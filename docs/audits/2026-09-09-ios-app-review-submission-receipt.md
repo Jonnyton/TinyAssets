@@ -6,7 +6,7 @@ the authenticated App Store Connect account on 2026-09-09 at 02:32 PDT.
 - Apple ID: `6808434444`
 - Bundle ID: `io.tinyassets.app`
 - Submission ID: `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`
-- App Store Connect status after reload: **Waiting for Review**
+- App Store Connect status after submission: **Waiting for Review**
 - Release mode: **Manually release this version**
 - Initial availability: 148 non-EU storefronts, including the United States;
   all 27 EU storefronts are **Not Available**
@@ -44,6 +44,79 @@ contract mismatch, tracked separately in
 invalidate the successful public request/response probes or this App Store
 submission.
 
-The next external state transition belongs to Apple. When Apple approves the
-version, use **Release This Version**, then verify the United States product
-page can install the app before calling the launch complete.
+## App Review response — 2026-09-10
+
+Apple changed the submission to **Unresolved Issues** and iOS 1.0 to
+**Rejected**. The first authenticated UI read at 2026-09-10 11:27 PDT showed a
+single issue, **Guideline 2.1 - Information Needed - New App Submission**. Apple
+did not report a crash, broken login, metadata defect, or Guideline 4.2 finding.
+Because the developer account has a limited review history, Apple requested:
+
+1. a screen recording captured on a physical device running the latest iOS,
+   beginning with app launch and demonstrating the ordinary user flow;
+2. the app's purpose, target audience, problem solved, and user value;
+3. setup and access instructions, including review credentials and sample files;
+4. the external services used for core functionality;
+5. regional differences, or confirmation that the app behaves consistently; and
+6. any authorization evidence for regulated or protected third-party material,
+   if applicable.
+
+The recording must also show account login and account deletion. TinyAssets has
+no public or user-to-user content surface, so content reporting and blocking are
+not applicable; user prompts, attachments, and universe output are private to
+the signed-in user's universe. The submitted build has no purchase, subscription,
+upgrade, advertising, or paid-content UI.
+
+At 2026-09-10 12:20 PDT the isolated App Review account completed a fresh,
+rendered production turn in universe `u-01m26ac5ds3t48mktxykvgnvwg`. Its
+review-only OpenRouter connection uses the zero-cost `openrouter/free` router,
+has a $5 hard key ceiling, and expires on 2026-10-10. The two superseded test
+keys were deleted. Reviewers therefore land in a working private universe and
+do not need to connect a provider or supply payment information. The production
+receipt showed the selected free provider returned a normal answer through the
+same `/mcp/app` surface used by the iOS shell. OpenRouter's provider log recorded
+the two production calls at $0.00, and a full page reload restored the same
+question and answer from the canonical conversation.
+
+The same session exposed and fixed an independent host-watchdog packaging fault:
+PR #3828 (merge `41034bf0171463d328e40c8eed84b0f66bfcc912`) now installs the
+canary helper beside the watchdog. No later auto-restart incident was created
+after the final pre-fix event at 2026-09-10 19:04:11 UTC, and the canonical
+authenticated public probe was green after convergence.
+
+PR #3830 (merge `f497050f6586ae70f41e98f78c412932176a46c7`) closed the
+last submitted-scope mismatch in the remotely hosted native client. Capacitor
+shells now keep Voice hidden and do not initialize its capability, while the
+browser-hosted client remains unchanged. The submitted binary still carries its
+defensive microphone usage string, but App Review Notes, App Privacy answers,
+and the reachable native product remain voice-dark. Deploy run `34523794549`
+published that exact revision, passed the authenticated public MCP canary with
+the canonical handles, and verified the protected release receipt. A fresh
+production fetch contained the default-hidden Voice controls and both native
+gates; a signed-in browser reload still rendered Voice, proving the web-only
+surface remained available.
+
+Protected read-only workflow run `34522734323` reverified the retained reviewer
+account/contact block plus `submission_state=UNRESOLVED_ISSUES`,
+`app_store_state=REJECTED`, manual release, and `listed_in_us=false` at
+2026-09-10 12:50 PDT. The United States remains in the
+148 enabled non-EU storefronts and all 27 EU storefronts remain excluded. Do not
+cancel the submission. Resubmit only after the physical-iPhone recording and the
+complete written response have both been attached/saved in App Store Connect.
+
+## Access recovery — 2026-09-10
+
+The Account Holder generated a separate App Manager team key, synchronized it to
+the protected `app-store` environment, and backed it up in Windows Credential
+Manager. Protected verify-only run `34562826944` proved the replacement key can
+read the retained App Review credential and contact block. Apple's separate
+TestFlight review record was completed from the same verified values without
+placing them in this repository.
+
+The Account Holder was added to the existing Internal TestFlight group. After
+Build 3's group relationship was refreshed, Apple's API changed the tester state
+from `NOT_INVITED` to `INVITED`; the authenticated UI showed one tester, one build,
+and **Invited — Sep 10, 2026**. App Store Version 1.0 was also changed to
+`releaseType=AFTER_APPROVAL`. The rejection and unresolved-issues states did not
+change, and no reviewer reply, beta-review submission, or resubmission was sent.
+Receipt: `docs/audits/2026-09-10-ios-review-recovery-access.md`.
