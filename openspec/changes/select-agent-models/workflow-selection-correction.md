@@ -188,7 +188,7 @@ legacy wire documents remain unchanged. No store schema or launch path emits
 this version yet; no migration, model selection or production readiness claim.
 
 WindowsPython3.14: `python -m pytest -q tests/test_provider_work_authority.py
---tb=short --show-capture=no` passes92cases in5.22s, zero skips. Includes26 new
+--tb=short --show-capture=no` passes92cases in5.22s, zero skips. Includes27 new
 manifest/strictness cases (full fixture-backed legacy coverage also remains).
 Ruff, strict OpenSpec validation and canonical plugin mirror/import pass.
 Expanded real run/consumer/background group remains50passed/2failed in11.63s,
