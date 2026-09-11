@@ -1345,6 +1345,8 @@ class ProviderInvocationCarrier:
 
     @property
     def provider(self) -> str:
+        if self._reservation.selection is not None:
+            return self._reservation.selection.provider
         return self._receipt.provider
 
     @property
@@ -1373,10 +1375,14 @@ class ProviderInvocationCarrier:
 
     @property
     def credential_reference_digest(self) -> str:
+        if self._reservation.selection is not None:
+            return self._reservation.selection.credential_reference_digest
         return self._receipt.credential_reference_digest
 
     @property
     def binding_revocation_generation(self) -> int:
+        if self._reservation.selection is not None:
+            return self._reservation.selection.binding_revocation_generation
         return self._receipt.binding_revocation_generation
 
     @property
@@ -1529,10 +1535,14 @@ def _mint_provider_invocation_carrier(
         receipt.state is ProviderWorkReceiptState.ACTIVE,
         claim.state is ProviderWorkExecutionClaimState.ACTIVE,
         reservation.state is ProviderInvocationReservationState.LAUNCH_STARTED,
-        # Record support precedes activation. Only the existing provider-bound
-        # path can mint until manifest admission validates a selected member.
-        receipt.authority_scope == "provider",
-        reservation.selection is None,
+        (
+            receipt.authority_scope == "provider" and reservation.selection is None
+        ) or (
+            receipt.authority_scope == "manifest" and reservation.selection is not None
+            and reservation.selection.assignment_generation == receipt.assignment_generation
+            and reservation.selection.assignment_digest == receipt.assignment_digest
+            and reservation.selection.manifest_digest == receipt.manifest_digest
+        ),
         receipt.receipt_digest == receipt.expected_digest(),
         claim.claim_digest == claim.expected_digest(),
         reservation.reservation_digest == reservation.expected_digest(),

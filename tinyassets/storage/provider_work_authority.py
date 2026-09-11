@@ -22,6 +22,7 @@ from tinyassets.provider_work_authority import (
     ProviderInvocationReservationRequest,
     ProviderInvocationReservationState,
     ProviderInvocationReservationWriteResult,
+    ProviderInvocationSelection,
     ProviderInvocationSettlementOwner,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkReceipt,
@@ -563,6 +564,57 @@ def _same_claim_intent(
     return left == right
 
 
+def _current_work_manifest(conn, receipt):
+    """Recheck aggregate work identity without depending on an anchor credential."""
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+
+    assignment = load_provider_assignment_in_transaction(conn, universe_id=receipt.universe_id)
+    if (
+        receipt.authority_scope != "manifest" or assignment is None
+        or assignment.state != "ready" or assignment.owner_user_id != receipt.principal_id
+        or assignment.generation != receipt.assignment_generation
+        or assignment.assignment_digest != receipt.assignment_digest
+        or assignment.manifest_digest != receipt.manifest_digest
+    ):
+        raise PermissionError("aggregate work assignment is stale")
+    return assignment
+
+
+def _current_work_member(conn, receipt, selection, now):
+    """SQL half of the member fence; custody/model checks belong to admission."""
+    assignment = _current_work_manifest(conn, receipt)
+    if type(selection) is not ProviderInvocationSelection:
+        raise PermissionError("aggregate invocation requires selected-member facts")
+    member = next((m for m in assignment.candidates if m.provider == selection.provider), None)
+    row = conn.execute(
+        "SELECT * FROM provider_work_bindings WHERE binding_id = ?", (selection.binding_id,),
+    ).fetchone()
+    binding = _record(row) if row is not None else None
+    if member is None or binding is None:
+        raise PermissionError("selected work member is unavailable")
+    if not all((
+        binding.state is ProviderWorkBindingState.ACTIVE,
+        binding.owner_user_id == receipt.principal_id,
+        binding.universe_id == receipt.universe_id,
+        binding.provider == selection.provider,
+        binding.binding_id == member.binding_id == selection.binding_id,
+        binding.generation == member.binding_generation == selection.binding_generation,
+        binding.binding_digest == member.binding_digest == selection.binding_digest,
+        binding.revocation_generation == selection.binding_revocation_generation,
+        binding.credential_reference_digest == member.credential_reference_digest
+        == selection.credential_reference_digest,
+        member.credential_reference_id == selection.credential_reference_id,
+        member.credential_reference_generation == selection.credential_reference_generation,
+        selection.assignment_generation == binding.assignment_generation == assignment.generation,
+        selection.assignment_digest == binding.assignment_digest == assignment.assignment_digest,
+        selection.manifest_digest == assignment.manifest_digest,
+        selection.member_digest == member.digest(receipt.universe_id, assignment.generation),
+        datetime.fromisoformat(binding.expires_at.replace("Z", "+00:00")) > now,
+    )):
+        raise PermissionError("selected work member changed")
+    return binding
+
+
 def _background_receipt_authority(
     conn: sqlite3.Connection,
     receipt: ProviderUniverseWorkReceipt,
@@ -916,15 +968,61 @@ class _Transaction:
         )
         if not all(exact):
             raise PermissionError("provider receipt authority is stale or invalid")
+        return self._store_receipt(candidate, now=now)
+
+    def _issue_manifest_receipt(self, candidate, bindings, *, now):
+        """Admission supplies current member bindings, never a synthetic anchor."""
+        assignment = _current_work_manifest(self._conn, candidate)
+        if not bindings or candidate.receipt_digest != candidate.expected_digest():
+            raise PermissionError("aggregate receipt authority is invalid")
+        for binding in bindings:
+            member = next(
+                (m for m in assignment.candidates if m.provider == binding.provider), None,
+            )
+            row = self._conn.execute(
+                "SELECT * FROM provider_work_bindings WHERE binding_id = ?", (binding.binding_id,),
+            ).fetchone()
+            if (member is None or row is None or _record(row) != binding
+                    or member.binding_id != binding.binding_id
+                    or member.binding_generation != binding.generation
+                    or member.binding_digest != binding.binding_digest
+                    or binding.state is not ProviderWorkBindingState.ACTIVE
+                    or binding.owner_user_id != candidate.principal_id
+                    or binding.universe_id != candidate.universe_id
+                    or binding.assignment_generation != assignment.generation
+                    or binding.assignment_digest != assignment.assignment_digest
+                    or not set(candidate.allowed_roles) <= set(binding.allowed_roles)
+                    or candidate.max_invocations > binding.max_invocations
+                    or candidate.max_tokens > binding.max_tokens
+                    or candidate.max_cost_microunits > binding.max_cost_microunits
+                    or datetime.fromisoformat(candidate.expires_at.replace("Z", "+00:00"))
+                    > datetime.fromisoformat(binding.expires_at.replace("Z", "+00:00"))):
+                raise PermissionError("aggregate receipt exceeds current member authority")
+        if (
+            candidate.work_item_kind not in {"run", "background_attempt"}
+            or candidate.allowed_operations != (
+                "run_graph" if candidate.work_item_kind == "run" else "background_branch_run",
+            )
+            or candidate.executor_class != "cloud"
+            or candidate.receipt_id != provider_work_receipt_id(
+                universe_id=candidate.universe_id,
+                root=ProviderUniverseWorkRoot(candidate.work_item_kind, candidate.work_item_id),
+            )
+            or datetime.fromisoformat(candidate.expires_at.replace("Z", "+00:00")) <= now
+        ):
+            raise PermissionError("aggregate receipt has invalid work identity or expiry")
+        return self._store_receipt(candidate, now=now)
+
+    def _store_receipt(self, candidate, *, now):
         existing = self._conn.execute(
             """
             SELECT * FROM provider_work_receipts
             WHERE universe_id = ? AND work_item_kind = ? AND work_item_id = ?
             """,
             (
-                binding.universe_id,
-                authority.root.work_item_kind,
-                authority.root.work_item_id,
+                candidate.universe_id,
+                candidate.work_item_kind,
+                candidate.work_item_id,
             ),
         ).fetchone()
         if existing is not None:
@@ -999,8 +1097,9 @@ class _Transaction:
             INSERT INTO provider_work_receipts (
                 receipt_id, receipt_digest, generation, state,
                 work_item_kind, work_item_id, universe_id, binding_id,
-                binding_generation, binding_digest, expires_at, record_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                binding_generation, binding_digest, expires_at, record_json,
+                authority_scope, manifest_digest
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 candidate.receipt_id,
@@ -1015,6 +1114,8 @@ class _Transaction:
                 candidate.binding_digest,
                 candidate.expires_at,
                 _json_record(candidate),
+                candidate.authority_scope,
+                candidate.manifest_digest,
             ),
         )
         return ProviderWorkReceiptWriteResult(
@@ -1030,6 +1131,7 @@ class _Transaction:
         now: datetime,
         agent_store_grant: object | None = None,
         allow_test_fixtures: bool = False,
+        manifest_authorized: bool = False,
     ) -> ProviderWorkExecutionClaimWriteResult:
         receipt_row = self._conn.execute(
             "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
@@ -1058,22 +1160,30 @@ class _Transaction:
                 ProviderWorkAuthorityWriteOutcome.STALE,
                 None,
             )
-        binding_row = self._conn.execute(
-            "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
-            (receipt.binding_id,),
-        ).fetchone()
-        if binding_row is None:
-            return ProviderWorkExecutionClaimWriteResult(
-                ProviderWorkAuthorityWriteOutcome.STALE,
-                None,
+        if receipt.authority_scope == "manifest":
+            if not manifest_authorized:
+                return ProviderWorkExecutionClaimWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.STALE, None,
+                )
+            _current_work_manifest(self._conn, receipt)
+            binding_current = (True,)
+        else:
+            binding_row = self._conn.execute(
+                "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+                (receipt.binding_id,),
+            ).fetchone()
+            if binding_row is None:
+                return ProviderWorkExecutionClaimWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.STALE,
+                    None,
+                )
+            binding = _record(binding_row)
+            binding_current = (
+                binding.state is ProviderWorkBindingState.ACTIVE,
+                binding.generation == receipt.binding_generation,
+                binding.binding_digest == receipt.binding_digest,
+                binding.revocation_generation == receipt.binding_revocation_generation,
             )
-        binding = _record(binding_row)
-        binding_current = (
-            binding.state is ProviderWorkBindingState.ACTIVE,
-            binding.generation == receipt.binding_generation,
-            binding.binding_digest == receipt.binding_digest,
-            binding.revocation_generation == receipt.binding_revocation_generation,
-        )
         if not all(binding_current):
             return ProviderWorkExecutionClaimWriteResult(
                 ProviderWorkAuthorityWriteOutcome.STALE,
@@ -1135,6 +1245,7 @@ class _Transaction:
         created_at: str,
         agent_store_grant: object | None = None,
         allow_test_fixtures: bool = False,
+        manifest_selection: ProviderInvocationSelection | None = None,
     ) -> ProviderInvocationReservationWriteResult:
         receipt_row = self._conn.execute(
             "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
@@ -1148,7 +1259,9 @@ class _Transaction:
         receipt = _receipt_record(receipt_row)
         # Selected-member documents are inert until the manifest admission path
         # validates them. Never attach new model authority to a legacy receipt.
-        if request.selection is not None:
+        if request.selection is not None and (
+            receipt.authority_scope != "manifest" or manifest_selection != request.selection
+        ):
             raise PermissionError("manifest invocation admission is not active")
         if receipt.work_item_kind == "agent_invocation":
             authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
@@ -1168,11 +1281,21 @@ class _Transaction:
                 None,
             )
         claim = _claim_record(claim_row)
-        binding_row = self._conn.execute(
-            "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
-            (receipt.binding_id,),
-        ).fetchone()
-        binding = _record(binding_row) if binding_row is not None else None
+        if receipt.authority_scope == "manifest":
+            binding = _current_work_member(self._conn, receipt, manifest_selection, now)
+            binding_current = (True,)
+        else:
+            binding_row = self._conn.execute(
+                "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+                (receipt.binding_id,),
+            ).fetchone()
+            binding = _record(binding_row) if binding_row is not None else None
+            binding_current = (
+                binding is not None,
+                binding is not None and binding.state is ProviderWorkBindingState.ACTIVE,
+                binding is not None and binding.generation == receipt.binding_generation,
+                binding is not None and binding.binding_digest == receipt.binding_digest,
+            )
         current = (
             receipt.receipt_digest == request.receipt_digest,
             receipt.state is ProviderWorkReceiptState.ACTIVE,
@@ -1184,10 +1307,7 @@ class _Transaction:
             claim.generation == request.claim_generation,
             claim.state.value == "active",
             datetime.fromisoformat(claim.lease_expires_at.removesuffix("Z") + "+00:00") > now,
-            binding is not None,
-            binding is not None and binding.state is ProviderWorkBindingState.ACTIVE,
-            binding is not None and binding.generation == receipt.binding_generation,
-            binding is not None and binding.binding_digest == receipt.binding_digest,
+            *binding_current,
         )
         if not all(current):
             return ProviderInvocationReservationWriteResult(
@@ -1232,6 +1352,7 @@ class _Transaction:
         if (
             request.operation not in receipt.allowed_operations
             or request.role not in receipt.allowed_roles
+            or request.role not in binding.allowed_roles
         ):
             return ProviderInvocationReservationWriteResult(
                 ProviderWorkAuthorityWriteOutcome.STALE,
@@ -1273,6 +1394,18 @@ class _Transaction:
             sum(item[2] for item in charged) + request.max_cost_microunits
             > receipt.max_cost_microunits,
         )
+        if manifest_selection is not None:
+            member_charged = [
+                charge for item, charge in zip(reservations, charged, strict=True)
+                if item.selection is not None
+                and item.selection.binding_id == manifest_selection.binding_id
+            ]
+            exhausted += (
+                sum(item[0] for item in member_charged) >= binding.max_invocations,
+                sum(item[1] for item in member_charged) + request.max_tokens > binding.max_tokens,
+                sum(item[2] for item in member_charged) + request.max_cost_microunits
+                > binding.max_cost_microunits,
+            )
         if any(exhausted):
             return ProviderInvocationReservationWriteResult(
                 ProviderWorkAuthorityWriteOutcome.EXHAUSTED,
@@ -1318,6 +1451,7 @@ class _Transaction:
         now: datetime,
         agent_store_grant: object | None = None,
         allow_test_fixtures: bool = False,
+        manifest_selection: ProviderInvocationSelection | None = None,
     ) -> ProviderInvocationReservationWriteResult:
         if agent_store_grant is not None:
             agent_authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
@@ -1356,6 +1490,10 @@ class _Transaction:
                 None,
             )
         reservation = _reservation_record(reservation_row)
+        if receipt.authority_scope == "manifest" and (
+            manifest_selection is None or reservation.selection != manifest_selection
+        ):
+            raise PermissionError("manifest launch admission is not active")
         same_identity = (
             reservation.receipt_id == request.receipt_id,
             reservation.receipt_digest == request.receipt_digest,
@@ -1394,11 +1532,21 @@ class _Transaction:
                 None,
             )
         claim = _claim_record(claim_row)
-        binding_row = self._conn.execute(
-            "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
-            (receipt.binding_id,),
-        ).fetchone()
-        binding = _record(binding_row) if binding_row is not None else None
+        if receipt.authority_scope == "manifest":
+            _current_work_member(self._conn, receipt, manifest_selection, now)
+            binding_current = (True,)
+        else:
+            binding_row = self._conn.execute(
+                "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+                (receipt.binding_id,),
+            ).fetchone()
+            binding = _record(binding_row) if binding_row is not None else None
+            binding_current = (
+                binding is not None,
+                binding is not None and binding.state is ProviderWorkBindingState.ACTIVE,
+                binding is not None and binding.generation == receipt.binding_generation,
+                binding is not None and binding.binding_digest == receipt.binding_digest,
+            )
         if receipt.work_item_kind == "background_attempt" and not allow_test_fixtures:
             _background_receipt_authority(
                 self._conn,
@@ -1416,10 +1564,7 @@ class _Transaction:
             claim.generation == request.claim_generation,
             claim.state.value == "active",
             datetime.fromisoformat(claim.lease_expires_at.removesuffix("Z") + "+00:00") > now,
-            binding is not None,
-            binding is not None and binding.state is ProviderWorkBindingState.ACTIVE,
-            binding is not None and binding.generation == receipt.binding_generation,
-            binding is not None and binding.binding_digest == receipt.binding_digest,
+            *binding_current,
         )
         if not all(current):
             return ProviderInvocationReservationWriteResult(
@@ -2372,29 +2517,29 @@ class SQLiteProviderWorkAuthorityStore:
         self,
         conn: sqlite3.Connection,
         *,
-        authority: ProviderUniverseWorkAuthority,
+        authority: ProviderUniverseWorkAuthority | ProviderUniverseWorkReceipt,
         worker_id: str,
         runtime_id: str,
         claim_nonce_digest: str,
         lease_seconds: int,
+        manifest_bindings: tuple[ProviderWorkBinding, ...] = (),
     ) -> tuple[ProviderUniverseWorkReceipt, ProviderWorkExecutionClaim]:
         """Issue one inert run receipt and claim inside the admission fence."""
 
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             raise ValueError("run provider admission requires an active transaction")
-        if authority.root.work_item_kind != "run":
+        manifest = type(authority) is ProviderUniverseWorkReceipt
+        kind = authority.work_item_kind if manifest else authority.root.work_item_kind
+        if kind != "run":
             raise PermissionError("run provider admission requires run authority")
         now = self._now()
         transaction = _Transaction(conn)
-        candidate = _receipt_from_authority(
-            authority,
-            created_at=self._timestamp(now),
-        )
-        issued = transaction._issue_universe_receipt(
-            authority,
-            candidate,
-            now=now,
-        )
+        if manifest:
+            candidate = authority
+            issued = transaction._issue_manifest_receipt(candidate, manifest_bindings, now=now)
+        else:
+            candidate = _receipt_from_authority(authority, created_at=self._timestamp(now))
+            issued = transaction._issue_universe_receipt(authority, candidate, now=now)
         if (
             issued.outcome
             not in {
@@ -2429,6 +2574,7 @@ class SQLiteProviderWorkAuthorityStore:
             claim_candidate,
             now=now,
             allow_test_fixtures=self._allow_test_fixtures,
+            manifest_authorized=manifest,
         )
         if (
             claimed.outcome
@@ -2441,6 +2587,37 @@ class SQLiteProviderWorkAuthorityStore:
             raise PermissionError("run provider execution claim is unavailable")
         return receipt, claimed.record
 
+    def _validate_native_work_selection(self, conn, receipt, selection):
+        """Native-default activation uses the same live member/custody fence as chat.
+
+        HTTP and explicit native models remain closed here until their prepared
+        discovery evidence and exact executor are connected. No remote discovery
+        is performed inside this SQLite/admission fence.
+        """
+        from tinyassets.provider_serving_binding import (
+            _current_selected_member_authority,
+            resolve_serving_agent_binding,
+        )
+        from tinyassets.providers.model_selection import _native_default
+        from tinyassets.storage.current_home import check_current_home
+
+        if type(selection) is not ProviderInvocationSelection:
+            raise PermissionError("work model selection is missing")
+        check_current_home(conn, receipt.principal_id, receipt.universe_id)
+        agent = resolve_serving_agent_binding(
+            self.base_path, universe_id=receipt.universe_id, owner_user_id=receipt.principal_id,
+        )
+        assignment, _binding, _custody = _current_selected_member_authority(
+            conn, store=self, universe_dir=self.base_path / receipt.universe_id,
+            base_path=self.base_path, owner_user_id=receipt.principal_id,
+            universe_id=receipt.universe_id, agent=agent, provider=selection.provider,
+        )
+        member = next(m for m in assignment.candidates if m.provider == selection.provider)
+        if (selection.model_evidence_json is not None or selection.executor_id != selection.provider
+                or not _native_default(selection.provider, selection.model_id, member.access)):
+            raise PermissionError("work model executor integration is not active")
+        _current_work_member(conn, receipt, selection, self._now())
+
     def _reserve_and_arm_run_carrier_in_transaction(
         self,
         conn: sqlite3.Connection,
@@ -2451,6 +2628,7 @@ class SQLiteProviderWorkAuthorityStore:
         role: str,
         max_tokens: int,
         max_cost_microunits: int,
+        selection: ProviderInvocationSelection | None = None,
     ) -> ProviderInvocationCarrier:
         """Reserve and arm one run attempt after caller-owned revalidation."""
 
@@ -2458,6 +2636,8 @@ class SQLiteProviderWorkAuthorityStore:
             raise ValueError("run provider launch requires an active transaction")
         if receipt.work_item_kind != "run":
             raise PermissionError("provider receipt is not run authority")
+        if receipt.authority_scope == "manifest":
+            self._validate_native_work_selection(conn, receipt, selection)
         request = ProviderInvocationReservationRequest(
             receipt_id=receipt.receipt_id,
             receipt_digest=receipt.receipt_digest,
@@ -2469,6 +2649,7 @@ class SQLiteProviderWorkAuthorityStore:
             role=role,
             max_tokens=max_tokens,
             max_cost_microunits=max_cost_microunits,
+            selection=selection,
         )
         now = self._now()
         transaction = _Transaction(conn)
@@ -2477,6 +2658,7 @@ class SQLiteProviderWorkAuthorityStore:
             now=now,
             created_at=self._timestamp(now),
             allow_test_fixtures=self._allow_test_fixtures,
+            manifest_selection=selection,
         )
         if (
             reserved.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
@@ -2487,6 +2669,7 @@ class SQLiteProviderWorkAuthorityStore:
             ProviderInvocationLaunchRequest.from_reservation(reserved.record),
             now=now,
             allow_test_fixtures=self._allow_test_fixtures,
+            manifest_selection=selection,
         )
         if (
             armed.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED

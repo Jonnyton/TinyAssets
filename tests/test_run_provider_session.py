@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +21,11 @@ from tinyassets.storage.provider_work_authority import db_path as authority_db_p
 
 
 class _CountingProvider(BaseProvider):
-    def __init__(self, name: str = "codex") -> None:
+    def __init__(self, name: str = "codex", after_call=None) -> None:
         self.name = name
         self.family = name
         self.calls: list[ModelConfig] = []
+        self.after_call = after_call
 
     async def complete(
         self,
@@ -34,6 +36,8 @@ class _CountingProvider(BaseProvider):
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
         self.calls.append(config)
+        if self.after_call is not None:
+            self.after_call(self.name, len(self.calls))
         return ProviderResponse(
             text="foreground-ok",
             provider=self.name,
@@ -286,6 +290,8 @@ def _run_branch(
     open_provider: bool = False,
     open_router_resolution_refusal: bool = False,
     model_access=None,
+    services=("codex",),
+    after_provider_call=None,
 ) -> tuple[dict[str, Any], _CountingProvider, dict[str, Any]]:
     from tinyassets.api import runs as api_runs
     from tinyassets.daemon_server import save_branch_definition, set_founder_home
@@ -312,16 +318,25 @@ def _run_branch(
                 select_for_serving=authority_case != "registered_only",
             )
         else:
-            _seed_serving_assignment(tmp_path, model_access=model_access)
+            _seed_serving_assignment(tmp_path, model_access=model_access, services=services)
+    provider_names = (
+        [selected_provider] if open_provider
+        else ["claude-code" if service == "claude" else service for service in services]
+    )
     (universe_dir / "config.yaml").write_text(
         f"preferred_writer: {selected_provider}\n"
-        f"allowed_providers:\n  - {selected_provider}\n",
+        "allowed_providers:\n" + "".join(f"  - {name}\n" for name in provider_names),
         encoding="utf-8",
     )
     if open_provider:
         for node in branch.node_defs:
             node.llm_policy = {"preferred": {"provider": selected_provider}}
     save_branch_definition(tmp_path, branch_def=branch.to_dict())
+    if authority_case == "home_rebound":
+        set_founder_home(
+            tmp_path, founder_sub="acct_alice", universe_id="universe_other",
+            platform_generated=True,
+        )
     if authority_case in {"revoked", "stale"}:
         conn = sqlite3.connect(authority_db_path(tmp_path))
         if authority_case == "revoked":
@@ -374,8 +389,10 @@ def _run_branch(
         lambda output: captured["effects"].append((output,)),
     )
 
-    provider = _CountingProvider(selected_provider)
-    provider_router = ProviderRouter({provider.name: provider})
+    providers = {name: _CountingProvider(name, after_provider_call) for name in provider_names}
+    provider = providers[selected_provider]
+    captured["providers"] = providers
+    provider_router = ProviderRouter(providers)
 
     def governed_provider_call(
         prompt,
@@ -539,6 +556,120 @@ def test_accepted_native_model_manifest_preserves_foreground_execution(
         assert conn.execute(
             "SELECT state FROM provider_invocation_reservations"
         ).fetchall() == [("succeeded",)]
+
+
+@pytest.mark.parametrize("rotated", [None, "codex", "claude-code"])
+def test_manifest_run_uses_independent_members_under_one_receipt(
+    tmp_path, monkeypatch, authenticate_request, rotated,
+):
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
+    branch = _branch(node_count=2)
+    branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
+    before = branch.to_dict()
+
+    def after_call(provider, count):
+        if rotated and provider == "codex" and count == 1:
+            write_credential_vault(
+                tmp_path / "universe_alice",
+                [
+                    {"credential_type": "llm_subscription", "service": "codex",
+                     "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==" if rotated == "codex" else "e30="},
+                    {"credential_type": "llm_subscription", "service": "claude",
+                     "oauth_token": "rotated-test-only" if rotated == "claude-code"
+                     else "synthetic-claude-test-only"},
+                ], owner_user_id="acct_alice", universe_id="universe_alice",
+            )
+
+    response, _provider, captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, branch,
+        model_access={name: ModelAccess("explicit", ("",)) for name in ("codex", "claude-code")},
+        services=("codex", "claude"), after_provider_call=after_call,
+    )
+    expected_status = "failed" if rotated == "claude-code" else "completed"
+    assert response["terminal_status"] == expected_status, response["terminal_error"]
+    assert branch.to_dict() == before
+    assert {name: len(p.calls) for name, p in captured["providers"].items()} == {
+        "codex": 1, "claude-code": int(rotated != "claude-code"),
+    }
+    assignment = load_provider_assignment(tmp_path, universe_id="universe_alice")
+    assert assignment.provider == "codex"  # Work choice never rewrites the main choice.
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        receipts = conn.execute("SELECT record_json FROM provider_work_receipts").fetchall()
+        assert len(receipts) == 1
+        receipt = json.loads(receipts[0][0])
+        assert receipt["authority_scope"] == "manifest"
+        assert receipt["binding_id"] is None and receipt["provider"] is None
+        records = [json.loads(row[0]) for row in conn.execute(
+            "SELECT record_json FROM provider_invocation_reservations ORDER BY ordinal"
+        )]
+    assert {r["receipt_id"] for r in records} == {receipt["receipt_id"]}
+    expected_providers = ["codex"] if rotated == "claude-code" else ["codex", "claude-code"]
+    assert [r["selection"]["provider"] for r in records] == expected_providers
+    assert all(r["schema_version"] == 3 and r["state"] == "succeeded" for r in records)
+
+
+@pytest.mark.parametrize("authority_case", ["revoked", "stale", "home_rebound"])
+def test_manifest_run_still_refuses_invalid_owner_or_authority(
+    tmp_path, monkeypatch, authenticate_request, authority_case,
+):
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    response, provider, _captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
+        authority_case=authority_case, model_access={"codex": ModelAccess("explicit", ("",))},
+    )
+    assert response["terminal_status"] == "failed"
+    assert provider.calls == []
+
+
+def test_manifest_work_model_pin_is_not_silently_replaced_by_native_default(
+    tmp_path, monkeypatch, authenticate_request,
+):
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    branch = _branch(node_count=1)
+    branch.node_defs[0].llm_policy["preferred"]["model"] = "unaccepted-model"
+    response, provider, _captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, branch,
+        model_access={"codex": ModelAccess("explicit", ("",))},
+    )
+    assert response["terminal_status"] == "failed"
+    assert provider.calls == []
+
+
+def test_parallel_manifest_members_share_one_work_receipt(
+    tmp_path, monkeypatch, authenticate_request,
+):
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
+    branch = _branch(node_count=2)
+    branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
+    branch.edges = [
+        EdgeDefinition(from_node="START", to_node="n1"),
+        EdgeDefinition(from_node="START", to_node="n2"),
+        EdgeDefinition(from_node="n1", to_node="END"),
+        EdgeDefinition(from_node="n2", to_node="END"),
+    ]
+    both_launched = threading.Barrier(2)
+    response, _provider, captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, branch,
+        model_access={name: ModelAccess("explicit", ("",)) for name in ("codex", "claude-code")},
+        services=("codex", "claude"),
+        after_provider_call=lambda _provider, _count: both_launched.wait(timeout=3),
+    )
+    assert response["terminal_status"] == "completed", response["terminal_error"]
+    assert all(len(provider.calls) == 1 for provider in captured["providers"].values())
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        assert conn.execute("SELECT count(*) FROM provider_work_receipts").fetchone() == (1,)
+        assert conn.execute(
+            "SELECT count(DISTINCT receipt_id), count(*), sum(actual_total_tokens) "
+            "FROM provider_invocation_reservations WHERE state = 'succeeded'"
+        ).fetchone() == (1, 2, 200)
 
 
 @pytest.mark.parametrize("manifest", [False, True], ids=["legacy", "model-access"])

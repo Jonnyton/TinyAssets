@@ -4,6 +4,41 @@ September 11, 2026, 20:25 UTC. Correction proposal and reproduced blocker;
 The initial proposal below is superseded by the reviewed disposition immediately
 below. Runtime integration remains unfinished.
 
+## Foreground native-manifest execution connected — September11
+
+The two real bind/enable/run regressions now pass. Foreground work issues one
+version4 aggregate receipt, claims it through manifest-aware admission, and
+reserves/arms version3 selected-member invocations through current home, serving
+agent, assignment, member, custody and native-default model checks. The carrier
+derives the executed provider/custody from that reservation, never the manifest
+anchor. Legacy single-provider guards and wire forms remain intact.
+
+The work allowance is bounded by common member ceilings and the immutable
+node-policy plan, including the compiler's bounded policy retry count and the
+declared fallback tail. Reservation sums enforce both aggregate and member
+usage. Launched failures retain their charge. Public raw reserve/arm calls still
+cannot activate supplied selection records; selected activation is private to
+the validated workflow admission path. Existing cancellation/settlement remains.
+
+Windows Python3.14, September11: six-file group `python -m pytest -q
+tests/test_run_provider_session.py tests/test_assigned_queue_consumer.py
+tests/test_background_budget_finalization_e2e.py tests/test_provider_work_authority.py
+tests/test_provider_invocation_selection.py tests/test_selected_model_authority.py
+--tb=short --show-capture=no` passes254cases in22.04s, zero skips. Additional
+`-k parallel_manifest` real compiler/router test passes1case in3.71s with a
+two-provider rendezvous, one receipt and two settled reservations. The focused
+manifest group passes9cases in6.19s: default/pin, mixed members, independent member
+surviving anchor rotation, selected member rotation refusal, stale/revoked/home
+refusals and unsupported explicit model not silently defaulted. Synthetic owned
+credentials/providers only; private workflow and main-provider choice unchanged.
+Ruff and plugin mirror/import pass. No Linux or live execution claim yet.
+
+Still required: HTTP prepared model/discovery admission and router propagation,
+background workflow integration, full fallback/loop budget coverage, native
+explicit-model catalogue/execution, final integrated tests/review/CI/deploy and
+rendered selector acceptance. Passing the two foreground regressions does not
+complete these requirements or make this candidate release-ready.
+
 ## September11 reviewed implementation decisions
 
 The owner's one extra independent review completed in336s, verdict ADAPT.
