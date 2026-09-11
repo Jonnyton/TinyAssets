@@ -778,15 +778,9 @@ def bind_serving_provider(
                     generation=generation,
                     provider=selected,
                     binding=binding_projection,
-                    **({} if model_access is None else {"candidate_bindings": {
-                        member.provider: {
-                            "binding_id": member.binding_id,
-                            "generation": member.binding_generation,
-                            "binding_digest": member.binding_digest,
-                            "assignment_digest": ready.assignment_digest,
-                        }
-                        for member in ready_members
-                    }}),
+                    **({} if model_access is None else {
+                        "assignment_candidates": ready.candidates,
+                    }),
                 )
                 conn.commit()
         except Exception:

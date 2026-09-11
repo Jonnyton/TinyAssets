@@ -193,4 +193,10 @@
   docs/reviews/2026-09-10-model-access-ui-proof.md. No live account changed;
   exact release integration/review, deployment and app acceptance remain open.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
+
+  September11 assignment projection now consumes resolved candidate records,
+  retaining legacy behavior and current admission authority.119Windows/119Linux
+  pass, zero skips; see docs/reviews/2026-09-11-assignment-projection-proof.md.
+  Config's two provider-name regressions removed; four gate loci remain.
+  Independent exact-commit review and complete release validation still required.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.
