@@ -333,9 +333,15 @@ def test_invalid_membership_changes_nothing(scene, invalid):
     assert _root(scene) is None
 
 
-def test_manifest_does_not_activate_unfinished_model_execution(scene):
+def test_manifest_without_model_discovery_cannot_enable_serving(scene):
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(
+        scene[0], founder_sub="owner-1", universe_id="u-owner", platform_generated=True,
+    )
     result = _publish(scene)
-    with pytest.raises(PermissionError, match="not active"):
+    before = _root(scene)
+    with pytest.raises(PermissionError, match="no eligible model"):
         set_serving(
             base_path=scene[0],
             universe_dir=scene[1],
@@ -345,6 +351,10 @@ def test_manifest_does_not_activate_unfinished_model_execution(scene):
             expected_revision=result["agent_binding"]["revision"],
             enabled=True,
         )
+    assert _root(scene) == before
+    assert get_binding(
+        scene[0], universe_id="u-owner", binding_id=scene[5]["agent_binding_id"],
+    ) == result["agent_binding"]
 
 
 def test_manifest_to_legacy_cannot_replay_stale_members(scene):
