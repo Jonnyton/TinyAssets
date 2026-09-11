@@ -33,6 +33,13 @@
   APPROVE85s,18cases independently passed; no required correction.
   This is not full custom source publication/enforcement or live acceptance.
 
+  Pure usage/capacity/request-ceiling execution shapes are now built, including
+  exact observed-cost rounding and existing token/request reservation arithmetic.
+  538Windows/538actualLinux pass, zero skips; see
+  docs/reviews/2026-09-11-discovery-execution-proof.md. Exact review pending.
+  No production consumer yet. Whole-source price/constant-effect closure,
+  publication/capture and per-attempt enforcement remain required before activation.
+
 ## 2. Owner policy and execution
 
 - [ ] 2.1 Add versioned universe-local policy and current-choice input through authenticated app ingress; test generation conflicts, isolation and legacy-pin preservation.
