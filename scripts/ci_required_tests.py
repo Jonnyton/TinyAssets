@@ -183,6 +183,11 @@ def summarise(lines: list[str]) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     text = "\n".join(lines)
     print(text)
+    # Expose the existing diagnostic to clients unable to follow log redirects.
+    # Escape command data so identifiers cannot inject runner commands.
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        message = text[:16000].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print("::notice title=Required test gate summary::" + message)
     if path:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(text + "\n")

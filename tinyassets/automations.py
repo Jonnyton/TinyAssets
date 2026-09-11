@@ -1330,6 +1330,27 @@ def run_due_automation(
             _record_refusal(base, automation, blocked, moment, consumer_id)
             return blocked
 
+        # Resolve before admission: a failed read has not started any graph
+        # and must remain retryable after its source is repaired.
+        try:
+            from tinyassets.automation_context import resolve_automation_inputs
+            current = store.get(automation.automation_id)
+            if current is None:
+                raise ValueError('automation_disappeared_before_context_read')
+            inputs = resolve_automation_inputs(
+                base, current, observed_at=_iso(datetime.now(timezone.utc))
+            )
+        except Exception as exc:  # noqa: BLE001 - explicit pre-execution refusal
+            logger.exception("automation context unavailable")
+            reason = "context_unavailable"
+            store.finish_attempt(
+                automation.automation_id, due_at, run_id="", status="refused",
+                reason=reason, now=moment, succeeded=False,
+            )
+            _record_refusal(base, automation, reason, moment, consumer_id)
+            _pause_if_hopeless(base, store, automation, str(exc), moment, consumer_id)
+            return reason
+
         # The same rolling write/total admission bounds a foreground `run_graph` pays
         # (Codex ADAPT §7). Counted against THIS universe, so one owner's
         # cadence cannot exhaust another's. A refusal is NOT a pause: the
@@ -1370,7 +1391,7 @@ def run_due_automation(
             automation,
             provider_call,
             branch,
-            dict(automation.inputs),
+            inputs,
             _started,
         )
         from tinyassets.runs import RUN_STATUS_COMPLETED
