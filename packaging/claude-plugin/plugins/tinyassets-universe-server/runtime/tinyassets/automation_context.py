@@ -62,6 +62,36 @@ def _conversation(root: Path) -> dict[str, Any]:
     }
 
 
+def _previous_run_id(base: Path, automation: Any) -> str:
+    """Recover a retained run across a rate-limited tick, without hiding loss."""
+    if automation.last_run_id:
+        return automation.last_run_id
+    if not getattr(automation, "last_due_at", ""):
+        return ""
+    if getattr(automation, "last_reason", "") != "run_rate_limited":
+        raise ValueError("automation_context_previous_run_missing")
+    path = base / ".automations.db"
+    if not path.is_file():
+        raise ValueError("automation_context_previous_run_missing")
+    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as conn:
+        rows = conn.execute(
+            "SELECT run_id, status, reason FROM automation_attempts "
+            "WHERE automation_id = ? AND due_at <= ? ORDER BY due_at DESC",
+            (automation.automation_id, automation.last_due_at),
+        )
+        seen = False
+        for run_id, status, reason in rows:
+            seen = True
+            if run_id:
+                return str(run_id)
+            if status != "refused" or reason != "run_rate_limited":
+                raise ValueError("automation_context_previous_run_missing")
+    if not seen:
+        raise ValueError("automation_context_previous_run_missing")
+    # Only rate-limited refusals exist: no graph has run yet.
+    return ""
+
+
 def resolve_automation_inputs(
     base_path: str | Path,
     automation: Any,
@@ -95,19 +125,18 @@ def resolve_automation_inputs(
         raise ValueError("automation_context_universe_missing")
 
     # An attempted tick without a retained run must not look like first use.
-    if not automation.last_run_id and getattr(automation, "last_due_at", ""):
-        raise ValueError("automation_context_previous_run_missing")
+    previous_run_id = _previous_run_id(base, automation)
     previous = None
-    if automation.last_run_id:
+    if previous_run_id:
         if get_run is None:
             from tinyassets.runs import get_run
-        record = get_run(base, automation.last_run_id)
+        record = get_run(base, previous_run_id)
         if record is None:
             raise ValueError("automation_context_previous_run_missing")
         if (
             record.get("queue_universe_id") != uid
             or record.get("branch_def_id") != automation.branch_def_id
-            or record.get("run_id") != automation.last_run_id
+            or record.get("run_id") != previous_run_id
         ):
             raise ValueError("automation_context_previous_run_scope_mismatch")
         if record.get("status") not in {"completed", "failed", "cancelled", "interrupted"}:
