@@ -45,6 +45,7 @@ RUNTIME_FILES = (
     "scripts/backup_ship_gh.py",
     "scripts/backup_prune.py",
     "tinyassets/__init__.py",
+    "tinyassets/ttl_memo.py",
     "tinyassets/storage/__init__.py",
     "tinyassets/storage/rotation.py",
 )
