@@ -29,7 +29,8 @@
   Mixed-source ranking now preserves each accepted source's own Interaction and
   caps through the advisory plan and picker, removing same-Interaction rejection
   and the union of maximum caps.252Windows/252actualLinux pass, zero skips; see
-  docs/reviews/2026-09-11-per-source-model-policy-proof.md. Exact review pending.
+  docs/reviews/2026-09-11-per-source-model-policy-proof.md. Exacta8408b66 review
+  APPROVE85s,18cases independently passed; no required correction.
   This is not full custom source publication/enforcement or live acceptance.
 
 ## 2. Owner policy and execution

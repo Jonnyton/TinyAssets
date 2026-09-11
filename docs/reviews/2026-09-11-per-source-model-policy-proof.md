@@ -28,7 +28,12 @@ tests/test_interactive_http_agent.py, tests/test_selected_model_authority.py,
 then --tb=short --show-capture=no -rs.
 Windows252passed63.00s; actual Linux oracle via Ubuntu WSL252passed36.34s,
 zero skips. Linux Python3.11.16/git2.47.3/bubblewrap0.12.0. Ruff clean;
-runtime mirrors rebuilt. Independent exact-head review required.
+runtime mirrors rebuilt. Independent exacta8408b6625de136d7097ba2186778bb2d3cb753f
+review completed85s, terminal exit0, APPROVE with no required correction.
+Reviewer independently ran18 source-policy cases in0.30s on Windows via
+python -B -m pytest -q tests/test_model_source_policies.py --noconftest
+-p no:cacheprovider -o addopts=''; plugin autoload disabled. Its local date
+September10 is September11 UTC in this session. Broader author group not rerun.
 
 Full custom source-contract publication/consumer, enforced accounting and
 unfamiliar-source actual execution remain unfinished. Four neutrality loci
