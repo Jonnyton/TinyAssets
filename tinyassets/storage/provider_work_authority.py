@@ -1146,6 +1146,10 @@ class _Transaction:
                 None,
             )
         receipt = _receipt_record(receipt_row)
+        # Selected-member documents are inert until the manifest admission path
+        # validates them. Never attach new model authority to a legacy receipt.
+        if request.selection is not None:
+            raise PermissionError("manifest invocation admission is not active")
         if receipt.work_item_kind == "agent_invocation":
             authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
                 agent_store_grant
@@ -1215,6 +1219,7 @@ class _Transaction:
                 reservation.role == request.role,
                 reservation.max_tokens == request.max_tokens,
                 reservation.max_cost_microunits == request.max_cost_microunits,
+                reservation.selection == request.selection,
             )
             return ProviderInvocationReservationWriteResult(
                 (
@@ -1496,7 +1501,7 @@ class _Transaction:
             actual_cost = int(cost_microunits)
         provisional = replace(
             current,
-            schema_version=2,
+            schema_version=max(2, current.schema_version),
             reservation_digest=_PLACEHOLDER_DIGEST,
             state=state,
             actual_input_tokens=actual_input,
@@ -2523,7 +2528,7 @@ class SQLiteProviderWorkAuthorityStore:
                 current = _reservation_record(row)
                 provisional = replace(
                     current,
-                    schema_version=2,
+                    schema_version=max(2, current.schema_version),
                     reservation_digest=_PLACEHOLDER_DIGEST,
                     state=ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                     actual_input_tokens=0,

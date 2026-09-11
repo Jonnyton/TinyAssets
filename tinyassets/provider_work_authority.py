@@ -913,6 +913,122 @@ class ProviderWorkExecutionClaimWriteResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderInvocationSelection:
+    """Immutable selected-member facts, never an inference grant by themselves.
+
+    The manifest receipt carries the shared work budget. This document identifies
+    one attempt's member, custody and model evidence for exact replay/launch
+    fencing. Opaque model names are data; no executable or callback is persisted.
+    """
+
+    provider: str
+    binding_id: str
+    binding_generation: int
+    binding_digest: str
+    binding_revocation_generation: int
+    credential_reference_id: str
+    credential_reference_generation: int
+    credential_reference_digest: str
+    assignment_generation: int
+    assignment_digest: str
+    manifest_digest: str
+    member_digest: str
+    model_id: str
+    executor_id: str
+    model_evidence_json: str | None = None
+
+    _FIELDS = frozenset({
+        "provider", "binding_id", "binding_generation", "binding_digest",
+        "binding_revocation_generation", "credential_reference_id",
+        "credential_reference_generation", "credential_reference_digest",
+        "assignment_generation", "assignment_digest", "manifest_digest",
+        "member_digest", "model_id", "executor_id", "model_evidence",
+    })
+
+    def __post_init__(self) -> None:
+        for name in ("provider", "binding_id", "credential_reference_id", "executor_id"):
+            _reference(getattr(self, name), name)
+        for name in ("binding_generation", "credential_reference_generation",
+                     "assignment_generation"):
+            _integer(getattr(self, name), name, minimum=1)
+        _integer(self.binding_revocation_generation, "binding_revocation_generation", minimum=0)
+        for name in ("binding_digest", "credential_reference_digest", "assignment_digest",
+                     "manifest_digest", "member_digest"):
+            _digest(getattr(self, name), name)
+        if (type(self.model_id) is not str or len(self.model_id) > 200
+                or self.model_id != self.model_id.strip()
+                or (self.model_id and not self.model_id.isprintable())):
+            raise ValueError("invalid selected model identifier")
+        if self.model_evidence_json is not None:
+            self.model_evidence()
+
+    def model_evidence(self) -> dict[str, Any] | None:
+        """Decode a fresh copy; the sealed record never exposes mutable internals."""
+        raw = self.model_evidence_json
+        if raw is None:
+            return None
+        if type(raw) is not str or len(raw.encode("utf-8")) > 262144:
+            raise ValueError("invalid selected model evidence")
+        evidence = json.loads(raw)
+        if type(evidence) is not dict or set(evidence) != {
+            "discovery_protocol", "source_digest", "context_tokens", "supports_tools",
+            "cost_caps", "execution_contract", "observed_at", "completed_at",
+        } or _canonical_json(evidence) != raw:
+            raise ValueError("selected model evidence fields do not match schema")
+        _reference(evidence["discovery_protocol"], "discovery_protocol")
+        if (type(evidence["source_digest"]) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", evidence["source_digest"]) is None):
+            raise ValueError("invalid discovery source digest")
+        _integer(evidence["context_tokens"], "context_tokens", minimum=1)
+        if type(evidence["supports_tools"]) is not bool:
+            raise ValueError("selected model tool capability must be boolean")
+        caps = evidence["cost_caps"]
+        if type(caps) is not dict or not caps:
+            raise ValueError("selected model cost caps are required")
+        for name, value in caps.items():
+            _reference(name, "cost component")
+            _integer(value, "cost cap", minimum=0)
+        for name in ("observed_at", "completed_at"):
+            _timestamp(evidence[name], name)
+        if _parsed_timestamp(evidence["observed_at"]) > _parsed_timestamp(evidence["completed_at"]):
+            raise ValueError("selected model discovery timestamps are reversed")
+        contract = evidence["execution_contract"]
+        if type(contract) is not dict or set(contract) != {"kind", "value"}:
+            raise ValueError("invalid selected execution contract")
+        if contract["kind"] == "installed":
+            if contract["value"] != evidence["discovery_protocol"]:
+                raise ValueError("selected installed contract identity differs")
+            from tinyassets.providers.discovery_protocols import discovery_protocol
+
+            compiled = discovery_protocol(contract["value"])
+        elif contract["kind"] == "configured":
+            from tinyassets.providers.discovery_contract import SourceContract
+
+            compiled = SourceContract.compile(contract["value"])
+        else:
+            raise ValueError("unsupported selected execution contract")
+        if compiled.inference_protocol != self.executor_id:
+            raise ValueError("selected execution contract does not match executor")
+        if set(caps) != compiled.price_components:
+            raise ValueError("selected model cost components do not match executor")
+        return evidence
+
+    def to_dict(self) -> dict[str, Any]:
+        values = {name: getattr(self, name) for name in self._FIELDS - {"model_evidence"}}
+        values["model_evidence"] = self.model_evidence()
+        return values
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProviderInvocationSelection:
+        if type(data) is not dict or set(data) != cls._FIELDS:
+            raise ValueError("ProviderInvocationSelection fields do not match schema")
+        values = dict(data)
+        evidence = values.pop("model_evidence")
+        values["model_evidence_json"] = None if evidence is None else _canonical_json(evidence)
+        return cls(**values)
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderInvocationReservationRequest:
     receipt_id: str
     receipt_digest: str
@@ -924,8 +1040,11 @@ class ProviderInvocationReservationRequest:
     role: str
     max_tokens: int
     max_cost_microunits: int
+    selection: ProviderInvocationSelection | None = None
 
     def __post_init__(self) -> None:
+        if self.selection is not None and type(self.selection) is not ProviderInvocationSelection:
+            raise ValueError("selection must be typed")
         for name in (
             "receipt_id",
             "claim_id",
@@ -968,6 +1087,7 @@ class ProviderInvocationReservation:
     actual_total_tokens: int | None = None
     actual_cost_microunits: int | None = None
     settled_at: str | None = None
+    selection: ProviderInvocationSelection | None = None
 
     _FIELDS_V1 = frozenset(
         {
@@ -998,10 +1118,16 @@ class ProviderInvocationReservation:
             "settled_at",
         }
     )
+    _FIELDS_V3 = _FIELDS_V2 | {"selection"}
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {1, 2}:
+        if type(self.schema_version) is not int or self.schema_version not in {1, 2, 3}:
             raise ValueError("unsupported schema_version")
+        if self.schema_version == 3:
+            if type(self.selection) is not ProviderInvocationSelection:
+                raise ValueError("version3 reservation requires exact selected-member facts")
+        elif self.selection is not None:
+            raise ValueError("legacy reservation cannot carry selected-member facts")
         if not isinstance(self.state, ProviderInvocationReservationState):
             raise ValueError("state must be typed")
         for name in (
@@ -1095,7 +1221,7 @@ class ProviderInvocationReservation:
             "max_cost_microunits": self.max_cost_microunits,
             "created_at": self.created_at,
         }
-        if self.schema_version == 2:
+        if self.schema_version >= 2:
             payload.update(
                 {
                     "actual_input_tokens": self.actual_input_tokens,
@@ -1105,17 +1231,24 @@ class ProviderInvocationReservation:
                     "settled_at": self.settled_at,
                 }
             )
+        if self.schema_version == 3:
+            payload["selection"] = self.selection.to_dict()
         return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProviderInvocationReservation:
         if not isinstance(data, dict):
             raise ValueError("ProviderInvocationReservation fields do not match schema")
-        expected = cls._FIELDS_V1 if data.get("schema_version") == 1 else cls._FIELDS_V2
+        version = data.get("schema_version")
+        if type(version) is not int or version not in {1, 2, 3}:
+            raise ValueError("unsupported schema_version")
+        expected = {1: cls._FIELDS_V1, 2: cls._FIELDS_V2, 3: cls._FIELDS_V3}[version]
         if set(data) != expected:
             raise ValueError("ProviderInvocationReservation fields do not match schema")
         values = dict(data)
         values["state"] = ProviderInvocationReservationState(values["state"])
+        if version == 3:
+            values["selection"] = ProviderInvocationSelection.from_dict(values["selection"])
         if values["schema_version"] == 1:
             values.update(
                 actual_input_tokens=None,
@@ -1396,6 +1529,10 @@ def _mint_provider_invocation_carrier(
         receipt.state is ProviderWorkReceiptState.ACTIVE,
         claim.state is ProviderWorkExecutionClaimState.ACTIVE,
         reservation.state is ProviderInvocationReservationState.LAUNCH_STARTED,
+        # Record support precedes activation. Only the existing provider-bound
+        # path can mint until manifest admission validates a selected member.
+        receipt.authority_scope == "provider",
+        reservation.selection is None,
         receipt.receipt_digest == receipt.expected_digest(),
         claim.claim_digest == claim.expected_digest(),
         reservation.reservation_digest == reservation.expected_digest(),
@@ -1571,7 +1708,7 @@ def _reservation_from_request(
     created_at: str,
 ) -> ProviderInvocationReservation:
     provisional = ProviderInvocationReservation(
-        schema_version=2,
+        schema_version=3 if request.selection is not None else 2,
         reservation_id=provider_invocation_reservation_id(
             receipt_id=request.receipt_id,
             invocation_key=request.invocation_key,
@@ -1590,6 +1727,7 @@ def _reservation_from_request(
         max_tokens=request.max_tokens,
         max_cost_microunits=request.max_cost_microunits,
         created_at=created_at,
+        selection=request.selection,
     )
     return replace(
         provisional,

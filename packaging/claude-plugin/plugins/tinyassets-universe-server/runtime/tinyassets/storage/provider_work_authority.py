@@ -135,6 +135,35 @@ def _provider_invocation_store_mint_proof(
     return proof
 
 
+_RECEIPT_TABLE_SCHEMA = """
+CREATE TABLE {table} (
+    receipt_id TEXT PRIMARY KEY,
+    receipt_digest TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'expired', 'fenced')),
+    work_item_kind TEXT NOT NULL,
+    work_item_id TEXT NOT NULL,
+    universe_id TEXT NOT NULL,
+    binding_id TEXT,
+    binding_generation INTEGER CHECK (binding_generation >= 1),
+    binding_digest TEXT,
+    expires_at TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    authority_scope TEXT NOT NULL DEFAULT 'provider',
+    manifest_digest TEXT,
+    CHECK (
+        (authority_scope = 'provider' AND manifest_digest IS NULL
+            AND binding_id IS NOT NULL AND binding_generation IS NOT NULL
+            AND binding_digest IS NOT NULL)
+        OR (authority_scope = 'manifest' AND manifest_digest IS NOT NULL
+            AND binding_id IS NULL AND binding_generation IS NULL
+            AND binding_digest IS NULL)
+    ),
+    UNIQUE (universe_id, work_item_kind, work_item_id),
+    FOREIGN KEY(binding_id) REFERENCES provider_work_bindings(binding_id)
+)
+"""
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS universe_model_preferences (
     owner_user_id TEXT NOT NULL,
@@ -158,23 +187,7 @@ CREATE TABLE IF NOT EXISTS provider_work_bindings (
 CREATE INDEX IF NOT EXISTS idx_provider_work_bindings_scope
 ON provider_work_bindings(owner_user_id, universe_id, provider, state);
 
-CREATE TABLE IF NOT EXISTS provider_work_receipts (
-    receipt_id TEXT PRIMARY KEY,
-    receipt_digest TEXT NOT NULL,
-    generation INTEGER NOT NULL CHECK (generation >= 1),
-    state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'expired', 'fenced')),
-    work_item_kind TEXT NOT NULL,
-    work_item_id TEXT NOT NULL,
-    universe_id TEXT NOT NULL,
-    binding_id TEXT NOT NULL,
-    binding_generation INTEGER NOT NULL CHECK (binding_generation >= 1),
-    binding_digest TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    record_json TEXT NOT NULL,
-    UNIQUE (universe_id, work_item_kind, work_item_id),
-    FOREIGN KEY(binding_id) REFERENCES provider_work_bindings(binding_id)
-);
-
+""" + _RECEIPT_TABLE_SCHEMA.format(table="IF NOT EXISTS provider_work_receipts") + ";" + """
 CREATE TABLE IF NOT EXISTS provider_work_execution_claims (
     claim_id TEXT PRIMARY KEY,
     claim_digest TEXT NOT NULL,
@@ -213,6 +226,86 @@ CREATE TABLE IF NOT EXISTS provider_invocation_reservations (
     FOREIGN KEY(claim_id) REFERENCES provider_work_execution_claims(claim_id)
 );
 """
+
+
+def _ensure_manifest_receipt_schema(conn: sqlite3.Connection) -> None:
+    """Atomically remove the old receipt's mandatory single-provider binding.
+
+    This runs before exposing a connection or beginning any caller transaction.
+    Disabling FK enforcement is connection-local and only spans the table rebuild;
+    all dependent rows and explicit indexes/triggers are preserved and checked.
+    It never translates stored authority documents or grants execution rights.
+    """
+    def columns():
+        return {row[1]: row for row in conn.execute("PRAGMA table_info(provider_work_receipts)")}
+
+    def already_migrated(found):
+        if "authority_scope" not in found:
+            return False
+        if (
+            "manifest_digest" not in found
+            or not found["authority_scope"][3]
+            or any(found.get(name) is None or found[name][3] for name in (
+                "binding_id", "binding_generation", "binding_digest",
+            ))
+        ):
+            raise ValueError("incomplete provider receipt schema; migration refused")
+        return True
+
+    if already_migrated(columns()):
+        return
+    if conn.in_transaction:
+        raise RuntimeError("receipt migration requires its own transaction")
+    foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        # Another opener may have migrated while this connection waited.
+        old_columns = columns()
+        if already_migrated(old_columns):
+            conn.commit()
+            return
+        expected = (
+            "receipt_id", "receipt_digest", "generation", "state", "work_item_kind",
+            "work_item_id", "universe_id", "binding_id", "binding_generation",
+            "binding_digest", "expires_at", "record_json",
+        )
+        if set(old_columns) != set(expected):
+            raise ValueError("unsupported provider receipt schema; migration refused")
+        # Refuse to discard or silently reinterpret a malformed authority row.
+        for row in conn.execute("SELECT * FROM provider_work_receipts"):
+            _receipt_record(row)
+        prior_fk_errors = {tuple(row) for row in conn.execute("PRAGMA foreign_key_check")}
+        schema_objects = [row[0] for row in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name = 'provider_work_receipts' "
+            "AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name"
+        )]
+        conn.execute(_RECEIPT_TABLE_SCHEMA.format(table="provider_work_receipts_v4"))
+        selected = ", ".join(expected)
+        conn.execute(
+            f"INSERT INTO provider_work_receipts_v4 ({selected}) "
+            f"SELECT {selected} FROM provider_work_receipts"
+        )
+        old_count = conn.execute("SELECT COUNT(*) FROM provider_work_receipts").fetchone()[0]
+        new_count = conn.execute("SELECT COUNT(*) FROM provider_work_receipts_v4").fetchone()[0]
+        if old_count != new_count or conn.execute(
+            f"SELECT {selected} FROM provider_work_receipts EXCEPT "
+            f"SELECT {selected} FROM provider_work_receipts_v4 LIMIT 1"
+        ).fetchone() is not None:
+            raise ValueError("provider receipt migration did not preserve every row")
+        conn.execute("DROP TABLE provider_work_receipts")
+        conn.execute("ALTER TABLE provider_work_receipts_v4 RENAME TO provider_work_receipts")
+        for statement in schema_objects:
+            conn.execute(statement)
+        new_fk_errors = {tuple(row) for row in conn.execute("PRAGMA foreign_key_check")}
+        if new_fk_errors - prior_fk_errors:
+            raise ValueError("provider receipt migration changed foreign-key integrity")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {int(foreign_keys)}")
 
 
 def _ensure_invocation_settlement_columns(conn: sqlite3.Connection) -> None:
@@ -319,6 +412,11 @@ def _receipt_record(row: sqlite3.Row) -> ProviderUniverseWorkReceipt:
     )
     if not all(exact):
         raise ValueError("persisted provider receipt failed integrity validation")
+    if "authority_scope" in row.keys() and (
+        row["authority_scope"] != receipt.authority_scope
+        or row["manifest_digest"] != receipt.manifest_digest
+    ):
+        raise ValueError("persisted provider receipt scope failed integrity validation")
     return receipt
 
 
@@ -1048,6 +1146,10 @@ class _Transaction:
                 None,
             )
         receipt = _receipt_record(receipt_row)
+        # Selected-member documents are inert until the manifest admission path
+        # validates them. Never attach new model authority to a legacy receipt.
+        if request.selection is not None:
+            raise PermissionError("manifest invocation admission is not active")
         if receipt.work_item_kind == "agent_invocation":
             authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
                 agent_store_grant
@@ -1117,6 +1219,7 @@ class _Transaction:
                 reservation.role == request.role,
                 reservation.max_tokens == request.max_tokens,
                 reservation.max_cost_microunits == request.max_cost_microunits,
+                reservation.selection == request.selection,
             )
             return ProviderInvocationReservationWriteResult(
                 (
@@ -1398,7 +1501,7 @@ class _Transaction:
             actual_cost = int(cost_microunits)
         provisional = replace(
             current,
-            schema_version=2,
+            schema_version=max(2, current.schema_version),
             reservation_digest=_PLACEHOLDER_DIGEST,
             state=state,
             actual_input_tokens=actual_input,
@@ -1509,6 +1612,7 @@ class SQLiteProviderWorkAuthorityStore:
                 if "locked" not in str(exc).lower():
                     raise
             conn.executescript(_SCHEMA)
+            _ensure_manifest_receipt_schema(conn)
             _ensure_invocation_settlement_columns(conn)
             yield conn
         finally:
@@ -2424,7 +2528,7 @@ class SQLiteProviderWorkAuthorityStore:
                 current = _reservation_record(row)
                 provisional = replace(
                     current,
-                    schema_version=2,
+                    schema_version=max(2, current.schema_version),
                     reservation_digest=_PLACEHOLDER_DIGEST,
                     state=ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                     actual_input_tokens=0,

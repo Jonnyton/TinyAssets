@@ -53,6 +53,12 @@ Do not let unrelated workflow-project or diagnostic lanes delay this release.
 Keep the broader goal and fallback/default requirements; this priority is not
 permission to deploy the existing workflow regressions or fabricate model names.
 
+Owner reiterated urgency: get model selection usable now. The first user-facing
+release target is actual answering-model display, switching and saved default.
+Do not extend unrelated lanes or add further fallback enhancements before this
+MVP. Existing workflow compatibility remains a release gate; broader requested
+fallback behavior stays in the overall goal rather than blocking on new polish.
+
 ## User capability and ownership
 
 Users must be able to choose the main serving provider, and independently
@@ -180,6 +186,33 @@ is neither taken over nor substituted as this task's implementation.
 ## Inventory integration correction — September 11, 22:21 UTC
 
 ## Version4 aggregate receipt implementation — September11 23:00UTC
+
+### Per-invocation selected-member record implemented — September11
+
+Version3 reservations now carry an immutable ProviderInvocationSelection with
+exact member binding/generations/digests, custody reference/generation/digest,
+assignment/manifest/member digests, opaque model ID, executor and canonical
+model evidence. HTTP evidence captures discovery identity/timestamps, context,
+tool support, price caps and the installed or configured execution contract.
+It serializes data only, never callbacks or credentials; returned dictionaries
+cannot mutate the sealed record. Legacy reservation1/2 wire fields stay exact.
+Terminal settlement retains version3 and all selection facts instead of
+downgrading to2. Replay comparison includes selection.
+
+Activation is deliberately still closed: ordinary reserve refuses selection,
+and carrier mint refuses manifest/selected records until the real manifest
+admission fence is connected. These tests do not turn fixture writes into
+permission to launch. Next work is that admission/claim/reserve/arm integration,
+followed by foreground/background callers and router, then native discovery.
+
+September11 Windows Python3.14 command: `python -m pytest -q
+tests/test_provider_invocation_selection.py tests/test_provider_work_authority.py
+tests/test_selected_model_authority.py --tb=short --show-capture=no` passes195
+cases in12.15s, zero skips. The new file has37cases covering round-trip, immutability,
+strict version/type/cost/model checks, inertness and once-only settlement.
+Ruff and canonical plugin mirror/import pass. No new Linux, independent exact-head
+review, deployment or app-selection proof is claimed. The two known foreground
+manifest failures remain open; this is not an MVP-ready claim.
 
 ### Receipt storage migration verified — September11
 
