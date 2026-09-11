@@ -1,5 +1,32 @@
 ## ADDED Requirements
 
+### Requirement: Connection-authored discovery contracts
+The existing provider-capability action SHALL allow a versioned bounded data
+contract for an unfamiliar connected model source, without provider-specific
+platform callbacks or model-release lists. The exact contract, endpoint and
+authority context SHALL be revalidated before model admission. Legacy descriptors
+SHALL keep their prior interpretation and serialization.
+
+#### Scenario: Owner accepts a custom source contract
+- **WHEN** the owner previews and commits the exact validated contract digest
+- **THEN** its successfully fetched catalogue may enter selection under existing accepted model, grant, executor and cost limits
+- **AND** the UI distinguishes source-contract acceptance from verified account availability
+- **AND** configuration acceptance creates no inference or spending permission
+
+#### Scenario: Catalogue invents trust or execution support
+- **WHEN** remote data claims filtered availability, account identity, unmetered pricing or executor support
+- **THEN** those claims cannot create trusted authority or an installed executor
+- **AND** absent accepted source semantics leave the source unverified
+
+#### Scenario: Unsupported charging or changed contract
+- **WHEN** unknown charges, unenforceable ceilings, stale evidence or a changed contract invalidate a candidate
+- **THEN** no inference uses the stale candidate and free-only routing cannot become paid
+
+#### Scenario: Distinct unfamiliar catalogue shape
+- **WHEN** a supported custom contract describes a new source schema and model ID
+- **THEN** the existing picker and authorized agent route consume the normalized result without a platform edit
+- **AND** unsupported wire protocols remain explicitly unsupported rather than fabricated success
+
 ### Requirement: Model access uses the existing owner binding action
 The authenticated custom_agents bind_serving_provider action SHALL accept optional
 model_access via strict ModelAccess validation and existing assignment publication.

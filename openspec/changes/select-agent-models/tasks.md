@@ -4,6 +4,11 @@
 - [x] 1.2 Ship truthful HTTP answering-model receipts, preserving requested selection and unknown metadata behavior, with tests and independent review.
 - [ ] 1.3 Implement normalized account-scoped discovery with source/freshness/capability/cost evidence; prove refresh adds a new model and cannot widen endpoint grants.
 
+  September11 remaining public/storage correction is specified in
+  discovery-contract-v1.md. Bounded connection-authored extraction/price/capacity
+  data and explicit source-contract acceptance replace a closed service profile.
+  Pre-build shape review required; no runtime extension or new permission yet.
+
 ## 2. Owner policy and execution
 
 - [ ] 2.1 Add versioned universe-local policy and current-choice input through authenticated app ingress; test generation conflicts, isolation and legacy-pin preservation.
