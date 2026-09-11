@@ -53,7 +53,11 @@ def reported_model(response_body: Any) -> str:
     a compatible endpoint omits this optional field. This label is telemetry,
     never a provider identity, routing choice or grant of authority.
     """
-    value = response_body.get("model") if isinstance(response_body, dict) else None
+    return model_receipt(response_body.get("model") if isinstance(response_body, dict) else None)
+
+
+def model_receipt(value: Any) -> str:
+    """Normalize an optional receipt value, independently of its wire location."""
     if not isinstance(value, str) or not 1 <= len(value) <= 200 or not value.isprintable():
         return ""
     return value.strip()
@@ -231,10 +235,11 @@ def _validate_chat_request(body, *, legacy=False):
 
 
 def _chat_agent_codec() -> AgentCodec:
-    # Lazy resolution avoids the codec's shared-error/helper import cycle.
-    from tinyassets.providers import agent_chat_codec as codec
+    # Installed envelope capability, separate from canonical history validation.
+    from tinyassets.providers.agent_wire_codec import installed_agent_wire
 
-    return AgentCodec(codec.encode_openai_chat_agent_portable, codec.decode_openai_chat_agent)
+    shape = installed_agent_wire()
+    return AgentCodec(shape.encode, shape.decode)
 
 #: The Anthropic Messages API REQUIRES an ``anthropic-version`` request header
 #: (independent of the api key). Pinned to the stable GA version.

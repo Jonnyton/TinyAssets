@@ -227,7 +227,7 @@ The full source compiler must match every price/constant effect to these caps.
 
     def _caps(self, caps):
         if self.legacy and len(caps) != len(self.outputs):
-            raise ValueError("incomplete accepted ceilings")
+            raise ValueError("incomplete inference price bounds")
         if not self.legacy and (
             type(caps) is not tuple
             or any(type(item) is not tuple or len(item) != 2 for item in caps)

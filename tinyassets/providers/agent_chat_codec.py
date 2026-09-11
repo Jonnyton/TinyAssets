@@ -17,9 +17,8 @@ from typing import Any, Literal
 from mcp.types import CallToolResult, Tool
 
 from tinyassets.providers.protocol_encoders import (
-    OPENAI_CHAT_PATH,
     ProtocolDecodeError,
-    reported_model,
+    model_receipt,
 )
 
 StopReason = Literal[
@@ -233,39 +232,29 @@ def reply_state(
     return stop, text, refusal
 
 
-def decode_openai_chat_agent(
-    response_body: Any, *, source_ref: str, requested_model: str, tool_names: frozenset[str],
+def decode_agent_message(
+    message: Any, *, finish: Any, receipt: Any, input_tokens: Any, output_tokens: Any,
+    source_ref: str, requested_model: str, tool_names: frozenset[str],
 ) -> AgentReply:
-    """Validate a complete response before exposing any requested tool."""
+    """Validate the canonical assistant projection without an HTTP envelope."""
     validate_reply_context(source_ref, requested_model, tool_names)
-    if not isinstance(response_body, dict) or response_body.get("error") is not None:
-        raise _bad("response unavailable")
-    choices = response_body.get("choices")
-    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
-        raise _bad("exactly one choice required")
-    choice = choices[0]
-    if choice.get("error") is not None or choice.get("finish_reason") == "error":
+    if finish == "error":
         raise _bad("choice unavailable")
-    message = choice.get("message")
     if not isinstance(message, dict):
         raise _bad("assistant message required")
     projection, dropped, incompatible = _assistant(message)
     calls = _calls(message.get("tool_calls"), tool_names)
-    finish = choice.get("finish_reason")
     finish = finish if isinstance(finish, str) else ""
     stop, text, refusal = reply_state(
         message, finish=finish, calls=calls, incompatible=incompatible,
     )
-    usage = response_body.get("usage")
-
-    def tokens(name: str) -> int | None:
-        value = usage.get(name) if isinstance(usage, dict) else None
+    def tokens(value: Any) -> int | None:
         return value if type(value) is int and value >= 0 else None
 
     return AgentReply(
         stop, text, refusal, calls if stop == "tool_requests" else (),
-        _dump(projection), dropped, source_ref, requested_model, reported_model(response_body),
-        finish, tokens("prompt_tokens"), tokens("completion_tokens"),
+        _dump(projection), dropped, source_ref, requested_model, model_receipt(receipt),
+        finish, tokens(input_tokens), tokens(output_tokens),
     )
 
 
@@ -337,12 +326,12 @@ def tool_outcome(request: ToolRequest, result: CallToolResult) -> ToolOutcome:
     return ToolOutcome(request.call_id, _dump(_result_projection(projected)), result.isError)
 
 
-def encode_openai_chat_agent(
+def build_agent_body(
     *, prompt: str, system: str, source_ref: str, model: str,
     tools: Sequence[dict[str, Any]], rounds: Sequence[ToolRound] = (),
     temperature: float | None = None, max_tokens: int | None = None,
     tool_choice: Literal["auto", "none", "required"] = "auto",
-) -> tuple[str, dict[str, Any]]:
+) -> dict[str, Any]:
     """Build a fresh same-source request from fully completed immutable rounds."""
     if not isinstance(prompt, str) or not isinstance(system, str):
         raise _bad("prompt and system must be text")
@@ -402,22 +391,22 @@ def encode_openai_chat_agent(
         if type(max_tokens) is not int or max_tokens < 1:
             raise _bad("invalid output token cap")
         body["max_tokens"] = max_tokens
-    return OPENAI_CHAT_PATH, body
+    return body
 
 
-def encode_openai_chat_agent_portable(
+def build_portable_agent_body(
     *, prompt: str, system: str, source_ref: str, model: str,
     tools: Sequence[dict[str, Any]], history: Sequence[CapturedToolRound] = (),
     temperature: float | None = None, max_tokens: int | None = None,
     tool_choice: Literal["auto", "none", "required"] = "auto",
-) -> tuple[str, dict[str, Any]]:
+) -> dict[str, Any]:
     """Render known results across selections without carrying foreign reasoning.
 
     Historical inventories validate historical calls, never today's permission
     to execute them. Wire identities are local to each completed tool batch.
     The caller must still admit every new inference and tool dispatch.
     """
-    path, body = encode_openai_chat_agent(
+    body = build_agent_body(
         prompt=prompt, system=system, source_ref=source_ref, model=model,
         tools=tools, temperature=temperature, max_tokens=max_tokens,
         tool_choice=tool_choice,
@@ -433,7 +422,7 @@ def encode_openai_chat_agent_portable(
         # Reuse the strict single-source validator for ONE historical batch.
         # It checks completeness, exact arguments/results and wire correlation;
         # its per-request ID set must not span independent historical rounds.
-        _, historical = encode_openai_chat_agent(
+        historical = build_agent_body(
             prompt="", system="", source_ref=reply.source_ref,
             model=reply.requested_model,
             tools=_object(captured.tools_json).get("tools"),
@@ -446,7 +435,28 @@ def encode_openai_chat_agent_portable(
                 if key in {"role", "content", "tool_calls"}
             }
         body["messages"].extend(messages)
-    return path, body
+    return body
+
+
+def encode_openai_chat_agent(**kwargs) -> tuple[str, dict[str, Any]]:
+    """Historical import compatibility; the engine uses the installed adapter."""
+    from tinyassets.providers.agent_wire_codec import installed_agent_wire
+
+    return installed_agent_wire().wrap_body(build_agent_body(**kwargs))
+
+
+def encode_openai_chat_agent_portable(**kwargs) -> tuple[str, dict[str, Any]]:
+    """Historical import compatibility for callers with captured history."""
+    from tinyassets.providers.agent_wire_codec import installed_agent_wire
+
+    return installed_agent_wire().encode(**kwargs)
+
+
+def decode_openai_chat_agent(response_body: Any, **kwargs) -> AgentReply:
+    """Historical import compatibility for the installed message envelope."""
+    from tinyassets.providers.agent_wire_codec import installed_agent_wire
+
+    return installed_agent_wire().decode(response_body, **kwargs)
 
 
 def validate_agent_body(body: dict[str, Any]) -> None:
@@ -461,7 +471,7 @@ def validate_agent_body(body: dict[str, Any]) -> None:
         raise _bad("unsupported request fields")
     if body.get("tool_choice") not in ("auto", "none", "required"):
         raise _bad("unsupported tool choice")
-    encode_openai_chat_agent(
+    build_agent_body(
         prompt="", system="", source_ref="validation", model=body.get("model"),
         tools=body.get("tools"), temperature=body.get("temperature"),
         max_tokens=body.get("max_tokens"), tool_choice=body["tool_choice"],
