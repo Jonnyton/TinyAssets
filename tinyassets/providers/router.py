@@ -27,6 +27,7 @@ from tinyassets.exceptions import (
     ProviderRateLimitedError,
     ProviderTimeoutError,
     ProviderUnavailableError,
+    SelectedModelCapacityError,
 )
 from tinyassets.provider_admission import ProviderBusy as _ProviderBusy
 from tinyassets.provider_admission import provider_slot_async as _provider_slot
@@ -47,6 +48,7 @@ from tinyassets.providers.diagnostics import (
     ProviderAttemptDiagnostic,
     build_chain_state,
     classify_unavailable,
+    dominant_capacity_scope,
     dominant_failure_class,
     dominant_retry_after_s,
     redacted_failure_detail,
@@ -149,6 +151,12 @@ def _effective_universe_provider_ceiling(
             for provider in requester_config.allowed_providers
             if str(provider).strip()
         ]
+    elif universe_context.served_provider is not None:
+        # The exact candidate was accepted by the owner and revalidated against
+        # the current manifest. The legacy preferred_writer structural anchor
+        # is not a separate ceiling on that membership. Explicit allowlists above
+        # still win, including an explicitly empty list.
+        ceiling = [universe_context.served_provider.provider]
     else:
         ceiling = list(dict.fromkeys(
             provider
@@ -462,6 +470,14 @@ class ProviderRouter:
                 alive.append(provider_name)
         return alive
 
+    def selected_agent_execution_kind(self, selection) -> str:
+        """Advisory installed capability; actual dispatch rechecks the resolved executor."""
+        provider = self._providers.get(selection.connection_id)
+        kind = getattr(provider, "agent_execution_kind", None)
+        if kind not in ("native_agent", "engine_inference"):
+            raise ProviderAuthorityHeldError("selected provider has no installed agent executor")
+        return kind
+
     async def call(
         self,
         role: str,
@@ -471,8 +487,18 @@ class ProviderRouter:
         *,
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
+        _agent_observer=None,
+        _agent_execution_kind=None,
     ) -> ProviderResponse:
         """Route a call, fencing founder-facing served turns before launch."""
+        if _agent_execution_kind is not None and (
+            _agent_execution_kind not in ("native_agent", "engine_inference")
+            or role != "writer" or operation != "converse"
+            or config is None or not config.engine_mcp_enabled
+            or universe_context is None or universe_context.model_selection is None
+            or universe_context.provider_invocation is not None
+        ):
+            raise PermissionError("agent step requires the selected served writer")
 
         # A context that ALREADY carries an authorized ServedProviderAuthority (the
         # daemon-owned background consumer fences its own authority per call in
@@ -501,6 +527,28 @@ class ProviderRouter:
             ):
                 raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
             universe_dir = universe_context.universe_dir
+            if universe_context.model_selection is not None:
+                from tinyassets.provider_assignment import authorize_served_provider_call_async
+
+                agent_turn = (_agent_execution_kind is not None
+                              or config is not None and config.agent_request is not None)
+                async with authorize_served_provider_call_async(
+                    universe_dir.parent,
+                    universe_dir=universe_dir,
+                    request_carrier=universe_context.provider_request,
+                    role=role, operation=operation,
+                    model_selection=universe_context.model_selection,
+                    **({"agent_turn": True} if agent_turn else {}),
+                ) as authority:
+                    if _agent_observer is not None:
+                        if not agent_turn or not callable(_agent_observer):
+                            raise PermissionError("agent observer requires an agent inference")
+                        authority = replace(authority, after_provider_claim=_agent_observer)
+                    return await self._call_routed(
+                        role, prompt, system, config, operation=operation,
+                        universe_context=replace(universe_context, served_provider=authority),
+                        _agent_execution_kind=_agent_execution_kind,
+                    )
             with authorize_served_provider_call(
                 universe_dir.parent,
                 universe_dir=universe_dir,
@@ -538,6 +586,7 @@ class ProviderRouter:
         *,
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
+        _agent_execution_kind=None,
     ) -> ProviderResponse:
         """Route a single call through the fallback chain for *role*.
 
@@ -599,6 +648,29 @@ class ProviderRouter:
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
+        # Selection is a validated per-attempt fact, never an ordinary caller's
+        # ModelConfig preference. Preserve legacy calls by clearing any injected
+        # selection when there is no selected-model serving authority.
+        model_authority = served_authority or invocation_carrier
+        cfg = replace(cfg, selected_model=getattr(model_authority, "selected_model", None))
+        if _agent_execution_kind == "native_agent" and (
+            cfg.agent_request is not None or cfg.selected_model is not None
+        ):
+            raise PermissionError("native agent cannot use HTTP inference facts")
+        if _agent_execution_kind == "engine_inference" and cfg.agent_request is None:
+            raise PermissionError("engine inference requires its structured request")
+        from tinyassets.providers.agent_inference import input_size, output_for_settlement
+
+        if cfg.agent_request is not None and (
+            cfg.selected_model is None or not cfg.engine_mcp_enabled
+            or role != "writer" or operation != "converse"
+        ):
+            raise PermissionError("agent inference requires the selected served writer")
+        if cfg.selected_model is not None:
+            if cfg.selected_model.provider != model_authority.provider:
+                raise PermissionError("selected model does not match serving authority")
+            if cfg.engine_mcp_enabled and cfg.agent_request is None:
+                raise PermissionError("selected HTTP agent tool execution is not implemented yet")
         if served_authority is not None:
             if (
                 operation != served_authority.operation
@@ -614,12 +686,20 @@ class ProviderRouter:
                 # ceiling — otherwise the first turn reserves the entire budget
                 # and the second concurrent turn bricks (Codex 2026-08-22). Cap
                 # to the ceiling so a small binding still validates.
-                cfg = replace(
-                    cfg,
-                    max_tokens=min(
-                        served_authority.max_tokens, _SERVED_PER_CALL_MAX_TOKENS
-                    ),
-                )
+                output_limit = min(served_authority.max_tokens, _SERVED_PER_CALL_MAX_TOKENS)
+                if cfg.selected_model is not None:
+                    # The chosen output limit is itself part of the encoded
+                    # agent request. Measure with that field present; otherwise
+                    # adding it can overflow an exactly filled context afterward.
+                    required_input = input_size(
+                        prompt, system, replace(cfg, max_tokens=output_limit),
+                    )
+                    output_limit = min(
+                        output_limit, cfg.selected_model.context_tokens - required_input,
+                    )
+                    if output_limit < 1:
+                        raise PermissionError("selected model cannot fit this inference context")
+                cfg = replace(cfg, max_tokens=output_limit)
             elif (
                 isinstance(cfg.max_tokens, bool)
                 or not isinstance(cfg.max_tokens, int)
@@ -638,7 +718,17 @@ class ProviderRouter:
             if invocation_carrier.max_cost_microunits < 1:
                 raise PermissionError("armed provider invocation has no positive cost budget")
             if cfg.max_tokens is None:
-                cfg = replace(cfg, max_tokens=invocation_carrier.max_tokens)
+                output_limit = invocation_carrier.max_tokens
+                if cfg.selected_model is not None:
+                    required_input = input_size(
+                        prompt, system, replace(cfg, max_tokens=output_limit),
+                    )
+                    output_limit = min(
+                        output_limit, cfg.selected_model.context_tokens - required_input,
+                    )
+                    if output_limit < 1:
+                        raise PermissionError("selected model cannot fit this workflow context")
+                cfg = replace(cfg, max_tokens=output_limit)
             elif (
                 isinstance(cfg.max_tokens, bool)
                 or not isinstance(cfg.max_tokens, int)
@@ -649,6 +739,20 @@ class ProviderRouter:
             chain = [invocation_carrier.provider]
         else:
             chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
+
+        if cfg.selected_model is not None:
+            if invocation_carrier is not None and cfg.selected_model.cost_upper_bound(
+                cfg.max_tokens,
+            ) > invocation_carrier.max_cost_microunits:
+                raise PermissionError("selected model exceeds this workflow cost allowance")
+            # Match the existing conservative input reservation measure. The
+            # selected catalogue's context limit is not a permission to truncate.
+            required_context = input_size(prompt, system, cfg)
+            if (
+                cfg.max_tokens is None
+                or required_context + cfg.max_tokens > cfg.selected_model.context_tokens
+            ):
+                raise PermissionError("selected model cannot fit this inference context")
 
         # Hard pin: TINYASSETS_PIN_WRITER narrows the writer chain to a
         # single provider for this call. No fallback — if the pinned
@@ -764,6 +868,7 @@ class ProviderRouter:
         # For normal fallback routing, remove unregistered providers before
         # iteration so the live chain does not advertise phantom first entries.
         attempts: list[ProviderAttemptDiagnostic] = []
+        native_proofs = {}
         if (
             invocation_carrier is None
             and served_authority is None
@@ -865,6 +970,10 @@ class ProviderRouter:
                     detail="provider name not registered with daemon",
                 ))
                 continue
+            if _agent_execution_kind is not None and (
+                getattr(provider, "agent_execution_kind", None) != _agent_execution_kind
+            ):
+                raise PermissionError("selected agent executor changed before dispatch")
             if not self._quota.available(provider_name):
                 logger.info("Skipping %s (quota/cooldown)", provider_name)
                 cd = self._quota.cooldown_remaining(provider_name)
@@ -912,24 +1021,7 @@ class ProviderRouter:
                         reserve_served_provider_budget,
                     )
 
-                    try:
-                        if served_authority.request_capability is not None:
-                            consume_provider_request_invocation(
-                                served_authority.request_capability,
-                                limit=served_authority.request_max_invocations,
-                            )
-                    except PermissionError as exc:
-                        raise ProviderAuthorityHeldError(
-                            _CONNECT_PROVIDER_MESSAGE
-                        ) from exc
-                    estimated_input_tokens = max(
-                        1,
-                        len(
-                            (f"{system}\n\n{prompt}" if system else prompt).encode(
-                                "utf-8"
-                            )
-                        ),
-                    )
+                    estimated_input_tokens = max(1, input_size(prompt, system, cfg))
                     budget_reservation = reserve_served_provider_budget(
                         universe_dir.parent,
                         universe_dir=universe_dir,
@@ -940,6 +1032,7 @@ class ProviderRouter:
                         call_timeout_s=getattr(cfg, "timeout", None),
                     )
                     cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
+                provider_started = False
                 try:
                     # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
                     # measured). ASYNC form: a blocking acquire here stalls the event
@@ -957,6 +1050,25 @@ class ProviderRouter:
                         ) if served_authority is not None else None
                         if callable(before_launch):
                             before_launch()
+                        if (
+                            served_authority is not None
+                            and served_authority.request_capability is not None
+                        ):
+                            try:
+                                consume_provider_request_invocation(
+                                    served_authority.request_capability,
+                                    limit=served_authority.request_max_invocations,
+                                )
+                            except PermissionError as exc:
+                                raise ProviderAuthorityHeldError(
+                                    _CONNECT_PROVIDER_MESSAGE
+                                ) from exc
+                        after_claim = getattr(served_authority, "after_provider_claim", None)
+                        if after_claim is not None:
+                            if not callable(after_claim) or budget_reservation is None:
+                                raise PermissionError("invalid agent pre-dispatch observer")
+                            after_claim(served_authority, budget_reservation, cfg)
+                        provider_started = True
                         resp = await provider.complete(
                             prompt, system, cfg, universe_dir=universe_dir,
                         )
@@ -993,7 +1105,7 @@ class ProviderRouter:
                         # as "budget exhausted" while actually having capacity.
                         # Only a failure AFTER the call began (genuinely unknown
                         # usage) is conservatively consumed.
-                        if isinstance(exc, ProviderUnavailableError):
+                        if not provider_started or isinstance(exc, ProviderUnavailableError):
                             release_served_provider_budget(
                                 universe_dir.parent,
                                 budget_reservation,
@@ -1031,7 +1143,7 @@ class ProviderRouter:
                         input_tokens=resp.input_tokens,
                         output_tokens=resp.output_tokens,
                         cost_microunits=resp.cost_microunits,
-                        fallback_output=resp.text,
+                        fallback_output=output_for_settlement(resp),
                     )
                 # A SUCCEEDED settlement must carry KNOWN usage: settle_invocation
                 # rejects anything that is not an int. But usage is optional on
@@ -1075,7 +1187,29 @@ class ProviderRouter:
                 raise
             except ProviderAuthorityHeldError:
                 raise
+            except SelectedModelCapacityError as exc:
+                # One model's capacity is not evidence its whole connection is
+                # unhealthy. Shared/unknown scope keeps the conservative cooldown.
+                if exc.signal.scope != "model":
+                    self._quota.cooldown(provider_name, _rate_limit_cooldown_s(exc))
+                attempts.append(ProviderAttemptDiagnostic(
+                    provider=provider_name, status="failed", skip_class="quota_or_cooldown",
+                    detail=exc.failure_class, failure_class=exc.failure_class,
+                    retry_after_s=exc.retry_after, capacity_scope=exc.signal.scope,
+                    side_effect_state=(
+                        "none" if cfg.agent_request is not None
+                        and getattr(provider, "agent_execution_kind", None) == "engine_inference"
+                        else _side_effect_from(exc)
+                    ),
+                ))
+                continue
             except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
+                from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
+                proof = getattr(exc, "native_evidence", None)
+                if (type(proof) is NativeCompletionEvidence
+                        and proof.provider == provider_name):
+                    native_proofs[len(attempts)] = proof
                 # A genuine rate-limit / overload IS real capacity: cool the
                 # provider until its own retry-after (+margin), keeping fallback
                 # forbidden for the sole served writer.
@@ -1210,6 +1344,8 @@ class ProviderRouter:
                 attempts=attempts,
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),
+                capacity_scope=dominant_capacity_scope(attempts),
+                native_evidence=tuple(native_proofs.get(i) for i in range(len(attempts))),
             )
         if invocation_carrier is not None:
             settle_carrier(

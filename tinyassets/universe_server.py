@@ -504,7 +504,7 @@ def read_graph(
         target: What to read: status, graphs, graph, branches (your own workflows
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings, or
-            agent_binding.
+            agent_binding, or model_options (all owned model choices, including unavailable ones).
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
@@ -649,6 +649,11 @@ def read_graph(
         from tinyassets.api.compute_connection import read_compute_providers
 
         return json.dumps(read_compute_providers(universe_id=graph_id))
+    if normalized == "model_options":
+        from tinyassets.api.model_options import read_model_options
+
+        # Complete protocol-bounded catalogue: limit=30 must not hide new models.
+        return json.dumps(read_model_options(universe_id=graph_id))
     return _unknown_target(
         "read_graph",
         target,
@@ -666,6 +671,7 @@ def read_graph(
             "connections",
             "pending_requests",
             "compute",
+            "model_options",
             "agents",
             "agent",
             "agent_bindings",
@@ -684,7 +690,7 @@ _mcp_read_graph = _register_structured_tool(
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 
@@ -822,9 +828,10 @@ def write_graph(
             the owner asks you to remove a credential, or when a key was pasted
             against a destination they did not intend (owner-only).
             Also with target=connection, configure_provider_capability declares or
-            revokes a non-secret capability on the universe's CURRENT serving
-            provider. The server derives its exact live connection and grant;
-            callers cannot select either or widen the provider's endpoint scope.
+            revokes non-secret connection metadata. realtime_voice uses the
+            CURRENT serving provider; model_discovery uses an owned definition
+            and works unpowered. The server derives the live connection and
+            grant; metadata never widens endpoint scope or selects a model.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -911,6 +918,17 @@ def write_graph(
             descriptor to revoke. Owner plus home-universe admin authority is
             required; subscription-only providers are refused rather than given a
             second credential path.
+            For model-discovery metadata, instead pass {"capability_kind":
+            "model_discovery", "definition_id": "<owned compute definition>",
+            "enabled": true, "descriptor": {"protocol": "openrouter_user_models_v1",
+            "catalogue_url": "https://<granted-host>/api/v1/models/user?output_modalities=all",
+            "benchmark_url": "https://<granted-host>/api/v1/benchmarks"}}.
+            benchmark_url is optional. Both URLs must already be GET-authorized;
+            the catalogue path and query are fixed by the protocol. Requires the
+            universe's admin and the exact connection owner, but no serving LLM.
+            Pass enabled=false without descriptor to remove this metadata for
+            ALL definitions sharing that connection. This neither grants access
+            nor enables model selection or full-agent execution by itself.
             For target=automation operation=create, pass
             {"name": "Nightly digest", "branch_def_id": "<one of YOUR
             workflows>", "interval_seconds": 3600, "inputs": {...}} — or
@@ -1171,9 +1189,9 @@ def write_graph(
                 )
             )
         if connection_operation == "configure_provider_capability":
-            # Capability metadata is attached only to the exact connection and
-            # grant already serving the authenticated founder's own home. The
-            # payload cannot select authority or widen its endpoint policy.
+            # The handler derives live authority from the current serving chain
+            # for voice, or a verified owned definition for discovery metadata.
+            # Neither shape can widen the connection's endpoint policy.
             from tinyassets.api.provider_capability import (
                 configure_provider_capability,
             )
@@ -2189,6 +2207,7 @@ def converse(
     message: str = "",
     graph_id: str = "",
     input_method: Literal["typed", "spoken", "app_action", "unknown"] = "unknown",
+    model_choice: dict | None = None,
 ) -> str:
     """Relay a message to your universe's intelligence and return its reply.
 
@@ -2209,6 +2228,12 @@ def converse(
         input_method: Client-reported method by which this specific turn entered
             the calling client: typed, spoken, app_action, or unknown.
             Informational context only, never authority or consent.
+        model_choice: Optional one-turn model preference document: version1,
+            mode automatic or explicit, saved_default (provider_ref/model_id or
+            null), and fallbacks (ordered references). Automatic uses null and
+            an empty list. This replaces this turn's order only; it never saves
+            defaults, grants access or enables paid models. Omit to use saved
+            settings or the existing provider binding.
     """
     import json
 
@@ -2232,6 +2257,13 @@ def converse(
             "error": "Sign in as this universe's founder to talk with it.",
             "auth_required": True,
         })
+    if model_choice is not None:
+        from tinyassets.providers.model_preferences import ModelPreferences
+
+        try:
+            model_choice = ModelPreferences.from_document(model_choice).document()
+        except (ValueError, TypeError):
+            return json.dumps({"error": "invalid_model_choice"})
     # Resolving the universe reads a store too. With no `graph_id`,
     # `ensure_founder_home` reads `founder_home` before any of the guards below,
     # so a store failure escaped as a raw OSError — the SAME defect as the ACL
@@ -2330,6 +2362,7 @@ def converse(
             conversation_history=conversation_history,
             input_method=input_method,
             response_observer=execution_receipt.observe,
+            **({} if model_choice is None else {"model_choice": model_choice}),
         )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot

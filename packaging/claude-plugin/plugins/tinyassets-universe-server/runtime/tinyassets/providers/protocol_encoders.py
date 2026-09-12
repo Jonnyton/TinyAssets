@@ -26,6 +26,9 @@ and a valid reply must not be discarded over metadata.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 # Canonical request paths per protocol. The host comes from the connection's
@@ -50,7 +53,11 @@ def reported_model(response_body: Any) -> str:
     a compatible endpoint omits this optional field. This label is telemetry,
     never a provider identity, routing choice or grant of authority.
     """
-    value = response_body.get("model") if isinstance(response_body, dict) else None
+    return model_receipt(response_body.get("model") if isinstance(response_body, dict) else None)
+
+
+def model_receipt(value: Any) -> str:
+    """Normalize an optional receipt value, independently of its wire location."""
     if not isinstance(value, str) or not 1 <= len(value) <= 200 or not value.isprintable():
         return ""
     return value.strip()
@@ -165,12 +172,74 @@ def decode_anthropic_messages(response_body: Any) -> tuple[str, int | None, int 
     return text, in_tok, out_tok
 
 
-# Protocol -> (encoder, decoder) dispatch. The api_key_http executor selects by the
-# ProviderDefinition.protocol; there is no per-vendor branch.
-ENCODERS = {
-    "openai_chat": (encode_openai_chat, decode_openai_chat),
-    "anthropic_messages": (encode_anthropic_messages, decode_anthropic_messages),
-}
+@dataclass(frozen=True, slots=True)
+class AgentCodec:
+    """Installed wire capability, not a remote claim or inference grant."""
+
+    encode: Callable
+    decode: Callable
+
+
+@dataclass(frozen=True, slots=True)
+class WireProtocol:
+    encode: Callable
+    decode: Callable
+    headers: tuple[tuple[str, str], ...] = ()
+    agent_factory: Callable[[], AgentCodec] | None = None
+    request_validator: Callable[[dict], None] | None = None
+    request_fields: frozenset[str] = frozenset()
+    legacy_request_validator: Callable[[dict], None] | None = None
+
+
+def _validate_chat_request(body, *, legacy=False):
+    """Installed wire structure only; no knowledge of a source's extensions."""
+    import math
+
+    is_object = isinstance(body, dict) if legacy else type(body) is dict
+    if not is_object or not {"model", "messages"} <= body.keys() <= {
+        "model", "messages", "temperature", "max_tokens", "tools", "tool_choice",
+    }:
+        raise ValueError("unsupported constrained wire body")
+    if not legacy and "max_tokens" in body and (type(body["max_tokens"]) is not int
+                                 or not 1 <= body["max_tokens"] <= 10**18):
+        raise ValueError("invalid constrained wire output limit")
+    if not legacy and "temperature" in body:
+        value = body["temperature"]
+        try:
+            valid = type(value) in (float, int) and math.isfinite(value)
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise ValueError("invalid constrained wire temperature")
+    if "tools" in body or "tool_choice" in body:
+        from tinyassets.providers.agent_chat_codec import validate_agent_body
+
+        validate_agent_body(body)
+        return
+    model, messages = body["model"], body["messages"]
+    if legacy:
+        if not isinstance(model, str) or not isinstance(messages, list) or any(
+            not isinstance(message, dict) or message.keys() != {"role", "content"}
+            or message["role"] not in ("system", "user", "assistant")
+            or not isinstance(message["content"], str) for message in messages
+        ):
+            raise ValueError("unsupported message shape in price-constrained inference")
+        return
+    if (type(model) is not str or not model or len(model) > 200
+            or not model.isprintable() or model != model.strip()
+            or type(messages) is not list or any(
+                type(message) is not dict or message.keys() != {"role", "content"}
+                or message["role"] not in ("system", "user", "assistant")
+                or type(message["content"]) is not str for message in messages)):
+        raise ValueError("unsupported constrained wire messages")
+
+
+def _chat_agent_codec() -> AgentCodec:
+    # Installed envelope capability, separate from canonical history validation.
+    from tinyassets.providers.agent_wire_codec import installed_agent_wire
+
+    shape = installed_agent_wire()
+    return AgentCodec(shape.encode, shape.decode)
 
 #: The Anthropic Messages API REQUIRES an ``anthropic-version`` request header
 #: (independent of the api key). Pinned to the stable GA version.
@@ -181,10 +250,32 @@ ANTHROPIC_VERSION = "2023-06-01"
 #: auth_scheme. anthropic_messages needs ``anthropic-version`` or the API 400s; the
 #: api key itself rides the connection's auth (auth_scheme="header",
 #: header_name="x-api-key" for Anthropic — never in these static headers).
-STATIC_HEADERS: dict[str, dict[str, str]] = {
-    "openai_chat": {},
-    "anthropic_messages": {"anthropic-version": ANTHROPIC_VERSION},
+PROTOCOLS = {
+    "openai_chat": WireProtocol(
+        encode_openai_chat, decode_openai_chat, agent_factory=_chat_agent_codec,
+        request_validator=_validate_chat_request,
+        legacy_request_validator=partial(_validate_chat_request, legacy=True),
+        request_fields=frozenset({"model", "messages", "temperature", "max_tokens",
+                                  "tools", "tool_choice"}),
+    ),
+    "anthropic_messages": WireProtocol(
+        encode_anthropic_messages, decode_anthropic_messages,
+        headers=(("anthropic-version", ANTHROPIC_VERSION),),
+    ),
 }
+
+# Preserve legacy text-only lookup shapes. Agent readiness is a separate,
+# optional local capability and never changes a legacy text encoder's contract.
+ENCODERS = {key: (value.encode, value.decode) for key, value in PROTOCOLS.items()}
+STATIC_HEADERS = {key: dict(value.headers) for key, value in PROTOCOLS.items()}
+
+
+def agent_codec_for(protocol: str) -> AgentCodec | None:
+    """Resolve installed full-agent support independently of source branding."""
+    contract = PROTOCOLS.get(protocol)
+    if contract is None or contract.agent_factory is None:
+        return None
+    return contract.agent_factory()
 
 
 def static_headers_for(protocol: str) -> dict[str, str]:

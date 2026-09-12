@@ -65,8 +65,11 @@ def _project(definition: Any) -> dict[str, Any]:
             "needs no llm_policy at all and uses whatever the universe serves. To "
             "pin one node to a provider, use the NAME, not this definition_id: "
             "llm_policy={'preferred': {'provider': 'codex'}}",
-            "the interactive tool-using agent currently runs on CLI-subscription "
-            "providers (codex/claude); api_key_http serves workflow nodes",
+            "interactive tool-using agents can use owned CLI subscriptions or "
+            "supported api_key_http models. HTTP agent selection requires "
+            "accepted model_access, fresh tool-capable discovery, and enabled "
+            "engine-tool execution; registration alone does not enable serving "
+            "or grant spending",
         ],
     }
 

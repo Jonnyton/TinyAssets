@@ -138,6 +138,13 @@ def test_api_key_http_registration_against_real_grant(base: Path) -> None:
                  model="moonshotai/kimi-k2", ref=_GRANT_ID)
     assert r["status"] == "registered"
     assert r["protocol"] == "openai_chat"
+    guidance = " ".join(r["next"])
+    assert "supported api_key_http models" in guidance
+    assert "accepted model_access" in guidance
+    assert "fresh tool-capable discovery" in guidance
+    assert "enabled engine-tool execution" in guidance
+    assert "registration alone does not enable serving or grant spending" in guidance
+    assert "api_key_http serves workflow nodes" not in guidance
     # No secret material anywhere in the response.
     assert "secret" not in json.dumps(r).lower()
     assert "vault://" not in json.dumps(r)

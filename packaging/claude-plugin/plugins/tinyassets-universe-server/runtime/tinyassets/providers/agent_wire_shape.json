@@ -1,0 +1,23 @@
+{
+  "path": "/v1/chat/completions",
+  "request": {
+    "model": "model",
+    "messages": "messages",
+    "tools": "tools",
+    "tool_choice": "tool_choice",
+    "temperature": "temperature",
+    "max_tokens": "max_tokens"
+  },
+  "response": {
+    "choices": "/choices",
+    "error": "/error",
+    "model": "/model",
+    "input_tokens": "/usage/prompt_tokens",
+    "output_tokens": "/usage/completion_tokens"
+  },
+  "choice": {
+    "message": "/message",
+    "finish": "/finish_reason",
+    "error": "/error"
+  }
+}

@@ -12,7 +12,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tinyassets.provider_assignment_manifest import AssignmentCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -253,12 +256,17 @@ def write_provider_assignment_projection(
     generation: int,
     provider: str = "",
     binding: dict[str, Any] | None = None,
+    assignment_candidates: tuple[AssignmentCandidate, ...] | None = None,
 ) -> None:
     """Strictly publish the non-authorizing requester-local config projection.
 
     Unlike the legacy merge helper, an unreadable existing config is a hard
     failure: assignment must never erase unrelated keys by falling back to an
     empty document.
+
+    Manifest projections consume resolved assignment records, not another list
+    of supported provider brands. These records are data, not launch authority;
+    the publisher owns their resolution and admission still re-reads the ledger.
     """
 
     import os
@@ -272,19 +280,49 @@ def write_provider_assignment_projection(
     if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
         raise ValueError("provider assignment generation is invalid")
     selected = provider.strip()
+    if assignment_candidates is not None and normalized_state != "ready":
+        raise ValueError("candidate projections require a ready assignment")
     if normalized_state == "ready":
-        # A ready assignment names exactly one provider: a subscription-CLI provider
-        # (claude-code/codex) OR a registered open compute provider
-        # (api_key_http:<def-id>, compute-agnostic). Anything else is invalid.
-        _is_canonical = selected in {"claude-code", "codex"} or selected.startswith(
-            "api_key_http:"
-        )
-        if generation < 1 or not _is_canonical:
+        if generation < 1:
             raise ValueError("ready assignment requires one canonical provider")
+        if assignment_candidates is None:
+            # Preserve the legacy single-source input contract. Manifest members
+            # are validated/resolved upstream, not guessed from names here.
+            _is_canonical = selected in {"claude-code", "codex"} or selected.startswith(
+                "api_key_http:"
+            )
+            if not _is_canonical:
+                raise ValueError("ready assignment requires one canonical provider")
         if not isinstance(binding, dict) or not binding.get("binding_id"):
             raise ValueError("ready assignment requires a binding projection")
         allowed = [selected]
         bindings = {selected: dict(binding)}
+        if assignment_candidates is not None:
+            from tinyassets.provider_assignment_manifest import AssignmentCandidate
+
+            if (
+                type(assignment_candidates) is not tuple or not assignment_candidates
+                or any(type(member) is not AssignmentCandidate for member in assignment_candidates)
+                or type(binding.get("generation")) is not int
+                or not isinstance(binding.get("assignment_digest"), str)
+                or not binding["assignment_digest"]
+            ):
+                raise ValueError("invalid accepted candidate projections")
+            members = {member.provider: member for member in assignment_candidates}
+            if len(members) != len(assignment_candidates) or selected not in members:
+                raise ValueError("invalid accepted candidate projections")
+            allowed = sorted(members)
+            bindings = {
+                name: {
+                    "binding_id": members[name].binding_id,
+                    "generation": members[name].binding_generation,
+                    "binding_digest": members[name].binding_digest,
+                    "assignment_digest": binding["assignment_digest"],
+                }
+                for name in allowed
+            }
+            if bindings[selected] != binding:
+                raise ValueError("root projection does not match its assignment candidate")
         preferred = selected
         engine_source = "requester_local"
     else:

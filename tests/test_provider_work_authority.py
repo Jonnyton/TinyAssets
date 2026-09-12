@@ -509,6 +509,256 @@ def test_universe_receipt_is_dark_bounded_and_restart_safe(tmp_path) -> None:
     assert store.list_reservations(receipt.receipt_id) == ()
 
 
+_RECEIPT_MEMBER_FIELDS = (
+    "provider", "binding_id", "binding_generation", "binding_digest",
+    "binding_revocation_generation", "credential_reference_digest",
+    "parent_binding_id", "parent_binding_generation", "parent_binding_digest",
+    "parent_binding_revocation_generation",
+)
+
+
+def _manifest_receipt(tmp_path):
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    legacy = service.issue(root).record
+    assert legacy is not None
+    manifest = replace(
+        legacy, schema_version=4, authority_scope="manifest",
+        manifest_digest=f"sha256:{'d' * 64}",
+        **dict.fromkeys(_RECEIPT_MEMBER_FIELDS),
+    )
+    return store, legacy, replace(manifest, receipt_digest=manifest.expected_digest())
+
+
+def test_manifest_receipt_roundtrip_has_no_anchor_authority(tmp_path) -> None:
+    store, legacy, receipt = _manifest_receipt(tmp_path)
+    payload = receipt.to_dict()
+    assert payload.keys() == ProviderUniverseWorkReceipt._FIELDS_V4
+    assert all(payload[name] is None for name in _RECEIPT_MEMBER_FIELDS)
+    assert receipt.receipt_id == legacy.receipt_id
+    assert receipt.execution_subject == legacy.execution_subject
+    assert receipt.max_invocations == legacy.max_invocations
+    assert receipt.max_tokens == legacy.max_tokens
+    assert receipt.max_cost_microunits == legacy.max_cost_microunits
+    assert ProviderUniverseWorkReceipt.from_dict(payload) == receipt
+    assert receipt.receipt_digest == receipt.expected_digest()
+    assert receipt.receipt_digest != legacy.receipt_digest
+    # Constructing the inert record neither publishes authority nor issues work.
+    assert store.get_receipt(receipt.receipt_id) == legacy
+    assert store.list_reservations(receipt.receipt_id) == ()
+
+
+@pytest.mark.parametrize("field", _RECEIPT_MEMBER_FIELDS)
+def test_manifest_receipt_rejects_every_member_field(tmp_path, field) -> None:
+    _store, legacy, receipt = _manifest_receipt(tmp_path)
+    value = getattr(legacy, field)
+    if value is None:
+        value = 1 if "generation" in field else f"sha256:{'a' * 64}"
+    with pytest.raises(ValueError, match="cannot carry member authority"):
+        replace(receipt, **{field: value})
+
+
+@pytest.mark.parametrize("field,value", [
+    ("manifest_digest", None), ("manifest_digest", "not-a-digest"),
+    ("authority_scope", "anchor"), ("authority_scope", []),
+    ("schema_version", 3), ("schema_version", 5),
+    ("schema_version", 4.0), ("schema_version", True),
+    ("assignment_generation", 0), ("assignment_digest", "not-a-digest"),
+    ("max_invocations", 0), ("max_tokens", -1),
+    ("max_cost_microunits", -1), ("principal_id", ""),
+    ("execution_subject", None),
+])
+def test_manifest_receipt_keeps_strict_scope_subject_and_budget_checks(
+    tmp_path, field, value,
+) -> None:
+    _store, _legacy, receipt = _manifest_receipt(tmp_path)
+    with pytest.raises(ValueError):
+        replace(receipt, **{field: value})
+
+
+def test_legacy_receipt_wire_is_unchanged_and_rejects_manifest_fields(tmp_path) -> None:
+    _store, legacy, manifest = _manifest_receipt(tmp_path)
+    payload = legacy.to_dict()
+    assert "authority_scope" not in payload and "manifest_digest" not in payload
+    assert ProviderUniverseWorkReceipt.from_dict(payload).to_dict() == payload
+    with pytest.raises(ValueError, match="fields do not match schema"):
+        ProviderUniverseWorkReceipt.from_dict(dict(payload, authority_scope="manifest"))
+    for field in ("authority_scope", "manifest_digest"):
+        incomplete = manifest.to_dict()
+        del incomplete[field]
+        with pytest.raises(ValueError, match="fields do not match schema"):
+            ProviderUniverseWorkReceipt.from_dict(incomplete)
+    with pytest.raises(ValueError, match="cannot carry a manifest digest"):
+        replace(legacy, schema_version=4, manifest_digest=manifest.manifest_digest)
+
+
+# Frozen pre-manifest table, independent of the current production schema.
+_LEGACY_RECEIPT_SQL = """
+CREATE TABLE receipt_legacy_fixture (
+    receipt_id TEXT PRIMARY KEY, receipt_digest TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'expired', 'fenced')),
+    work_item_kind TEXT NOT NULL, work_item_id TEXT NOT NULL, universe_id TEXT NOT NULL,
+    binding_id TEXT NOT NULL,
+    binding_generation INTEGER NOT NULL CHECK (binding_generation >= 1),
+    binding_digest TEXT NOT NULL, expires_at TEXT NOT NULL, record_json TEXT NOT NULL,
+    UNIQUE (universe_id, work_item_kind, work_item_id),
+    FOREIGN KEY(binding_id) REFERENCES provider_work_bindings(binding_id)
+)
+"""
+
+
+def _legacy_migration_fixture(tmp_path):
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    claim = store.claim(ProviderWorkExecutionClaimRequest(
+        receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
+        worker_id="migration-worker", runtime_id="migration-runtime",
+        claim_nonce_digest=f"sha256:{'f' * 64}", lease_seconds=60,
+    )).record
+    reserved = store.reserve(ProviderInvocationReservationRequest(
+        receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
+        claim_id=claim.claim_id, claim_digest=claim.claim_digest,
+        claim_generation=claim.generation, invocation_key="migration-invocation",
+        operation="repository_spec_delivery", role="writer",
+        max_tokens=100, max_cost_microunits=10,
+    )).record
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(_LEGACY_RECEIPT_SQL)
+        columns = ", ".join(row[1] for row in conn.execute(
+            "PRAGMA table_info(receipt_legacy_fixture)"
+        ))
+        conn.execute(
+            f"INSERT INTO receipt_legacy_fixture ({columns}) "
+            f"SELECT {columns} FROM provider_work_receipts"
+        )
+        conn.execute("DROP TABLE provider_work_receipts")
+        conn.execute("ALTER TABLE receipt_legacy_fixture RENAME TO provider_work_receipts")
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    return store, receipt, claim, reserved
+
+
+def test_receipt_migration_preserves_saved_work_and_foreign_keys(tmp_path) -> None:
+    store, receipt, claim, reserved = _legacy_migration_fixture(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("CREATE INDEX receipt_expiry_fixture ON provider_work_receipts(expires_at)")
+        conn.execute("CREATE TABLE receipt_audit_fixture (receipt_id TEXT)")
+        conn.execute("CREATE TRIGGER receipt_update_fixture AFTER UPDATE ON provider_work_receipts "
+                     "BEGIN INSERT INTO receipt_audit_fixture VALUES (NEW.receipt_id); END")
+        before_claims = conn.execute("SELECT * FROM provider_work_execution_claims").fetchall()
+        before_reservations = conn.execute(
+            "SELECT * FROM provider_invocation_reservations"
+        ).fetchall()
+    for _ in range(2):
+        assert store.get_receipt(receipt.receipt_id) == receipt
+        with store.connection() as conn:
+            assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert [tuple(r) for r in conn.execute(
+                "SELECT * FROM provider_work_execution_claims"
+            )] == before_claims
+            assert [tuple(r) for r in conn.execute(
+                "SELECT * FROM provider_invocation_reservations"
+            )] == before_reservations
+            assert conn.execute("SELECT COUNT(*) FROM receipt_audit_fixture").fetchone()[0] == 0
+            names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
+            assert {"receipt_expiry_fixture", "receipt_update_fixture"} <= names
+            assert "provider_work_receipts_v4" not in names
+    assert store.list_reservations(receipt.receipt_id) == (reserved,)
+    assert reserved.claim_id == claim.claim_id
+
+
+@pytest.mark.parametrize("statement", [
+    "INSERT INTO provider_work_receipts_v4",
+    "DROP TABLE provider_work_receipts",
+    "ALTER TABLE provider_work_receipts_v4",
+])
+def test_receipt_migration_interrupt_rolls_back_and_restores_fk(tmp_path, statement) -> None:
+    _store, receipt, _claim, _reserved = _legacy_migration_fixture(tmp_path)
+
+    class InterruptedConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            result = super().execute(sql, parameters)
+            if sql.startswith(statement):
+                raise RuntimeError("simulated migration interruption")
+            return result
+
+    conn = sqlite3.connect(db_path(tmp_path), isolation_level=None, factory=InterruptedConnection)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(RuntimeError, match="simulated migration interruption"):
+            provider_store._ensure_manifest_receipt_schema(conn)
+        assert not conn.in_transaction
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(provider_work_receipts)")}
+        assert "authority_scope" not in columns
+        row = conn.execute("SELECT * FROM provider_work_receipts").fetchone()
+        assert provider_store._receipt_record(row) == receipt
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'provider_work_receipts_v4'"
+        ).fetchone() is None
+    finally:
+        conn.close()
+
+
+def test_receipt_migration_concurrent_open_is_idempotent(tmp_path) -> None:
+    _store, receipt, _claim, _reserved = _legacy_migration_fixture(tmp_path)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(
+            lambda _: SQLiteProviderWorkAuthorityStore(tmp_path).get_receipt(receipt.receipt_id),
+            range(8),
+        ))
+    assert results == [receipt] * 8
+
+
+@pytest.mark.parametrize("mutation,match", [
+    ("ALTER TABLE provider_work_receipts ADD COLUMN extra_data TEXT", "unsupported"),
+    ("ALTER TABLE provider_work_receipts ADD COLUMN authority_scope TEXT", "incomplete"),
+    ("UPDATE provider_work_receipts SET record_json = '{}'", "invalid"),
+])
+def test_receipt_migration_refuses_unknown_or_corrupt_shape(tmp_path, mutation, match) -> None:
+    _legacy_migration_fixture(tmp_path)
+    conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(mutation)
+        before = [tuple(row) for row in conn.execute("SELECT * FROM provider_work_receipts")]
+        with pytest.raises(ValueError, match=match):
+            provider_store._ensure_manifest_receipt_schema(conn)
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert not conn.in_transaction
+        after = [tuple(row) for row in conn.execute("SELECT * FROM provider_work_receipts")]
+        assert after == before
+    finally:
+        conn.close()
+
+
+def test_manifest_receipt_storage_remains_inert_until_authorized(tmp_path) -> None:
+    store, _legacy, receipt = _manifest_receipt(tmp_path)
+    # Only the synthetic fixture writes this row: no public issuer supports it yet.
+    with store.connection() as conn:
+        conn.execute("DELETE FROM provider_work_receipts")
+        conn.execute(
+            "INSERT INTO provider_work_receipts (receipt_id, receipt_digest, generation, state, "
+            "work_item_kind, work_item_id, universe_id, expires_at, record_json, "
+            "authority_scope, manifest_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (receipt.receipt_id, receipt.receipt_digest, receipt.generation, receipt.state.value,
+             receipt.work_item_kind, receipt.work_item_id, receipt.universe_id, receipt.expires_at,
+             json.dumps(receipt.to_dict()), receipt.authority_scope, receipt.manifest_digest),
+        )
+    assert store.get_receipt(receipt.receipt_id) == receipt
+    refused = store.claim(ProviderWorkExecutionClaimRequest(
+        receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
+        worker_id="cannot-create-authority", runtime_id="synthetic",
+        claim_nonce_digest=f"sha256:{'d' * 64}", lease_seconds=60,
+    ))
+    assert refused.record is None
+    assert refused.outcome is ProviderWorkAuthorityWriteOutcome.STALE
+
+
 def test_universe_receipt_preserves_exact_authorized_role_set(tmp_path) -> None:
     store, _binding, root, authority, _service = _ledger_fixture(tmp_path)
     with pytest.raises(ValueError, match="allowed_roles"):

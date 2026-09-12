@@ -146,6 +146,59 @@ def two_users(tmp_path: Path) -> Path:
 # --------------------------------------------------------------------------- #
 
 
+def test_model_preferences_removed_for_current_and_former_home_only_for_owner(two_users: Path):
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.providers.model_preferences import ModelPreferences
+    from tinyassets.storage.model_preferences import ModelPreferenceStore
+
+    store = ModelPreferenceStore(two_users)
+    prefs = ModelPreferences("explicit", ModelRef("owned:future", "opaque-new-model"), ())
+    store.save(A, HOME_A, expected_generation=0, policy=prefs)
+    store.save(A, "former-home", expected_generation=0, policy=prefs)
+    other = store.save(B, HOME_B, expected_generation=0, policy=prefs)
+    delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                   delete_identity=lambda sub: "deleted")
+    assert store.get(A, HOME_A).policy is None
+    assert store.get(A, "former-home").policy is None
+    assert store.get(B, HOME_B) == other
+
+
+def test_agent_journal_deletion_counts_cascades_and_former_home(two_users: Path):
+    from tinyassets.providers.agent_chat_codec import decode_openai_chat_agent
+    from tinyassets.storage.agent_turn_journal import AgentTurnJournal
+    from tinyassets.storage.agent_turn_records import RoundInput, dump
+
+    journal = AgentTurnJournal(two_users)
+    candidate = RoundInput("owned:test", "model", dump({"version": 1, "tools": [
+        {"type": "function", "function": {"name": "tool", "description": "",
+                                         "parameters": {"type": "object"}}},
+    ]}), "binding", "reservation", 1, "sha256:" + "a" * 64, "sha256:" + "b" * 64)
+    reply = decode_openai_chat_agent({"choices": [{"finish_reason": "tool_calls", "message": {
+        "role": "assistant", "content": None, "tool_calls": [{"id": "call", "type": "function",
+        "function": {"name": "tool", "arguments": "{}"}}],
+    }}]}, source_ref="owned:test", requested_model="model", tool_names=frozenset({"tool"}))
+    turns = []
+    for owner, home in ((A, HOME_A), (A, "former-home"), (B, HOME_B)):
+        # Model a genuine past home, then restore the current one before deletion.
+        from tinyassets.daemon_server import set_founder_home
+
+        set_founder_home(two_users, founder_sub=owner, universe_id=home, platform_generated=True)
+        turn = journal.create(owner, home, prompt="private", system="exact")
+        turn = journal.begin_round(owner, home, turn.turn_id,
+            expected_generation=turn.generation, candidate=candidate).snapshot
+        turn = journal.finish_inference(owner, home, turn.turn_id,
+            expected_generation=turn.generation, ordinal=1, reply=reply).snapshot
+        turns.append(turn)
+    set_founder_home(two_users, founder_sub=A, universe_id=HOME_A, platform_generated=True)
+    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                             delete_identity=lambda sub: "deleted")
+    assert journal.get(A, HOME_A, turns[0].turn_id) is None
+    assert journal.get(A, "former-home", turns[1].turn_id) is None
+    assert journal.get(B, HOME_B, turns[2].turn_id) == turns[2]
+    for table in ("agent_turns", "agent_turn_rounds", "agent_turn_tools"):
+        assert receipt["rows_deleted"][table] == 2
+
+
 def test_deleting_a_removes_all_of_a_and_none_of_b(two_users: Path):
     base = two_users
     root_db = base / ".tinyassets.db"

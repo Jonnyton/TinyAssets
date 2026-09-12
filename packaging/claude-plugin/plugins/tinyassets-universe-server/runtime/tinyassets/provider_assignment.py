@@ -16,10 +16,22 @@ import sqlite3
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.providers.model_selection import SelectedModel
+
+from tinyassets.provider_assignment_manifest import (
+    AssignmentCandidate,
+    ensure_manifest_schema,
+    load_candidates,
+    manifest_digest,
+    store_candidates,
+)
 from tinyassets.storage import db_path
 
 logger = logging.getLogger(__name__)
@@ -44,6 +56,8 @@ class ProviderAssignment:
     credential_reference_digest: str
     assignment_digest: str
     updated_at: str
+    manifest_digest: str = ""
+    candidates: tuple[AssignmentCandidate, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +98,8 @@ class ServedProviderAuthority:
     before_provider_launch: object | None = field(
         default=None, repr=False, compare=False
     )
+    selected_model: SelectedModel | None = None
+    after_provider_claim: object | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,9 +467,47 @@ def reserve_served_provider_budget(
                 and binding.generation == authority.binding_generation
                 and binding.binding_digest == authority.binding_digest
             )
+        elif assignment is not None and assignment.manifest_digest:
+            member = next(
+                (m for m in assignment.candidates if m.provider == authority.provider), None
+            )
+            native_default = False
+            if (
+                member is not None and authority.selected_model is None
+                and authority.authority_kind == "subscription_snapshot"
+            ):
+                from tinyassets.providers.model_selection import _native_default
+
+                try:
+                    native_default = _native_default(member.provider, "", member.access)
+                except PermissionError:
+                    pass  # An accepted specific native model is not its default.
+            binding_matches_assignment = (
+                authority.operation == "converse"
+                and (
+                    native_default or (
+                        authority.selected_model is not None
+                        and authority.selected_model.provider == authority.provider
+                    )
+                )
+                and member is not None
+                and member.binding_id == authority.binding_id
+                and member.binding_generation == authority.binding_generation
+                and member.binding_digest == authority.binding_digest
+                and binding is not None
+                and binding.assignment_generation == assignment.generation
+                and binding.assignment_digest == assignment.assignment_digest
+                and member.credential_reference_id == authority.credential_reference_id
+                and (
+                    member.credential_reference_generation
+                    == authority.credential_reference_generation
+                )
+                and member.credential_reference_digest == authority.credential_reference_digest
+            )
         else:
             binding_matches_assignment = (
                 assignment is not None
+                and authority.selected_model is None
                 and assignment.binding_id == authority.binding_id
                 and assignment.binding_generation == authority.binding_generation
                 and assignment.binding_digest == authority.binding_digest
@@ -577,11 +631,26 @@ def reserve_served_provider_budget(
             remaining_tokens - estimated_input_tokens,
             affordable_total_tokens - estimated_input_tokens,
         )
+        if authority.selected_model is not None and output_tokens > 0:
+            selected_affordable = authority.selected_model.affordable_output(
+                remaining_cost, output_limit=output_tokens,
+            )
+            if selected_affordable is not None:
+                output_tokens = min(output_tokens, selected_affordable)
         if output_tokens < 1:
             conn.rollback()
             raise ProviderAuthorityHeldError(held)
         reserved_total = estimated_input_tokens + output_tokens
         reserved_cost = reserved_total * _SERVED_COST_MICROUNITS_PER_TOKEN
+        if authority.selected_model is not None:
+            # Keep the legacy conservative accounting floor, but never reserve
+            # less than the selected HTTP request can cost at its accepted caps.
+            reserved_cost = max(
+                reserved_cost, authority.selected_model.cost_upper_bound(output_tokens)
+            )
+        if reserved_cost > remaining_cost:
+            conn.rollback()
+            raise ProviderAuthorityHeldError(held)
         # Per-call lease deadline: this call's OWN worst-case healthy duration.
         # The reconciler settles a row only past this, so it never reclaims a live
         # call even under an unbounded configured timeout (Codex re-review #4).
@@ -656,6 +725,12 @@ def finalize_served_provider_budget(
         and cost_microunits >= 0
         else actual_total * _SERVED_COST_MICROUNITS_PER_TOKEN
     )
+    if authority.selected_model is not None and (
+        type(cost_microunits) is not int or cost_microunits < 0
+    ):
+        # No reported cost is not a zero-cost receipt. Retain the conservative
+        # full reservation estimate; ProviderResponse still reports unknown.
+        measured_cost = max(measured_cost, reservation.reserved_cost_microunits)
     exceeded = (
         actual_total > reservation.reserved_total_tokens
         or measured_cost > reservation.reserved_cost_microunits
@@ -970,6 +1045,12 @@ def ensure_provider_assignment_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(provider_assignments)")}
+    if "manifest_digest" not in columns:
+        conn.execute(
+            "ALTER TABLE provider_assignments ADD COLUMN manifest_digest TEXT NOT NULL DEFAULT ''"
+        )
+    ensure_manifest_schema(conn)
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_provider_assignment_owner
@@ -988,6 +1069,7 @@ def provider_assignment_digest(
     credential_reference_id: str,
     credential_reference_generation: int,
     credential_reference_digest: str,
+    manifest_digest: str = "",
 ) -> str:
     payload = {
         "binding_id": binding_id,
@@ -1000,6 +1082,9 @@ def provider_assignment_digest(
         "schema_version": 1,
         "universe_id": universe_id,
     }
+    if manifest_digest:
+        payload["schema_version"] = 2
+        payload["manifest_digest"] = manifest_digest
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -1020,6 +1105,7 @@ def _assignment_from_row(row: sqlite3.Row | tuple[object, ...]) -> ProviderAssig
         credential_reference_digest=str(values[10]),
         assignment_digest=str(values[11]),
         updated_at=str(values[12]),
+        manifest_digest=str(values[13]),
     )
     expected = provider_assignment_digest(
         owner_user_id=assignment.owner_user_id,
@@ -1030,9 +1116,42 @@ def _assignment_from_row(row: sqlite3.Row | tuple[object, ...]) -> ProviderAssig
         credential_reference_id=assignment.credential_reference_id,
         credential_reference_generation=assignment.credential_reference_generation,
         credential_reference_digest=assignment.credential_reference_digest,
+        manifest_digest=assignment.manifest_digest,
     )
     if assignment.assignment_digest != expected:
         raise RuntimeError("provider assignment digest is invalid")
+    return assignment
+
+
+def _validate_assignment_manifest(assignment: ProviderAssignment) -> None:
+    if not assignment.manifest_digest:
+        if assignment.candidates:
+            raise ValueError("legacy assignment cannot contain candidates")
+        return
+    expected = manifest_digest(assignment.provider, assignment.candidates)
+    if expected != assignment.manifest_digest:
+        raise ValueError("provider assignment manifest digest is invalid")
+    anchor = next(c for c in assignment.candidates if c.provider == assignment.provider)
+    for name in (
+        "provider", "binding_id", "binding_generation", "binding_digest",
+        "credential_reference_id", "credential_reference_generation", "credential_reference_digest",
+    ):
+        if getattr(anchor, name) != getattr(assignment, name):
+            raise ValueError("provider assignment anchor does not match its candidate")
+
+
+def _load_assignment_manifest(
+    conn: sqlite3.Connection, assignment: ProviderAssignment,
+) -> ProviderAssignment:
+    if not assignment.manifest_digest:
+        return assignment  # Old child rows never grant authority to a legacy root.
+    try:
+        assignment = replace(assignment, candidates=load_candidates(
+            conn, assignment.universe_id, assignment.generation,
+        ))
+        _validate_assignment_manifest(assignment)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("provider assignment manifest is invalid") from exc
     return assignment
 
 
@@ -1047,12 +1166,12 @@ def load_provider_assignment_in_transaction(
         SELECT universe_id, owner_user_id, state, generation, provider,
                binding_id, binding_generation, binding_digest,
                credential_reference_id, credential_reference_generation,
-               credential_reference_digest, assignment_digest, updated_at
+               credential_reference_digest, assignment_digest, updated_at, manifest_digest
           FROM provider_assignments WHERE universe_id = ?
         """,
         (universe_id.strip(),),
     ).fetchone()
-    return _assignment_from_row(row) if row is not None else None
+    return _load_assignment_manifest(conn, _assignment_from_row(row)) if row is not None else None
 
 
 def store_provider_assignment_in_transaction(
@@ -1070,9 +1189,11 @@ def store_provider_assignment_in_transaction(
         credential_reference_id=assignment.credential_reference_id,
         credential_reference_generation=assignment.credential_reference_generation,
         credential_reference_digest=assignment.credential_reference_digest,
+        manifest_digest=assignment.manifest_digest,
     )
     if assignment.assignment_digest != expected:
         raise ValueError("provider assignment digest is invalid")
+    _validate_assignment_manifest(assignment)
     ensure_provider_assignment_schema(conn)
     conn.execute(
         """
@@ -1080,8 +1201,8 @@ def store_provider_assignment_in_transaction(
             universe_id, owner_user_id, state, generation, provider,
             binding_id, binding_generation, binding_digest,
             credential_reference_id, credential_reference_generation,
-            credential_reference_digest, assignment_digest, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            credential_reference_digest, assignment_digest, updated_at, manifest_digest
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(universe_id) DO UPDATE SET
             owner_user_id = excluded.owner_user_id,
             state = excluded.state,
@@ -1094,7 +1215,8 @@ def store_provider_assignment_in_transaction(
             credential_reference_generation = excluded.credential_reference_generation,
             credential_reference_digest = excluded.credential_reference_digest,
             assignment_digest = excluded.assignment_digest,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            manifest_digest = excluded.manifest_digest
         """,
         (
             assignment.universe_id,
@@ -1110,8 +1232,11 @@ def store_provider_assignment_in_transaction(
             assignment.credential_reference_digest,
             assignment.assignment_digest,
             assignment.updated_at,
+            assignment.manifest_digest,
         ),
     )
+    if assignment.manifest_digest:
+        store_candidates(conn, assignment.universe_id, assignment.generation, assignment.candidates)
 
 
 def load_provider_assignment(
@@ -1122,49 +1247,202 @@ def load_provider_assignment(
     conn = sqlite3.connect(db_path(base_path))
     try:
         ensure_provider_assignment_schema(conn)
-        row = conn.execute(
-            """
-            SELECT universe_id, owner_user_id, state, generation, provider,
-                   binding_id, binding_generation, binding_digest,
-                   credential_reference_id, credential_reference_generation,
-                   credential_reference_digest, assignment_digest, updated_at
-              FROM provider_assignments WHERE universe_id = ?
-            """,
-            (universe_id.strip(),),
-        ).fetchone()
+        conn.execute("BEGIN")  # Root and children must come from one read snapshot.
+        return load_provider_assignment_in_transaction(conn, universe_id=universe_id)
     finally:
         conn.close()
-    return _assignment_from_row(row) if row is not None else None
+
+
+def _served_request_agent(base_path, universe, request_carrier, role, operation):
+    """One validator shared by discovery preflight and final launch admission."""
+    from tinyassets.auth.middleware import validate_provider_request_carrier
+    from tinyassets.custom_agents import get_binding
+
+    uid = universe.name
+    binding_id = str(getattr(request_carrier, "agent_binding_id", ""))
+    revision = getattr(request_carrier, "binding_revision", 0)
+    if str(getattr(request_carrier, "universe_id", "")) != uid or not binding_id:
+        raise PermissionError("provider request does not match universe")
+    capability = validate_provider_request_carrier(
+        request_carrier, universe_id=uid, agent_binding_id=binding_id,
+        binding_revision=revision, operation=operation,
+    )
+    accepted_sources = {
+        ("tinyassets.authenticated-request.v1", "tinyassets.auth.middleware", "converse"),
+        ("tinyassets.authenticated-app-event.v1", "tinyassets.app_ingress_http", "slack_event"),
+    }
+    if (capability.mechanism, capability.issuer, capability.tool_name) not in accepted_sources:
+        raise PermissionError("provider request source is not trusted")
+    if role != "writer" or operation != "converse":
+        raise PermissionError("served authority is converse/writer only")
+    agent = get_binding(base_path, universe_id=uid, binding_id=binding_id)
+    if agent is None or not all((
+        agent["status"] == "serving",
+        agent["created_by"] == capability.principal_id,
+        int(agent["revision"]) == revision,
+    )):
+        raise PermissionError("agent binding is not current serving authority")
+    return capability, agent
+
+
+def _selected_chain(store, base_path, universe, capability, agent, selection):
+    from tinyassets.provider_serving_binding import _current_selected_member_authority
+    from tinyassets.providers.model_policy import ModelRef
+
+    if not isinstance(selection, ModelRef):
+        raise PermissionError("invalid model selection")
+    with store.connection() as conn:
+        conn.execute("BEGIN")
+        return _current_selected_member_authority(
+            conn, store=store, universe_dir=universe, base_path=Path(base_path),
+            owner_user_id=capability.principal_id, universe_id=universe.name,
+            agent=agent, provider=selection.connection_id,
+        )
+
+
+def check_served_agent_tool_authority(universe_context) -> str:
+    """Fresh engine-side execution fence, without a provider launch or held IO lock."""
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    universe = universe_context.universe_dir
+    if universe is None or universe_context.provider_invocation is not None:
+        raise PermissionError("interactive agent requires a current served request")
+    with provider_assignment_admission().shared(universe):
+        capability, agent = _served_request_agent(
+            universe.parent, universe, universe_context.provider_request, "writer", "converse",
+        )
+        _selected_chain(
+            SQLiteProviderWorkAuthorityStore(universe.parent), universe.parent,
+            universe, capability, agent, universe_context.model_selection,
+        )
+        return capability.principal_id
 
 
 @contextmanager
 def authorize_served_provider_call(
+    base_path: str | Path, *, universe_dir: str | Path, request_carrier: object,
+    role: str, operation: str, model_selection: ModelRef | None = None,
+) -> Iterator[ServedProviderAuthority]:
+    """Synchronous authority entrypoint; caller-supplied discovery is not accepted."""
+    with _authorize_served_provider_call(
+        base_path, universe_dir=universe_dir, request_carrier=request_carrier,
+        role=role, operation=operation, model_selection=model_selection,
+    ) as authority:
+        yield authority
+
+
+@asynccontextmanager
+async def authorize_served_provider_call_async(
+    base_path: str | Path, *, universe_dir: str | Path, request_carrier: object,
+    role: str, operation: str, model_selection: ModelRef,
+    agent_turn: bool = False,
+):
+    """Release admission for discovery; revalidate the exact chain before launch.
+
+    Thread-owned admission contexts enter and exit on the event-loop thread.
+    Only discovery IO runs in a worker. Neither callers nor configuration may
+    supply the prepared result, and the final fence rechecks request + custody.
+    """
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.providers.model_selection import prepare_selected_model_async
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    universe = Path(universe_dir)
+    try:
+        with provider_assignment_admission().shared(universe):
+            capability, agent = _served_request_agent(
+                base_path, universe, request_carrier, role, operation
+            )
+            chain = _selected_chain(
+                SQLiteProviderWorkAuthorityStore(base_path), base_path, universe,
+                capability, agent, model_selection,
+            )
+            member = next(
+                m for m in chain[0].candidates if m.provider == model_selection.connection_id
+            )
+        # No assignment fence or SQL transaction spans the remote request.
+        selected, recheck = await prepare_selected_model_async(
+            base_path=Path(base_path), owner_user_id=capability.principal_id,
+            universe_id=universe.name, provider=member.provider,
+            model_id=model_selection.model_id, access=member.access,
+            needs_tools=agent_turn,
+        )
+    except ProviderAuthorityHeldError:
+        raise
+    except Exception as exc:
+        raise ProviderAuthorityHeldError(_SERVED_AUTHORITY_HELD) from exc
+    with _authorize_served_provider_call(
+        base_path, universe_dir=universe, request_carrier=request_carrier,
+        role=role, operation=operation, model_selection=model_selection,
+        _prepared_selection=(agent, chain, selected, recheck),
+        agent_turn=agent_turn,
+    ) as authority:
+        yield authority
+
+
+_SERVED_AUTHORITY_HELD = (
+    "Connect your provider before running this universe. TinyAssets will not "
+    "borrow platform credentials or start a metered trial."
+)
+
+
+def _seal_agent_launch_allowance(conn, store, assignment, capability) -> None:
+    """Finite accepted-binding ceiling; rolling usage is still admitted each call."""
+    from tinyassets.auth.middleware import seal_provider_request_launch_allowance
+
+    if not assignment.manifest_digest or not assignment.candidates:
+        raise PermissionError("agent inference requires an accepted candidate manifest")
+    seen = set()
+    total = 0
+    for member in assignment.candidates:
+        if member.binding_id in seen:
+            continue
+        binding = store.get_binding_in_transaction(conn, binding_id=member.binding_id)
+        if binding is None or (
+            binding.owner_user_id, binding.universe_id, binding.generation, binding.binding_digest,
+        ) != (
+            assignment.owner_user_id, assignment.universe_id,
+            member.binding_generation, member.binding_digest,
+        ):
+            raise PermissionError("agent launch plan binding changed")
+        allowance = binding.max_invocations
+        if type(allowance) is not int or not 0 < allowance <= 2**63 - 1 - total:
+            raise PermissionError("agent launch plan has invalid finite allowance")
+        total += allowance
+        seen.add(member.binding_id)
+    # Set-once operation refuses late sealing and a changed plan. Never refill.
+    seal_provider_request_launch_allowance(capability, limit=total)
+
+
+@contextmanager
+def _authorize_served_provider_call(
     base_path: str | Path,
     *,
     universe_dir: str | Path,
     request_carrier: object,
     role: str,
     operation: str,
+    model_selection: ModelRef | None = None,
+    _prepared_selection=None,
+    agent_turn: bool = False,
 ) -> Iterator[ServedProviderAuthority]:
     """Fence selection + request + binding + custody immediately before launch."""
 
-    from tinyassets.auth.middleware import validate_provider_request_carrier
     from tinyassets.credential_vault import (
         cleanup_llm_credential_snapshot,
-        current_connection_grant_custody,
-        current_llm_subscription_custody,
         snapshot_llm_subscription_credential,
     )
     from tinyassets.custom_agents import get_binding
     from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_serving_binding import (
+        _current_selected_member_authority,
+        _current_serving_authority,
+    )
     from tinyassets.storage.provider_work_authority import (
         SQLiteProviderWorkAuthorityStore,
     )
 
-    held = (
-        "Connect your provider before running this universe. TinyAssets will not "
-        "borrow platform credentials or start a metered trial."
-    )
+    held = _SERVED_AUTHORITY_HELD
     universe = Path(universe_dir)
     uid = universe.name
     carrier_uid = str(getattr(request_carrier, "universe_id", ""))
@@ -1172,133 +1450,92 @@ def authorize_served_provider_call(
     carrier_revision = getattr(request_carrier, "binding_revision", 0)
     if carrier_uid != uid or not carrier_binding_id:
         raise ProviderAuthorityHeldError(held)
+    if agent_turn and (role != "writer" or operation != "converse" or model_selection is None):
+        raise ProviderAuthorityHeldError(held)
 
     with provider_assignment_admission().shared(universe):
         authority: ServedProviderAuthority | None = None
         credential_snapshot = None
         try:
-            capability = validate_provider_request_carrier(
-                request_carrier,
-                universe_id=uid,
-                agent_binding_id=carrier_binding_id,
-                binding_revision=carrier_revision,
-                operation=operation,
+            capability, agent = _served_request_agent(
+                base_path, universe, request_carrier, role, operation
             )
-            accepted_request_sources = {
-                (
-                    "tinyassets.authenticated-request.v1",
-                    "tinyassets.auth.middleware",
-                    "converse",
-                ),
-                (
-                    "tinyassets.authenticated-app-event.v1",
-                    "tinyassets.app_ingress_http",
-                    "slack_event",
-                ),
-            }
-            if (
-                capability.mechanism,
-                capability.issuer,
-                capability.tool_name,
-            ) not in accepted_request_sources:
-                raise PermissionError("provider request source is not trusted")
-            if role != "writer" or operation != "converse":
-                raise PermissionError("served authority is converse/writer only")
-            agent = get_binding(
-                base_path,
-                universe_id=uid,
-                binding_id=carrier_binding_id,
-            )
-            if agent is None:
-                raise PermissionError("agent binding is missing")
-            exact_agent = (
-                agent["status"] == "serving",
-                agent["created_by"] == capability.principal_id,
-                int(agent["revision"]) == carrier_revision,
-            )
-            if not all(exact_agent):
-                raise PermissionError("agent binding is not current serving authority")
 
             store = SQLiteProviderWorkAuthorityStore(base_path)
+            selected_model = None
+            selection_recheck = None
+            selected_chain = None
+            if model_selection is not None:
+                from tinyassets.providers.model_selection import prepare_selected_model
+
+                selected_chain = _selected_chain(
+                    store, base_path, universe, capability, agent, model_selection
+                )
+                selected_assignment = selected_chain[0]
+                member = next(
+                    m for m in selected_assignment.candidates
+                    if m.provider == model_selection.connection_id
+                )
+                if _prepared_selection is None:
+                    # Synchronous callers retain the original fenced path.
+                    # Never keep a SQLite read transaction over discovery IO.
+                    selected_model, selection_recheck = prepare_selected_model(
+                        base_path=Path(base_path),
+                        owner_user_id=capability.principal_id, universe_id=uid,
+                        provider=member.provider, model_id=model_selection.model_id,
+                        access=member.access,
+                        needs_tools=agent_turn,
+                    )
+                else:
+                    (before_agent, before_chain, selected_model,
+                     selection_recheck) = _prepared_selection
+                    if before_agent != agent or before_chain != selected_chain:
+                        raise PermissionError("selected authority changed during model discovery")
+                    if selection_recheck is not None:
+                        selection_recheck()
+                if get_binding(
+                    base_path, universe_id=uid, binding_id=carrier_binding_id
+                ) != agent:
+                    raise PermissionError("agent binding changed during model discovery")
+
+            def before_selected_launch() -> None:
+                selection_recheck()
+                if get_binding(
+                    base_path, universe_id=uid, binding_id=carrier_binding_id
+                ) != agent:
+                    raise PermissionError("agent binding changed before model launch")
             with store.connection() as conn:
                 conn.execute("BEGIN")
-                assignment = load_provider_assignment_in_transaction(
-                    conn,
-                    universe_id=uid,
+                resolver = (
+                    _current_serving_authority if model_selection is None
+                    else _current_selected_member_authority
                 )
-                provider_ref = agent["configuration"].get("provider_ref")
-                if (
-                    assignment is None
-                    or assignment.state != "ready"
-                    or assignment.owner_user_id != capability.principal_id
-                    or provider_ref != assignment.binding_id
-                ):
-                    raise PermissionError("provider assignment is not current")
-                provider_binding = store.get_binding_in_transaction(
+                assignment, provider_binding, custody = resolver(
                     conn,
-                    binding_id=assignment.binding_id,
-                )
-                if provider_binding is None or not store.validate_in_transaction(
-                    conn,
-                    binding_id=assignment.binding_id,
-                    binding_generation=assignment.binding_generation,
-                    binding_digest=assignment.binding_digest,
+                    store=store,
+                    universe_dir=universe,
+                    base_path=Path(base_path),
                     owner_user_id=capability.principal_id,
                     universe_id=uid,
-                    provider=assignment.provider,
-                    operation=operation,
-                    role=role,
+                    agent=agent,
+                    **({} if model_selection is None else {
+                        "provider": model_selection.connection_id,
+                    }),
+                )
+                if selected_chain is not None and selected_chain != (
+                    assignment, provider_binding, custody,
                 ):
-                    raise PermissionError("provider binding is not current")
-                # Shared custody-identity check for BOTH variants (Codex: exact tuple).
-                def _exact_custody(cust: object) -> bool:
-                    return all((
-                        cust is not None,
-                        cust is not None
-                        and cust.reference_id == assignment.credential_reference_id,
-                        cust is not None
-                        and cust.generation == assignment.credential_reference_generation,
-                        cust is not None
-                        and cust.reference_digest == assignment.credential_reference_digest,
-                        provider_binding.assignment_generation == assignment.generation,
-                        provider_binding.assignment_digest == assignment.assignment_digest,
-                        provider_binding.credential_reference_digest
-                        == assignment.credential_reference_digest,
-                    ))
-
-                if _is_open_provider(assignment.provider):
-                    # connection_grant variant: no subscription snapshot/custody. Two
-                    # independent gates (Codex reject #1): (a) the custody row must match
-                    # the assignment's exact digests (_exact_custody), AND (b) the LIVE
-                    # grant — resolved fresh under the AUTHENTICATED CALLER as owner —
-                    # must still be owned + bound + not-revoked + not-rotated
-                    # (verify_open_grant_custody recomputes the live grant-identity digest
-                    # and compares it to the stored custody, so a rotated grant / changed
-                    # credential_ref that kept the connection_id is rejected). This is the
-                    # independent caller-ownership check, not a read of the grant's own owner.
-                    from tinyassets.provider_serving_binding import (
-                        _open_connection_id,
-                        verify_open_grant_custody,
-                    )
-
-                    connection_id = _open_connection_id(
-                        Path(base_path), uid, assignment.provider
-                    )
-                    custody = current_connection_grant_custody(
-                        conn,
-                        owner_user_id=capability.principal_id,
-                        universe_id=uid,
-                        connection_id=connection_id,
-                    )
-                    if not _exact_custody(custody):
-                        raise PermissionError("credential custody is not current")
-                    verify_open_grant_custody(
-                        Path(base_path), uid, capability.principal_id,
-                        assignment.provider, custody,
-                    )
+                    raise PermissionError("selected provider authority changed during discovery")
+                provider = (
+                    assignment.provider if model_selection is None
+                    else model_selection.connection_id
+                )
+                if agent_turn:
+                    _seal_agent_launch_allowance(conn, store, assignment, capability)
+                if _is_open_provider(provider):
                     authority = ServedProviderAuthority(
                         authority_kind="connection_grant",
-                        provider=assignment.provider,
+                        provider=provider,
                         max_invocations=provider_binding.max_invocations,
                         request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
                         max_tokens=provider_binding.max_tokens,
@@ -1316,29 +1553,24 @@ def authorize_served_provider_call(
                         credential_service="http",
                         credential_snapshot_dir=None,
                         request_capability=capability,
+                        selected_model=selected_model,
+                        before_provider_launch=(
+                            before_selected_launch if selection_recheck is not None else None
+                        ),
                     )
                 else:
                     service = {"codex": "codex", "claude-code": "claude"}.get(
-                        assignment.provider
+                        provider
                     )
                     if service is None:
                         raise PermissionError("provider is not supported for serving")
-                    custody = current_llm_subscription_custody(
-                        conn,
-                        universe_dir=universe,
-                        owner_user_id=capability.principal_id,
-                        universe_id=uid,
-                        service=service,
-                    )
-                    if not _exact_custody(custody):
-                        raise PermissionError("credential custody is not current")
                     credential_snapshot = snapshot_llm_subscription_credential(
                         universe_dir=universe,
                         custody=custody,
                     )
                     authority = ServedProviderAuthority(
                         authority_kind="subscription_snapshot",
-                        provider=assignment.provider,
+                        provider=provider,
                         max_invocations=provider_binding.max_invocations,
                         request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
                         max_tokens=provider_binding.max_tokens,

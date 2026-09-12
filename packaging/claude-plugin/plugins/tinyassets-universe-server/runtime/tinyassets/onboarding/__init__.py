@@ -545,7 +545,7 @@ def _app_identity_required() -> Any:
     return None
 
 
-def _read_home(identity: Any) -> str:
+def _read_home(identity: Any, *, raise_errors: bool = False) -> str:
     """The signed-in user's OWN complete home universe id, or "" — read-only
     (no provisioning, no ledger write). For the status GET."""
     from tinyassets.api.first_contact import home_is_complete
@@ -559,6 +559,8 @@ def _read_home(identity: Any) -> str:
             home = get_founder_home(base, identity.user_id) or ""
             return home if home and home_is_complete(base, home) else ""
         except Exception:  # noqa: BLE001
+            if raise_errors:
+                raise
             return ""
 
 
@@ -1599,6 +1601,8 @@ def onboarding_routes() -> list[Any]:
     """
     from starlette.routing import Route
 
+    from tinyassets.onboarding.model_preferences import handle_model_preferences
+
     return [
         Route("/mcp/app", _handle_app, methods=["GET", "HEAD"]),
         Route("/mcp/app/token", _handle_token, methods=["POST"]),
@@ -1611,6 +1615,7 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/me", _handle_me, methods=["GET"]),
         Route("/mcp/app/trace", _handle_trace, methods=["POST"]),
         Route("/mcp/app/serving/bind", _handle_serving_bind, methods=["POST"]),
+        Route("/mcp/app/models/preferences", handle_model_preferences, methods=["GET", "POST"]),
         Route("/mcp/app/billing/status", _handle_billing_status, methods=["GET"]),
         Route("/mcp/app/billing/checkout", _handle_billing_checkout, methods=["POST"]),
         Route("/mcp/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),

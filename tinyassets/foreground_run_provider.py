@@ -8,12 +8,14 @@ import os
 import threading
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
+    ProviderInvocationSelection,
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkReceipt,
     ProviderUniverseWorkRoot,
@@ -23,6 +25,8 @@ from tinyassets.provider_work_authority import (
     ProviderWorkBindingSeed,
     ProviderWorkBindingService,
     ProviderWorkExecutionClaim,
+    ProviderWorkReceiptState,
+    provider_work_receipt_id,
 )
 
 RUN_GRAPH_OPERATION = "run_graph"
@@ -224,7 +228,10 @@ class _ForegroundRunProviderSession:
 
     def _admit(self) -> None:
         from tinyassets.exceptions import ProviderAuthorityHeldError
-        from tinyassets.provider_assignment import provider_assignment_admission
+        from tinyassets.provider_assignment import (
+            load_provider_assignment_in_transaction,
+            provider_assignment_admission,
+        )
         from tinyassets.provider_serving_binding import (
             _current_serving_authority,
             resolve_serving_agent_binding,
@@ -266,6 +273,19 @@ class _ForegroundRunProviderSession:
                 with store.connection() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     try:
+                        observed = load_provider_assignment_in_transaction(
+                            conn, universe_id=self._universe_id,
+                        )
+                        if observed is not None and observed.manifest_digest:
+                            receipt, claim, default_provider = self._admit_manifest(
+                                conn, store, agent, observed, nodes, roles,
+                            )
+                            self._validate_run(allowed_statuses={"running"})
+                            conn.commit()
+                            self._provider, self._receipt, self._claim = (
+                                default_provider, receipt, claim,
+                            )
+                            return
                         assignment, parent_binding, _custody = _current_serving_authority(
                             conn,
                             store=store,
@@ -406,6 +426,88 @@ class _ForegroundRunProviderSession:
         except Exception as exc:
             raise ProviderAuthorityHeldError(_HELD) from exc
 
+    def _admit_manifest(self, conn, store, agent, assignment, nodes, roles):
+        """One aggregate receipt for all nodes, not one full allowance per source."""
+        from tinyassets.graph_compiler import _POLICY_PROVIDER_RETRY_BACKOFF_SECONDS
+        from tinyassets.provider_serving_binding import _current_selected_member_authority
+
+        bindings = []
+        for member in assignment.candidates:
+            try:
+                _assignment, binding, _custody = _current_selected_member_authority(
+                    conn, store=store, universe_dir=self._universe_dir, base_path=self._base_path,
+                    owner_user_id=self._principal_id, universe_id=self._universe_id,
+                    agent=agent, provider=member.provider,
+                )
+            except PermissionError:
+                continue
+            if set(roles) <= set(binding.allowed_roles):
+                bindings.append(binding)
+        declared = set().union(*(
+            _declared_policy_providers(node.get("llm_policy")) for node in nodes
+        ))
+        if not bindings or declared - {binding.provider for binding in bindings}:
+            raise PermissionError("workflow requests an unavailable accepted provider")
+        policies = [
+            node.get("llm_policy") or self._branch_snapshot.get("default_llm_policy")
+            for node in nodes
+        ]
+        # Share the actual compiler's bounded policy-retry count. Include the
+        # requested fallback tail, not a fresh member allowance for each retry.
+        max_invocations = sum(
+            (1 + len(policy.get("fallback_chain", []))
+             + int(bool(policy.get("difficulty_override"))))
+            * (1 + len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS)) if policy else 1
+            for policy in policies
+        )
+        if max_invocations > min(binding.max_invocations for binding in bindings):
+            raise PermissionError("workflow exceeds the shared invocation allowance")
+        subject_ref = self._branch_version_id or (
+            f"{self._branch_def_id}@definition:{int(self._branch_snapshot.get('version') or 1)}"
+        )
+        root = ProviderUniverseWorkRoot(work_item_kind="run", work_item_id=self._run_id)
+        candidate = ProviderUniverseWorkReceipt(
+            schema_version=4, authority_scope="manifest",
+            manifest_digest=assignment.manifest_digest,
+            receipt_id=provider_work_receipt_id(universe_id=self._universe_id, root=root),
+            receipt_digest="sha256:" + "0" * 64, generation=1,
+            state=ProviderWorkReceiptState.ACTIVE, work_item_kind="run", work_item_id=self._run_id,
+            binding_id=None, binding_generation=None, binding_digest=None,
+            binding_revocation_generation=None, provider=None, credential_reference_digest=None,
+            principal_id=self._principal_id, actor_id=f"universe:{self._universe_id}",
+            universe_id=self._universe_id, branch_def_id=self._branch_def_id,
+            branch_version_id=subject_ref, assignment_generation=assignment.generation,
+            assignment_digest=assignment.assignment_digest, executor_class="cloud",
+            allowed_operations=(RUN_GRAPH_OPERATION,), allowed_roles=roles,
+            max_invocations=max_invocations,
+            max_tokens=min(binding.max_tokens for binding in bindings),
+            max_cost_microunits=min(binding.max_cost_microunits for binding in bindings),
+            expires_at=min(
+                bindings, key=lambda binding: datetime.fromisoformat(
+                    binding.expires_at.replace("Z", "+00:00"),
+                ),
+            ).expires_at,
+            created_at=store.timestamp(),
+            execution_subject=ExecutionSubject(
+                kind=ExecutionSubjectKind.BRANCH_VERSION, ref=subject_ref,
+                digest=self._branch_digest,
+            ),
+        )
+        candidate = replace(candidate, receipt_digest=candidate.expected_digest())
+        receipt, claim = store._admit_run_in_transaction(
+            conn, authority=candidate, manifest_bindings=tuple(bindings),
+            worker_id=f"foreground-run:{os.getpid()}", runtime_id=f"run:{self._run_id}",
+            claim_nonce_digest=_content_digest([
+                self._run_id, self._principal_id, self._universe_id,
+                self._branch_digest, os.getpid(),
+            ]), lease_seconds=3600,
+        )
+        default = next(
+            (binding.provider for binding in bindings if binding.provider == assignment.provider),
+            bindings[0].provider,
+        )
+        return receipt, claim, default
+
     def _ensure_admitted(self) -> None:
         if self._receipt is not None:
             return
@@ -417,7 +519,7 @@ class _ForegroundRunProviderSession:
         receipt = self._receipt
         if receipt is None:
             raise PermissionError("foreground run receipt is unavailable")
-        exact = (
+        common = (
             receipt.principal_id == self._principal_id,
             receipt.actor_id == f"universe:{self._universe_id}",
             receipt.universe_id == self._universe_id,
@@ -426,9 +528,13 @@ class _ForegroundRunProviderSession:
             receipt.execution_subject is not None,
             receipt.execution_subject is not None
             and receipt.execution_subject.digest == self._branch_digest,
-            receipt.provider == assignment.provider == self._provider,
             receipt.assignment_generation == assignment.generation,
             receipt.assignment_digest == assignment.assignment_digest,
+        )
+        exact = (
+            receipt.manifest_digest == assignment.manifest_digest,
+        ) if receipt.authority_scope == "manifest" else (
+            receipt.provider == assignment.provider == self._provider,
             receipt.credential_reference_digest
             == assignment.credential_reference_digest,
             receipt.parent_binding_id == parent_binding.binding_id,
@@ -437,7 +543,7 @@ class _ForegroundRunProviderSession:
             receipt.parent_binding_revocation_generation
             == parent_binding.revocation_generation,
         )
-        if not all(exact):
+        if not all((*common, *exact)):
             raise PermissionError("foreground run provider authority is stale")
 
     @contextmanager
@@ -456,6 +562,7 @@ class _ForegroundRunProviderSession:
         from tinyassets.exceptions import ProviderAuthorityHeldError
         from tinyassets.provider_assignment import provider_assignment_admission
         from tinyassets.provider_serving_binding import (
+            _current_selected_member_authority,
             _current_serving_authority,
             _is_open_provider,
             resolve_serving_agent_binding,
@@ -471,7 +578,8 @@ class _ForegroundRunProviderSession:
                 raise PermissionError("foreground run provider session is not active")
             if role not in self._receipt.allowed_roles:
                 raise PermissionError("foreground run provider role is not authorized")
-            if _declared_policy_providers(policy) - {self._provider}:
+            if (self._receipt.authority_scope != "manifest"
+                    and _declared_policy_providers(policy) - {self._provider}):
                 raise PermissionError("foreground policy is outside the active provider")
             self._validate_founder_home()
             if self._branch_snapshot is None or (
@@ -492,27 +600,73 @@ class _ForegroundRunProviderSession:
                 owner_user_id=self._principal_id,
             )
             store = SQLiteProviderWorkAuthorityStore(self._base_path)
+            model_snapshot = None
+            if self._receipt.authority_scope == "manifest":
+                from tinyassets.providers.work_model_selection import prepare_work_model_snapshot
+
+                preferred = (policy or {}).get("preferred", {})
+                if not isinstance(preferred, dict):
+                    raise PermissionError("workflow model preference is invalid")
+                model_snapshot = prepare_work_model_snapshot(
+                    base_path=self._base_path, universe_id=self._universe_id,
+                    provider=preferred.get("provider") or self._provider,
+                )
             with provider_assignment_admission().shared(self._universe_dir):
                 with store.connection() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     try:
-                        assignment, parent_binding, custody = _current_serving_authority(
-                            conn,
-                            store=store,
-                            universe_dir=self._universe_dir,
-                            owner_user_id=self._principal_id,
-                            universe_id=self._universe_id,
-                            agent=agent,
-                        )
+                        selection = None
+                        if self._receipt.authority_scope == "manifest":
+                            preferred = (policy or {}).get("preferred", {})
+                            if not isinstance(preferred, dict):
+                                raise PermissionError("workflow model preference is invalid")
+                            provider = preferred.get("provider") or self._provider
+                            model_id = preferred.get("model_id", preferred.get("model", ""))
+                            if ("model_id" in preferred and "model" in preferred
+                                    and preferred["model_id"] != preferred["model"]):
+                                raise PermissionError("workflow model preference is conflicting")
+                            current = _current_selected_member_authority(
+                                conn, store=store, universe_dir=self._universe_dir,
+                                base_path=self._base_path, owner_user_id=self._principal_id,
+                                universe_id=self._universe_id, agent=agent, provider=provider,
+                            )
+                            assignment, parent_binding, custody = current
+                            member = next(
+                                m for m in assignment.candidates if m.provider == provider
+                            )
+                            selection = ProviderInvocationSelection(
+                                provider=provider, binding_id=parent_binding.binding_id,
+                                binding_generation=parent_binding.generation,
+                                binding_digest=parent_binding.binding_digest,
+                                binding_revocation_generation=parent_binding.revocation_generation,
+                                credential_reference_id=custody.reference_id,
+                                credential_reference_generation=custody.generation,
+                                credential_reference_digest=custody.reference_digest,
+                                assignment_generation=assignment.generation,
+                                assignment_digest=assignment.assignment_digest,
+                                manifest_digest=assignment.manifest_digest,
+                                member_digest=member.digest(
+                                    self._universe_id, assignment.generation,
+                                ),
+                                model_id=model_id, executor_id=provider,
+                            )
+                        else:
+                            assignment, parent_binding, custody = _current_serving_authority(
+                                conn, store=store, universe_dir=self._universe_dir,
+                                owner_user_id=self._principal_id, universe_id=self._universe_id,
+                                agent=agent,
+                            )
+                            provider = assignment.provider
                         self._validate_receipt_parent(parent_binding, assignment)
+                        shares = len(_prompt_nodes(self._branch_snapshot))
                         token_share = max(
                             1,
-                            self._receipt.max_tokens // self._receipt.max_invocations,
+                            self._receipt.max_tokens // shares,
                         )
                         cost_share = max(
                             1,
                             self._receipt.max_cost_microunits
-                            // self._receipt.max_invocations,
+                            // shares,
                         )
                         carrier = store._reserve_and_arm_run_carrier_in_transaction(
                             conn,
@@ -522,8 +676,10 @@ class _ForegroundRunProviderSession:
                             role=role,
                             max_tokens=token_share,
                             max_cost_microunits=cost_share,
+                            selection=selection,
+                            model_snapshot=model_snapshot,
                         )
-                        if not _is_open_provider(assignment.provider):
+                        if not _is_open_provider(provider):
                             snapshot = snapshot_llm_subscription_credential(
                                 universe_dir=self._universe_dir,
                                 custody=custody,
@@ -536,7 +692,7 @@ class _ForegroundRunProviderSession:
             yield (
                 carrier,
                 snapshot.directory if snapshot is not None else None,
-                assignment.provider,
+                provider,
             )
         except ProviderAuthorityHeldError:
             raise

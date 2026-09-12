@@ -21,6 +21,12 @@ if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
     from tinyassets.provider_assignment import ServedProviderAuthority
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
+    from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+    from tinyassets.providers.agent_chat_codec import AgentReply
+    from tinyassets.providers.agent_inference import AgentInferenceRequest
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.providers.model_selection import SelectedModel
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +121,10 @@ class UniverseContext:
     provider_invocation: "ProviderInvocationCarrier | None" = None
     provider_request: "ProviderRequestCarrier | None" = None
     served_provider: "ServedProviderAuthority | None" = None
+    model_selection: ModelRef | None = None
+    """Requested candidate, not authority; revalidated by the serving boundary."""
+    agent_model_plan: AgentModelPlan | None = None
+    """Captured advisory owner policy; never a grant or a tool-replay instruction."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +228,16 @@ class ModelConfig:
     """Internal per-launch credential snapshot. Served adapters must use this
     immutable copy instead of resolving mutable vault paths at use time."""
 
+    selected_model: SelectedModel | None = None
+    """Router-owned selection from current serving authority, never caller policy.
+
+    None preserves legacy model semantics. The router always overwrites caller
+    input, including clearing it for calls without selected-model authority.
+    """
+
+    agent_request: AgentInferenceRequest | None = field(default=None, repr=False)
+    """Internal tool inventory/completed history, never execution authority."""
+
     def stream_timeout_profile(self) -> StreamTimeoutProfile:
         """Resolve the idle-watchdog profile, filling ``None`` knobs with the
         design defaults. Backward-compat: a config that only ever set the legacy
@@ -278,6 +298,11 @@ class ProviderResponse:
     Legacy ``model`` may contain a requested/default label. Such a label is not
     proof of the model that answered and must not be substituted here.
     """
+
+    agent_reply: AgentReply | None = field(default=None, repr=False)
+    """One inference's validated result; requested tools have not been executed."""
+    native_evidence: NativeCompletionEvidence | None = field(default=None, repr=False)
+    """Local execution evidence, not provider-reported billing or HTTP progress."""
 
 
 # Sentinel for quality-floor-only degraded judge responses.
@@ -1219,6 +1244,9 @@ class BaseProvider(abc.ABC):
 
     family: str = ""
     """Model family for judge diversity enforcement."""
+
+    agent_execution_kind: str | None = None
+    """Installed execution capability; unknown executors cannot claim an agent lane."""
 
     @classmethod
     def is_available(cls) -> bool:

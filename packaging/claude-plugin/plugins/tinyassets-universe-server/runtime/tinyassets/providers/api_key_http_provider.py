@@ -57,15 +57,11 @@ def _single_host(view: Any) -> str:
     provider endpoint; an ambiguous (multi-host) or hostless connection is refused
     rather than guessed."""
     hosts = {
-        ep.host
-        for ep in getattr(view, "allowed_endpoints", ()) or ()
-        if getattr(ep, "host", "")
+        ep.host for ep in getattr(view, "allowed_endpoints", ()) or () if getattr(ep, "host", "")
     }
     if len(hosts) == 1:
         return next(iter(hosts))
-    raise ProviderUnavailableError(
-        "compute connection must have exactly one allowlisted host"
-    )
+    raise ProviderUnavailableError("compute connection must have exactly one allowlisted host")
 
 
 def _declared_path(view: Any) -> str:
@@ -110,6 +106,8 @@ def _coerce_status(value: Any) -> int | None:
 class ApiKeyHttpProvider(BaseProvider):
     """Compute over a user-registered http provider, via the credential-blind proxy."""
 
+    agent_execution_kind = "engine_inference"
+
     def __init__(
         self, definition: ProviderDefinition, *, proxy_override: Any | None = None
     ) -> None:
@@ -132,16 +130,19 @@ class ApiKeyHttpProvider(BaseProvider):
         return True
 
     def _resolve_proxy(
-        self, *, db_path: Path, universe_id: str, grant_id: str, connection_id: str,
+        self,
+        *,
+        db_path: Path,
+        universe_id: str,
+        grant_id: str,
+        connection_id: str,
         owner_user_id: str,
     ) -> Any:
         if self._proxy_override is not None:
             return self._proxy_override
         from tinyassets.storage.outbound_connections import ConnectionLedger
 
-        ledger = ConnectionLedger(
-            db_path, verify_authenticated_principal=lambda: owner_user_id
-        )
+        ledger = ConnectionLedger(db_path, verify_authenticated_principal=lambda: owner_user_id)
         return ledger.resolve_exact_scoped_proxy(
             universe_id=universe_id, grant_id=grant_id, connection_id=connection_id
         )
@@ -212,13 +213,9 @@ class ApiKeyHttpProvider(BaseProvider):
         read_ledger = ConnectionLedger(db_path)
         grant = read_ledger.get_grant(grant_id)
         if grant is None or getattr(grant, "revoked_at", None) is not None:
-            raise ProviderUnavailableError(
-                f"compute grant {grant_id} is absent or revoked"
-            )
+            raise ProviderUnavailableError(f"compute grant {grant_id} is absent or revoked")
         if getattr(grant, "universe_id", "") != universe_id:
-            raise ProviderUnavailableError(
-                "compute grant is not bound to the running universe"
-            )
+            raise ProviderUnavailableError("compute grant is not bound to the running universe")
         connection_id = grant.connection_id
         owner_user_id = grant.owner_user_id
         view = read_ledger.get_connection_view(connection_id)
@@ -226,13 +223,42 @@ class ApiKeyHttpProvider(BaseProvider):
             raise ProviderUnavailableError("compute connection resource is absent")
         host = _single_host(view)
 
-        protocol_path, body = self._encode(
-            prompt=prompt,
-            system=system,
-            model=self.model,
-            temperature=getattr(config, "temperature", None),
-            max_tokens=getattr(config, "max_tokens", None),
-        )
+        selection = getattr(config, "selected_model", None)
+        agent_request = getattr(config, "agent_request", None)
+        if selection is not None:
+            contract = selection.contract()
+            if (
+                selection.provider != self.name
+                or contract.inference_protocol != self._definition.protocol
+            ):
+                raise ProviderUnavailableError("selected model does not match the compute source")
+            if config.engine_mcp_enabled and agent_request is None:
+                raise ProviderUnavailableError(
+                    "selected HTTP agent tool execution is not implemented yet"
+                )
+        if agent_request is not None:
+            from tinyassets.providers.agent_inference import AgentInferenceRequest
+            from tinyassets.providers.protocol_encoders import agent_codec_for
+
+            agent_codec = agent_codec_for(self._definition.protocol)
+            if (type(agent_request) is not AgentInferenceRequest or selection is None
+                    or not config.engine_mcp_enabled
+                    or agent_codec is None):
+                raise ProviderUnavailableError("HTTP agent inference requires admitted selection")
+            protocol_path, body = agent_request.encode(
+                prompt=prompt, system=system, selection=selection,
+                temperature=config.temperature, max_tokens=config.max_tokens,
+            )
+        else:
+            protocol_path, body = self._encode(
+                prompt=prompt,
+                system=system,
+                model=self.model if selection is None else selection.model_id,
+                temperature=getattr(config, "temperature", None),
+                max_tokens=getattr(config, "max_tokens", None),
+            )
+            if selection is not None:
+                body = contract.constrain_inference(body, selection.cost_caps)
         # The path the user granted wins over the protocol's canonical one: the
         # broker allowlists what they registered, so calling anything else is a
         # guaranteed refusal. The encoder still owns the BODY shape.
@@ -272,13 +298,25 @@ class ApiKeyHttpProvider(BaseProvider):
             ) from exc
 
         if not isinstance(result, dict):
+            if agent_request is not None:
+                raise ProviderProtocolError("agent inference outcome is unknown")
             raise ProviderUnavailableError("compute proxy returned no response")
         status = _coerce_status(result.get("status"))
         if status is None:
+            if agent_request is not None:
+                # The proxy was called. No status does not prove no remote work;
+                # hold the full reservation rather than report a free attempt.
+                raise ProviderProtocolError("agent inference outcome is unknown")
             # A sanitized error envelope (no HTTP status) — the worker refused or
             # the network failed. Fail loud with the secret-free reason.
             reason = str(result.get("reason") or result.get("error") or "unknown")
             raise ProviderUnavailableError(f"compute call failed: {reason}")
+        if agent_request is not None and contract.capacity_decoder is not None:
+            from tinyassets.exceptions import SelectedModelCapacityError
+
+            capacity = contract.capacity_decoder(status, result.get("headers"))
+            if capacity is not None:
+                raise SelectedModelCapacityError(capacity)
         if status == 429:
             raise ProviderRateLimitedError("compute provider rate limited (429)")
         if 500 <= status < 600:
@@ -290,11 +328,30 @@ class ApiKeyHttpProvider(BaseProvider):
         if not isinstance(body_str, str) or not body_str:
             raise ProviderProtocolError("compute response had an empty body")
         try:
-            parsed = json.loads(body_str)
+            if agent_request is not None:
+                from tinyassets.providers.agent_chat_codec import _object
+
+                parsed = _object(body_str)
+            else:
+                parsed = json.loads(body_str)
         except (TypeError, ValueError) as exc:
             raise ProviderProtocolError(f"compute response was not JSON: {exc}") from exc
+        agent_reply = None
+        cost = None
         try:
-            text, in_tok, out_tok = self._decode(parsed)
+            if agent_request is not None:
+                agent_reply = agent_codec.decode(
+                    parsed, source_ref=selection.provider, requested_model=selection.model_id,
+                    tool_names=frozenset(
+                        item["function"]["name"] for item in agent_request.tools()
+                    ),
+                )
+                text = agent_reply.text or ""
+                in_tok, out_tok = agent_reply.input_tokens, agent_reply.output_tokens
+            else:
+                text, in_tok, out_tok = self._decode(parsed)
+            if selection is not None and contract.usage_decoder is not None:
+                cost = contract.usage_decoder(body_str)
         except ProtocolDecodeError as exc:
             raise ProviderProtocolError(str(exc)) from exc
 
@@ -307,4 +364,6 @@ class ApiKeyHttpProvider(BaseProvider):
             latency_ms=latency_ms,
             input_tokens=in_tok,
             output_tokens=out_tok,
+            cost_microunits=cost,
+            agent_reply=agent_reply,
         )

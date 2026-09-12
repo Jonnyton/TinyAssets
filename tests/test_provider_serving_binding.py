@@ -480,14 +480,18 @@ def test_set_serving_requires_current_server_authority_and_is_reversible(tmp_pat
 
 
 def test_served_binding_selection_is_owner_scoped_and_unambiguous(tmp_path):
-    from tinyassets.custom_agents import create_binding, get_definition
+    from tinyassets.custom_agents import create_binding, get_definition, serving_binding_candidates
     from tinyassets.provider_serving_binding import (
         bind_serving_provider,
+        resolve_current_serving_provider_authority,
         resolve_serving_agent_binding,
         set_serving,
     )
 
     universe_dir, agent = _seed_universe(tmp_path)
+    assert serving_binding_candidates(
+        tmp_path, universe_id="u-owner", owner_user_id="owner-1",
+    ) == []
     connected = bind_serving_provider(
         base_path=tmp_path,
         universe_dir=universe_dir,
@@ -506,12 +510,33 @@ def test_served_binding_selection_is_owner_scoped_and_unambiguous(tmp_path):
         expected_revision=connected["agent_binding"]["revision"],
         enabled=True,
     )
+    # The general list only exposes the newest 100 rows. Inactive bindings
+    # outside that window must not conceal this older serving binding.
+    for _ in range(105):
+        create_binding(
+            tmp_path, universe_id="u-owner", definition_id=agent["agent_definition_id"],
+            created_by="owner-1", payload=_binding(),
+        )
+    from tinyassets.storage import db_path
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("UPDATE agent_bindings SET updated_at = 946684800.0 "
+                     "WHERE status = 'serving'")
+    assert serving_binding_candidates(
+        tmp_path, universe_id="u-owner", owner_user_id="other-owner",
+    ) == []
+    assert serving_binding_candidates(
+        tmp_path, universe_id="other-universe", owner_user_id="owner-1",
+    ) == []
     selected = resolve_serving_agent_binding(
         tmp_path,
         universe_id="u-owner",
         owner_user_id="owner-1",
     )
     assert selected["agent_binding_id"] == agent["agent_binding_id"]
+    assert resolve_current_serving_provider_authority(
+        tmp_path, universe_dir=universe_dir, universe_id="u-owner", owner_user_id="owner-1",
+    ).provider == "codex"
 
     definition_id = agent["agent_definition_id"]
     assert get_definition(tmp_path, definition_id) is not None
@@ -545,6 +570,10 @@ def test_served_binding_selection_is_owner_scoped_and_unambiguous(tmp_path):
             tmp_path,
             universe_id="u-owner",
             owner_user_id="owner-1",
+        )
+    with pytest.raises(PermissionError, match="exactly one"):
+        resolve_current_serving_provider_authority(
+            tmp_path, universe_dir=universe_dir, universe_id="u-owner", owner_user_id="owner-1",
         )
 
 

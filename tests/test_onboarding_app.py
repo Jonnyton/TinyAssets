@@ -185,7 +185,7 @@ def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
 def test_voice_client_keeps_converse_as_the_only_writer():
     html, _csp = onboarding.render_app_html()
     assert 'event.name!=="converse"' in html
-    assert 'const payload=await MCP.converse(message,"spoken");' in html
+    assert 'const payload=await MCP.converse(message,"spoken",opts.modelChoice);' in html
     assert '{message,input_method:turnInputMethod(inputMethod)}' in html
     assert 'sendTurn(send, display, {inputMethod:"typed"})' in html
     assert "voice_active" not in html
@@ -222,7 +222,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
         "/mcp/app/voice/status", "/mcp/app/voice/session",
-        "/mcp/app/serving/bind",
+        "/mcp/app/serving/bind", "/mcp/app/models/preferences",
         "/mcp/app/billing/status", "/mcp/app/billing/checkout",
         "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
         "/mcp/app/account/delete",
@@ -231,6 +231,7 @@ def test_route_is_mcp_app_get(monkeypatch):
     assert "GET" in by_path["/mcp/app/billing/status"].methods
     assert "GET" in by_path["/mcp/app/me"].methods
     assert "GET" in by_path["/mcp/app/voice/status"].methods
+    assert {"GET", "POST"} <= by_path["/mcp/app/models/preferences"].methods
     for post_only in (
         "/mcp/app/token", "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
@@ -1527,11 +1528,12 @@ function autoGrow(el){ el.style.height="auto"; }
 function sessionExpired(){ messages.push({role:"session-expired"}); }
 function showConnect(){ messages.push({role:"connect"}); }
 const SCENARIO=__SCENARIO__;
-const converseCalls=[], converseMethods=[];
+const converseCalls=[], converseMethods=[], converseChoices=[];
 let active=0, maxActive=0;
-const MCP={ converse: async (m,inputMethod) => {
+const MCP={ converse: async (m,inputMethod,modelChoice) => {
   converseCalls.push(m);
   converseMethods.push(inputMethod);
+  converseChoices.push(copyModelChoice(modelChoice));
   active++; maxActive=Math.max(maxActive, active);
   try{
     if(SCENARIO.transportError){ const e=new Error("offline"); e.transport=true; throw e; }
@@ -1559,10 +1561,12 @@ async function fetch(){ fetched++; return {headers:{get:()=>SCENARIO.liveBuild||
 __APP_FUNCTIONS__
 (async()=>{
   const out={};
+  modelChoiceForNextTurn=SCENARIO.modelChoice||null;
   if(SCENARIO.kind==="send"){
     const turnOpts=SCENARIO.inputMethod?{inputMethod:SCENARIO.inputMethod}:undefined;
     if(SCENARIO.secondMessage){
       const first=sendTurn(SCENARIO.message,undefined,turnOpts);
+      if(SCENARIO.secondModelChoice) modelChoiceForNextTurn=SCENARIO.secondModelChoice;
       els["composer-input"].value=SCENARIO.secondMessage;
       // ...arriving while the first is in flight
       for(let i=0;i<(SCENARIO.repeatSecond||1);i++)
@@ -1577,6 +1581,8 @@ __APP_FUNCTIONS__
       out.composerWhileQueued=els["composer-input"].value;
       out.statusWhileQueued=els["status-line"].textContent;
       out.savedWhileQueued=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
+      if(SCENARIO.mutateQueuedChoice) modelChoiceForNextTurn.saved_default.model_id="mutated";
+      if(SCENARIO.afterQueueModelChoice) modelChoiceForNextTurn=SCENARIO.afterQueueModelChoice;
       if(SCENARIO.claimElsewhere) localStorage.removeItem(QUEUE_KEY);   // another tab restored it
       out.queuedWhileInFlight=sendQueue.length;
       // every queued send now rejects before its try/finally
@@ -1587,6 +1593,7 @@ __APP_FUNCTIONS__
       await sendTurn(SCENARIO.message,undefined,turnOpts);
     }
     if(SCENARIO.clickResend){
+      if(SCENARIO.beforeRetryModelChoice) modelChoiceForNextTurn=SCENARIO.beforeRetryModelChoice;
       const btn=els.thread.children.flatMap(n=>n.children).find(c=>c.tagName==="BUTTON");
       btn.click();                                   // the listener fires sendTurn (async)
       await new Promise(r=>setTimeout(r, 20));
@@ -1648,6 +1655,7 @@ __APP_FUNCTIONS__
     if(SCENARIO.pending) localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
       message:SCENARIO.pending, display:SCENARIO.pending,
       inputMethod:SCENARIO.pendingInputMethod,
+      modelChoice:SCENARIO.pendingModelChoice,
       ts: Date.now()-(SCENARIO.pendingAgeS||0)*1000}));
     if(SCENARIO.queued) localStorage.setItem(QUEUE_KEY, JSON.stringify(SCENARIO.queued));
     if(SCENARIO.draftBeforeRestore) els["composer-input"].value=SCENARIO.draftBeforeRestore;
@@ -1688,6 +1696,7 @@ __APP_FUNCTIONS__
     out.reloaded=reloaded; out.fetched=fetched;
   }
   out.executionDetails=executionDetails;
+  out.converseChoices=converseChoices;
   console.log(JSON.stringify(out));
 })().catch(e=>{ console.error(e&&e.stack||e); process.exit(1); });
 """
@@ -1715,16 +1724,18 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"const SEND_QUEUE_MAX=[^\n]*;", r"const QUEUE_KEY=[^\n]*;",
                     r"let queueRestored=[^\n]*;", r"const QUEUE_MAX_AGE_MS=[^\n]*;",
                     r"let queueScope=[^\n]*;", r"let queuePersisted=[^\n]*;",
-                    r"let retainedItems=[^\n]*;")
+                    r"let retainedItems=[^\n]*;", r"let modelChoiceForNextTurn=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
+        "copyModelChoice", "captureTurnOptions",
         "executionLabel", "answerExecutionDetail",
         "offerResend", "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
         "restoreInflight",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
         "flushSendQueue", "queueTurn",
         "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
+        "sameSavedLine",
         "restoreQueue", "claimedElsewhere", "offerSavedLine",
     ))
     program = (_APP_SHIM
@@ -2082,7 +2093,7 @@ def test_an_unconfirmed_message_survives_a_reload_and_says_so():
 
     html, _csp = render_app_html()
     assert "ta_inflight_turn" in html
-    assert "rememberInflight(message, display, sentAt, inputMethod)" in html
+    assert "rememberInflight(message, display, sentAt, inputMethod, modelChoice)" in html
     assert "inputMethod:turnInputMethod(inputMethod)" in html
     # Cleared on success, KEPT on failure — a failed send is still the user's.
     assert "forgetInflight();" in html

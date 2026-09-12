@@ -250,6 +250,39 @@ class ConnectionCapability:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class ModelDiscoveryCapability:
+    """Connection-scoped discovery metadata, not model or endpoint authority."""
+
+    connection_id: str
+    capability_kind: str
+    protocol: str
+    catalogue_url: str
+    benchmark_url: str
+    contract_json: str = ""
+
+    def descriptor(self) -> dict[str, Any]:
+        result = (
+            {"schema_version": 1, "catalogue_url": self.catalogue_url,
+             "contract": json.loads(self.contract_json)}
+            if self.contract_json else
+            {"protocol": self.protocol, "catalogue_url": self.catalogue_url}
+        )
+        if self.benchmark_url:
+            result["benchmark_url"] = self.benchmark_url
+        return result
+
+    def execution_contract(self):
+        """Resolve validated metadata, never an execution or semantic-trust grant."""
+        if self.contract_json:
+            from tinyassets.providers.discovery_contract import SourceContract
+
+            return SourceContract.compile(json.loads(self.contract_json))
+        from tinyassets.providers.discovery_protocols import discovery_protocol
+
+        return discovery_protocol(self.protocol)
+
+
 @dataclass(frozen=True)
 class ActionCap:
     name: str
@@ -1822,7 +1855,6 @@ def _enforce_endpoint_allowlist(
     raise SsrfValidationError("outbound endpoint is not on the connection allowlist")
 
 
-_CONNECTION_CAPABILITY_KINDS = frozenset({"realtime_voice"})
 _REALTIME_VOICE_PROTOCOL = "tinyassets.voice.v1"
 _CAPABILITY_SERVICE_NAME_MAX = 80
 _CAPABILITY_URL_MAX = 2048
@@ -1830,7 +1862,7 @@ _CAPABILITY_URL_MAX = 2048
 
 def _validate_capability_kind(value: Any) -> str:
     kind = value.strip() if isinstance(value, str) else ""
-    if kind not in _CONNECTION_CAPABILITY_KINDS:
+    if kind not in _CAPABILITY_SPECS:
         raise ValueError("capability_kind is not supported")
     return kind
 
@@ -1848,14 +1880,14 @@ def _capability_https_url(name: str, value: Any, *, optional: bool = False) -> s
     return _canonical_request_url(canonical)
 
 
-def _validate_connection_capability(
-    connection_id: str, capability_kind: str, descriptor: Any
+def _validate_realtime_voice_capability(
+    connection_id: str, descriptor: Any
 ) -> ConnectionCapability:
     """Validate the complete, closed metadata document for one capability."""
 
     if not isinstance(descriptor, dict):
         raise ValueError("capability descriptor must be an object")
-    kind = _validate_capability_kind(capability_kind)
+    kind = "realtime_voice"
     required = {"protocol", "session_url", "service_name"}
     allowed = required | {"privacy_url"}
     if set(descriptor) - allowed or not required.issubset(descriptor):
@@ -1882,6 +1914,75 @@ def _validate_connection_capability(
             "privacy_url", descriptor.get("privacy_url"), optional=True
         ),
     )
+
+
+def _validate_model_discovery_capability(
+    connection_id: str, descriptor: Any
+) -> ModelDiscoveryCapability:
+    from tinyassets.providers.discovery_protocols import discovery_protocol
+
+    custom = isinstance(descriptor, dict) and "schema_version" in descriptor
+    required = {"schema_version", "contract", "catalogue_url"} if custom else {
+        "protocol", "catalogue_url",
+    }
+    if (
+        not isinstance(descriptor, dict)
+        or not required.issubset(descriptor)
+        or set(descriptor) - (required | {"benchmark_url"})
+    ):
+        raise ValueError("discovery descriptor fields are invalid")
+    contract_json = ""
+    if custom:
+        from tinyassets.providers.discovery_contract import SourceContract
+
+        if type(descriptor["schema_version"]) is not int or descriptor["schema_version"] != 1:
+            raise ValueError("unsupported discovery descriptor version")
+        contract = SourceContract.compile(descriptor["contract"])
+        contract_json = contract.descriptor_json
+        protocol = ""  # A custom source is not a caller-created registry identity.
+    else:
+        protocol = descriptor["protocol"]
+        contract = discovery_protocol(protocol)
+    if "benchmark_url" in descriptor and not isinstance(descriptor["benchmark_url"], str):
+        raise ValueError("discovery benchmark_url must be a string when provided")
+    catalogue_url = _capability_https_url("catalogue_url", descriptor["catalogue_url"])
+    benchmark_url = _capability_https_url(
+        "benchmark_url", descriptor.get("benchmark_url"), optional=True
+    )
+    contract.validate_urls(catalogue_url, benchmark_url)
+    return ModelDiscoveryCapability(
+        _required("connection_id", connection_id), "model_discovery", protocol,
+        catalogue_url, benchmark_url, contract_json,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _CapabilitySpec:
+    value_type: type
+    validate: Callable[[str, Any], ConnectionCapability | ModelDiscoveryCapability]
+    verb: str
+    url_fields: tuple[str, ...]
+
+
+_CAPABILITY_SPECS = {
+    "realtime_voice": _CapabilitySpec(
+        ConnectionCapability, _validate_realtime_voice_capability, "POST", ("session_url",)
+    ),
+    "model_discovery": _CapabilitySpec(
+        ModelDiscoveryCapability, _validate_model_discovery_capability, "GET",
+        ("catalogue_url", "benchmark_url"),
+    ),
+}
+
+
+def _validate_connection_capability(
+    connection_id: str, capability_kind: str, descriptor: Any
+) -> ConnectionCapability | ModelDiscoveryCapability:
+    spec = _CAPABILITY_SPECS[_validate_capability_kind(capability_kind)]
+    capability = spec.validate(connection_id, descriptor)
+    if not isinstance(capability, spec.value_type):
+        raise TypeError("capability validator returned the wrong value type")
+    return capability
 
 
 def _classify_global_address(ip_text: str) -> str:
@@ -3616,18 +3717,24 @@ class ConnectionLedger:
         capability_kind: str,
         descriptor: Any = None,
         enabled: bool,
-    ) -> ConnectionCapability | None:
+        expected_grant: ConnectionGrant | None = None,
+        preview: bool = False,
+    ) -> ConnectionCapability | ModelDiscoveryCapability | None:
         """Idempotently configure one bounded capability on existing authority.
 
         The descriptor is metadata, never authority: enabling succeeds only when
         the current connection is active HTTP authority whose existing scope and
-        endpoint allowlist already admit the exact realtime-session POST.
+        endpoint allowlist already admit the capability's exact destinations.
+        Discovery additionally fences the handler's live grant context in this
+        transaction. Voice retains its existing current-serving API contract.
         """
 
         if not isinstance(enabled, bool):
             raise ValueError("enabled must be a boolean")
         connection_key = _required("connection_id", connection_id)
         kind = _validate_capability_kind(capability_kind)
+        if type(preview) is not bool or (preview and (not enabled or kind != "model_discovery")):
+            raise ValueError("preview requires enabled model discovery metadata")
         capability = (
             _validate_connection_capability(connection_key, kind, descriptor)
             if enabled
@@ -3644,6 +3751,25 @@ class ConnectionLedger:
             resource = _resource_from_row(row)
             if resource.revoked_at is not None:
                 raise PermissionError("connection resource is revoked")
+            if kind == "model_discovery":
+                if expected_grant is None:
+                    raise PermissionError("discovery requires current grant context")
+                grant_row = connection.execute(
+                    "SELECT * FROM outbound_connection_grants WHERE grant_id = ?",
+                    (expected_grant.grant_id,),
+                ).fetchone()
+                if (
+                    grant_row is None
+                    or grant_row["revoked_at"] is not None
+                    or expected_grant.revoked_at is not None
+                    or grant_row["connection_id"] != connection_key
+                    or expected_grant.connection_id != connection_key
+                    or grant_row["owner_user_id"] != resource.owner_user_id
+                    or grant_row["owner_user_id"] != expected_grant.owner_user_id
+                    or grant_row["universe_id"] != expected_grant.universe_id
+                    or grant_row["granted_at"] != expected_grant.granted_at
+                ):
+                    raise PermissionError("discovery grant context changed")
             if not enabled:
                 connection.execute(
                     "DELETE FROM connection_capabilities "
@@ -3652,17 +3778,30 @@ class ConnectionLedger:
                 )
                 return None
             assert capability is not None
-            if resource.connection_type != "http" or "POST" not in resource.scopes:
-                raise PermissionError("connection does not authorize capability POST")
-            canonical = _parse_canonical_https_url(
-                capability.session_url, allowed_ports=frozenset({443})
+            spec = _CAPABILITY_SPECS[kind]
+            # Preserve voice's legacy explicit-POST rule. Discovery follows the
+            # existing GET/full-channel scope semantics used by its transport.
+            verb_allowed = (
+                spec.verb in resource.scopes if kind == "realtime_voice"
+                else _verb_within_scopes(spec.verb, resource.scopes, resource.access_mode)
             )
-            _enforce_endpoint_allowlist(
-                canonical,
-                "POST",
-                resource.allowed_endpoints,
-                resource.access_mode,
-            )
+            if resource.connection_type != "http" or not verb_allowed:
+                raise PermissionError(f"connection does not authorize capability {spec.verb}")
+            if isinstance(capability, ModelDiscoveryCapability):
+                if resource.auth_scheme != capability.execution_contract().auth_scheme:
+                    raise PermissionError(
+                        "connection authentication does not match discovery protocol"
+                    )
+            for field_name in spec.url_fields:
+                url = getattr(capability, field_name)
+                if not url:
+                    continue
+                canonical = _parse_canonical_https_url(url, allowed_ports=frozenset({443}))
+                _enforce_endpoint_allowlist(
+                    canonical, spec.verb, resource.allowed_endpoints, resource.access_mode,
+                )
+            if preview:
+                return capability  # Same current grant/endpoint checks, no metadata write.
             connection.execute(
                 """
                 INSERT INTO connection_capabilities (
@@ -3683,7 +3822,7 @@ class ConnectionLedger:
 
     def get_connection_capability(
         self, connection_id: str, capability_kind: str
-    ) -> ConnectionCapability | None:
+    ) -> ConnectionCapability | ModelDiscoveryCapability | None:
         """Return validated non-secret metadata without altering connection views."""
 
         connection_key = _required("connection_id", connection_id)

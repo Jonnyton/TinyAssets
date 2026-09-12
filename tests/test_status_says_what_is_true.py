@@ -49,21 +49,37 @@ def _ready(monkeypatch) -> None:
     )
 
 
-def _bindings(monkeypatch, *statuses: str, created_by: str = "alice") -> None:
-    """What `resolve_serving_agent_binding` will see: it requires exactly one
-    `serving` binding created by the assignment's owner."""
-    monkeypatch.setattr(
-        "tinyassets.provider_serving_binding.list_bindings",
-        lambda base, universe_id, limit=100: [
-            {"status": s, "created_by": created_by, "agent_binding_id": f"b-{i}"}
-            for i, s in enumerate(statuses)
-        ],
+def _bindings(base, *statuses: str, created_by: str = "alice") -> None:
+    """Exercise the real owner/status-filtered query, not a retired import."""
+    from tests.test_open_serving_bind import _agent_definition
+    from tinyassets.custom_agents import (
+        _agent_connect,
+        create_binding,
+        publish_definition,
+        set_binding_serving_in_transaction,
     )
+
+    definition = publish_definition(base, author_id=created_by, payload=_agent_definition())
+    for index, status in enumerate(statuses):
+        binding = create_binding(
+            base, universe_id="u-1", created_by=created_by,
+            definition_id=definition["agent_definition_id"],
+            payload={"schema_version": 1, "name": f"Agent {index}", "role": "writer"},
+        )
+        if status == "serving":
+            with _agent_connect(base) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                set_binding_serving_in_transaction(
+                    conn, universe_id="u-1", binding_id=binding["agent_binding_id"],
+                    expected_revision=binding["revision"], owner_user_id=created_by,
+                    enabled=True,
+                )
+                conn.commit()
 
 
 def test_a_SERVING_universe_is_not_told_to_choose_a_provider(tmp_path, monkeypatch):
     _ready(monkeypatch)
-    _bindings(monkeypatch, "configured", "serving")
+    _bindings(tmp_path, "configured", "serving")
     assert _consumer(tmp_path)._no_runtime_reason("u-1") == "legacy_control_tasks_parked"
 
 
@@ -71,13 +87,13 @@ def test_TWO_serving_bindings_are_not_serving_because_admission_refuses_them(tmp
     """Codex round 2: admission requires exactly one serving binding for the
     owner; the status must use the same predicate, not "any serving"."""
     _ready(monkeypatch)
-    _bindings(monkeypatch, "serving", "serving")
+    _bindings(tmp_path, "serving", "serving")
     assert _consumer(tmp_path)._no_runtime_reason("u-1") == "no_serving_runtime"
 
 
 def test_a_serving_binding_created_by_someone_else_does_not_count(tmp_path, monkeypatch):
     _ready(monkeypatch)
-    _bindings(monkeypatch, "serving", created_by="mallory")
+    _bindings(tmp_path, "serving", created_by="mallory")
     assert _consumer(tmp_path)._no_runtime_reason("u-1") == "no_serving_runtime"
 
 
@@ -86,7 +102,7 @@ def test_a_ready_assignment_with_serving_DISABLED_is_still_not_serving(tmp_path,
     the assignment ready; runs then fail provider_not_bound, so the honest
     reason is still the unserved one and the app heal must still fire."""
     _ready(monkeypatch)
-    _bindings(monkeypatch, "configured")
+    _bindings(tmp_path, "configured")
     assert _consumer(tmp_path)._no_runtime_reason("u-1") == "no_serving_runtime"
 
 
@@ -101,7 +117,7 @@ def test_a_universe_without_a_ready_assignment_still_hears_no_serving_runtime(
         "tinyassets.provider_assignment.load_provider_assignment",
         lambda base, universe_id: assignment,
     )
-    _bindings(monkeypatch, "serving")
+    _bindings(tmp_path, "serving")
     assert _consumer(tmp_path)._no_runtime_reason("u-1") == "no_serving_runtime"
 
 
