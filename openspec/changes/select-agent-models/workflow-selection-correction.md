@@ -4,6 +4,43 @@ September 11, 2026, 20:25 UTC. Correction proposal and reproduced blocker;
 The initial proposal below is superseded by the reviewed disposition immediately
 below. Runtime integration remains unfinished.
 
+## HTTP workflow model execution connected — September12 00:17UTC
+
+Foreground and assigned background text prompts now prepare owned-source
+discovery outside assignment admission and SQL transactions, then reconstruct
+current home/member/custody/model/price authority inside the reservation fence.
+The store records exact selected model, executor, contract and discovery interval
+in the existing version3 reservation. The sealed carrier supplies those facts
+to the router; ordinary ModelConfig values remain non-authorizing. No new grants,
+credentials or alternate work identities. An omitted HTTP model retains its
+source's declared default; explicit missing models refuse, never silently default.
+
+Affordable output is bounded before arming; the router additionally enforces
+context and reserved-cost limits. Selected text HTTP responses now use the same
+contract usage decoder as agent responses, while legacy unselected responses
+retain unknown-cost handling. Missing usage is not invented as zero.
+
+Windows Python3.14, 4f503d23 plus this working-tree correction:
+`python -m pytest -q tests/test_work_model_selection.py
+tests/test_run_provider_session.py tests/test_background_budget_finalization_e2e.py
+tests/test_provider_invocation_selection.py tests/test_provider_work_authority.py
+tests/test_selected_model_authority.py tests/test_interactive_http_agent.py
+tests/test_custom_source_execution.py --tb=short --show-capture=no`
+passes286 in39.22s,102 dependency warnings, zero skips. The new eight-case file
+proves real store/compiler/router/HTTP executor composition with synthetic network:
+default and explicit model across two foreground nodes, background exact selection,
+shared receipt and actual usage, absent model/stale catalogue/revoked source/paid
+refusal before invocation, finite affordable output. Its discovery reader admits
+a second thread through both fences, proving remote IO is outside them.
+Ruff, generated435-file plugin build/import and strict OpenSpec validation pass.
+
+Not live or all-model complete: native explicit catalogue/execution remains
+unimplemented, and selected HTTP workflow engine-tool loops are still refused.
+Native discovery's source-derived design needs its independent review; final
+implementation release approval also remains pending. The prior one-review
+exception was consumed by workflow authority and authorizes neither new review.
+No private workflow or cloud project was edited/run. No new Linux proof claimed.
+
 ## Native background compatibility connected — September11 23:58UTC
 
 The assigned background consumer now uses the same accepted-member selection

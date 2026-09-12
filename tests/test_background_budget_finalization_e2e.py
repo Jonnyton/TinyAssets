@@ -157,7 +157,7 @@ def _seed_serving_assignment(tmp_path: Path, *, model_access=None, services=("co
 
 
 def _seed_claimable_background_path(tmp_path: Path, *, model_access=None,
-                                    services=("codex",), policy=None):
+                                    services=("codex",), policy=None, setup_serving=None):
     from tests.test_cloud_automation_continuation import (
         BRANCH_TASK_ID,
         _activate_cloud,
@@ -232,7 +232,10 @@ def _seed_claimable_background_path(tmp_path: Path, *, model_access=None,
             universe_id="universe_alice",
             platform_generated=True,
         )
-    _seed_serving_assignment(tmp_path, model_access=model_access, services=services)
+    if setup_serving is None:
+        _seed_serving_assignment(tmp_path, model_access=model_access, services=services)
+    else:
+        setup_serving()
 
     candidates = Epoch2BranchTaskAdapter(tmp_path).list_candidates(
         universe_id="universe_alice",
@@ -243,7 +246,7 @@ def _seed_claimable_background_path(tmp_path: Path, *, model_access=None,
 
 
 def _run_consumer_once(tmp_path: Path, monkeypatch, *, model_access=None,
-                       services=("codex",), policy=None, before_execution=None):
+                       services=("codex",), policy=None, before_execution=None, setup_serving=None):
     import tinyassets.providers.call as provider_call_module
     from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
 
@@ -301,6 +304,7 @@ def _run_consumer_once(tmp_path: Path, monkeypatch, *, model_access=None,
             model_access=model_access,
             services=services,
             policy=policy,
+            setup_serving=setup_serving,
         )
         assert not hasattr(consumer, "worker_id_for")
         assert consumer.poll_once() == 1

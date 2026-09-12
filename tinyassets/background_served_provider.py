@@ -864,6 +864,18 @@ class _BackgroundAssignedProviderSession:
             admission_store = RequestAdmissionStore(self._base_path)
             provider_store = SQLiteProviderWorkAuthorityStore(self._base_path)
             background_store = SQLiteBackgroundBranchAuthorityStore(self._base_path)
+            from tinyassets.providers.work_model_selection import prepare_work_model_snapshot
+
+            preferred = (policy or {}).get("preferred", {})
+            if not isinstance(preferred, dict):
+                raise PermissionError("background model preference is invalid")
+            # Validate the task before any discovery IO, then revalidate every
+            # durable task/activation/member fact below after discovery finishes.
+            load_background_executor_identity(self._base_path, self._task, self._consumer_lease)
+            model_snapshot = prepare_work_model_snapshot(
+                base_path=self._base_path, universe_id=self._task.universe_id,
+                provider=preferred.get("provider"),
+            )
             with provider_assignment_admission().shared(universe_dir):
                 with admission_store.connection() as conn:
                     conn.execute("BEGIN IMMEDIATE")
@@ -1188,6 +1200,7 @@ class _BackgroundAssignedProviderSession:
                             max_cost_microunits=cost_share,
                             manifest_bindings=manifest_bindings,
                             selection=selection,
+                            model_snapshot=model_snapshot,
                         )
                         conn.commit()
                     except Exception:

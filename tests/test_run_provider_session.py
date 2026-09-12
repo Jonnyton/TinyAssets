@@ -188,6 +188,7 @@ def _seed_open_serving_assignment(
     owner_user_id: str = "acct_alice",
     universe_id: str = "universe_alice",
     select_for_serving: bool = True,
+    model_access=None,
 ) -> str:
     """Select one synthetic owner-bound HTTP provider for foreground runs."""
     from tinyassets.custom_agents import create_binding, publish_definition
@@ -210,7 +211,7 @@ def _seed_open_serving_assignment(
         connection_class="http",
         connection_type="http",
         auth_scheme="bearer",
-        scopes=("http",),
+        scopes=("http",) if model_access is None else ("GET", "POST"),
         provider="http",
         destination="compute:synthetic",
         credential_ref="vault://http/compute:synthetic",
@@ -218,7 +219,11 @@ def _seed_open_serving_assignment(
             "host": "api.example.com",
             "path_template": "/v1/chat/completions",
             "methods": ["POST"],
-        }],
+        }] + ([{
+            "host": "api.example.com", "path_template": "/api/v1/models/user", "methods": ["GET"],
+            "allowed_query": ["output_modalities"], "required_query": ["output_modalities"],
+            "query_patterns": {"output_modalities": "^all$"},
+        }] if model_access is not None else []),
     )
     ledger.grant_connection(
         grant_id=grant_id,
@@ -235,6 +240,14 @@ def _seed_open_serving_assignment(
         model="synthetic-model",
         ref=grant_id,
     )
+    if model_access is not None:
+        ledger.configure_capability(
+            connection_id=connection_id, capability_kind="model_discovery", enabled=True,
+            descriptor={"protocol": "openrouter_user_models_v1",
+                        "catalogue_url": "https://api.example.com/api/v1/models/user?output_modalities=all",
+                        "benchmark_url": ""},
+            expected_grant=ledger.get_grant(grant_id),
+        )
     published = publish_definition(
         base_path,
         author_id=owner_user_id,
@@ -266,6 +279,7 @@ def _seed_open_serving_assignment(
             agent_binding_id=agent["agent_binding_id"],
             expected_revision=1,
             provider=definition.id,
+            model_access=None if model_access is None else {definition.id: model_access},
         )
         set_serving(
             base_path=base_path,
@@ -316,6 +330,7 @@ def _run_branch(
                 tmp_path,
                 monkeypatch,
                 select_for_serving=authority_case != "registered_only",
+                model_access=model_access,
             )
         else:
             _seed_serving_assignment(tmp_path, model_access=model_access, services=services)
@@ -330,7 +345,9 @@ def _run_branch(
     )
     if open_provider:
         for node in branch.node_defs:
-            node.llm_policy = {"preferred": {"provider": selected_provider}}
+            node.llm_policy = dict(node.llm_policy or {})
+            node.llm_policy["preferred"] = dict(node.llm_policy.get("preferred") or {})
+            node.llm_policy["preferred"]["provider"] = selected_provider
     save_branch_definition(tmp_path, branch_def=branch.to_dict())
     if authority_case == "home_rebound":
         set_founder_home(

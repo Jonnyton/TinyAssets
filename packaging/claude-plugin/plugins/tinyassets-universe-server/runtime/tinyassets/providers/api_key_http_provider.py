@@ -348,10 +348,10 @@ class ApiKeyHttpProvider(BaseProvider):
                 )
                 text = agent_reply.text or ""
                 in_tok, out_tok = agent_reply.input_tokens, agent_reply.output_tokens
-                if contract.usage_decoder is not None:
-                    cost = contract.usage_decoder(body_str)
             else:
                 text, in_tok, out_tok = self._decode(parsed)
+            if selection is not None and contract.usage_decoder is not None:
+                cost = contract.usage_decoder(body_str)
         except ProtocolDecodeError as exc:
             raise ProviderProtocolError(str(exc)) from exc
 

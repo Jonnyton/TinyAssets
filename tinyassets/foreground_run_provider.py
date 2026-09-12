@@ -600,6 +600,17 @@ class _ForegroundRunProviderSession:
                 owner_user_id=self._principal_id,
             )
             store = SQLiteProviderWorkAuthorityStore(self._base_path)
+            model_snapshot = None
+            if self._receipt.authority_scope == "manifest":
+                from tinyassets.providers.work_model_selection import prepare_work_model_snapshot
+
+                preferred = (policy or {}).get("preferred", {})
+                if not isinstance(preferred, dict):
+                    raise PermissionError("workflow model preference is invalid")
+                model_snapshot = prepare_work_model_snapshot(
+                    base_path=self._base_path, universe_id=self._universe_id,
+                    provider=preferred.get("provider") or self._provider,
+                )
             with provider_assignment_admission().shared(self._universe_dir):
                 with store.connection() as conn:
                     conn.execute("BEGIN IMMEDIATE")
@@ -666,6 +677,7 @@ class _ForegroundRunProviderSession:
                             max_tokens=token_share,
                             max_cost_microunits=cost_share,
                             selection=selection,
+                            model_snapshot=model_snapshot,
                         )
                         if not _is_open_provider(provider):
                             snapshot = snapshot_llm_subscription_credential(

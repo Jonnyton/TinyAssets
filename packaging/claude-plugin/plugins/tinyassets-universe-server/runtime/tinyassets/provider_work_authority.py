@@ -1350,6 +1350,12 @@ class ProviderInvocationCarrier:
         return self._receipt.provider
 
     @property
+    def selected_model(self):
+        from tinyassets.providers.work_model_selection import selected_work_model
+
+        return selected_work_model(self._reservation.selection)
+
+    @property
     def role(self) -> str:
         return self._reservation.role
 

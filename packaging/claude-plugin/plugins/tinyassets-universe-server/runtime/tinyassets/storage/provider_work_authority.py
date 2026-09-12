@@ -2399,6 +2399,7 @@ class SQLiteProviderWorkAuthorityStore:
         max_cost_microunits: int,
         manifest_bindings: tuple[ProviderWorkBinding, ...] = (),
         selection: ProviderInvocationSelection | None = None,
+        model_snapshot=None,
     ) -> ProviderInvocationCarrier:
         """Issue/claim from durable background state and arm atomically."""
 
@@ -2411,7 +2412,10 @@ class SQLiteProviderWorkAuthorityStore:
         if manifest:
             if authority.work_item_kind != "background_attempt":
                 raise PermissionError("background provider receipt has the wrong work kind")
-            self._validate_native_work_selection(conn, authority, selection)
+            selection = self._validate_work_selection(conn, authority, selection, model_snapshot)
+            from tinyassets.providers.work_model_selection import bound_work_model_tokens
+
+            max_tokens = bound_work_model_tokens(selection, max_tokens, max_cost_microunits)
             issued = transaction._issue_manifest_receipt(authority, manifest_bindings, now=now)
         else:
             receipt_candidate = _receipt_from_authority(
@@ -2595,13 +2599,8 @@ class SQLiteProviderWorkAuthorityStore:
             raise PermissionError("run provider execution claim is unavailable")
         return receipt, claimed.record
 
-    def _validate_native_work_selection(self, conn, receipt, selection):
-        """Native-default activation uses the same live member/custody fence as chat.
-
-        HTTP and explicit native models remain closed here until their prepared
-        discovery evidence and exact executor are connected. No remote discovery
-        is performed inside this SQLite/admission fence.
-        """
+    def _validate_work_selection(self, conn, receipt, selection, model_snapshot=None):
+        """Reconstruct per-attempt model authority without network inside the fence."""
         from tinyassets.provider_serving_binding import (
             _current_selected_member_authority,
             resolve_serving_agent_binding,
@@ -2621,10 +2620,37 @@ class SQLiteProviderWorkAuthorityStore:
             universe_id=receipt.universe_id, agent=agent, provider=selection.provider,
         )
         member = next(m for m in assignment.candidates if m.provider == selection.provider)
-        if (selection.model_evidence_json is not None or selection.executor_id != selection.provider
-                or not _native_default(selection.provider, selection.model_id, member.access)):
-            raise PermissionError("work model executor integration is not active")
+        if selection.model_evidence_json is not None or selection.executor_id != selection.provider:
+            raise PermissionError("work model evidence must be prepared by admission")
         _current_work_member(conn, receipt, selection, self._now())
+        if _native_default(selection.provider, selection.model_id, member.access):
+            if model_snapshot is not None:
+                raise PermissionError("native model cannot use HTTP discovery")
+            return selection
+
+        from tinyassets.providers.definition import get_definition
+        from tinyassets.providers.discovery_snapshot import DiscoverySnapshot
+        from tinyassets.providers.model_selection import _selection_definition, _validate_snapshot
+        from tinyassets.providers.work_model_selection import selection_with_model
+
+        if type(model_snapshot) is not DiscoverySnapshot:
+            raise PermissionError("workflow model requires fresh discovery")
+        definition = get_definition(
+            receipt.universe_id, selection.provider.removeprefix("api_key_http:"),
+        )
+        if definition is None:
+            raise PermissionError("workflow model source is unavailable")
+        # An omitted workflow model retains its source's declared default. An
+        # explicit model is never replaced with a convenient available sibling.
+        model_id = selection.model_id or model_snapshot.models.default_model_id or definition.model
+        definition = _selection_definition(
+            self.base_path, receipt.principal_id, receipt.universe_id,
+            selection.provider, model_id, member.access,
+        )
+        selected, _recheck = _validate_snapshot(
+            definition, model_snapshot, selection.provider, model_id, member.access,
+        )
+        return selection_with_model(selection, selected, model_snapshot)
 
     def _reserve_and_arm_run_carrier_in_transaction(
         self,
@@ -2637,6 +2663,7 @@ class SQLiteProviderWorkAuthorityStore:
         max_tokens: int,
         max_cost_microunits: int,
         selection: ProviderInvocationSelection | None = None,
+        model_snapshot=None,
     ) -> ProviderInvocationCarrier:
         """Reserve and arm one run attempt after caller-owned revalidation."""
 
@@ -2645,7 +2672,10 @@ class SQLiteProviderWorkAuthorityStore:
         if receipt.work_item_kind != "run":
             raise PermissionError("provider receipt is not run authority")
         if receipt.authority_scope == "manifest":
-            self._validate_native_work_selection(conn, receipt, selection)
+            selection = self._validate_work_selection(conn, receipt, selection, model_snapshot)
+            from tinyassets.providers.work_model_selection import bound_work_model_tokens
+
+            max_tokens = bound_work_model_tokens(selection, max_tokens, max_cost_microunits)
         request = ProviderInvocationReservationRequest(
             receipt_id=receipt.receipt_id,
             receipt_digest=receipt.receipt_digest,

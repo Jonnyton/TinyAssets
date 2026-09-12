@@ -651,7 +651,8 @@ class ProviderRouter:
         # Selection is a validated per-attempt fact, never an ordinary caller's
         # ModelConfig preference. Preserve legacy calls by clearing any injected
         # selection when there is no selected-model serving authority.
-        cfg = replace(cfg, selected_model=getattr(served_authority, "selected_model", None))
+        model_authority = served_authority or invocation_carrier
+        cfg = replace(cfg, selected_model=getattr(model_authority, "selected_model", None))
         if _agent_execution_kind == "native_agent" and (
             cfg.agent_request is not None or cfg.selected_model is not None
         ):
@@ -666,7 +667,7 @@ class ProviderRouter:
         ):
             raise PermissionError("agent inference requires the selected served writer")
         if cfg.selected_model is not None:
-            if cfg.selected_model.provider != served_authority.provider:
+            if cfg.selected_model.provider != model_authority.provider:
                 raise PermissionError("selected model does not match serving authority")
             if cfg.engine_mcp_enabled and cfg.agent_request is None:
                 raise PermissionError("selected HTTP agent tool execution is not implemented yet")
@@ -717,7 +718,17 @@ class ProviderRouter:
             if invocation_carrier.max_cost_microunits < 1:
                 raise PermissionError("armed provider invocation has no positive cost budget")
             if cfg.max_tokens is None:
-                cfg = replace(cfg, max_tokens=invocation_carrier.max_tokens)
+                output_limit = invocation_carrier.max_tokens
+                if cfg.selected_model is not None:
+                    required_input = input_size(
+                        prompt, system, replace(cfg, max_tokens=output_limit),
+                    )
+                    output_limit = min(
+                        output_limit, cfg.selected_model.context_tokens - required_input,
+                    )
+                    if output_limit < 1:
+                        raise PermissionError("selected model cannot fit this workflow context")
+                cfg = replace(cfg, max_tokens=output_limit)
             elif (
                 isinstance(cfg.max_tokens, bool)
                 or not isinstance(cfg.max_tokens, int)
@@ -730,6 +741,10 @@ class ProviderRouter:
             chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
 
         if cfg.selected_model is not None:
+            if invocation_carrier is not None and cfg.selected_model.cost_upper_bound(
+                cfg.max_tokens,
+            ) > invocation_carrier.max_cost_microunits:
+                raise PermissionError("selected model exceeds this workflow cost allowance")
             # Match the existing conservative input reservation measure. The
             # selected catalogue's context limit is not a permission to truncate.
             required_context = input_size(prompt, system, cfg)
