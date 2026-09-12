@@ -70,6 +70,15 @@ class _OpenProxy:
         }
 
 
+@pytest.fixture
+def available_native_executors(monkeypatch):
+    """Only the executor is synthetic; readiness and custody stay real."""
+    router = ProviderRouter({name: _CountingProvider(name)
+                             for name in ("codex", "claude-code")})
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: router)
+    return router
+
+
 def _branch(
     *,
     node_count: int,
@@ -324,6 +333,14 @@ def _run_branch(
     universe_dir = tmp_path / "universe_alice"
     universe_dir.mkdir(exist_ok=True)
     selected_provider = "codex"
+    providers = {
+        name: _CountingProvider(name, after_provider_call)
+        for name in ("claude-code" if service == "claude" else service for service in services)
+    }
+    provider_router = ProviderRouter(providers)
+    # Readiness must see the same simulated executors used by the run, not
+    # whichever native CLIs happen to be installed on the test host.
+    monkeypatch.setattr(call_module, "get_provider_router", lambda: provider_router)
     if authority_case != "missing":
         if open_provider:
             selected_provider = _seed_open_serving_assignment(
@@ -406,10 +423,11 @@ def _run_branch(
         lambda output: captured["effects"].append((output,)),
     )
 
-    providers = {name: _CountingProvider(name, after_provider_call) for name in provider_names}
+    if open_provider:
+        providers = {name: _CountingProvider(name, after_provider_call) for name in provider_names}
+        provider_router = ProviderRouter(providers)
     provider = providers[selected_provider]
     captured["providers"] = providers
-    provider_router = ProviderRouter(providers)
 
     def governed_provider_call(
         prompt,
@@ -694,6 +712,7 @@ def test_parallel_manifest_members_share_one_work_receipt(
 def test_enabled_model_access_universe_remains_visible_to_background_scheduler(
     tmp_path: Path,
     authenticate_request,
+    available_native_executors,
     manifest: bool,
     invalidate: str,
 ) -> None:
@@ -748,8 +767,30 @@ def test_enabled_model_access_universe_remains_visible_to_background_scheduler(
     assert list_serving_universes(tmp_path) == []
 
 
-def test_scheduler_inventory_keeps_independent_member_after_anchor_rotation(
+def test_manifest_enable_still_refuses_missing_native_executor(
     tmp_path: Path, authenticate_request, monkeypatch,
+) -> None:
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import list_serving_universes
+
+    authenticate_request("acct_alice")
+    set_founder_home(
+        tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
+        platform_generated=True,
+    )
+    monkeypatch.setattr(
+        "tinyassets.providers.call.get_provider_router", lambda: ProviderRouter({}),
+    )
+    with pytest.raises(PermissionError, match="no eligible model"):
+        _seed_serving_assignment(
+            tmp_path, model_access={"codex": ModelAccess("explicit", ("",))},
+        )
+    assert list_serving_universes(tmp_path) == []
+
+
+def test_scheduler_inventory_keeps_independent_member_after_anchor_rotation(
+    tmp_path: Path, authenticate_request, monkeypatch, available_native_executors,
 ) -> None:
     from tinyassets.credential_vault import write_credential_vault
     from tinyassets.daemon_server import set_founder_home

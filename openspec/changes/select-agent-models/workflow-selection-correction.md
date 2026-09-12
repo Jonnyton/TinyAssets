@@ -4,6 +4,36 @@ September 11, 2026, 20:25 UTC. Correction proposal and reproduced blocker;
 The initial proposal below is superseded by the reviewed disposition immediately
 below. Runtime integration remains unfinished.
 
+## Cross-platform fixture correction — September12 00:33UTC
+
+At ce424a57, actual Ubuntu WSL Docker oracle12421 returned335passes/13failures
+in35.79s with zero skips. All thirteen failures happened while enabling the
+synthetic native assignment: readiness consulted the ambient router before the
+test's counting executors were installed. Windows passed because native CLIs
+were present there. Production availability checks are correct and unchanged.
+
+The foreground helper now installs the same simulated router for readiness and
+execution. Scheduler-only tests explicitly supply their simulated executors.
+A negative case proves an empty executor inventory still refuses serving.
+No approval, custody, admission, budget, router or runtime check was mocked away.
+
+Windows Python3.14: `python -m pytest -q tests/test_work_model_selection.py
+tests/test_run_provider_session.py tests/test_background_budget_finalization_e2e.py
+tests/test_provider_invocation_selection.py tests/test_provider_work_authority.py
+tests/test_selected_model_authority.py tests/test_interactive_http_agent.py
+tests/test_custom_source_execution.py tests/test_app_model_picker.py
+tests/test_app_model_choice.py --tb=short --show-capture=no`
+passes337 in49.53s,102 dependency warnings, zero skips. Ruff and diff checks pass.
+
+Actual Linux oracle34740, ce424a57 plus this test-only correction, runs the same
+ten files plus tests/test_shared_background_self.py through
+`python3 scripts/linux_oracle.py -- -q <those eleven files> --tb=short --show-capture=no`.
+It passes349 in39.63s, zero skips; Python3.11.16, Git2.47.3, bubblewrap0.12.0.
+Invocation uses the existing Ubuntu WSL Docker engine and process-local git paths
+documented in docs/reviews/2026-09-09-linux-oracle-wsl-proof.md. This also exercises
+the POSIX symlink case that cannot run under this Windows user's privileges.
+Neither full CI, independent exact-head approval nor live release is established.
+
 ## HTTP workflow model execution connected — September12 00:17UTC
 
 Foreground and assigned background text prompts now prepare owned-source
@@ -39,7 +69,8 @@ unimplemented, and selected HTTP workflow engine-tool loops are still refused.
 Native discovery's source-derived design needs its independent review; final
 implementation release approval also remains pending. The prior one-review
 exception was consumed by workflow authority and authorizes neither new review.
-No private workflow or cloud project was edited/run. No new Linux proof claimed.
+No private workflow or cloud project was edited/run. Subsequent Linux proof is
+recorded in the newer entry above; this Windows result alone did not establish it.
 
 ## Native background compatibility connected — September11 23:58UTC
 
