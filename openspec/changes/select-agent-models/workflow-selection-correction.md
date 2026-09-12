@@ -4,6 +4,32 @@ September 11, 2026, 20:25 UTC. Correction proposal and reproduced blocker;
 The initial proposal below is superseded by the reviewed disposition immediately
 below. Runtime integration remains unfinished.
 
+## Remaining tool-loop design boundary — September12 00:36UTC
+
+Read-only inspection at089129e8 confirms the selected HTTP workflow tool gap is
+not just the router's operation predicate. `check_served_agent_tool_authority`
+explicitly rejects a provider_invocation carrier and requires a current claimed
+writer/converse request. `InteractiveHttpAgentTurn._check_scope` uses that fence
+before every tool; its `_begin` records served-binding and inference-reservation
+facts. The foreground `_call` instead arms one RUN_GRAPH_OPERATION invocation
+around the whole provider call, with immutable workflow/run authority.
+
+Therefore removing the router's writer/converse guard, fabricating a chat request,
+or reusing one launched invocation for multiple HTTP rounds is not an integration
+fix. Remaining design must define a workflow-owned coordinator: each inference
+round reserves within the same aggregate work receipt, each tool rechecks the
+current immutable work/claim/member/owner authority, and progress journals cannot
+grant execution or replay uncertain effects. Foreground and assigned-background
+cancellation/lease fences must both survive. Existing chat coordination stays
+unchanged. No new grant, alternate user identity or owner workflow edit is allowed.
+
+The prior extra review covered aggregate receipts and selected-member provider
+invocations, not this tool-dispatch authority adaptation. Include this boundary
+with native discovery in the pending remaining-design review, before authority
+implementation. The final exact-head release review remains separate. Both need
+the owner's requested additional-review exception; none has been dispatched.
+This note is a design requirement, not an implemented capability or release proof.
+
 ## Cross-platform fixture correction — September12 00:33UTC
 
 At ce424a57, actual Ubuntu WSL Docker oracle12421 returned335passes/13failures
