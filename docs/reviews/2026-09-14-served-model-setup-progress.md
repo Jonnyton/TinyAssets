@@ -56,7 +56,24 @@ used the wrong synthetic Claude credential field; corrected to oauth_token,
 then all14model-access cases passed as part of the final366. No runtime fallback
 or skipped assertion was added. Four rail tests execute the shipped JS in Node.
 
-Remaining: exact-head independent review, CI/Linux evidence, spec sync, deploy
+September14 exact-code Fable5.1 review completed APPROVE in258seconds, exit0,
+at91409a36671392248ff2b3e94cd85d7f8e65a748 against deployed005b01df.
+Full review: docs/reviews/2026-09-14-served-model-setup-exact-fable.md.
+No blocking code findings. Live acceptance must include the agent raising the
+owner ask, not only the person answering. Superseded asks remain owner-clearable;
+an identical owner-published assignment can finish reconnection without rebinding.
+The served setup requirement is synchronized to the canonical surface spec in
+this release candidate; the complete model-selection change remains open.
+
+Rollback: return to the verified prior image for005b01df
+sha256:5b7c88166533f96120e9cb5acd6f88c124bbdef7b698effdab58403d6462d79f
+through the existing fail-safe deploy workflow if new auth, availability or data
+integrity errors appear. No new storage schema or destructive data migration.
+Old runtime does not execute the new action; leave such pending asks intact for
+restored support rather than deleting owner records. Model access already granted
+is not revoked by code rollback; its existing owner controls remain authoritative.
+
+Remaining: CI/Linux evidence, deploy
 and rendered app acceptance including real account catalogue/model selection.
 Do not present preference save as inference authority or synthetic fixtures as
 real-account proof. Private workflows remain untouched.

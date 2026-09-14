@@ -639,6 +639,40 @@ It SHALL NOT create a home, agent, assignment, preference or inference grant.
 - **AND** these fields are not actual answering-model receipts or newly admitted candidates
 - **AND** revocation during refresh clears the legacy-source projection
 
+### Requirement: Served model setup preserves the person-only access boundary
+The served agent SHALL be able to read pinned model options and its universe's
+private agent bindings, save current-home model preferences by expected
+generation, and configure discovery metadata on existing owned connections.
+These operations SHALL NOT grant inference, widen endpoints, change spending
+ceilings or silently enroll a provider. Shared connector preference saving SHALL
+use the same parser, actor/current-home checks and generation store.
+
+#### Scenario: Catalogue admission and isolation
+- **WHEN** the served agent requests model options or an exact private binding
+- **THEN** the graph is server-pinned and foreign binding ids are not disclosed
+- **AND** catalogue refresh requires admission and envelopes remote strings as untrusted
+
+#### Scenario: Preference and discovery setup are not grants
+- **WHEN** a model preference or discovery descriptor is saved
+- **THEN** inference membership and connection grants remain unchanged
+- **AND** stale generation, changed home and outside-grant URLs refuse without overwrite
+
+#### Scenario: Explicit owner model-access approval
+- **WHEN** the agent raises a bind_model_access pending request
+- **THEN** the server validates current home, creator, revision and each owned source before showing it
+- **AND** captures the baseline assignment and exact model-access proposal server-side
+- **AND** the person sees deterministic before/after scope, unchanged spending ceilings and reconnect warning
+- **AND** other accepted providers and their scopes are preserved; new sources are free-only
+- **AND** the request has no answer fields and the served agent cannot answer it
+
+#### Scenario: Reconnection failure can be retried safely
+- **WHEN** publication or reconnect fails during the person's confirmation
+- **THEN** the request remains pending and the UI shows the actionable error without claiming delivery to an offline agent
+- **AND** replay distinguishes untouched, failed-publication, bound and serving states using revision, exact membership and assignment fences
+- **AND** repeated failed publication generations are recoverable without blindly overwriting a superseding assignment
+- **AND** reconnect rechecks the exact assignment digest and current home inside its transaction
+- **AND** success is reported only after serving and request resolution are confirmed
+
 ### Requirement: Converse accepts non-authoritative current model choice
 The authenticated converse handle SHALL accept optional model_choice using the
 existing versioned preferences document. Omission SHALL use supported saved
