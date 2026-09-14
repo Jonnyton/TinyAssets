@@ -21,6 +21,12 @@ if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
     from tinyassets.provider_assignment import ServedProviderAuthority
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
+    from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+    from tinyassets.providers.agent_chat_codec import AgentReply
+    from tinyassets.providers.agent_inference import AgentInferenceRequest
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.providers.model_selection import SelectedModel
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +121,10 @@ class UniverseContext:
     provider_invocation: "ProviderInvocationCarrier | None" = None
     provider_request: "ProviderRequestCarrier | None" = None
     served_provider: "ServedProviderAuthority | None" = None
+    model_selection: ModelRef | None = None
+    """Requested candidate, not authority; revalidated by the serving boundary."""
+    agent_model_plan: AgentModelPlan | None = None
+    """Captured advisory owner policy; never a grant or a tool-replay instruction."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +164,13 @@ class ModelConfig:
     """Optional token cap (provider-specific interpretation)."""
 
     temperature: float = 0.7
+
+    native_model_id: str | None = None
+    """Router-owned native request: None is legacy; empty omits the CLI flag.
+
+    Not authority or an actual answering-model receipt. The router overwrites
+    caller values from the current serving authority or sealed work carrier.
+    """
 
     reasoning_effort: str = ""
     """Generic per-call reasoning/effort level (e.g. ``minimal`` / ``low`` /
@@ -218,6 +235,16 @@ class ModelConfig:
     """Internal per-launch credential snapshot. Served adapters must use this
     immutable copy instead of resolving mutable vault paths at use time."""
 
+    selected_model: SelectedModel | None = None
+    """Router-owned selection from current serving authority, never caller policy.
+
+    None preserves legacy model semantics. The router always overwrites caller
+    input, including clearing it for calls without selected-model authority.
+    """
+
+    agent_request: AgentInferenceRequest | None = field(default=None, repr=False)
+    """Internal tool inventory/completed history, never execution authority."""
+
     def stream_timeout_profile(self) -> StreamTimeoutProfile:
         """Resolve the idle-watchdog profile, filling ``None`` knobs with the
         design defaults. Backward-compat: a config that only ever set the legacy
@@ -278,6 +305,11 @@ class ProviderResponse:
     Legacy ``model`` may contain a requested/default label. Such a label is not
     proof of the model that answered and must not be substituted here.
     """
+
+    agent_reply: AgentReply | None = field(default=None, repr=False)
+    """One inference's validated result; requested tools have not been executed."""
+    native_evidence: NativeCompletionEvidence | None = field(default=None, repr=False)
+    """Local execution evidence, not provider-reported billing or HTTP progress."""
 
 
 # Sentinel for quality-floor-only degraded judge responses.
@@ -1219,6 +1251,46 @@ class BaseProvider(abc.ABC):
 
     family: str = ""
     """Model family for judge diversity enforcement."""
+
+    agent_execution_kind: str | None = None
+    """Installed execution capability; unknown executors cannot claim an agent lane."""
+
+    native_credential_service: str | None = None
+    """Native custody service declared by this executor; not a model identifier."""
+    native_discovery_protocol = None
+    native_metadata_arguments: tuple[str, ...] = ()
+    native_command_resolver = None
+
+    @staticmethod
+    def native_process_options():
+        return {}
+
+    async def enumerate_models(self, *, universe_dir: Path, credential_snapshot_dir: Path):
+        """Optional native metadata adapter; None means enumeration is unknown.
+
+        Invoked only with owned snapshot custody by the discovery boundary.
+        Returns NativeCatalogue, never execution authority or inference output.
+        Future executors override this without adding model releases to policy.
+        """
+        if self.native_discovery_protocol is None:
+            return None
+        from tinyassets.exceptions import ProviderError
+        from tinyassets.providers.native_jsonrpc_discovery import read_native_catalogue
+
+        if universe_dir is None or credential_snapshot_dir is None:
+            raise ProviderError("native model discovery requires owned credentials")
+        if not callable(self.native_command_resolver):
+            raise ProviderError("native model discovery requires an executable resolver")
+        base_cmd, use_shell = self.native_command_resolver()
+        if use_shell:
+            raise ProviderError("native model discovery requires a direct executable")
+        env = subprocess_env_for_provider(
+            self.name, universe_dir=universe_dir, credential_snapshot_dir=credential_snapshot_dir,
+        )
+        return await read_native_catalogue(
+            [*base_cmd, *self.native_metadata_arguments], protocol=self.native_discovery_protocol,
+            env=env, cwd=str(credential_snapshot_dir), spawn_kwargs=self.native_process_options(),
+        )
 
     @classmethod
     def is_available(cls) -> bool:

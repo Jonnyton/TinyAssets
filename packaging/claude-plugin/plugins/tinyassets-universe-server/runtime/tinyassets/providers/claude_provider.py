@@ -415,8 +415,11 @@ def _sandbox_cli_args(
 class ClaudeProvider(BaseProvider):
     """Calls Claude via the ``claude -p`` CLI binary."""
 
+    agent_execution_kind = "native_agent"
+
     name = "claude-code"
     family = "anthropic"
+    native_credential_service = "claude"
 
     @classmethod
     def is_available(cls) -> bool:
@@ -439,8 +442,11 @@ class ClaudeProvider(BaseProvider):
         ``ProviderUnavailableError`` / ``ProviderError``).
         """
         base_cmd, use_shell = _resolve_claude_cmd()
+        from tinyassets.providers.native_model_selection import native_model_arguments
+
         cmd = [
             *base_cmd, "-p",
+            *native_model_arguments(config.native_model_id, "--model"),
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
@@ -589,6 +595,13 @@ class ClaudeProvider(BaseProvider):
                 "exit_code": _coerce_int(proc.returncode),
                 "terminal": terminal is not None,
             }
+            # Liveness normalization deliberately tolerates unknown events; it
+            # is not a complete effects trace and cannot attest a safe retry.
+            from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
+            exc.native_evidence = NativeCompletionEvidence(
+                self.name, False, type(proc.returncode) is int, side_effect_state,
+            )
             return exc
 
         async def _raise_timeout(bound_is_absolute: bool, allow: float) -> None:
@@ -711,6 +724,8 @@ class ClaudeProvider(BaseProvider):
             elapsed_ms = (time.monotonic() - start) * 1000
 
             if terminal is not None and _result_is_success(terminal):
+                from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
                 final_text = str(terminal.get("result") or "").strip()
                 if not final_text:
                     final_text = (
@@ -731,7 +746,7 @@ class ClaudeProvider(BaseProvider):
                 return ProviderResponse(
                     text=final_text,
                     provider=self.name,
-                    model="claude",
+                    model=config.native_model_id or self.native_credential_service,
                     family=self.family,
                     latency_ms=elapsed_ms,
                     input_tokens=_coerce_int(usage.get("input_tokens")),
@@ -742,6 +757,9 @@ class ClaudeProvider(BaseProvider):
                     tool_phase=tool_phase,
                     exit_code=_coerce_int(returncode),
                     side_effect_state=side_effect_state,
+                    native_evidence=NativeCompletionEvidence(
+                        self.name, False, type(returncode) is int, side_effect_state,
+                    ),
                 )
 
             # Not a successful terminal result — classify the failure.
@@ -828,6 +846,9 @@ class ClaudeProvider(BaseProvider):
         """Call with ``--output-format json`` for structured output."""
         base_cmd, use_shell = _resolve_claude_cmd()
         cmd = [*base_cmd, "-p", "--output-format", "json"]
+        from tinyassets.providers.native_model_selection import native_model_arguments
+
+        cmd.extend(native_model_arguments(config.native_model_id, "--model"))
         if system:
             cmd.extend(["--system-prompt", system])
         extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
@@ -900,7 +921,7 @@ class ClaudeProvider(BaseProvider):
         return ProviderResponse(
             text=text,
             provider=self.name,
-            model="claude",
+            model=config.native_model_id or self.native_credential_service,
             family=self.family,
             latency_ms=elapsed_ms,
         )

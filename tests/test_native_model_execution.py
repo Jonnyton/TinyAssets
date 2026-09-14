@@ -1,0 +1,150 @@
+"""Native requests are owner selections, not reported answering-model evidence."""
+
+import asyncio
+import json
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from tests.test_run_provider_session import _branch, _run_branch
+from tinyassets.provider_assignment_manifest import ModelAccess
+from tinyassets.providers.base import ModelConfig
+from tinyassets.storage.provider_work_authority import db_path
+
+
+@pytest.mark.parametrize("value", [None, 1, True, " spaced ", "line\nbreak", "x" * 201])
+def test_native_ids_fail_closed(value):
+    from tinyassets.providers.native_model_selection import NativeSelection
+
+    with pytest.raises(ValueError):
+        NativeSelection("native", value)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("version", True), ("version", 2), ("kind", "http"),
+    ("basis", "executor_enumerated"), ("default_model_id", "invented-default"),
+])
+def test_native_evidence_does_not_manufacture_discovery(field, value):
+    from tinyassets.providers.native_model_selection import NativeSelection
+
+    document = NativeSelection("native", "new-model").to_dict()
+    document[field] = value
+    with pytest.raises(ValueError):
+        NativeSelection.from_dict(document)
+
+
+def test_native_work_evidence_is_strict_and_roundtrips():
+    from dataclasses import replace
+
+    from tests.test_provider_invocation_selection import selection
+    from tinyassets.provider_work_authority import ProviderInvocationSelection, _canonical_json
+    from tinyassets.providers.native_model_selection import NativeSelection
+
+    native = NativeSelection("native", "new-model")
+    chosen = selection(provider="native", executor_id="native", model_id="new-model",
+                       model_evidence_json=_canonical_json(native.to_dict()))
+    assert ProviderInvocationSelection.from_dict(chosen.to_dict()) == chosen
+    for kwargs in ({"model_id": "other"}, {"executor_id": "other"}, {"provider": "other"}):
+        with pytest.raises(ValueError, match="does not match"):
+            replace(chosen, **kwargs)
+    with pytest.raises(ValueError):
+        replace(chosen, model_evidence_json=json.dumps(native.to_dict(), indent=2))
+
+
+def test_workflow_honors_accepted_native_id_without_rewriting_main(
+    tmp_path, monkeypatch, authenticate_request,
+):
+    import sqlite3
+
+    branch = _branch(node_count=1)
+    branch.node_defs[0].llm_policy["preferred"]["model"] = "future-native-model"
+    before = branch.to_dict()
+    response, provider, _ = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, branch,
+        model_access={"codex": ModelAccess("explicit", ("", "future-native-model"))},
+    )
+    assert response["terminal_status"] == "completed", response["terminal_error"]
+    assert branch.to_dict() == before
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    assert load_provider_assignment(tmp_path, universe_id="universe_alice").provider == "codex"
+    assert provider.calls[0].native_model_id == "future-native-model"
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        rows = conn.execute("SELECT record_json FROM provider_invocation_reservations").fetchall()
+    assert len(rows) == 1
+    row = json.loads(rows[0][0])
+    assert row["state"] == "succeeded"
+    assert row["selection"]["model_id"] == "future-native-model"
+    assert row["selection"]["model_evidence"]["basis"] == "owner_declared"
+
+
+def test_native_catalogue_exposes_declared_ids_with_honest_basis(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tinyassets.providers import served_model_plan
+
+    monkeypatch.setattr(served_model_plan, "_resolve_serving_source", lambda *args: None)
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: SimpleNamespace(
+        _providers={"codex": SimpleNamespace(is_available=lambda: True)},
+    ))
+    models = served_model_plan._native_models(
+        tmp_path, tmp_path / "universe", "owner", SimpleNamespace(
+            provider="codex", access=ModelAccess("explicit", ("", "new-id", "future-id")),
+        ),
+    )
+    # ModelAccess canonicalizes accepted membership; this is not fallback order.
+    assert [m.model_id for m in models.models] == ["", "future-id", "new-id"]
+    assert [m.availability_basis for m in models.models] == [
+        "executor_default", "owner_declared", "owner_declared",
+    ]
+    assert models.default_model_id == ""
+
+
+@pytest.mark.parametrize("requested", ["", "future-native-model"])
+def test_codex_explicit_or_default_argument_ignores_global_model(requested, monkeypatch):
+    from tinyassets.providers.codex_provider import CodexProvider
+
+    monkeypatch.setenv("TINYASSETS_CODEX_MODEL", "host-only-model")
+    proc = AsyncMock()
+    proc.communicate.return_value = (b"native answer", b"")
+    proc.returncode = 0
+    with (
+        patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
+              return_value=(["codex"], False)),
+        patch("asyncio.create_subprocess_exec", return_value=proc) as spawn,
+    ):
+        result = asyncio.run(CodexProvider().complete(
+            "hello", "", ModelConfig(native_model_id=requested),
+        ))
+    argv = spawn.call_args.args
+    if requested:
+        assert argv[argv.index("-m") + 1] == requested
+    else:
+        assert "-m" not in argv
+    assert "host-only-model" not in argv
+    assert result.reported_model == ""
+
+
+@pytest.mark.parametrize("method", ["complete", "complete_json"])
+@pytest.mark.parametrize("requested", ["", "future-native-model"])
+def test_claude_both_paths_emit_only_requested_primary(method, requested):
+    from tinyassets.providers.claude_provider import ClaudeProvider
+
+    class ObservedLaunch(Exception):
+        pass
+
+    with (
+        patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
+              return_value=(["claude"], False)),
+        patch("asyncio.create_subprocess_exec", side_effect=ObservedLaunch) as spawn,
+    ):
+        with pytest.raises(ObservedLaunch):
+            asyncio.run(getattr(ClaudeProvider(), method)(
+                "hello", "", ModelConfig(native_model_id=requested),
+            ))
+    argv = spawn.call_args.args
+    if requested:
+        assert argv[argv.index("--model") + 1] == requested
+    else:
+        assert "--model" not in argv
+    assert "--fallback-model" not in argv

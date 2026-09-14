@@ -77,11 +77,19 @@ class ProviderAttemptDiagnostic:
     # sole-writer retry policy avoid re-running a turn that already committed a
     # side effect. Optional + dropped from to_dict when None.
     side_effect_state: str | None = None
+    capacity_scope: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize, dropping ``None`` fields for compactness."""
         d = asdict(self)
         return {k: v for k, v in d.items() if v is not None}
+
+
+def dominant_capacity_scope(attempts):
+    for attempt in reversed(attempts):
+        if attempt.status == "failed":
+            return attempt.capacity_scope
+    return None
 
 
 def build_chain_state(

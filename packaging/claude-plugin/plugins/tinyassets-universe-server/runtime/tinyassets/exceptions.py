@@ -69,6 +69,20 @@ class ProviderUnavailableError(ProviderError):
     """
 
 
+class SelectedModelCapacityError(ProviderUnavailableError):
+    """Confirmed pre-generation HTTP refusal with protocol-scoped evidence."""
+
+    def __init__(self, signal):
+        from tinyassets.providers.model_capacity import CapacitySignal
+
+        if type(signal) is not CapacitySignal:
+            raise TypeError("capacity error requires normalized evidence")
+        super().__init__(signal.failure_class)
+        self.signal = signal
+        self.failure_class = signal.failure_class
+        self.retry_after = signal.retry_after_s
+
+
 class ProviderRateLimitedError(ProviderUnavailableError):
     """The provider reported a genuine rate limit (documented retry event).
 
@@ -131,6 +145,8 @@ class AllProvidersExhaustedError(ProviderError):
         chain_state=None,
         failure_class=None,
         retry_after=None,
+        capacity_scope=None,
+        native_evidence=(),
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -145,6 +161,10 @@ class AllProvidersExhaustedError(ProviderError):
         # float | None — provider-supplied retry-after (seconds) for a rate-limit
         # / overload outcome, carried through for the user-facing notice.
         self.retry_after = retry_after
+        self.capacity_scope = capacity_scope
+        # Private local executor evidence aligned with attempts; not a public
+        # provider diagnostic field, credential, or instruction to retry.
+        self.native_evidence = native_evidence
 
 
 # ---------------------------------------------------------------------------

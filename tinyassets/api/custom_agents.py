@@ -278,16 +278,21 @@ def custom_agents(
             document = _payload(payload)
             if normalized in {"bind_serving_provider", "set_serving"}:
                 from tinyassets.api.helpers import _universe_dir
+                from tinyassets.exceptions import ProviderError
                 from tinyassets.provider_serving_binding import (
                     bind_serving_provider,
                     set_serving,
                 )
+                from tinyassets.storage.current_home import CurrentHomeChanged
+                from tinyassets.storage.model_preferences import PreferenceStoreUnavailable
 
                 expected_fields = (
                     {"provider"}
                     if normalized == "bind_serving_provider"
                     else {"enabled"}
                 )
+                if normalized == "bind_serving_provider" and "model_access" in document:
+                    expected_fields = expected_fields | {"model_access"}
                 if set(document) != expected_fields:
                     raise AgentValidationError(
                         f"{normalized} payload must contain exactly "
@@ -298,6 +303,17 @@ def custom_agents(
                     if not isinstance(provider, str):
                         raise AgentValidationError("provider must be a string")
                     try:
+                        model_access = None
+                        if "model_access" in document:
+                            from tinyassets.provider_assignment_manifest import ModelAccess
+
+                            raw_access = document["model_access"]
+                            if type(raw_access) is not dict or not raw_access:
+                                raise ValueError("model_access must be a nonempty object")
+                            model_access = {
+                                name: ModelAccess.from_json(json.dumps(value, allow_nan=False))
+                                for name, value in raw_access.items()
+                            }
                         return bind_serving_provider(
                             base_path=base,
                             universe_dir=_universe_dir(uid),
@@ -306,6 +322,7 @@ def custom_agents(
                             agent_binding_id=binding_id,
                             expected_revision=expected_revision,
                             provider=provider,
+                            **({} if model_access is None else {"model_access": model_access}),
                         )
                     except (PermissionError, ValueError, LookupError) as exc:
                         return {
@@ -325,7 +342,10 @@ def custom_agents(
                         expected_revision=expected_revision,
                         enabled=enabled,
                     )
-                except (PermissionError, ValueError, LookupError) as exc:
+                except (
+                    PermissionError, ValueError, LookupError,
+                    CurrentHomeChanged, PreferenceStoreUnavailable, ProviderError,
+                ) as exc:
                     return {"error": "provider_authority_denied", "detail": str(exc)}
             if normalized == "create_binding":
                 binding = create_binding(

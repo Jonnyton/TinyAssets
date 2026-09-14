@@ -67,7 +67,9 @@ COPY_EXCLUDES = (
 _RUN_SCRIPT = r"""
 set -e
 mkdir -p /work
-tar -C /src -cf - {excludes} . | tar -C /work -xf -
+# Do not restore host uid/gid onto /work: git would reject that copied root as
+# dubious ownership even though its newly initialized .git belongs to us.
+tar -C /src -cf - {excludes} . | tar -C /work --no-same-owner -xf -
 cd /work
 # A real repository, not the host's: the worktree's .git is a file pointing at
 # a path this container does not have. History is irrelevant to the suite; a

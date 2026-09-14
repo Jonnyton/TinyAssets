@@ -178,6 +178,7 @@ def _authority_fixture(
         provider="codex",
         generation=4,
         assignment_digest="sha256:" + "f" * 64,
+        manifest_digest="",
     )
     serving_binding = SimpleNamespace(expires_at="2099-01-01T02:00:00+00:00")
     custody = SimpleNamespace(
@@ -327,6 +328,10 @@ def _authority_fixture(
             return SimpleNamespace(owner_id=owner_id, state=SimpleNamespace(value="running"))
 
     monkeypatch.setattr(background_provider, "_branch_roles", lambda *_a: ("writer",))
+    monkeypatch.setattr(background_provider, "_branch_snapshot", lambda *_a: {
+        "node_defs": [{"node_type": "prompt", "model_hint": "writer",
+                       "prompt_template": "ordinary background work"}],
+    })
     monkeypatch.setattr(
         background_provider, "provider_assignment_admission", lambda: _AdmissionFence()
     )
@@ -512,6 +517,12 @@ def test_stale_held_or_terminal_background_attempt_is_refused_before_provider_ca
         attempt_lifecycle=lifecycle,
         attempt_lease_expires_at=lease_expires_at,
     )
+    terminalized: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        background_provider,
+        "terminalize_background_queue_authority",
+        lambda _base_path, _task, *, status, reason: terminalized.append((status, reason)),
+    )
     raw_calls: list[str] = []
     session = background_provider._BackgroundAssignedProviderSession(
         tmp_path,
@@ -525,7 +536,14 @@ def test_stale_held_or_terminal_background_attempt_is_refused_before_provider_ca
 
     assert raw_calls == []
     assert _reservation_count(conn) == 0
-    assert events == ["hold"]
+    # Identity is checked before discovery or credential snapshotting. Invalid
+    # attempts use the existing terminal projection, not a repairable hold.
+    assert events == []
+    expected_reason = (
+        "background_attempt_lease_expired"
+        if lifecycle == "claimed" else "background_attempt_inactive"
+    )
+    assert terminalized == [("failed", expected_reason)]
 
 
 def test_cross_universe_and_provider_substitution_never_reaches_ambient_call(
@@ -745,7 +763,10 @@ def test_branch_roles_normalizes_bare_hex_content_hash(monkeypatch, tmp_path):
         background_provider._branch_roles(tmp_path, task)
 
 
-def test_branch_version_rollback_before_launch_fails_closed(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("seam", ["_branch_roles", "_branch_snapshot"])
+def test_branch_version_rollback_before_launch_fails_closed(
+    tmp_path: Path, monkeypatch, seam,
+) -> None:
     """A rolled-back immutable Branch version cannot mint a launch carrier."""
     task, conn, _assignment, _current, events = _authority_fixture(tmp_path, monkeypatch)
     state = {"n": 0}
@@ -754,7 +775,7 @@ def test_branch_version_rollback_before_launch_fails_closed(tmp_path: Path, monk
         state["n"] += 1
         raise PermissionError("immutable Branch version is not current authority")
 
-    monkeypatch.setattr(background_provider, "_branch_roles", _roles)
+    monkeypatch.setattr(background_provider, seam, _roles)
     raw_calls: list[str] = []
 
     def raw_provider(*_a, **_k):

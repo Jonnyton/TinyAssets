@@ -14,9 +14,11 @@ without being told where to look.
 Originally, `list_requests` prepended the synthesized connect ask when
 `not _serving_llm_bound(...)` (`tinyassets/api/pending_requests.py`). That helper
 resolved only the serving **binding row** and returned True whenever one existed.
-September 9 local correction replaces that test with the canonical
+September 9 correction replaces that test with the canonical
 `resolve_current_serving_provider_authority` check. It verifies local custody,
-assignment and connection grants, but is not yet deployed proof and cannot by
+assignment and connection grants. PR #3676 is deployed: authenticated release
+34394967360 verified ff498d301c41 at 19:26 UTC and release 34395463075 verified
+descendant 5c991f432566 at 19:31 UTC. Both canaries passed. This check cannot by
 itself detect remote expiration of an otherwise unchanged credential.
 
 So there are two different unserved states and only one of them asks:
@@ -69,6 +71,13 @@ with canonical authority validation. It also exercises the actual request rail
 before and after test subscription custody removal and verifies repeated polling
 does not duplicate the synthesized request. No production credentials or user
 workflows were changed. Remote auth failure feedback, upstream quota/health,
-the owner's two-request OpenRouter/generic-LLM flow, deployment and rendered
+the owner's two-request OpenRouter/generic-LLM flow and rendered
 recovery remain unproven. Keep this concern open until recovery is proven across
 the reported failure, not merely for locally revoked authority.
+
+Source recheck September 9 at fc617195: `list_requests` still synthesizes only
+`sys_connect_llm`. The app's `railBody` handles that action by opening the generic
+connection form. There is no automatic OpenRouter request with the direct key
+page link yet. Reuse the secure deposit/register/serve flow; do not make an
+unpowered model generate the request, ask the user for endpoint internals, or
+equate a text-only HTTP provider with a working full-agent connection.

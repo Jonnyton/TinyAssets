@@ -198,6 +198,7 @@ def reserve_provider_request(
             "worker_id": None,
             "capability_ref": None,
             "invocations": 0,
+            "launch_limit": None,
         }
     weakref.finalize(reserve, _discard_unclaimed_provider_request, nonce, issuer_pid)
     return reserve
@@ -318,6 +319,39 @@ def revoke_provider_request(capability: ProviderRequestCapability) -> None:
         _current_provider_request.reset(capability._context_token)
 
 
+def seal_provider_request_launch_allowance(
+    capability: ProviderRequestCapability,
+    *,
+    limit: int,
+) -> int:
+    """Seal the validated turn plan's finite launch allowance exactly once.
+
+    Only the trusted routing boundary calls this, after validating its candidate
+    plan. It is not a preference setter or authority to use any provider. Legacy
+    requests remain unsealed and retain the caller's existing fixed limit.
+    """
+    if type(limit) is not int or limit < 1:
+        raise ValueError("provider request invocation limit must be positive")
+    _active_provider_request(capability)
+    with _PROVIDER_REQUEST_LOCK:
+        record = _PROVIDER_REQUESTS.get(capability._nonce)
+        if (
+            record is None
+            or record["state"] != "claimed"
+            or record["identity_token"] is not capability._identity_token
+        ):
+            raise PermissionError("provider request capability is revoked")
+        sealed = record["launch_limit"]
+        if sealed is not None:
+            if sealed != limit:
+                raise PermissionError("provider request launch allowance is already sealed")
+            return sealed
+        if record["invocations"]:
+            raise PermissionError("cannot seal provider request after a launch")
+        record["launch_limit"] = limit
+        return limit
+
+
 def consume_provider_request_invocation(
     capability: ProviderRequestCapability,
     *,
@@ -337,7 +371,10 @@ def consume_provider_request_invocation(
         ):
             raise PermissionError("provider request capability is revoked")
         used = int(record["invocations"])
-        if used >= limit:
+        effective_limit = record["launch_limit"]
+        if effective_limit is None:
+            effective_limit = limit
+        if used >= effective_limit:
             raise PermissionError("provider request invocation budget is exhausted")
         record["invocations"] = used + 1
         return used + 1

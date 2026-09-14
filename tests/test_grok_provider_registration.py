@@ -14,6 +14,8 @@ import sys
 
 import pytest
 
+from tests.support.provider_import import isolated_provider_import
+
 
 def _reload_stub():
     mod_name = "tinyassets.providers.call"
@@ -24,12 +26,8 @@ def _reload_stub():
 
 @pytest.fixture
 def reset_stub():
-    mod_name = "tinyassets.providers.call"
-    saved = sys.modules.pop(mod_name, None)
-    yield
-    sys.modules.pop(mod_name, None)
-    if saved is not None:
-        sys.modules[mod_name] = saved
+    with isolated_provider_import():
+        yield
 
 
 class TestGrokRegistration:

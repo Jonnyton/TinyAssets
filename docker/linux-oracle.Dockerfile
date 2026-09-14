@@ -26,18 +26,13 @@ RUN apt-get update -qq \
 # changes included, which is the point of a local oracle) and pytest imports it
 # from the rootdir. Installing a stub here would shadow the tree under test.
 COPY pyproject.toml /tmp/oracle/pyproject.toml
-RUN python - <<'PY' > /tmp/oracle/requirements.txt
-import tomllib
-
-with open("/tmp/oracle/pyproject.toml", "rb") as handle:
-    data = tomllib.load(handle)
-project = data.get("project", {})
-deps = list(project.get("dependencies", []))
-deps += list(project.get("optional-dependencies", {}).get("dev", []))
-print("\n".join(deps))
-PY
+# One normal shell RUN works with both classic builders and BuildKit. A Docker
+# heredoc is silently skipped by some classic builders, leaving an empty file.
+RUN python -c "import tomllib; p = tomllib.load(open('/tmp/oracle/pyproject.toml', 'rb')).get('project', {}); print('\n'.join(p.get('dependencies', []) + p.get('optional-dependencies', {}).get('dev', [])))" > /tmp/oracle/requirements.txt \
+    && test -s /tmp/oracle/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r /tmp/oracle/requirements.txt
+    && pip install --no-cache-dir -r /tmp/oracle/requirements.txt \
+    && python -m pytest --version
 
 # The suite refuses a temp root inside the repo (tests/conftest.py), so give it
 # one outside and make it explicit rather than inherited.

@@ -684,8 +684,24 @@ async def _stream_codex_exec(
 class CodexProvider(BaseProvider):
     """Calls GPT via the ``codex exec`` CLI binary."""
 
+    agent_execution_kind = "native_agent"
+
     name = "codex"
     family = "openai"
+    native_credential_service = name
+    native_command_resolver = staticmethod(lambda: _resolve_codex_cmd())
+    native_process_options = staticmethod(_no_window_kwargs)
+    native_metadata_arguments = ("app-server",)
+    from tinyassets.providers.native_jsonrpc_discovery import NativeJsonRpcProtocol
+
+    native_discovery_protocol = NativeJsonRpcProtocol(
+        list_method="model/list", items_key="data", model_key="model", default_key="isDefault",
+        modalities_key="inputModalities", hidden_key="hidden", cursor_key="nextCursor",
+        cursor_param="cursor", initialize_method="initialize",
+        initialized_notification="initialized",
+        initialize_params_json='{"clientInfo":{"name":"tinyassets_model_discovery","version":"1"}}',
+        list_params_json='{"limit":100,"includeHidden":true}',
+    )
 
     @classmethod
     def is_available(cls) -> bool:
@@ -701,8 +717,8 @@ class CodexProvider(BaseProvider):
     ) -> ProviderResponse:
         full_input = f"{system}\n\n{prompt}" if system else prompt
 
-        base_cmd, use_shell = _resolve_codex_cmd()
-        model = _codex_model()
+        base_cmd, use_shell = self.native_command_resolver()
+        model = _codex_model() if config.native_model_id is None else config.native_model_id
         sandbox_status = get_sandbox_status()
         sandbox_args = (
             ["--sandbox", "workspace-write"] if sandbox_status.get("bwrap_available")
@@ -768,7 +784,9 @@ class CodexProvider(BaseProvider):
                 'web_search="cached"',
                 "--json",
             ]
-        model_args = ["-m", model] if model else []
+        from tinyassets.providers.native_model_selection import native_model_arguments
+
+        model_args = native_model_arguments(model, "-m")
         cmd = [
             *base_cmd,
             "exec",
@@ -1031,6 +1049,8 @@ class CodexProvider(BaseProvider):
                 f"stderr: {stderr_text[:200].strip() or '(empty)'}"
             )
 
+        from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
         return ProviderResponse(
             text=text,
             provider=self.name,
@@ -1042,4 +1062,9 @@ class CodexProvider(BaseProvider):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_microunits=cost_microunits,
+            # JSONL intermediate tool events are best-effort. Even a recognized
+            # successful terminal proves no absence of earlier internal effects.
+            native_evidence=NativeCompletionEvidence(
+                self.name, False, type(proc.returncode) is int, "unknown",
+            ) if machine_accounting else None,
         )

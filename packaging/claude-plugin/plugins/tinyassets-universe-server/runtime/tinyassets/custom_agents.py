@@ -1081,6 +1081,27 @@ def get_binding(
         return _binding_from_row(row) if row is not None else None
 
 
+def serving_binding_candidates(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    owner_user_id: str,
+) -> list[dict[str, Any]]:
+    """Read enough exact owner-serving matches to detect absent/unique/ambiguous.
+
+    Filtering precedes the bound: inactive or other-owner bindings cannot hide
+    an active binding. Two rows prove ambiguity without enumerating all agents.
+    """
+    with _agent_connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM agent_bindings "
+            "WHERE universe_id = ? AND created_by = ? AND status = 'serving' "
+            "ORDER BY agent_binding_id LIMIT 2",
+            (universe_id, owner_user_id),
+        ).fetchall()
+        return [_binding_from_row(row) for row in rows]
+
+
 def list_bindings(
     base_path: str | Path,
     *,

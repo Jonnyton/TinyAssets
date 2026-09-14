@@ -71,6 +71,9 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     "request_admissions": "preserve",
     "request_admission_events": "preserve",
     "branch_tasks_v2": "preserve_or_block",
+    "agent_turns": "preserve_or_block",
+    "agent_turn_rounds": "preserve_or_block",
+    "agent_turn_tools": "preserve_or_block",
     "branch_tasks_v2_quarantine": "block_matching",
     "branch_tasks_v2_maintenance_state": "preserve",
     "request_admission_rollouts": "preserve_or_block",
@@ -1011,6 +1014,9 @@ def _inspect_database(
         "WHERE universe_id = ? AND founder_sub <> ?",
         (home_id, principal),
     )
+    from tinyassets.storage.agent_turn_journal import reset_blockers
+
+    blockers.extend(reset_blockers(conn, principal, home_id))
     if foreign_bindings:
         blockers.append(f"foreign binding references exact home ({foreign_bindings})")
 
