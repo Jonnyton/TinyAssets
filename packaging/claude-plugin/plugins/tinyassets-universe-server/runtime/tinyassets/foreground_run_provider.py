@@ -68,6 +68,16 @@ def _declared_policy_providers(policy: dict[str, Any] | None) -> set[str]:
     return {provider for provider in providers if provider}
 
 
+def _work_invocation_allowance(snapshot, *, minimum: int, ceiling: int) -> int:
+    """Reuse accepted finite authority for agent rounds, never mint per-round caps."""
+    from tinyassets.shared_self import shared_self_requested
+
+    if (type(minimum) is not int or type(ceiling) is not int
+            or minimum < 1 or ceiling < minimum):
+        raise PermissionError("workflow exceeds the shared invocation allowance")
+    return ceiling if shared_self_requested(snapshot) else minimum
+
+
 def _binding_matches_seed(binding: Any, seed: ProviderWorkBindingSeed) -> bool:
     """Whether an existing run-class binding already expresses ``seed``.
 
@@ -378,7 +388,10 @@ class _ForegroundRunProviderSession:
                             role=roles[0],
                             allowed_roles=roles,
                             executor_class="cloud",
-                            max_invocations=len(nodes),
+                            max_invocations=_work_invocation_allowance(
+                                snapshot, minimum=len(nodes),
+                                ceiling=child_binding.max_invocations,
+                            ),
                             max_tokens=child_binding.max_tokens,
                             max_cost_microunits=child_binding.max_cost_microunits,
                             expires_at=child_binding.expires_at,
@@ -460,8 +473,10 @@ class _ForegroundRunProviderSession:
             * (1 + len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS)) if policy else 1
             for policy in policies
         )
-        if max_invocations > min(binding.max_invocations for binding in bindings):
-            raise PermissionError("workflow exceeds the shared invocation allowance")
+        max_invocations = _work_invocation_allowance(
+            self._branch_snapshot, minimum=max_invocations,
+            ceiling=min(binding.max_invocations for binding in bindings),
+        )
         subject_ref = self._branch_version_id or (
             f"{self._branch_def_id}@definition:{int(self._branch_snapshot.get('version') or 1)}"
         )
@@ -545,6 +560,116 @@ class _ForegroundRunProviderSession:
         )
         if not all((*common, *exact)):
             raise PermissionError("foreground run provider authority is stale")
+
+    def _check_agent_authority(self, carrier: ProviderInvocationCarrier) -> str:
+        """Fresh work fence between agent steps; never reserve or rearm a call."""
+        import hmac
+
+        from tinyassets.provider_assignment import provider_assignment_admission
+        from tinyassets.provider_serving_binding import (
+            _current_selected_member_authority,
+            _current_serving_authority,
+            resolve_serving_agent_binding,
+        )
+        from tinyassets.provider_work_authority import _provider_invocation_carrier_seal
+        from tinyassets.shared_self import shared_self_requested
+        from tinyassets.storage.current_home import check_current_home
+        from tinyassets.storage.provider_work_authority import (
+            SQLiteProviderWorkAuthorityStore,
+            _claim_record,
+            _current_work_member,
+            _receipt_record,
+            _record,
+            _reservation_record,
+        )
+
+        if (self._closed or self._receipt is None or self._claim is None
+                or type(carrier) is not ProviderInvocationCarrier
+                or carrier._issuer_pid != os.getpid()
+                or not hmac.compare_digest(
+                    carrier._seal, _provider_invocation_carrier_seal(carrier),
+                )
+                or carrier._receipt != self._receipt or carrier._claim != self._claim):
+            raise PermissionError("work agent carrier does not match its active run")
+        if (self._branch_snapshot is None
+                or _content_digest(self._branch_snapshot) != self._branch_digest
+                or not shared_self_requested(self._branch_snapshot)):
+            raise PermissionError("work agent immutable subject changed")
+        self._validate_founder_home()
+        self._validate_run(allowed_statuses={"running"})
+        store = SQLiteProviderWorkAuthorityStore(self._base_path)
+        agent = resolve_serving_agent_binding(
+            self._base_path, universe_id=self._universe_id, owner_user_id=self._principal_id,
+        )
+        with provider_assignment_admission().shared(self._universe_dir):
+            with store.connection() as conn:
+                conn.execute("BEGIN")
+                check_current_home(conn, self._principal_id, self._universe_id)
+                receipt_row = conn.execute(
+                    "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+                    (carrier.work_receipt_id,),
+                ).fetchone()
+                claim_row = conn.execute(
+                    "SELECT * FROM provider_work_execution_claims WHERE claim_id = ?",
+                    (self._claim.claim_id,),
+                ).fetchone()
+                reservation_row = conn.execute(
+                    "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
+                    (carrier.reservation_id,),
+                ).fetchone()
+                if receipt_row is None or claim_row is None or reservation_row is None:
+                    raise PermissionError("work agent progress authority is unavailable")
+                receipt, claim = _receipt_record(receipt_row), _claim_record(claim_row)
+                reservation = _reservation_record(reservation_row)
+                now = store._now()
+                if not all((
+                    receipt == self._receipt, claim == self._claim,
+                    receipt.state is ProviderWorkReceiptState.ACTIVE,
+                    claim.state.value == "active",
+                    datetime.fromisoformat(receipt.expires_at.replace("Z", "+00:00")) > now,
+                    datetime.fromisoformat(claim.lease_expires_at.replace("Z", "+00:00")) > now,
+                    reservation.receipt_id == receipt.receipt_id,
+                    reservation.receipt_digest == receipt.receipt_digest,
+                    reservation.claim_id == claim.claim_id,
+                    reservation.claim_digest == claim.claim_digest,
+                    reservation.claim_generation == claim.generation,
+                    reservation.selection == carrier._reservation.selection,
+                    reservation.operation == carrier.operation == RUN_GRAPH_OPERATION,
+                    reservation.role == carrier.role == "writer",
+                    reservation.state.value in {"launch_started", "succeeded"},
+                )):
+                    raise PermissionError("work agent receipt, claim or invocation changed")
+                if receipt.authority_scope == "manifest":
+                    assignment, binding, _ = _current_selected_member_authority(
+                        conn, store=store, universe_dir=self._universe_dir,
+                        base_path=self._base_path, owner_user_id=self._principal_id,
+                        universe_id=self._universe_id, agent=agent, provider=carrier.provider,
+                    )
+                    _current_work_member(conn, receipt, reservation.selection, now)
+                else:
+                    child_row = conn.execute(
+                        "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+                        (receipt.binding_id,),
+                    ).fetchone()
+                    child = _record(child_row) if child_row is not None else None
+                    if child is None or not all((
+                        child.state.value == "active",
+                        child.generation == receipt.binding_generation,
+                        child.binding_digest == receipt.binding_digest,
+                        child.revocation_generation == receipt.binding_revocation_generation,
+                        datetime.fromisoformat(child.expires_at.replace("Z", "+00:00")) > now,
+                        reservation.operation in child.allowed_operations,
+                        reservation.role in child.allowed_roles,
+                    )):
+                        raise PermissionError("work agent child binding changed")
+                    assignment, binding, _ = _current_serving_authority(
+                        conn, store=store, universe_dir=self._universe_dir,
+                        owner_user_id=self._principal_id, universe_id=self._universe_id,
+                        agent=agent,
+                    )
+                self._validate_receipt_parent(binding, assignment)
+        self._validate_run(allowed_statuses={"running"})
+        return self._principal_id
 
     @contextmanager
     def _authorize_attempt(

@@ -61,7 +61,7 @@ authority. Windows/Linux real-store groups each pass 115 tests, zero skips;
 HTTP compiler/router cases verify the selected member rather than the aggregate
 manifest root. This is not yet the dispatch observer or workflow adapter.
 
-## Round allowance (R5 — adaptation pending before workflow integration)
+## Round allowance (R5 — existing authorized ceiling)
 
 ### R4 format correction before implementation
 
@@ -95,10 +95,33 @@ AGREE with the finding: current admission counts one inference per node attempt;
 multi-round tools need an explicitly finite allowance under the same work cap.
 DISAGREE_CONCERN with automatically adding a new workflow `max_agent_rounds=0`
 knob as the only repair: this would keep existing workflows unable to use the
-capability unless their authors changed them. Reuse existing declared work/member
-invocation allowances where possible. Resolve the exact derivation against the
-immutable compiler and budget code before implementing this arithmetic. No gate
-is relaxed meanwhile. No user workflow is edited for the proof.
+capability unless their authors changed them. For the existing immutable opt-in
+agent-turn workflow contract, use the already authorized finite work/member
+ceiling as its aggregate invocation allowance. The static compiler node/retry
+term remains the minimum admission requirement and must fit that ceiling.
+Prompt-only work retains exactly its old static term. Legacy run receipts use
+their child binding's existing ceiling; manifest receipts use the minimum of
+their accepted participating members' ceilings. Neither tokens nor money increase.
+All rounds share that one receipt/claim and existing durable reservation counter;
+there is no new per-node allowance, counter, store or workflow field. A native
+agent that performs one invocation consumes one; engine inference consumes each
+round. Exhaustion holds, never creates another receipt or retries an effect.
+
+This uses `shared_self_requested` only to recognize the platform's existing
+immutable agent-turn opt-in. It does not create or alter the user's background
+project, enable unmarked nodes, change its existing single-prompt restriction or
+add a new tool permission. Background receipts already derive a finite ceiling
+from the remaining attempt/queue/member limits, so their arithmetic is unchanged.
+Router permissions remain closed until the adapter/observer/replay fence is built.
+This adaptation implements the review's finite aggregate invariant using existing
+owner authority rather than its proposed new zero-default workflow field.
+
+The allowance adaptation and private foreground between-step authority check are
+now built. The check rereads live receipt/claim/member/parent (and legacy child),
+current owner and immutable running subject without reserving or rearming. Its
+adapter call sites remain pending. Windows/Linux group193/193 passes, zero skips;
+provider-neutrality plus new files57 passes. Evidence:
+`docs/reviews/2026-09-14-work-agent-admission-proof.md`.
 
 R6 refinement from the actual compiler: `_call_policy_router_with_retry` catches
 AllProvidersExhaustedError and starts the entire node again. Even a *known*
