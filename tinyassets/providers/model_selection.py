@@ -105,6 +105,16 @@ def prepare_selected_model(
     native = accepted_native_selection(provider, model_id, access)
     if native is not None:
         return native, None
+    if _native_discovery_needed(provider, model_id, access):
+        from tinyassets.providers.native_discovery import discover_native_models_sync
+
+        snapshot = discover_native_models_sync(
+            base_path=base_path, owner_user_id=owner_user_id,
+            universe_id=universe_id, provider=provider,
+        )
+        return _validate_native_snapshot(
+            snapshot, base_path, owner_user_id, universe_id, provider, model_id, access,
+        )
     if _native_default(provider, model_id, access):
         return None, None
     definition = _selection_definition(
@@ -136,6 +146,16 @@ async def prepare_selected_model_async(
     native = accepted_native_selection(provider, model_id, access)
     if native is not None:
         return native, None
+    if _native_discovery_needed(provider, model_id, access):
+        from tinyassets.providers.native_discovery import discover_native_models
+
+        snapshot = await discover_native_models(
+            base_path=base_path, owner_user_id=owner_user_id,
+            universe_id=universe_id, provider=provider,
+        )
+        return _validate_native_snapshot(
+            snapshot, base_path, owner_user_id, universe_id, provider, model_id, access,
+        )
     if _native_default(provider, model_id, access):
         return None, None
     definition = _selection_definition(
@@ -149,6 +169,26 @@ async def prepare_selected_model_async(
     return _validate_snapshot(
         definition, snapshot, provider, model_id, access, needs_tools=needs_tools,
     )
+
+
+def _native_discovery_needed(provider, model_id, access):
+    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
+
+    return (provider in _PROVIDER_SERVICE and bool(model_id)
+            and type(access) is ModelAccess and access.model_scope == "discovered")
+
+
+def _validate_native_snapshot(snapshot, base, owner, uid, provider, model_id, access):
+    from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
+
+    if type(snapshot) is not NativeDiscoverySnapshot:
+        raise PermissionError("native model requires fresh owned enumeration")
+    snapshot.assert_current()
+    selected = snapshot.select(
+        provider=provider, owner=owner, universe=Path(base) / uid, custody=snapshot.custody,
+        model_id=model_id, access=access,
+    )
+    return selected, snapshot.assert_current
 
 
 def _native_default(provider, model_id, access):

@@ -7,7 +7,7 @@ not a grant: the store reconstructs current member/model authority before arming
 from pathlib import Path
 
 
-def prepare_work_model_snapshot(*, base_path, universe_id, provider=None):
+def prepare_work_model_snapshot(*, base_path, universe_id, provider=None, model_id=""):
     from tinyassets.provider_assignment import (
         load_provider_assignment_in_transaction,
         provider_assignment_admission,
@@ -30,8 +30,13 @@ def prepare_work_model_snapshot(*, base_path, universe_id, provider=None):
             if assignment is None or not assignment.manifest_digest:
                 return None
             selected_provider = provider or assignment.provider
-            if not selected_provider.startswith("api_key_http:"):
-                return None
+            native = not selected_provider.startswith("api_key_http:")
+            if native:
+                member = next((m for m in assignment.candidates
+                               if m.provider == selected_provider), None)
+                if (not model_id or member is None
+                        or member.access.model_scope != "discovered"):
+                    return None
             check_current_home(conn, assignment.owner_user_id, universe_id)
             agent = resolve_serving_agent_binding(
                 base, universe_id=universe_id, owner_user_id=assignment.owner_user_id,
@@ -42,6 +47,13 @@ def prepare_work_model_snapshot(*, base_path, universe_id, provider=None):
                 agent=agent, provider=selected_provider,
             )
     # Deliberately outside BOTH the assignment fence and every SQL transaction.
+    if native:
+        from tinyassets.providers.native_discovery import discover_native_models_sync
+
+        return discover_native_models_sync(
+            base_path=base, owner_user_id=assignment.owner_user_id,
+            universe_id=universe_id, provider=selected_provider,
+        )
     return refresh_model_discovery(
         owner_user_id=assignment.owner_user_id, universe_id=universe_id,
         definition_id=selected_provider.removeprefix("api_key_http:"),

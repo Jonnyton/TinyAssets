@@ -144,6 +144,18 @@ The app SHALL expose model choices from the universe owner's authorized connecti
 - **WHEN** refreshed connection discovery returns a new model
 - **THEN** the owner can see and select it without a platform release, subject to current authority and supported capabilities
 
+#### Scenario: Native discovered choice is checked at execution
+- **WHEN** an accepted native discovered scope selects a nonempty model ID
+- **THEN** fresh owned metadata must contain that ID with the required capability
+- **AND** chat, foreground and background admission recheck the exact current member and custody before launch
+- **AND** workflow evidence distinguishes versioned enumeration facts from an owner-declared choice and actual answering-model telemetry
+
+#### Scenario: Native enumeration is unavailable
+- **WHEN** a native executor cannot enumerate its current model catalogue
+- **THEN** the provider-default choice remains available if independently authorized
+- **AND** the app labels the enumeration gap rather than claiming a complete model list
+- **AND** a nonempty discovered choice is refused without silently substituting the default
+
 #### Scenario: Discovery fails
 - **WHEN** discovery cannot refresh
 - **THEN** cached choices are labelled stale and the app does not claim current availability

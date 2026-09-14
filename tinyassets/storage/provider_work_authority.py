@@ -612,6 +612,13 @@ def _current_work_member(conn, receipt, selection, now):
         datetime.fromisoformat(binding.expires_at.replace("Z", "+00:00")) > now,
     )):
         raise PermissionError("selected work member changed")
+    evidence = selection.model_evidence()
+    if evidence is not None and evidence.get("kind") == "native":
+        from tinyassets.providers.native_model_selection import NativeSelection
+
+        NativeSelection.from_dict(evidence).assert_access(
+            member.access, member.credential_reference_digest,
+        )
     return binding
 
 
@@ -2623,7 +2630,20 @@ class SQLiteProviderWorkAuthorityStore:
         if selection.model_evidence_json is not None or selection.executor_id != selection.provider:
             raise PermissionError("work model evidence must be prepared by admission")
         _current_work_member(conn, receipt, selection, self._now())
+        from tinyassets.providers.model_selection import _native_discovery_needed
         from tinyassets.providers.native_model_selection import accepted_native_selection
+        if _native_discovery_needed(selection.provider, selection.model_id, member.access):
+            from tinyassets.provider_work_authority import _canonical_json
+            from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
+
+            if type(model_snapshot) is not NativeDiscoverySnapshot:
+                raise PermissionError("native workflow model requires fresh owned enumeration")
+            native = model_snapshot.select(
+                provider=selection.provider, owner=receipt.principal_id,
+                universe=self.base_path / receipt.universe_id, custody=_custody,
+                model_id=selection.model_id, access=member.access,
+            )
+            return replace(selection, model_evidence_json=_canonical_json(native.to_dict()))
 
         native = accepted_native_selection(selection.provider, selection.model_id, member.access)
         if native is not None:

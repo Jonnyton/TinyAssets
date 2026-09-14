@@ -27,14 +27,16 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 
 
 @pytest.fixture
-def native(tmp_path, monkeypatch):
+def native(tmp_path, monkeypatch, request):
     universe, agent, initial_capability, _ = _served_context(tmp_path)
     revoke_provider_request(initial_capability)
     bound = bind_serving_provider(
         base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
         universe_id=universe.name, agent_binding_id=agent["agent_binding_id"],
         expected_revision=agent["revision"], provider="codex",
-        model_access={"codex": ModelAccess("explicit", ("", "future-native-model"))},
+        model_access={"codex": (ModelAccess("discovered")
+                                if getattr(request, "param", None) == "discovered"
+                                else ModelAccess("explicit", ("", "future-native-model")))},
     )
     with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -62,7 +64,7 @@ def native(tmp_path, monkeypatch):
     provider = _RecordingProvider("codex")
     other = _RecordingProvider("claude-code")
     state = SimpleNamespace(
-        base=tmp_path, universe=universe, context=context, capability=capability,
+        base=tmp_path, universe=universe, context=context, capability=capability, agent=agent,
         provider=provider, other=other,
         router=ProviderRouter({"codex": provider, "claude-code": other}),
     )

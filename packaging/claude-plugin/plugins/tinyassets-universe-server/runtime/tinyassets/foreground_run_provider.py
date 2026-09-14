@@ -610,6 +610,7 @@ class _ForegroundRunProviderSession:
                 model_snapshot = prepare_work_model_snapshot(
                     base_path=self._base_path, universe_id=self._universe_id,
                     provider=preferred.get("provider") or self._provider,
+                    model_id=preferred.get("model_id", preferred.get("model", "")),
                 )
             with provider_assignment_admission().shared(self._universe_dir):
                 with store.connection() as conn:

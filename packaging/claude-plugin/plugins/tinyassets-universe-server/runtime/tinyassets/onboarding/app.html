@@ -2130,7 +2130,11 @@
         const li=document.createElement("li");
         li.textContent=this.label(row.reference)+" — "+(this.stale ? "stale; " : "")+
           ((row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ")|| (row.availability_basis==="owner_declared"?"owner-selected; availability not verified":this.usable(row)?"available":"availability unconfirmed"));
-        if(row.availability_basis==="executor_default") li.textContent+=" — provider chooses the model; full model list not yet verified";
+        if(row.availability_basis==="executor_default"){
+          const enumerated=rows.some(other=>other.reference.provider_ref===row.reference.provider_ref&&other.availability_basis==="executor_enumerated");
+          li.textContent+=" — provider chooses the model"+(enumerated?"":"; full model list not yet verified");
+        }
+        if(row.availability_basis==="executor_enumerated") li.textContent+=" — listed by the connected provider";
         if(row.availability_basis==="owner_configured_contract") li.textContent+=" — availability, privacy and charges are declared by this configured source, not independently verified";
         inventory.appendChild(li);
       }

@@ -48,6 +48,17 @@ def test_declared_models_are_not_labelled_verified_available(tmp_path):
     assert "full model list not yet verified" in rows[1]["text"]
 
 
+def test_enumerated_models_and_provider_default_have_distinct_truthful_labels(tmp_path):
+    doc = catalogue()
+    doc["options"][0]["availability_basis"] = "executor_enumerated"
+    doc["options"][1]["availability_basis"] = "executor_default"
+    result = run_picker(tmp_path, "", doc=doc)
+    rows = result["ui"]["model-inventory"]["children"]
+    assert "listed by the connected provider" in rows[0]["text"]
+    assert "provider chooses the model" in rows[1]["text"]
+    assert "full model list not yet verified" not in rows[1]["text"]
+
+
 def run_picker(tmp_path, steps, doc=None, response=None):
     html, _ = render_app_html()
     picker = html[html.index("  const ModelPicker={") : html.index("  function captureTurnOptions")]

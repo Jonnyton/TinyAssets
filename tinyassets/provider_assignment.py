@@ -476,6 +476,7 @@ def reserve_served_provider_budget(
             native_default = False
             if (
                 member is not None and authority.selected_model is None
+                and authority.native_selection is None
                 and authority.authority_kind == "subscription_snapshot"
             ):
                 from tinyassets.providers.model_selection import _native_default
@@ -488,17 +489,17 @@ def reserve_served_provider_budget(
             if member is not None and authority.native_selection is not None:
                 from tinyassets.providers.native_model_selection import (
                     NativeSelection,
-                    accepted_native_selection,
                 )
 
                 native_explicit = (
                     authority.authority_kind == "subscription_snapshot"
                     and type(authority.native_selection) is NativeSelection
-                    and authority.native_selection == accepted_native_selection(
-                        member.provider, authority.native_selection.requested_model_id,
-                        member.access,
-                    )
+                    and authority.native_selection.provider == member.provider
                 )
+                if native_explicit:
+                    authority.native_selection.assert_access(
+                        member.access, member.credential_reference_digest,
+                    )
             binding_matches_assignment = (
                 authority.operation == "converse"
                 and (
@@ -1606,6 +1607,9 @@ def _authorize_served_provider_call(
                         credential_snapshot_dir=credential_snapshot.directory,
                         request_capability=capability,
                         native_selection=selected_model,
+                        before_provider_launch=(
+                            before_selected_launch if selection_recheck is not None else None
+                        ),
                     )
                 conn.rollback()
             yield authority

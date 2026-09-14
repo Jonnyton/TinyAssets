@@ -13,7 +13,11 @@ Next internal checkpoint: native metadata types, registered Codex paginated
 metadata-only adapter, and owner-custody snapshot lifecycle built. No model-list
 release table or inference-based enumeration. Claude enumeration remains unknown.
 See docs/reviews/2026-09-14-native-discovery-adapter-proof.md. Advisory display and
-discovered-scope launch/work evidence wiring remain pending; task1.3 stays open.
+discovered-scope launch/work evidence wiring subsequently landed locally in the
+September14 integration checkpoint: real-store chat/foreground/background and
+picker-refresh cases pass. Final18files442Windows/444Linux,3/1skips. Evidence:
+docs/reviews/2026-09-14-native-discovery-integration-proof.md. Real account proof,
+Claude enumeration and final release work remain open; task1.3 stays open.
 
 - [ ] 1.1 Resolve the design's exact storage/authority and discovery seams; obtain one cross-family shape review before implementing public/storage/authority changes.
 - [x] 1.2 Ship truthful HTTP answering-model receipts, preserving requested selection and unknown metadata behavior, with tests and independent review.

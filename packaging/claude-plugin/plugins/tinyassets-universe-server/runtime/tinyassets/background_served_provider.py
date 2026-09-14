@@ -875,6 +875,7 @@ class _BackgroundAssignedProviderSession:
             model_snapshot = prepare_work_model_snapshot(
                 base_path=self._base_path, universe_id=self._task.universe_id,
                 provider=preferred.get("provider"),
+                model_id=preferred.get("model_id", preferred.get("model", "")),
             )
             with provider_assignment_admission().shared(universe_dir):
                 with admission_store.connection() as conn:

@@ -41,6 +41,18 @@ from tinyassets.storage.model_preferences import ModelPreferenceStore
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 
+def _assert_plan_snapshot(snapshot):
+    from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
+    from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
+
+    if type(snapshot) is NativeDiscoverySnapshot:
+        # The caller has just rechecked every exact member/custody chain in its
+        # transaction. Do not open another SQLite connection inside that fence.
+        snapshot.assert_fresh()
+    else:
+        assert_discovery_snapshot_current(snapshot)
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedPlan:
     plan: AgentModelPlan
@@ -54,8 +66,6 @@ class PreparedPlan:
     display_only: bool = False
 
     def recheck(self, conn, *, store, base, universe, owner, agent, check_preferences=False):
-        from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
-
         if self.display_only:
             raise ValueError("display catalogue cannot authorize activation")
         self.recheck_scope(conn, universe=universe, owner=owner, agent=agent,
@@ -68,7 +78,7 @@ class PreparedPlan:
             if actual != expected:
                 raise PermissionError("model member changed during discovery")
         for snapshot in self.snapshots:
-            assert_discovery_snapshot_current(snapshot)
+            _assert_plan_snapshot(snapshot)
 
     def recheck_scope(self, conn, *, universe, owner, agent, check_preferences=False):
         """A changed home/agent/assignment invalidates the entire display too."""
@@ -83,8 +93,6 @@ class PreparedPlan:
             raise PermissionError("model preferences changed during activation")
     def recheck_display(self, conn, *, store, base, universe, owner, agent):
         """Demote only failed sources; never let them hide independent choices."""
-        from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
-
         self.recheck_scope(conn, universe=universe, owner=owner, agent=agent,
                            check_preferences=True)
         failed = {}
@@ -100,7 +108,7 @@ class PreparedPlan:
                 failed[provider] = "source_revoked"
         for snapshot in self.snapshots:
             try:
-                assert_discovery_snapshot_current(snapshot)
+                _assert_plan_snapshot(snapshot)
             except ModelDiscoveryUnavailable as exc:
                 failed[snapshot.provider] = exc.reason
             except ProviderError:
@@ -141,7 +149,7 @@ class ModelSourceUnavailable(PermissionError):
         self.reason = reason
 
 
-def _native_models(base, universe, owner, member):
+def _native_models(base, universe, owner, member, *, native_snapshot=None):
     from tinyassets.providers.call import get_provider_router
     from tinyassets.providers.model_selection import _native_default
 
@@ -159,6 +167,18 @@ def _native_models(base, universe, owner, member):
             model_id, True, frozenset({"text"}), pricing=Pricing("fresh", unmetered=True),
             availability_basis="owner_declared" if model_id else "executor_default",
         ))
+    if native_snapshot is not None:
+        if member.access.model_scope != "discovered":
+            raise PermissionError("native discovery cannot widen an explicit model scope")
+        native_snapshot.assert_fresh()
+        if (native_snapshot.provider != member.provider or native_snapshot.owner_id != owner
+                or native_snapshot.universe != Path(universe).resolve()
+                or native_snapshot.custody.reference_digest != member.credential_reference_digest):
+            raise PermissionError("native catalogue is outside current member custody")
+        models.extend(Model(
+            model.model_id, True, model.input_modalities,
+            pricing=Pricing("fresh", unmetered=True), availability_basis="executor_enumerated",
+        ) for model in native_snapshot.catalogue.models)
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
     if provider is None or not provider.is_available():
@@ -281,7 +301,25 @@ def prepare_owned_model_plan(
         member = next(m for m in chain[0].candidates if m.provider == provider)
         try:
             if provider in _PROVIDER_SERVICE:
-                catalog = filtered = _native_models(base, universe, owner, member)
+                native_snapshot = None
+                if member.access.model_scope == "discovered":
+                    from tinyassets.providers.native_discovery import discover_native_models_sync
+
+                    try:
+                        native_snapshot = discover_native_models_sync(
+                            base_path=base, owner_user_id=owner,
+                            universe_id=universe.name, provider=provider,
+                        )
+                    except ProviderError:
+                        # Enumeration is not necessary to run the provider's
+                        # own default. Preserve that lane and expose the gap.
+                        rejected.append(Ineligible(ModelRef(provider, ""),
+                                                   "native_catalogue_unavailable", scope="source"))
+                catalog = filtered = _native_models(
+                    base, universe, owner, member, native_snapshot=native_snapshot,
+                )
+                if native_snapshot is not None:
+                    snapshots.append(native_snapshot)
                 required, caps = interaction, member.access.cost_caps
             else:
                 from tinyassets.providers.discovery_snapshot import refresh_model_discovery
