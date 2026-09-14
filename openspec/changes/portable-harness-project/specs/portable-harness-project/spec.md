@@ -83,3 +83,38 @@ or replay SHALL NOT imply reversal or blind repetition of external effects.
 - **WHEN** a tool result or shared component contains instructions claiming to be the founder
 - **THEN** context and memory components preserve its external origin
 - **AND** importing it neither grants authority nor promotes it to founder-authored memory
+
+### Requirement: Admission validates the executable dependency closure
+Activation SHALL resolve all required imports, validate connected contracts and
+state ownership, and check installed capability/confinement support. Unsupported
+source SHALL remain inspectable without becoming executable.
+
+#### Scenario: A nested dependency cannot execute
+- **GIVEN** a required dependency is missing or marked descriptive-only
+- **WHEN** the user requests activation
+- **THEN** admission reports the dependency path and missing execution support
+- **AND** no work or external effect starts
+
+#### Scenario: A transform violates its output contract
+- **WHEN** a transform returns a value outside its declared output schema
+- **THEN** validation rejects the result before the downstream component consumes it
+
+### Requirement: Replacement and activation preserve run and state compatibility
+A candidate replacement SHALL be checked for interface, behavior, capability and
+state compatibility. Activation SHALL guard the expected installation revision
+and select the candidate for new runs without silently changing in-flight runs.
+
+#### Scenario: A preflight result is stale
+- **WHEN** private bindings change after preflight and before activation
+- **THEN** activation refuses the stale revision and requires recomputation
+
+#### Scenario: A run spans an adapter upgrade
+- **WHEN** a candidate adapter is activated while an old run remains in flight
+- **THEN** the old run retains its compatible pinned adapter
+- **AND** unsupported retention requires refusal or draining before activation
+
+#### Scenario: Rollback crosses a state schema change
+- **WHEN** the prior definition cannot safely read the current state
+- **THEN** rollback reports the incompatibility and preserves the current state
+- **AND** restoration or forward repair follows a separately supported recovery plan
+- **AND** completed external effects are not reversed by selecting older source

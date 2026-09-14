@@ -221,3 +221,120 @@ point, renderer bridge, event cursor semantics and bounded package transport.
 Each decision names the current owner module and a conformance fixture.
 Unresolved decisions block implementation of that seam; they do not invalidate
 preservation or authoring of an unsupported composition.
+
+## Composition admission and substitutability (second refinement)
+
+A component being present is different from a composition being executable.
+Admission produces a diagnostic plan before activation. The proposed plan is
+derived from the existing compiler and installation, and must not become a new
+source of authority. The following ordered checks define the first profile:
+
+1. Verify the inventory and locked dependency identities before resolving code.
+   Reject absolute paths, escaping links, unresolved references and digest mismatches.
+2. Resolve the required dependency closure, including dependencies of adapters and
+   nested compositions. Every required import must have exactly one selected
+   provider. Report the dependency path for missing or ambiguous providers.
+3. Resolve each connection by locked interface/schema identity. A transform has
+   both an input and an output contract; a matching field name alone is insufficient.
+   Validate actual values at invocation and return, including transform results.
+4. Check execution mode, confinement and required capabilities against installed
+   governed descriptors. A descriptive dependency can be preserved and inspected
+   but cannot satisfy an executable import. An optional dependency needs a declared,
+   testable absence path; "optional" cannot hide a required effect.
+5. Check state ownership, supported control flow and resource budgets. Fan-out
+   needs a defined merge/reducer for shared outputs. A scheduling loop needs a
+   stop condition supported by the runtime. Report unsupported semantics explicitly.
+6. Produce a public diagnostic summary and a private binding diff. Activation
+   rechecks the installation revision and current authority; a stale successful
+   plan is never permission to execute.
+
+An author can inspect/edit/export an unsupported composition. Only activation of
+the unsupported path is refused. This preserves user freedom without pretending
+that storing arbitrary source makes it runnable.
+
+### Replacement compatibility is directional
+
+Replacing A with B requires B to accept the same contracted inputs, produce the
+contracted outputs, preserve declared outcome/lifecycle semantics, and fit the
+installed capability/budget envelope. The first profile uses exact locked schema
+identities or explicit adapters; it does not infer arbitrary JSON Schema subtyping.
+
+Equal schemas are necessary at a connection, but insufficient for behavioral
+substitutability. A "read document" component that now publishes it is incompatible
+even if both return a string. Changing required capabilities, confinement,
+durable state schema, effect behavior, cancellation semantics or error vocabulary
+requires an explicit compatibility decision and relevant conformance evidence.
+A semantic version label alone is not that evidence.
+
+The compatibility report separates:
+
+| Dimension | Example | Required outcome |
+| --- | --- | --- |
+| Package preservation | Unknown user-defined kind survives round-trip | Preserve inertly, report execution support separately |
+| Wiring | Context output uses a different schema digest | Refuse connection or require explicit validated transform |
+| Host support | Adapter needs a filesystem capability absent locally | Report the missing requirement before starting |
+| Authority | New tool needs a broader destination binding | Stage the change; use existing authority request mechanisms |
+| Behavior | Replacement changes effect retries from reconcile to resend | Treat as incompatible until explicitly reviewed and proven |
+| State | New memory policy changes durable entry shape | Require a versioned migration plan; keep old installation usable |
+
+### Upgrade, migration and rollback
+
+Create a candidate revision from immutable source, locked dependencies and private
+overlay revision. Preview the source, binding, capability and state changes. Run
+fixtures with recorded or simulated effects. Activation then compares the expected
+installation revision and atomically selects the candidate for **new** runs.
+In-flight runs retain the definition/adapter versions they began with. If retaining
+an old adapter is impossible, refuse the upgrade or drain those runs; never silently
+change their code at a checkpoint.
+
+State migration is a separate, explicitly supported operation with source schema,
+target schema, preconditions, a snapshot/backup reference, and failure recovery.
+Do not assume every store can make schema and binding updates in one transaction.
+A store adapter must document its own commit/recovery boundary. Until that exists,
+activate only changes requiring no live state migration. Migration functions use
+governed execution and cannot obtain new authority from a package.
+
+Rollback selects a prior compatible definition for new work. It does not undo
+external effects, delete newer memory, or make older code able to read newer state.
+If state cannot be read safely, retain the candidate state and offer restoration
+to a separate verified snapshot or a forward repair. The UI must show the scope of
+rollback before the user chooses it.
+
+### Conformance traces to implement
+
+These are acceptance vectors, not claims of tests already passing. Each retained
+result records package/adapter digests, installation revision, runtime profile,
+fixture digest, observed events, effect attempts and final outcome. Use explicit
+virtual time/random inputs where fixtures need determinism. Compare semantic
+outcomes and ordering constraints, not provider wording or wall-clock timings.
+
+| ID | Given / action | Required observation |
+| --- | --- | --- |
+| H-C1 | A required child adapter is absent two dependencies deep | Admission reports the complete dependency path; zero work/effects start |
+| H-C2 | A transform declares the right output schema but returns an invalid value | Return validation fails before the downstream tool sees it |
+| H-C3 | Two branches write a single-valued state port without a reducer | Admission refuses ambiguous ownership; execution order cannot choose a winner |
+| H-C4 | Bindings change after successful preflight | Activation detects the stale revision and recomputes; no stale authority is used |
+| H-C5 | An adapter is replaced while an old run is paused | Old run resumes only with its pinned compatible adapter; new run uses the candidate |
+| H-C6 | Remote service commits an effect, then the response is lost | Outcome stays uncertain; inspect/reconcile before another non-idempotent attempt |
+| H-C7 | Cancellation arrives after one delivery but before the next | Evidence retains the first effect; later dispatch obeys current cancellation semantics |
+| H-C8 | A memory schema migration fails halfway through its supported boundary | Recovery leaves a documented readable state; activation cannot claim success |
+| H-C9 | Second account imports a package containing private-data sentinels in excluded stores | Public package contains none; no source bindings, schedules or runs activate |
+| H-C10 | Context component is swapped, then UI is swapped, with fixed evaluator/task | Each swap needs only its own bindings; instance identity and unrelated source stay stable |
+
+H-C10 is the shared proof with the experience proposal: use the same task,
+installation and outcome references. A pair of disconnected demos does not prove
+independent replacement. P1-P5 remain the acceptance ladder; these vectors make
+their failure expectations concrete.
+
+### Next implementation slice and stop conditions
+
+First implement admission plus inert project round-trip and the deterministic
+offline fixture. Keep the profile within the existing component envelope and
+reuse current validation/receipts. The fixture should exercise a real source edit,
+a missing dependency and a rejected connection, not just re-serialize a manifest.
+
+Before that slice, review must resolve the mapping from locked project contracts to
+GovernedComponentDescriptor, the actual runner invocation, and the digest/transport
+bounds already listed in design.md. Record choices in review.md with code anchors.
+State migration and live run transfer are subsequent seams; neither is required
+to prove source portability, and neither may be implied by that proof.

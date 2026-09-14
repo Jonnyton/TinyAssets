@@ -2,7 +2,7 @@
 
 - [x] Inspect native definitions, interchange API, current specs, and delivery WIP.
 - [x] Record the bounded project contract and acceptance scenarios.
-- [x] Research and refine the primitive contracts, compiler mapping, evidence ladder and companion UI handoff.
+- [x] Research and refine primitive contracts, compiler mapping, admission, upgrade/rollback semantics, H-C1–H-C10 conformance traces and companion UI handoff.
 
 ## Before implementation
 
@@ -12,7 +12,7 @@
 ## Implementation and proof
 
 - [ ] Implement the smallest project adapter using existing native validation and receipts.
-- [ ] Add round-trip, integrity, inert-import, compatibility, and private-state exclusion tests.
+- [ ] Add round-trip, integrity, inert-import, compatibility and private-state exclusion tests; implement applicable H-C1–H-C10 vectors and retain their evidence.
 - [ ] Prove the deterministic fixture and editable source in an empty offline installation.
 - [ ] Prove browser delivery and second-account authority separation with retained evidence.
 - [ ] Prove model-backed strategy replacement with fixed evaluator evidence before claiming the combined toolset complete.
