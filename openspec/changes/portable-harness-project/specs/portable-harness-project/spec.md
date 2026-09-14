@@ -150,3 +150,51 @@ explicitly unsupported.
 - **WHEN** a cancellation request overlaps an external effect attempt
 - **THEN** evidence records the actual cancellation and dispatch outcomes separately
 - **AND** terminal cancellation does not imply reversal of the effect
+
+### Requirement: First-party served harness replacement is observable
+The system SHALL allow replacement of the actual served harness's context,
+memory, loop, tool and lifecycle strategies through ordinary user capabilities.
+A sample graph, context-only swap or compiled descriptor SHALL NOT establish
+complete harness replacement.
+
+#### Scenario: Replace the served loop while retaining identity
+- **GIVEN** a fixed task/evaluator, current conversation and an in-flight run
+- **WHEN** a compatible user-built harness is selected for subsequent turns
+- **THEN** traces identify changed loop and tool behavior from that selected source
+- **AND** canonical identity and data persist while the old run retains its pinned behavior
+
+### Requirement: Pending input and authorized learning use existing authority
+Pending input or approval SHALL refer to existing pending-request state and
+guarded answer operations. Ordinary memory writes within existing authorization
+SHALL NOT require fresh approval solely because they update durable memory.
+
+#### Scenario: Authorized learning versus changed authority
+- **WHEN** a selected memory policy writes within its existing authorized scope
+- **THEN** the update persists for the next turn under normal store checks
+- **AND** a separate new authority requirement still follows the existing request path
+
+#### Scenario: A pending answer refers to stale work
+- **WHEN** target, arguments or relevant binding revisions change before continuation
+- **THEN** the old answer cannot authorize the changed action
+- **AND** unsupported native continuation/preconditions are reported explicitly
+
+### Requirement: Portable execution uses materialized source in the Branch runtime
+Executable-project evidence SHALL validate canonical inventory paths, byte digests,
+native fingerprints and complete required dependencies, then execute the
+materialized source through the actual Branch runtime. Browser import SHALL use
+an owner-scoped staged artifact transport with the same validation.
+
+#### Scenario: Descriptor compilation succeeds without a runner
+- **WHEN** an adapter resolves but source cannot be materialized or invoked by the Branch runner
+- **THEN** the project remains execution-unsupported
+- **AND** compilation is not reported as a successful executable fixture
+
+### Requirement: Whole setups preserve the receiving user's data
+Sharing SHALL support workflows, harnesses, experiences and their combined setup
+source without carrying private state or authority. Adoption SHALL retain the
+receiving user's data and customizations or stage an explicit compatibility conflict.
+
+#### Scenario: Independent and combined replacements
+- **WHEN** the user follows shared trace S-1 for UI-only, harness-only, whole-setup and mixed shared/custom adoption
+- **THEN** source selection changes while canonical data and private bindings remain the receiver's
+- **AND** incompatible state/overlays are retained without reset and imported schedules remain inactive

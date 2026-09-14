@@ -196,3 +196,43 @@ external-content provenance. A descriptive-only unknown component proves
 preservation; it cannot satisfy an executable requirement. Keep source export,
 offline deterministic execution, model-backed replacement and rendered device
 parity as separate evidence claims.
+
+## Reviewed execution and materialization boundary
+
+The first executable profile must define a concrete mapping from inventory source
+references to Branch node source and its installed execution adapter. Merely
+compiling a GovernedComponentDescriptor is not an execution result.
+
+Materialize into a fresh governed workspace only after validating the complete
+declared inventory. Canonical package paths use slash-separated relative segments;
+reject empty, dot/dot-dot, absolute/drive/UNC paths, backslashes, NULs, links,
+duplicate names and names colliding under the destination filesystem's case or
+Unicode rules. Refuse unsupported names rather than silently normalizing two names
+into one. Check each file's byte length and digest before exposing a staged project.
+Keep the existing native fingerprint algorithm unchanged. For the new project
+digest, choose RFC 8785 canonical JSON over the descriptor plus sorted inventory,
+excluding the lock file itself; pin a conforming implementation and cross-language
+vectors before executable compatibility is claimed.
+
+Resolve the full required dependency closure from locked inventory/provider
+identities, including nested compositions. Reject unresolved/ambiguous dependencies;
+detect import cycles and support them only under an explicitly documented runtime
+contract. Branch control-flow iteration is distinct from a cyclic package import.
+No depth-one ceiling or speculative numeric package limits are adopted. Existing
+runtime limits still apply; proposed package bounds must come from measured
+representative projects and governed resource limits, with compatibility diagnostics.
+
+For browser import, use an authenticated upload/staging transport that yields an
+owner-scoped artifact reference to the governed workspace. The browser selects
+bytes; it does not provide a server filesystem path. Fetching a remote package
+requires separately held channel access. The implementation must identify the
+actual existing upload handler or smallest missing seam, stage the bytes without
+execution, and apply the same inventory validator as local import. A generic
+workspace checkout alone does not prove this browser upload path.
+
+Record the actual local Branch runner command, runtime revision, fixture paths,
+materialization receipt and node/effect trace. The offline fixture must execute
+through that runner with network disabled. Running the source as a standalone
+script or displaying a compiled descriptor does not pass the Branch execution proof.
+Browser acceptance additionally retains a rendered import/inspect/activate trace.
+These are explicit unresolved implementation seams, not newly shipped APIs.

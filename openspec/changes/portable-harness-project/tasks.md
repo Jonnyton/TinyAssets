@@ -7,7 +7,7 @@
 ## Before implementation
 
 - [ ] Resolve project extension, digest encoding, artifact limits, and runner entry point against existing contracts.
-- [ ] Record Claude research/shape review of primitives.md and research.md in review.md; resolve profile, schema and runtime seams before implementation.
+- [ ] Obtain reviewer confirmation of the ADAPT dispositions in review.md and resolve remaining profile, schema, materialization and runtime seams before implementation.
 
 ## Implementation and proof
 
@@ -15,5 +15,5 @@
 - [ ] Add round-trip, integrity, inert-import, compatibility and private-state exclusion tests; implement applicable H-C1–H-C14 vectors by capability slice and retain their evidence.
 - [ ] Prove the deterministic fixture and editable source in an empty offline installation.
 - [ ] Prove browser delivery and second-account authority separation with retained evidence.
-- [ ] Prove model-backed strategy replacement with fixed evaluator evidence before claiming the combined toolset complete.
+- [ ] Prove actual served whole-harness replacement and shared S-1 setup adoption with retained data/customizations, fixed evaluator evidence and applicable H-C15–H-C18 cases.
 - [ ] Sync only verified behavior into the main specs and archive on landing.

@@ -60,3 +60,11 @@ for one ordinary harness. Delivery: one draft PR; implementation tasks remain
 unchecked. Cross-family shape review precedes implementation. The scope covers
 local developers and browser users receiving the same project artifact through
 a governed workspace and existing delivery channels.
+
+## Review corrections
+
+The posted ADAPT feedback is addressed in [review.md](review.md). The full target
+includes the actual served harness and shareable entire setups, preserving the
+receiving user's data and customizations. [Shared acceptance S-1](setup-acceptance.md)
+coordinates UI-only, harness-only, whole-setup and mixed adoption with #3842.
+The first offline package slice remains incremental; it cannot complete that target.

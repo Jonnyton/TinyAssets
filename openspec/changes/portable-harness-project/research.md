@@ -218,3 +218,61 @@ Verification boundary: documentation-only refinement. Python is present; OpenSpe
 Claude and Ruff CLIs are absent on PATH in this governed workspace. The manual
 OpenSpec layout remains applicable. Independent review remains pending; no new
 Claude verdict, executed conformance vector or live capability is asserted.
+
+## Review follow-up: Pi, lab harnesses and open interoperability
+
+Checked primary pages on 2026-09-14. These are comparisons and design inferences;
+no external dependency is adopted. Pin concrete revisions before implementation.
+
+| Primary source | Supported comparison | Implication and limit |
+| --- | --- | --- |
+| [Pi coding harness](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) (the former badlogic/pi-mono URL redirects here) | Extensions, skills, templates and themes can be packaged; interactive, print/JSON, RPC and SDK modes expose different integration levels | A useful benchmark for user-built behavior and sharing. Packages alone do not prove confinement, private-state separation or whole-harness compatibility in TinyAssets |
+| [Anthropic Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) | Exposes Claude Code's loop/context facilities, hooks, tools and sessions; direct model API use leaves loop implementation to the application | Compare reusable vendor harness integration with owning the loop. A vendor hook is not proof every internal boundary is replaceable; this is research, not a switch away from current writer policy |
+| [Google ADK workflows](https://adk.dev/agents/workflow-agents/) | Documents deterministic sequential/loop/parallel templates and newer graph/dynamic workflow options | Support user-authored control flow without freezing today's template taxonomy; shared source still needs an execution and state mapping |
+| [LangGraph](https://github.com/langchain-ai/langgraph) | Low-level stateful orchestration, durable execution and human input integration | Reuse the Branch runtime's actual contracts; a framework capability is not evidence that every TinyAssets adapter exposes it |
+| [Agent Skills specification](https://agentskills.io/specification) | Packages instructions plus optional scripts, references and assets; tool declarations are implementation-dependent | Partial import/export option for instructional components. Does not define the complete loop, state stores, lifecycle or portable grants |
+| [Open Agent Spec](https://github.com/oracle/agent-spec) and [language specification 26.1.2](https://oracle.github.io/agent-spec/26.1.2/agentspec/language_spec_26_1_2.html) | Describes agents/flows for execution by supporting runtimes | Partial semantic interchange option. Each adapter must report supported mappings and losses; framework-agnostic description is not universal executable harness portability |
+
+A comparison must distinguish source availability, replaceable strategy boundaries,
+runtime dependencies, state ownership and deployment confinement. None of these
+sources supplies our required proof that a user can replace the first-party served
+harness and experience while retaining their own data.
+
+### One-to-two-year forecast (inference, September 2027–September 2028)
+
+Moderate-confidence expectation: composable skills, tool protocols and embeddable
+harnesses will make sharing individual components easier. Lower-confidence
+expectation: adapters will cover a growing useful subset of cross-framework
+agent/flow semantics. It remains uncertain whether state migration, cancellation,
+provider session internals and effect guarantees will converge enough for lossless
+whole-harness interchange. These are planning hypotheses, not source claims,
+announced roadmaps or delivery promises.
+
+Design for that uncertainty with preserved source, versioned interfaces, full
+dependency diagnostics, explicit conversion loss and replaceable execution adapters.
+Revisit the forecast with real two-runtime round-trip and execution evidence;
+do not hardcode a vendor's current loop or unsupported numeric package ceiling.
+MCP transport reconnection, application run cursors and destination effect
+deduplication remain three independent contracts regardless of protocol adoption.
+
+The posted review and author dispositions are recorded in review.md. The historical
+failed Claude dispatches above describe earlier attempts; the posted coordinated
+review now reports ADAPT. These revisions still require reviewer confirmation and
+do not constitute implementation or live-user approval.
+
+### Pending-request implementation evidence for this correction
+
+Rechecked in the governed Linux proposal checkout on 2026-09-14 using
+scripts/docview.py lines: api/pending_requests.py answer_request (line 1251)
+applies _owner_gate, loads the existing request and rejects an already-resolved
+record. storage/pending_requests.py resolve_request (line 284) conditionally
+updates only a pending row; supported stored outcomes are answered or dismissed.
+Its projected record has request_id/status and creation/resolution times, not a
+global cursor or general action revision. Correlating a request with a paused
+operation and validating that operation's target remain explicit adapter work.
+Do not reinterpret answered as proof that the requested job completed.
+
+graph_compiler.py exposes compile_branch and source-code/invoke/await node builders;
+agent_runtime_compiler remains a separate component admission layer. No executable
+project result follows merely from either symbol existing. The code inventory
+was produced with a Python definition scan; runtime and rendered proof remain pending.

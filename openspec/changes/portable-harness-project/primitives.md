@@ -210,7 +210,7 @@ agent loops, provider portability, voice, or phone push work.
 | --- | --- | --- |
 | P1: package | Fingerprints, inventory verification, inert round-trip | Execution support |
 | P2: offline runtime | Frozen deterministic fixture result; source edit changes output | Model-backed harness parity |
-| P3: harness replacement | Same task/fixtures with two context or loop components; traces and bounded effects | Every future adapter |
+| P3: served harness replacement | Actual served composition replaced through ordinary user capabilities; context, memory, loop, tool and lifecycle traces on fixed tasks/evaluators | Every future adapter; a context-only replacement is partial evidence |
 | P4: experience replacement | Same instance/conversation with two UIs and two device classes | All native surfaces |
 | P5: second account | Private rebinding, exclusion sentinels and rendered interaction | Universal private-state migration |
 
@@ -436,3 +436,61 @@ inert source proof. Each later capability earns its own evidence before being of
 H-C11 belongs to the extraction capability when supported; H-C12–H-C14 belong to
 the action adapter slice. These extend the pending conformance catalog, not claims
 of executed tests. A deterministic fixture establishes only its declared profile.
+
+## Review correction: parity applies to the served harness
+
+The product target is replacement of the harness that actually handles the user's
+turns, not merely a demonstrator Branch or export wrapper. Export the first-party
+served composition, install a user-edited revision through ordinary capabilities,
+and show subsequent committed turns executing that selection. Existing vendor CLI
+internals may currently be opaque; that is a documented adapter limitation, not
+an irreducible product boundary. A different supported execution adapter may be
+needed. This proposal does not silently authorize changing primary-writer policy.
+
+| Replaceable boundary | Observable replacement evidence | Retained enforcement |
+| --- | --- | --- |
+| Context assembly/compaction | Selected source changes context selection and preserves origin labels on a real served turn | Authorized reads, input provenance and context limits |
+| Memory policy | Selected policy performs an already-authorized durable update, visible on the next turn | Store scope, attribution and revision checks |
+| Planning/loop/evaluation | Different bounded control flow/tool sequence on the same frozen task and evaluator | Canonical run identity, budget, cancellation and checkpoint contracts |
+| Tool choice/argument construction | User strategy selects a different supported operation with traceable arguments | Governed dispatch and destination-specific authorization |
+| Lifecycle strategy | User composition chooses stop, pending-input continuation and permitted recurrence behavior | Existing run/request/trigger records and supported transitions |
+
+The component descriptor compiler is admission/adapter resolution, not the Branch
+runner. Execution must continue through the existing graph/run pipeline, with
+materialized source resolved to the intended nodes and governed effects. P1 and
+P2 remain useful first slices. Neither a context-only swap nor an inert package
+completes P3 or the full product requirement.
+
+## Review correction: pending requests, learning and effect uncertainty
+
+An approval-needed or input-needed outcome carries the existing pending-request
+reference and native state, correlated to the relevant run/interaction where
+supported. The UI reads that record; it does not create a second approval queue.
+Answering uses the existing guarded request operation under the answering user's
+authority. Recheck the exact target, arguments, definition/binding revisions and
+current grants before continuation. A stale answer must not authorize changed work.
+If the runtime cannot suspend/resume that operation, expose the pending request
+and a supported continuation path; do not invent a resumable run status.
+
+Source activation, authority changes and routine data updates are separate.
+Activating new executable source selects a revision; changed authority uses the
+existing request/grant path. Ordinary memory writes already within the user's
+authorized policy execute under that policy and store checks, without asking for
+fresh approval for each learned fact. External text remains externally attributed
+data and cannot become founder instructions through a write or compaction.
+
+Dispatch attempted, destination accepted, confirmed delivery (where available),
+canonical task completion and user acknowledgment are separate evidence fields.
+A timeout after dispatch is uncertain even if the run is failed. Reconcile via
+the destination's supported receipt/resource lookup or deduplication contract;
+if neither can establish the result, keep it uncertain and do not replay it.
+Transport recovery and application run cursors cannot supply effect idempotency.
+No universal exactly-once guarantee is proposed. The review reports a separate
+PLAN wording concern; this patch does not modify PLAN or assert it resolved.
+
+| ID | Future proof | Required observation |
+| --- | --- | --- |
+| H-C15 | Replace the actual served loop and tool strategy | Subsequent turns use changed source with the same canonical conversation; a context-only swap cannot pass |
+| H-C16 | Authorized memory update versus a source/authority change | Routine write persists without redundant approval; missing authority still uses existing requests |
+| H-C17 | Pending request becomes stale before answer/continuation | Existing request identity retained; changed target/revision is rejected or re-prepared before action |
+| H-C18 | Delivery times out after destination acceptance | Run and effect facts remain separate; no automatic replay when receipt reconciliation is unavailable |
