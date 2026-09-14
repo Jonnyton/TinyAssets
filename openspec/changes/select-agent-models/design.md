@@ -1,5 +1,9 @@
 ## Context
 
+September14 next-slice supplement: `served-model-setup.md` records the Fable5.1
+reviewed model-setup facade and owner-consent boundary before implementation.
+The native-picker release candidate remains unchanged while its CI completes.
+
 September 9 owner direction in PLAN and the provider-compatibility concern is
 authoritative. The 11:39 PDT app reply proposes account-aware fallback but
 explicitly says it has not inspected implementation. Existing serving authority
