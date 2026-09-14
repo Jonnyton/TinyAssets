@@ -59,7 +59,7 @@ def test_billing_is_enabled_only_with_both_secrets(monkeypatch):
     assert billing_enabled() is True
 
 
-def test_calls_fail_soft_rather_than_crashing_when_billing_is_off(monkeypatch):
+def test_calls_fail_soft_rather_than_crashing_when_billing_is_off(monkeypatch, checkout_anchor):
     """A missing processor must be a clear refusal, never an unhandled error."""
     monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
     with pytest.raises(BillingUnavailable):
@@ -70,18 +70,25 @@ def test_calls_fail_soft_rather_than_crashing_when_billing_is_off(monkeypatch):
                 "price_id": "price_x",
                 "success_url": "https://x/ok",
                 "cancel_url": "https://x/no",
-                "expires_at": int(_NOW_ANCHOR + 2100),
+                "expires_at": int(checkout_anchor + 2100),
                 "entitlement_version": "1",
                 "entitlement_claim": "claim",
             },
         )
 
 
+@pytest.fixture
+def checkout_anchor():
+    """Start each attempt at test execution, not potentially slow collection.
+
+    Reuse this one value for every retry within a test, preserving frozen checkout
+    parameters. Production's minimum remaining expiry check stays untouched.
+    """
+    return time.time()
+
+
 # --- webhook verification ----------------------------------------------------
 
-#: A CURRENT anchor. A fixed past one now fails the preflight-budget check, which
-#: is the check working: an anchor from an hour ago cannot yield a valid expiry.
-_NOW_ANCHOR = time.time()
 SECRET = "whsec_test_secret"
 PRICE_ID = "price_tinyassets_monthly"
 
@@ -312,7 +319,7 @@ def test_price_lookup_rejects_a_misconfigured_plan(monkeypatch):
         stripe_adapter.resolve_price_id()
 
 
-def test_checkout_refuses_a_second_subscription_for_one_universe(monkeypatch):
+def test_checkout_refuses_a_second_subscription_for_one_universe(monkeypatch, checkout_anchor):
     """Two completed sessions would bill the same universe twice."""
     from tinyassets.billing import stripe_adapter
 
@@ -329,7 +336,7 @@ def test_checkout_refuses_a_second_subscription_for_one_universe(monkeypatch):
                 "price_id": "price_x",
                 "success_url": "https://x/ok",
                 "cancel_url": "https://x/no",
-                "expires_at": int(_NOW_ANCHOR + 2100),
+                "expires_at": int(checkout_anchor + 2100),
                 "entitlement_version": "1",
                 "entitlement_claim": "claim",
             },
@@ -429,7 +436,7 @@ def _capture_checkout(
     return seen
 
 
-def test_checkout_sends_an_idempotency_key(monkeypatch):
+def test_checkout_sends_an_idempotency_key(monkeypatch, checkout_anchor):
     """A lost response must not turn a retry into a second subscription."""
     from tinyassets.billing import stripe_adapter
 
@@ -463,7 +470,7 @@ def test_checkout_sends_an_idempotency_key(monkeypatch):
                 "price_id": "price_x",
                 "success_url": "https://x/ok",
                 "cancel_url": "https://x/no",
-                "expires_at": int(_NOW_ANCHOR + 2100),
+                "expires_at": int(checkout_anchor + 2100),
                 "entitlement_version": "1",
                 "entitlement_claim": "claim",
             },
@@ -742,7 +749,7 @@ def test_the_user_facing_copy_covers_every_refusal_the_route_classifies():
 # --- Codex round 1 on the fix above: the claim did not bound what it guarded --
 
 
-def test_the_session_is_given_an_expiry_inside_its_claim(monkeypatch):
+def test_the_session_is_given_an_expiry_inside_its_claim(monkeypatch, checkout_anchor):
     """Sending no expires_at let Stripe apply its 24-HOUR default.
 
     The claim then expired 23h45m before the session it guarded stopped being
@@ -751,7 +758,7 @@ def test_the_session_is_given_an_expiry_inside_its_claim(monkeypatch):
     """
     from tinyassets.storage.subscription_state import CHECKOUT_WINDOW_SECONDS
 
-    anchor = _NOW_ANCHOR
+    anchor = checkout_anchor
     sent = _capture_checkout(monkeypatch, anchor=anchor)
 
     expires_at = int(sent["params"]["expires_at"])
@@ -762,30 +769,36 @@ def test_the_session_is_given_an_expiry_inside_its_claim(monkeypatch):
     )
 
 
-def test_the_idempotency_key_identifies_the_attempt_not_the_clock(monkeypatch):
+def test_an_aged_checkout_attempt_still_refuses(monkeypatch, checkout_anchor):
+    """Fresh test setup must not relax the real remaining-expiry safety check."""
+    with pytest.raises(BillingUnavailable, match="too old"):
+        _capture_checkout(monkeypatch, anchor=checkout_anchor - 600)
+
+
+def test_the_idempotency_key_identifies_the_attempt_not_the_clock(monkeypatch, checkout_anchor):
     """A wall-clock bucket replayed a COMPLETED session on resubscribe.
 
     Stripe keeps idempotency results for ~24h, so subscribing, cancelling, and
     resubscribing inside one bucket returned the original finished session -- a dead
     checkout URL. Two different attempts must be two different requests.
     """
-    first = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR, attempt_id="a")
-    same = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR, attempt_id="a")
-    other = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR, attempt_id="b")
+    first = _capture_checkout(monkeypatch, anchor=checkout_anchor, attempt_id="a")
+    same = _capture_checkout(monkeypatch, anchor=checkout_anchor, attempt_id="a")
+    other = _capture_checkout(monkeypatch, anchor=checkout_anchor, attempt_id="b")
 
     assert first["key"] == same["key"], "a retry of one attempt must deduplicate"
     assert first["key"] != other["key"], "a new attempt must not replay the old one"
 
 
-def test_a_retry_of_one_attempt_sends_identical_parameters(monkeypatch):
+def test_a_retry_of_one_attempt_sends_identical_parameters(monkeypatch, checkout_anchor):
     """Stripe errors on a reused idempotency key with changed parameters.
 
     Deriving expires_at from the clock rather than the anchor would make every retry
     a parameter mismatch -- the retry path the key exists for would be the one that
     breaks.
     """
-    first = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR, attempt_id="a")
-    retry = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR, attempt_id="a")
+    first = _capture_checkout(monkeypatch, anchor=checkout_anchor, attempt_id="a")
+    retry = _capture_checkout(monkeypatch, anchor=checkout_anchor, attempt_id="a")
 
     assert first["params"] == retry["params"]
 
@@ -1161,7 +1174,6 @@ def test_matching_modes_pass(monkeypatch):
 
 
 ENTITLEMENT_KEY = "tinyassets_entitlement_key_for_tests"
-_NOW_ANCHOR = time.time()
 
 
 def _v2_subscription(monkeypatch, *, universe_id="u-1"):
@@ -1201,14 +1213,14 @@ def test_v1_subscriptions_keep_working_after_the_upgrade(monkeypatch):
     assert _authorized_subscription_universe(obj, secret=SECRET) == "u-1"
 
 
-def test_new_checkouts_issue_v2_once_the_key_exists(monkeypatch):
-    sent = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
+def test_new_checkouts_issue_v2_once_the_key_exists(monkeypatch, checkout_anchor):
+    sent = _capture_checkout(monkeypatch, anchor=checkout_anchor)
     assert sent["params"][
         "subscription_data[metadata][tinyassets_entitlement_version]"
     ] == "1", "without the key, the old scheme"
 
     monkeypatch.setenv("TINYASSETS_BILLING_ENTITLEMENT_KEY", ENTITLEMENT_KEY)
-    sent = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
+    sent = _capture_checkout(monkeypatch, anchor=checkout_anchor)
     assert sent["params"][
         "subscription_data[metadata][tinyassets_entitlement_version]"
     ] == "2"
@@ -1236,7 +1248,7 @@ def test_a_v2_claim_cannot_be_verified_with_the_v1_key(monkeypatch):
     assert _authorized_subscription_universe(obj, secret=SECRET) == ""
 
 
-def test_every_stripe_request_pins_the_api_version(monkeypatch):
+def test_every_stripe_request_pins_the_api_version(monkeypatch, checkout_anchor):
     """Unversioned requests inherit a DASHBOARD setting we do not control."""
     from tinyassets.billing import stripe_adapter
 
@@ -1261,5 +1273,5 @@ def test_every_stripe_request_pins_the_api_version(monkeypatch):
     stripe_adapter._get("prices?limit=1")
     assert seen["version"] == stripe_adapter.STRIPE_API_VERSION
 
-    sent = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
+    sent = _capture_checkout(monkeypatch, anchor=checkout_anchor)
     assert sent.get("api_version") == stripe_adapter.STRIPE_API_VERSION
