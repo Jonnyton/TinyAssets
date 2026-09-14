@@ -171,8 +171,10 @@ external effects is a separate explicit action under current authority.
 | Shared experience settings | Private installation revision | Separate from definition defaults |
 | Device-local focus/draft | Device/session unless explicitly promoted | Never incidentally published |
 
-Memory policy may propose writes; observations from tools, commons or another
-agent cannot become founder instructions simply by entering a context bundle.
+Memory policy performs ordinary already-authorized learning without a new approval
+for each write. Source activation and changes to authority remain separate actions.
+Observations from tools, commons or another agent cannot become founder instructions
+simply by entering a context bundle.
 Preserve origin and trust distinctions through compaction and cross-device relay.
 
 No claim of universal live-session migration follows from source portability.

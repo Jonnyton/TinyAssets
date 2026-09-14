@@ -7,7 +7,7 @@
 ## Before implementation
 
 - [ ] Resolve project extension, digest encoding, artifact limits, and runner entry point against existing contracts.
-- [ ] Obtain reviewer confirmation of the ADAPT dispositions in review.md and resolve remaining profile, schema, materialization and runtime seams before implementation.
+- [x] Record the follow-up Fable 5.1 approval on reviewed head 23b6e41959828eac92ca7116259e16b73b90fe3b; carry the bounded implementation points into implementation.md.
 
 ## Implementation and proof
 
