@@ -24,7 +24,11 @@ bytes are retained exactly. The lock covers path, UTF-8 byte length and SHA-256.
 The project digest uses RFC 8785-compatible JSON for a **closed metadata grammar**:
 ASCII object keys (including validated entry names), strings, arrays and bounded
 integer byte counts. Arbitrary native JSON is not passed through this codec. A
-Node cross-language test checks Unicode, escaping, byte counts and the digest.
+Node cross-language test independently rebuilds inventory from source files and
+checks Unicode, escaping, byte counts and the digest. Inventory order is Unicode
+code point order, equivalent to UTF-8 byte order for valid paths. In particular,
+`src/\uFFFD.txt` precedes `src/\U0001F600.txt`; JavaScript default UTF-16 `.sort()`
+is not the inventory ordering contract.
 Extending metadata to arbitrary keys/numbers requires the existing pinned
 `rfc8785` dependency and additional vectors; this restricted codec is not a
 general replacement for that dependency.
@@ -42,7 +46,10 @@ Run `python3 -m unittest discover -s tests -p test_agent_project.py -v`.
 The cases cover round-trip, altered source, tampered locks and inventories, inert
 source containing a deliberate exception, path collisions, private content,
 unsupported representations, missing entries, encoding and transport budgets.
-The cross-language case requires Node and explicitly skips if it is absent.
+The cross-language case requires Node. It fails in CI if Node is absent, so this
+proof cannot silently skip there; local environments may explicitly skip it.
+The current `tests.yml` uses `ubuntu-latest` without an explicit Node setup step;
+this test enforces availability rather than assuming the runner image supplies it.
 
 The governed Linux workspace lacks pytest, Ruff, the OpenSpec CLI and full runtime
 dependencies. The dependency-free unittest suite and Node digest check are the
@@ -67,3 +74,20 @@ unavailable sandbox capability. CLI inner-loop limits remain a current adapter
 limitation, not the product ceiling. Browser staging, dependency closure,
 second-account binding, live whole-harness replacement and shared S-1 adoption
 remain open. No partial conformance case is marked complete on this library proof.
+
+## Implementation review follow-up (2026-09-14 UTC)
+
+The [retained review](review-evidence.md) approves the first inert slice at
+`0a3b47c37277c7c21b8e9898bb69f0364c56e1ad`, with two required small fixes.
+This follow-up rejects overflowing JSON numbers (including `1e400`) through
+`ProjectValidationError` and distinguishes malformed JSON source from detected
+private content. Regression cases cover both exponent signs, JSONC and duplicate
+keys. Strict JSON remains required for `.json` files; JSONC is not silently accepted.
+The native normalizer remains the sole portable-key source: export compares input
+keys with normalized output instead of maintaining a second field set.
+
+The source secret scan remains heuristic defense in depth; credential-shaped
+comments may be refused. That limitation is accepted for this inert profile,
+not a claim of complete secret discovery. The approval comments are retained
+alongside this change; the fixes do not turn the older exact-head review into
+an approval of a new head. Full CI and execution/adoption evidence remain open.

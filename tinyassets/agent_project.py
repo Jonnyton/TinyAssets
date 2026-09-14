@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import unicodedata
 from typing import Any
@@ -23,10 +24,6 @@ from tinyassets.custom_agents import (
 SCHEMA = "tinyassets-source-project/v1"
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)", re.I)
-_NATIVE_KEYS = {
-    "schema_version", "name", "description", "tags", "components",
-    "lineage", "external_origins",
-}
 
 
 class ProjectValidationError(AgentValidationError):
@@ -46,10 +43,17 @@ def _json(raw: str) -> Any:
             out[key] = value
         return out
 
+    def finite_float(raw: str) -> float:
+        value = float(raw)
+        if not math.isfinite(value):
+            _fail("non-finite JSON number")
+        return value
+
     try:
         return json.loads(
             raw, object_pairs_hook=pairs,
             parse_constant=lambda _: _fail("non-finite JSON number"),
+            parse_float=finite_float,
         )
     except (ValueError, RecursionError) as exc:
         raise ProjectValidationError("invalid project JSON") from exc
@@ -105,11 +109,17 @@ def _files(files: Any) -> tuple[dict[str, str], list[dict[str, Any]]]:
         parts = path.split("/")
         if any("/".join(parts[:i]) in seen for i in range(1, len(parts))):
             _fail("file and directory paths collide")
+    parsed_sources = []
+    for path, value in files.items():
+        if path.endswith(".json"):
+            try:
+                parsed_sources.append(_json(value))
+            except ProjectValidationError as exc:
+                raise ProjectValidationError("invalid JSON source file") from exc
     try:
         _check_secret_fields(files)
-        for path, value in files.items():
-            if path.endswith(".json"):
-                _check_secret_fields(_json(value))
+        for value in parsed_sources:
+            _check_secret_fields(value)
     except AgentValidationError as exc:
         raise ProjectValidationError("source contains forbidden private content") from exc
     return dict(files), sorted(inventory, key=lambda item: item["path"])
@@ -156,7 +166,7 @@ def _digest(descriptor: dict[str, Any], inventory: list[dict[str, Any]]) -> str:
 
 def _native(raw: str) -> tuple[dict[str, Any], str]:
     value = _json(raw)
-    if not isinstance(value, dict) or set(value) - _NATIVE_KEYS:
+    if not isinstance(value, dict):
         _fail("agent.json must contain only a portable native definition")
     try:
         normalized = _normalize_definition_payload(value)
@@ -175,12 +185,15 @@ def export_project(
     runtime_requirements: list[str] | None = None,
 ) -> str:
     """Package explicitly supplied public source; never traverse a working directory."""
-    if not isinstance(definition, dict) or set(definition) - _NATIVE_KEYS:
+    if not isinstance(definition, dict):
         _fail("export requires a portable native definition, not a binding or run")
     try:
         native = _normalize_definition_payload(definition)
     except AgentValidationError as exc:
         raise ProjectValidationError("invalid portable native definition") from exc
+    # The native normalizer owns the portable field set; do not duplicate it.
+    if set(definition) - set(native):
+        _fail("export requires a portable native definition, not a binding or run")
     if not isinstance(sources, dict) or "agent.json" in sources:
         _fail("sources must not replace agent.json")
     files, inventory = _files({"agent.json": _canonical_json(native), **sources})

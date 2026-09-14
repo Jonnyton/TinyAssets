@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import unittest
@@ -103,6 +104,22 @@ class SourceProjectTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(ProjectValidationError):
                 inspect_project(raw)
 
+    def test_overflowing_lock_numbers_raise_project_error(self):
+        package = json.loads(self.package())
+        package["lock"]["inventory"][0]["bytes"] = "overflow-marker"
+        for token in ["1e400", "-1e400"]:
+            changed = json.dumps(package).replace('"overflow-marker"', token)
+            with self.subTest(token=token), self.assertRaises(ProjectValidationError) as caught:
+                inspect_project(changed)
+            self.assertNotIn(token, str(caught.exception))
+
+    def test_malformed_json_sources_have_value_free_json_diagnostic(self):
+        for value in ['{// private-sentinel\\n}', '{"a":1,"a":2}', '{"a":1e400}']:
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ProjectValidationError, "^invalid JSON source file$"
+            ):
+                self.package(sources={**self.sources, "tsconfig.json": value})
+
     def test_private_definition_binding_and_source_refuse_without_echoing_value(self):
         sentinel = "private-sentinel-that-must-not-appear"
         for field in ["credentials", "conversations", "api_key"]:
@@ -131,14 +148,24 @@ class SourceProjectTests(unittest.TestCase):
 
     def test_descriptor_inventory_digest_matches_javascript_closed_grammar(self):
         if shutil.which("node") is None:
+            if os.environ.get("CI"):
+                self.fail("Node is required for the CI cross-language digest proof")
             self.skipTest("Node is unavailable; cross-language digest proof pending")
         package = json.loads(self.package(sources={
-            **self.sources, "src/😀.txt": "line\né\u2028😀",
+            **self.sources, "src/😀.txt": "line\né\u2028😀", "src/�.txt": "BMP",
         }))
         program = r"""
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const p = JSON.parse(fs.readFileSync(0, 'utf8'));
+// Inventory ordering is UTF-8 byte (Unicode code point) order, not JS sort().
+const inventory = Object.entries(p.files).map(([path, source]) => ({
+  path, bytes: Buffer.byteLength(source),
+  sha256: crypto.createHash('sha256').update(source).digest('hex')
+})).sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
+if (inventory.findIndex(x => x.path === 'src/�.txt') >=
+    inventory.findIndex(x => x.path === 'src/😀.txt')) throw Error('ordering vector');
+
 function canonical(v) {
   if (Array.isArray(v)) return '[' + v.map(canonical).join(',') + ']';
   if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(
@@ -146,7 +173,7 @@ function canonical(v) {
   return JSON.stringify(v);
 }
 process.stdout.write(crypto.createHash('sha256').update(canonical({
-  descriptor:p.descriptor,inventory:p.lock.inventory
+  descriptor:p.descriptor,inventory
 })).digest('hex'));
 """
         got = subprocess.run(
