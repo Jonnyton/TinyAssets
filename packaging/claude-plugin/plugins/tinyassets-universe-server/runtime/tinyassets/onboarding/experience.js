@@ -98,7 +98,8 @@
     return current;
   }
   function recovery(outcome) {
-    if (!outcome || outcome.kind === "conversation" || !outcome.actionId)
+    if (!outcome || outcome.kind !== "action" ||
+        typeof outcome.actionId !== "string" || !outcome.actionId.trim())
       return freeze({automaticRetry: false, next: "check_canonical_history"});
     return freeze({automaticRetry: false, next: "inspect_action_outcome"});
   }
@@ -106,7 +107,11 @@
     const {source, unsupported} = inspect(definition);
     const doc = container.ownerDocument;
     const mode = options.mode === "phone" ? "phone" : "desktop";
-    const fixtures = clone(options.fixtures || []);
+    const fixtures = clone(options.fixtures === undefined ? [] : options.fixtures);
+    if (!Array.isArray(fixtures) || fixtures.some(item => !item ||
+        typeof item !== "object" || Array.isArray(item) ||
+        typeof item.label !== "string" || typeof item.status !== "string"))
+      fail("Fixtures must be an array of label/status objects");
     const fragment = doc.createDocumentFragment();
     function element(tag, text, parent) {
       const node = doc.createElement(tag);

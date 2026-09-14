@@ -48,7 +48,14 @@ test("no implicit conversation operation or retry", () => {
   assert.deepEqual(experience.recovery({kind: "conversation", actionId: "guess"}), {
     automaticRetry: false, next: "check_canonical_history"
   });
-  assert.equal(experience.recovery({kind: "run", actionId: "a"}).automaticRetry, false);
+  for (const outcome of [undefined, {actionId: "a"}, {kind: "run", actionId: "a"},
+    {kind: "action"}, {kind: "action", actionId: 1}, {kind: "action", actionId: " "}])
+    assert.deepEqual(experience.recovery(outcome), {
+      automaticRetry: false, next: "check_canonical_history"
+    });
+  assert.deepEqual(experience.recovery({kind: "action", actionId: "a"}), {
+    automaticRetry: false, next: "inspect_action_outcome"
+  });
 });
 test("absent or malformed bindings and tampered intent refuse", () => {
   for (const bad of [{}, {worker: {branchId: "x", revision: NaN}},
@@ -88,6 +95,16 @@ function documentFixture() {
   return new Element("main", doc);
 }
 function walk(node) { return [node, ...node.children.flatMap(walk)]; }
+test("malformed fixtures fail clearly before replacing the view", () => {
+  const root = documentFixture();
+  const original = new Element("p", root.ownerDocument);
+  root.appendChild(original);
+  for (const fixtures of [{}, null, false, "", [null], [1], [{label: "x"}]]) {
+    assert.throws(() => experience.renderPreview(fixture(), root, {fixtures}),
+      /^Error: Fixtures must be an array of label\/status objects$/);
+    assert.equal(root.children[0], original);
+  }
+});
 test("desktop and phone layouts keep literal text and inert action identity", () => {
   const root = documentFixture();
   const definition = fixture();
