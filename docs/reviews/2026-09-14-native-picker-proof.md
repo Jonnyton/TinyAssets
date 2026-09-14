@@ -62,3 +62,18 @@ protocol, or final new-head approval/deployment is proven here. Current live
 release remains d895905e. The app's six workflow smoke passes are recorded in
 the primary goal, not treated as model-selection acceptance. Keep the PR draft
 until exact-code release review and CI. This shape review is not that receipt.
+
+## CI manifest correction — September 14, 20:45 UTC
+
+Both initial CI failures (invariants run34894197546 and preview contract
+run34894197368) identify the same stale generated-assets app.html hash. Ran
+`python WebSite/brand/render_marks.py`; the sole substantive generated change
+is that manifest hash. No mark geometry or app behavior changed. All six
+`python scripts/invariants_run.py --pre-commit` checks now pass locally.
+`node --test WebSite/site-react/scripts/brand-parity.test.mjs`:2passed.
+
+Initial local `npm test` lacked yaml in this new worktree. After the locked
+`npm ci --ignore-scripts --no-audit --no-fund`, Windows `npm test` reports
+233passed,4skipped,0failed (237tests). Linux CI remains authoritative for those
+skips. No dependency versions changed. Install warned that existing Next14.2.15
+is vulnerable; recorded separately for assessment, not fixed in this picker PR.
