@@ -178,6 +178,7 @@ def _authority_fixture(
         provider="codex",
         generation=4,
         assignment_digest="sha256:" + "f" * 64,
+        manifest_digest="",
     )
     serving_binding = SimpleNamespace(expires_at="2099-01-01T02:00:00+00:00")
     custody = SimpleNamespace(
@@ -512,6 +513,12 @@ def test_stale_held_or_terminal_background_attempt_is_refused_before_provider_ca
         attempt_lifecycle=lifecycle,
         attempt_lease_expires_at=lease_expires_at,
     )
+    terminalized: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        background_provider,
+        "terminalize_background_queue_authority",
+        lambda _base_path, _task, *, status, reason: terminalized.append((status, reason)),
+    )
     raw_calls: list[str] = []
     session = background_provider._BackgroundAssignedProviderSession(
         tmp_path,
@@ -525,7 +532,14 @@ def test_stale_held_or_terminal_background_attempt_is_refused_before_provider_ca
 
     assert raw_calls == []
     assert _reservation_count(conn) == 0
-    assert events == ["hold"]
+    # Identity is checked before discovery or credential snapshotting. Invalid
+    # attempts use the existing terminal projection, not a repairable hold.
+    assert events == []
+    expected_reason = (
+        "background_attempt_lease_expired"
+        if lifecycle == "claimed" else "background_attempt_inactive"
+    )
+    assert terminalized == [("failed", expected_reason)]
 
 
 def test_cross_universe_and_provider_substitution_never_reaches_ambient_call(

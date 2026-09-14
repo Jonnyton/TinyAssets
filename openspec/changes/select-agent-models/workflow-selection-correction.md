@@ -1,5 +1,48 @@
 # Workflow selection must compose with accepted model authority
 
+## September 14, 2026 UTC — CI fixture and import-isolation correction
+
+PR3832 remains draft at remote089129e8; required-tests and scope review are
+terminal failures, not pending jobs. This correction changes tests only.
+
+The four-file Windows reproduction initially failed18 cases. Legacy mock carriers
+did not specify selected_model=None, and a synthetic assignment omitted the real
+record's empty manifest_digest default. Three invalid background-attempt cases
+expected an old hold path; they now assert the earlier identity rejection's exact
+terminal reason and no credential snapshot, reservation or provider call.
+The corrected group passes135 in18.42s on Windows Python3.14.
+
+Running the provider registration probes before workflow tests then reproduced
+two additional failures (59passed/2failed,22.51s): the missing-native-executor
+negative test incorrectly succeeded, and background HTTP hit force-mock refusal.
+Those probes restored sys.modules but left the parent package's call attribute
+pointing at a different module. Package imports and direct module imports then
+configured/executed different routers and mock flags. Three probe fixtures now
+share a test-only context manager restoring both paths on success or exception.
+Four new cases cover present/absent prior modules and failed/successful probes.
+Production provider availability and authority checks are unchanged.
+
+Windows Python3.14 expanded command:
+`python -m pytest -q tests/test_provider_import_isolation.py
+tests/test_provider_binary_probe.py tests/test_provider_stub_registration.py
+tests/test_grok_provider_registration.py tests/test_providers.py
+tests/test_background_served_provider.py tests/test_run_provider_session.py
+tests/test_work_model_selection.py tests/test_background_budget_finalization_e2e.py
+tests/test_providers_call.py --tb=short --show-capture=no`
+passes172 in29.87s, zero skips,102 dependency deprecation warnings.
+`python -m ruff check` for all seven changed Python files and `git diff --check`
+pass. The same ten-file Linux oracle55286 completed169passed/3skipped in20.32s
+(Python3.11.16, Git2.47.3, bubblewrap0.12.0). The three registration checks require
+optional SDKs absent from the image; no workflow or authority case skipped.
+Invocation: the existing Ubuntu WSL Docker route documented below, running
+`python3 scripts/linux_oracle.py -- -q <the same ten files> --tb=short --show-capture=no`.
+A reverse-order Windows group (provider bridge, HTTP/native workflow, then the
+three registration probes and new isolation tests) passes72 in23.68s. Strict
+OpenSpec validation also passes. This establishes focused correction evidence;
+it does not establish that every full-suite CI failure is resolved.
+Full fresh CI, remaining native catalogue/workflow-tool capabilities, independent
+release review, deployment and rendered model-selection proof remain required.
+
 September 11, 2026, 20:25 UTC. Correction proposal and reproduced blocker;
 The initial proposal below is superseded by the reviewed disposition immediately
 below. Runtime integration remains unfinished.
