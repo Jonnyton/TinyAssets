@@ -400,4 +400,3 @@ class InteractiveHttpAgentTurn:
                     expected_generation=self.turn.generation,
                 )
             )
-

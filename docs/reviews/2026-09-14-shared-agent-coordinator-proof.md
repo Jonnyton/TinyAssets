@@ -28,7 +28,13 @@ Command: `python -m pytest -q tests/test_agent_turn_coordinator.py tests/test_in
 Skips: POSIX shared readers, bubblewrap and optional real connected-account
 inference. No real account or rendered deployment proof is inferred.
 Ruff, diff and strict OpenSpec pass. Plugin mirror/import passes440files.
-Linux verification is still in progress; no result claimed yet.
+Actual Linux Python3.11.16/git2.47.3/bubblewrap0.12.0: **158 passed,1 skipped,
+37.53s**, verified18:02UTC. Same nine-file command through
+`python3 scripts/linux_oracle.py --` in WSL Ubuntu, with GIT_DIR/GIT_WORK_TREE
+pinned to this feature worktree. The only skip is optional real account inference.
+Earlier seven-file Linux group138passed/1skip is supporting evidence only; the
+final group was launched after the mixed-native refusal correction and adds those
+cases. No test process was restarted while still live.
 
 Prior pushed00c6a456 required CI34816559310/job103888332425 completed successfully:
 17686passed,9failed,2errors,54skipped,10deselected; **zero new failures** against
