@@ -9,7 +9,7 @@ from tests.test_run_provider_session import _branch, _run_branch
 from tests.test_work_model_selection import http_wire  # noqa: F401 - pytest fixture
 from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
 from tinyassets.provider_assignment_manifest import ModelAccess
-from tinyassets.providers.base import ModelConfig
+from tinyassets.providers.base import ModelConfig, UniverseContext
 from tinyassets.storage.provider_work_authority import db_path
 
 
@@ -88,3 +88,18 @@ def test_step_rechecks_current_authority_without_new_reservation(
         model_access=ModelAccess("discovered") if manifest else None,
     )
     assert observations == [change], result
+
+
+@pytest.mark.parametrize("field", ["provider_request", "provider_invocation", "served_provider",
+                                  "agent_model_plan", "model_selection"])
+def test_foreground_call_rejects_injected_authority_before_admission(tmp_path, field):
+    from dataclasses import replace
+
+    session = _ForegroundRunProviderSession(
+        tmp_path, universe_id="universe_alice", principal_id="acct_alice", provider_call=None,
+    )
+    context = replace(UniverseContext(universe_dir=tmp_path / "universe_alice", config=None),
+                      **{field: object()})
+    with pytest.raises(PermissionError, match="authority cannot be substituted"):
+        session._call("writer", "prompt", "", ModelConfig(), None, {"universe_context": context})
+    assert session._receipt is None and session._claim is None

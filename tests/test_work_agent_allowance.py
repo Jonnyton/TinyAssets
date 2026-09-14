@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,7 +10,8 @@ from tests.test_run_provider_session import _branch, _run_branch
 from tests.test_work_model_selection import http_wire  # noqa: F401 - pytest fixture
 from tinyassets.foreground_run_provider import _work_invocation_allowance
 from tinyassets.provider_assignment_manifest import ModelAccess
-from tinyassets.storage.provider_work_authority import db_path
+from tinyassets.provider_work_authority import ProviderInvocationReservationState
+from tinyassets.storage.provider_work_authority import _reservation_charge, db_path
 
 
 def snapshot(*, agent=False):
@@ -54,8 +56,8 @@ def test_invalid_agent_subject_does_not_gain_allowance():
 def test_actual_foreground_receipt_uses_existing_binding_ceiling(
     tmp_path, monkeypatch, authenticate_request, agent, open_provider,
 ):
-    # Exercise admission only for agent work. Its current tool-route refusal is
-    # expected here; this test does not claim the unimplemented tool loop works.
+    # Exercise admission only for agent work. No engine route is installed in
+    # this fixture; full tool-loop proof lives in test_workflow_http_agent.py.
     branch = _branch(node_count=1)
     if agent:
         branch.node_defs[0].tools_allowed = ["universe_self"]
@@ -84,3 +86,21 @@ def test_actual_foreground_receipt_uses_existing_binding_ceiling(
     )
     assert receipt["max_tokens"] == binding["max_tokens"]
     assert receipt["max_cost_microunits"] == binding["max_cost_microunits"]
+
+
+@pytest.mark.parametrize("state", list(ProviderInvocationReservationState))
+@pytest.mark.parametrize("tokens,cost", [(None, None), (7, None), (None, 3), (0, 0), (7, 3)])
+def test_shared_reservation_charge_matches_original_admission_expression(state, tokens, cost):
+    item = SimpleNamespace(state=state, actual_total_tokens=tokens, actual_cost_microunits=cost,
+                           max_tokens=1000, max_cost_microunits=500)
+    # Frozen pre-extraction admission expression is the executable specification.
+    expected = (
+        (0, 0, 0)
+        if item.state is ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH
+        else (1, int(item.actual_total_tokens), int(item.actual_cost_microunits))
+        if item.state in {ProviderInvocationReservationState.SUCCEEDED,
+                          ProviderInvocationReservationState.FAILED}
+        and item.actual_total_tokens is not None and item.actual_cost_microunits is not None
+        else (1, item.max_tokens, item.max_cost_microunits)
+    )
+    assert _reservation_charge(item) == expected

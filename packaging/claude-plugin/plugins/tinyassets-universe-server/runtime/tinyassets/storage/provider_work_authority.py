@@ -470,6 +470,17 @@ def _reservation_record(row: sqlite3.Row) -> ProviderInvocationReservation:
     return reservation
 
 
+def _reservation_charge(item):
+    """One canonical charge for admission and remaining-round clipping."""
+    if item.state is ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH:
+        return 0, 0, 0
+    if (item.state in {ProviderInvocationReservationState.SUCCEEDED,
+                       ProviderInvocationReservationState.FAILED}
+            and item.actual_total_tokens is not None and item.actual_cost_microunits is not None):
+        return 1, int(item.actual_total_tokens), int(item.actual_cost_microunits)
+    return 1, item.max_tokens, item.max_cost_microunits
+
+
 def _agent_receipt_for_authority(
     conn: sqlite3.Connection,
     authority: ProviderUniverseWorkAuthority,
@@ -1373,28 +1384,7 @@ class _Transaction:
             (receipt.receipt_id,),
         ).fetchall()
         reservations = tuple(_reservation_record(row) for row in rows)
-        charged = tuple(
-            (
-                0,
-                0,
-                0,
-            )
-            if item.state is ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH
-            else (
-                1,
-                int(item.actual_total_tokens),
-                int(item.actual_cost_microunits),
-            )
-            if item.state
-            in {
-                ProviderInvocationReservationState.SUCCEEDED,
-                ProviderInvocationReservationState.FAILED,
-            }
-            and item.actual_total_tokens is not None
-            and item.actual_cost_microunits is not None
-            else (1, item.max_tokens, item.max_cost_microunits)
-            for item in reservations
-        )
+        charged = tuple(_reservation_charge(item) for item in reservations)
         exhausted = (
             sum(item[0] for item in charged) >= receipt.max_invocations,
             sum(item[1] for item in charged) + request.max_tokens > receipt.max_tokens,
@@ -2606,7 +2596,9 @@ class SQLiteProviderWorkAuthorityStore:
             raise PermissionError("run provider execution claim is unavailable")
         return receipt, claimed.record
 
-    def _validate_work_selection(self, conn, receipt, selection, model_snapshot=None):
+    def _validate_work_selection(
+        self, conn, receipt, selection, model_snapshot=None, *, needs_tools=False,
+    ):
         """Reconstruct per-attempt model authority without network inside the fence."""
         from tinyassets.provider_serving_binding import (
             _current_selected_member_authority,
@@ -2678,6 +2670,7 @@ class SQLiteProviderWorkAuthorityStore:
         )
         selected, _recheck = _validate_snapshot(
             definition, model_snapshot, selection.provider, model_id, member.access,
+            needs_tools=needs_tools,
         )
         return selection_with_model(selection, selected, model_snapshot)
 
@@ -2693,6 +2686,7 @@ class SQLiteProviderWorkAuthorityStore:
         max_cost_microunits: int,
         selection: ProviderInvocationSelection | None = None,
         model_snapshot=None,
+        needs_tools: bool = False,
     ) -> ProviderInvocationCarrier:
         """Reserve and arm one run attempt after caller-owned revalidation."""
 
@@ -2700,8 +2694,23 @@ class SQLiteProviderWorkAuthorityStore:
             raise ValueError("run provider launch requires an active transaction")
         if receipt.work_item_kind != "run":
             raise PermissionError("provider receipt is not run authority")
+        if type(needs_tools) is not bool:
+            raise ValueError("work tools requirement must be boolean")
+        if needs_tools:
+            charged = [_reservation_charge(_reservation_record(row)) for row in conn.execute(
+                "SELECT * FROM provider_invocation_reservations WHERE receipt_id = ?",
+                (receipt.receipt_id,),
+            )]
+            max_tokens = min(max_tokens, receipt.max_tokens - sum(item[1] for item in charged))
+            max_cost_microunits = min(
+                max_cost_microunits, receipt.max_cost_microunits - sum(item[2] for item in charged),
+            )
+            if max_tokens < 1 or max_cost_microunits < 1:
+                raise PermissionError("workflow agent aggregate budget exhausted")
         if receipt.authority_scope == "manifest":
-            selection = self._validate_work_selection(conn, receipt, selection, model_snapshot)
+            selection = self._validate_work_selection(
+                conn, receipt, selection, model_snapshot, needs_tools=needs_tools,
+            )
             from tinyassets.providers.work_model_selection import bound_work_model_tokens
 
             max_tokens = bound_work_model_tokens(selection, max_tokens, max_cost_microunits)

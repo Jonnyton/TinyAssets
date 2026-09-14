@@ -30,6 +30,13 @@ class ServedChatAgentAdapter:
         # remains in infer(), preserving the router's typed refusal on fallback.
         return config.engine_mcp_actor_id, config.engine_mcp_graph_id
 
+    def create_turn(self, journal, *, owner, context, prompt, system, plan):
+        return journal.create(
+            owner, context.universe_dir.name, prompt=prompt, system=system,
+            policy_generation=None if plan is None else plan.policy.generation,
+            policy_source="unknown" if plan is None else plan.policy_source,
+        )
+
     async def infer(self, *, router, prompt, system, config, context, observer, kind):
         return await router.call(
             "writer", prompt, system, config, operation="converse",

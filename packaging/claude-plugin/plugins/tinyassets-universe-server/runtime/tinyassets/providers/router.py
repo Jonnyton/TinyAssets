@@ -491,12 +491,21 @@ class ProviderRouter:
         _agent_execution_kind=None,
     ) -> ProviderResponse:
         """Route a call, fencing founder-facing served turns before launch."""
+        work_agent = (
+            universe_context is not None
+            and type(universe_context.provider_invocation) is ProviderInvocationCarrier
+            and universe_context.provider_request is None
+            and universe_context.served_provider is None
+            and operation in {"run_graph", "background_branch_run"}
+            and operation == universe_context.provider_invocation.operation
+            and callable(_agent_observer)
+        )
         if _agent_execution_kind is not None and (
             _agent_execution_kind not in ("native_agent", "engine_inference")
-            or role != "writer" or operation != "converse"
+            or role != "writer" or (operation != "converse" and not work_agent)
             or config is None or not config.engine_mcp_enabled
             or universe_context is None or universe_context.model_selection is None
-            or universe_context.provider_invocation is not None
+            or (universe_context.provider_invocation is not None and not work_agent)
         ):
             raise PermissionError("agent step requires the selected served writer")
 
@@ -575,6 +584,8 @@ class ProviderRouter:
             config,
             operation=operation,
             universe_context=universe_context,
+            **({"_agent_execution_kind": _agent_execution_kind,
+                "_work_agent_observer": _agent_observer} if work_agent else {}),
         )
 
     async def _call_routed(
@@ -587,6 +598,7 @@ class ProviderRouter:
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
         _agent_execution_kind=None,
+        _work_agent_observer=None,
     ) -> ProviderResponse:
         """Route a single call through the fallback chain for *role*.
 
@@ -648,6 +660,13 @@ class ProviderRouter:
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
+        if _work_agent_observer is not None:
+            if (type(invocation_carrier) is not ProviderInvocationCarrier
+                    or not callable(_work_agent_observer) or _agent_execution_kind is None):
+                raise PermissionError("work agent observer requires admitted inference")
+            # Inert caller configuration cannot select another tool identity.
+            cfg = replace(cfg, engine_mcp_actor_id=invocation_carrier._receipt.principal_id,
+                          engine_mcp_graph_id=invocation_carrier._receipt.universe_id)
         # Selection is a validated per-attempt fact, never an ordinary caller's
         # ModelConfig preference. Preserve legacy calls by clearing any injected
         # selection when there is no selected-model serving authority.
@@ -675,7 +694,13 @@ class ProviderRouter:
 
         if cfg.agent_request is not None and (
             cfg.selected_model is None or not cfg.engine_mcp_enabled
-            or role != "writer" or operation != "converse"
+            or role != "writer" or (
+                operation != "converse" and not (
+                    _work_agent_observer is not None
+                    and operation == invocation_carrier.operation
+                    and cfg.selected_model is not None and cfg.selected_model.supports_tools
+                )
+            )
         ):
             raise PermissionError("agent inference requires the selected served writer")
         if cfg.selected_model is not None:
@@ -1080,6 +1105,8 @@ class ProviderRouter:
                             if not callable(after_claim) or budget_reservation is None:
                                 raise PermissionError("invalid agent pre-dispatch observer")
                             after_claim(served_authority, budget_reservation, cfg)
+                        if _work_agent_observer is not None:
+                            _work_agent_observer(invocation_carrier, None, cfg)
                         provider_started = True
                         resp = await provider.complete(
                             prompt, system, cfg, universe_dir=universe_dir,
@@ -1089,6 +1116,11 @@ class ProviderRouter:
                     # released untouched, no cooldown is applied, and the actionable
                     # message reaches the caller instead of being flattened into
                     # "all providers exhausted".
+                    if invocation_carrier is not None:
+                        settle_carrier(
+                            ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                            input_tokens=0, output_tokens=0, cost_microunits=0,
+                        )
                     if budget_reservation is not None:
                         # RELEASED, not abandoned: nothing launched, so no tokens were
                         # spent and charging the binding would exhaust a budget that
@@ -1128,7 +1160,12 @@ class ProviderRouter:
                                 budget_reservation,
                             )
                     if invocation_carrier is not None:
-                        if isinstance(
+                        if not provider_started:
+                            settle_carrier(
+                                ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                                input_tokens=0, output_tokens=0, cost_microunits=0,
+                            )
+                        elif isinstance(
                             exc,
                             (
                                 ProviderRateLimitedError,
@@ -1372,6 +1409,8 @@ class ProviderRouter:
                 attempts=attempts,
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),
+                capacity_scope=dominant_capacity_scope(attempts),
+                native_evidence=tuple(native_proofs.get(i) for i in range(len(attempts))),
             )
         if is_pinned_writer:
             # Hard pin must fail loudly rather than silently falling through

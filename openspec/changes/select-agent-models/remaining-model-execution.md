@@ -116,6 +116,16 @@ Router permissions remain closed until the adapter/observer/replay fence is buil
 This adaptation implements the review's finite aggregate invariant using existing
 owner authority rather than its proposed new zero-default workflow field.
 
+Full coordinator integration exposed a second R5 boundary: a one-node receipt
+reserves its entire token/cost share again after spending seven tokens, so the
+second reservation exceeds the aggregate by seven even though almost all budget
+remains. Before arming an agent round, clip its requested token/cost share to the
+remaining aggregate, using the exact existing reservation-charge function (known
+actuals, unknown maxima, cancelled-before-launch zero). Keep ordinary calls
+unchanged. Reapply model affordability after clipping. Receipt ceilings are no
+larger than participating member ceilings; the existing atomic aggregate/member
+checks remain authoritative. This neither grants fresh budget nor erases spend.
+
 The allowance adaptation and private foreground between-step authority check are
 now built. The check rereads live receipt/claim/member/parent (and legacy child),
 current owner and immutable running subject without reserving or rearming. Its
@@ -130,6 +140,28 @@ turn. Therefore a work adapter must suppress whole-node retry after any dispatch
 tool, not just an unknown effect. Safe no-effect capacity traversal remains inside
 the same coordinator/history. A pre-intent failure can retain existing retry only
 when no earlier action was dispatched. Cancellation must keep its original signal.
+
+Foreground integration is now built with the separate work adapter and actual
+pre-inference observer. HTTP tool/result/second-round execution and native
+completion/capacity/uncertainty use work-owned journal roots. Prelaunch failures
+release unused reservations, injected caller authority refuses, and effectful
+or unknown failures cannot restart the node.292Windows/292Linux tests pass;
+see docs/reviews/2026-09-14-foreground-work-agent-proof.md. Background integration
+and work-owned within-turn safe fallback traversal remain open. The current
+foreground adapter pins the initially resolved source/model for later rounds;
+it does not fabricate a served-chat model plan for workflow authority.
+
+Background implementation seams confirmed from current source: `_branch_roles`
+already loads and validates the immutable version, but the background session
+does not yet call `prepare_shared_self_turn`. Reuse that opt-in/persona path.
+Every inference still needs `_authorize_launch`'s current task, activation,
+attempt/member and consumer-lease checks; tool checks must additionally reject
+`cancel_requested` rather than inheriting that launch helper's broader status
+set. Existing `_background_receipt_authority` validates the receipt's attempt
+and queue owner but is insufficient alone for activation and consumer identity.
+Keep per-inference invocation indices monotonic even after a failed attempt;
+the old session increments only after a successful provider call. Existing
+background token/cost shares already divide the aggregate across its ceiling.
 
 ## Order and completion
 

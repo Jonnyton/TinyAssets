@@ -1,5 +1,13 @@
 ## 1. Reviewed foundation
 
+September14 foreground tool integration now passes through the real compiler,
+admission, router and work journal. HTTP tool/continuation and native evidence
+cases, effect-safe refusal, finite remaining budget, stale capability and injected
+authority checks pass:292Windows/292Linux, zero skips. Supplementary94Windows
+checks pass. See docs/reviews/2026-09-14-foreground-work-agent-proof.md.
+Background adapter, work-owned safe capacity traversal, integrated user proof
+and final approved release review remain open. No live deployment claimed.
+
 September14 owner-approved remaining-design Fable review completed576s ADAPT;
 dispositions in remaining-model-execution.md. Native explicit propagation now
 built for chat/workflows, both CLIs, sealed evidence and honest picker basis.

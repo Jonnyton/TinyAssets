@@ -176,10 +176,9 @@ class AgentTurnCoordinator:
             self._check_scope()
         if self.turn is None:
             self.journal = AgentTurnJournal(self.context.universe_dir.parent)
-            self.turn = self.journal.create(
-                self.owner, uid, prompt=self.prompt, system=self.system,
-                policy_generation=None if self.plan is None else self.plan.policy.generation,
-                policy_source="unknown" if self.plan is None else self.plan.policy_source,
+            self.turn = self.adapter.create_turn(
+                self.journal, owner=self.owner, context=self.context,
+                prompt=self.prompt, system=self.system, plan=self.plan,
             )
         elif self.turn.state != "ready" or self.turn.rounds:
             raise JournalUnavailable("agent turn cannot be replayed")

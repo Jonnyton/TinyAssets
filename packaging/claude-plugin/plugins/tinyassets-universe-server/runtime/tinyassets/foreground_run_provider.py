@@ -692,6 +692,7 @@ class _ForegroundRunProviderSession:
             _is_open_provider,
             resolve_serving_agent_binding,
         )
+        from tinyassets.shared_self import shared_self_requested
         from tinyassets.storage.provider_work_authority import (
             SQLiteProviderWorkAuthorityStore,
         )
@@ -804,6 +805,7 @@ class _ForegroundRunProviderSession:
                             max_cost_microunits=cost_share,
                             selection=selection,
                             model_snapshot=model_snapshot,
+                            needs_tools=shared_self_requested(self._branch_snapshot),
                         )
                         if not _is_open_provider(provider):
                             snapshot = snapshot_llm_subscription_credential(
@@ -846,6 +848,12 @@ class _ForegroundRunProviderSession:
             Path(supplied_context.universe_dir) != self._universe_dir
         ):
             raise PermissionError("foreground provider universe cannot be substituted")
+        if supplied_context is not None and any(
+            getattr(supplied_context, field, None) is not None
+            for field in ("provider_request", "provider_invocation", "served_provider",
+                          "agent_model_plan", "model_selection")
+        ):
+            raise PermissionError("foreground provider authority cannot be substituted")
         if self._closed:
             from tinyassets.exceptions import ProviderAuthorityHeldError
 
@@ -884,6 +892,14 @@ class _ForegroundRunProviderSession:
             prompt, system, config = prepare_shared_self_turn(
                 self._base_path, self._universe_id, self._principal_id, prompt, config,
             )
+            if config.engine_mcp_enabled:
+                from tinyassets.workflow_agent import call_foreground_work_agent
+
+                if role != "writer" or kwargs:
+                    raise PermissionError("workflow agent call cannot substitute execution context")
+                return call_foreground_work_agent(
+                    self, prompt=prompt, system=system, config=config, policy=policy,
+                )
         with self._authorize_attempt(
             role=role,
             prompt=prompt,
