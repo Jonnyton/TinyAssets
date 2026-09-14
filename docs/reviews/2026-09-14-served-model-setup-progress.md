@@ -34,7 +34,29 @@ Latest September14 Windows verification:
 git diff --check pass;442-file mirror/import probe passes. This is still not
 both-client rendered proof, Linux evidence, or real-account model selection.
 
-Remaining: typed bind_model_access owner request/answer/rendering and partial
-failure semantics; fresh head review, CI, deploy and rendered
-app acceptance. Do not present preference save as inference authority or turn
-this checkpoint into a final narrower feature. Private workflows remain untouched.
+Typed bind_model_access is now locally implemented after the second Fable5.1
+sequence review (ADAPT,341seconds). It reuses one membership parser, captures
+owner/current-home/binding/root/membership state before raising a fieldless ask,
+preserves other sources and ceilings, and discloses before/after and reconnect.
+The served agent still cannot answer. Bind/reconnect use internal assignment
+digest/current-home fences. Failed publication can advance multiple generations;
+matching partial reconnect retries do not rebind. Request-resolution failure
+stays pending and a matching serving-state retry performs no new activation.
+The rail shows partial-setup errors locally rather than pretending an offline
+agent received a relay. No new storage table or authority-from-preference path.
+
+Final September14 Windows command is the prior group plus
+tests/test_model_access_requests.py, tests/test_pending_requests.py,
+tests/test_request_rail_honest_asks.py, tests/test_app_request_rail_executes.py,
+tests/test_provider_serving_binding.py, tests/test_served_model_preferences.py
+and tests/test_provider_assignment_manifest.py:366passed,3Windows skips,
+33.82seconds,six deprecation warnings. Ruff and git diff --check pass;
+443-file plugin mirror/import probe passes. One extra two-source test initially
+used the wrong synthetic Claude credential field; corrected to oauth_token,
+then all14model-access cases passed as part of the final366. No runtime fallback
+or skipped assertion was added. Four rail tests execute the shipped JS in Node.
+
+Remaining: exact-head independent review, CI/Linux evidence, spec sync, deploy
+and rendered app acceptance including real account catalogue/model selection.
+Do not present preference save as inference authority or synthetic fixtures as
+real-account proof. Private workflows remain untouched.

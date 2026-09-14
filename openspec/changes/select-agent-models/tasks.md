@@ -6,7 +6,10 @@ implemented locally on codex/served-model-setup, now including canonical shared
 connector preference save and real discovery-grant boundary tests.207Windows
 passes/3skips,13.53s, Ruff,
 442-file mirror/import pass. See docs/reviews/2026-09-14-served-model-setup-progress.md.
-Typed owner-consent action and full delivery/live-account proof remain OPEN;
+Typed owner-consent action is now locally implemented with assignment/current-home
+fences and partial-stage replay, after Fable's sequence review. Final366Windows
+passes/3skips,33.82s,443-file mirror/import pass. Exact-head review and full
+delivery/live-account proof remain OPEN;
 do not mark the broad task complete from this partial checkpoint.
 
 September14 follow-up after deployed PR3832: the app reports six workflow smoke

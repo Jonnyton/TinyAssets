@@ -1515,7 +1515,11 @@ def write_graph(
             Metadata never adds endpoints or grants inference/spending. Read your
             existing connections/compute before asking for new credentials.
         operation: branch create/patch/delete; automation create/pause/resume/delete;
-            pending_request ask.
+            pending_request ask. For model access, ask with action type
+            bind_model_access, agent_binding_id, expected_revision, provider
+            and complete model_access. No fields: the owner sees the exact
+            change and reconnect warning, and must confirm in their app.
+            Other accepted sources and spending ceilings must be preserved.
         payload_json: for create, a complete Branch spec (JSON object); for patch, a
             JSON array of edit ops.
         branch_id: for patch, the id of YOUR branch to edit (required for patch).
@@ -1621,11 +1625,12 @@ def write_graph(
     if t != "branch":
         return json.dumps({
             "error": (
-                "write_graph on the served surface builds workflow SHAPES only: "
-                f"target must be 'branch', 'automation' or 'pending_request' "
+                "write_graph on the served surface supports scoped setup and workflows: "
+                "target must be 'branch', 'automation', 'pending_request', "
+                "'model_preferences' or discovery-only 'connection' "
                 f"(got '{target or '(empty)'}'). "
-                "Connections, credentials, agents, and goals are "
-                "not built here."
+                "Credential deposit, broad connection changes, agent-binding "
+                "mutation and goals are not available here."
             ),
         })
     # Require an EXPLICIT known op: empty/unknown must never fall through. create +

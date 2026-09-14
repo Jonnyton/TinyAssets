@@ -98,6 +98,18 @@ class ModelAccess:
         )
 
 
+def parse_model_access(document: object) -> dict[str, ModelAccess]:
+    """The complete accepted membership parser shared by owner ingresses."""
+    if type(document) is not dict or not document:
+        raise ValueError("model_access must be a nonempty object")
+    if any(not _text(name) for name in document):
+        raise ValueError("invalid model_access provider")
+    return {
+        name: ModelAccess.from_json(json.dumps(value, allow_nan=False))
+        for name, value in document.items()
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class AssignmentCandidate:
     provider: str

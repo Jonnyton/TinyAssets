@@ -53,6 +53,37 @@ equivalent behavior. Do not create a new failure-state schema just for this acti
 
 ## Verification to implement
 
+September14 sequence review is preserved in
+docs/reviews/2026-09-14-model-consent-sequence-fable.md (ADAPT,341seconds).
+Confirmed in source: bind increments R and resets configured; enable changes
+status only, so completion is R+1/serving, not R+2. The universe assignment can
+change through a different binding without advancing this agent's revision.
+Add an optional internal expected_assignment_digest fence to set_serving,
+checked before discovery and again inside the existing write transaction.
+An omitted fence preserves current callers. This is a prerequisite, not a new
+served binding mutation or a completed consent flow.
+
+The final action must explicitly disclose reconnect and partial failure. Pending
+and failed publications share the next generation with ready, so retry cannot
+infer success from revision/generation alone. The review's failed-retry example
+publishes G+2, while its B/C classifier only accepts G+1; reconcile this before
+implementing the classifier, and test a second failure rather than copying the
+table mechanically. Preserve membership/caps; no unrecorded auto-grant or restore.
+
+Classifier disposition: capture original digest and generation as well as R.
+Untouched state must still match that digest. Exact proposed pending/failed
+membership may be retried with R unchanged and generation greater than G;
+bind fences that newly observed digest before publishing. Bound/done states
+require R+1, ready, generation greater than G, exact proposed root/membership,
+owner and matching provider_ref. This permits repeated failed publications
+without pretending every retry remains G+1. An already matching original ready
+assignment can reconnect without rebinding. Reconnect pins its observed digest
+and current home inside its transaction. Request resolution failure stays an
+error; a subsequent matching serving-state answer resolves without re-publishing.
+The access-only operation preserves every existing member's cost caps and every
+other member's scope. It can change only the nominated source's model scope or
+add a free-only source. Spending-limit changes remain outside this action.
+
 - Non-home pinned universe cannot read home model state or save preferences.
 - Foreign binding ids never read or create a pending access request.
 - Stale preference generation returns conflict/current snapshot without overwrite.

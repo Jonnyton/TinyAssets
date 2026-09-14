@@ -107,6 +107,44 @@ def test_changed_home_cannot_receive_old_pinned_preference(home):
     assert ModelPreferenceStore(home).get("owner-setup", "u-setup").generation == 0
 
 
+def test_preference_home_change_between_validation_and_commit_is_refused(home, monkeypatch):
+    from tinyassets import shared_self
+    from tinyassets.storage.model_preferences import ModelPreferenceStore
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    require_home = shared_self.require_founder_home
+
+    def move_after_check(base, universe_id, actor):
+        path = require_home(base, universe_id, actor)
+        with SQLiteProviderWorkAuthorityStore(home).connection() as conn:
+            conn.execute("UPDATE founder_home SET universe_id=? WHERE founder_sub=?",
+                         ("u-other", "owner-setup"))
+        return path
+
+    monkeypatch.setattr(shared_self, "require_founder_home", move_after_check)
+    assert save()["error"] == "model_preference_home_changed"
+    assert ModelPreferenceStore(home).get("owner-setup", "u-setup").generation == 0
+
+
+@pytest.mark.parametrize("target,payload", [
+    ("model_preferences", {"expected_generation": 0, "policy": AUTO}),
+    ("connection", {"capability_kind": "model_discovery", "enabled": False,
+                    "definition_id": "anything"}),
+])
+def test_setup_write_refused_before_mutation_without_admission(bound, monkeypatch, target, payload):
+    monkeypatch.setattr(engine, "_engine_run_admit", lambda **kw: False)
+    monkeypatch.setattr("tinyassets.api.model_preferences.save_model_preferences",
+                        lambda **kw: pytest.fail("unadmitted preferences write"))
+    monkeypatch.setattr("tinyassets.api.provider_capability.configure_provider_capability",
+                        lambda **kw: pytest.fail("unadmitted discovery configuration"))
+    result = json.loads(engine.write_graph(
+        target=target, operation="save" if target == "model_preferences" else (
+            "configure_provider_capability"
+        ), payload_json=json.dumps(payload),
+    ))
+    assert "refused" in result["error"]
+
+
 def test_binding_read_uses_real_universe_scoped_storage(home):
     from tests.test_custom_agents import _binding, _definition
     from tinyassets.custom_agents import create_binding, publish_definition

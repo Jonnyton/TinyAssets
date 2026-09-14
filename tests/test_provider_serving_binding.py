@@ -479,6 +479,34 @@ def test_set_serving_requires_current_server_authority_and_is_reversible(tmp_pat
     )["status"] == "configured"
 
 
+def test_set_serving_fences_the_exact_approved_assignment(tmp_path):
+    from tinyassets.custom_agents import get_binding
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+
+    universe, agent = _seed_universe(tmp_path)
+    scope = dict(base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+                 universe_id="u-owner", agent_binding_id=agent["agent_binding_id"])
+    bound = bind_serving_provider(**scope, expected_revision=1, provider="codex")
+    revision = bound["agent_binding"]["revision"]
+    assignment = load_provider_assignment(tmp_path, universe_id="u-owner")
+    with pytest.raises(PermissionError, match="assignment changed since approval"):
+        set_serving(**scope, expected_revision=revision, enabled=True,
+                    expected_assignment_digest="not-the-approved-assignment")
+    assert get_binding(tmp_path, universe_id="u-owner",
+                       binding_id=agent["agent_binding_id"])["status"] == "configured"
+    enabled = set_serving(**scope, expected_revision=revision, enabled=True,
+                          expected_assignment_digest=assignment.assignment_digest)
+    assert enabled["status"] == "serving"
+    assert enabled["agent_binding"]["revision"] == revision  # status is not a revision bump
+    # The transaction-level fence also protects an explicitly pinned disable.
+    with pytest.raises(PermissionError, match="assignment changed since approval"):
+        set_serving(**scope, expected_revision=revision, enabled=False,
+                    expected_assignment_digest="stale")
+    assert get_binding(tmp_path, universe_id="u-owner",
+                       binding_id=agent["agent_binding_id"])["status"] == "serving"
+
+
 def test_served_binding_selection_is_owner_scoped_and_unambiguous(tmp_path):
     from tinyassets.custom_agents import create_binding, get_definition, serving_binding_candidates
     from tinyassets.provider_serving_binding import (

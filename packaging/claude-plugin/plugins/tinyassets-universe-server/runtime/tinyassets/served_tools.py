@@ -27,6 +27,12 @@ from __future__ import annotations
 #:
 #: Included:
 #:   read_graph, get_status, browse_commons, read_commons_shape  — read surfaces
+#:       Model options and private agent bindings are pinned to this universe.
+#:       Catalogue refresh uses admission; remote model text is untrusted.
+#:   write_graph model_preferences/save and connection/configure_provider_capability
+#:       (model_discovery only) reuse current-home preference CAS and existing
+#:       owned connection grants. Neither authorizes inference or spending.
+#:       Broad agent-binding mutation and pending-request answer remain unavailable.
 #:   read_brain, write_brain                                     — the universe's own brain
 #:   connect_compute                                             — register a compute
 #:       provider (candidate-only, owner-gated, graph-pinned, secret-free; no
