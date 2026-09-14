@@ -2027,7 +2027,7 @@
   // The server owns ordering, eligibility, source identity and accepted constraints.
   const ModelPicker={
     snapshot:null,draft:null,epoch:0,busy:false,stale:true,expires:0,timer:null,recovery:null,
-    actual:"No answering model reported yet",
+    actual:"No answering model reported yet",nativeDrafts:{},
     automatic(){return {version:1,mode:"automatic",saved_default:null,fallbacks:[]};},
     key(ref){return JSON.stringify([ref.provider_ref,ref.model_id]);},
     label(ref){return ref.provider_ref+" · "+(ref.model_id||"Provider default");},
@@ -2050,7 +2050,7 @@
     },
     reset(){
       this.epoch++;clearTimeout(this.timer);this.snapshot=null;this.draft=null;
-      this.busy=false;this.stale=true;this.recovery=null;modelChoiceForNextTurn=null;
+      this.busy=false;this.stale=true;this.recovery=null;this.nativeDrafts={};modelChoiceForNextTurn=null;
       this.actual="No answering model reported yet";
       if($("model-dialog").open) $("model-dialog").close();
       this.paintHeader();
@@ -2071,7 +2071,7 @@
           !Array.isArray(doc.options)||!Array.isArray(doc.unavailable)||!Array.isArray(doc.order)||
           !doc.preferences||typeof doc.universe_id!=="string") throw new Error("catalogue unavailable");
         if(this.snapshot&&this.snapshot.universe_id!==doc.universe_id){
-          modelChoiceForNextTurn=null;this.draft=null;this.recovery=null;this.actual="No answering model reported yet";
+          modelChoiceForNextTurn=null;this.draft=null;this.recovery=null;this.nativeDrafts={};this.actual="No answering model reported yet";
         }
         this.snapshot=doc;this.stale=false;
         if(!this.draft) this.draft=copyModelChoice(modelChoiceForNextTurn||doc.preferences.policy||this.automatic());
@@ -2145,6 +2145,9 @@
       for(const source of (this.snapshot&&this.snapshot.sources||[])){
         const proposal=this.accessProposal(source),li=document.createElement("li");
         const label=document.createElement("span");label.textContent=source.provider_ref;li.appendChild(label);
+        if(source.access_method==="subscription_cli"&&this.nativeAccessProposal(source,"explicit",[])){
+          this.renderNativeAccess(source,li);accessList.appendChild(li);continue;
+        }
         if(proposal){
           const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";
           btn.textContent="Allow "+proposal.count+" compatible model"+(proposal.count===1?"":"s")+" and reconnect";
@@ -2152,6 +2155,10 @@
           btn.addEventListener("click",()=>this.allowAccess(source));li.appendChild(btn);
         }else{
           const note=document.createElement("span");note.textContent=" — "+(this.stale?"refresh required":source.accepted?"existing access retained":"connect or enable model access on your current source first");li.appendChild(note);
+          if(!source.accepted){
+            const connect=document.createElement("button");connect.type="button";connect.className="btn btn--link";connect.textContent="Connection setup";
+            connect.addEventListener("click",()=>{$("model-dialog").close();showConnect(true);});li.appendChild(connect);
+          }
         }
         accessList.appendChild(li);
       }
@@ -2194,12 +2201,61 @@
       this.status("Next messages will use this choice. Already sent or queued messages keep their original choice.");
     },
     useSaved(){modelChoiceForNextTurn=null;this.draft=copyModelChoice(this.snapshot&&this.snapshot.preferences.policy||this.automatic());this.render();this.status("Next messages will use the saved default. Queued messages are unchanged.");},
-    accessProposal(source){
+    accessContext(source){
       const snapshot=this.snapshot;
       if(!this.fresh()||!snapshot.binding||!source||!source.bind_key) return null;
       const legacy=snapshot.legacy_source;
       if(snapshot.choice_authority!=="accepted_manifest"&&
          !(snapshot.choice_authority==="legacy_single_provider"&&legacy&&legacy.provider_ref===source.provider_ref)) return null;
+      return {source:copyModelChoice(source),access:copyModelChoice(snapshot.accepted_model_access||{}),
+        legacy:copyModelChoice(legacy),universe_id:snapshot.universe_id,binding:copyModelChoice(snapshot.binding)};
+    },
+    nativeAccessProposal(source,scope,ids){
+      const proposal=this.accessContext(source);
+      if(!proposal||source.access_method!=="subscription_cli"||!["explicit","discovered"].includes(scope)) return null;
+      if(scope==="discovered"&&source.enumeration!=="supported") return null;
+      if(!Array.isArray(ids)||ids.some(id=>typeof id!=="string"||!id||id!==id.trim()||[...id].length>200||/[\p{C}\p{Z}]/u.test(id.replace(/ /g,"")))||new Set(ids).size!==ids.length) return null;
+      if(scope==="discovered"&&ids.length) return null;
+      const membership=new Set(["source_not_accepted","model_access_optin_required","outside_accepted_model_scope"]);
+      if(!this.snapshot.options.some(row=>row.reference.provider_ref===source.provider_ref&&row.freshness==="fresh"&&
+          (row.reasons||[]).every(reason=>membership.has(reason.reason)))) return null;
+      const prior=proposal.access[source.bind_key];
+      proposal.access[source.bind_key]={model_scope:scope,model_ids:scope==="explicit"?["",...ids]:[],cost_caps:prior?prior.cost_caps:null};
+      return proposal;
+    },
+    renderNativeAccess(source,li){
+      const prior=(this.snapshot.accepted_model_access||{})[source.bind_key];
+      const draft=this.nativeDrafts[source.provider_ref]||(this.nativeDrafts[source.provider_ref]={
+        scope:prior&&prior.model_scope==="discovered"?"discovered":prior&&prior.model_ids.some(Boolean)?"named":"default",
+        text:prior&&prior.model_scope==="explicit"?prior.model_ids.filter(Boolean).join("\n"):""});
+      const mode=document.createElement("select");mode.setAttribute("aria-label","Model access for "+source.provider_ref);
+      this.option(mode,"default","Provider default",false);this.option(mode,"named","Name specific models",false);
+      if(source.enumeration==="supported"||draft.scope==="discovered") this.option(mode,"discovered","Models listed by this source",source.enumeration!=="supported");
+      mode.value=draft.scope;mode.disabled=this.busy;li.appendChild(mode);
+      const input=document.createElement("textarea");input.setAttribute("aria-label","Model IDs for "+source.provider_ref);
+      input.placeholder="One model ID per line";input.rows=2;input.value=draft.text;input.hidden=draft.scope!=="named";input.disabled=this.busy;
+      input.addEventListener("input",()=>{draft.text=input.value;});li.appendChild(input);
+      mode.addEventListener("change",()=>{draft.scope=mode.value;input.hidden=draft.scope!=="named";});
+      const note=document.createElement("p");note.textContent="Named models are unverified; an unavailable name fails without substituting the default. Named and discovered access are alternatives. "+
+        (source.enumeration==="supported"?"Discovery support is installed; the account's full list is not yet proven.":"This source cannot currently verify its full model list.");li.appendChild(note);
+      const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";btn.textContent="Review model access and reconnect";btn.disabled=this.busy;
+      btn.addEventListener("click",()=>this.allowNativeAccess(source,draft.scope==="discovered"?"discovered":"explicit",
+        draft.scope==="named"?draft.text.split(/\r?\n/).map(id=>id.trim()).filter(Boolean):[]));li.appendChild(btn);
+    },
+    async allowNativeAccess(source,scope,ids){
+      if(this.busy) return;
+      const proposal=this.nativeAccessProposal(source,scope,ids);
+      if(!proposal){this.status("Review the model IDs or refresh this source's supported access. Nothing was changed.");return;}
+      const description=scope==="discovered"?"models listed by this connected source (including future additions); account availability remains unverified until refreshed"
+        :ids.length?"the provider default and these unverified model IDs: "+ids.join(", "):"the provider default only";
+      if(!confirm("Allow "+description+"? This replaces this source's current model scope and reconnects your agent. Other sources, spending limits and saved choices stay unchanged. An unavailable named model fails; it does not silently use the default.")) return;
+      if(!this.fresh()){this.status("Model availability changed while you were confirming. Refresh and review again.");return;}
+      await this.publishAccess(proposal,{provider:source.bind_key,model_access:proposal.access});
+    },
+    accessProposal(source){
+      const context=this.accessContext(source);
+      if(!context) return null;
+      const snapshot=this.snapshot,legacy=context.legacy;
       const method=source.access_method,access=copyModelChoice(snapshot.accepted_model_access||{});
       const prior=access[source.bind_key];
       if(method==="api_key_http"){

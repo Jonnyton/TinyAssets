@@ -310,6 +310,11 @@ def prepare_owned_model_plan(
                             base_path=base, owner_user_id=owner,
                             universe_id=universe.name, provider=provider,
                         )
+                        if native_snapshot is None:
+                            rejected.append(Ineligible(
+                                ModelRef(provider, ""), "native_enumeration_unsupported",
+                                scope="source",
+                            ))
                     except ProviderError:
                         # Enumeration is not necessary to run the provider's
                         # own default. Preserve that lane and expose the gap.

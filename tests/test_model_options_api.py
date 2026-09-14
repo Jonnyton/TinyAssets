@@ -276,7 +276,10 @@ def test_source_revocation_does_not_hide_independent_source(catalogue, reader, m
     assert any("source_revoked" in row["reasons"] for row in result["sources"])
 
 
-def test_legacy_native_default_stays_visible_without_model_access_optin(tmp_path, monkeypatch):
+@pytest.mark.parametrize("metadata", [False, True])
+def test_legacy_native_default_stays_visible_without_model_access_optin(
+    tmp_path, monkeypatch, metadata,
+):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "owner-1")
@@ -288,6 +291,8 @@ def test_legacy_native_default_stays_visible_without_model_access_optin(tmp_path
         daemon_server.grant_universe_access(tmp_path, universe_id=universe.name,
                                            actor_id="owner-1", permission="admin")
         native = _RecordingProvider("codex")
+        if metadata:
+            monkeypatch.setattr(native, "native_discovery_protocol", object())
         monkeypatch.setattr(provider_calls, "_real_router", ProviderRouter({"codex": native}))
         result = read()
         assert result["choice_authority"] == "legacy_single_provider"
@@ -299,5 +304,20 @@ def test_legacy_native_default_stays_visible_without_model_access_optin(tmp_path
             "access_method": "subscription_cli",
         }
         assert native.calls == 0
+        assert result["sources"][0]["enumeration"] == ("supported" if metadata else "unknown")
     finally:
         auth.revoke_provider_request(capability)
+
+
+def test_enumeration_support_accepts_executor_override_without_invoking_it(monkeypatch):
+    from tinyassets.api.model_options import _native_enumeration
+
+    native = _RecordingProvider("future-source")
+
+    async def metadata(**kwargs):
+        raise AssertionError("Capability display must not invoke discovery")
+
+    monkeypatch.setattr(native, "enumerate_models", metadata)
+    monkeypatch.setattr(provider_calls, "_real_router", ProviderRouter({"future-source": native}))
+    assert _native_enumeration("future-source") == "supported"
+    assert _native_enumeration("absent") == "unavailable"

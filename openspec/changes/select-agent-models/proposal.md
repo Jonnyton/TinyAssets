@@ -58,7 +58,8 @@ explicit pins remain fixed; previously ignored CLI model strings must not become
 active preferences accidentally. Main specs describe only what actually ships.
 
 Owner: Codex (current Patches task). Delivery branch:
-`codex/select-agent-models`; PR #3832. Current review, test and deployment state
+`codex/select-agent-models`; PR #3832 (deployed). Native picker follow-up continues
+on `codex/native-model-picker`. Current review, test and deployment state
 belongs in tasks/evidence and the active goal's stage list, not a pinned proposal
 head. Supporting
 connection recovery PR #3676, HTTP model receipts PR #3680 and endpoint-path

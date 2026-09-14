@@ -1,5 +1,14 @@
 ## 1. Reviewed foundation
 
+September14 follow-up after deployed PR3832: the app reports six workflow smoke
+checks PASS, but the picker still exposed defaults only. Native named/discovered
+setup is now built locally following one additional owner-approved Fable5.1
+shape review (ADAPT357s), with99Windows/99Linux tests, zero skips. Evidence:
+docs/reviews/2026-09-14-native-picker-proof.md. Shipped deltas are synchronized
+to main specs locally; full change remains open, not archived. Exact-code
+release review/CI/deploy/native-account proof remain ahead. Engine model-options
+and agent-binding read parity is a fresh adjacent blocker, not yet implemented.
+
 September14 background integration now shares the work-owned agent coordinator,
 with fresh queue/task/activation/lease/admin/member checks, no assignment lock
 held across model/tool execution, monotonic round keys and existing finite caps.
