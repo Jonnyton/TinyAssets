@@ -90,6 +90,22 @@ def test_foreground_http_selection_reaches_exact_model(
     http_wire,
     model,
 ):
+    from tinyassets.provider_work_authority import ProviderInvocationCarrier
+
+    provenance = []
+    original_validate = ProviderInvocationCarrier.validate_for_call
+
+    def capture(carrier, **kwargs):
+        selected = carrier._reservation.selection
+        assert selected is not None
+        assert carrier._receipt.binding_id is None  # Aggregate is not the member.
+        assert carrier.binding_id == selected.binding_id
+        assert carrier.binding_generation == selected.binding_generation
+        assert carrier.binding_digest == selected.binding_digest
+        provenance.append((carrier.work_receipt_id, carrier.reservation_id))
+        return original_validate(carrier, **kwargs)
+
+    monkeypatch.setattr(ProviderInvocationCarrier, "validate_for_call", capture)
     branch = _branch(node_count=2)
     for node in branch.node_defs:
         node.llm_policy = {
@@ -123,6 +139,7 @@ def test_foreground_http_selection_reaches_exact_model(
         ]
     assert len(receipts) == 1
     assert len(reservations) == 2
+    assert provenance == [(receipts[0]["receipt_id"], r["reservation_id"]) for r in reservations]
     assert all(r["state"] == "succeeded" for r in reservations)
     assert all(r["selection"]["model_id"] == (model or "synthetic-model") for r in reservations)
     assert all(r["selection"]["executor_id"] == "openai_chat" for r in reservations)

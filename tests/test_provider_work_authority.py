@@ -1351,6 +1351,27 @@ def test_provider_invocation_carrier_mint_rejects_launch_replay(tmp_path) -> Non
         store.arm_launch_carrier(launch)
 
 
+def test_carrier_round_provenance_is_read_only_and_does_not_rearm(tmp_path) -> None:
+    carrier = _armed_carrier(tmp_path)
+    expected = {
+        "reservation_id": carrier._reservation.reservation_id,
+        "work_receipt_id": carrier._receipt.receipt_id,
+        "binding_id": carrier._receipt.binding_id,
+        "binding_generation": carrier._receipt.binding_generation,
+        "binding_digest": carrier._receipt.binding_digest,
+    }
+    for name, value in expected.items():
+        assert getattr(carrier, name) == value
+        with pytest.raises(AttributeError, match="immutable"):
+            setattr(carrier, name, value)
+    assert carrier.validate_for_call(
+        role="writer", operation="repository_spec_delivery",
+    ) == "codex"
+    assert {name: getattr(carrier, name) for name in expected} == expected
+    with pytest.raises(PermissionError, match="consumed"):
+        carrier.validate_for_call(role="writer", operation="repository_spec_delivery")
+
+
 def test_private_carrier_mint_is_one_shot_per_durable_reservation(tmp_path) -> None:
     receipt, claim, result = _armed_carrier_result(tmp_path)
     armed = result.record

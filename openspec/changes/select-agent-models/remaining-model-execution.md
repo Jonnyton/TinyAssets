@@ -54,6 +54,13 @@ retaining legacy chat record decoding and excluding work records from chat-only
 projection. A completed tool result is preserved; uncertain external effects
 hold and suppress whole-node retry, rather than beginning a fresh replayable turn.
 
+Carrier provenance accessors are now built: reservation ID, work receipt ID and
+selected member binding ID/generation/digest. Legacy provider-scoped receipts
+retain their binding tuple. Reads do not consume/rearm a carrier or grant fresh
+authority. Windows/Linux real-store groups each pass 115 tests, zero skips;
+HTTP compiler/router cases verify the selected member rather than the aggregate
+manifest root. This is not yet the dispatch observer or workflow adapter.
+
 ## Round allowance (R5 — adaptation pending before workflow integration)
 
 ### R4 format correction before implementation
@@ -92,6 +99,14 @@ capability unless their authors changed them. Reuse existing declared work/membe
 invocation allowances where possible. Resolve the exact derivation against the
 immutable compiler and budget code before implementing this arithmetic. No gate
 is relaxed meanwhile. No user workflow is edited for the proof.
+
+R6 refinement from the actual compiler: `_call_policy_router_with_retry` catches
+AllProvidersExhaustedError and starts the entire node again. Even a *known*
+completed tool followed by later capacity exhaustion would be replayed by a new
+turn. Therefore a work adapter must suppress whole-node retry after any dispatched
+tool, not just an unknown effect. Safe no-effect capacity traversal remains inside
+the same coordinator/history. A pre-intent failure can retain existing retry only
+when no earlier action was dispatched. Cancellation must keep its original signal.
 
 ## Order and completion
 

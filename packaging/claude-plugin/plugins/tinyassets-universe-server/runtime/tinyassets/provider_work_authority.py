@@ -1358,6 +1358,34 @@ class ProviderInvocationCarrier:
             return self._reservation.selection.provider
         return self._receipt.provider
 
+    # These are inert provenance from the sealed records, not fresh authority.
+    # Reading them neither consumes the carrier nor permits another launch.
+    @property
+    def reservation_id(self) -> str:
+        return self._reservation.reservation_id
+
+    @property
+    def work_receipt_id(self) -> str:
+        return self._receipt.receipt_id
+
+    @property
+    def binding_id(self) -> str:
+        if self._reservation.selection is not None:
+            return self._reservation.selection.binding_id
+        return self._receipt.binding_id
+
+    @property
+    def binding_generation(self) -> int:
+        if self._reservation.selection is not None:
+            return self._reservation.selection.binding_generation
+        return self._receipt.binding_generation
+
+    @property
+    def binding_digest(self) -> str:
+        if self._reservation.selection is not None:
+            return self._reservation.selection.binding_digest
+        return self._receipt.binding_digest
+
     @property
     def selected_model(self):
         from tinyassets.providers.work_model_selection import selected_work_model
