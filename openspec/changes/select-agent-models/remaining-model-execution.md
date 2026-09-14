@@ -56,6 +56,13 @@ hold and suppress whole-node retry, rather than beginning a fresh replayable tur
 
 ## Round allowance (R5 — adaptation pending before workflow integration)
 
+Shared progress extraction now built locally: AgentTurnCoordinator plus the
+served-chat adapter retain existing chat behavior, including original input
+records and typed fallback refusal. Ten executable differential cases compare
+the old coordinator with the new composition through real stores and router.
+Evidence: docs/reviews/2026-09-14-shared-agent-coordinator-proof.md. This neither
+implements the workflow adapter nor relaxes the pinned authorization refusals.
+
 AGREE with the finding: current admission counts one inference per node attempt;
 multi-round tools need an explicitly finite allowance under the same work cap.
 DISAGREE_CONCERN with automatically adding a new workflow `max_agent_rounds=0`
