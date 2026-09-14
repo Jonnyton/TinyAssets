@@ -22,13 +22,13 @@ class WorkAgentEffectHeld(ProviderAuthorityHeldError):
     failure_class = "agent_effect_held"
 
 
-class ForegroundWorkAgentAdapter:
+class WorkAgentAdapter:
     def __init__(self, session, initial_launch, policy):
         self.session = session
         self.initial_launch = initial_launch
         self.initial_pending = True
         self.carrier = initial_launch[0]
-        self.receipt = session._receipt
+        self.receipt = self.carrier._receipt
         self.policy = dict(policy or {})
         selected = self.carrier.selected_model
         native = self.carrier.native_selection
@@ -45,6 +45,8 @@ class ForegroundWorkAgentAdapter:
                 or context.provider_request is not None or context.provider_invocation is not None
                 or context.served_provider is not None or context.agent_model_plan is not None
                 or context.model_selection != self.selection
+                or self.carrier._receipt != self.receipt
+                or self.carrier._claim != self.initial_launch[0]._claim
                 or not config.engine_mcp_enabled
                 or config.engine_mcp_actor_id != self.receipt.principal_id
                 or config.engine_mcp_graph_id != self.receipt.universe_id):
@@ -145,6 +147,21 @@ class WorkflowAgentTurn(AgentTurnCoordinator):
 
 def call_foreground_work_agent(session, *, prompt, system, config, policy):
     """Enter once from immutable work opt-in, never through a fake served request."""
+    return _call_work_agent(
+        session, prompt=prompt, system=system, config=config, policy=policy,
+        principal_id=session._principal_id, universe_id=session._universe_id,
+    )
+
+
+def call_background_work_agent(session, *, prompt, system, config, policy):
+    """Use the queue session's own per-round admission and between-step fence."""
+    return _call_work_agent(
+        session, prompt=prompt, system=system, config=config, policy=policy,
+        principal_id=session._task.actor_id, universe_id=session._task.universe_id,
+    )
+
+
+def _call_work_agent(session, *, prompt, system, config, policy, principal_id, universe_id):
     from tinyassets.config import load_universe_config
     from tinyassets.engine_mcp_http import read_engine_mcp_route
     from tinyassets.provider_work_authority import ProviderInvocationReservationState
@@ -152,21 +169,23 @@ def call_foreground_work_agent(session, *, prompt, system, config, policy):
     from tinyassets.providers.provider_resolver import register_universe_open_providers
 
     router = bridge.get_provider_router()
-    receipt = session._receipt
-    if bridge.is_force_mock() or router is None or receipt is None:
+    if bridge.is_force_mock() or router is None:
         raise ProviderAuthorityHeldError("workflow agent requires its real provider router")
     if read_engine_mcp_route(
-        actor_id=receipt.principal_id, graph_id=receipt.universe_id, root=session._base_path,
+        actor_id=principal_id, graph_id=universe_id, root=session._base_path,
     ) is None:
         raise ProviderAuthorityHeldError("engine_tools_unavailable")
-    config = replace(config, engine_mcp_enabled=True, engine_mcp_actor_id=receipt.principal_id,
-                     engine_mcp_graph_id=receipt.universe_id, credential_snapshot_dir=None)
+    config = replace(config, engine_mcp_enabled=True, engine_mcp_actor_id=principal_id,
+                     engine_mcp_graph_id=universe_id, credential_snapshot_dir=None)
     with session._authorize_attempt(
         role="writer", prompt=prompt, system=system, policy=policy,
     ) as initial:
         adapter = None
         try:
-            adapter = ForegroundWorkAgentAdapter(session, initial, policy)
+            receipt = initial[0]._receipt
+            if receipt.principal_id != principal_id or receipt.universe_id != universe_id:
+                raise ProviderAuthorityHeldError("workflow agent admitted identity changed")
+            adapter = WorkAgentAdapter(session, initial, policy)
             context = UniverseContext(
                 universe_dir=session._universe_dir,
                 config=load_universe_config(session._universe_dir),

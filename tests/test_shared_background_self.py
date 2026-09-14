@@ -215,8 +215,16 @@ class ProviderSeamTests(unittest.TestCase):
             assemble.side_effect = build
             received_system[0] = "persona"
             order.clear()
-            session._call("writer", "direction", "", plain, None, {})
-            self.assertEqual(order, ["admit", "assemble", "authorize", "provider"])
+            def agent_turn(active_session, *, prompt, system, config, policy):
+                self.assertIs(active_session, session)
+                order.append("agent")
+                received.append((prompt, system, config))
+                return "done", "codex"
+            # This test checks persona-to-agent dispatch only. Real receipt,
+            # reservation and provider execution live in test_workflow_http_agent.
+            with patch("tinyassets.workflow_agent.call_foreground_work_agent", agent_turn):
+                session._call("writer", "direction", "", plain, None, {})
+            self.assertEqual(order, ["admit", "assemble", "agent"])
             self.assertEqual(received[-1], ("history+direction", "persona", shared))
 
     def test_failed_admission_never_reads_persona(self):

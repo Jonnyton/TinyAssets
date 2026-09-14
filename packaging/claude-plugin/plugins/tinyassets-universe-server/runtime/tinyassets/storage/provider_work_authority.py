@@ -2397,11 +2397,14 @@ class SQLiteProviderWorkAuthorityStore:
         manifest_bindings: tuple[ProviderWorkBinding, ...] = (),
         selection: ProviderInvocationSelection | None = None,
         model_snapshot=None,
+        needs_tools: bool = False,
     ) -> ProviderInvocationCarrier:
         """Issue/claim from durable background state and arm atomically."""
 
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             raise ValueError("background Branch launch requires an active transaction")
+        if type(needs_tools) is not bool:
+            raise ValueError("work tools requirement must be boolean")
 
         now = self._now()
         transaction = _Transaction(conn)
@@ -2409,7 +2412,9 @@ class SQLiteProviderWorkAuthorityStore:
         if manifest:
             if authority.work_item_kind != "background_attempt":
                 raise PermissionError("background provider receipt has the wrong work kind")
-            selection = self._validate_work_selection(conn, authority, selection, model_snapshot)
+            selection = self._validate_work_selection(
+                conn, authority, selection, model_snapshot, needs_tools=needs_tools,
+            )
             from tinyassets.providers.work_model_selection import bound_work_model_tokens
 
             max_tokens = bound_work_model_tokens(selection, max_tokens, max_cost_microunits)

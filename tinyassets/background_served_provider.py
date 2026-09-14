@@ -614,7 +614,7 @@ def _normalize_content_digest(value: str) -> str:
     return text if text.startswith("sha256:") else f"sha256:{text}"
 
 
-def _branch_roles(base_path: Path, task: Epoch2BranchTask) -> tuple[str, ...]:
+def _branch_snapshot(base_path: Path, task: Epoch2BranchTask) -> dict:
     from tinyassets.branch_versions import get_branch_version
 
     version = get_branch_version(base_path, task.automation_branch_version)
@@ -626,7 +626,11 @@ def _branch_roles(base_path: Path, task: Epoch2BranchTask) -> tuple[str, ...]:
         != _normalize_content_digest(task.automation_subject_digest)
     ):
         raise PermissionError("immutable Branch version is not current authority")
-    node_defs = version.snapshot.get("node_defs", {})
+    return version.snapshot
+
+
+def _branch_roles(base_path: Path, task: Epoch2BranchTask) -> tuple[str, ...]:
+    node_defs = _branch_snapshot(base_path, task).get("node_defs", {})
     if isinstance(node_defs, dict):
         nodes = node_defs.values()
     elif isinstance(node_defs, list):
@@ -728,6 +732,7 @@ class _BackgroundAssignedProviderSession:
     ) -> None:
         self._base_path = base_path
         self._task = task
+        self._universe_dir = base_path / task.universe_id
         self._consumer_lease = consumer_lease
         self._provider_call = provider_call
         self._call_index = 0
@@ -784,11 +789,46 @@ class _BackgroundAssignedProviderSession:
             raise PermissionError("background provider operation cannot be substituted")
         if (
             supplied_context is not None
-            and Path(supplied_context.universe_dir).name != self._task.universe_id
+            and Path(supplied_context.universe_dir) != self._universe_dir
         ):
             raise PermissionError("background provider universe cannot be substituted")
+        if supplied_context is not None and any(
+            getattr(supplied_context, field, None) is not None
+            for field in ("provider_request", "provider_invocation", "served_provider",
+                          "agent_model_plan", "model_selection")
+        ):
+            raise PermissionError("background provider authority cannot be substituted")
         declared_providers = self._declared_policy_providers(policy)
         with self._lock:
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+            from tinyassets.shared_self import prepare_shared_self_turn, shared_self_requested
+
+            try:
+                agent_requested = shared_self_requested(
+                    _branch_snapshot(self._base_path, self._task),
+                )
+            except Exception as exc:
+                # Preserve the existing typed hold when the earlier opt-in read
+                # detects the same invalid subject that launch admission rejects.
+                try:
+                    _hold_background_authority(self._base_path, self._task)
+                except Exception:
+                    logger.exception("background subject hold projection failed")
+                raise ProviderAuthorityHeldError(
+                    "Assigned background provider authority is unavailable; retry after repair.",
+                ) from exc
+            if agent_requested:
+                if role != "writer" or kwargs:
+                    raise PermissionError("workflow agent cannot substitute execution context")
+                load_background_executor_identity(self._base_path, self._task, self._consumer_lease)
+                prompt, system, config = prepare_shared_self_turn(
+                    self._base_path, self._task.universe_id, self._task.actor_id, prompt, config,
+                )
+                from tinyassets.workflow_agent import call_background_work_agent
+
+                return call_background_work_agent(
+                    self, prompt=prompt, system=system, config=config, policy=policy,
+                )
             invocation_index = self._call_index + 1
             with self._authorize_launch(
                 role=role,
@@ -829,6 +869,172 @@ class _BackgroundAssignedProviderSession:
                 return result, provider
 
     @contextmanager
+    def _authorize_attempt(self, *, role, prompt, system, policy):
+        """One agent inference, under the existing queue session lock and cap."""
+        invocation_index = self._call_index + 1
+        with self._authorize_launch(
+            role=role, prompt=prompt, system=system, policy=policy,
+            invocation_index=invocation_index,
+            declared_providers=self._declared_policy_providers(policy),
+        ) as launch:
+            # Once armed, even failed attempts cannot reuse this round's key.
+            self._call_index = invocation_index
+            yield launch
+
+    def _check_agent_authority(self, carrier: ProviderInvocationCarrier) -> str:
+        """Fresh queue/work authority for tools, without reserving another call."""
+        import hmac
+
+        from tinyassets.branch_versions import compute_content_hash
+        from tinyassets.provider_serving_binding import (
+            _current_selected_member_authority,
+            _current_serving_authority,
+            resolve_serving_agent_binding,
+        )
+        from tinyassets.provider_work_authority import _provider_invocation_carrier_seal
+        from tinyassets.shared_self import require_founder_home, shared_self_requested
+        from tinyassets.storage.current_home import check_current_home
+        from tinyassets.storage.provider_work_authority import (
+            SQLiteProviderWorkAuthorityStore,
+            _background_receipt_authority,
+            _claim_record,
+            _current_work_member,
+            _receipt_record,
+            _record,
+            _reservation_record,
+        )
+
+        if (type(carrier) is not ProviderInvocationCarrier
+                or carrier._issuer_pid != os.getpid()
+                or not hmac.compare_digest(
+                    carrier._seal, _provider_invocation_carrier_seal(carrier),
+                )):
+            raise PermissionError("background agent carrier is invalid")
+        snapshot = _branch_snapshot(self._base_path, self._task)
+        if (not shared_self_requested(snapshot)
+                or _normalize_content_digest(compute_content_hash(snapshot))
+                != _normalize_content_digest(self._task.automation_subject_digest)):
+            raise PermissionError("background agent immutable subject changed")
+        principal = self._task.actor_id
+        require_founder_home(self._base_path, self._task.universe_id, principal)
+        store = SQLiteProviderWorkAuthorityStore(self._base_path)
+        agent = resolve_serving_agent_binding(
+            self._base_path, universe_id=self._task.universe_id, owner_user_id=principal,
+        )
+        with provider_assignment_admission().shared(self._universe_dir):
+            with store.connection() as conn:
+                conn.execute("BEGIN")
+                now = store._now()
+                check_current_home(conn, principal, self._task.universe_id)
+                self._check_agent_task(conn, now)
+                receipt_row = conn.execute(
+                    "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+                    (carrier.work_receipt_id,),
+                ).fetchone()
+                claim_row = conn.execute(
+                    "SELECT * FROM provider_work_execution_claims WHERE claim_id = ?",
+                    (carrier._claim.claim_id,),
+                ).fetchone()
+                reservation_row = conn.execute(
+                    "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
+                    (carrier.reservation_id,),
+                ).fetchone()
+                if receipt_row is None or claim_row is None or reservation_row is None:
+                    raise PermissionError("background agent progress authority is unavailable")
+                receipt, claim = _receipt_record(receipt_row), _claim_record(claim_row)
+                reservation = _reservation_record(reservation_row)
+                if not all((
+                    receipt == carrier._receipt, claim == carrier._claim,
+                    receipt.state is ProviderWorkReceiptState.ACTIVE,
+                    receipt.work_item_kind == "background_attempt",
+                    receipt.principal_id == principal,
+                    receipt.universe_id == self._task.universe_id,
+                    claim.state.value == "active", _utc(receipt.expires_at) > now,
+                    _utc(claim.lease_expires_at) > now,
+                    reservation.receipt_id == receipt.receipt_id,
+                    reservation.receipt_digest == receipt.receipt_digest,
+                    reservation.claim_id == claim.claim_id,
+                    reservation.claim_digest == claim.claim_digest,
+                    reservation.claim_generation == claim.generation,
+                    reservation.selection == carrier._reservation.selection,
+                    reservation.operation == carrier.operation == BACKGROUND_BRANCH_RUN_OPERATION,
+                    reservation.role == carrier.role == "writer",
+                    reservation.state.value in {"launch_started", "succeeded"},
+                )):
+                    raise PermissionError("background agent receipt, claim or invocation changed")
+                _, _, owner = _background_receipt_authority(conn, receipt, now=now, claim=claim)
+                if owner.owner_id != self._task.branch_task_id:
+                    raise PermissionError("background agent queue owner changed")
+                if receipt.authority_scope == "manifest":
+                    _current_selected_member_authority(
+                        conn, store=store, universe_dir=self._universe_dir,
+                        base_path=self._base_path, owner_user_id=principal,
+                        universe_id=self._task.universe_id, agent=agent, provider=carrier.provider,
+                    )
+                    _current_work_member(conn, receipt, reservation.selection, now)
+                else:
+                    child_row = conn.execute(
+                        "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+                        (receipt.binding_id,),
+                    ).fetchone()
+                    child = _record(child_row) if child_row is not None else None
+                    assignment, _, _ = _current_serving_authority(
+                        conn, store=store, universe_dir=self._universe_dir,
+                        owner_user_id=principal, universe_id=self._task.universe_id, agent=agent,
+                    )
+                    if child is None or not all((
+                        child.state is ProviderWorkBindingState.ACTIVE,
+                        child.generation == receipt.binding_generation,
+                        child.binding_digest == receipt.binding_digest,
+                        child.revocation_generation == receipt.binding_revocation_generation,
+                        child.owner_user_id == principal, child.universe_id == receipt.universe_id,
+                        child.provider == receipt.provider == carrier.provider
+                        == assignment.provider,
+                        child.assignment_generation == receipt.assignment_generation
+                        == assignment.generation,
+                        child.assignment_digest == receipt.assignment_digest
+                        == assignment.assignment_digest,
+                        child.credential_reference_digest == receipt.credential_reference_digest
+                        == assignment.credential_reference_digest,
+                        _utc(child.expires_at) > now,
+                        carrier.operation in child.allowed_operations,
+                        carrier.role in child.allowed_roles,
+                    )):
+                        raise PermissionError("background agent child or assigned provider changed")
+        return principal
+
+    def _check_agent_task(self, conn, now):
+        row = conn.execute("SELECT * FROM branch_tasks_v2 WHERE branch_task_id = ?",
+                           (self._task.branch_task_id,)).fetchone()
+        fields = ("universe_id", "branch_def_id", "request_id", "admission_id", "automation_id",
+                  "automation_activation_epoch", "automation_subject_kind",
+                  "automation_subject_ref",
+                  "automation_subject_digest", "automation_branch_version", "automation_lease_id",
+                  "automation_executor_class", "claimed_at")
+        if row is None or not all((
+            row["status"] == "running", row["disabled"] == 0,
+            row["claimed_by"] == self._task.claimed_by == self._consumer_lease.consumer_id,
+            _utc(str(row["lease_expires_at"])) > now, _utc(self._consumer_lease.expires_at) > now,
+            all(row[key] == getattr(self._task, key) for key in fields),
+        )):
+            raise PermissionError("background agent task cancelled, changed or lease expired")
+        activation = conn.execute(
+            "SELECT * FROM automation_activations WHERE universe_id = ? AND automation_id = ?",
+            (self._task.universe_id, self._task.automation_id),
+        ).fetchone()
+        if activation is None or not all((
+            activation["state"] == "active",
+            activation["epoch"] == self._task.automation_activation_epoch,
+            activation["executor_class"] == self._task.automation_executor_class == "cloud",
+            activation["subject_kind"] == self._task.automation_subject_kind,
+            activation["subject_ref"] == self._task.automation_subject_ref,
+            activation["subject_digest"] == self._task.automation_subject_digest,
+            activation["immutable_branch_version"] == self._task.automation_branch_version,
+            activation["lease_id"] == self._task.automation_lease_id,
+        )):
+            raise PermissionError("background agent activation changed")
+
+    @contextmanager
     def _authorize_launch(
         self,
         *,
@@ -847,6 +1053,7 @@ class _BackgroundAssignedProviderSession:
             _is_open_provider,
             resolve_serving_agent_binding,
         )
+        from tinyassets.shared_self import shared_self_requested
         from tinyassets.storage.background_branch_authority import (
             SQLiteBackgroundBranchAuthorityStore,
         )
@@ -858,6 +1065,7 @@ class _BackgroundAssignedProviderSession:
         snapshot = None
         carrier = None
         try:
+            needs_tools = shared_self_requested(_branch_snapshot(self._base_path, self._task))
             roles = _branch_roles(self._base_path, self._task)
             if role not in roles:
                 raise PermissionError("provider role is outside immutable Branch authority")
@@ -895,7 +1103,8 @@ class _BackgroundAssignedProviderSession:
                             raise PermissionError("task admission is unavailable")
                         now = datetime.now(timezone.utc)
                         exact_task = (
-                            row["status"] in {"running", "cancel_requested"},
+                            row["status"] in ({"running"} if needs_tools
+                                              else {"running", "cancel_requested"}),
                             row["claimed_by"] == self._consumer_lease.consumer_id,
                             row["claimed_at"] == self._task.claimed_at,
                             _utc(str(row["lease_expires_at"])) > now,
@@ -1202,13 +1411,14 @@ class _BackgroundAssignedProviderSession:
                             manifest_bindings=manifest_bindings,
                             selection=selection,
                             model_snapshot=model_snapshot,
+                            needs_tools=needs_tools,
                         )
                         conn.commit()
                     except Exception:
                         conn.rollback()
                         raise
-                assert carrier is not None
-                yield carrier, snapshot.directory if snapshot else None, provider
+            assert carrier is not None
+            yield carrier, snapshot.directory if snapshot else None, provider
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:

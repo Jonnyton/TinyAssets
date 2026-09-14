@@ -163,6 +163,25 @@ Keep per-inference invocation indices monotonic even after a failed attempt;
 the old session increments only after a successful provider call. Existing
 background token/cost shares already divide the aggregate across its ceiling.
 
+Background/native integration also exposes an accounting distinction: the old
+router settles every typed capacity error at zero usage. A delegated work agent
+may already have spent tokens before that error, even with no external effects.
+Without observed usage totals, retain an indeterminate reservation and its
+maximum charge, consistent with R5. No-effects evidence controls safe retry,
+not accounting; permitted traversal still has to fit the remaining budget.
+Do not infer zero usage from a capacity exception or an empty engine log.
+
+Background integration and that accounting correction are now implemented.
+The work adapter preserves its initial receipt/claim, while separate foreground
+and queue sessions recheck their own execution authority. Background metadata
+discovery and model/tools execute outside assignment locks. The existing attempt
+ceiling, owner/admin, immutable subject, activation and consumer/task leases stay
+authoritative at each step. Final accounting group211Windows/211Linux passes,
+zero skips; broader initial integration323Windows/335Linux. Exact evidence and
+the fixed obsolete persona unit seam are in
+docs/reviews/2026-09-14-background-work-agent-proof.md. User acceptance and final
+review remain open; no private workflow or user background project was edited.
+
 ## Order and completion
 
 Implement native propagation with basis labels and tests; then owner-bound

@@ -1173,12 +1173,23 @@ class ProviderRouter:
                                 ProviderUnavailableError,
                             ),
                         ):
-                            settle_carrier(
-                                ProviderInvocationReservationState.FAILED,
-                                input_tokens=0,
-                                output_tokens=0,
-                                cost_microunits=0,
+                            # Native no-effects evidence controls safe retry,
+                            # not usage: the CLI may already have spent tokens.
+                            # Without totals, keep its conservative reservation.
+                            native_unmetered = (
+                                _work_agent_observer is not None
+                                and _agent_execution_kind == "native_agent"
+                                and isinstance(
+                                    exc, (ProviderRateLimitedError, ProviderOverloadedError),
+                                )
                             )
+                            if native_unmetered:
+                                settle_carrier(ProviderInvocationReservationState.INDETERMINATE)
+                            else:
+                                settle_carrier(
+                                    ProviderInvocationReservationState.FAILED,
+                                    input_tokens=0, output_tokens=0, cost_microunits=0,
+                                )
                         else:
                             settle_carrier(
                                 ProviderInvocationReservationState.INDETERMINATE

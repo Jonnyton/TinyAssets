@@ -63,7 +63,7 @@ class _CountingProvider(BaseProvider):
         )
 
 
-def _seed_branch_version(tmp_path: Path, *, policy=None):
+def _seed_branch_version(tmp_path: Path, *, policy=None, agent=False):
     from tinyassets.branch_versions import publish_branch_version
     from tinyassets.daemon_server import initialize_author_server, save_branch_definition
 
@@ -72,6 +72,7 @@ def _seed_branch_version(tmp_path: Path, *, policy=None):
         display_name="Background writer",
         prompt_template="Complete the assigned background task.",
         llm_policy=node_policy,
+        tools_allowed=["universe_self"] if agent else [],
     ) for index, node_policy in enumerate(policy if isinstance(policy, list) else [policy])]
     branch = BranchDefinition(
         branch_def_id="branch_repo_spec_loop",

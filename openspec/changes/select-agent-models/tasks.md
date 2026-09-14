@@ -1,5 +1,18 @@
 ## 1. Reviewed foundation
 
+September14 background integration now shares the work-owned agent coordinator,
+with fresh queue/task/activation/lease/admin/member checks, no assignment lock
+held across model/tool execution, monotonic round keys and existing finite caps.
+Actual queue/HTTP tools/second-round and native evidence cases pass. Initial
+combined323Windows/335Linux; final native-accounting211/211, zero skips. Unknown
+native usage retains its conservative charge. The old persona dispatch test is
+updated; prior f4cd CI's only new failure is that now-corrected test. Evidence:
+docs/reviews/2026-09-14-background-work-agent-proof.md. Integrated selector/real
+account proof, final approved review, CI/deploy and app acceptance remain open.
+Final20-file group:497Windows passes/1unchanged base-reproduced symlink failure;
+498Linux passes, zero skips. Prior f4cd CI's single new persona-seam failure and
+older isolated background fixtures are corrected without changing a quarantine.
+
 September14 foreground tool integration now passes through the real compiler,
 admission, router and work journal. HTTP tool/continuation and native evidence
 cases, effect-safe refusal, finite remaining budget, stale capability and injected

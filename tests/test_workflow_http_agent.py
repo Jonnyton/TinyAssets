@@ -219,11 +219,11 @@ def test_prelaunch_failure_releases_reserved_budget(
         raise RuntimeError("synthetic prelaunch failure")
 
     if phase == "adapter":
-        monkeypatch.setattr(workflow_agent.ForegroundWorkAgentAdapter, "__init__", fail)
+        monkeypatch.setattr(workflow_agent.WorkAgentAdapter, "__init__", fail)
     elif phase == "turn":
         monkeypatch.setattr(workflow_agent.WorkflowAgentTurn, "__init__", fail)
     elif phase == "observer":
-        monkeypatch.setattr(workflow_agent.ForegroundWorkAgentAdapter, "round_input", fail)
+        monkeypatch.setattr(workflow_agent.WorkAgentAdapter, "round_input", fail)
     else:
         work_agent.mode = "discovery_failure"
     result = run(tmp_path, monkeypatch, authenticate_request)
@@ -342,3 +342,10 @@ def test_native_foreground_uses_work_journal_and_preserves_execution_evidence(
         assert turn.rounds[0].reply.evidence.protocol_complete
     elif outcome == "unknown_capacity":
         assert len(turns) == 1  # No whole-node replay without no-effects proof.
+    if outcome != "success":
+        with sqlite3.connect(db_path(tmp_path)) as conn:
+            reservation = json.loads(conn.execute(
+                "SELECT record_json FROM provider_invocation_reservations ORDER BY ordinal LIMIT 1",
+            ).fetchone()[0])
+        assert reservation["state"] == "indeterminate"
+        assert reservation["actual_total_tokens"] is None

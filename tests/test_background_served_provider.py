@@ -328,6 +328,10 @@ def _authority_fixture(
             return SimpleNamespace(owner_id=owner_id, state=SimpleNamespace(value="running"))
 
     monkeypatch.setattr(background_provider, "_branch_roles", lambda *_a: ("writer",))
+    monkeypatch.setattr(background_provider, "_branch_snapshot", lambda *_a: {
+        "node_defs": [{"node_type": "prompt", "model_hint": "writer",
+                       "prompt_template": "ordinary background work"}],
+    })
     monkeypatch.setattr(
         background_provider, "provider_assignment_admission", lambda: _AdmissionFence()
     )
@@ -759,7 +763,10 @@ def test_branch_roles_normalizes_bare_hex_content_hash(monkeypatch, tmp_path):
         background_provider._branch_roles(tmp_path, task)
 
 
-def test_branch_version_rollback_before_launch_fails_closed(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("seam", ["_branch_roles", "_branch_snapshot"])
+def test_branch_version_rollback_before_launch_fails_closed(
+    tmp_path: Path, monkeypatch, seam,
+) -> None:
     """A rolled-back immutable Branch version cannot mint a launch carrier."""
     task, conn, _assignment, _current, events = _authority_fixture(tmp_path, monkeypatch)
     state = {"n": 0}
@@ -768,7 +775,7 @@ def test_branch_version_rollback_before_launch_fails_closed(tmp_path: Path, monk
         state["n"] += 1
         raise PermissionError("immutable Branch version is not current authority")
 
-    monkeypatch.setattr(background_provider, "_branch_roles", _roles)
+    monkeypatch.setattr(background_provider, seam, _roles)
     raw_calls: list[str] = []
 
     def raw_provider(*_a, **_k):
