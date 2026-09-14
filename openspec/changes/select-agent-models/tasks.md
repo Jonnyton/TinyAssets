@@ -1,5 +1,12 @@
 ## 1. Reviewed foundation
 
+September14 served-setup follow-up: reviewed proposal in served-model-setup.md;
+pinned model/binding reads, preference save and discovery-only configuration
+implemented locally on codex/served-model-setup.194Windows passes/3skips, Ruff,
+442-file mirror/import pass. See docs/reviews/2026-09-14-served-model-setup-progress.md.
+Typed owner-consent action and full delivery/live-account proof remain OPEN;
+do not mark the broad task complete from this partial checkpoint.
+
 September14 follow-up after deployed PR3832: the app reports six workflow smoke
 checks PASS, but the picker still exposed defaults only. Native named/discovered
 setup is now built locally following one additional owner-approved Fable5.1

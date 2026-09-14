@@ -43,7 +43,9 @@ def test_read_graph_refuses_unpinned_targets(monkeypatch):
     # the founder's real X post and then could not say whether it posted - the run
     # had already failed on an unapproved source_code node. "I queued it" is not
     # an outcome, and reading your own run is not a write.
-    for bad in ("goals", "goal", "agents", "agent_binding"):
+    # Binding reads now use the canonical universe+binding-id SQL scope.
+    # Global discovery remains confined to its separate public browse surface.
+    for bad in ("goals", "goal", "agents", "agent"):
         out = json.loads(s.read_graph(target=bad))
         assert "not available" in out.get("error", ""), bad
 
@@ -1305,7 +1307,9 @@ def test_served_write_graph_refuses_unmounted_targets(monkeypatch):
 
     for bad in ("connection", "agent", "goal", "request", "universe"):
         out = json.loads(s.write_graph(target=bad, operation="create"))
-        assert "must be 'branch'" in out.get("error", ""), bad
+        expected = ("configure_provider_capability' only" if bad == "connection"
+                    else "must be 'branch'")
+        assert expected in out.get("error", ""), bad
     assert captured["n"] == 0, "a non-branch target must never reach the write impl"
 
     # target=branch create reaches the author-gated, effect-free build_branch.
