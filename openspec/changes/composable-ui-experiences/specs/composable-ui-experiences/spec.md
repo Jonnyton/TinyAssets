@@ -211,3 +211,50 @@ SHALL NOT require focus movement merely to perceive them.
 - **WHEN** an accepted action has no conclusive external delivery result
 - **THEN** the experience presents uncertainty and a supported inspection path
 - **AND** it does not announce success or offer an unconditional safe retry
+
+### Requirement: Composite projections preserve independent source consistency
+Conversation, run and pending-request projections SHALL retain their separate
+native references, cursor/revision semantics and read freshness. They SHALL NOT
+claim a global snapshot or use transport recovery as an application replay guarantee.
+
+#### Scenario: A run projection lags a pending request
+- **WHEN** independent store reads reflect different moments
+- **THEN** the experience exposes freshness and refreshes the relevant source
+- **AND** it does not infer approval, completion or safe effect retry from the mismatch
+
+### Requirement: Pending input is canonical and ordinary learning remains authorized
+Approval/input-needed presentation SHALL use existing pending requests and guarded
+answer operations. New source activation, changed authority and ordinary authorized
+memory updates SHALL remain separate operations.
+
+#### Scenario: A renderer is replaced with a request unanswered
+- **WHEN** the new view refreshes canonical pending-request state
+- **THEN** the same request remains available without duplicating or answering it
+- **AND** continuation revalidates target, arguments, relevant revisions and authority
+
+#### Scenario: A memory policy records an authorized preference
+- **WHEN** the write is within existing policy and store authorization
+- **THEN** it needs no new source activation or per-write approval
+- **AND** it remains private during design sharing
+
+### Requirement: Executable renderer and native device claims require distinct proof
+A first-party declarative layout or Android/Capacitor shell SHALL NOT establish
+arbitrary user-code confinement, phone delivery, earbud behavior or device handoff.
+Imported executable views SHALL remain inert until confined away from the
+authenticated app origin with independently usable recovery.
+
+#### Scenario: A custom renderer never yields
+- **WHEN** executable view code loops indefinitely
+- **THEN** the trusted recovery path can still disable it
+- **AND** an adapter unable to prove this remains unsupported for arbitrary code
+
+### Requirement: Whole-setup adoption preserves private data and customization
+The user SHALL be able to adopt UI alone, harness alone, an entire shared setup,
+or mixed shared/custom components while retaining their own canonical data,
+private bindings and customizations. Incompatible changes SHALL stage conflicts.
+
+#### Scenario: Adopt a shared setup over an existing personal setup
+- **WHEN** the user performs shared acceptance trace S-1
+- **THEN** conversation, memory, artifacts and in-flight run identity remain theirs
+- **AND** publisher data/credentials/authority are absent
+- **AND** conflicts preserve the prior working setup and custom source without reset

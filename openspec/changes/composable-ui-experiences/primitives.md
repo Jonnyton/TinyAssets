@@ -399,3 +399,79 @@ establish complete accessibility compliance.
 E-C13–E-C16 belong to the first action/renderer proof where applicable, alongside
 E-C2, E-C7 and E-C11. Office/game/native voice expansions follow the usable first
 slice and retain the same semantic contracts. No visual archetype registry is needed.
+
+## Review correction: canonical stores and pending requests
+
+A composite projection is a view over separate authoritative stores. Conversation
+history uses conversation_store.py and its own paging identity; run events use
+runs.py with the returned per-run cursor; pending approvals/input use
+storage/pending_requests.py through api/pending_requests.py. Each item carries
+its source, native reference/revision or cursor where supported, and read freshness.
+There is no global snapshot, shared cursor or timestamp-derived ordering across
+these stores. If a source lacks incremental reads, refresh it explicitly and mark
+freshness; do not manufacture a replay contract.
+
+An approval-needed/input-needed result displays the existing pending-request
+record, preserving its distinction from an accepted run and from an unsent local
+draft. Answer through the existing guarded handler; never store approval solely
+in renderer state. Before continuation, re-resolve the exact action target,
+arguments, source/binding revision and current authority. If the native operation
+cannot enforce the required precondition, expose that limitation and do not claim
+atomic stale-target protection from an earlier UI read.
+
+A new renderer independently refreshes conversation, run and request state.
+It can show a fresher request beside an older run projection without inventing a
+single consistent snapshot. On a gap, refresh only the affected source and reconcile
+its references. Transport reconnection neither resumes an application run by
+itself nor makes an uncertain external action safe to repeat.
+
+## Review correction: renderer and device proof boundaries
+
+The first-party composition-driven board/list is a useful initial renderer.
+It proves user-editable composition only for its supported components. It does
+not prove safe arbitrary executable views. Imported code must stay inert until an
+adapter supplies confinement outside the authenticated application's origin and
+a narrow validated bridge. Recovery must run independently of the custom renderer:
+prove an infinite loop cannot prevent disabling it, not merely that thrown
+exceptions are caught. Keep arbitrary user code unsupported until that proof.
+
+The Android/Capacitor shell is a rendering anchor only. It supplies no evidence of
+phone push delivery, earbud interaction, generic custom-code rendering or device
+handoff. Each claim requires its actual adapter and interaction: a phone receipt/
+observed notification, earbud disconnect and committed speech behavior, authenticated
+handoff to the same canonical conversation, and hostile-renderer recovery.
+Simulators and mocked routes are labeled fixtures, with the corresponding live
+capability still unproven.
+
+First-party parity covers behavior: input mappings, instance selection, action
+binding, routing and device alternatives must be editable through the same user
+capabilities. Export the actual first-party composition and inspect its handler
+trace for privileged shortcuts. A theme or an independently coded lookalike fails.
+
+## Review correction: learning, sharing and outcomes
+
+Routine authorized memory updates remain ordinary governed writes. They do not
+require activation of a new UI/harness definition or a new approval per write.
+Executable source revisions follow activation; added authority follows existing
+requests. Private preferences are not published just because a model learned them.
+
+Users can share workflows, experiences, harnesses and entire setups. Setup source
+selects components and symbolic roles; adoption retains the receiving user's data,
+private bindings and customizations, staging incompatible overlays/schemas for
+resolution. It never imports the publisher's account, grants or credentials.
+Default design export/import excludes private data. A separately requested data
+transfer is an independent operation with explicit custody and authority.
+
+For every destination show only evidenced stages: dispatch attempted, provider
+acceptance, confirmed delivery if supported, acknowledgment and canonical work
+outcome. A failed run can still contain an accepted external effect. Without a
+conclusive receipt or destination reconciliation contract, show uncertainty and
+no automatic resend. Per-run cursors and transport recovery do not provide
+universal exactly-once effects.
+
+| ID | Future proof | Required observation |
+| --- | --- | --- |
+| E-C17 | Conversation, run and request reads have different freshness | Source-specific cursors/references preserved; no fabricated global snapshot |
+| E-C18 | Pending request target changes before answer/continuation | Guarded native request handling; no action against changed meaning |
+| E-C19 | Imported executable view loops forever | Independently operable recovery disables it; otherwise adapter remains unsupported |
+| E-C20 | Phone shell displays a fixture notification | No live push/earbud/handoff claim without separate actual delivery/interaction evidence |

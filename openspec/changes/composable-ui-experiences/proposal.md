@@ -55,3 +55,10 @@ Expected integration areas: native agent composition/interchange, the onboarding
 app, desktop rendering, canonical conversation relay, and governed event delivery.
 No new top-level MCP handle, runtime service, or fixed catalog of UI archetypes
 is proposed. No runtime behavior or canonical as-built spec changes in this PR.
+
+## Review corrections
+
+[review.md](review.md) addresses the posted ADAPT findings. [Shared trace S-1](setup-acceptance.md)
+requires adoption of another design or mixed components without losing the user's
+data, private bindings or customizations. Entire setups include workflow, harness
+and experience source; publisher authority never travels with them.

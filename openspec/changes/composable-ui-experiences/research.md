@@ -168,3 +168,40 @@ contracts, preserving the path to those user-authored experiences.
 
 This round changes proposal artifacts only. Independent Claude review remains
 pending; no fresh provider execution or review verdict is claimed.
+
+## Current review disposition
+
+The posted coordinated Claude research/architecture feedback reports ADAPT;
+[review.md](review.md) records its source and author dispositions. Earlier failed
+provider attempts above remain historical evidence, not the current review status.
+The added requirements still need reviewer confirmation; no new independent
+verdict or executed acceptance result is claimed.
+
+The companion harness research now compares Pi, Anthropic's harness integration,
+Google ADK, LangGraph, Agent Skills and Open Agent Spec, and labels a one-to-two-year
+forecast as inference. These are partial interoperability precedents, not proof
+of complete setup portability or native device capability.
+
+Current integration mapping uses conversation_store.py, runs.py, and the separate
+storage/pending_requests.py plus api/pending_requests.py. The latter expose
+create_request/get_request/list_pending/resolve_request and guarded
+request_from_user/list_requests/answer_request handlers. These stores require
+separate freshness and state reconciliation; handler existence does not prove
+an atomic composite projection or universally resumable pending run.
+
+### Pending-request implementation evidence for this correction
+
+Rechecked in the governed Linux proposal checkout on 2026-09-14 using
+scripts/docview.py lines: api/pending_requests.py answer_request (line 1251)
+applies _owner_gate, loads the existing request and rejects an already-resolved
+record. storage/pending_requests.py resolve_request (line 284) conditionally
+updates only a pending row; supported stored outcomes are answered or dismissed.
+Its projected record has request_id/status and creation/resolution times, not a
+global cursor or general action revision. Correlating a request with a paused
+operation and validating that operation's target remain explicit adapter work.
+Do not reinterpret answered as proof that the requested job completed.
+
+graph_compiler.py exposes compile_branch and source-code/invoke/await node builders;
+agent_runtime_compiler remains a separate component admission layer. No executable
+project result follows merely from either symbol existing. The code inventory
+was produced with a Python definition scan; runtime and rendered proof remain pending.

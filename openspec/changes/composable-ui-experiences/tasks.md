@@ -7,7 +7,7 @@
 ## Before implementation
 
 - [ ] Map responsibilities to current handlers and settle native extension, schema, asset bounds, and renderer isolation.
-- [ ] Record Claude research/shape review of primitives.md and research.md in review.md; resolve bridge and profile findings before implementation.
+- [ ] Obtain reviewer confirmation of the ADAPT dispositions in review.md and resolve remaining bridge, profile and confinement seams before implementation.
 
 ## Implementation and proof
 
@@ -15,5 +15,5 @@
 - [ ] Add inert import/preview, lineage, private-data exclusion, capability and authority checks.
 - [ ] Prove edit/upgrade conflict, stale renderer rejection, accessible recovery, personalization preview, disable and rollback behavior using applicable E-C1–E-C16 vectors by capability slice.
 - [ ] Prove canonical voice handoff, committed input, replay-gap recovery and honest notification delivery outcomes.
-- [ ] Retain first-party parity and second-account remix evidence from rendered interactions.
+- [ ] Retain actual first-party parity and S-1 independent/whole/mixed setup adoption evidence, with retained data/customizations and applicable E-C17–E-C20 cases.
 - [ ] Sync verified behavior into canonical specs and archive when implementation lands.

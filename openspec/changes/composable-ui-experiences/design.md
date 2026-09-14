@@ -168,3 +168,13 @@ Before implementation, settle:
    availability; no claim that phone push exists until proved.
 5. Cross-family shape review, with AGREE / DISAGREE_EVIDENCE /
    DISAGREE_CONCERN findings and code citations where applicable.
+
+## Review correction boundary
+
+[review.md](review.md) maps the posted ADAPT findings to the updated contract.
+The added primitive sections distinguish conversation/run/pending-request stores,
+source-specific freshness, existing guarded request answers, ordinary authorized
+learning, and actual confinement/device evidence. [Shared acceptance S-1](setup-acceptance.md)
+requires UI-only, harness-only, whole-setup and mixed adoption over retained user
+data and customizations. A declarative first-party layout remains a limited first
+slice; it does not prove arbitrary executable views or native delivery.
