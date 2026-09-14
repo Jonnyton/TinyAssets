@@ -70,9 +70,10 @@ renderer exists. A handler inventory is not a live acceptance result.
 ## Worktree landing and pickup packet
 
 - Concept: independently replaceable harness and experience compositions.
-- Existing review lanes: #3840, branch tiny/u-01kxm1vszd/portable-harness-project;
-  #3841, branch tiny/u-01kxm1vszd/composable-ui-experiences. Continue these lanes;
-  do not create a third competing proposal.
+- Current review lanes: #3840, branch tiny/u-01kxm1vszd/portable-harness-project;
+  UI refinement #3842, branch tiny/u-01kxm1vszd/refine-experience-primitives.
+  Original UI proposal #3841 merged during this round at 2026-09-14T00:23:29Z;
+  #3842 continues that change on main. Continue these lanes without a competing proposal.
 - Workspace: governed scratch checkout of the corresponding remote branch.
   A local contributor may use ../wf-portable-harness-project or
   ../wf-composable-ui-experiences with the same branch ownership.
@@ -91,7 +92,7 @@ renderer exists. A handler inventory is not a live acceptance result.
   resolve the affected implementation task before code work on that seam.
 - First harness implementation: the project adapter and deterministic offline
   fixture, using current native validation and receipt machinery.
-- First experience implementation: one ordinary composition with desktop/phone
+- First experience implementation (proposal refined in #3842): one ordinary composition with desktop/phone
   projections and a governed action bridge; second-account remix evidence.
 - Before commit/push: admission, scoped diff checks, applicable conformance tests,
   independent shape/research review for implementation. Proposal publication is

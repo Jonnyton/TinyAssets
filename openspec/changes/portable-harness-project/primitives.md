@@ -1,7 +1,7 @@
 # Foundational composition contract
 
 Status: proposed semantic contract, 2026-09-14. Initial provider: Codex.
-This is the detailed companion to design.md and PR #3841. Names in examples
+This is the detailed companion to design.md and UI refinement PR #3842. Names in examples
 are author-defined roles, not newly registered MCP tools or shipped schemas.
 
 ## One substrate, independently replaceable compositions
@@ -211,8 +211,8 @@ agent loops, provider portability, voice, or phone push work.
 | P4: experience replacement | Same instance/conversation with two UIs and two device classes | All native surfaces |
 | P5: second account | Private rebinding, exclusion sentinels and rendered interaction | Universal private-state migration |
 
-P1/P2 belong to #3840's first implementation. P4 belongs to #3841's first
-implementation. P3/P5 are required before claiming the combined fundamental
+P1/P2 belong to #3840's first implementation. P4 belongs to the UI proposal
+in merged #3841 and refinement #3842. P3/P5 are required before claiming the combined fundamental
 toolset is complete. These proofs constrain the final shared contract; they are
 not permission to ship incompatible interim storage or API shapes.
 

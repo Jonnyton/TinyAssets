@@ -19,7 +19,7 @@ interfaces, runtime boundaries and an evidence ladder. [research.md](research.md
 records primary sources, existing compiler integration, alternatives and the
 implementation review handoff.
 
-Companion [UI proposal #3841](https://github.com/Jonnyton/TinyAssets/pull/3841)
+Companion [UI refinement #3842](https://github.com/Jonnyton/TinyAssets/pull/3842)
 uses the same substrate for presentation, inputs, state projections and actions.
 Packaging proof alone does not establish that this complete toolset works.
 
