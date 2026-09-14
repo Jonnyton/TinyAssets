@@ -48,6 +48,13 @@ def model_options_document(
             candidate = candidates.get(ref)
             row_reasons = list(reasons.get(ref, []))
             for reason in source_reasons.get(ref.connection_id, []):
+                # Missing enumeration is a source diagnostic, not a refusal of
+                # an independently admitted provider-default invocation.
+                if (model.model_id == "" and ref in admitted
+                        and reason["reason"] in {
+                            "native_catalogue_unavailable", "native_enumeration_unsupported",
+                        }):
+                    continue
                 if reason not in row_reasons:
                     row_reasons.append(reason)
             rows.append({

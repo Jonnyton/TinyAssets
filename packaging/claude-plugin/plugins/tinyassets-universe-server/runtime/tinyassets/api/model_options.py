@@ -81,6 +81,22 @@ def _native_inventory(conn, universe, owner):
     }
 
 
+def _native_enumeration(provider):
+    """Installed metadata support, not proof this account has a model list."""
+    from tinyassets.providers.base import BaseProvider
+    from tinyassets.providers.call import get_provider_router
+
+    router = get_provider_router()
+    executor = None if router is None else router._providers.get(provider)
+    if executor is None:
+        return "unavailable"
+    method = getattr(executor, "enumerate_models", None)
+    supported = (getattr(executor, "native_discovery_protocol", None) is not None
+                 or callable(method)
+                 and getattr(method, "__func__", method) is not BaseProvider.enumerate_models)
+    return "supported" if supported else "unknown"
+
+
 def _collect(base, owner, uid):
     universe = _canonical_universe(base, base / uid, uid)
     store = SQLiteProviderWorkAuthorityStore(base)
@@ -158,6 +174,7 @@ def _collect(base, owner, uid):
     for provider, custody in native.items():
         sources[provider] = {"provider_ref": provider, "bind_key": provider,
                              "access_method": "subscription_cli",
+                             "enumeration": _native_enumeration(provider),
                              "accepted": provider in accepted, "reasons": []}
         if prepared is not None and provider in accepted:
             continue

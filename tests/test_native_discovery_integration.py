@@ -136,15 +136,25 @@ def test_picker_refresh_adds_new_model_without_static_release_table(native, monk
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)
-def test_unavailable_enumeration_keeps_provider_default_usable(native, monkeypatch):
+@pytest.mark.parametrize("unsupported", [False, True])
+def test_unavailable_enumeration_keeps_provider_default_usable(native, monkeypatch, unsupported):
+    from tinyassets.providers.model_options import model_options_document
+
     async def discover():
+        if unsupported:
+            return None
         raise ProviderError("metadata temporarily unavailable")
     seen, configs = install_discovery(native, monkeypatch, discover)
     plan = prepare_owned_model_plan(
         base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
     )
     assert plan.plan.next_candidate("owner-1", native.universe.name) == ModelRef("codex", "")
-    assert any(item.reason == "native_catalogue_unavailable" for item in plan.ineligible)
+    reason = "native_enumeration_unsupported" if unsupported else "native_catalogue_unavailable"
+    assert any(item.reason == reason for item in plan.ineligible)
+    document = model_options_document(plan.catalog, plan.plan, plan.ineligible)
+    default = next(row for row in document["options"] if row["reference"]["model_id"] == "")
+    assert default["in_candidate_catalog"] and default["reasons"] == []
+    assert document["source_failures"][0]["reasons"][0]["reason"] == reason
     assert _call(native).provider == "codex"
     assert configs[0].native_model_id == "" and all(not path.exists() for path in seen)
 
