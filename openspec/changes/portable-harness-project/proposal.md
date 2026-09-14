@@ -10,6 +10,19 @@ This is a proposal-only change. Requirements below are targets, not claims of
 shipped behavior. It does not change PLAN.md, storage, runtime activation, or
 the public tool catalog.
 
+## Refinement: the fundamental toolset
+
+The source project is the portable unit of a broader composition contract.
+[primitives.md](primitives.md) maps Node, Edge, State, Scope, Run and Trigger to
+replaceable context, memory, loop, tool and evaluator components, with concrete
+interfaces, runtime boundaries and an evidence ladder. [research.md](research.md)
+records primary sources, existing compiler integration, alternatives and the
+implementation review handoff.
+
+Companion [UI proposal #3841](https://github.com/Jonnyton/TinyAssets/pull/3841)
+uses the same substrate for presentation, inputs, state projections and actions.
+Packaging proof alone does not establish that this complete toolset works.
+
 ## What Changes
 
 - Specify a portable project representation around the existing

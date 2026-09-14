@@ -1,3 +1,16 @@
+## Contract map
+
+Read [primitives.md](primitives.md) for the detailed component/toolset contract
+and [research.md](research.md) for source evidence and implementation pickup.
+This file owns project packaging and the first offline proof. The new documents
+extend the behavioral target without claiming that the deterministic fixture
+proves a model-backed harness or cross-device experience.
+
+The 2026-09-14 refinement also inspected the existing governed component compiler:
+its adapter pins, typed ports, capability/resource/provider requirements,
+confinement and diagnostics are integration anchors, not a reason to add a
+parallel registry. General packaged JSON Schema port validation remains proposed.
+
 ## Context and verified baseline
 
 Repository inspection on 2026-09-13 found:
@@ -174,3 +187,12 @@ and disposition in this change.
 
 This PR is a reviewable proposal. It supplies no executable compatibility
 claim, no live acceptance result, and no authorization to merge or deploy.
+
+## Additional conformance scenarios
+
+The delta spec and primitives.md require incompatible-port refusal, governed
+strategy replacement, uncertain-effect reconciliation, and preservation of
+external-content provenance. A descriptive-only unknown component proves
+preservation; it cannot satisfy an executable requirement. Keep source export,
+offline deterministic execution, model-backed replacement and rendered device
+parity as separate evidence claims.
