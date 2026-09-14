@@ -1257,6 +1257,13 @@ class BaseProvider(abc.ABC):
 
     native_credential_service: str | None = None
     """Native custody service declared by this executor; not a model identifier."""
+    native_discovery_protocol = None
+    native_metadata_arguments: tuple[str, ...] = ()
+    native_command_resolver = None
+
+    @staticmethod
+    def native_process_options():
+        return {}
 
     async def enumerate_models(self, *, universe_dir: Path, credential_snapshot_dir: Path):
         """Optional native metadata adapter; None means enumeration is unknown.
@@ -1265,7 +1272,25 @@ class BaseProvider(abc.ABC):
         Returns NativeCatalogue, never execution authority or inference output.
         Future executors override this without adding model releases to policy.
         """
-        return None
+        if self.native_discovery_protocol is None:
+            return None
+        from tinyassets.exceptions import ProviderError
+        from tinyassets.providers.native_jsonrpc_discovery import read_native_catalogue
+
+        if universe_dir is None or credential_snapshot_dir is None:
+            raise ProviderError("native model discovery requires owned credentials")
+        if not callable(self.native_command_resolver):
+            raise ProviderError("native model discovery requires an executable resolver")
+        base_cmd, use_shell = self.native_command_resolver()
+        if use_shell:
+            raise ProviderError("native model discovery requires a direct executable")
+        env = subprocess_env_for_provider(
+            self.name, universe_dir=universe_dir, credential_snapshot_dir=credential_snapshot_dir,
+        )
+        return await read_native_catalogue(
+            [*base_cmd, *self.native_metadata_arguments], protocol=self.native_discovery_protocol,
+            env=env, cwd=str(credential_snapshot_dir), spawn_kwargs=self.native_process_options(),
+        )
 
     @classmethod
     def is_available(cls) -> bool:

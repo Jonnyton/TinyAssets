@@ -746,7 +746,7 @@ class ClaudeProvider(BaseProvider):
                 return ProviderResponse(
                     text=final_text,
                     provider=self.name,
-                    model=config.native_model_id or "claude",
+                    model=config.native_model_id or self.native_credential_service,
                     family=self.family,
                     latency_ms=elapsed_ms,
                     input_tokens=_coerce_int(usage.get("input_tokens")),
@@ -921,7 +921,7 @@ class ClaudeProvider(BaseProvider):
         return ProviderResponse(
             text=text,
             provider=self.name,
-            model=config.native_model_id or "claude",
+            model=config.native_model_id or self.native_credential_service,
             family=self.family,
             latency_ms=elapsed_ms,
         )

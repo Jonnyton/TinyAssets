@@ -56,6 +56,24 @@ Synthetic DOM exercises label rendering, not a live signed-in browser session.
 The first two picker integration tests needed their fixture's current home
 created through set_founder_home; no production authorization was weakened.
 
+## CI ratchet correction, verified September14 at07:09UTC
+
+Remote c6e786ee required-tests run34814329571/job103881747426 identified exactly
+two new failures, both channel-agnostic ratchet checks. The correction moves the
+bounded metadata transport to native_jsonrpc_discovery.py and describes method,
+field, handshake and pagination differences with a trusted executor registration.
+It reuses command resolution and configured labels without changing actual-model
+telemetry. No gate exemption or upward baseline change: total references682→681.
+A real subprocess test uses different methods/fields and an arbitrary future
+model ID through the same transport; this is synthetic metadata, not an account.
+
+The previous command plus tests/test_channel_agnostic_ratchet.py now passes
+**458 Windows/460 Linux**, **3/1 skips**, **61.53s/54.85s** respectively. Linux
+uses the same pinned working-tree oracle described above. Ruff and diff checks
+pass; plugin mirror/import passes439files. The Windows group was repeated because
+its earlier closed tool session's terminal output could not be recovered; no
+success was inferred from that missing output. Skip meanings are unchanged.
+
 ## Remaining
 
 Actual connected-account CLI proof, Claude's direct enumeration seam, Windows

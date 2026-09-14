@@ -688,24 +688,20 @@ class CodexProvider(BaseProvider):
 
     name = "codex"
     family = "openai"
-    native_credential_service = "codex"
+    native_credential_service = name
+    native_command_resolver = staticmethod(lambda: _resolve_codex_cmd())
+    native_process_options = staticmethod(_no_window_kwargs)
+    native_metadata_arguments = ("app-server",)
+    from tinyassets.providers.native_jsonrpc_discovery import NativeJsonRpcProtocol
 
-    async def enumerate_models(self, *, universe_dir: Path, credential_snapshot_dir: Path):
-        from tinyassets.providers.codex_model_discovery import read_codex_catalogue
-
-        if universe_dir is None or credential_snapshot_dir is None:
-            raise ProviderError("native model discovery requires owned credentials")
-        base_cmd, use_shell = _resolve_codex_cmd()
-        if use_shell:
-            raise ProviderError("native model discovery requires a direct executable")
-        env = subprocess_env_for_provider(
-            self.name, universe_dir=universe_dir,
-            credential_snapshot_dir=credential_snapshot_dir,
-        )
-        return await read_codex_catalogue(
-            [*base_cmd, "app-server"], env=env, cwd=str(credential_snapshot_dir),
-            spawn_kwargs=_no_window_kwargs(),
-        )
+    native_discovery_protocol = NativeJsonRpcProtocol(
+        list_method="model/list", items_key="data", model_key="model", default_key="isDefault",
+        modalities_key="inputModalities", hidden_key="hidden", cursor_key="nextCursor",
+        cursor_param="cursor", initialize_method="initialize",
+        initialized_notification="initialized",
+        initialize_params_json='{"clientInfo":{"name":"tinyassets_model_discovery","version":"1"}}',
+        list_params_json='{"limit":100,"includeHidden":true}',
+    )
 
     @classmethod
     def is_available(cls) -> bool:
@@ -721,7 +717,7 @@ class CodexProvider(BaseProvider):
     ) -> ProviderResponse:
         full_input = f"{system}\n\n{prompt}" if system else prompt
 
-        base_cmd, use_shell = _resolve_codex_cmd()
+        base_cmd, use_shell = self.native_command_resolver()
         model = _codex_model() if config.native_model_id is None else config.native_model_id
         sandbox_status = get_sandbox_status()
         sandbox_args = (

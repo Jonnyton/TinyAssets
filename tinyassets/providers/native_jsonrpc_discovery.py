@@ -1,12 +1,13 @@
-"""Bounded Codex app-server metadata protocol, never a writer or host session.
+"""Bounded native JSON-RPC metadata transport, never a writer or host session.
 
-Only initialize/initialized/model/list are sent. The caller supplies an owned
+Only registered metadata methods are sent. The caller supplies an owned
 credential snapshot environment and clean cwd, and retains authority checks.
 No thread/turn, implicit inference, shell, stderr relay or partial catalogue.
 """
 
 import asyncio
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from tinyassets.exceptions import ProviderError
@@ -17,29 +18,62 @@ _MAX_MODELS = 4096
 _MAX_PAGES = 64
 
 
-def parse_model_page(result):
-    if type(result) is not dict or type(result.get("data")) is not list:
+@dataclass(frozen=True, slots=True)
+class NativeJsonRpcProtocol:
+    """Trusted executor metadata contract, not user-supplied executable authority."""
+
+    list_method: str
+    items_key: str
+    model_key: str
+    default_key: str
+    modalities_key: str
+    hidden_key: str
+    cursor_key: str | None = None
+    cursor_param: str | None = None
+    initialize_method: str | None = None
+    initialized_notification: str | None = None
+    initialize_params_json: str = "{}"
+    list_params_json: str = "{}"
+
+    def __post_init__(self):
+        required = (self.list_method, self.items_key, self.model_key, self.default_key,
+                    self.modalities_key, self.hidden_key)
+        optional = (self.cursor_key, self.cursor_param, self.initialize_method,
+                    self.initialized_notification)
+        if (any(type(key) is not str or not key or len(key) > 200 for key in required)
+                or any(key is not None and (type(key) is not str or not key or len(key) > 200)
+                       for key in optional)
+                or (self.cursor_key is None) != (self.cursor_param is None)):
+            raise ValueError("invalid native metadata protocol fields")
+        for params in (self.initialize_params_json, self.list_params_json):
+            if type(params) is not str or type(json.loads(params)) is not dict:
+                raise ValueError("invalid native metadata protocol parameters")
+
+
+def parse_model_page(result, protocol):
+    if type(result) is not dict or type(result.get(protocol.items_key)) is not list:
         raise ValueError("invalid native model page")
-    cursor = result.get("nextCursor")
+    cursor = result.get(protocol.cursor_key) if protocol.cursor_key is not None else None
     if cursor is not None and (type(cursor) is not str or not cursor or len(cursor) > 4096):
         raise ValueError("invalid native model cursor")
     models, defaults = [], []
-    for row in result["data"]:
-        if type(row) is not dict or type(row.get("isDefault", False)) is not bool:
+    for row in result[protocol.items_key]:
+        if type(row) is not dict or type(row.get(protocol.default_key, False)) is not bool:
             raise ValueError("invalid native model entry")
-        # `model` is the executable ID; `id` and displayName are not substitutes.
+        # Only the registered execution-ID field is used, never a display label.
         # Missing modalities remain unknown, not fabricated account evidence.
-        modalities = row.get("inputModalities", [])
+        modalities = row.get(protocol.modalities_key, [])
         if type(modalities) is not list or any(type(item) is not str for item in modalities):
             raise ValueError("invalid native input modalities")
-        model = NativeModel(row.get("model"), frozenset(modalities), row.get("hidden", False))
+        model = NativeModel(row.get(protocol.model_key), frozenset(modalities),
+                            row.get(protocol.hidden_key, False))
         models.append(model)
-        if row.get("isDefault", False):
+        if row.get(protocol.default_key, False):
             defaults.append(model.model_id)
     return models, defaults, cursor
 
 
-async def read_codex_catalogue(argv, *, env, cwd, timeout=30, spawn_kwargs=None):
+async def read_native_catalogue(argv, *, protocol, env, cwd, timeout=30, spawn_kwargs=None):
     """Read the complete bounded list or fail with sanitized fixed prose.
 
     Resource ceilings are transport guards, never silent list truncation. New
@@ -48,6 +82,8 @@ async def read_codex_catalogue(argv, *, env, cwd, timeout=30, spawn_kwargs=None)
     """
     proc = None
     try:
+        if type(protocol) is not NativeJsonRpcProtocol:
+            raise ValueError("native metadata requires a registered protocol")
         async with asyncio.timeout(timeout):
             proc = await asyncio.create_subprocess_exec(
                 *argv, env=env, cwd=cwd, stdin=asyncio.subprocess.PIPE,
@@ -77,19 +113,20 @@ async def read_codex_catalogue(argv, *, env, cwd, timeout=30, spawn_kwargs=None)
                         raise ValueError("unexpected native discovery response")
                     return message["result"]
 
-            await send({"method": "initialize", "id": 0, "params": {
-                "clientInfo": {"name": "tinyassets_model_discovery", "version": "1"},
-            }})
-            await response(0)
-            await send({"method": "initialized", "params": {}})
+            if protocol.initialize_method is not None:
+                await send({"method": protocol.initialize_method, "id": 0,
+                            "params": json.loads(protocol.initialize_params_json)})
+                await response(0)
+            if protocol.initialized_notification is not None:
+                await send({"method": protocol.initialized_notification, "params": {}})
             models, defaults, cursors = [], [], set()
             cursor = None
             for request_id in range(1, _MAX_PAGES + 1):
-                params = {"limit": 100, "includeHidden": True}
+                params = json.loads(protocol.list_params_json)
                 if cursor is not None:
-                    params["cursor"] = cursor
-                await send({"method": "model/list", "id": request_id, "params": params})
-                page, recommended, cursor = parse_model_page(await response(request_id))
+                    params[protocol.cursor_param] = cursor
+                await send({"method": protocol.list_method, "id": request_id, "params": params})
+                page, recommended, cursor = parse_model_page(await response(request_id), protocol)
                 models.extend(page)
                 defaults.extend(recommended)
                 if len(models) > _MAX_MODELS or len(defaults) > 1:

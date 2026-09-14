@@ -11,8 +11,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tinyassets.exceptions import ProviderError
-from tinyassets.providers.codex_model_discovery import parse_model_page, read_codex_catalogue
+from tinyassets.providers.codex_provider import CodexProvider
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
+from tinyassets.providers.native_jsonrpc_discovery import (
+    NativeJsonRpcProtocol,
+    parse_model_page,
+    read_native_catalogue,
+)
+
+PROTOCOL = CodexProvider.native_discovery_protocol
 
 
 def row(model="a-future-release", **kwargs):
@@ -23,14 +30,16 @@ def test_native_wire_ids_are_not_display_labels_and_unknown_fields_are_tolerated
     models, defaults, cursor = parse_model_page({
         "data": [row(id="display-id", displayName="Some name", isDefault=True,
                      futureProviderFeature={"new": True})], "nextCursor": "opaque/page2",
-    })
+    }, PROTOCOL)
     assert models == [NativeModel("a-future-release", frozenset({"text"}))]
     assert defaults == ["a-future-release"]
     assert cursor == "opaque/page2"
 
 
 def test_missing_modality_is_unknown_not_invented():
-    assert parse_model_page({"data": [{"model": "new"}]})[0][0].input_modalities == frozenset()
+    assert parse_model_page(
+        {"data": [{"model": "new"}]}, PROTOCOL,
+    )[0][0].input_modalities == frozenset()
 
 
 @pytest.mark.parametrize("result", [
@@ -41,7 +50,7 @@ def test_missing_modality_is_unknown_not_invented():
 ])
 def test_malformed_page_refuses(result):
     with pytest.raises(ValueError):
-        parse_model_page(result)
+        parse_model_page(result, PROTOCOL)
 
 
 @pytest.mark.parametrize("models,default,observed", [
@@ -83,8 +92,9 @@ for line in sys.stdin:
 
 def run_peer(tmp_path, pages, **kwargs):
     script = peer_script(pages, **kwargs)
-    return asyncio.run(read_codex_catalogue(
+    return asyncio.run(read_native_catalogue(
         [sys.executable, "-u", "-c", script], env=os.environ.copy(), cwd=str(tmp_path), timeout=3,
+        protocol=PROTOCOL,
     ))
 
 
@@ -133,8 +143,9 @@ def test_child_is_reaped_on_every_failure(tmp_path, mode):
                 "oversized": "print('x' * (4 * 1024 * 1024 + 10), flush=True)",
                 "eof": "pass"}[mode]
         with patch("asyncio.create_subprocess_exec", spawn):
-            task = asyncio.create_task(read_codex_catalogue(
+            task = asyncio.create_task(read_native_catalogue(
                 [sys.executable, "-u", "-c", code], env=os.environ.copy(), cwd=str(tmp_path),
+                protocol=PROTOCOL,
                 timeout=0.2 if mode == "timeout" else 3,
             ))
             if mode == "cancel":
@@ -165,9 +176,9 @@ def test_native_registration_uses_owned_environment_and_direct_metadata_only(tmp
     with (
         patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
               return_value=(["executor"], False)),
-        patch("tinyassets.providers.codex_provider.subprocess_env_for_provider",
+        patch("tinyassets.providers.base.subprocess_env_for_provider",
               return_value={"OWNED": "yes"}) as environment,
-        patch("tinyassets.providers.codex_model_discovery.read_codex_catalogue",
+        patch("tinyassets.providers.native_jsonrpc_discovery.read_native_catalogue",
               new_callable=AsyncMock, return_value=expected) as reader,
     ):
         assert asyncio.run(CodexProvider().enumerate_models(
@@ -178,6 +189,29 @@ def test_native_registration_uses_owned_environment_and_direct_metadata_only(tmp
     assert reader.call_args.args == (["executor", "app-server"],)
     assert reader.call_args.kwargs["env"] == {"OWNED": "yes"}
     assert reader.call_args.kwargs["cwd"] == str(snapshot)
+    assert reader.call_args.kwargs["protocol"] is PROTOCOL
+
+
+def test_new_executor_can_describe_other_metadata_methods_and_fields(tmp_path):
+    protocol = NativeJsonRpcProtocol(
+        list_method="catalogue/get", items_key="items", model_key="identifier",
+        default_key="preferred", modalities_key="inputs", hidden_key="internal",
+    )
+    # No handshake, different method and field names, same bounded transport.
+    script = '''
+import json, sys
+request = json.loads(sys.stdin.readline())
+assert request['method'] == 'catalogue/get'
+print(json.dumps({'id': request['id'], 'result': {'items': [
+    {'identifier': 'future-company/model', 'preferred': True, 'inputs': ['text']}
+]}}), flush=True)
+'''
+    result = asyncio.run(read_native_catalogue(
+        [sys.executable, "-u", "-c", script], env=os.environ.copy(), cwd=str(tmp_path),
+        protocol=protocol, timeout=3,
+    ))
+    assert result.models[0].model_id == "future-company/model"
+    assert result.default_model_id == "future-company/model"
 
 
 def test_unproven_native_adapter_reports_unknown():
