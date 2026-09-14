@@ -75,3 +75,51 @@ revision/environment evidence. Unsupported native adapters remain explicit.
 Fold back through the successor PR to #3841; sync only verified behavior into canonical specs on landing.
 Applies when touching UI composition, custom-agent components, canonical conversation,
 voice, event routing, instance controls, private bindings or renderer adapters.
+
+## Second refinement: ownership, authoring fidelity and multi-device races
+
+Research checked 2026-09-14; all adaptations below are design judgments.
+
+- [Ink & Switch, Local-first software](https://www.inkandswitch.com/essay/local-first/)
+  motivates ownership and continued use of source/data independently of a vendor.
+  Translate that into lossless editor round-trip, private overlay preservation and
+  a usable pinned/forked experience when an upstream upgrade conflicts. This does
+  not establish safe offline merging for canonical approvals or remote effects.
+- [W3C SCXML 2015](https://www.w3.org/TR/2015/REC-scxml-20150901/)
+  distinguishes state transitions and completion. Use explicit voice/input/playback
+  states and keep renderer lifecycle separate from run lifecycle. Do not implement
+  a second scheduler or assume "parallel" requires threads.
+- [CloudEvents 1.0.2](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md)
+  supplies source-scoped event identity. It does not solve snapshot/subscription
+  races, cursor retention or delivery guarantees; those must be specified by the
+  projection/channel adapter and tested with interrupted traces.
+- [W3C technique G219](https://www.w3.org/WAI/WCAG22/Techniques/general/G219)
+  illustrates non-drag pointer alternatives. Apply it to an office/board action
+  alongside separate keyboard and focus checks. The technique is informative;
+  these checks alone are not a claim of complete WCAG conformance.
+
+The added E-C1–E-C12 vectors in primitives.md make editor fidelity, upstream conflict,
+snapshot gaps, revocation, notification grouping, earbud interruption and recovery
+observable. Pair E-C12 with H-C10 in #3840 rather than treating two independent
+demonstrations as proof that harness and experience are interchangeable.
+
+Before implementation, review must choose the actual snapshot/cursor owner,
+private-overlay storage mapping and activation revision boundary. Reuse current
+stores and handlers wherever their contracts suffice. Where no existing primitive
+can express the needed behavior, document the failed composition and smallest
+missing seam. No new service, universal CRDT, UI archetype registry, or native
+voice adapter is selected by this refinement.
+
+The existing `custom_agents.update_binding` revision-guarded update and
+`agent_runtime_compiler.compile_agent_components` diagnostics are reusable
+anchors, inspected in the companion proposal checkout. They do not implement
+three-way overlay merge, a projection cursor protocol or renderer recovery.
+PLAN's scoping and browser-user rules support keeping those as narrowly mapped
+contracts over ordinary compositions. The required Claude review remains pending;
+the governed inspection workspace has no Claude CLI on PATH.
+
+A bounded Claude critique was also attempted through the registered subscription
+provider route during this round. Execution refused before producing a review:
+provider access was not bound for this universe. A registered descriptor is not
+routable subscription authority. No review verdict was produced or inferred.
+The existing review task remains the handoff for both proposals.

@@ -129,3 +129,49 @@ automatically published with a shared definition.
 - **WHEN** an agent proposes a new route or component that needs additional access
 - **THEN** the user can inspect the revision and its changed requirements
 - **AND** activation cannot confer the missing authority
+
+### Requirement: Editors and upgrades preserve user-authored customization
+Supported editors SHALL preserve source outside their understood edit scope or
+refuse an edit without loss. Upstream upgrades SHALL retain private modifications
+and stage conflicts separately from the active experience.
+
+#### Scenario: An editor encounters an unknown field
+- **WHEN** the user edits a supported field and saves
+- **THEN** unknown source is preserved or the edit is refused without modifying it
+
+#### Scenario: Upstream deletes a customized component
+- **WHEN** a candidate upgrade removes a component with private modifications
+- **THEN** the user receives a conflict with the modifications retained
+- **AND** the old active experience remains available for use, pinning or forking
+
+### Requirement: Projection recovery has a defined consistency boundary
+A projection adapter SHALL define snapshot/cursor consistency, gap recovery and
+authority revalidation. Device timestamps SHALL NOT imply global event ordering.
+
+#### Scenario: An event races snapshot and subscription
+- **WHEN** state changes between snapshot retrieval and subscription establishment
+- **THEN** reconciliation includes the change or a later snapshot covering it
+- **AND** the view does not silently omit it or reissue its effects
+
+#### Scenario: An expired cursor is followed by an old delta
+- **WHEN** a new authorized snapshot replaces an expired delta chain
+- **THEN** an older delta cannot regress state or trigger an action
+
+### Requirement: Programmable routing preserves action and lifecycle meaning
+Notification grouping, playback interruption and renderer recovery SHALL remain
+distinct from canonical requests, approvals, runs and task completion.
+
+#### Scenario: Notifications group distinct pending requests
+- **WHEN** a route groups two notifications with different request targets
+- **THEN** each target and action identity remains distinct
+- **AND** grouping or viewing answers neither request
+
+#### Scenario: Voice playback is interrupted
+- **WHEN** the user interrupts a spoken reply or earbuds disconnect
+- **THEN** playback policy applies without implicitly cancelling the run
+- **AND** private audio does not move to a speaker without configured authorization
+
+#### Scenario: A spatial renderer cannot be operated by dragging
+- **WHEN** the user uses the non-drag pointer or keyboard alternative
+- **THEN** it reaches the same semantic action and governed target
+- **AND** trusted recovery remains reachable if the renderer fails

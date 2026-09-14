@@ -172,3 +172,125 @@ and state compatibility; it cannot restore a revoked credential.
   before implementing public/storage/authority seams.
 
 External evidence and design inferences are recorded in research.md in this change.
+
+## Authoring and evolution without losing the user's work (second refinement)
+
+The minimum complete authoring loop is inspect → edit → preview → bind → activate
+→ observe → revise/export. Each step has an artifact the user can inspect.
+A visual editor, conversational editor and source editor must round-trip the same
+definition without discarding fields they do not understand. An editor may refuse
+an unsupported edit, but must retain the original source and explain the limitation.
+
+Preview uses fixture projections and simulated outcomes by default. It displays
+its simulation status and cannot silently invoke live bindings. A user may choose
+a separately authorized live test under current scope; that test produces ordinary
+run/effect evidence. Saving, publishing and opening preview remain inert.
+
+First-party parity is checked by exporting the actual first-party composition and
+remixing it in a second account, with no internal-only action names or privileged
+resource roles. If a first-party behavior cannot be reproduced through the public
+composition contract, record the exact missing seam. A hand-built lookalike demo
+does not satisfy parity.
+
+### Private overlays and upstream upgrades
+
+Keep public defaults, private shared preferences and device-local transient state
+separate. A candidate update records the upstream base revision, new upstream
+revision, private overlay revision and schema versions. Compute the user's
+three-way diff against that base, preserving edits keyed by stable component/port
+identities rather than display labels or screen positions.
+
+Independent changes can be proposed together. If upstream removes a component the
+user customized, changes a port contract, or modifies the same setting, preserve
+the user's old composition and present the conflict. Never silently drop custom
+source or reset a preference to make an upgrade succeed. Store a conflicted candidate
+separately from the still-active revision. Pinning or forking the old version must
+remain an ordinary authoring choice.
+
+Automatic personalization follows the same candidate process. The user sees the
+changed behavior, affected devices and capability difference. Activation compares
+the expected installation/overlay revision; simultaneous activations produce a
+conflict, not a last-writer-wins overwrite. A definition update does not migrate
+open drafts, canonical conversation, or already-running work by implication.
+
+### Cross-device state classes and recovery
+
+| Class | Reconciliation policy | Example |
+| --- | --- | --- |
+| Canonical operation/approval state | Server-authoritative revision and existing guarded operation | Cancel a run, answer an access request |
+| Shared private preferences | Revision-guarded candidate edit; explicit conflict | Quiet hours or default experience |
+| Device-local transient state | Retain locally; only promote deliberately | Focus, scroll position, unsent text |
+| Presentation projection/cache | Replace from authorized snapshot/cursor contract | Run card or office occupant status |
+| Public source/definition | Immutable revisions with explicit remix/upgrade | Office layout and action mappings |
+
+This is a policy selection, not a general synchronization engine. CRDT-style merge
+may eventually help collaborative source/draft editing; it must not merge approval
+decisions or invent authority from two offline replicas.
+
+A projection snapshot must pair state with a cursor from one documented consistency
+boundary. If the adapter cannot do that atomically, it needs a specified subscribe/
+buffer/snapshot reconciliation protocol. "Fetch then subscribe" without gap
+handling is insufficient. On cursor expiry, invalidate the old delta chain, obtain
+a snapshot and resume only from its documented boundary. Do not treat timestamps
+from different devices as a global event order.
+
+When access is revoked, stop the affected subscription and clear its live projection
+and actionable bindings. Previously viewed or downloaded data cannot be promised
+to disappear from a person's possession; cache retention/purge behavior must be
+documented by the adapter. Reconnecting a stale device rechecks authority before
+hydrating private data or submitting retained intent.
+
+### Notification and voice routing is programmable behavior
+
+A user-defined route can choose conditions, priority, quiet hours, grouping,
+expiry and declared fallback destinations. Runtime adapters still enforce current
+channel permissions and expose the delivery guarantees they actually provide.
+The route emits a delivery intent; it cannot assert "the user saw it."
+
+Distinguish routing suppression, queued delivery, provider acceptance, confirmed
+delivery where supported, view/acknowledgment and canonical task outcome. An expired
+notification can still link to the current task, but its stale action payload
+must be revalidated. A notification grouping key is presentation policy; it must
+not accidentally collapse distinct action requests or grant requests.
+
+Voice has separate listening, draft-transcript, committed-input and playback state.
+Barge-in may stop speech without cancelling the underlying run. A run cancellation
+requires an explicit supported intent. Losing the earbud connection must not switch
+private playback to a speaker unless the user's configured, permitted policy says
+so. Clarification is required for ambiguous targets; a guessed device or instance
+cannot select the authority context.
+
+The trusted recovery control remains reachable outside a custom renderer's focus
+and execution loop. It can disable that experience and restore a usable surface
+without cancelling unrelated work. For an office experience, moving an item by
+drag must have an equivalent non-drag control, and keyboard operation must reach
+the same semantic action. Test both; one does not imply the other.
+
+### Concrete device and evolution conformance traces
+
+These are required future proofs, not implemented tests. Retain exact source and
+binding revisions, adapter/device profile, fixture cursor history, semantic action
+records, effect counts and rendered evidence. Screenshot appearance alone cannot
+prove action or identity continuity.
+
+| ID | Given / action | Required observation |
+| --- | --- | --- |
+| E-C1 | Edit a source field the visual editor does not understand, then save via that editor | Preserve it verbatim or refuse the edit without damaging source |
+| E-C2 | Preview an imported office with "start work" gesture mapping | Show simulated outcome; zero live runs, deliveries or subscriptions |
+| E-C3 | Upstream removes a privately customized room/action | Conflict candidate retains the customization; active experience still works |
+| E-C4 | Two devices activate different edits based on the same revision | One wins the guarded update; the other retains a reviewable conflict |
+| E-C5 | Event occurs between snapshot retrieval and subscription | Adapter reconciliation yields the event or a newer state covering it; no silent gap |
+| E-C6 | Reconnect after cursor expiry, then receive an old delta | Fresh snapshot governs; stale delta cannot regress visible state or reissue effects |
+| E-C7 | Revoke access while a room projects private work | Subscription stops; stale renderer actions fail; unaffected components remain usable |
+| E-C8 | Route groups two notifications referring to different pending requests | Each request retains its own target and identity; grouping answers neither |
+| E-C9 | Earbuds disconnect during a reply; user interrupts playback after reconnect | No unintended speaker playback; interruption alone does not cancel the run |
+| E-C10 | Office drag, non-drag pointer control and keyboard control perform the same action | Same semantic intent/target and governed outcome; focus remains recoverable |
+| E-C11 | Renderer loops or crashes while a run is active | Independent recovery disables it; canonical run and conversation remain intact |
+| E-C12 | Swap harness context strategy, then board to office/phone, on one fixture | Unchanged instance/conversation; independent source diffs and bindings; same outcome references |
+
+E-C12 and harness H-C10 are one shared acceptance trace. Include the second-account
+remix and private sentinel exclusion already required above. The first experience
+slice proves one ordinary desktop/phone composition and its bridge; a full office,
+game or native earbud adapter must remain explicitly unsupported until separately
+demonstrated. The general contract must allow those adapters without adding engine
+enums for each experience.
