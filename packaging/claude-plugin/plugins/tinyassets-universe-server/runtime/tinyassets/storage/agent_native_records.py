@@ -22,6 +22,8 @@ class NativeInput:
     binding_generation: int
     binding_digest: str
     request_digest: str
+    authority_kind: str = "served_request"
+    work_receipt_id: str = ""
 
     def canonical_json(self) -> str:
         for name in ("source_ref", "binding_id", "reservation_id"):
@@ -36,16 +38,26 @@ class NativeInput:
                     or not value.startswith("sha256:")
                     or any(c not in "0123456789abcdef" for c in value[7:])):
                 raise records.invalid()
-        return records.dump({"version": 2, "kind": "native_agent", **asdict(self)})
+        value = asdict(self)
+        if records.work_lineage(self.authority_kind, self.work_receipt_id):
+            return records.dump({"version": 3, "kind": "native_agent", **value})
+        value.pop("authority_kind")
+        value.pop("work_receipt_id")
+        return records.dump({"version": 2, "kind": "native_agent", **value})
 
     @classmethod
     def from_json(cls, raw: str) -> NativeInput:
-        value = records.fields(
-            records.document(raw), {"version", "kind", *cls.__dataclass_fields__}, version=2,
-        )
+        value = records.document(raw)
+        version = value.get("version")
+        names = set(cls.__dataclass_fields__)
+        if version == 2:
+            names -= {"authority_kind", "work_receipt_id"}
+        elif version != 3:
+            raise records.invalid()
+        records.fields(value, {"version", "kind", *names}, version=version)
         if value["kind"] != "native_agent":
             raise records.invalid()
-        result = cls(**{key: value[key] for key in cls.__dataclass_fields__})
+        result = cls(**{key: value[key] for key in names})
         if result.canonical_json() != raw:
             raise records.invalid()
         return result

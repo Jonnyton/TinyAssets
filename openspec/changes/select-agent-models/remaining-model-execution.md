@@ -56,6 +56,27 @@ hold and suppress whole-node retry, rather than beginning a fresh replayable tur
 
 ## Round allowance (R5 — adaptation pending before workflow integration)
 
+### R4 format correction before implementation
+
+DISAGREE_EVIDENCE with reusing round version2 for work: current
+storage/agent_turn_journal.py dispatches that version to NativeInput, whose
+existing native payload is version2/kind=native_agent. Preserve HTTP version1
+and native version2 byte-for-byte. New work payloads use version3 with explicit
+kind (engine_inference/native_agent), authority_kind=work_invocation and a
+nonempty work_receipt_id. Root input headers use version3 with the same lineage;
+chat headers remain version2 (and legacy version1 still reads). SQL containers
+remain unchanged. Every inserted/read round must match its root lineage, so work
+cannot masquerade as chat or move between work receipts. TurnSnapshot exposes
+lineage without converting it into execution authority. Reset continues to
+preserve/block uncertain effects for either kind; it must not hide work holds.
+No existing row is migrated or rewritten. The workflow adapter will supply the
+actual admitted receipt, never a caller's synthetic chat request.
+
+The lineage format is now implemented and tested on Windows and Linux (258
+passes in each, zero skips). Evidence:
+`docs/reviews/2026-09-14-work-agent-journal-proof.md`. Current-home checks and
+all execution guards remain unchanged; this checkpoint grants no work authority.
+
 Shared progress extraction now built locally: AgentTurnCoordinator plus the
 served-chat adapter retain existing chat behavior, including original input
 records and typed fallback refusal. Ten executable differential cases compare

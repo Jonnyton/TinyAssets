@@ -93,12 +93,20 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
         value = records.document(row["input_json"])
         names = {"version", "prompt", "system", "policy_generation"}
         header_version = value.get("version")
-        if type(header_version) is not int or header_version not in {1, 2}:
+        if type(header_version) is not int or header_version not in {1, 2, 3}:
             raise records.invalid()
+        if header_version >= 2:
+            names.add("policy_source")
+        if header_version == 3:
+            names.update(("authority_kind", "work_receipt_id"))
         records.fields(
-            value, names | ({"policy_source"} if header_version == 2 else set()),
+            value, names,
             version=header_version,
         )
+        authority_kind = value.get("authority_kind", "served_request")
+        work_receipt_id = value.get("work_receipt_id", "")
+        if records.work_lineage(authority_kind, work_receipt_id) != (header_version == 3):
+            raise records.invalid()
         if not isinstance(value["prompt"], str) or not isinstance(value["system"], str):
             raise records.invalid()
         if value["policy_generation"] is not None:
@@ -120,7 +128,11 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
         ):
             # SQL version 1 is the unchanged container. Candidate/reply payloads
             # carry their own version; old HTTP rows are neither migrated nor rewritten.
-            if records.document(rr["candidate_json"]).get("version") == 2:
+            candidate_document = records.document(rr["candidate_json"])
+            if candidate_document.get("version") == 2 or (
+                candidate_document.get("version") == 3
+                and candidate_document.get("kind") == "native_agent"
+            ):
                 rounds.append(_read_native_round(conn, scope, ordinal, rr))
                 continue
             if (
@@ -203,6 +215,9 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
                 if tool.state != "completed" or tool.content_kind == "non_text":
                     pending = True
             rounds.append(RoundSnapshot(ordinal, candidate, rr["state"], reply, tuple(tools), cost))
+        if any((item.candidate.authority_kind, item.candidate.work_receipt_id)
+               != (authority_kind, work_receipt_id) for item in rounds):
+            raise records.invalid()
         if len(rounds) != frontier:
             raise records.invalid()
         for completed_round in rounds[:-1]:
@@ -234,6 +249,8 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
             timestamp,
             tuple(rounds),
             source,
+            authority_kind,
+            work_receipt_id,
         )
     except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
         raise JournalUnavailable("agent turn record unavailable") from None
@@ -364,6 +381,8 @@ class AgentTurnJournal:
         system: str,
         policy_generation: int | None = None,
         policy_source: str = "unknown",
+        authority_kind: str = "served_request",
+        work_receipt_id: str = "",
     ) -> TurnSnapshot:
         scope = _scope(owner, universe, uuid.uuid4().hex)
         if not isinstance(prompt, str) or not isinstance(system, str):
@@ -371,13 +390,16 @@ class AgentTurnJournal:
         if policy_generation is not None:
             records.integer(policy_generation)
         records.policy_source(policy_source, policy_generation)
+        work = records.work_lineage(authority_kind, work_receipt_id)
         raw = records.dump(
             {
-                "version": 2,
+                "version": 3 if work else 2,
                 "prompt": prompt,
                 "system": system,
                 "policy_generation": policy_generation,
                 "policy_source": policy_source,
+                **({"authority_kind": authority_kind, "work_receipt_id": work_receipt_id}
+                   if work else {}),
             }
         )
         with self._transaction() as conn:
@@ -425,6 +447,10 @@ class AgentTurnJournal:
             scope,
             current,
         ):
+            if (candidate.authority_kind, candidate.work_receipt_id) != (
+                current.authority_kind, current.work_receipt_id,
+            ):
+                raise records.invalid()
             retryable = (
                 after_failed_inference
                 and current.state == "held_transport"

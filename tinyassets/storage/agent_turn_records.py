@@ -100,6 +100,18 @@ def policy_source(value: Any, generation: int | None) -> str:
     return value
 
 
+def work_lineage(authority_kind: str, work_receipt_id: str) -> bool:
+    """Validate progress provenance, never grant authority from it."""
+    if type(authority_kind) is not str or type(work_receipt_id) is not str:
+        raise invalid()
+    if authority_kind == "served_request" and work_receipt_id == "":
+        return False
+    if authority_kind == "work_invocation":
+        identity(work_receipt_id)
+        return True
+    raise invalid()
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class RoundInput:
     source_ref: str
@@ -110,6 +122,8 @@ class RoundInput:
     binding_generation: int
     binding_digest: str
     request_digest: str
+    authority_kind: str = "served_request"
+    work_receipt_id: str = ""
 
     def canonical_json(self) -> str:
         for name in ("source_ref", "model", "binding_id", "reservation_id"):
@@ -125,12 +139,27 @@ class RoundInput:
         tools = document(self.tools_json)
         fields(tools, {"version", "tools"})
         codec._definitions(tools["tools"])
-        return dump({"version": 1, **asdict(self)})
+        value = asdict(self)
+        if work_lineage(self.authority_kind, self.work_receipt_id):
+            return dump({"version": 3, "kind": "engine_inference", **value})
+        value.pop("authority_kind")
+        value.pop("work_receipt_id")
+        return dump({"version": 1, **value})
 
     @classmethod
     def from_json(cls, raw: str) -> RoundInput:
-        value = fields(document(raw), {"version", *cls.__dataclass_fields__})
-        result = cls(**{key: val for key, val in value.items() if key != "version"})
+        value = document(raw)
+        version = value.get("version")
+        legacy = set(cls.__dataclass_fields__) - {"authority_kind", "work_receipt_id"}
+        if version == 1:
+            fields(value, {"version", *legacy})
+        elif version == 3:
+            fields(value, {"version", "kind", *cls.__dataclass_fields__}, version=3)
+            if value["kind"] != "engine_inference":
+                raise invalid()
+        else:
+            raise invalid()
+        result = cls(**{key: val for key, val in value.items() if key not in {"version", "kind"}})
         if result.canonical_json() != raw:
             raise invalid()
         return result
@@ -284,6 +313,8 @@ class TurnSnapshot:
     created_at: str
     rounds: tuple[RoundSnapshot, ...]
     policy_source: str = "unknown"
+    authority_kind: str = "served_request"
+    work_receipt_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
