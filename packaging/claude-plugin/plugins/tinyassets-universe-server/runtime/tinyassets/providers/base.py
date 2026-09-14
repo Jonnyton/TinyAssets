@@ -1255,6 +1255,18 @@ class BaseProvider(abc.ABC):
     agent_execution_kind: str | None = None
     """Installed execution capability; unknown executors cannot claim an agent lane."""
 
+    native_credential_service: str | None = None
+    """Native custody service declared by this executor; not a model identifier."""
+
+    async def enumerate_models(self, *, universe_dir: Path, credential_snapshot_dir: Path):
+        """Optional native metadata adapter; None means enumeration is unknown.
+
+        Invoked only with owned snapshot custody by the discovery boundary.
+        Returns NativeCatalogue, never execution authority or inference output.
+        Future executors override this without adding model releases to policy.
+        """
+        return None
+
     @classmethod
     def is_available(cls) -> bool:
         """Return True if this provider's binary/dependency is present.

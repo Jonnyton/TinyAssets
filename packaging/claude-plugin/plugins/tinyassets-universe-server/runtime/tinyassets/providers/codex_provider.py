@@ -688,6 +688,24 @@ class CodexProvider(BaseProvider):
 
     name = "codex"
     family = "openai"
+    native_credential_service = "codex"
+
+    async def enumerate_models(self, *, universe_dir: Path, credential_snapshot_dir: Path):
+        from tinyassets.providers.codex_model_discovery import read_codex_catalogue
+
+        if universe_dir is None or credential_snapshot_dir is None:
+            raise ProviderError("native model discovery requires owned credentials")
+        base_cmd, use_shell = _resolve_codex_cmd()
+        if use_shell:
+            raise ProviderError("native model discovery requires a direct executable")
+        env = subprocess_env_for_provider(
+            self.name, universe_dir=universe_dir,
+            credential_snapshot_dir=credential_snapshot_dir,
+        )
+        return await read_codex_catalogue(
+            [*base_cmd, "app-server"], env=env, cwd=str(credential_snapshot_dir),
+            spawn_kwargs=_no_window_kwargs(),
+        )
 
     @classmethod
     def is_available(cls) -> bool:

@@ -419,6 +419,7 @@ class ClaudeProvider(BaseProvider):
 
     name = "claude-code"
     family = "anthropic"
+    native_credential_service = "claude"
 
     @classmethod
     def is_available(cls) -> bool:

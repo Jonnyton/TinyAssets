@@ -9,6 +9,12 @@ docs/reviews/2026-09-14-native-model-propagation-proof.md. No deployment, privat
 workflow edit or complete enumeration/tool-loop claim. Final release review
 remains unused. Full task checkboxes stay open pending their actual outcomes.
 
+Next internal checkpoint: native metadata types, registered Codex paginated
+metadata-only adapter, and owner-custody snapshot lifecycle built. No model-list
+release table or inference-based enumeration. Claude enumeration remains unknown.
+See docs/reviews/2026-09-14-native-discovery-adapter-proof.md. Advisory display and
+discovered-scope launch/work evidence wiring remain pending; task1.3 stays open.
+
 - [ ] 1.1 Resolve the design's exact storage/authority and discovery seams; obtain one cross-family shape review before implementing public/storage/authority changes.
 - [x] 1.2 Ship truthful HTTP answering-model receipts, preserving requested selection and unknown metadata behavior, with tests and independent review.
 - [ ] 1.3 Implement normalized account-scoped discovery with source/freshness/capability/cost evidence; prove refresh adds a new model and cannot widen endpoint grants.
