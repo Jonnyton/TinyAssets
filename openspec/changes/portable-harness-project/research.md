@@ -174,3 +174,47 @@ The inspection workspace provides Python 3 but no Claude CLI, Codex CLI or OpenS
 CLI on PATH. The existing Claude review task remains claimable and uncompleted;
 no independent review result is asserted. OpenSpec's documented manual layout is
 used. The proposal is the review artifact; implementation remains gated.
+
+## Third refinement: construction and truthful action contracts
+
+Primary sources rechecked 2026-09-14; proposals below are design inferences.
+
+| Source | Evidence | Adaptation and limit |
+| --- | --- | --- |
+| [RFC 9110 §9.2.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2) | Automatic retry of non-idempotent requests requires knowledge of idempotent semantics or that the prior request was not applied | Expose adapter-specific retry/reconciliation support. This RFC does not supply an application deduplication ledger |
+| [RFC 9110 §13.1.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-13.1.1) | If-Match preconditions prevent stale mutation at the resource boundary | Require real owner-side revision checks where advertised; do not emulate atomicity with a prior client read |
+| [SCXML §3.13](https://www.w3.org/TR/2015/REC-scxml-20150901/#SelectingTransitions) | The event processor specifies transition selection and run-to-completion behavior | Separate pure input transitions from asynchronous work. Retain the existing graph runtime; deterministic local transitions do not make external effects deterministic |
+
+Request-key binding, expiry behavior and extraction diagnostics are our proposed
+contracts, not claims these standards define TinyAssets behavior.
+
+### Fresh code evidence
+
+Inspected existing proposal checkouts in a governed Linux workspace on 2026-09-14:
+- `tinyassets/api/runs.py:1545`, `_action_cancel_run`, checks reachability and
+  write authority, requests cooperative cancellation, then rereads status. It
+  returns terminal and cancel_requested separately. Reuse this distinction;
+  do not promise cancellation can prevent an already-dispatched effect.
+- `tinyassets/runs.py:2357`, `list_events`, reads events ordered by step_index,
+  using the last observed cursor rather than a count of completed nodes.
+  `await_run_events` returns next_cursor and terminal/timeout reasons. This is
+  a per-run read contract, not an atomic multi-resource projection snapshot.
+- `tinyassets/agent_runtime_compiler.py:358` accepts existing component,
+  runtime/configuration and governed registry inputs. Its diagnostics anchor
+  readiness reporting. It does not establish a complete authoring editor,
+  automatic subgraph extraction or universal action deduplication.
+
+The new construction exercise makes inspect/edit/connect/validate/simulate/export/
+bind/observe reviewable. H-C11–H-C14 add targeted dependency and action checks.
+Keep the first inert package/offline fixture slice small; later capabilities have
+their own evidence gates rather than expanding the first implementation indefinitely.
+
+Before action implementation, the reviewer must name the native handler and
+receipt lookup for each offered operation, its actual request-key/precondition
+support, and how expiry/unknown delivery is exposed. Absence of support is an
+acceptable explicit outcome; a generic wrapper that claims support is not.
+
+Verification boundary: documentation-only refinement. Python is present; OpenSpec,
+Claude and Ruff CLIs are absent on PATH in this governed workspace. The manual
+OpenSpec layout remains applicable. Independent review remains pending; no new
+Claude verdict, executed conformance vector or live capability is asserted.

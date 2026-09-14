@@ -118,3 +118,35 @@ and select the candidate for new runs without silently changing in-flight runs.
 - **THEN** rollback reports the incompatibility and preserves the current state
 - **AND** restoration or forward repair follows a separately supported recovery plan
 - **AND** completed external effects are not reversed by selecting older source
+
+### Requirement: Authoring exposes dependencies and separates readiness
+The builder SHALL retain inspectable candidate source and diagnostics for edits
+and connections. Package validity, executable wiring, host support and authority
+readiness SHALL be reported separately. Reusable extraction SHALL expose captured
+dependencies or explicitly report that extraction is unsupported.
+
+#### Scenario: Extract a component with captured private state
+- **WHEN** a selected subgraph depends on its parent's private memory binding
+- **THEN** extraction declares an explicit resource/input requirement or refuses
+- **AND** no private binding is copied into the reusable source
+
+### Requirement: Action retries preserve request meaning and honest uncertainty
+An adapter advertising deduplication SHALL bind request identity to authenticated
+scope, operation, resolved target, arguments and relevant preconditions, and SHALL
+document retention and reconciliation. Native unsupported behavior SHALL remain
+explicitly unsupported.
+
+#### Scenario: A request identity is reused with changed meaning
+- **WHEN** the same deduplication key is submitted with different arguments or target
+- **THEN** the adapter reports conflict before another execution
+- **AND** it does not return the prior result as success for the changed request
+
+#### Scenario: A retry outlives deduplication retention
+- **WHEN** the adapter can no longer establish whether the original request executed
+- **THEN** the outcome remains uncertain pending supported reconciliation
+- **AND** an expired key does not establish that the effect never happened
+
+#### Scenario: Cancellation races dispatch
+- **WHEN** a cancellation request overlaps an external effect attempt
+- **THEN** evidence records the actual cancellation and dispatch outcomes separately
+- **AND** terminal cancellation does not imply reversal of the effect

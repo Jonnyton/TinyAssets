@@ -4,6 +4,9 @@ Status: proposed semantic contract, 2026-09-14. Initial provider: Codex.
 This is the detailed companion to design.md and UI refinement PR #3842. Names in examples
 are author-defined roles, not newly registered MCP tools or shipped schemas.
 
+The builder-operation table and action semantics near the end define the next
+construction exercise and capability-by-capability implementation order.
+
 ## One substrate, independently replaceable compositions
 
 A harness is the composition deciding how work proceeds. An experience is the
@@ -338,3 +341,98 @@ GovernedComponentDescriptor, the actual runner invocation, and the digest/transp
 bounds already listed in design.md. Record choices in review.md with code anchors.
 State migration and live run transfer are subsequent seams; neither is required
 to prove source portability, and neither may be implied by that proof.
+
+## Builder operations and action semantics (third refinement)
+
+This section turns the authoring vocabulary into reviewable operations and narrows
+the first build. These are semantic contracts mapped to existing handlers, not new
+MCP verbs, storage tables, or a universal transaction service.
+
+### A builder must expose the whole composition
+
+| Author operation | Input and retained artifact | Required behavior |
+| --- | --- | --- |
+| Inspect | Definition revision, dependency closure, installed adapter capabilities | Show source, typed ports, effects and unsupported requirements without executing |
+| Edit/connect | Base source revision plus scoped edit | Preserve unrelated source; return a candidate and source/connection diagnostics |
+| Extract/compose | Selected subgraph and its boundary ports | Make captured state/resource dependencies explicit; preserve stable references and lineage |
+| Validate | Candidate digest plus runtime profile | Report package, wiring, adapter and authority readiness separately |
+| Simulate | Candidate plus frozen fixture/evaluator | Execute only in declared fixture confinement; record simulated effects and stop conditions |
+| Publish/export | Selected immutable candidate and inventoried assets | Produce inert source; exclude installation bindings and live evidence by default |
+| Bind/activate | Candidate, private role choices and expected installation revision | Recheck compatibility/current authority; select for new work only |
+| Observe/revise | Canonical run/receipt and source provenance | Trace a result to its component and propose an edit without rewriting run history |
+
+Extracting a context/retrieval subgraph must list every input it previously captured:
+document role, memory access, configuration and state reducer. Hidden references to
+a parent installation make extraction incomplete. The first slice may explicitly
+refuse automatic extraction; it must still allow authors to compose equivalent
+source with declared ports. A visual editor is not required for the source proof.
+
+A validation report identifies component path, port, expected/observed contract,
+responsible adapter and an actionable diagnostic. "Valid package" never means
+"authorized to run." Diagnostics must not include private resolved resource values.
+
+### Actions have a contract before an editor offers them
+
+The bridge consumes an installed operation contract covering argument/result
+schemas, target scope, supported preconditions, native lifecycle, retry/reconciliation
+behavior, cancellation behavior and evidence lookup. Read-only, mutating and
+externally effectful behavior come from trusted adapter metadata. Package labels
+cannot downgrade an operation's authority requirements.
+
+A builder displays only behavior that the installed adapter actually supports.
+Missing revision preconditions are reported as unsupported; a client-side revision
+comparison must not masquerade as atomic compare-and-swap. A supported precondition
+is evaluated at the owning mutation boundary, not only during preview.
+
+Keep three independent facts: request admission, canonical work outcome, and each
+effect's delivery outcome. The following is a semantic mapping, not a replacement
+for native run status strings:
+
+| Observation | Meaning | Permitted next step |
+| --- | --- | --- |
+| Locally unsent | No dispatch attempted | Edit or discard locally; an explicit submit may start work |
+| Refused before admission | Boundary rejected this request | Correct the stated cause; do not show a started run |
+| Accepted with reference | Existing runtime admitted work | Observe the referenced work; acceptance is not completion |
+| Delivery uncertain | An attempted external effect has no conclusive receipt | Reconcile through the adapter; no blind resend |
+| Terminal work outcome | Canonical runtime reports completion/failure/cancellation | Show that outcome alongside retained effect evidence |
+
+For operations supporting deduplication, the adapter must bind the request key to
+the authenticated scope, operation, resolved target, canonical argument digest and
+relevant preconditions. The same key with changed meaning is a conflict, never a
+cached success for different work. Return prior evidence only after current read
+authorization. Document key retention and the outcome after expiry: a forgotten key
+is not proof that a previous effect never happened. If the native handler cannot
+provide these guarantees, report retry support as unavailable.
+
+Cancellation acknowledgment records a request, not guaranteed prevention of the
+next effect. Dispatch and cancellation may race; the adapter states its actual
+decision boundary and records effects already started or delivered. Compensation
+is separately authorized work with its own outcome; it is not a state rollback.
+
+### One concrete construction exercise
+
+Starting from the document-review fixture, author a context selector, evaluator,
+bounded iteration rule and artifact sink through explicit ports. Replace the
+selector with a deterministic alternative; an intentionally changed fixture output
+must trace to that source edit. Extract the selector into a reusable component,
+or record the unsupported extraction operation and perform the same explicit
+source composition. Export and import into an empty second installation; bind its
+own document role. Replacing presentation then uses the same work references in
+H-C10/E-C12. None of these authoring steps starts a schedule or sends a notification.
+
+The implementation order is: existing source envelope and port mapping; inert
+package plus deterministic fixture; governed action integration; rendered experience
+and second-account proof. Do not make automatic extraction, migration, live-run
+transfer, native voice or every conformance vector a prerequisite for the first
+inert source proof. Each later capability earns its own evidence before being offered.
+
+| ID | Given / action | Required observation |
+| --- | --- | --- |
+| H-C11 | Extract a context component with a hidden parent-memory dependency | Expose an explicit input/resource requirement or refuse extraction; no captured private binding |
+| H-C12 | Reuse one supported request key with different arguments or target | Conflict before new execution; never return the old result as success for new work |
+| H-C13 | Retry after adapter deduplication retention expires | Explicit expiry/uncertainty handling; no assumption that the earlier effect did not occur |
+| H-C14 | Cancel races an external dispatch | Preserve the observed dispatch and cancellation boundary; never infer effect reversal from cancelled status |
+
+H-C11 belongs to the extraction capability when supported; H-C12–H-C14 belong to
+the action adapter slice. These extend the pending conformance catalog, not claims
+of executed tests. A deterministic fixture establishes only its declared profile.
