@@ -165,6 +165,13 @@ class ModelConfig:
 
     temperature: float = 0.7
 
+    native_model_id: str | None = None
+    """Router-owned native request: None is legacy; empty omits the CLI flag.
+
+    Not authority or an actual answering-model receipt. The router overwrites
+    caller values from the current serving authority or sealed work carrier.
+    """
+
     reasoning_effort: str = ""
     """Generic per-call reasoning/effort level (e.g. ``minimal`` / ``low`` /
     ``medium`` / ``high``). Empty = provider default. Each provider maps this to

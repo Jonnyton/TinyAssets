@@ -1,5 +1,14 @@
 ## 1. Reviewed foundation
 
+September14 owner-approved remaining-design Fable review completed576s ADAPT;
+dispositions in remaining-model-execution.md. Native explicit propagation now
+built for chat/workflows, both CLIs, sealed evidence and honest picker basis.
+Final14-file group367Windows/369Linux (3/1skips), including existing concurrency
+and sandbox checks on Linux. Real-account CLI test remains skipped. See
+docs/reviews/2026-09-14-native-model-propagation-proof.md. No deployment, private
+workflow edit or complete enumeration/tool-loop claim. Final release review
+remains unused. Full task checkboxes stay open pending their actual outcomes.
+
 - [ ] 1.1 Resolve the design's exact storage/authority and discovery seams; obtain one cross-family shape review before implementing public/storage/authority changes.
 - [x] 1.2 Ship truthful HTTP answering-model receipts, preserving requested selection and unknown metadata behavior, with tests and independent review.
 - [ ] 1.3 Implement normalized account-scoped discovery with source/freshness/capability/cost evidence; prove refresh adds a new model and cannot widen endpoint grants.

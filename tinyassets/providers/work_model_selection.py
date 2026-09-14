@@ -57,7 +57,7 @@ def selected_work_model(selection):
     if selection is None:
         return None
     evidence = selection.model_evidence()
-    if evidence is None:
+    if evidence is None or evidence.get("kind") == "native":
         return None
     contract = evidence["execution_contract"]
     compiled = (SourceContract.compile(contract["value"]) if contract["kind"] == "configured"

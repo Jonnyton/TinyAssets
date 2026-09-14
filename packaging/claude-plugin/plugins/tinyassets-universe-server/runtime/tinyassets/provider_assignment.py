@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_selection import SelectedModel
+    from tinyassets.providers.native_model_selection import NativeSelection
 
 from tinyassets.provider_assignment_manifest import (
     AssignmentCandidate,
@@ -99,6 +100,7 @@ class ServedProviderAuthority:
         default=None, repr=False, compare=False
     )
     selected_model: SelectedModel | None = None
+    native_selection: NativeSelection | None = None
     after_provider_claim: object | None = field(default=None, repr=False, compare=False)
 
 
@@ -482,10 +484,25 @@ def reserve_served_provider_budget(
                     native_default = _native_default(member.provider, "", member.access)
                 except PermissionError:
                     pass  # An accepted specific native model is not its default.
+            native_explicit = False
+            if member is not None and authority.native_selection is not None:
+                from tinyassets.providers.native_model_selection import (
+                    NativeSelection,
+                    accepted_native_selection,
+                )
+
+                native_explicit = (
+                    authority.authority_kind == "subscription_snapshot"
+                    and type(authority.native_selection) is NativeSelection
+                    and authority.native_selection == accepted_native_selection(
+                        member.provider, authority.native_selection.requested_model_id,
+                        member.access,
+                    )
+                )
             binding_matches_assignment = (
                 authority.operation == "converse"
                 and (
-                    native_default or (
+                    native_default or native_explicit or (
                         authority.selected_model is not None
                         and authority.selected_model.provider == authority.provider
                     )
@@ -1588,6 +1605,7 @@ def _authorize_served_provider_call(
                         credential_service=service,
                         credential_snapshot_dir=credential_snapshot.directory,
                         request_capability=capability,
+                        native_selection=selected_model,
                     )
                 conn.rollback()
             yield authority

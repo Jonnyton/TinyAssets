@@ -34,7 +34,7 @@ def native(tmp_path, monkeypatch):
         base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
         universe_id=universe.name, agent_binding_id=agent["agent_binding_id"],
         expected_revision=agent["revision"], provider="codex",
-        model_access={"codex": ModelAccess("explicit", ("",))},
+        model_access={"codex": ModelAccess("explicit", ("", "future-native-model"))},
     )
     with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -124,6 +124,39 @@ def test_native_default_still_requires_current_owned_credential(native):
     with pytest.raises(ProviderAuthorityHeldError):
         _call(native)
     assert native.provider.calls == 0 and native.other.calls == 0
+
+
+def test_accepted_native_model_reaches_request_local_config(native, monkeypatch):
+    captured = []
+    original = native.provider.complete
+
+    async def record(prompt, system, config, **kwargs):
+        captured.append(config)
+        return await original(prompt, system, config, **kwargs)
+
+    monkeypatch.setattr(native.provider, "complete", record)
+    context = replace(native.context, model_selection=ModelRef("codex", "future-native-model"))
+    assert _call(native, context).provider == "codex"
+    assert captured[0].native_model_id == "future-native-model"
+    assert captured[0].selected_model is None
+
+
+def test_caller_native_model_cannot_replace_authorized_default(native, monkeypatch):
+    from tinyassets.providers.base import ModelConfig
+
+    captured = []
+    original = native.provider.complete
+
+    async def record(prompt, system, config, **kwargs):
+        captured.append(config)
+        return await original(prompt, system, config, **kwargs)
+
+    monkeypatch.setattr(native.provider, "complete", record)
+    asyncio.run(native.router.call(
+        "writer", "hello", "", ModelConfig(native_model_id="injected-model"),
+        operation="converse", universe_context=native.context,
+    ))
+    assert captured[0].native_model_id == ""
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude-code"])

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tinyassets.providers.discovery_contract import SourceContract
     from tinyassets.providers.discovery_protocols import DiscoveryProtocol
+    from tinyassets.providers.native_model_selection import NativeSelection
 
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.model_policy import (
@@ -90,7 +91,7 @@ def prepare_selected_model(
     model_id: str,
     access: ModelAccess,
     needs_tools: bool = False,
-) -> tuple[SelectedModel | None, Callable[[], None] | None]:
+) -> tuple[SelectedModel | NativeSelection | None, Callable[[], None] | None]:
     """Prepare an accepted source; native defaults carry no HTTP model facts.
 
     This is not an independent authority entrypoint. The caller must validate the
@@ -99,7 +100,11 @@ def prepare_selected_model(
     remains the caller's responsibility before and after this preparation.
     """
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
+    from tinyassets.providers.native_model_selection import accepted_native_selection
 
+    native = accepted_native_selection(provider, model_id, access)
+    if native is not None:
+        return native, None
     if _native_default(provider, model_id, access):
         return None, None
     definition = _selection_definition(
@@ -119,14 +124,18 @@ async def prepare_selected_model_async(
     *, base_path: Path, owner_user_id: str, universe_id: str,
     provider: str, model_id: str, access: ModelAccess,
     needs_tools: bool = False,
-) -> tuple[SelectedModel | None, Callable[[], None] | None]:
+) -> tuple[SelectedModel | NativeSelection | None, Callable[[], None] | None]:
     """Refresh without blocking ingress; the caller re-fences authority afterward.
 
     No assignment lock or SQLite transaction may span this await. The snapshot
     is advisory data, not permission, and cancelled callers never reach launch.
     """
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery_async
+    from tinyassets.providers.native_model_selection import accepted_native_selection
 
+    native = accepted_native_selection(provider, model_id, access)
+    if native is not None:
+        return native, None
     if _native_default(provider, model_id, access):
         return None, None
     definition = _selection_definition(

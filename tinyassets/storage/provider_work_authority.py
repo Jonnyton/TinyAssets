@@ -2623,6 +2623,15 @@ class SQLiteProviderWorkAuthorityStore:
         if selection.model_evidence_json is not None or selection.executor_id != selection.provider:
             raise PermissionError("work model evidence must be prepared by admission")
         _current_work_member(conn, receipt, selection, self._now())
+        from tinyassets.providers.native_model_selection import accepted_native_selection
+
+        native = accepted_native_selection(selection.provider, selection.model_id, member.access)
+        if native is not None:
+            from tinyassets.provider_work_authority import _canonical_json
+
+            if model_snapshot is not None:
+                raise PermissionError("declared native model cannot use HTTP discovery")
+            return replace(selection, model_evidence_json=_canonical_json(native.to_dict()))
         if _native_default(selection.provider, selection.model_id, member.access):
             if model_snapshot is not None:
                 raise PermissionError("native model cannot use HTTP discovery")

@@ -146,7 +146,19 @@ def _native_models(base, universe, owner, member):
     from tinyassets.providers.model_selection import _native_default
 
     _resolve_serving_source(base, universe.name, owner, member.provider, member.access)
-    _native_default(member.provider, "", member.access)
+    from tinyassets.providers.native_model_selection import accepted_native_selection
+
+    declared = member.access.model_ids if member.access.model_scope == "explicit" else ("",)
+    models = []
+    for model_id in declared:
+        if model_id:
+            accepted_native_selection(member.provider, model_id, member.access)
+        else:
+            _native_default(member.provider, model_id, member.access)
+        models.append(Model(
+            model_id, True, frozenset({"text"}), pricing=Pricing("fresh", unmetered=True),
+            availability_basis="owner_declared" if model_id else "executor_default",
+        ))
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
     if provider is None or not provider.is_available():
@@ -154,8 +166,7 @@ def _native_models(base, universe, owner, member):
     return ConnectionModels(
         member.provider, "native-subscription:" + member.provider, "subscription", "fresh",
         True, True,
-        (Model("", True, frozenset({"text"}), pricing=Pricing("fresh", unmetered=True)),),
-        default_model_id="",
+        tuple(models), default_model_id="" if "" in declared else None,
     )
 
 

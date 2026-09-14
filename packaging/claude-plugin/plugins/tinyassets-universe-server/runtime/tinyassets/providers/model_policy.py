@@ -68,6 +68,7 @@ class Model:
     pricing: Pricing = Pricing()
     scores: Scores | None = None
     output_modalities: frozenset[str] = frozenset({"text"})
+    availability_basis: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -441,8 +441,11 @@ class ClaudeProvider(BaseProvider):
         ``ProviderUnavailableError`` / ``ProviderError``).
         """
         base_cmd, use_shell = _resolve_claude_cmd()
+        from tinyassets.providers.native_model_selection import native_model_arguments
+
         cmd = [
             *base_cmd, "-p",
+            *native_model_arguments(config.native_model_id, "--model"),
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
@@ -742,7 +745,7 @@ class ClaudeProvider(BaseProvider):
                 return ProviderResponse(
                     text=final_text,
                     provider=self.name,
-                    model="claude",
+                    model=config.native_model_id or "claude",
                     family=self.family,
                     latency_ms=elapsed_ms,
                     input_tokens=_coerce_int(usage.get("input_tokens")),
@@ -842,6 +845,9 @@ class ClaudeProvider(BaseProvider):
         """Call with ``--output-format json`` for structured output."""
         base_cmd, use_shell = _resolve_claude_cmd()
         cmd = [*base_cmd, "-p", "--output-format", "json"]
+        from tinyassets.providers.native_model_selection import native_model_arguments
+
+        cmd.extend(native_model_arguments(config.native_model_id, "--model"))
         if system:
             cmd.extend(["--system-prompt", system])
         extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
@@ -914,7 +920,7 @@ class ClaudeProvider(BaseProvider):
         return ProviderResponse(
             text=text,
             provider=self.name,
-            model="claude",
+            model=config.native_model_id or "claude",
             family=self.family,
             latency_ms=elapsed_ms,
         )

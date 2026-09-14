@@ -704,7 +704,7 @@ class CodexProvider(BaseProvider):
         full_input = f"{system}\n\n{prompt}" if system else prompt
 
         base_cmd, use_shell = _resolve_codex_cmd()
-        model = _codex_model()
+        model = _codex_model() if config.native_model_id is None else config.native_model_id
         sandbox_status = get_sandbox_status()
         sandbox_args = (
             ["--sandbox", "workspace-write"] if sandbox_status.get("bwrap_available")
@@ -770,7 +770,9 @@ class CodexProvider(BaseProvider):
                 'web_search="cached"',
                 "--json",
             ]
-        model_args = ["-m", model] if model else []
+        from tinyassets.providers.native_model_selection import native_model_arguments
+
+        model_args = native_model_arguments(model, "-m")
         cmd = [
             *base_cmd,
             "exec",

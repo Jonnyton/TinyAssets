@@ -2129,7 +2129,8 @@
       for(const row of rows){
         const li=document.createElement("li");
         li.textContent=this.label(row.reference)+" — "+(this.stale ? "stale; " : "")+
-          ((row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ")|| (this.usable(row)?"available":"availability unconfirmed"));
+          ((row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ")|| (row.availability_basis==="owner_declared"?"owner-selected; availability not verified":this.usable(row)?"available":"availability unconfirmed"));
+        if(row.availability_basis==="executor_default") li.textContent+=" — provider chooses the model; full model list not yet verified";
         if(row.availability_basis==="owner_configured_contract") li.textContent+=" — availability, privacy and charges are declared by this configured source, not independently verified";
         inventory.appendChild(li);
       }

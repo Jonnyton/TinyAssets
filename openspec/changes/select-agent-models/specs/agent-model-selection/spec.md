@@ -48,6 +48,18 @@ rewriting a private workflow. Preferences alone SHALL NOT grant execution access
 - **THEN** execution refuses with the actual category before provider launch
 - **AND** it neither silently changes the pin nor requests unrelated authentication as the repair
 
+#### Scenario: Owner-declared native choice
+- **WHEN** an owner selects a nonempty native model ID already accepted in explicit model scope
+- **THEN** chat and workflow invocations pass that exact request-local ID to the native executor
+- **AND** process-global model overrides cannot replace the selection
+- **AND** the catalogue labels it owner-declared with availability unverified, not executor-enumerated
+- **AND** unknown answering-model telemetry remains unknown
+
+#### Scenario: Native default and injected preference
+- **WHEN** native authority selects its provider default or no native selection is authorized
+- **THEN** a caller-supplied native model field cannot change that authority
+- **AND** an authorized default omits the model argument rather than activating a host preference
+
 ### Requirement: Connection-authored discovery contracts
 The existing provider-capability action SHALL allow a versioned bounded data
 contract for an unfamiliar connected model source, without provider-specific

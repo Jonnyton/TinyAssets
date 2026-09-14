@@ -970,6 +970,15 @@ class ProviderInvocationSelection:
         if type(raw) is not str or len(raw.encode("utf-8")) > 262144:
             raise ValueError("invalid selected model evidence")
         evidence = json.loads(raw)
+        if type(evidence) is dict and evidence.get("kind") == "native":
+            from tinyassets.providers.native_model_selection import NativeSelection
+
+            native = NativeSelection.from_dict(evidence)
+            if (_canonical_json(evidence) != raw or native.provider != self.provider
+                    or native.requested_model_id != self.model_id
+                    or self.executor_id != self.provider):
+                raise ValueError("native model evidence does not match selection")
+            return evidence
         if type(evidence) is not dict or set(evidence) != {
             "discovery_protocol", "source_digest", "context_tokens", "supports_tools",
             "cost_caps", "execution_contract", "observed_at", "completed_at",
@@ -1354,6 +1363,16 @@ class ProviderInvocationCarrier:
         from tinyassets.providers.work_model_selection import selected_work_model
 
         return selected_work_model(self._reservation.selection)
+
+    @property
+    def native_selection(self):
+        from tinyassets.providers.native_model_selection import NativeSelection
+
+        selection = self._reservation.selection
+        evidence = None if selection is None else selection.model_evidence()
+        if evidence is not None and evidence.get("kind") == "native":
+            return NativeSelection.from_dict(evidence)
+        return None
 
     @property
     def role(self) -> str:

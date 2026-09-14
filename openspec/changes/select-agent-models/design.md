@@ -8,6 +8,9 @@ Neither fact can be repaired by drawing a picker over today's name list.
 
 ## Goals / Non-Goals
 
+September14 remaining execution decisions and Fable ADAPT dispositions are in
+`remaining-model-execution.md`; read it before native/workflow tool integration.
+
 **Goals:** actionable model choice, automatic suitable defaults, accepted ordered
 fallbacks and honest actual-model receipts using the user's authorized compute.
 

@@ -653,6 +653,18 @@ class ProviderRouter:
         # selection when there is no selected-model serving authority.
         model_authority = served_authority or invocation_carrier
         cfg = replace(cfg, selected_model=getattr(model_authority, "selected_model", None))
+        from tinyassets.providers.native_model_selection import NativeSelection
+
+        native_selection = getattr(model_authority, "native_selection", None)
+        if native_selection is not None and (
+            type(native_selection) is not NativeSelection
+            or native_selection.provider != model_authority.provider
+        ):
+            raise PermissionError("native selection does not match serving authority")
+        cfg = replace(cfg, native_model_id=(
+            None if model_authority is None else
+            native_selection.requested_model_id if native_selection is not None else ""
+        ))
         if _agent_execution_kind == "native_agent" and (
             cfg.agent_request is not None or cfg.selected_model is not None
         ):
