@@ -7,7 +7,7 @@
 ## Before implementation
 
 - [ ] Map responsibilities to current handlers and settle native extension, schema, asset bounds, and renderer isolation.
-- [ ] Obtain reviewer confirmation of the ADAPT dispositions in review.md and resolve remaining bridge, profile and confinement seams before implementation.
+- [x] Record follow-up Fable 5.1 approval on reviewed head 5e8a5d0120566b4c49b56e6a81388e35bb1a818d; carry the bounded implementation points into implementation.md.
 
 ## Implementation and proof
 

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Editable experience preview</title>
+<style>
+body{font:16px system-ui;max-width:960px;margin:2rem auto;padding:0 1rem;color:#18232d;background:#f7f8fa}
+textarea{box-sizing:border-box;width:100%;min-height:22rem;font:14px monospace}
+button,select{font:inherit;padding:.6rem;margin:.4rem .4rem .4rem 0}
+.experience-board{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;list-style:none;padding:0}
+.experience-list{list-style:none;padding:0}
+li{padding:1rem;margin-bottom:.7rem;background:white;border:1px solid #aab6c1;border-radius:.4rem}
+#error{color:#9b1920} :focus-visible{outline:3px solid #0969da;outline-offset:3px}
+</style>
+<h1>Make this experience yours</h1>
+<p>Edit the shared design below. Both views use the same fixture instances.
+This offline preview has no account connection and sends no actions.</p>
+<label for="mode">View</label>
+<select id="mode"><option value="desktop">Desktop board</option><option value="phone">Phone list</option></select>
+<button id="preview">Preview my edits</button>
+<button id="recover">Restore example</button>
+<p id="error" role="alert"></p>
+<main id="surface" aria-label="Experience preview"></main>
+<label for="source">Editable native composition</label>
+<textarea id="source" spellcheck="false"></textarea>
+<script src="../../tinyassets/onboarding/experience.js"></script>
+<script>
+"use strict";
+const example = {
+  schema_version:1,name:"My workspace",
+  components:{
+    instances:{kind:"experience.view",title:"My instances",
+      layouts:{desktop:"board",phone:"list"}},
+    work:{kind:"experience.action",label:"Inspect action",operation:"run_branch",
+      target_role:"worker",input:{topic:"Example task"}},
+    custom:{kind:"my.future-view",config:{note:"Preserved when I change layouts"}}
+  }
+};
+const source=document.getElementById("source");
+function render(){
+  try{
+    TinyExperience.renderPreview(JSON.parse(source.value),document.getElementById("surface"),{
+      mode:document.getElementById("mode").value,
+      fixtures:[{label:"Research",status:"Waiting for input"},{label:"Drafting",status:"Complete"}],
+      bindings:{worker:{branchId:"demo-work",revision:1}}
+    });
+    document.getElementById("error").textContent="";
+  }catch(error){document.getElementById("error").textContent=error.message;}
+}
+document.getElementById("preview").addEventListener("click",render);
+document.getElementById("mode").addEventListener("change",render);
+document.getElementById("recover").addEventListener("click",()=>{
+  source.value=JSON.stringify(example,null,2);render();
+});
+source.value=JSON.stringify(example,null,2);render();
+</script>
+</html>
