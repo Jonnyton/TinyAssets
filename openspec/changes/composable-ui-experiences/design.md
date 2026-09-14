@@ -1,3 +1,15 @@
+## Contract map
+
+Read [primitives.md](primitives.md) for concrete port responsibilities, bridge
+lifecycle, event identities, recovery semantics, accessibility and a worked
+cross-device trace. [research.md](research.md) records evidence and the next
+implementation review. The companion harness PR #3840 owns the shared source
+project contract and evidence ladder.
+
+These details refine the semantic responsibilities below. They are proposed
+contracts to map onto existing handlers and the governed component compiler,
+not a new tool catalog or a claim that native device adapters already exist.
+
 ## Context
 
 Repository inspection on 2026-09-14 used a governed Linux checkout of main,
@@ -44,8 +56,11 @@ preserve unsupported components so this initial renderer does not set a ceiling.
 ## Composition model
 
 The following are semantic responsibilities, not a proposed list of MCP tools.
-Before implementing, map each responsibility to existing primitives and document
-only the irreducible gaps.
+primitives.md specifies their data flow and lifecycle; research.md maps them to
+existing native component, graph, run, conversation and desktop anchors.
+Before implementing, settle the concrete bridge handler for each responsibility
+and document only the irreducible gaps. Preserve governed descriptor requirements;
+public component metadata cannot weaken adapter authority or confinement.
 
 | Responsibility | Replaceable composition | Enforced boundary |
 |---|---|---|

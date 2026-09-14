@@ -79,3 +79,53 @@ a broken experience and restore a compatible prior revision.
 - **THEN** only fixture behavior runs
 - **AND** after explicit activation the user can disable or roll back the view
 - **AND** rollback does not claim to undo completed external effects
+
+### Requirement: Experience primitives have explicit governed interfaces
+An experience SHALL connect versioned projection, view, input, action, routing
+and device contracts through validated ports. Public source SHALL remain
+independent from private bindings and canonical run/conversation state.
+
+#### Scenario: Change presentation without changing the harness
+- **GIVEN** a run shown by a board and a compact phone view
+- **WHEN** the board is replaced by a compatible office component
+- **THEN** both views continue observing the same authorized run and conversation
+- **AND** changing the view creates no new runtime instance or writer
+
+#### Scenario: A disposed renderer sends a delayed action
+- **WHEN** a bridge request arrives from an old renderer lifecycle generation
+- **THEN** the trusted bridge rejects it
+- **AND** it does not act through the current installation's bindings
+
+### Requirement: Event recovery cannot replay user authority
+Projection updates SHALL carry documented revision/cursor semantics and
+distinguish event identity, destination delivery and user action identity.
+
+#### Scenario: Reconnect beyond retained history
+- **WHEN** a saved cursor precedes the retained stream
+- **THEN** the view obtains a fresh authorized snapshot and reconciles local state
+- **AND** older deltas do not overwrite the snapshot
+- **AND** reconnect does not silently dispatch saved external actions
+
+#### Scenario: Speech is still being transcribed
+- **WHEN** partial speech matches an action phrase
+- **THEN** the experience waits for committed user input
+- **AND** playback completion or notification display is not treated as approval
+
+### Requirement: Custom experiences remain accessible and recoverable
+Required semantic controls SHALL have operable non-spatial alternatives.
+The trusted host SHALL retain an accessible way to disable a broken experience.
+
+#### Scenario: Spatial rendering or custom input fails
+- **WHEN** a user cannot operate a spatial view or a component stops responding
+- **THEN** keyboard and accessible alternatives preserve required semantic controls where supported
+- **AND** the trusted recovery surface can disable the experience
+
+### Requirement: Personalization remains a proposed user-controlled revision
+An agent-generated personalization SHALL produce an inspectable diff and
+inert preview before activation. Learned private preferences SHALL NOT be
+automatically published with a shared definition.
+
+#### Scenario: A suggested improvement requests new capabilities
+- **WHEN** an agent proposes a new route or component that needs additional access
+- **THEN** the user can inspect the revision and its changed requirements
+- **AND** activation cannot confer the missing authority

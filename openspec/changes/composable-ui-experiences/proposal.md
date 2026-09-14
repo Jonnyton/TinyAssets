@@ -6,6 +6,17 @@ gamified experience, office simulation, and earbud conversation are different
 compositions over shared capabilities. Their layouts and interaction behavior
 must be editable, including instance selection and phone notification routing.
 
+## Refinement: buildable behavior through a concrete toolset
+
+[primitives.md](primitives.md) specifies projection, view, input, action,
+event-routing and device contracts, with a complete desktop/office/phone/earbud
+trace. [research.md](research.md) records primary-source evidence, existing code
+anchors, limits and the cross-family implementation handoff.
+
+The harness and experience are independently replaceable compositions over the
+same Node, Edge, State, Scope, Run and Trigger substrate. This proposal requires
+behavioral customization and source-level remix, not only themes or layouts.
+
 ## What Changes
 
 - Specify an inspectable, versioned experience composition with replaceable
