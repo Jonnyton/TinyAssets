@@ -2392,15 +2392,17 @@ def converse(
             "error": _served_failure_notice(exc),
             **_served_failure_diagnosis(exc),
         })
+    execution = execution_receipt.projection()
     try:
         from tinyassets.conversation_store import record_exchange
 
         # Both sides in ONE transaction: never a founder-only half-turn.
-        record_exchange(memory_universe_dir, memory_session, message, str(reply))
+        record_exchange(
+            memory_universe_dir, memory_session, message, str(reply), execution=execution,
+        )
     except Exception:  # noqa: BLE001 - the reply is already earned; memory is best-effort
         logger.warning("converse: conversation memory could not record the turn", exc_info=True)
     payload = {"reply": reply, "universe_id": uid}
-    execution = execution_receipt.projection()
     if execution is not None:
         payload["execution"] = execution
     return json.dumps(payload)

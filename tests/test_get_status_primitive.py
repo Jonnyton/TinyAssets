@@ -703,7 +703,8 @@ def test_get_status_recent_conversation_optin_gate_and_isolation(
     udir = tmp_path / uid
     udir.mkdir(parents=True, exist_ok=True)
     # Two founders' turns co-located in ONE universe DB, keyed by principal.
-    record_exchange(udir, "principal:founder-a", "A question", "A answer")
+    receipt_a = {"provider": "provider-a", "model": "model-a", "model_status": "reported"}
+    record_exchange(udir, "principal:founder-a", "A question", "A answer", execution=receipt_a)
     record_exchange(udir, "principal:founder-b", "B question", "B answer")
 
     def _as(actor: str, allowed: bool) -> None:
@@ -720,6 +721,8 @@ def test_get_status_recent_conversation_optin_gate_and_isolation(
     _as("founder-a", True)
     pa = json.loads(get_status(universe_id=uid, include_conversation=True))
     rc = pa["recent_conversation"]
+    assert "execution" not in rc["turns"][0]
+    assert rc["turns"][1]["execution"] == receipt_a
     assert rc["content_is_untrusted"] is True
     texts_a = " ".join(t["text"] for t in rc["turns"])
     assert "A answer" in texts_a and "B answer" not in texts_a  # principal isolation
@@ -729,6 +732,7 @@ def test_get_status_recent_conversation_optin_gate_and_isolation(
     pb = json.loads(get_status(universe_id=uid, include_conversation=True))
     texts_b = " ".join(t["text"] for t in pb["recent_conversation"]["turns"])
     assert "B answer" in texts_b and "A answer" not in texts_b
+    assert "provider-a" not in json.dumps(pb)
 
     # Non-founder (no write access): peek withheld entirely, no content leak.
     _as("stranger", False)

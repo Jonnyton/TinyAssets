@@ -26,6 +26,8 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from tinyassets.providers.execution_receipt import ExecutionReceipt
+
 #: How many recent messages to carry by default. Enough to hold a multi-step
 #: request + its answers, and enough back-scroll that a conversation resumed
 #: after a gap still feels continuous, without paying for the whole thread.
@@ -59,6 +61,7 @@ class Msg:
     speaker: str
     text: str
     ts: float | None = None
+    execution: ExecutionReceipt | None = None
 
 
 #: Longest interlocutor name allowed into the fence — bounds the header/footer so
