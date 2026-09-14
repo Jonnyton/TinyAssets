@@ -175,3 +175,39 @@ distinct from canonical requests, approvals, runs and task completion.
 - **WHEN** the user uses the non-drag pointer or keyboard alternative
 - **THEN** it reaches the same semantic action and governed target
 - **AND** trusted recovery remains reachable if the renderer fails
+
+### Requirement: Prepared interactions retain target meaning
+An experience SHALL bind prepared intent to its source/binding revision, selected
+target and arguments. A material change SHALL invalidate the preparation before
+dispatch. Accepted work SHALL be observed through its canonical reference.
+
+#### Scenario: Selection changes before submission
+- **WHEN** a prepared action targets one instance and selection changes to another
+- **THEN** the prior preparation cannot silently act on the new target
+- **AND** the new preparation exposes materially changed meaning
+
+#### Scenario: A view remounts after action acceptance
+- **WHEN** a renderer is replaced while accepted work remains in progress
+- **THEN** the new authorized view observes the canonical work reference where supported
+- **AND** missing local pending state does not cause a new run
+- **AND** unsupported recovery is shown as uncertainty rather than retried blindly
+
+### Requirement: Renderer communication and handoff convey no ambient authority
+A renderer adapter SHALL define a confined bootstrap and message-validation
+contract tied to its host-created session and lifecycle. Handoff links SHALL use
+non-authorizing references resolved under current authentication.
+
+#### Scenario: A different opaque-origin frame sends a bridge message
+- **WHEN** the message has a valid payload and the origin string is null
+- **THEN** the host verifies the expected source or bound port and session
+- **AND** an unrelated frame receives neither private data nor action authority
+
+### Requirement: Action status is accessible and evidence-backed
+Required controls SHALL expose pending, refusal, uncertainty and completion through
+accessible presentation consistent with canonical evidence. Routine status changes
+SHALL NOT require focus movement merely to perceive them.
+
+#### Scenario: Delivery is uncertain
+- **WHEN** an accepted action has no conclusive external delivery result
+- **THEN** the experience presents uncertainty and a supported inspection path
+- **AND** it does not announce success or offer an unconditional safe retry

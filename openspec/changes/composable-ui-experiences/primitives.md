@@ -5,6 +5,9 @@ Companion foundation: [PR #3840](https://github.com/Jonnyton/TinyAssets/pull/384
 especially portable-harness-project/primitives.md and research.md.
 The names below describe component contracts; they are not newly exposed tools.
 
+The final section follows an editable control from input to canonical outcome
+and specifies prepared intent, remount recovery and the first rendered proof.
+
 ## Scope of customization
 
 An experience includes what a person sees/hears, how input becomes intent,
@@ -294,3 +297,105 @@ slice proves one ordinary desktop/phone composition and its bridge; a full offic
 game or native earbud adapter must remain explicitly unsupported until separately
 demonstrated. The general contract must allow those adapters without adding engine
 enums for each experience.
+
+## A buildable interaction has inspectable meaning (third refinement)
+
+### Trace a control all the way to its result
+
+The experience editor must expose the mapping from source input to semantic intent,
+symbolic target, installed operation contract, and observed outcome. A button label,
+room name or animation cannot define authority. Selecting a different target
+invalidates any prepared action tied to the previous target.
+
+A minimal action presentation includes its name, selected target, required input,
+availability/reason, pending state and evidence-backed outcome. These are semantic
+responsibilities, not prescribed visual fields. The office, phone and accessible
+list can present them differently while referring to the same operation contract.
+
+| User construction | Editable composition | Host/adapter responsibility |
+| --- | --- | --- |
+| Place a room around a running task | Projection-to-view mapping and selection rules | Authorized resource resolution; canonical task identity |
+| Map a gesture to a control | Input-to-intent mapping and explicit arguments | Validate installed operation, target and current authority |
+| Add a progress cue | Outcome-to-presentation mapping | Distinguish accepted, running, terminal and uncertain delivery |
+| Route a completed artifact to a phone | Event condition, grouping, destination role | Channel authorization and truthful delivery evidence |
+| Replace office with a list | Renderer and non-spatial input alternatives | Preserve meaning, available controls and recovery access |
+
+Offer a "why this control?" inspection from the authoring surface: component path,
+input mapping, public operation contract, symbolic target role and capability
+diagnostics. Concrete private target values are shown only to authorized users.
+The same trace should help diagnose an ineffective gesture without reading backend
+implementation details in the ordinary product flow.
+
+### Input commitment and pending actions
+
+Treat listening, partial transcription, committed intent, dispatch and observed
+outcome as distinct transitions. Pure input-state transitions finish consistently
+before consuming the next committed event; external operations remain asynchronous.
+This does not require a new scheduler or SCXML interpreter.
+
+A prepared interaction records its source/binding revision, target and canonical
+arguments. If any changes before submission, rebuild the preparation and expose
+materially changed meaning. The host binds dispatch to the current authenticated
+session and renderer generation. A displayed old preparation is not an authority
+token and cannot silently retarget a command.
+
+Once accepted, the UI retains the returned canonical reference. A rerender, lost
+connection or second tap must not replace that reference with a freshly started
+run. For an adapter that supports retries, reuse the same request identity for the
+same intent; changing the target/arguments is a new intent. For an adapter without
+deduplication or reconciliation, present the unknown outcome and inspection path.
+Do not invent a universal safe Retry button.
+
+A newer component may observe pending work after an authorized handoff, but cannot
+resubmit it simply because its local pending state is empty. The old renderer's
+bridge is revoked; the canonical work remains available through authorized reads.
+Unsent drafts are a separate, deliberate transfer choice and never auto-submit.
+
+### Sharing and the web bridge
+
+Published examples use synthetic targets and fixture artifacts. Before publishing,
+the author sees the inventoried source/assets and which private fields were
+excluded. A public artifact reference is not a substitute for filtering private
+data inside source, fixtures, logs or assets. Retain seeded exclusion evidence.
+
+Notification/handoff links carry non-authorizing references. The receiving host
+authenticates and resolves them afresh. No grant, bearer URL, device token or
+session credential belongs in a shared definition, ordinary deep link or renderer
+message. Sharing a link does not transfer the sender's action permission.
+
+The web adapter must specify a concrete bootstrap protocol. Validate both message
+origin where meaningful and expected source/window or bound message port, message
+schema and lifecycle generation. For opaque sandbox origins, do not treat the
+literal origin "null" as trusted: pin the created frame/port and host-created
+session through a reviewed handshake. Never send confidential data with a wildcard
+target origin. If the intended sandbox cannot support a confined communication
+path, report that adapter unsupported until the bridge design is reviewed.
+
+Apply adapter budgets to input/message processing and rendering. Recovery must
+remain responsive outside the custom component's execution loop; catching a
+renderer exception alone does not demonstrate recovery from an infinite loop.
+The first web proof must identify how execution isolation makes recovery possible.
+
+### Observable first slice
+
+Use one ordinary desktop board and phone list built from the same source. A user
+edits one input mapping and one routing condition, previews with fixtures, activates
+under their existing bindings, and observes the canonical result. Then export the
+actual composition for a second account. The editable source and semantic traces
+prove buildability; screenshots alone do not.
+
+Show pending, refusal, delivery uncertainty and completion in text/accessible status
+as well as visual cues. Routine status updates should not steal focus. Retain manual
+keyboard, non-drag and assistive-technology observations; one status role does not
+establish complete accessibility compliance.
+
+| ID | Given / action | Required observation |
+| --- | --- | --- |
+| E-C13 | Target changes after preparing a control, before dispatch | Old preparation is invalidated; no silent action on the newly selected target |
+| E-C14 | Accepted action loses its reply view, then the renderer remounts | Recover canonical reference where supported; never start new work merely to fill an empty pending view |
+| E-C15 | Unrelated opaque-origin frame sends a valid-looking bridge message | Host rejects the wrong source/port/session; a "null" origin does not confer trust |
+| E-C16 | Pending action becomes refused or delivery-uncertain | Accessible outcome matches canonical evidence; no false completion or unconditional Retry |
+
+E-C13–E-C16 belong to the first action/renderer proof where applicable, alongside
+E-C2, E-C7 and E-C11. Office/game/native voice expansions follow the usable first
+slice and retain the same semantic contracts. No visual archetype registry is needed.

@@ -43,11 +43,10 @@ voice-first earbuds, and combinations nobody has named yet. These remain
 user-authored designs, never platform enums.
 
 The first proof is one editable experience with a desktop instance board and a
-compact phone view. A user replaces the board with an office layout while keeping
-the same semantic instance bindings and actions. An event can be represented in
-the office, announced through an available authorized speech adapter, or routed
-to the user's phone notification destination. The same event identity connects
-these representations.
+compact phone list, preserving the same semantic instance bindings and actions.
+An office layout, authorized speech adapter and actual phone notification route
+are subsequent capability proofs using the same event identity. Their absence
+must remain visible and must not block the first ordinary rendered composition.
 
 A production 3D editor, every native device adapter, marketplace ranking, and
 automatic personalization are outside the first implementation. The format must

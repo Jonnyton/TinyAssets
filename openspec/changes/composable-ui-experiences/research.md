@@ -59,8 +59,9 @@ reviews primitives.md plus the companion harness contract, and records a verdict
 and structured disagreements in review.md. The before-implementation task depends
 on that artifact. No independent approval is claimed by this refinement.
 
-First implementation: board/office/phone composition, governed bridge, inert
-preview/import, private rebinding and rendered second-account evidence.
+First implementation: ordinary desktop board/phone list composition, governed
+bridge, inert preview/import, private rebinding and rendered second-account
+evidence. Office/game/native voice adapters follow with their own proofs.
 Read PLAN scoping rules, Daemon Platform, Providers, API & MCP Interface and
 Distribution & Discoverability before implementation; inspect the latest native
 definition/compiler, relay and run contracts. Provider context was scanned at
@@ -123,3 +124,47 @@ provider route during this round. Execution refused before producing a review:
 provider access was not bound for this universe. A registered descriptor is not
 routable subscription authority. No review verdict was produced or inferred.
 The existing review task remains the handoff for both proposals.
+
+## Third refinement: editable intent, confined messaging and useful status
+
+Primary sources rechecked 2026-09-14; these are proposed adaptations.
+
+| Source | Evidence | Adaptation and limit |
+| --- | --- | --- |
+| [WHATWG HTML, cross-document messaging security](https://html.spec.whatwg.org/multipage/web-messaging.html#security-postmsg) | Receivers must check message origin and data; confidential messages must not use wildcard target origins | Specify source/port/session bootstrap as well as payload validation. Opaque-origin frame handling is an explicit implementation decision; an origin string alone is insufficient |
+| [W3C capability URL guidance](https://www.w3.org/TR/capability-urls/) | URLs that confer authority can leak through history, logs, referrals and other intermediaries | Use non-authorizing handoff references with fresh authentication. This guidance is informative, not proof of our link implementation |
+| [WCAG 2.2 §4.1.3](https://www.w3.org/TR/WCAG22/#status-messages) | Status messages can be programmatically determined without taking focus | Include pending/refusal/uncertainty in rendered assistive checks; one status role is not complete accessibility conformance |
+| [RFC 9110 §9.2.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2) | Retrying non-idempotent work needs knowledge beyond a lost response | Offer retry only through a documented adapter contract; remount and reconnect must not manufacture new work |
+
+The complete control trace connects an editable input mapping to an installed
+operation, symbolic target and evidence-backed outcome. Prepared intent invalidation
+and remount recovery are TinyAssets design proposals, not features supplied by these
+standards. E-C13–E-C16 are pending acceptance vectors for those boundaries.
+
+### Current code and first-build decisions
+
+Rechecked `tinyassets/api/runs.py:1545` and `tinyassets/runs.py:2357` in the
+companion governed checkout. Cancellation returns status, terminal and
+cancel_requested distinctly. Run events use an opaque per-run step_index cursor;
+one node can emit several events. The experience must pass the returned cursor,
+never compute it from visible node/card count. Existing polling reads do not prove
+an atomic snapshot across instances, conversation and notifications. Preserve
+separate stream cursors or document the adapter's reconciliation boundary.
+
+Before the first rendered slice, review must specify:
+1. The prepared-intent representation and which existing request/run reference
+   survives renderer replacement; no second run registry.
+2. The host-created frame/port handshake and isolation that keeps recovery usable
+   when custom code never yields.
+3. The canonical outcome-to-accessible-status mapping, with an actual uncertain
+   delivery fixture and manual observations.
+4. Which ordinary board/phone composition is exported for first-party parity;
+   inspect its actual action names and resource roles for privileged shortcuts.
+
+Do not block that first usable slice on a 3D engine, automatic component extraction,
+native earbud integration or the complete future conformance catalog. Keep those
+unsupported until proven. The builder still exposes the same source and semantic
+contracts, preserving the path to those user-authored experiences.
+
+This round changes proposal artifacts only. Independent Claude review remains
+pending; no fresh provider execution or review verdict is claimed.
