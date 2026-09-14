@@ -1,7 +1,7 @@
 # Served model setup: reviewed next slice
 
 September14 2026. Existing select-agent-models intent; platform enablement only.
-PR3843 remains the unchanged release candidate. This document is a pre-code
+PR3843 is deployed as005b01df; six app smoke checks pass. This document is a pre-code
 public-surface/authority proposal, not a shipped specification or implementation.
 Fable5.1 shape review: docs/reviews/2026-09-14-model-setup-tools-shape-fable.md.
 

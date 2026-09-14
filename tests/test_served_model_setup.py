@@ -1,5 +1,6 @@
 """Served setup uses the owner/home and preference boundaries, never grants."""
 
+import asyncio
 import json
 
 import pytest
@@ -155,3 +156,69 @@ def test_discovery_configuration_pins_owner_and_universe(bound, monkeypatch):
                                           payload_json=json.dumps(document)))
     assert seen == [({"universe_id": "u-setup", "payload": document}, "owner-setup", ["write"])]
     assert result["grants_inference"] is False
+
+
+@pytest.mark.parametrize("through_adapter", [False, True])
+def test_canonical_preference_save_uses_same_home_and_generation(home, through_adapter):
+    from tinyassets import universe_server
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+
+    args = {"target": "model_preferences", "operation": "save",
+            "payload_json": json.dumps({"expected_generation": 0, "policy": PIN})}
+    with identity_context(Identity(user_id="owner-setup", username="owner-setup",
+                                   capabilities=["write"])):
+        if through_adapter:
+            result = asyncio.run(universe_server.mcp.call_tool("write_graph", args))
+            value = result.structured_content
+            assert json.loads(result.content[0].text) == value
+        else:
+            raw = universe_server.write_graph(**args)
+            assert isinstance(raw, str)
+            value = json.loads(raw)
+        assert value["universe_id"] == "u-setup"
+        assert value["policy"] == PIN and value["generation"] == 1
+        assert json.loads(universe_server.write_graph(**args))["error"] == (
+            "model_preferences_conflict"
+        )
+        refused = json.loads(universe_server.write_graph(**args, graph_id="u-other"))
+        assert refused["error"] == "model_preference_home_changed"
+    # Shared and served ingress operate on the same document, not parallel stores.
+    assert save(generation=1)["generation"] == 2
+
+
+@pytest.mark.parametrize("payload", [
+    '{"expected_generation":0,"expected_generation":1,"policy":null}',
+    '{"expected_generation":true,"policy":{}}',
+    '{"expected_generation":0,"policy":{},"actor":"other"}',
+    '[]', 'null', 'not json',
+])
+def test_canonical_preferences_refuse_invalid_documents(home, payload):
+    from tinyassets import universe_server
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.storage.model_preferences import ModelPreferenceStore
+
+    with identity_context(Identity(user_id="owner-setup", username="owner-setup",
+                                   capabilities=["write"])):
+        result = json.loads(universe_server.write_graph(
+            target="model_preferences", operation="save", payload_json=payload,
+        ))
+    assert result["error"] == "invalid_model_preferences"
+    assert ModelPreferenceStore(home).get("owner-setup", "u-setup").generation == 0
+
+
+def test_canonical_preferences_require_identity_and_exact_operation(home):
+    from tinyassets import universe_server
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+
+    with identity_context(None):
+        assert json.loads(universe_server.write_graph(
+            target="model_preferences", operation="save",
+        ))["auth_required"] is True
+    with identity_context(Identity(user_id="owner-setup", username="owner-setup",
+                                   capabilities=["write"])):
+        assert "only operation=save" in json.loads(universe_server.write_graph(
+            target="model_preferences", operation="delete",
+        ))["error"]

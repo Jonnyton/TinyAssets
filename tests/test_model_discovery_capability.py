@@ -145,6 +145,45 @@ def test_authenticated_unpowered_owner_can_configure_and_remove(rig):
     assert rig.ledger.get_grant("grant-models") == rig.grant
 
 
+def test_served_discovery_setup_preserves_existing_connection_and_grant(rig, monkeypatch):
+    from tinyassets import engine_mcp_server as engine
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    monkeypatch.setattr(engine, "_ACTOR_ID", "owner")
+    monkeypatch.setattr(engine, "_GRAPH_ID", "u-models")
+    monkeypatch.setattr(engine, "_engine_run_admit", lambda **kw: True)
+    monkeypatch.setattr("tinyassets.engine_mcp_http.run_graph_allowlist", lambda: {"u-models"})
+    before = rig.ledger.get_connection_view("conn-models")
+    document = {"capability_kind": "model_discovery", "enabled": True,
+                "definition_id": rig.definition.id, "descriptor": DESCRIPTOR}
+
+    def configure(payload):
+        return json.loads(engine.write_graph(
+            target="connection", operation="configure_provider_capability",
+            payload_json=json.dumps(payload),
+        ))
+
+    assert configure(document)["status"] == "configured"
+    outside = document | {"descriptor": DESCRIPTOR | {
+        "benchmark_url": BENCHMARK.replace("owned.example", "other.example"),
+    }}
+    assert configure(outside)["error"] == "provider_capability_invalid"
+    assert rig.ledger.get_connection_capability("conn-models", "model_discovery").descriptor() == (
+        DESCRIPTOR
+    )
+    assert rig.ledger.get_connection_view("conn-models") == before
+    assert rig.ledger.get_grant("grant-models") == rig.grant
+    assert definitions.get_definition("u-models", rig.definition.id) == rig.definition
+    with SQLiteProviderWorkAuthorityStore(rig.base).connection() as conn:
+        assert conn.execute("SELECT count(*) FROM provider_work_bindings").fetchone()[0] == 0
+
+    # A current tool identity does not turn a foreign universe's definition into access.
+    monkeypatch.setattr(engine, "_GRAPH_ID", "u-other")
+    monkeypatch.setattr("tinyassets.engine_mcp_http.run_graph_allowlist", lambda: {"u-other"})
+    assert configure(document)["error"] == "not_found"
+    assert rig.ledger.get_grant("grant-models") == rig.grant
+
+
 def test_all_definitions_sharing_connection_share_and_remove_metadata(rig):
     second = definitions.register_definition(
         universe_id="u-models",

@@ -2,7 +2,9 @@
 
 September14 served-setup follow-up: reviewed proposal in served-model-setup.md;
 pinned model/binding reads, preference save and discovery-only configuration
-implemented locally on codex/served-model-setup.194Windows passes/3skips, Ruff,
+implemented locally on codex/served-model-setup, now including canonical shared
+connector preference save and real discovery-grant boundary tests.207Windows
+passes/3skips,13.53s, Ruff,
 442-file mirror/import pass. See docs/reviews/2026-09-14-served-model-setup-progress.md.
 Typed owner-consent action and full delivery/live-account proof remain OPEN;
 do not mark the broad task complete from this partial checkpoint.
