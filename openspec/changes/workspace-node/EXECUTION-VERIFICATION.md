@@ -116,6 +116,17 @@ captured terminal result; do not claim engine recovery or oracle success.
 19:29UTC bounded docker info returned1: dockerDesktopLinuxEngine pipe absent;
 no Docker Desktop/backend process present. Normal existing-installation start
 requested, with no reset/deletion. Real-jail oracle is still pending.
-No push/deploy. Exact-head cross-family review and working real Linux jail oracle
-remain required before rollout. Tasks2.1-2.3 stay open: listener/supervision,
+19:41UTC correction: Docker Desktop is not required. The existing native Ubuntu
+WSL Docker engine works. Windows worktree git pointers need process-local Linux
+GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE paths, not edits to the gitfiles. Command:
+`wsl -d Ubuntu --cd /mnt/c/Users/Jonathan/.codex/worktrees/repair-resolver-pip-configuration/TinyAssets -- env GIT_DIR=/mnt/c/Users/Jonathan/Projects/TinyAssets/.git/worktrees/TinyAssets27 GIT_COMMON_DIR=/mnt/c/Users/Jonathan/Projects/TinyAssets/.git GIT_WORK_TREE=/mnt/c/Users/Jonathan/.codex/worktrees/repair-resolver-pip-configuration/TinyAssets python3 scripts/linux_oracle.py -- -q tests/test_workspace_provision_mount.py tests/test_node_sandbox.py tests/test_node_sandbox_workspace.py`
+passed255tests/13subtests, zero skips,21.50s on e8952b37. Container Python3.11.16,
+git2.47.3, bubblewrap0.12.0; actual existing jail tests executed. New provisioning
+mount tests still prove descriptor/argv contracts, not an end-to-end install.
+No Docker reset, deletion or host credential change. A bounded independent
+Fable Docker diagnosis exited1 without a usable result; no verdict was received.
+Native Docker makes that diagnosis unnecessary. This was not a PR3859 review.
+
+No push/deploy. Exact-head cross-family review remains required before rollout.
+Tasks2.1-2.3 stay open: listener/supervision,
 consent/reservation/caller, actual pip/npm and rendered cloud use are unfinished.
