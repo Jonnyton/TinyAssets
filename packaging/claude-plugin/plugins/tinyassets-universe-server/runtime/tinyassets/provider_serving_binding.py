@@ -498,6 +498,8 @@ def bind_serving_provider(
     expected_revision: int,
     provider: str,
     model_access: dict[str, ModelAccess] | None = None,
+    expected_assignment_digest: str | None = None,
+    require_current_home: bool = False,
 ) -> dict[str, object]:
     """Publish one exact agent's accepted connections in the existing two phases.
 
@@ -567,6 +569,14 @@ def bind_serving_provider(
         if int(agent["revision"]) != expected_revision:
             raise ValueError("agent binding revision is stale")
         current_assignment = load_provider_assignment(base, universe_id=uid)
+        if expected_assignment_digest is not None and expected_assignment_digest != (
+            current_assignment.assignment_digest if current_assignment is not None else ""
+        ):
+            raise PermissionError("provider assignment changed since approval")
+        if require_current_home:
+            from tinyassets.shared_self import require_founder_home
+
+            require_founder_home(base, uid, owner)
         current_bindings = {name: store.get(identifier) for name, identifier in binding_ids.items()}
         if (
             current_assignment is not None
@@ -634,6 +644,16 @@ def bind_serving_provider(
             # Publish a durable deny-all root and complete membership first.
             with store.connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
+                if require_current_home:
+                    from tinyassets.storage.current_home import check_current_home
+
+                    check_current_home(conn, owner, uid)
+                if expected_assignment_digest is not None:
+                    observed = load_provider_assignment_in_transaction(conn, universe_id=uid)
+                    if expected_assignment_digest != (
+                        observed.assignment_digest if observed is not None else ""
+                    ):
+                        raise PermissionError("provider assignment changed since approval")
                 pending_members = []
                 custodies = {}
                 for source in sources:
@@ -681,6 +701,10 @@ def bind_serving_provider(
                 conn.execute("BEGIN IMMEDIATE")
                 if load_provider_assignment_in_transaction(conn, universe_id=uid) != pending:
                     raise PermissionError("assignment changed before publication")
+                if require_current_home:
+                    from tinyassets.storage.current_home import check_current_home
+
+                    check_current_home(conn, owner, uid)
                 records = {}
                 ready_members = []
                 for source, pending_member in zip(sources, pending_members, strict=True):
@@ -961,11 +985,20 @@ def set_serving(
     agent_binding_id: str,
     expected_revision: int,
     enabled: bool,
+    expected_assignment_digest: str | None = None,
+    require_current_home: bool = False,
 ) -> dict[str, object]:
-    """Enable/disable an exact founder-owned binding for served turns."""
+    """Enable/disable an exact founder-owned binding for served turns.
+
+    A composed owner-consent operation can additionally pin the assignment it
+    approved. Binding revision alone does not fence another binding's changes
+    to this universe's assignment. None preserves existing standalone callers.
+    """
 
     if not isinstance(enabled, bool):
         raise ValueError("enabled must be a boolean")
+    if expected_assignment_digest is not None and not isinstance(expected_assignment_digest, str):
+        raise ValueError("expected_assignment_digest must be a string")
     owner = owner_user_id.strip()
     uid = universe_id.strip()
     binding_id = agent_binding_id.strip()
@@ -989,6 +1022,10 @@ def set_serving(
     if enabled:
         with store.connection() as conn:
             assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
+        if expected_assignment_digest is not None and expected_assignment_digest != (
+            assignment.assignment_digest if assignment is not None else ""
+        ):
+            raise PermissionError("provider assignment changed since approval")
         if assignment is not None and assignment.manifest_digest:
             if existing["created_by"] != owner or int(existing["revision"]) != expected_revision:
                 raise PermissionError("agent binding is not current owner authority")
@@ -1010,6 +1047,16 @@ def set_serving(
             raise ValueError("agent binding revision is stale")
         with store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if require_current_home:
+                from tinyassets.storage.current_home import check_current_home
+
+                check_current_home(conn, owner, uid)
+            if expected_assignment_digest is not None:
+                approved = load_provider_assignment_in_transaction(conn, universe_id=uid)
+                if expected_assignment_digest != (
+                    approved.assignment_digest if approved is not None else ""
+                ):
+                    raise PermissionError("provider assignment changed since approval")
             if enabled:
                 if prepared is not None:
                     prepared.recheck(

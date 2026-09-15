@@ -3868,7 +3868,12 @@
       const r = await MCP.answerRequest(payload);
       if(r && r.error){
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";
-        if(mode === "accept" && actionAsk){
+        if(mode === "accept" && r.request_pending === true){
+          // Reconnection may have paused this agent. Keep the actionable error
+          // here; do not promise an unpowered agent has received a relay.
+          note.textContent = "Setup is not confirmed: " + (r.detail || r.error)
+            + ". This request stays open. You can retry it after checking the problem.";
+        } else if(mode === "accept" && actionAsk){
           note.textContent = "This ask can't be granted as written. Your universe has been told why.";
           sendTurn(refusedGrantLine(req, r.detail || r.error), undefined,
             {relay:true, keepComposer:true, inputMethod:"app_action"});
@@ -3877,6 +3882,7 @@
         }
       }
       else {
+        if(r && r.suppressed === false) delete payload.dont_ask_again;
         // The answer is the founder's own line in the thread. Live 2026-08-29:
         // after each approval the universe sat idle until the founder typed
         // "approved - go ahead", twice. The click IS that line; say it where

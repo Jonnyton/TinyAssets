@@ -87,3 +87,41 @@ def test_the_rail_renders_the_four_verbs_and_only_those():
     assert 'payload.dismiss = true' in rail
     assert "refusedGrantLine(req" in rail, "a refused grant is relayed to the universe"
     assert 'if(!text){ note.textContent = "Type something to send."' in rail
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("succeeds", [False, True])
+def test_model_setup_retry_is_visible_and_not_relayed_to_an_unpowered_agent(succeeds):
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    functions = _extract() + "\n" + _function_source(html, "answerRail")
+    response = ({"status": "answered", "suppressed": False, "receipt": "Reconnected"}
+                if succeeds else {"error": "provider_authority_denied", "request_pending": True,
+                                  "detail": "Source temporarily unavailable"})
+    script = functions + r"""
+const sent = [], note = {}, buttons = [{}];
+const req = {request_id: "models", title: "Model access", fields: [],
+             action: {type: "bind_model_access"}};
+const $ = id => id.startsWith("mute_") ? {checked:true}
+  : id === "btn-send" ? {disabled:false} : null;
+const sendTurn = line => sent.push(line);
+const refreshRail = async () => {};
+let railOpen = "models";
+const MCP = {answerRequest:async () => (RESPONSE)};
+answerRail(req, "accept", note, buttons).then(() => {
+  process.stdout.write(JSON.stringify({sent, note:note.textContent, disabled:buttons[0].disabled}));
+});
+""".replace("RESPONSE", json.dumps(response))
+    run = subprocess.run([_NODE, "-e", script], capture_output=True, text=True,
+                         encoding="utf-8", timeout=30, check=False)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout)
+    assert result["disabled"] is False
+    if succeeds:
+        assert result["sent"] == ['Approved: "Model access"']
+        assert "Reconnected" in result["note"]
+    else:
+        assert result["sent"] == []
+        assert "Source temporarily unavailable" in result["note"]
+        assert "request stays open" in result["note"]

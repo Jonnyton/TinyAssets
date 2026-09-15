@@ -874,6 +874,10 @@ def write_graph(
         agent_binding_id: Existing private binding for operation=update.
         agent_stage_id: Private import stage for operation=publish_stage.
         payload_json: Agent definition, portable import, or private binding JSON.
+            For target=model_preferences operation=save, pass the complete
+            {"expected_generation": <integer>, "policy": {...}} preference
+            document. The authenticated actor's current home is required;
+            saving preferences never grants model or spending access.
             For target=connection operation=connect_llm, pass
             {"service": "claude"|"codex", "auth_material_b64": "<base64>"} to
             deposit YOUR OWN subscription into this universe's private vault so
@@ -978,6 +982,15 @@ def write_graph(
     if rejection:
         return rejection
     normalized = target.strip().lower()
+    if normalized == "model_preferences":
+        from tinyassets.api.helpers import _request_universe
+        from tinyassets.api.model_preferences import save_model_preferences
+
+        if operation.strip().lower() != "save":
+            return json.dumps({"error": "model_preferences supports only operation=save"})
+        return json.dumps(save_model_preferences(
+            universe_id=_request_universe(graph_id), payload=payload_json,
+        ))
     if normalized == "universe":
         # A universe is the owner's ACCOUNT, not a workflow: it hosts many
         # automations, so an owner must be able to declare a Loop branch AFTER

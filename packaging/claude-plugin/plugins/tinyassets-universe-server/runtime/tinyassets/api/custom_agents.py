@@ -305,15 +305,9 @@ def custom_agents(
                     try:
                         model_access = None
                         if "model_access" in document:
-                            from tinyassets.provider_assignment_manifest import ModelAccess
+                            from tinyassets.provider_assignment_manifest import parse_model_access
 
-                            raw_access = document["model_access"]
-                            if type(raw_access) is not dict or not raw_access:
-                                raise ValueError("model_access must be a nonempty object")
-                            model_access = {
-                                name: ModelAccess.from_json(json.dumps(value, allow_nan=False))
-                                for name, value in raw_access.items()
-                            }
+                            model_access = parse_model_access(document["model_access"])
                         return bind_serving_provider(
                             base_path=base,
                             universe_dir=_universe_dir(uid),

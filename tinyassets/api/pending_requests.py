@@ -166,6 +166,10 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     kind = str(action.get("type") or "answer").strip().lower()
     if kind == "answer":
         return {"type": "answer"}
+    if kind == "bind_model_access":
+        from tinyassets.api.model_access_requests import validate_action
+
+        return validate_action({**action, "type": kind})
     if kind == "grant_workspace_consent":
         return _validated_workspace_consent(action)
     if kind == "extend_http":
@@ -233,7 +237,7 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     if kind != "connect_http":
         raise ValueError(
             "action type must be answer, connect_http, extend_http, "
-            "remove_http or grant_workspace_consent"
+            "remove_http, grant_workspace_consent or bind_model_access"
         )
 
     destination = str(action.get("destination") or "").strip().lower()
@@ -510,6 +514,10 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
     from tinyassets.storage.pending_requests import FIELD_TYPES
 
     fields = raw if isinstance(raw, list) else []
+    if action["type"] == "bind_model_access":
+        if raw not in (None, []):
+            raise ValueError("model access is a fieldless owner confirmation")
+        return []
     if not fields:
         # NO unlabelled fallback for a credential ask.
         #
@@ -679,6 +687,14 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
     except Exception as exc:  # noqa: BLE001 - endpoint validator
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
 
+    if action.get("type") == "bind_model_access":
+        from tinyassets.api.model_access_requests import capture_action
+        from tinyassets.storage.current_home import CurrentHomeChanged
+
+        try:
+            action = capture_action(_uid, action)
+        except (ValueError, LookupError, PermissionError, CurrentHomeChanged) as exc:
+            return _bad(str(exc))
     if action.get("type") == "extend_http":
         captured_preview: dict[str, Any] = {}
         held = _extend_ask_verdict(_uid, action, captured_preview=captured_preview)
@@ -968,6 +984,13 @@ def _grants_git(action: dict[str, Any]) -> bool:
 def _grant_sentence(row: dict[str, Any]) -> str:
     """For a credential ask, the exact grant in one line. Empty otherwise."""
     action = row.get("action") or {}
+    if action.get("type") == "bind_model_access":
+        from tinyassets.api.model_access_requests import grant_sentence
+
+        try:
+            return grant_sentence(action)
+        except (KeyError, TypeError, ValueError):
+            return "This model-access request is invalid; ask again."
     if action.get("type") == "grant_workspace_consent":
         from tinyassets.storage.workspace_authority import CONSENT_OPERATIONS
 
@@ -1409,6 +1432,28 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "the clear, so say it in words instead"
         )
 
+    if action.get("type") == "bind_model_access":
+        from tinyassets.api.model_access_requests import execute_action
+        from tinyassets.exceptions import ProviderError
+        from tinyassets.storage.current_home import CurrentHomeChanged
+        from tinyassets.storage.model_preferences import PreferenceStoreUnavailable
+
+        try:
+            if row["fields"] or values:
+                return _bad("model access is a fieldless owner confirmation")
+            result = execute_action(_uid, action)
+        except (ValueError, LookupError, PermissionError, ProviderError,
+                PreferenceStoreUnavailable, CurrentHomeChanged) as exc:
+            return {"error": "provider_authority_denied", "detail": str(exc),
+                    "request_pending": True}
+        except Exception:  # noqa: BLE001 - an interrupted setup must not consume consent
+            logger.warning("Model setup could not be confirmed; request remains pending")
+            return {"error": "model_setup_unavailable", "request_pending": True}
+        if not resolve_request(udir, request_id, status="answered", answer=answer,
+                               feedback=feedback, dont_ask_again=False, decision="allowed"):
+            return {"error": "request_resolution_unconfirmed", "request_pending": True}
+        return {**result, "status": "answered", "request_id": request_id,
+                "receipt": _grant_sentence(row), "secret_reused": True, "suppressed": False}
     if action.get("type") == "grant_workspace_consent":
         return _grant_workspace_consent(
             udir=udir,
