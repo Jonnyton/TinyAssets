@@ -45,6 +45,40 @@ the real resolver/isolation tests, plus independent exact-head review.
 
 ## Remaining implementation
 
+September15 08:23UTC priority interruption: founder reports new live chat failure;
+Patches paused this cloud lane to investigate Automatic selecting broken Claude
+authentication. In-progress transport and command changes remain local/unpublished.
+The registry core accepts only CONNECT443 to the three reviewed hosts, reuses
+pin_address for all-address validation, dials numeric addresses, relays opaque
+TLS bidirectionally with bounded buffers and one shared byte/connection/deadline
+budget, and closes relays on cancellation. Linux-only Unix packet/SCM_RIGHTS
+handoff admits one connected Unix stream, close-on-exec, closing malformed or
+truncated descriptor lists. No host-network socket crosses to the downloader.
+
+Actual WSL Ubuntu Python3.12.3 command:
+`wsl -d Ubuntu -- python3 -m unittest -v tests.test_workspace_registry`
+=>23tests pass0.231s/no skips. Local socket peers and injected DNS/pinned dial;
+NO external registry traffic, real TLS verification, bubblewrap or checkout
+integration proof. Includes actual descriptor-passing and /proc fd-leak checks.
+Windows:14transport tests pass,9Linux-only skips,42parameterized subtests pass.
+
+Acquisition commands now use fixed namespace proxy http://127.0.0.1:3128 via
+pip --proxy and npm --proxy/--https-proxy/--noproxy=. Offline commands remain
+proxy-free. npm dependency scripts are allowed only offline with canonical
+root-script-free manifests, per D3. Updated regressions first returned4failures
+and44passes on old builders. After correction the combined registry/manifest/
+resolver/provision suites returned356passes14POSIXskips42subtests. Added real
+installed npm config-parser checks without network/install; npm normalizes the
+proxy origin with a trailing slash, now explicitly accepted by those assertions.
+Final combined Windows rerun:358passed14POSIXskips42subtests2.57s. Ruff passes;
+plugin mirror445files and import probe pass. Official config reference:
+https://docs.npmjs.com/cli/v11/using-npm/config/ (September15 read).
+
+Still absent: namespace listener, broker process supervision and its inherited
+descriptor lifecycle, typed mounts, checkout consent and byte reservations,
+actual jailed pip/npm acquisitions and offline installs. No runtime caller is
+wired; do not claim this core completes provisioning or open a rollout PR yet.
+
 Task2.1 remains open until checkout uses extraction after connection-sourced
 consent. Task2.2 still needs the reviewed registry broker/namespace relay,
 acquisition-only proxy flags, validated second mount, workspace limits,

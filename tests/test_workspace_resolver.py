@@ -13,6 +13,8 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
+import subprocess
 
 import pytest
 
@@ -216,6 +218,7 @@ def test_the_download_argv_is_exactly_this(python_plan, tmp_path) -> None:
         "--no-input",
         "--only-binary=:all:",
         "--require-hashes",
+        "--proxy", "http://127.0.0.1:3128",
         "--index-url", "https://pypi.org/simple",
         "--dest", str(cache),
         "-r", str(staged.path),
@@ -280,9 +283,11 @@ def test_pip_really_accepts_builder_options(
     assert options.requirements == [str(staged.path)]
     assert options.format_control.only_binary == {":all:"}
     if command == "download":
+        assert options.proxy == "http://127.0.0.1:3128"
         assert options.index_url == wr.DEFAULT_INDEX_URL
         assert options.download_dir == str(tmp_path / "cache")
     else:
+        assert not options.proxy
         assert options.no_index is True
         assert options.find_links == [str(tmp_path / "cache")]
 
@@ -310,19 +315,67 @@ def test_the_npm_fetch_argv_is_exactly_this(node_plan, tmp_path) -> None:
         "--userconfig", wr.NULL_DEVICE,
         "--registry", "https://registry.npmjs.org",
         "--prefix", str(staged.directory),
+        "--proxy", "http://127.0.0.1:3128",
+        "--https-proxy", "http://127.0.0.1:3128",
+        "--noproxy=",
     ]
 
 
-def test_the_npm_offline_argv_adds_offline(node_plan, tmp_path) -> None:
+def test_npm_offline_is_proxy_free_and_permits_dependency_scripts(node_plan, tmp_path) -> None:
     staged = stage_node_plan(node_plan, tmp_path)
-    fetch = npm_fetch_argv(staged, tmp_path / "cache")
     offline = npm_offline_install_argv(staged, tmp_path / "cache")
-    assert offline == fetch + ["--offline"]
+    assert "--offline" in offline
+    assert "--ignore-scripts" not in offline
+    assert "--proxy" not in offline
+    assert "--https-proxy" not in offline
+    assert not any("127.0.0.1" in token for token in offline)
+    # The caller stages this canonical root before install, never the original
+    # checkout manifest. Dependency scripts run offline; root hooks do not.
+    assert "scripts" not in json.loads(staged.package_json.read_text())
 
 
 def test_npm_never_runs_a_lifecycle_script_while_fetching(node_plan, tmp_path) -> None:
     staged = stage_node_plan(node_plan, tmp_path)
     assert "--ignore-scripts" in npm_fetch_argv(staged, tmp_path / "cache")
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_real_npm_parses_acquisition_and_offline_options(node_plan, tmp_path, offline):
+    """Ask the installed npm parser, without fetching or installing any package."""
+    node = shutil.which("node")
+    npm = shutil.which("npm")
+    if not node or not npm:
+        pytest.skip("real npm parser requires installed Node/npm")
+    command = pathlib.Path(npm).resolve()
+    cli = (command if command.name == "npm-cli.js" else
+           command.parent / "node_modules" / "npm" / "bin" / "npm-cli.js")
+    if not cli.is_file():
+        pytest.skip("installed npm entry point could not be resolved")
+    staged = stage_node_plan(node_plan, tmp_path)
+    builder = npm_offline_install_argv if offline else npm_fetch_argv
+    argv = builder(staged, tmp_path / "cache")
+    env = resolver_environment(tmp_path, str(pathlib.Path(node).parent))
+    if os.name == "nt":
+        env["SystemRoot"] = os.environ["SystemRoot"]
+        env["USERPROFILE"] = str(tmp_path)
+    # Replace only the subcommand. The actual emitted options remain intact.
+    # Suppress the test machine's global npmrc as well as the builder's usercfg.
+    result = subprocess.run(
+        [node, str(cli), "config", "list", "--json", "--globalconfig", os.devnull, *argv[2:]],
+        env=env, cwd=tmp_path, capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    config = json.loads(result.stdout)
+    assert config["offline"] is offline
+    assert config["ignore-scripts"] is not offline
+    if offline:
+        assert config["proxy"] is None
+        assert config["https-proxy"] is None
+    else:
+        # npm's URL config type may serialize the origin with a trailing slash.
+        assert config["proxy"] in {wr.REGISTRY_PROXY_URL, wr.REGISTRY_PROXY_URL + "/"}
+        assert config["https-proxy"] in {wr.REGISTRY_PROXY_URL, wr.REGISTRY_PROXY_URL + "/"}
+        assert config["noproxy"] in ("", [""])
 
 
 def test_the_argv_gate_refuses_a_dash_token_no_builder_chose() -> None:
