@@ -79,6 +79,22 @@ def test_the_fixture_round_trips_through_admission() -> None:
     assert again.digest == plan.digest
 
 
+def test_real_node_fixture_round_trips_and_keeps_its_registry_integrity(tmp_path):
+    fixture = FIXTURE.parent / "node"
+    plan = admit_node((fixture / "package.json").read_text(encoding="utf-8"),
+                      (fixture / "package-lock.json").read_text(encoding="utf-8"))
+    staged = stage_node_plan(plan, tmp_path)
+    again = admit_node(staged.package_json.read_text(encoding="utf-8"),
+                       staged.lockfile.read_text(encoding="utf-8"))
+    assert again.digest == plan.digest
+    package = json.loads(again.normalized_lockfile)["packages"]["node_modules/picocolors"]
+    assert package["version"] == "1.1.1"
+    assert package["resolved"] == "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz"
+    assert package["integrity"] == (
+        "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/"
+        "Lcu0X8KEyMceP2ntpaHrDEVA==")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Staging
 # ──────────────────────────────────────────────────────────────────────────────

@@ -69,6 +69,12 @@ jail, package installation or browser runtime.
    npm ci may extract tarballs in its isolated staged prefix despite ignore-
    scripts; this prefix contains no checkout. Use the D4 workspace limit class,
    not the ordinary code-node16MiB file-size limit which cannot hold many wheels.
+   September15 real npm proof identified a missing shipped runtime resource:
+   Debian Node/OpenSSL requires /etc/ssl/certs/ca-certificates.crt. Acquisition
+   binds only that fixed public bundle read-only, refusing path redirection;
+   neither /etc nor private keys are mounted. Offline/ordinary jails gain no
+   CA bind. TLS verification remains enabled. Exact-head execution review must
+   include this resource and the pre-fix issuer-error/post-fix real npm proof.
 6. After resolver exit and verified process-tree termination, close/revoke the
    bridge before offline installation. Bind acquired cache read-only inside
    the existing workspace jail. Installation, including permitted package code,

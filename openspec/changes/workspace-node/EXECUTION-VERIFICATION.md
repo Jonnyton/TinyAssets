@@ -187,3 +187,44 @@ additional dependencies absent from this five-wheel fixture. Tasks2.1-2.3 stay
 open. No rollout PR or production caller; shared sandbox repair3860 must land
 with independent review first. Fable5.1 remains unavailable/inaccessible and
 founder choice of another Claude model is unanswered.
+
+## Real npm install and public trust bundle — September 15, 2026 20:35 UTC
+
+Expanded the explicit manual registry smoke to `--ecosystem python|node`.
+The npm fixture uses the existing site lockfile's picocolors1.1.1 resolved URL
+and SHA512 integrity. Acquisition copies canonical/digest-checked manifests
+to a fresh private /tmp prefix because npm ci extracts node_modules; it does
+not write the canonical mount or access the checkout. Offline installation
+uses a different checkout jail, RO cache, no proxy or inherited broker channel.
+The fixture is platform test data, not a user workflow or either app-owned PR.
+
+Two normal npm runs timed out. A separately labelled diagnostic with retries
+disabled exposed `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`; broker had one connection,
+4638bytes and no admission/transport failure. The jail omitted Debian's public
+CA bundle. Added one fixed, non-redirected read-only bind of
+/etc/ssl/certs/ca-certificates.crt for acquisition ONLY. No /etc directory,
+private keys, ambient CA override, host network or TLS-verification disablement.
+New shape tests failed twice before the fix; both pass after. Real jail tests
+parse CA roots, refuse write-open, confirm no private directory and absence
+from the offline stage. Normal code-node mount behavior is unchanged.
+
+With that fix the NORMAL npm command (diagnostic=false) exits0:
+namespace_acquisition=true,broker_bytes=8872,broker_connections=1,
+ecosystem=node,offline=true,executed=picocolors1.1.1. The check resolves the
+package specifically from /workspace/node_modules and executes its API.
+Normal Python proof also exits0:1926527bytes,2connections,pytest9.1.1.
+Use the Docker command above, adding `--ecosystem node` or `--ecosystem python`.
+Official npm semantics checked: https://docs.npmjs.com/cli/v11/commands/npm-ci/
+and https://docs.npmjs.com/cli/v11/commands/npm-cache/. Runtime actually tested
+is Debian Node20.19.2/npm9.2.0 in the oracle image, not npm11/production proof.
+
+Final seven-file cohort uses the five files above plus tests/test_node_sandbox.py
+and tests/test_node_sandbox_workspace.py. Windows589pass/42POSIXskips/58subtests,
+23.78s; same WSL Linux oracle631pass/63subtests/zero skips,23.74s. Ruff, plugin
+mirror446files/import probe passed. No concurrent source changes during copy.
+
+This closes the local npm acquisition/offline proof gap, not task2.2 or2.3.
+Next: the actual production supervisor with bounded drains, process-tree
+termination, broker DNS deadline and revocation; then consent/lease/byte-ledger
+caller integration before publication. No production caller or rollout added.
+The shared descriptor repair3860 remains draft75c7daf1 and review held.

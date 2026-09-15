@@ -136,6 +136,37 @@ class ProvisionMountTests(unittest.TestCase):
         self.assertFalse(any("/provision" in item for item in argv()))
         self.assertFalse(hasattr(sandbox.PlainSubprocessLauncher(), "for_provision"))
 
+    def test_only_acquisition_mounts_the_public_system_ca_bundle(self):
+        bundle = "/etc/ssl/certs/ca-certificates.crt"
+        cases = ((None, None, ()),
+                 (sandbox.ProvisionMount(30, 31, "acquire"), None, (30, 31)),
+                 (sandbox.ProvisionMount(30, 31, "install"),
+                  "/proc/self/fd/32", (30, 31, 32)))
+        for mount, workspace, inherited in cases:
+            with self.subTest(phase=mount.phase if mount else "ordinary"):
+                with patch.object(sandbox.os, "fstat", side_effect=directory):
+                    result = sandbox._bwrap_argv(
+                        exists=lambda path: path == bundle, realpath=lambda path: path,
+                        provision_mount=mount, workspace_bind=workspace, pass_fds=inherited)
+                if mount and mount.phase == "acquire":
+                    start = result.index(bundle)
+                    self.assertEqual(result[start - 1:start + 2], ["--ro-bind", bundle, bundle])
+                else:
+                    self.assertNotIn(bundle, result)
+                self.assertNotIn("/etc", result)
+                self.assertNotIn("/etc/ssl/private", result)
+                self.assertNotIn("--share-net", result)
+
+    def test_acquisition_refuses_redirected_system_ca_bundle(self):
+        bundle = "/etc/ssl/certs/ca-certificates.crt"
+        with patch.object(sandbox.os, "fstat", side_effect=directory):
+            with self.assertRaisesRegex(ValueError, "system CA bundle"):
+                sandbox._bwrap_argv(
+                    exists=lambda path: path == bundle,
+                    realpath=lambda path: "/private/key" if path == bundle else path,
+                    provision_mount=sandbox.ProvisionMount(30, 31, "acquire"),
+                    pass_fds=(30, 31))
+
     def test_launcher_preserves_owned_fds_and_original_launcher(self):
         root = sandbox.BwrapLauncher(bwrap_path="/usr/bin/bwrap")
         workspace = root.for_workspace(sandbox.WorkspaceMount("/proc/self/fd/32", pass_fds=(32,)))
@@ -204,9 +235,23 @@ def test_real_jail_mounts_do_not_leak_writable_directory_descriptors(tmp_path, p
             f"/proc/self/fd/{checkout_fd}", pass_fds=(checkout_fd,)))
     launcher = launcher.for_provision(sandbox.ProvisionMount(manifest_fd, cache_fd, phase))
     script = r'''
-import errno, json, os, socket, sys
+import errno, json, os, socket, ssl, sys
 from pathlib import Path
 phase = sys.argv[1]
+ca_bundle = '/etc/ssl/certs/ca-certificates.crt'
+expect_ca = phase == 'acquire' and sys.argv[2] == '1'
+assert Path(ca_bundle).exists() == expect_ca
+assert not Path('/etc/ssl/private').exists()
+if expect_ca:
+    context = ssl.create_default_context(cafile=ca_bundle)
+    assert context.cert_store_stats()['x509_ca'] > 0
+    try:
+        handle = os.open(ca_bundle, os.O_WRONLY)
+    except OSError as error:
+        assert error.errno in (errno.EROFS, errno.EACCES)
+    else:
+        os.close(handle)
+        raise AssertionError('public trust bundle is writable')
 assert Path('/provision/manifests/marker').read_text() == 'manifests'
 assert Path('/provision/cache/marker').read_text() == 'cache'
 assert Path('/workspace').exists() == (phase == 'install')
@@ -241,7 +286,8 @@ print(json.dumps({'phase': phase, 'mounts_verified': True}))
 '''
     try:
         result = subprocess.run(
-            launcher.build_argv(script, [phase]),
+            launcher.build_argv(script, [phase, str(int(
+                Path('/etc/ssl/certs/ca-certificates.crt').exists()))]),
             pass_fds=launcher.pass_fds,
             env={**launcher.env(str(tmp_path)), "TA_PROVISION_HOST_SECRET": "not-for-child"},
             capture_output=True, text=True, timeout=15,

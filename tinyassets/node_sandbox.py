@@ -1748,6 +1748,17 @@ def _bwrap_argv(
             argv.extend(("--ro-bind", system_path, system_path))
             bound.append(system_path)
 
+    if provision_mount is not None and provision_mount.phase == "acquire":
+        # The shipped Debian Node/OpenSSL toolchain uses the public system CA
+        # bundle, outside /usr. TLS must keep verifying the registry, not fall
+        # back to strict-ssl=false. Expose this one public file read-only only
+        # during acquisition; never mount /etc or its private-key directory.
+        ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
+        if exists(ca_bundle):
+            if realpath(ca_bundle) != ca_bundle:
+                raise ValueError("system CA bundle must not redirect outside its fixed path")
+            argv.extend(("--ro-bind", ca_bundle, ca_bundle))
+
     # The interpreter may live outside /usr (a venv, /opt, a symlink farm).
     # Bind the directories it actually needs, read-only.
     for raw, is_file in (
