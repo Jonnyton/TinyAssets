@@ -231,10 +231,15 @@ No user code ever runs with both network and the checkout *(R1)*.
   Extras are optional. The resolver receives **only the reconstructed
   canonical text** (`<name>[extras]==<version> ; <marker> --hash=…`,
   sorted), never the original file, and runs `pip download --isolated
-  --no-config --only-binary=:all: --require-hashes --index-url
+  --disable-pip-version-check --no-input --only-binary=:all: --require-hashes --index-url
   https://pypi.org/simple -r <canonical> -d <cache>` *(R2)*; the offline
   install is `python -m venv /workspace/.venv && .venv/bin/pip install
   --no-index --find-links <cache> …` in the jail.
+  Both pip commands use `PIP_CONFIG_FILE=os.devnull` in the explicit child
+  environment to disable all config files, including global/site files that
+  isolated mode still reads. Both emit the version-check/no-input flags because
+  isolated mode ignores their ordinary option environment variables. These are
+  command-builder guarantees; resolver execution/jail integration remains pending.
 - **Node admission** *(R3)*: `package-lock.json` (v2/v3) required;
   workspaces and `link:` entries are **refused in this slice**; every
   installable lock entry must carry `resolved` parsing to
