@@ -1136,6 +1136,58 @@ def resolve_serving_agent_binding(
     return matches[0]
 
 
+def serving_connection_is_current(
+    base_path: str | Path,
+    *,
+    universe_dir: str | Path,
+    universe_id: str,
+    owner_user_id: str,
+) -> bool:
+    """Local connection readiness only, never model or execution authority.
+
+    A manifest needs at least one current accepted member, not a healthy anchor.
+    Polling must not discover models, check remote quota, or enable an executor.
+    Actual work still selects and authorizes its model at launch.
+    """
+    base = Path(base_path)
+    uid, owner = universe_id.strip(), owner_user_id.strip()
+    if not uid or not owner:
+        return False
+    universe = _canonical_universe(base, universe_dir, uid)
+    store = SQLiteProviderWorkAuthorityStore(base)
+    with provider_assignment_admission().shared(universe):
+        matches = serving_binding_candidates(base, universe_id=uid, owner_user_id=owner)
+        if len(matches) != 1:
+            return False
+        agent = get_binding(base, universe_id=uid,
+                            binding_id=str(matches[0]["agent_binding_id"]))
+        if agent is None or agent["status"] != "serving":
+            return False
+        with store.connection() as conn:
+            conn.execute("BEGIN")
+            try:
+                assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
+                if assignment is not None and assignment.manifest_digest:
+                    for member in assignment.candidates:
+                        try:
+                            _current_selected_member_authority(
+                                conn, store=store, universe_dir=universe, base_path=base,
+                                owner_user_id=owner, universe_id=uid, agent=agent,
+                                provider=member.provider,
+                            )
+                        except PermissionError:
+                            continue
+                        return True
+                    return False
+                _current_serving_authority(
+                    conn, store=store, universe_dir=universe, base_path=base,
+                    owner_user_id=owner, universe_id=uid, agent=agent,
+                )
+                return True
+            finally:
+                conn.rollback()
+
+
 def resolve_current_serving_provider_authority(
     base_path: str | Path,
     *,
@@ -1296,5 +1348,6 @@ __all__ = [
     "list_serving_universes",
     "resolve_current_serving_provider_authority",
     "resolve_serving_agent_binding",
+    "serving_connection_is_current",
     "set_serving",
 ]

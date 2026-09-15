@@ -1063,11 +1063,11 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
     """
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.provider_serving_binding import (
-        resolve_current_serving_provider_authority,
+        serving_connection_is_current,
     )
 
     try:
-        selected = resolve_current_serving_provider_authority(
+        return serving_connection_is_current(
             base_path,
             universe_dir=_universe_dir(universe_id),
             universe_id=universe_id,
@@ -1075,7 +1075,6 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
         )
     except Exception:  # noqa: BLE001 - unavailable authority must not hide recovery
         return False
-    return bool(selected and selected.provider)
 
 
 def _connect_llm_request() -> dict[str, object]:
