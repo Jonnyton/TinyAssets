@@ -61,7 +61,7 @@ Two more habits that fell out of the same incident:
 
 ## Output contract
 
-- Success: `--out` file holds the peer's final message; exit 0. The full result is also on the task's stdout, so a background completion preview usually shows it directly.
+- Success: `--out` holds every Claude assistant text block in stream order, including Stop-hook continuations, or Codex's final message; exit 0. Claude requires a successful terminal result; its duplicate echo of the last text block is omitted. Thinking, tool payloads, user/system events and raw JSON are excluded. The wrapper does not choose a verdict: multiple verdicts remain visible and must be read in context. The full retained result is also on task stdout.
 - Failure: the file holds a `[peer_agent] ERROR ...` block; exit 2 (provider error), 124 (timeout), 127 (CLI not found — set `CLAUDE_BIN`/`CODEX_BIN` to the full `.cmd` path on Windows).
 - Never treat a missing or stale `--out` file as a result; check the exit code in the task status first.
 
