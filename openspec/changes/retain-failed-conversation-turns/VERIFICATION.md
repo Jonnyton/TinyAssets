@@ -1,10 +1,20 @@
 # Failure-history implementation verification
 
 September 15, 2026 UTC, Windows, isolated retain-failed-conversation-turns
-worktree. Base 89a335578a1576a1b4253375e6d900a770338009; implementation is still
-uncommitted at this checkpoint. No user workflows, credentials or live history
-were changed. Fable5.1 pre-build round 1 is complete; implementation round 2
-has not been dispatched. No PR, deployment or rendered failure-history proof.
+worktree. Base 89a335578a1576a1b4253375e6d900a770338009; first implementation
+committed df09debecd54c0fc2c0433b73d79b1365d19884a as draft PR3856. No user
+workflows, credentials or live history were changed. Fable5.1 round2 completed
+353s/ADAPT on that head,29 independent tests passed5.95s. Its one required
+live-copy correction is being applied; not yet approved, deployed or proven
+through a real failure-refresh-next-message conversation.
+
+Round2 correction, September15 07:06UTC: live typed/voice failures preserve
+the richer server error, setup holds preserve note/CTA, missing live copy uses
+the fixed notice, and ordinary failed execution still warns before retry.
+`python -m pytest -q tests/test_app_failure_history.py tests/test_onboarding_app.py tests/test_conversation_failure_history.py tests/test_conversation_failure_readers.py --tb=short`
+passes176 tests33.27s/no skips after3 failing live-copy regressions were observed.
+Canonical brand/plugin generation was rerun; the final exact-head review
+remains required. No stored diagnostic representation changed in this correction.
 
 ## Local checks
 

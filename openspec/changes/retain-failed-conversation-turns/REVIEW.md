@@ -31,3 +31,24 @@ Implementation checkpoint, September 15, 2026 UTC: the adapted storage, five
 readers and UI are implemented locally. The focused Windows cohort passed
 320 tests in 46.78s (session 14767); see VERIFICATION.md. Exact-head independent
 code review, Linux proof, PR, deployment and live failure-history proof remain.
+
+## Implementation round2, September15 UTC
+
+Fable5.1 session2344 completed353s/exit0 ADAPT at exactdf09debe (draft3856).
+Full ordered answer: output/failed-history-implementation-fable.md. Reviewer
+ran only tests/test_conversation_failure_history.py:29passed5.95s, Windows,
+temporary root outside the repo. Agrees on admission, safe metadata/no receipt,
+atomic persistence, owner isolation/deletion and explicit retry/refresh.
+
+Required correction accepted: live UI must retain `note`/`error` recovery copy,
+including first-contact setup guidance/Connect CTA. Fixed notice belongs to
+restored history; it is not a reason to hide live explanation. Typed and voice
+tests reproduced the regression (3failed/11passed before the fix). Live failed
+execution keeps an explicit side-effect/retry caution; raw live copy never
+enters durable storage. Fixed-notice fallback remains for missing live copy.
+
+Optional notes: mapping consolidation remains later work; legacy text-only
+setup rows cannot infer a Connect CTA from missing metadata (normal source
+control still exists); non-principal automation-session exclusion is now
+explicit in proposal; verification's old uncommitted status corrected.
+Final exact-head round3 and hosted Linux CI remain before ready/landing.

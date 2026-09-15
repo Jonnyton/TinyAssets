@@ -16,6 +16,9 @@ what went wrong without losing the user's words or inventing a successful reply.
   explicit retry distinct from confirmed terminal failure. Never auto-replay.
 - Preserve legacy reads and success behavior; exclude raw provider errors,
   attempts, secrets and authority from durable failure metadata.
+- Automation context now reads the persisted owner's principal session only;
+  previously it included every session in that universe. Non-principal channel
+  sessions are deliberately excluded, not silently treated as owner authority.
 
 ## Capabilities
 

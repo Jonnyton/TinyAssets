@@ -37,7 +37,8 @@ def test_live_saved_failure_clears_local_slot_without_fake_answer(tmp_path, kind
     )
     assert result["inflight"] is None
     assert [m["role"] for m in result["messages"]] == ["founder", "platform"]
-    assert result["messages"][-1]["text"].startswith(NOTICE)
+    assert result["messages"][-1]["text"].startswith(payload()["error"])
+    assert "Check progress before sending again" in result["messages"][-1]["text"]
     assert not result["executionDetails"] and not result["observedModels"]
     assert result["converseCalls"] == ["original"]
 
@@ -134,8 +135,19 @@ def test_setup_hold_keeps_a_connection_recovery_button_without_fake_answer(tmp_p
         "history_saved": True,
         "turn_failure": {**FAILURE, "code": "setup_required"},
         "failure_notice": NOTICE,
+        "note": "Connect your own model to begin; no other user's account will be used.",
     }
     result = _run_app(tmp_path, {"kind": "send", "message": "hello", "payload": held})
     assert result["inflight"] is None
     assert result["notes"][0]["buttons"] == ["Send it again", "Connect a source"]
     assert [m["role"] for m in result["messages"]] == ["founder", "platform"]
+    assert result["messages"][-1]["text"] == held["note"]
+
+
+def test_live_failure_without_richer_copy_uses_fixed_notice(tmp_path):
+    response = payload()
+    response["error"] = ""
+    response["status"] = "held"
+    response["note"] = {"unexpected": "not a sentence"}
+    result = _run_app(tmp_path, {"kind": "send", "message": "hello", "payload": response})
+    assert result["messages"][-1]["text"] == NOTICE

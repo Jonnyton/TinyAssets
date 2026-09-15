@@ -1990,7 +1990,14 @@
     const failure=payload&&payload.turn_failure;
     const recorded=!!failure&&failure.version===1&&failure.kind==="turn_failed"&&
       typeof payload.failure_notice==="string"&&!!payload.failure_notice;
-    const error=new Error(recorded?payload.failure_notice:payload.error);
+    // Live recovery can be richer than the safe fixed sentence retained by
+    // the server. Never copy this live-only text back into stored history.
+    const live=[payload.note,payload.error].find(value=>typeof value==="string"&&value.trim());
+    const caution=recorded&&live&&failure.code!=="setup_required"&&
+      !live.includes("Check progress before sending again")
+      ? " Actions may already have occurred. Check progress before sending again; sending again repeats the whole request."
+      : "";
+    const error=new Error((live||(recorded?payload.failure_notice:payload.error))+caution);
     error.served=true;
     error.failureRecorded=recorded;
     error.historySaved=recorded&&payload.history_saved===true;

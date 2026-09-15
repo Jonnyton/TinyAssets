@@ -78,6 +78,11 @@ permissions, default/fallback behavior, FIFO executor or private workflows.
    automation fixtures before implementation; do not widen its read authority.
 5. App live error and history rendering label platform notices clearly and never
    update the actual answering-model indicator from them. `history_saved=true`
+   keeps the existing live `note`/`error` recovery sentence (with retry caution
+   for failed execution), while restored history uses the fixed safe notice.
+   Live provider text is not copied into the durable store. A setup hold keeps
+   its first-contact explanation and Connect CTA rather than pretending to be
+   a successful model answer. The saved-history flag
    confirms receipt of a terminal failure, not absence of side effects: preserve
    “check progress before retrying.” Keep an explicit user resend affordance;
    no automatic resend on refresh, later send or model change. On saved failure,
