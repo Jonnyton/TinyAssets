@@ -1,5 +1,14 @@
 ## 1. Reviewed foundation
 
+September15 automatic bootstrap supplement: reviewed shape/disposition in
+automatic-model-bootstrap.md. Initial server setup projection is implemented
+locally; seven red-first cases now pass,173focused onboarding tests pass24.73s.
+Same-source baseline166pass23.03s; Ruff,444-file mirror/import and spec validation
+pass. Not pushed or deployed; this is an initial component, not completed OAuth.
+HTTP bound setup was already recognized via config; old presence/readiness and
+unreadable-state conflation is the corrected premise. OAuth flow, return-page
+confirmation, UI routing/optional request, exact-head review and live proof remain.
+
 September14 served-setup follow-up: reviewed proposal in served-model-setup.md;
 pinned model/binding reads, preference save and discovery-only configuration
 implemented locally on codex/served-model-setup, now including canonical shared

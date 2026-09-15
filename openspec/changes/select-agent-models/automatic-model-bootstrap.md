@@ -1,0 +1,134 @@
+# Automatic model connection during sign-in
+
+September15,2026 pre-build design supplement. Owner: Codex Patches. Implements
+the founder's September14 PDT direction in PLAN Providers. This is the remaining
+unpowered model-selection slice, not a new workflow or competing delivery lane.
+No runtime implementation or live second-user success is claimed.
+
+## Outcome and current seams
+
+TinyAssets sign-in resolves the person's own universe, then automatically opens
+OpenRouter's hosted signup/sign-in/authorization when it has no LLM connection.
+Returning completes a free-only model setup without an already-running LLM.
+Afterward a nonblocking generic Connect another LLM request remains available.
+Cancellation offers resume/another source/skip, never repeated forced redirects.
+An expired/exhausted/failed existing connection goes to recovery, not bootstrap.
+
+Source inspection September15: onboarding/__init__.py::_handle_me exposes one
+engine_connected boolean; app.html::enterSignedIn treats false and unavailable
+as the same Connect screen. pending_requests.py synthesizes sys_connect_llm
+only while serving authority is unavailable. Neither proves absence of stored
+connections. Existing deterministic connect_http, connect_compute and
+configure_provider_capability(model_discovery) need no powered agent. Existing
+model_access_requests.capture_action/execute_action provide owner/home/revision/
+assignment fences but require a configured agent binding. Existing source
+contract preset openrouter_user_models_v1 provides discovery, pricing and caps.
+The arbitrary paste/inference path requires a powered agent and is not bootstrap.
+
+## Proposed implementation boundary (requires Fable review before code)
+
+Fable5.1 round2 process31465 completed386s ADAPT. Lead disposition accepts:
+replace enterSignedIn's routing key (not just append data), distinct callback
+path before WorkOS code handling, safe non-serving first-binding helper, explicit
+home recheck at exchange and existing owner-capable request_from_user. The prior
+claim that raising model consent requires an agent was wrong; no new raiser.
+Review artifact: docs/reviews/2026-09-15-automatic-model-bootstrap-fable.md.
+Implement web-first; native deep-link return stays explicitly unverified rather
+than inheriting the web success claim. Exact implementation review remains ahead.
+
+1. Add a strict owner-scoped setup projection to the authenticated app status.
+   Separate empty, existing/recovery, connected, and unavailable observations.
+   Read failures are unavailable, never empty. Inspect this owner's home only:
+   assignment (including failed/pending), native deposit metadata, owned compute
+   definitions and connection records, rather than live health or host quota.
+   Unrelated HTTP channels do not count as LLMs. Ambiguous provider artifacts
+   hold for recovery rather than invite destructive first setup. GET does not
+   provision a home or start auth; a bounded authenticated POST does.
+2. Generic hosted-authorization transport with an OpenRouter bootstrap preset.
+   Define acquisition metadata alongside source-contract/onboarding data: display
+   name, acquisition/help URL, fixed authorization/exchange endpoints, protocol
+   (PKCE code-to-user-key), selected inference/catalogue/benchmark scopes and
+   source-contract version. No hardcoded model name, host-name sniffing of pasted
+   keys, prompt-based interpretation, or changes to native provider executors.
+   Do not claim arbitrary OAuth/CLI protocol compatibility. Later sources may
+   supply reviewed contract data for the supported protocol. Remote model rows
+   cannot supply new auth/redirect/endpoints. No dynamic callback origin from a
+   request Host header; use the configured canonical HTTPS app origin.
+3. The automatic redirect is navigation, not silent user consent. TinyAssets
+   discloses that connecting powers this universe using eligible free models and
+   their provider's privacy/limits; OpenRouter handles signup/login/its consent.
+   After return, present the existing owner model-access confirmation if there
+   is no already-recorded explicit consent for that exact setup. Do not pretend
+   OpenRouter consent alone approves arbitrary TinyAssets workflow authority.
+   Make this one coherent onboarding journey, not a manual key form. No extra
+   paid plan, credit purchase, API-key paste or running agent prerequisite.
+4. App POST begin resolves/provisions the authenticated owner's current home,
+   rechecks empty setup and freezes preset/version, home and empty-assignment
+   baseline. Use S256, unpredictable correlation nonce and PKCE verifier; bind
+   challenge to owner+home+flow. Follow existing bounded expiring one-shot flow
+   leasing semantics in onboarding/openai_device.py, without treating its OpenAI
+   grant as authority for this flow. Independent namespace/protocol tag prevents
+   cross-flow redemption. Callback must be fixed, same-origin and correlation-
+   checked; merely GETting it never deposits or enables anything. Strip code
+   from the address bar before loading external resources. Referrer no-referrer,
+   Cache-Control no-store; never log code, verifier, key or raw upstream response.
+5. Authenticated exchange requires same owner/current home/admin, matching flow
+   and verifier, unexpired lease and unchanged empty baseline before network or
+   writes. Do not follow exchange redirects; strict bounded response/deadline.
+   Key goes server-to-existing vault via connect_http, never chat/browser JSON.
+   Exact preset endpoints only: inference POST plus necessary discovery GET;
+   no wildcard egress, broad credential scope, implicit purchase or maintainer key.
+   Register candidate and configure discovery through existing deterministic
+   primitives. No legacy serveOn path that can enable paid-capable defaults.
+6. Ensure an unambiguous owner-approved first agent binding without resetting
+   custom content or enabling it. Capture existing bind_model_access action with
+   discovered scope, cost_caps=None and this sole selected provider. Reuse the
+   pending-request owner answer path and publication/enable fences. Automatic
+   ranking/fallback is limited to fresh eligible free models; changed/nonzero/
+   unknown pricing remains ineligible at launch. No model is available is an
+   honest limited/setup state, not permission to buy credits or borrow capacity.
+7. Durable state stays in existing vault/connection/definition/discovery/pending
+   request/assignment stores. The short-lived OAuth flow may expire on restart;
+   restart before exchange is an explicit resumable retry, not a redirect loop.
+   Persisted partial setup resumes through its captured owner request and
+   deterministic IDs, not code reuse or a second credential store. An ambiguous
+   exchange failure reports uncertainty and asks user to restart authorization;
+   it never claims no key was minted. A callback replay cannot duplicate grants
+   or overwrite a newer connection. Cross-tab connection/home changes hold.
+8. Auto-begin once per explicit sign-in attempt after an empty result. A reload,
+   heartbeat, expired access-token refresh, back button or cancelled callback
+   cannot begin repeatedly. Retry requires the visible Resume connection action.
+   Existing signed-in empty accounts receive the same resumable setup entry.
+   After connection, render sys_connect_llm as optional Connect another LLM;
+   before connection/recovery keep honest blocking guidance. This is platform
+   UI, not an instruction that the user's agent maintain a bootstrap workflow.
+
+## Verification and rollout
+
+Before implementation: Fable research/architecture review this supplement and
+the actual named seams. Existing unpowered review is research round1, not approval
+of this newer automatic-OAuth design. No new top-level MCP tool is proposed.
+
+Tests: new/existing OpenRouter account journey (vendor UI belongs to user);
+no-account user can reach authorization before any LLM call; zero network until
+proper authenticated begin; separate owner/home and cross-tab races; no shared
+credentials; empty vs revoked/expired/unavailable; cancel/back/refresh/restart;
+CSRF/state/verifier/expiry/replay/duplicate exchange; bounded malformed upstream;
+partial deposit/register/discovery/bind/enable; custom binding preservation;
+free-only price drift, rate exhaustion and actual model/fallback receipt.
+
+Production proof requires independent exact-head review, CI, protected deployed
+SHA and public canary, then a rendered free-only second-user connection and real
+answer surviving refresh. User handles credential/account terms/consent actions.
+Original subscription account is neither credential source nor proof for this
+user. No private workflow edits; original checklist retest remains a separate
+regression signal. Keep bootstrap resumable if deployment rolls back.
+
+## External sources (verified September15,2026)
+
+- https://openrouter.ai/docs/guides/overview/auth/oauth documents S256 auth,
+  login/authorization, code return and POST /api/v1/auth/keys user-controlled key.
+- https://openrouter.ai/auth unauthenticated fetch redirects to sign-up with a
+  return-to-auth URL; not proof our integrated callback already works.
+- https://openrouter.ai/docs/faq documents limited free-model availability.
+  OAuth consent does not itself enforce the universe's free-only cost policy.

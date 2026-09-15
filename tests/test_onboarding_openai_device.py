@@ -240,7 +240,7 @@ def _home(monkeypatch, home="u-home"):
     import tinyassets.onboarding as onboarding
 
     monkeypatch.setattr(onboarding, "_bootstrap_home", lambda identity: home)
-    monkeypatch.setattr(onboarding, "_read_home", lambda identity: home)
+    monkeypatch.setattr(onboarding, "_read_home", lambda identity, **kwargs: home)
 
 
 def _user(sub="user_123"):
@@ -829,19 +829,19 @@ def test_me_requires_identity_and_reports_engine(monkeypatch, tmp_path):
     assert _drive_get("/mcp/app/me", monkeypatch=monkeypatch)[0] == 401
 
     import tinyassets.api.helpers as helpers
-    import tinyassets.api.universe as uni
+    import tinyassets.onboarding.model_setup as setup
 
     (tmp_path / "u-home").mkdir()
     monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
     # Cannot create a home (no scope) -> not connected; the public landing
     # universe must NOT read as "you're connected".
     _home(monkeypatch, "")
-    monkeypatch.setattr(uni, "universe_has_assigned_engine", lambda d: True)
+    monkeypatch.setattr(setup, "model_setup_state", lambda *args, **kwargs: "connected")
     status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
     assert (status, doc["home_bound"], doc["engine_connected"]) == (200, False, False)
     # Home (bootstrapped) without an engine -> connect gate.
     _home(monkeypatch, "u-home")
-    monkeypatch.setattr(uni, "universe_has_assigned_engine", lambda d: False)
+    monkeypatch.setattr(setup, "model_setup_state", lambda *args, **kwargs: "empty")
     status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
     assert (doc["home_bound"], doc["engine_connected"], doc["universe_id"]) == (
         True,
@@ -849,7 +849,7 @@ def test_me_requires_identity_and_reports_engine(monkeypatch, tmp_path):
         "u-home",
     )
     # Home with an engine -> straight to chat.
-    monkeypatch.setattr(uni, "universe_has_assigned_engine", lambda d: True)
+    monkeypatch.setattr(setup, "model_setup_state", lambda *args, **kwargs: "connected")
     assert (
         _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)[1][
             "engine_connected"
@@ -891,7 +891,7 @@ def test_me_is_read_only_and_bootstrap_happens_on_begin(monkeypatch):
     import tinyassets.onboarding as onboarding
 
     calls = []
-    monkeypatch.setattr(onboarding, "_read_home", lambda identity: "")
+    monkeypatch.setattr(onboarding, "_read_home", lambda identity, **kwargs: "")
     monkeypatch.setattr(
         onboarding, "_bootstrap_home", lambda identity: calls.append("boot") or "u-new"
     )

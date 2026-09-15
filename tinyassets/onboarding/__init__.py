@@ -718,27 +718,33 @@ async def _handle_me(request: Any) -> Any:
     identity = current_identity()
 
     def _read() -> dict[str, Any]:
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.api.universe import universe_has_assigned_engine
+        from tinyassets.api.helpers import _base_path, _universe_dir
+        from tinyassets.onboarding.model_setup import model_setup_state
 
         # Only the user's OWN home counts, read-only: a GET never creates a
         # universe (the POST begin/start routes bootstrap it when the user acts).
         # The identity-neutral public landing universe has an engine of its own
         # and must never read as "you're connected".
-        home = _read_home(identity)
+        home = _read_home(identity, raise_errors=True)
         if not home:
-            return {"universe_id": "", "home_bound": False, "engine_connected": False}
+            return {"universe_id": "", "home_bound": False,
+                    "engine_connected": False, "setup": "empty"}
         with identity_context(identity):
+            setup = model_setup_state(
+                _base_path(), universe=_universe_dir(home), uid=home, owner=identity.user_id,
+            )
             return {
                 "universe_id": home,
                 "home_bound": True,
-                "engine_connected": bool(universe_has_assigned_engine(_universe_dir(home))),
+                "engine_connected": setup == "connected",
+                "setup": setup,
             }
 
     try:
         doc = await run_in_threadpool(_read)
     except Exception:  # noqa: BLE001 - never let a storage hiccup 500 the app shell
-        doc = {"universe_id": "", "home_bound": False, "engine_connected": False, "degraded": True}
+        doc = {"universe_id": "", "home_bound": False, "engine_connected": False,
+               "setup": "unavailable", "degraded": True}
     return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
 
