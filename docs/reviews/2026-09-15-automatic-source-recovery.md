@@ -40,11 +40,21 @@ pytest -q tests/test_app_model_picker.py =>50passed,8.47s.
 Four Windows skips are not Linux proof; CI required.
 Ruff check and plugin build/import probe passed. No real-user auto recovery proof.
 
-Exact-head implementation review, required Linux CI, deployment and rendered
-Automatic recovery proof remain pending. The original founder's request was
+Round2 Fable5.1 exact-head review APPROVE at d2b77b84a7a6654a1cf32925bff2a0f776720e26,
+356s; independent two-case auth integration test passed. No blocking findings.
+Additional queue/capacity/order/composition tests148pass,8.52s. CI identified a
+stale generated-asset receipt for the edited app HTML; only its normalized hash
+is refreshed. No mark geometry, pixels, generator or app behavior changed in
+this follow-up. This review note moves into the existing review-artifact home.
+Final unchanged-runtime head confirmation, required Linux CI, deployment and
+rendered Automatic recovery proof remain pending. The original founder's request was
 recovered through a temporary explicit Codex choice without changing saved Auto.
 
 Rollback: revert this implementation through the normal PR/deploy pipeline if
 Automatic chooses outside authority, explicit order changes, or error rates rise.
 There is no schema migration or credential write to reverse. Rollback loses only
 advisory process memory and restores previous routing; retain conversation records.
+
+Post-live non-blocking observations are tracked in
+../concerns/2026-09-15-automatic-source-health-followups.md. Do not expand the
+MVP or weaken its effect fence to address them.
