@@ -11,6 +11,6 @@
 
 ## 3. Verification and delivery
 
-- [ ] 3.1 Run focused Windows/Linux tests, legacy/differential checks, plugin mirror and independent exact-head review.
-- [ ] 3.2 Deploy through normal gates and prove deployed SHA/canary plus rendered failure-refresh-next-message behavior.
-- [ ] 3.3 Sync as-built spec, resolve the concern, archive this change and record real-user clean-use evidence or its absence.
+- [x] 3.1 Run focused Windows/Linux tests, legacy/differential checks, plugin mirror and independent exact-head review.
+- [x] 3.2 Deploy through normal gates and prove deployed SHA/canary plus rendered failure-refresh-next-message behavior.
+- [x] 3.3 Sync as-built spec, resolve the concern, archive this change and record real-user clean-use evidence or its absence.
