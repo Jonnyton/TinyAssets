@@ -228,3 +228,35 @@ Next: the actual production supervisor with bounded drains, process-tree
 termination, broker DNS deadline and revocation; then consent/lease/byte-ledger
 caller integration before publication. No production caller or rollout added.
 The shared descriptor repair3860 remains draft75c7daf1 and review held.
+
+## Killable registry process — September 15, 2026 20:48 UTC
+
+Implemented workspace_registry_process as a private, single-use subprocess.
+It starts with an empty allowlisted environment, isolated Python, disabled
+bytecode/core dumps, closed unrelated descriptors and a separate process group.
+Only the acquisition jail receives its Unix control channel. The existing
+registry classifier/relay remains authoritative. Receipt output is capped at
+4096 bytes and strictly validated; failure, cancellation, malformed or uncertain
+completion retains the maximum byte reservation. Closing verifies process exit,
+including a test-injected blocked DNS thread, and receipt-drain termination.
+This component does not itself reserve ledger bytes or supervise the acquisition
+jail's aggregate resources. Those remain coordinator obligations.
+
+The manual smoke now uses this process instead of parent-owned broker threads.
+Using the Docker command above with --ecosystem node passed:8870bytes,
+1connection, offline picocolors1.1.1 API execution. --ecosystem python passed:
+1926740bytes,2connections, offline pytest9.1.1. Real public DNS/TLS/downloads,
+separate offline jails, no production data or private workflow changes.
+
+Final cohort adds tests/test_workspace_registry_process.py to the seven files
+above. Windows python -m pytest -q with those eight paths:614passed,
+51POSIXskips,58subtests,23.76s. Same paths through scripts/linux_oracle.py
+(WSL command above):665passed,63subtests,zero skips,24.96s. The process tests
+cover actual isolated child startup, inherited environment/fd exclusion,
+oversized output, nonzero exit, cancellation/deadlines and a deliberately
+blocked resolver. The last case is injected, not a claim of real libc DNS
+failure. Ruff passed; generated plugin447files and import probe passed.
+
+Tasks2.1-2.3 remain open. Next is acquisition/offline process coordination and
+connection-sourced consent, lease/byte reservation and publication integration.
+No production caller, push, rollout or new independent review in this checkpoint.

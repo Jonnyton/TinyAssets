@@ -12,22 +12,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import select
-import socket
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from tinyassets import node_sandbox as sandbox  # noqa: E402
-from tinyassets import workspace_registry as registry  # noqa: E402
 from tinyassets import workspace_registry_proxy as proxy  # noqa: E402
 from tinyassets import workspace_resolver as resolver  # noqa: E402
+from tinyassets.workspace_registry_process import RegistryBrokerProcess  # noqa: E402
 
 
 def main():
@@ -114,49 +110,25 @@ finally:
 '''
             launcher = sandbox.BwrapLauncher().for_provision(
                 sandbox.ProvisionMount(handles[0], handles[1], "acquire"))
-            parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-            budget = registry.TransferBudget(
+            broker = RegistryBrokerProcess(
                 max_bytes=32*1024*1024, max_connections=32, max_active=8, timeout_s=45)
-            workers = []
             process = None
             try:
+                broker.start()
                 process = subprocess.Popen(
                     launcher.build_argv(
                         proxy_source + "\n" + acquire_tail, [json.dumps(acquisition)]),
-                    pass_fds=launcher.pass_fds, stdin=child, stdout=subprocess.PIPE,
+                    pass_fds=launcher.pass_fds, stdin=broker.control, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, close_fds=True, env=launcher.env("/tmp"), text=True)
-                child.close()
-                deadline = time.monotonic() + 45
-                while process.poll() is None:
-                    if time.monotonic() > deadline:
-                        raise RuntimeError("acquisition deadline")
-                    ready, _, _ = select.select([parent], [], [], 0.1)
-                    if ready:
-                        relay = registry.receive_relay(parent)
-                        if relay is None:
-                            break
-                        if len(workers) >= 32:
-                            relay.close()
-                            raise RuntimeError("connection bound")
-                        worker = threading.Thread(
-                            target=registry.serve_registry_tunnel,
-                            args=(relay, budget), daemon=True)
-                        worker.start()
-                        workers.append(worker)
-                output, errors = process.communicate(timeout=5)
+                broker.release_control()
+                output, errors = process.communicate(timeout=40)
+                receipt = broker.finish()
                 if process.returncode:
-                    raise RuntimeError(str(budget.snapshot()) + "\n" + errors[-5000:])
+                    raise RuntimeError(str(receipt) + "\n" + errors[-5000:])
                 assert json.loads(output) == {"acquired": True}
-                for worker in workers:
-                    worker.join(timeout=1)
-                if any(worker.is_alive() for worker in workers):
-                    raise RuntimeError("broker termination unconfirmed")
-                receipt = budget.snapshot()
                 assert receipt.failure is None, receipt.failure
             finally:
-                parent.close()
-                child.close()
-                budget.cancel()
+                broker.close()
                 if process is not None and process.poll() is None:
                     process.kill()
                     process.communicate(timeout=5)
@@ -216,7 +188,7 @@ print(json.dumps({'offline':True, 'executed':result.stdout.strip()}))
             if result.returncode:
                 raise RuntimeError(result.stderr[-1500:])
             print(json.dumps({
-                "namespace_acquisition": True, "broker_bytes": receipt.bytes_transferred,
+                "namespace_acquisition": True, "broker_bytes": receipt.bytes_observed,
                 "broker_connections": receipt.connections,
                 "ecosystem": ecosystem, "diagnostic": options.diagnose_npm,
                 **json.loads(result.stdout),
