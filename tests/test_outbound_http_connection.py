@@ -131,6 +131,55 @@ def test_alter_migration_backfills_descriptor_columns_on_old_db(tmp_path):
     assert resource is not None
     assert resource.connection_type == ""
     assert resource.allowed_endpoints == ()
+    assert ledger.incarnation("conn-old")
+    assert ConnectionLedger(db_path).incarnation("conn-old") == ledger.incarnation("conn-old")
+
+
+def test_legacy_identity_repair_mints_per_row_and_skips_initialized_writes(tmp_path, monkeypatch):
+    db_path = tmp_path / "legacy-identities.db"
+    ledger = ConnectionLedger(db_path)
+    with ledger._connect() as conn:
+        # Simulate older writers inserting after the schema was upgraded.
+        conn.executemany(
+            "INSERT INTO outbound_connections "
+            "(connection_id, owner_user_id, connection_class, scopes_json, provider, "
+            "destination, credential_ref) VALUES (?, 'user-1', 'http', '[]', 'http', ?, 'ref')",
+            [("one", "one"), ("two", "two")],
+        )
+    repaired = ConnectionLedger(db_path)
+    first, second = repaired.incarnation("one"), repaired.incarnation("two")
+    assert first and second and first != second
+    statements = []
+    original = ConnectionLedger._connect
+
+    def traced_connect(self):
+        conn = original(self)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(ConnectionLedger, "_connect", traced_connect)
+    reopened = ConnectionLedger(db_path)
+    assert reopened.incarnation("one") == first
+    assert reopened.incarnation("two") == second
+    assert not any(sql.lstrip().upper().startswith("UPDATE") for sql in statements)
+
+
+def test_legacy_identity_repair_fails_loudly_if_database_is_readonly(tmp_path, monkeypatch):
+    db_path = tmp_path / "readonly-legacy.db"
+    ledger = ConnectionLedger(db_path)
+    _create_http_connection(ledger)
+    with ledger._connect() as conn:
+        conn.execute("UPDATE outbound_connections SET incarnation = ''")
+
+    def readonly_connect(self):
+        conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    monkeypatch.setattr(ConnectionLedger, "_connect", readonly_connect)
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        ConnectionLedger(db_path)
+    assert ledger.incarnation("conn-http") == ""
 
 
 # --------------------------------------------------------------------------- #

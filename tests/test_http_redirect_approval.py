@@ -1,6 +1,7 @@
 """Real temporary owner/request/ledger path for redirect consent, with no network."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -55,6 +56,80 @@ def _ask(endpoint=OPTED):
             "action": {"type": "extend_http", "destination": "downloads", "endpoints": [endpoint]},
         },
     )
+
+
+@pytest.mark.parametrize("mode", ["exact", "full"])
+def test_legacy_connection_can_request_redirect_consent_without_redeposit(base, mode):
+    ledger, cid = _seed(base, mode)
+    # The old column migration and rollback writers leave the default empty.
+    with ledger._connect() as conn:
+        conn.execute(
+            "UPDATE outbound_connections SET incarnation = '' WHERE connection_id = ?",
+            (cid,),
+        )
+    before = ledger._get_connection_resource(cid)
+    asked = _ask()
+    assert "request_id" in asked, asked
+    snapshot = get_request(base / "u-1", asked["request_id"])["action"]["policy_snapshot"]
+    assert snapshot["incarnation"]
+    assert snapshot["incarnation"] == ledger.incarnation(cid)
+    # Creating the request must not itself grant the additional permission.
+    assert ledger._get_connection_resource(cid) == before
+    done = answer_request(
+        universe_id="u-1", payload={"request_id": asked["request_id"], "values": {}}
+    )
+    assert done.get("status") == "answered", done
+    after = ledger._get_connection_resource(cid)
+    assert after.access_mode == before.access_mode
+    assert after.scopes == before.scopes
+    assert after.credential_ref == before.credential_ref
+    assert any(e.redirect_mode == "public_https_get" for e in after.allowed_endpoints)
+
+
+def test_legacy_identity_repair_is_stable_and_changes_no_policy_or_grants(base):
+    ledger, cid = _seed(base, "full")
+    with ledger._connect() as conn:
+        conn.execute("UPDATE outbound_connections SET incarnation = '', revoked_at = 123")
+        conn.execute("UPDATE outbound_connection_grants SET revoked_at = 456")
+        before = dict(conn.execute("SELECT * FROM outbound_connections").fetchone())
+        grants = [dict(row) for row in conn.execute("SELECT * FROM outbound_connection_grants")]
+
+    def reopen(_):
+        return ConnectionLedger(base / "outbound.db").incarnation(cid)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        tokens = list(pool.map(reopen, range(12)))
+    assert tokens[0]
+    assert len(set(tokens)) == 1
+    assert len(tokens[0]) == 32
+    assert all(char in "0123456789abcdef" for char in tokens[0])
+    with ledger._connect() as conn:
+        after = dict(conn.execute("SELECT * FROM outbound_connections").fetchone())
+        after_grants = [
+            dict(row) for row in conn.execute("SELECT * FROM outbound_connection_grants")
+        ]
+        assert after_grants == grants
+    assert after == {**before, "incarnation": tokens[0]}
+
+
+def test_repair_covers_rollback_rows_and_never_reuses_previous_identity(base):
+    ledger, cid = _seed(base, "exact")
+    original_token = ledger.incarnation(cid)
+    asked = _ask()
+    assert "request_id" in asked
+    with ledger._connect() as conn:
+        # Simulate a rollback writer recreating the same id and policy without
+        # the new field. A previous approval must not attach to that generation.
+        conn.execute("UPDATE outbound_connections SET incarnation = ''")
+    reopened = ConnectionLedger(base / "outbound.db")
+    replacement_token = reopened.incarnation(cid)
+    assert replacement_token and replacement_token != original_token
+    assert ConnectionLedger(base / "outbound.db").incarnation(cid) == replacement_token
+    refused = answer_request(
+        universe_id="u-1", payload={"request_id": asked["request_id"], "values": {}}
+    )
+    assert refused.get("error") == "connection_conflict", refused
+    assert all(e.redirect_mode == "none" for e in reopened.get_connection(cid).allowed_endpoints)
 
 
 @pytest.mark.parametrize("mode", ["exact", "full"])

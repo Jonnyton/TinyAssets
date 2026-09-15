@@ -3315,6 +3315,16 @@ class ConnectionLedger:
                     connection.execute(
                         f"ALTER TABLE outbound_connections ADD COLUMN {column} {ddl}"
                     )
+            # The column default also applies to rows inserted by older writers.
+            # Adopt those rows without rotating any established deposit identity
+            # or changing its policy. Ordinary opens must not take a write lock.
+            if connection.execute(
+                "SELECT 1 FROM outbound_connections WHERE incarnation = '' LIMIT 1"
+            ).fetchone():
+                connection.execute(
+                    "UPDATE outbound_connections SET incarnation = lower(hex(randomblob(16))) "
+                    "WHERE incarnation = ''"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_path, timeout=30.0)
