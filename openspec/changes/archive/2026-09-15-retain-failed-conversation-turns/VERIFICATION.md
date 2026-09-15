@@ -1,5 +1,43 @@
 # Failure-history implementation verification
 
+## Final deployed and rendered evidence, September15,2026 UTC
+
+PR3856 merged07:32:20UTC as43479ccda60013b68ec303fda5a27356f792e2a5 from
+reviewed25ec71052b5929d576923d8e56212b25a2d19edd. Final Fable5.1 round3
+APPROVE183s/exit0; independent14app-history tests passed8.36s. Public receipt:
+https://github.com/Jonnyton/TinyAssets/pull/3856#issuecomment-5676271542.
+
+Required LinuxPython3.11 run34940621608 passed with zero NEW failures:
+18093passed54skipped10deselected,5known failures/2known collection errors.
+Downloaded JUnit artifact10385936389 inspected:14app-history+29conversation-
+history+6readers+3Linux symlink cases all pass,52total0failed0skipped.
+This resolves the Windows fixture limitation below without a quarantine change.
+
+Build34942213879/deploy34942509946 passed. Protected deployed_sha.py
+--assert-contains43479ccda600 at07:36:53UTC and public mcp_public_canary.py
+--url https://tinyassets.io/mcp --assert-handles passed. Later descendant
+2c902151a47a verified in deploy34943847005 at07:52:34UTC with the same gates.
+
+Rendered Chrome/original-owner app mission9023, not direct MCP:
+- Exact Retest your workflow checklist returned six smoke passes on43479ccda600
+  at00:48PDT,8runs all finished. Webhook0314d1cd87634c0c,
+  contention4d555751feeb4254, recoveryeabec8494de6419f.
+- Saved Automatic, no default/credential changes: harmless greeting Can you
+  answer a simple hello now? produced a real sign-in failure at00:49PDT.
+  Correct Platform notice label, no answering receipt on failed turn.
+- Reload retained verbatim greeting+safe notice+explicit Send it again. No
+  automatic replay; did not click retry. Codex chosen for next messages only.
+- Asked What happened to my last message? At00:53PDT agent identified the exact
+  greeting and sign-in notice, preserved diagnostic uncertainty, and answered
+  hello. No diagnostic clue was supplied in the question.
+- A second reload retained BOTH failure and successful follow-up, no duplicate
+  greeting or automatic resend. Read visibly through the Chrome extension.
+
+General provider-auth failure remains separate. No private workflows, second-
+user credentials or grants changed. No independent customer clean use is yet
+visible; a separate post-fix watch records that limit. Historical checks below
+are superseded where they say review/deployment/live proof remains pending.
+
 September 15, 2026 UTC, Windows, isolated retain-failed-conversation-turns
 worktree. Base 89a335578a1576a1b4253375e6d900a770338009; first implementation
 committed df09debecd54c0fc2c0433b73d79b1365d19884a as draft PR3856. No user
