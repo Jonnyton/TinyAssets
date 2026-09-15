@@ -146,3 +146,44 @@ repair displaces provisioning integration. Its Fable5.1 review could not start:
 CLI reports requested model unavailable or inaccessible, not proven quota.
 Founder choice of available Claude reviewer is pending. This cloud copy and
 all provisioning remain unpublished/unreviewed; no task closure or live claim.
+
+## Namespace relay and real pip proof — September 15, 2026 20:24 UTC
+
+Built the acquisition-namespace-only listener in workspace_registry_proxy.py.
+Its private Unix packet control arrives as stdin; only namespace-local Unix
+relay endpoints cross to the existing host registry broker. No host listener,
+host network namespace, checkout mount, credential or connection grant is added.
+Package children use DEVNULL stdin and close_fds. Connection/active bounds,
+deadline, EOF revocation, bounded pumping and thread-start failure cleanup are
+covered. The outer process supervisor and verified process-death contract remain
+the production coordinator's responsibility; this library is not that caller.
+
+Final five-file cohort (proxy, registry, provisioning mount, resolver, provision):
+Windows `python -m pytest -q tests/test_workspace_registry_proxy.py tests/test_workspace_registry.py tests/test_workspace_provision_mount.py tests/test_workspace_resolver.py tests/test_workspace_provision.py`
+=>366passed,25POSIXskipped,55subtests,2.19s. Same file arguments through the WSL
+Linux oracle command above =>391passed,60subtests,zero skips,2.73s. Ruff passed.
+An initial Linux run had389passes/two npm config-parser failures: the test used
+/dev/null for both global and user config; npm rejects that double-load. Only
+the test's global config fixture changed to a distinct empty file. Actual
+acquisition/offline builder options remain intact; assertions were not weakened.
+
+The explicit local script scripts/probes/workspace_registry_smoke.py downloaded
+the existing hash-locked requirements fixture from public PyPI using real DNS,
+address classification, pinned broker connections and end-to-end pip TLS. It
+then terminated the acquisition/broker relays, verified manifest digest and
+installed five wheels in a separate offline jail, running pytest9.1.1 there.
+Command: `wsl -d Ubuntu -- docker run --rm --memory=2g --pids-limit=1024 --security-opt seccomp=unconfined -v /mnt/c/Users/Jonathan/.codex/worktrees/repair-resolver-pip-configuration/TinyAssets:/src:ro --workdir /src -e PYTHONDONTWRITEBYTECODE=1 tinyassets-linux-oracle:7693b1a8f805 python scripts/probes/workspace_registry_smoke.py`
+Both explicit runs exited0; final receipt: namespace_acquisition=true,
+broker_bytes=1926522,broker_connections=2,wheels=5,offline=true,pytest9.1.1.
+No tenant data, production request or user workflow was used. The script is
+manual proof, not a reusable production supervisor. Plugin mirror446/import
+probe passed before the test-only npm fixture correction.
+
+Still open: whole-process broker supervision, lease/consent/reservation/caller
+integration, real npm installation, complete repository dependency closure,
+browser runtime/preview and rendered cloud-user acceptance. Running pytest's
+version is NOT running the repository's test suite: its global conftest needs
+additional dependencies absent from this five-wheel fixture. Tasks2.1-2.3 stay
+open. No rollout PR or production caller; shared sandbox repair3860 must land
+with independent review first. Fable5.1 remains unavailable/inaccessible and
+founder choice of another Claude model is unanswered.

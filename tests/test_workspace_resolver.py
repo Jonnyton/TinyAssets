@@ -360,8 +360,14 @@ def test_real_npm_parses_acquisition_and_offline_options(node_plan, tmp_path, of
         env["USERPROFILE"] = str(tmp_path)
     # Replace only the subcommand. The actual emitted options remain intact.
     # Suppress the test machine's global npmrc as well as the builder's usercfg.
+    # npm on Linux refuses the same filename in two config layers: userconfig
+    # is already /dev/null. A distinct empty fixture isolates global config
+    # without changing any of the builder's options under test.
+    global_config = tmp_path / "empty-global.npmrc"
+    global_config.write_text("", encoding="utf-8")
     result = subprocess.run(
-        [node, str(cli), "config", "list", "--json", "--globalconfig", os.devnull, *argv[2:]],
+        [node, str(cli), "config", "list", "--json", "--globalconfig",
+         str(global_config), *argv[2:]],
         env=env, cwd=tmp_path, capture_output=True, text=True, timeout=15,
     )
     assert result.returncode == 0, result.stderr
