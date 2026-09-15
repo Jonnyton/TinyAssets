@@ -9,6 +9,8 @@ as capacity") forbids exactly that.
 
 from __future__ import annotations
 
+import pytest
+
 from tinyassets.exceptions import AllProvidersExhaustedError
 from tinyassets.universe_server import _served_failure_notice
 
@@ -74,3 +76,50 @@ def test_an_exception_without_a_failure_class_is_unchanged():
     assert _served_failure_notice(exc) == (
         "Your universe couldn't be reached right now: engine binding unreadable"
     )
+
+
+def test_unknown_failure_does_not_rule_out_billing_without_evidence():
+    notice = _served_failure_notice(_exhausted(None))
+    assert "could not identify why" in notice
+    assert "not a usage or billing limit" not in notice
+
+
+def test_auth_notice_does_not_invent_expiry_or_guarantee_reconnect():
+    notice = _served_failure_notice(_exhausted("auth_invalid"))
+    assert "sign-in" in notice and "reconnect" in notice.lower()
+    for unsupported in ("expired", "revoked", "will fix"):
+        assert unsupported not in notice
+
+
+@pytest.mark.parametrize("skip_class", ["unknown", "timed_out"])
+def test_native_auth_clue_requires_generic_provider_error(skip_class):
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = _exhausted(None)
+    exc.attempts = [ProviderAttemptDiagnostic(
+        "fixture", "failed", skip_class,
+        "fixture-native terminal result was not success "
+        "(subtype=success, is_error=true, last_assistant_error=authentication_failed)",
+    )]
+    assert "sign-in" not in _served_failure_notice(exc)
+
+
+def test_native_auth_clue_never_uses_an_earlier_failed_attempt():
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = _exhausted(None)
+    exc.attempts = [
+        ProviderAttemptDiagnostic(
+            "first", "failed", "provider_error",
+            "fixture-native terminal result was not success "
+            "(subtype=success, is_error=true, last_assistant_error=authentication_failed)",
+        ),
+        ProviderAttemptDiagnostic("second", "failed", "provider_error", "different failure"),
+    ]
+    assert "sign-in" not in _served_failure_notice(exc)
+
+
+def test_malformed_attempts_do_not_break_the_unknown_failure_notice():
+    exc = _exhausted(None)
+    exc.attempts = 123
+    assert "could not identify why" in _served_failure_notice(exc)

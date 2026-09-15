@@ -51,6 +51,72 @@ def _definition() -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("terminal,category,clue", [
+    ("true", "authentication_failed", True),
+    ("false", "authentication_failed", False),
+    ("absent", "authentication_failed", False),
+    ("true", "billing_error", False),
+    ("true", "oauth_org_not_allowed", False),
+    ("true", "unrecognized", False),
+    ("true", "not_reported", False),
+])
+def test_native_auth_notice_keeps_served_retry_fenced(
+    tmp_path, terminal, category, clue,
+):
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderError
+    from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+    from tinyassets.providers.quota import COOLDOWN_OTHER
+    from tinyassets.providers.router import ProviderRouter
+    from tinyassets.universe_server import _served_failure_notice
+
+    _, _, capability, context = _served_context(tmp_path)
+    error = ProviderError(
+        "fixture-native terminal result was not success "
+        f"(subtype=success, is_error={terminal}, last_assistant_error={category})"
+    )
+    error.attempt_telemetry = {
+        "phase": "streaming", "terminal_is_error": terminal,
+        "last_assistant_error": category, "side_effect_state": "possible",
+    }
+    error.native_evidence = NativeCompletionEvidence("codex", False, True, "possible")
+
+    class RejectingProvider(_RecordingProvider):
+        async def complete(self, *args, **kwargs):
+            self.calls += 1
+            raise error
+
+    provider = RejectingProvider("codex")
+    fallback = _RecordingProvider("ollama-local")
+    router = ProviderRouter(providers={"codex": provider, "ollama-local": fallback})
+    try:
+        with patch.object(router._quota, "cooldown") as cooldown:
+            with pytest.raises(AllProvidersExhaustedError) as caught:
+                asyncio.run(router.call(
+                    "writer", "hello", "system", universe_context=context,
+                    operation="converse",
+                ))
+        cooldown.assert_called_once_with("codex", COOLDOWN_OTHER)
+        aggregate = caught.value
+        assert aggregate.failure_class is None
+        assert aggregate.native_evidence == (None,)
+        assert len(aggregate.attempts) == 1
+        assert aggregate.attempts[0].skip_class == "provider_error"
+        assert aggregate.attempts[0].side_effect_state == "possible"
+        assert provider.calls == 1
+        assert fallback.calls == 0
+        notice = _served_failure_notice(aggregate).lower()
+        if clue:
+            assert "sign-in" in notice and "reconnect" in notice
+            assert "expired" not in notice and "revoked" not in notice
+            assert "will fix" not in notice
+        else:
+            assert "could not identify why" in notice
+            assert "not a usage or billing limit" not in notice
+    finally:
+        revoke_provider_request(capability)
+
+
 def _binding() -> dict[str, object]:
     return {"schema_version": 1, "name": "Served", "role": "writer"}
 

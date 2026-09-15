@@ -1949,10 +1949,9 @@ _TURN_ENDED_FAILURE_CLASSES = {
     # unchanged. Recovery still needs that remote failure signal; local custody
     # validation alone cannot establish whether the upstream accepts a token.
     "auth_invalid": (
-        "Your universe's connection to its model is no longer valid -- the "
-        "credential has expired or been revoked. Reconnecting the provider "
-        "for this universe will fix it. Nothing is wrong with your usage or "
-        "your billing."
+        "Your universe's model provider reported a sign-in problem. Check the "
+        "connection and reconnect the provider for this universe if needed. "
+        "This is not evidence of a usage or billing limit."
     ),
     "endpoint_unreachable": (
         "Your universe could not reach its model provider at all. That is a "
@@ -2163,6 +2162,34 @@ def _record_served_failure(universe_id: str, exc: BaseException) -> None:
         logger.warning("served turn failed universe=%s (diagnostics unavailable)", universe_id)
 
 
+_NATIVE_AUTH_CLUE = re.compile(
+    r"[a-zA-Z0-9_. -]{1,48} terminal result was not success "
+    r"\(subtype=(?:success|non_success), is_error=true, "
+    r"last_assistant_error=authentication_failed\)"
+)
+
+
+def _has_native_auth_clue(exc: BaseException) -> bool:
+    """Read only the last failed attempt's closed native diagnostic rendering.
+
+    This is a provider-reported clue, never a new failure class, evidence of
+    safe replay, or authority to change credentials. Adapter progress
+    supersedes prior assistant errors before constructing this rendering.
+    """
+    attempts = getattr(exc, "attempts", None)
+    if not isinstance(attempts, (list, tuple)):
+        return False
+    for attempt in reversed(attempts):
+        if getattr(attempt, "status", None) == "failed":
+            detail = getattr(attempt, "detail", "")
+            return (
+                getattr(attempt, "skip_class", None) == "provider_error"
+                and isinstance(detail, str)
+                and _NATIVE_AUTH_CLUE.fullmatch(detail) is not None
+            )
+    return False
+
+
 def _served_failure_notice(exc: BaseException) -> str:
     """The user-facing sentence for a failed served turn.
 
@@ -2200,6 +2227,14 @@ def _served_failure_notice(exc: BaseException) -> str:
     notice = _TURN_ENDED_FAILURE_CLASSES.get(_attempt_class(exc))
     if notice is not None:
         return notice
+    if _has_native_auth_clue(exc):
+        return (
+            "Your universe's turn did not complete. Its model provider reported "
+            "a sign-in problem during this turn. Check this universe's provider "
+            "connection; reconnect if needed. We have not confirmed that was "
+            "the only cause, or whether the turn already acted. Check progress "
+            "before sending again."
+        )
     # Unmapped. Pass the text through UNLESS it is our own synthetic wrapper,
     # which is the only text here that actively lies: the router says
     # "exhausted ... forbids fallback widening" whatever the attempts failed
@@ -2210,8 +2245,8 @@ def _served_failure_notice(exc: BaseException) -> str:
     if any(lie in text for lie in _MISLEADING_ROUTER_TELLS):
         return (
             "Your universe's turn could not run, and we could not identify why. "
-            "This is not necessarily anything you did, and it is not a usage or "
-            "billing limit -- rather than guess, we have recorded the details."
+            "We cannot tell whether this is a connection, usage, billing, or "
+            "platform problem -- rather than guess, we have recorded the details."
         )
     return f"Your universe couldn't be reached right now: {exc}"
 

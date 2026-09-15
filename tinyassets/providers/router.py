@@ -1352,6 +1352,7 @@ class ProviderRouter:
                     provider=provider_name, status="failed",
                     skip_class="provider_error",
                     detail=redacted_failure_detail(str(exc)),
+                    side_effect_state=_side_effect_from(exc),
                 ))
                 continue
             except _ProviderBusy:

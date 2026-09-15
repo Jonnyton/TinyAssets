@@ -193,7 +193,8 @@ def _normalize_stream_obj(obj: dict) -> list[tuple[str, dict]]:
             # hook_response / tool_heartbeat / ... — recognized activity.
             events.append(("heartbeat", {}))
     elif kind == "assistant":
-        if "error" in obj and obj["error"] is not None:
+        has_error = "error" in obj and obj["error"] is not None
+        if has_error:
             error = obj["error"]
             category = (error if type(error) is str and error in _ASSISTANT_ERROR_CATEGORIES
                         else "unrecognized")
@@ -202,7 +203,9 @@ def _normalize_stream_obj(obj: dict) -> list[tuple[str, dict]]:
             block_type = block.get("type")
             if block_type == "text":
                 text = block.get("text") or ""
-                if text:
+                # Error rendering proves liveness, not useful model output.
+                # Never reuse it as the reply after an empty success result.
+                if text and not has_error:
                     events.append(("text_delta", {"text": text}))
                 else:
                     events.append(("heartbeat", {}))
@@ -703,6 +706,7 @@ class ClaudeProvider(BaseProvider):
                         seen_init = True
                         seen_progress = True
                         pending_retry_delay = None
+                        last_assistant_error = None
                         if ttft_ms is None:
                             ttft_ms = (time.monotonic() - start) * 1000
                         if payload.get("partial"):
@@ -713,6 +717,7 @@ class ClaudeProvider(BaseProvider):
                         seen_init = True
                         seen_progress = True
                         pending_retry_delay = None
+                        last_assistant_error = None
                         tool_phase = "tool_use"
                         if side_effect_state == "none":
                             side_effect_state = "possible"
@@ -720,6 +725,7 @@ class ClaudeProvider(BaseProvider):
                         seen_init = True
                         seen_progress = True
                         pending_retry_delay = None
+                        last_assistant_error = None
                         tool_phase = "tool_result"
                         side_effect_state = "committed"
                     elif kind == "api_retry":
@@ -734,8 +740,9 @@ class ClaudeProvider(BaseProvider):
                         if payload.get("failure_class"):
                             last_retry = payload
                     elif kind == "assistant_error":
-                        # Diagnostic only: not proof of the final cause, no
-                        # capacity/retry classification or authority change.
+                        # Unsuperseded diagnostic clue, not proof of final cause.
+                        # Later useful output/tools clear it; liveness does not.
+                        # No capacity/retry classification or authority change.
                         last_assistant_error = payload["category"]
                     elif kind == "result":
                         terminal = payload.get("obj")
@@ -807,7 +814,7 @@ class ClaudeProvider(BaseProvider):
                     "claude -p reported a provider rate limit and did not recover",
                     retry_after=retry_after,
                 ))
-            if returncode == 1 and elapsed_ms < 5000:
+            if returncode == 1 and elapsed_ms < 5000 and terminal is None:
                 raise _attach(ProviderUnavailableError(
                     "claude -p returned exit code 1 quickly -- API likely unavailable"
                 ))
