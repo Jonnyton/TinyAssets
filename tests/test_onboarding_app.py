@@ -219,6 +219,7 @@ def test_route_is_mcp_app_get(monkeypatch):
     # the one-tap OpenAI device-auth broker (POST only, identity-gated).
     assert set(by_path) == {
         "/mcp/app", "/mcp/app/token", "/mcp/app/me",
+        "/mcp/app/model-connect/{operation}", "/mcp/app/model-callback/{flow}",
         "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
         "/mcp/app/voice/status", "/mcp/app/voice/session",
@@ -285,11 +286,13 @@ def test_the_deposit_form_names_protocols_not_companies():
 
     html, _csp = render_app_html()
 
-    # No company gets a shortcut the next one would not get.
+    # Manual HTTP deposit remains protocol-based. September14's approved hosted
+    # signup journey has a separate OpenRouter preset, not host-sniffing here.
     for gone in ('id="preset-x"', 'id="preset-openrouter"', 'id="preset-slack"',
-                 "api.x.com", "twitter.com", "hooks.slack.com", "openrouter.ai",
+                 "api.x.com", "twitter.com", "hooks.slack.com",
                  "switched to the four-key form below"):
         assert gone not in html, f"service-specific UI survived: {gone!r}"
+    assert 'href="https://openrouter.ai/settings/keys"' in html
 
     # The scheme select describes protocols, and names nobody.
     assert 'value="oauth1a"' in html

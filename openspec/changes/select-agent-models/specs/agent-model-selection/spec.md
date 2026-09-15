@@ -1,5 +1,25 @@
 ## ADDED Requirements
 
+### Requirement: Unconnected sign-in continues through model authorization
+After authenticating and resolving the owner's own universe, the app SHALL automatically continue genuinely empty LLM setup through the configured OpenRouter hosted signup/sign-in and authorization flow. Provider consent SHALL remain a user action. First free-only setup SHALL need neither a running agent nor manual API-key creation/paste, using the existing owner-confirmed authority boundary.
+
+#### Scenario: New provider account
+- **WHEN** a signed-in owner has no LLM connection or OpenRouter account
+- **THEN** setup reaches provider signup/consent, returns to the same owner's universe and offers eligible free-model execution after the required consent
+- **AND** no other user's credentials or paid fallback is used
+
+#### Scenario: Failed or unreadable existing setup
+- **WHEN** existing setup is expired, revoked, pending, failed or unreadable
+- **THEN** it is recovery or unavailable rather than empty, and automatic setup cannot overwrite it
+
+#### Scenario: Cancel or refresh
+- **WHEN** the owner cancels, refreshes, returns twice or changes home
+- **THEN** setup is resumable without redirect loops, duplicate grants or replacing newer state
+
+#### Scenario: Initial connection is serving
+- **WHEN** authorized setup powers the universe
+- **THEN** a nonblocking generic Connect another LLM request remains available
+
 ### Requirement: Main and work-scoped choices are independent
 The platform SHALL support owner-authorized main-agent provider/model changes
 and independent provider/model choices for an agent, workflow or task. A work

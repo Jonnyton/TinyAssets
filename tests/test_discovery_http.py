@@ -30,6 +30,24 @@ from tinyassets.storage.outbound_connections import (
 URL = "https://models.example.com/api/models/user"
 
 
+def test_owned_grant_can_discover_before_model_registration(rig):
+    assert discovery.read_granted_discovery_document(
+        db_path=rig.db, grant_id="grant-discovery", owner_user_id="owner",
+        universe_id="universe", url=URL,
+    ) == {"data": []}
+    assert len(rig.calls) == 1
+
+
+@pytest.mark.parametrize("owner,universe", [("stranger", "universe"), ("owner", "other")])
+def test_pre_registration_discovery_keeps_owner_and_universe_fences(rig, owner, universe):
+    with pytest.raises(discovery.ModelDiscoveryUnavailable):
+        discovery.read_granted_discovery_document(
+            db_path=rig.db, grant_id="grant-discovery", owner_user_id=owner,
+            universe_id=universe, url=URL,
+        )
+    assert not rig.calls
+
+
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
     ledger = ConnectionLedger(

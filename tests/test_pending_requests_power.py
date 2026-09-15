@@ -54,7 +54,7 @@ def manifest_connection(tmp_path, monkeypatch, request):
     return tmp_path, universe, agent
 
 
-def test_manifest_connection_hides_only_its_owners_connect_request(manifest_connection):
+def test_manifest_connection_makes_only_its_owners_connect_request_optional(manifest_connection):
     from tinyassets.api.pending_requests import list_requests
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
@@ -64,7 +64,9 @@ def test_manifest_connection_hides_only_its_owners_connect_request(manifest_conn
     assert _serving_llm_bound(base, "u-owner", "someone-else") is False
     assert _serving_llm_bound(base, "u-other", "owner-1") is False
     with identity_context(Identity(user_id="owner-1", username="owner", capabilities=["read"])):
-        assert list_requests(universe_id="u-owner")["pending"] == []
+        entry = list_requests(universe_id="u-owner")["pending"][0]
+        assert entry["title"] == "Connect another LLM"
+        assert entry["sticky"] is False
 
 
 @pytest.mark.parametrize("change", ["custody_lost", "paused", "stale_provider_ref"])
@@ -195,7 +197,7 @@ def test_subscription_custody_loss_restores_the_actual_request_rail(tmp_path, mo
     )
     identity = Identity(user_id="owner-1", username="owner-1", capabilities=["read"])
     with identity_context(identity):
-        assert list_requests(universe_id="u-owner")["pending"] == []
+        assert list_requests(universe_id="u-owner")["pending"][0]["sticky"] is False
         # Test-only vault contents; no real user credential or provider call.
         write_credential_vault(udir, [], owner_user_id="owner-1", universe_id="u-owner")
         rail = list_requests(universe_id="u-owner")
