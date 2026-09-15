@@ -73,6 +73,7 @@ NULL_DEVICE: Final[str] = "NUL" if os.name == "nt" else "/dev/null"
 #: dash and not in this set is an injected option wearing a path's clothes.
 FIXED_FLAGS: Final[frozenset[str]] = frozenset(
     {
+        "-I",
         "-m",
         "-r",
         "--isolated",
@@ -370,6 +371,7 @@ def pip_download_argv(
     return _admitted_argv(
         [
             _check_program(python, "python"),
+            "-I",
             "-m",
             "pip",
             "download",
@@ -399,6 +401,7 @@ def pip_offline_install_argv(
     return _admitted_argv(
         [
             _check_program(venv_python, "venv python"),
+            "-I",
             "-m",
             "pip",
             "install",

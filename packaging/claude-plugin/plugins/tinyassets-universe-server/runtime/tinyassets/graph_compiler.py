@@ -3261,7 +3261,7 @@ def _wrap_with_effects(
         delta = inner_fn(state)
         if not isinstance(delta, dict):
             return delta
-        from tinyassets.effectors import dispatch_node_effects
+        from tinyassets.effectors import EffectFailedError, dispatch_node_effects
         from tinyassets.node_sandbox import _cancel_requested
 
         if should_cancel is not None and _cancel_requested(should_cancel):
@@ -3271,11 +3271,21 @@ def _wrap_with_effects(
 
         _validate_delta_reducers(node_id, delta, append_fields, merge_fields)
         view = _delta_view(state, delta, append_fields, merge_fields)
-        evidence = dispatch_node_effects(
-            effect_chain, node, view, state_schema=schema, ancestors=ancestors,
-            node_key=chain_key or node_id,
-            should_cancel=should_cancel,
-        )
+        try:
+            evidence = dispatch_node_effects(
+                effect_chain, node, view, state_schema=schema, ancestors=ancestors,
+                node_key=chain_key or node_id,
+                should_cancel=should_cancel,
+            )
+        except EffectFailedError as exc:
+            # Workspace stages return typed failure evidence after stopping
+            # their children. Only the root-owned predicate, never that packet's
+            # claimed reason, may turn the graph outcome into cancellation.
+            if should_cancel is not None and _cancel_requested(should_cancel):
+                raise NodeCancelledError(
+                    "run cancelled during effects", node_id=chain_key or node_id,
+                ) from exc
+            raise
         if event_sink is not None:
             try:
                 event_sink(node_id=node_id, phase="effect", effects=evidence)

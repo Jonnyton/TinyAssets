@@ -98,6 +98,17 @@ jail, package installation or browser runtime.
    Cleanup follows the lease/outbox lifecycle and preserves the existing
    unknown-transfer maximum charge. No retry hides a failed or uncertain stage.
 
+September15 implementation clarification: each acquisition uses a fresh
+server-generated operation id. The existing ledger may return an already-
+reconciled smaller amount for a reused id; that is not authority to download
+again. Python builders add interpreter `-I` as well as pip `--isolated`, since
+pip's option alone does not prevent checkout module shadowing. Installation
+uses an exclusively created `.venv`; a checkout-provided environment is retained
+and the attempt fails, rather than executing or deleting it. Cancellation reaches
+both stages through the root-owned callback and is rechecked before publication;
+only that callback, not packet evidence, can classify graph failure as cancelled.
+These details are part of the pending exact-head execution review.
+
 ## Browser capability is a separate required part of the outcome
 
 Driver package, compatible browser binary and OS libraries are distinct. D3's

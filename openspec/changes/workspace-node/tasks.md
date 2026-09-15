@@ -11,7 +11,7 @@
 
 ## 2. Slice B — provisioning
 
-- [ ] 2.1 Manifest extraction through the held lease dirfd (beneath/no-symlink, bounded regular files, digests); Python requirement grammar (`name[extras]==version ; marker --hash=…` only) and npm lockfile validator (`https://registry.npmjs.org/` tarballs only). Reopened: parsers/staging exist but the runtime extraction/caller integration is not complete.
+- [x] 2.1 Manifest extraction through the held lease dirfd (beneath/no-symlink, bounded regular files, digests); Python requirement grammar (`name[extras]==version ; marker --hash=…` only) and npm lockfile validator (`https://registry.npmjs.org/` tarballs only). Runtime checkout now checks resolved connection consent before extracting all manifests together; refusal precedes any resolver network. Local integration and Linux extraction tests pass; release acceptance remains in 2.3/3.1.
 - [ ] 2.2 Resolver jail (no checkout, admitted manifests + empty cache, own network namespace, egress allowlist with per-address validation); `pip download --only-binary=:all: --require-hashes`; `npm ci --ignore-scripts` fetch; offline install in the workspace jail bound to the digests; `workspace_provision` consent; `workspace_provision_refused`
 - [ ] 2.3 Tests: URL/path/VCS/include/option lines refused before network; sdist-only package refused; git-URL npm dependency refused; resolver cannot reach loopback/private/neighbours; offline install runs with no network; live proof: provision the checked-in hash-locked fixture `tests/fixtures/workspace/requirements-locked.txt` and run `pytest -q tests/test_docview.py` in a workspace node
 

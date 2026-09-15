@@ -437,3 +437,42 @@ the two node_sandbox names). Windows python -m pytest -q:623passed,104skips,
 No edits during snapshot/test execution. No production caller, task closure,
 new review, push or deployment. Next is consent/reservation/stage composition;
 the npm data-preservation obstacle no longer requires rewriting original files.
+
+## September15 21:52UTC — checkout caller and composed installer
+
+`workspace_provision_execution.execute_provision` now composes both ecosystems
+in one acquisition phase with one broker budget and overall deadline, followed
+by broker death and offline installation. Private per-attempt scratch is beneath
+the held lease but outside its repo. The existing held-fd meter includes both.
+Verified writer death precedes private scratch removal; unknown death propagates
+and retains scratch for the existing lease lifecycle. No package output becomes
+public evidence. Isolated Python startup avoids checkout import shadows, and
+exclusive .venv creation refuses rather than deletes an existing environment.
+
+Checkout now calls the composer after checked credentialed-staging deletion and
+before capability publication. The resolved connection owns consent; a packet's
+full-access claim is ignored. All requested manifests are admitted before any
+network. A fresh operation id reserves the maximum before each actual attempt,
+even after an earlier attempt refunded its unused bytes. Stage failures prevent
+publication and owe the lease a wipe. Cancellation is checked before publication;
+graph classification trusts the root cancellation callback, not a packet reason.
+Task2.1 closes locally; tasks2.2/2.3 and live release acceptance remain open.
+
+Actual public-fixture proof, Linux container, command:
+`wsl -d Ubuntu -- docker run --rm --memory=2g --pids-limit=1024 --security-opt seccomp=unconfined -v /mnt/c/Users/Jonathan/.codex/worktrees/repair-resolver-pip-configuration/TinyAssets:/src:ro --workdir /src -e PYTHONDONTWRITEBYTECODE=1 tinyassets-linux-oracle:7693b1a8f805 python scripts/probes/workspace_provision_smoke.py`
+Exited0: composed=true, both_ecosystems=true, bytes_to_charge=1935349,
+original_manifests_preserved=true, root_script_ran=false, executed pytest9.1.1
+and picocolors1.1.1. Checkout pip.py/venv.py/sitecustomize.py import traps did not
+run. This is real composer/jail proof, not a real-user or complete browser proof.
+
+Final cohort (no source edits while snapshot/tests ran):
+`python -m pytest -q tests/test_workspace_provision_execution.py tests/test_workspace_effector.py tests/test_workspace_resolver.py tests/test_workspace_provision_process.py tests/test_workspace_provision_mount.py tests/test_workspace_manifest_reads.py tests/test_workspace_tree_usage.py tests/test_workspace_registry_process.py tests/test_effects_at_node_time.py tests/test_node_sandbox.py tests/test_node_sandbox_workspace.py`
+Windows:538passed,105skipped,16subtests,36.76s. Same file list through the existing
+WSL `scripts/linux_oracle.py -- -q -rs` command:641passed,2Windows-only skips,
+23subtests,42.60s. Earlier pre-boundary-addition cohort639passed/2skips. Ruff,
+git diff --check and plugin449files/import probe pass. Not a full-suite claim.
+
+No private workflow changed, no fourth review dispatched, no push or deployment.
+Exact-head cross-family execution review and shared sandbox repair3860 still
+gate rollout. Browser binaries/libraries, hosted preview, governed arbitrary
+artifact acquisition and the app's own project proof remain unfinished.

@@ -228,7 +228,7 @@ def test_the_download_argv_is_exactly_this(python_plan, tmp_path) -> None:
     cache = tmp_path / "cache"
     assert pip_download_argv(staged, cache, python="python3") == [
         "python3",
-        "-m", "pip", "download",
+        "-I", "-m", "pip", "download",
         "--isolated",
         "--disable-pip-version-check",
         "--no-input",
@@ -256,7 +256,7 @@ def test_the_offline_install_argv_is_exactly_this(python_plan, tmp_path) -> None
     venv = tmp_path / "venv" / "bin" / "python"
     assert pip_offline_install_argv(staged, cache, venv) == [
         str(venv),
-        "-m", "pip", "install",
+        "-I", "-m", "pip", "install",
         "--isolated",
         "--disable-pip-version-check",
         "--no-input",
@@ -290,7 +290,7 @@ def test_pip_really_accepts_builder_options(
         if command == "download"
         else pip_offline_install_argv(staged, tmp_path / "cache", tmp_path / "python")
     )
-    options, args = create_command(command, isolated=True).parse_args(argv[4:])
+    options, args = create_command(command, isolated=True).parse_args(argv[5:])
     assert args == []
     assert options.isolated_mode is True
     assert options.no_input is True

@@ -1663,11 +1663,7 @@ def test_a_barrier_that_cannot_run_refuses_instead_of_admitting(
 def test_a_provision_request_is_refused_without_pretending_it_ran(
     tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
 ) -> None:
-    """Nothing installs from the manifest yet; say that, not 'grant a consent'.
-
-    A hint naming a consent implies granting it would make provisioning work
-    (Codex round 2, #3).
-    """
+    """Consent refusal preserves checkout and never claims an installation."""
     _root, universe_dir = _setup(tmp_path)
     result = _run(
         tmp_path,
@@ -1678,9 +1674,9 @@ def test_a_provision_request_is_refused_without_pretending_it_ran(
     assert result.get("error_kind") is None, "the checkout itself still completes"
     assert result["provision"] == "workspace_provision_refused"
     assert result["provision_detail"] == (
-        "provisioning is not available in this release (admission only)"
+        "workspace_provision consent is required"
     )
-    assert "consent" not in result["provision_detail"]
+    assert result["provision_reason"] == "missing_consent"
     assert "provision_hint" not in result
 
 
@@ -2850,3 +2846,160 @@ def test_the_mount_is_resolvable_only_through_the_chain(
     assert result["lease_generation"] == 1
     rows = _outbox_rows(workspace_pool_db(universe_dir))
     assert all(row["lease_id"] != "forged-lease" for row in rows), rows
+
+
+def test_provision_consent_precedes_reads_and_packet_full_is_not_authority(
+    tmp_path, chain, fs_spy, no_real_git, monkeypatch,
+):
+    from tinyassets import workspace_resolver
+    _, universe = _setup(tmp_path)
+    def forbidden(*args, **kwargs):
+        pytest.fail("read manifests before consent")
+    monkeypatch.setattr(workspace_resolver, "read_provision_manifests", forbidden)
+    result = _run(tmp_path, _packet(provision={"node": True}, access_mode="full"),
+                  universe_dir=universe, chain=chain)
+    assert result["provision_reason"] == "missing_consent"
+    assert chain.workspace_mount_or_none("n1") is not None
+
+
+@pytest.mark.parametrize("requested", [True, [], {}, {"node": 1}, {"python": []},
+                                       {"node": True, "command": "anything"}])
+def test_provision_request_shape_is_refused_before_reading(
+    tmp_path, chain, fs_spy, no_real_git, monkeypatch, requested,
+):
+    from tinyassets import workspace_resolver
+    _, universe = _setup(tmp_path, consents=("checkout", "provision"))
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid provision shape reached manifest reader")
+    monkeypatch.setattr(workspace_resolver, "read_provision_manifests", forbidden)
+    result = _run(tmp_path, _packet(provision=requested), universe_dir=universe, chain=chain)
+    assert result["provision_reason"] == "invalid_request"
+    assert chain.workspace_mount_or_none("n1") is not None
+
+
+def test_bad_manifest_refuses_without_execution_or_private_detail(
+    tmp_path, chain, fs_spy, no_real_git, monkeypatch,
+):
+    from tinyassets import workspace_provision_execution, workspace_resolver
+    from tinyassets.workspace_provision import ProvisionRefused
+    _, universe = _setup(tmp_path, consents=("checkout", "provision"))
+    def refuse(*args, **kwargs):
+        raise ProvisionRefused("not_regular_file", "private-path-token", line_no=2)
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid manifests reached execution")
+    monkeypatch.setattr(workspace_resolver, "read_provision_manifests", refuse)
+    monkeypatch.setattr(workspace_provision_execution, "execute_provision", forbidden)
+    result = _run(tmp_path, _packet(provision={"node": True}), universe_dir=universe, chain=chain)
+    assert result["provision_line"] == 2
+    assert "private-path-token" not in str(result)
+    assert chain.workspace_mount_or_none("n1") is not None
+
+
+@pytest.mark.parametrize("failure", [None, "process_failed", "cancelled", "unknown_death"])
+def test_provision_execution_reserved_before_wire_and_published_only_on_success(
+    tmp_path, chain, fs_spy, no_real_git, monkeypatch, failure,
+):
+    import sqlite3
+
+    from tinyassets import node_sandbox, workspace_provision_execution, workspace_resolver
+    from tinyassets.workspace_provision import admit_requirements
+    _, universe = _setup(tmp_path, consents=("checkout", "provision"))
+    manifests = workspace_resolver.ProvisionManifests(admit_requirements(
+        "example==1.0 --hash=sha256:" + "a" * 64), None)
+    calls = []
+    def read(fd, **kwargs):
+        calls.append("read")
+        assert chain.workspace_mount_or_none("n1") is None
+        assert kwargs == {"python_path": "requirements.txt", "node": False}
+        return manifests
+    def execute(admitted, **kwargs):
+        calls.append("execute")
+        assert admitted is manifests
+        assert chain.workspace_mount_or_none("n1") is None
+        # Worker staging and its credentials must already be gone.
+        assert all(not Path(request["staging_dir"]).exists() for request in worker.requests)
+        assert kwargs["storage_bound"] == kwargs["max_transfer_bytes"]
+        assert kwargs["timeout_s"] == 20
+        with sqlite3.connect(wse._pool_db(universe)) as db:
+            amount, reserved = db.execute(
+                "SELECT amount, reserved FROM workspace_ledger WHERE operation_id LIKE ? "
+                "AND kind='bytes'", ("%:provision:%",)).fetchone()
+        assert (amount, reserved) == (kwargs["max_transfer_bytes"], 1)
+        if failure == "unknown_death":
+            raise node_sandbox.SandboxTerminationError("unknown lifecycle")
+        return workspace_provision_execution.ProvisionResult(failure, 123)
+    monkeypatch.setattr(workspace_resolver, "read_provision_manifests", read)
+    monkeypatch.setattr(workspace_provision_execution, "execute_provision", execute)
+    worker = FakeWorker()
+    result = _run(tmp_path, _packet(provision={"python": "requirements.txt"}),
+                  universe_dir=universe, chain=chain, worker=worker, timeout_seconds=20)
+    assert calls == ["read", "execute"]
+    if failure:
+        assert result["error_kind"] == (
+            "effector_crashed" if failure == "unknown_death" else "workspace_provision_failed")
+        assert chain.workspace_mount_or_none("n1") is None
+        assert _outbox_rows(wse._pool_db(universe))
+    else:
+        assert result["provision"] == "completed"
+        assert result["provision_bytes"] == 123
+        assert result["provision_digests"] == {"python": manifests.python.digest}
+        assert chain.workspace_mount_or_none("n1") is not None
+    with sqlite3.connect(wse._pool_db(universe)) as db:
+        amount, reserved = db.execute(
+            "SELECT amount, reserved FROM workspace_ledger WHERE operation_id LIKE ? "
+            "AND kind='bytes'", ("%:provision:%",)).fetchone()
+    assert reserved == (1 if failure == "unknown_death" else 0)
+    assert amount == (wse._DEFAULT_MAX_CHECKOUT_BYTES if failure == "unknown_death" else 123)
+
+
+def test_each_new_provision_attempt_reserves_again_after_prior_refund(tmp_path, monkeypatch):
+    import sqlite3
+    from types import SimpleNamespace
+
+    from tinyassets import workspace_provision_execution, workspace_resolver
+    from tinyassets.workspace_provision import admit_requirements
+    _, universe = _setup(tmp_path, consents=("checkout", "provision"))
+    manifests = workspace_resolver.ProvisionManifests(admit_requirements(
+        "example==1.0 --hash=sha256:" + "a" * 64), None)
+    monkeypatch.setattr(workspace_resolver, "read_provision_manifests", lambda *a, **kw: manifests)
+    def execute(*args, **kwargs):
+        with sqlite3.connect(wse._pool_db(universe)) as db:
+            amounts = db.execute(
+                "SELECT amount FROM workspace_ledger WHERE kind='bytes' AND reserved=1").fetchall()
+        assert amounts == [(1000,)]
+        return workspace_provision_execution.ProvisionResult(None, 123)
+    monkeypatch.setattr(workspace_provision_execution, "execute_provision", execute)
+    for _ in range(2):
+        result = wse._provision_checkout(
+            {"python": "requirements.txt"}, base_path=universe,
+            resource=SimpleNamespace(connection_id="conn-git"), host=HOST, repo=REPO,
+            lease=SimpleNamespace(reserved_bytes=1000), lease_fd=3, repo_fd=4,
+            run_id="same-run", node_id="same-node", universe_id=UNIVERSE,
+            timeout_seconds=10, should_cancel=None)
+        assert result["provision"] == "completed"
+    with sqlite3.connect(wse._pool_db(universe)) as db:
+        rows = db.execute(
+            "SELECT operation_id, amount FROM workspace_ledger WHERE kind='bytes'").fetchall()
+    assert len(rows) == 2
+    assert rows[0][0] != rows[1][0]
+    assert [row[1] for row in rows] == [123, 123]
+
+
+def test_cancellation_after_install_before_publication_still_owes_wipe(
+    tmp_path, chain, fs_spy, no_real_git, monkeypatch,
+):
+    _, universe = _setup(tmp_path)
+    stop = []
+    def provision(*args, **kwargs):
+        assert chain.workspace_mount_or_none("n1") is None
+        stop.append(True)
+        return {"provision": "completed"}
+    monkeypatch.setattr(wse, "_provision_checkout", provision)
+    result = run_workspace_effector(
+        node_id="n1", output_keys=["ws"], run_state={"ws": _packet(provision={"node": True})},
+        base_path=universe, run_id="run-1", chain=chain, execute=FakeWorker(),
+        should_cancel=lambda: bool(stop))
+    assert result["error_kind"] == "workspace_provision_failed"
+    assert result["provision_reason"] == "cancelled"
+    assert chain.workspace_mount_or_none("n1") is None
+    assert _outbox_rows(wse._pool_db(universe))

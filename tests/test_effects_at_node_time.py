@@ -161,6 +161,28 @@ def test_cancellation_after_model_returns_prevents_effect_dispatch(monkeypatch):
     assert chain.dispatches == 0
 
 
+@pytest.mark.parametrize("cancel_requested", [True, False])
+def test_failed_workspace_stage_is_cancelled_only_by_root_predicate(monkeypatch, cancel_requested):
+    from tinyassets.graph_compiler import NodeCancelledError
+    stop = []
+    def adapter(**kwargs):
+        stop.append(cancel_requested)
+        return {"error": "install stopped", "error_kind": "workspace_provision_failed",
+                "provision_reason": "cancelled"}
+    monkeypatch.setitem(effectors._EFFECTORS, EXTERNAL_WRITE_SINK_WORKSPACE, adapter)
+    node = _effect_node("checkout")
+    node.effects = [EXTERNAL_WRITE_SINK_WORKSPACE]
+    chain = EffectChain(run_id="cancel-during-install", base_path=None)
+    compiled = compile_branch(
+        _linear(node), provider_call=_provider_for({"checkout": json.dumps({"op": "checkout"})}),
+        effect_chain=chain, should_cancel=lambda: bool(stop and stop[0]))
+    expected = NodeCancelledError if cancel_requested else effectors.EffectFailedError
+    with pytest.raises(expected):
+        compiled.graph.compile(checkpointer=InMemorySaver()).invoke(
+            {}, config={"configurable": {"thread_id": "cancel-during-install"}})
+    assert chain.dispatches == 1
+
+
 def test_workspace_adapter_forwards_cancellation_without_serializing_it(monkeypatch):
     seen = []
     def cancelled():
