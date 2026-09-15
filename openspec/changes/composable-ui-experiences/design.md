@@ -1,3 +1,15 @@
+## Contract map
+
+Read [primitives.md](primitives.md) for concrete port responsibilities, bridge
+lifecycle, event identities, recovery semantics, accessibility and a worked
+cross-device trace. [research.md](research.md) records evidence and the next
+implementation review. The companion harness PR #3840 owns the shared source
+project contract and evidence ladder.
+
+These details refine the semantic responsibilities below. They are proposed
+contracts to map onto existing handlers and the governed component compiler,
+not a new tool catalog or a claim that native device adapters already exist.
+
 ## Context
 
 Repository inspection on 2026-09-14 used a governed Linux checkout of main,
@@ -31,11 +43,10 @@ voice-first earbuds, and combinations nobody has named yet. These remain
 user-authored designs, never platform enums.
 
 The first proof is one editable experience with a desktop instance board and a
-compact phone view. A user replaces the board with an office layout while keeping
-the same semantic instance bindings and actions. An event can be represented in
-the office, announced through an available authorized speech adapter, or routed
-to the user's phone notification destination. The same event identity connects
-these representations.
+compact phone list, preserving the same semantic instance bindings and actions.
+An office layout, authorized speech adapter and actual phone notification route
+are subsequent capability proofs using the same event identity. Their absence
+must remain visible and must not block the first ordinary rendered composition.
 
 A production 3D editor, every native device adapter, marketplace ranking, and
 automatic personalization are outside the first implementation. The format must
@@ -44,8 +55,11 @@ preserve unsupported components so this initial renderer does not set a ceiling.
 ## Composition model
 
 The following are semantic responsibilities, not a proposed list of MCP tools.
-Before implementing, map each responsibility to existing primitives and document
-only the irreducible gaps.
+primitives.md specifies their data flow and lifecycle; research.md maps them to
+existing native component, graph, run, conversation and desktop anchors.
+Before implementing, settle the concrete bridge handler for each responsibility
+and document only the irreducible gaps. Preserve governed descriptor requirements;
+public component metadata cannot weaken adapter authority or confinement.
 
 | Responsibility | Replaceable composition | Enforced boundary |
 |---|---|---|
@@ -154,3 +168,13 @@ Before implementation, settle:
    availability; no claim that phone push exists until proved.
 5. Cross-family shape review, with AGREE / DISAGREE_EVIDENCE /
    DISAGREE_CONCERN findings and code citations where applicable.
+
+## Review correction boundary
+
+[review.md](review.md) maps the posted ADAPT findings to the updated contract.
+The added primitive sections distinguish conversation/run/pending-request stores,
+source-specific freshness, existing guarded request answers, ordinary authorized
+learning, and actual confinement/device evidence. [Shared acceptance S-1](setup-acceptance.md)
+requires UI-only, harness-only, whole-setup and mixed adoption over retained user
+data and customizations. A declarative first-party layout remains a limited first
+slice; it does not prove arbitrary executable views or native delivery.

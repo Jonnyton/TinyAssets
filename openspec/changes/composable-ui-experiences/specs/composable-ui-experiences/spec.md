@@ -79,3 +79,182 @@ a broken experience and restore a compatible prior revision.
 - **THEN** only fixture behavior runs
 - **AND** after explicit activation the user can disable or roll back the view
 - **AND** rollback does not claim to undo completed external effects
+
+### Requirement: Experience primitives have explicit governed interfaces
+An experience SHALL connect versioned projection, view, input, action, routing
+and device contracts through validated ports. Public source SHALL remain
+independent from private bindings and canonical run/conversation state.
+
+#### Scenario: Change presentation without changing the harness
+- **GIVEN** a run shown by a board and a compact phone view
+- **WHEN** the board is replaced by a compatible office component
+- **THEN** both views continue observing the same authorized run and conversation
+- **AND** changing the view creates no new runtime instance or writer
+
+#### Scenario: A disposed renderer sends a delayed action
+- **WHEN** a bridge request arrives from an old renderer lifecycle generation
+- **THEN** the trusted bridge rejects it
+- **AND** it does not act through the current installation's bindings
+
+### Requirement: Event recovery cannot replay user authority
+Projection updates SHALL carry documented revision/cursor semantics and
+distinguish event identity, destination delivery and user action identity.
+
+#### Scenario: Reconnect beyond retained history
+- **WHEN** a saved cursor precedes the retained stream
+- **THEN** the view obtains a fresh authorized snapshot and reconciles local state
+- **AND** older deltas do not overwrite the snapshot
+- **AND** reconnect does not silently dispatch saved external actions
+
+#### Scenario: Speech is still being transcribed
+- **WHEN** partial speech matches an action phrase
+- **THEN** the experience waits for committed user input
+- **AND** playback completion or notification display is not treated as approval
+
+### Requirement: Custom experiences remain accessible and recoverable
+Required semantic controls SHALL have operable non-spatial alternatives.
+The trusted host SHALL retain an accessible way to disable a broken experience.
+
+#### Scenario: Spatial rendering or custom input fails
+- **WHEN** a user cannot operate a spatial view or a component stops responding
+- **THEN** keyboard and accessible alternatives preserve required semantic controls where supported
+- **AND** the trusted recovery surface can disable the experience
+
+### Requirement: Personalization remains a proposed user-controlled revision
+An agent-generated personalization SHALL produce an inspectable diff and
+inert preview before activation. Learned private preferences SHALL NOT be
+automatically published with a shared definition.
+
+#### Scenario: A suggested improvement requests new capabilities
+- **WHEN** an agent proposes a new route or component that needs additional access
+- **THEN** the user can inspect the revision and its changed requirements
+- **AND** activation cannot confer the missing authority
+
+### Requirement: Editors and upgrades preserve user-authored customization
+Supported editors SHALL preserve source outside their understood edit scope or
+refuse an edit without loss. Upstream upgrades SHALL retain private modifications
+and stage conflicts separately from the active experience.
+
+#### Scenario: An editor encounters an unknown field
+- **WHEN** the user edits a supported field and saves
+- **THEN** unknown source is preserved or the edit is refused without modifying it
+
+#### Scenario: Upstream deletes a customized component
+- **WHEN** a candidate upgrade removes a component with private modifications
+- **THEN** the user receives a conflict with the modifications retained
+- **AND** the old active experience remains available for use, pinning or forking
+
+### Requirement: Projection recovery has a defined consistency boundary
+A projection adapter SHALL define snapshot/cursor consistency, gap recovery and
+authority revalidation. Device timestamps SHALL NOT imply global event ordering.
+
+#### Scenario: An event races snapshot and subscription
+- **WHEN** state changes between snapshot retrieval and subscription establishment
+- **THEN** reconciliation includes the change or a later snapshot covering it
+- **AND** the view does not silently omit it or reissue its effects
+
+#### Scenario: An expired cursor is followed by an old delta
+- **WHEN** a new authorized snapshot replaces an expired delta chain
+- **THEN** an older delta cannot regress state or trigger an action
+
+### Requirement: Programmable routing preserves action and lifecycle meaning
+Notification grouping, playback interruption and renderer recovery SHALL remain
+distinct from canonical requests, approvals, runs and task completion.
+
+#### Scenario: Notifications group distinct pending requests
+- **WHEN** a route groups two notifications with different request targets
+- **THEN** each target and action identity remains distinct
+- **AND** grouping or viewing answers neither request
+
+#### Scenario: Voice playback is interrupted
+- **WHEN** the user interrupts a spoken reply or earbuds disconnect
+- **THEN** playback policy applies without implicitly cancelling the run
+- **AND** private audio does not move to a speaker without configured authorization
+
+#### Scenario: A spatial renderer cannot be operated by dragging
+- **WHEN** the user uses the non-drag pointer or keyboard alternative
+- **THEN** it reaches the same semantic action and governed target
+- **AND** trusted recovery remains reachable if the renderer fails
+
+### Requirement: Prepared interactions retain target meaning
+An experience SHALL bind prepared intent to its source/binding revision, selected
+target and arguments. A material change SHALL invalidate the preparation before
+dispatch. Accepted work SHALL be observed through its canonical reference.
+
+#### Scenario: Selection changes before submission
+- **WHEN** a prepared action targets one instance and selection changes to another
+- **THEN** the prior preparation cannot silently act on the new target
+- **AND** the new preparation exposes materially changed meaning
+
+#### Scenario: A view remounts after action acceptance
+- **WHEN** a renderer is replaced while accepted work remains in progress
+- **THEN** the new authorized view observes the canonical work reference where supported
+- **AND** missing local pending state does not cause a new run
+- **AND** unsupported recovery is shown as uncertainty rather than retried blindly
+
+### Requirement: Renderer communication and handoff convey no ambient authority
+A renderer adapter SHALL define a confined bootstrap and message-validation
+contract tied to its host-created session and lifecycle. Handoff links SHALL use
+non-authorizing references resolved under current authentication.
+
+#### Scenario: A different opaque-origin frame sends a bridge message
+- **WHEN** the message has a valid payload and the origin string is null
+- **THEN** the host verifies the expected source or bound port and session
+- **AND** an unrelated frame receives neither private data nor action authority
+
+### Requirement: Action status is accessible and evidence-backed
+Required controls SHALL expose pending, refusal, uncertainty and completion through
+accessible presentation consistent with canonical evidence. Routine status changes
+SHALL NOT require focus movement merely to perceive them.
+
+#### Scenario: Delivery is uncertain
+- **WHEN** an accepted action has no conclusive external delivery result
+- **THEN** the experience presents uncertainty and a supported inspection path
+- **AND** it does not announce success or offer an unconditional safe retry
+
+### Requirement: Composite projections preserve independent source consistency
+Conversation, run and pending-request projections SHALL retain their separate
+native references, cursor/revision semantics and read freshness. They SHALL NOT
+claim a global snapshot or use transport recovery as an application replay guarantee.
+
+#### Scenario: A run projection lags a pending request
+- **WHEN** independent store reads reflect different moments
+- **THEN** the experience exposes freshness and refreshes the relevant source
+- **AND** it does not infer approval, completion or safe effect retry from the mismatch
+
+### Requirement: Pending input is canonical and ordinary learning remains authorized
+Approval/input-needed presentation SHALL use existing pending requests and guarded
+answer operations. New source activation, changed authority and ordinary authorized
+memory updates SHALL remain separate operations.
+
+#### Scenario: A renderer is replaced with a request unanswered
+- **WHEN** the new view refreshes canonical pending-request state
+- **THEN** the same request remains available without duplicating or answering it
+- **AND** continuation revalidates target, arguments, relevant revisions and authority
+
+#### Scenario: A memory policy records an authorized preference
+- **WHEN** the write is within existing policy and store authorization
+- **THEN** it needs no new source activation or per-write approval
+- **AND** it remains private during design sharing
+
+### Requirement: Executable renderer and native device claims require distinct proof
+A first-party declarative layout or Android/Capacitor shell SHALL NOT establish
+arbitrary user-code confinement, phone delivery, earbud behavior or device handoff.
+Imported executable views SHALL remain inert until confined away from the
+authenticated app origin with independently usable recovery.
+
+#### Scenario: A custom renderer never yields
+- **WHEN** executable view code loops indefinitely
+- **THEN** the trusted recovery path can still disable it
+- **AND** an adapter unable to prove this remains unsupported for arbitrary code
+
+### Requirement: Whole-setup adoption preserves private data and customization
+The user SHALL be able to adopt UI alone, harness alone, an entire shared setup,
+or mixed shared/custom components while retaining their own canonical data,
+private bindings and customizations. Incompatible changes SHALL stage conflicts.
+
+#### Scenario: Adopt a shared setup over an existing personal setup
+- **WHEN** the user performs shared acceptance trace S-1
+- **THEN** conversation, memory, artifacts and in-flight run identity remain theirs
+- **AND** publisher data/credentials/authority are absent
+- **AND** conflicts preserve the prior working setup and custom source without reset
