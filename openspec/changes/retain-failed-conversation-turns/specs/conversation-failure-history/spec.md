@@ -37,6 +37,11 @@ The platform SHALL expose retained failure notices through existing authorized
 history, lossless retrieval and agent-memory readers without treating them as
 owner instructions, consent or successful model replies.
 
+#### Scenario: Shared and automation context readers
+- **WHEN** an authorized shared-self or owner automation reads conversation context
+- **THEN** platform notices retain their speaker label and untrusted status
+- **AND** conversation rows are scoped to the persisted owner principal, not an arbitrary session
+
 #### Scenario: Two principals access conversation history
 - **WHEN** each owner reads conversation state
 - **THEN** each sees only the conversation rows authorized for their own principal and universe
@@ -51,14 +56,23 @@ The platform SHALL distinguish saved terminal failure, unsaved failure and
 unknown transport outcome, and SHALL never automatically replay a failed turn.
 
 #### Scenario: Failure write cannot complete
-- **WHEN** a failure-pair write or required metadata migration fails
+- **WHEN** a failure-pair write fails
 - **THEN** no partial pair is committed and the owner receives an unsaved-history indication
 - **AND** the original failure remains usable with explicit recovery
+
+#### Scenario: Optional metadata column unavailable
+- **WHEN** a writable legacy store cannot add the optional failure metadata column
+- **THEN** the atomic pair can retain fixed safe notice text labelled by speaker platform
+- **AND** no structured metadata is falsely reported as persisted
 
 #### Scenario: Refresh after saved failure
 - **WHEN** the owner refreshes after a saved terminal failure
 - **THEN** the original message and a platform-labelled notice render without duplicate owner speech
 - **AND** retry requires an explicit user action and warns that prior side effects are not ruled out
+
+#### Scenario: Original request is not fully loaded
+- **WHEN** the adjacent original request is missing or truncated in the history peek
+- **THEN** the app does not resend guessed or partial text and requires the full original first
 
 #### Scenario: Existing retention or deletion applies
 - **WHEN** existing conversation retention or authorized universe/account deletion runs
