@@ -150,6 +150,10 @@ Claude enumeration and final release work remain open; task1.3 stays open.
 
 ## 2. Owner policy and execution
 
+The existing2.1/2.2 authority scope includes the September15
+`model-preserving-reconnect.md` supplement; its four red-first reproductions
+exist, runtime implementation and independent shape approval remain pending.
+
 - [ ] 2.1 Add versioned universe-local policy and current-choice input through authenticated app ingress; test generation conflicts, isolation and legacy-pin preservation.
 
   September11 release blocker: real bind -> enable -> foreground run tests now

@@ -8,6 +8,9 @@ the served-router tests use) — no mocks of the authority layer.
 
 from __future__ import annotations
 
+import base64
+from types import SimpleNamespace
+
 import pytest
 
 from tinyassets.onboarding import serving as sv
@@ -41,6 +44,79 @@ def _serving_binding(tmp_path, uid="u-owner", owner="owner-1"):
     from tinyassets.provider_serving_binding import resolve_serving_agent_binding
 
     return resolve_serving_agent_binding(tmp_path, universe_id=uid, owner_user_id=owner)
+
+
+@pytest.mark.parametrize("service", ["codex", "claude"])
+@pytest.mark.parametrize("rotate", [False, True])
+def test_reconnect_preserves_accepted_models_and_root(tmp_path, monkeypatch, service, rotate):
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.custom_agents import get_binding
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: SimpleNamespace(
+        _providers={name: SimpleNamespace(is_available=lambda: True)
+                    for name in ("codex", "claude-code")},
+    ))
+    universe = _seed(tmp_path)
+    set_founder_home(
+        tmp_path, founder_sub="owner-1", universe_id="u-owner", platform_generated=True,
+    )
+    credentials = [
+        {"credential_type": "llm_subscription", "service": "codex", "auth_json_b64": "e30="},
+        {"credential_type": "llm_subscription", "service": "claude",
+         "oauth_token": "sk-ant-fixture"},
+    ]
+    write_credential_vault(universe, credentials, owner_user_id="owner-1", universe_id="u-owner")
+    first = sv.ensure_founder_serving(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+        universe_id="u-owner", service="codex",
+    )
+    assert first["status"] == "serving", first
+    manifest = bind_serving_provider(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+        universe_id="u-owner", agent_binding_id=first["agent_binding_id"],
+        expected_revision=first["revision"], provider="codex",
+        model_access={
+            "codex": ModelAccess("discovered"),
+            "claude-code": ModelAccess("explicit", ("", "sonnet")),
+        },
+    )
+    bound = manifest["agent_binding"]
+    set_serving(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+        universe_id="u-owner", agent_binding_id=bound["agent_binding_id"],
+        expected_revision=bound["revision"], enabled=True,
+    )
+    before = load_provider_assignment(tmp_path, universe_id="u-owner")
+    if rotate:
+        # Synthetic owner-supplied credential only; no provider or network call.
+        if service == "claude":
+            credentials[1]["oauth_token"] = "sk-ant-replacement-fixture"
+        else:
+            credentials[0]["auth_json_b64"] = base64.b64encode(
+                b'{"tokens":{"access_token":"replacement-fixture"}}'
+            ).decode()
+        write_credential_vault(
+            universe, credentials, owner_user_id="owner-1", universe_id="u-owner",
+        )
+    result = sv.ensure_founder_serving(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+        universe_id="u-owner", service=service,
+    )
+    assert result["status"] == "serving", result
+    after = load_provider_assignment(tmp_path, universe_id="u-owner")
+    assert after.provider == before.provider
+    assert after.manifest_digest
+    assert {m.provider: m.access for m in after.candidates} == {
+        m.provider: m.access for m in before.candidates
+    }
+    assert result["agent_binding_id"] == first["agent_binding_id"]
+    current = get_binding(tmp_path, universe_id="u-owner", binding_id=first["agent_binding_id"])
+    assert current["status"] == "serving"
 
 
 def test_fresh_universe_gets_definition_binding_and_serving(tmp_path):
