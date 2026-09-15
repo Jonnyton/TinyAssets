@@ -75,7 +75,7 @@ plugin mirror445files and import probe pass. Official config reference:
 https://docs.npmjs.com/cli/v11/using-npm/config/ (September15 read).
 
 Still absent: namespace listener, broker process supervision and its inherited
-descriptor lifecycle, typed mounts, checkout consent and byte reservations,
+descriptor lifecycle, checkout consent and byte reservations,
 actual jailed pip/npm acquisitions and offline installs. No runtime caller is
 wired; do not claim this core completes provisioning or open a rollout PR yet.
 
@@ -86,3 +86,36 @@ pre-wire byte reservation/reconciliation, separate offline install and truthful
 publication evidence. Task2.3 needs real jailed pip/npm plus the user's rendered
 cloud proof. Browser/system runtime and governed additional artifacts remain in
 the overall goal. Parser/reader success is NOT provisioning success.
+
+## Typed provisioning mounts — September 15, 2026
+
+Built locally in node_sandbox.ProvisionMount and BwrapLauncher.for_provision.
+The coordinator must supply held descriptors for distinct sibling scratch
+directories outside the checkout; this object is not consent or public input.
+Acquisition mounts canonical manifests read-only plus a writable private cache,
+with no checkout. Offline installation requires a held checkout directory and
+read-only manifest/cache binds. Every directory is fstat-validated before launch;
+aliases, sockets/files/symlinks, closed/uninherited descriptors and extra offline
+descriptors are refused. Fixed destinations only, no arbitrary bind paths and no
+host-network flag. A provisioning launcher cannot be reused/rebound between stages.
+The existing ordinary code/workspace launcher behavior remains unchanged.
+
+09:27UTC Windows Python3.14: focused pytest17pass1POSIXskip13subtests; RuffPASS.
+Actual WSL Ubuntu Python3.12.3: python3 -m unittest -q
+tests.test_workspace_provision_mount =>18testsPASS0.056s/no skips, including real
+directory descriptors and duplicate-inode refusal. These are filesystem/argv
+proofs, NOT actual mount permissions, a bubblewrap launch or provisioning proof.
+Initial broader sandbox cohort236pass18skip18.57s; final broader rerun at19:28UTC
+after checkout-fd validation: pytest -q tests/test_node_sandbox.py
+tests/test_node_sandbox_workspace.py tests/test_workspace_provision_mount.py
+=>237pass18skip13subtests19.07s. Plugin mirror445files/import probe and Ruff pass.
+
+Work was interrupted after09:27UTC; reinspection19:26UTC found precisely these
+local edits intact. The old Docker version probe handle was gone, without a
+captured terminal result; do not claim engine recovery or oracle success.
+19:29UTC bounded docker info returned1: dockerDesktopLinuxEngine pipe absent;
+no Docker Desktop/backend process present. Normal existing-installation start
+requested, with no reset/deletion. Real-jail oracle is still pending.
+No push/deploy. Exact-head cross-family review and working real Linux jail oracle
+remain required before rollout. Tasks2.1-2.3 stay open: listener/supervision,
+consent/reservation/caller, actual pip/npm and rendered cloud use are unfinished.
