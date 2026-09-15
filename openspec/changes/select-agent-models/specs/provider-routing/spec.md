@@ -1,5 +1,21 @@
 ## ADDED Requirements
 
+### Requirement: Reconnecting an accepted source preserves model setup
+An owner-driven reconnect of a source in a ready accepted model manifest SHALL preserve the existing root, accepted membership, model scopes, spending ceilings, model preferences and the selected agent content last authored by that owner. Credential replacement SHALL NOT imply consent to replace that manifest with legacy single-provider setup, adopt collaborator edits or add a new source.
+
+#### Scenario: Refreshing a non-root accepted source
+- **WHEN** the owner reconnects a source already accepted alongside other models
+- **THEN** the original root and accepted model setup remain intact while current custody is revalidated
+- **AND** no other user's credentials, approvals or connections are substituted
+
+#### Scenario: Unknown or concurrently changed model setup
+- **WHEN** the nominated source is unaccepted, the model assignment changed, or the current owner binding cannot be identified safely
+- **THEN** reconnect refuses or requests existing owner confirmation without discarding the model setup, broadening access, or resetting private agent content
+
+#### Scenario: Credential stored but serving cannot resume
+- **WHEN** the credential deposit succeeds but binding or enablement fails
+- **THEN** the app reports that partial result without claiming successful sign-in or switching to another source
+
 ### Requirement: Automatic interactive-agent selection respects owner priorities
 Automatic interactive-agent routing SHALL prefer eligible owner-connected subscription or local sources over OpenRouter, then order suitable OpenRouter models using fresh ranking evidence; explicit owner choices and accepted fallback order SHALL override automatic ranking.
 

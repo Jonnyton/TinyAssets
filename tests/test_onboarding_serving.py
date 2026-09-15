@@ -8,6 +8,9 @@ the served-router tests use) — no mocks of the authority layer.
 
 from __future__ import annotations
 
+import base64
+from types import SimpleNamespace
+
 import pytest
 
 from tinyassets.onboarding import serving as sv
@@ -41,6 +44,247 @@ def _serving_binding(tmp_path, uid="u-owner", owner="owner-1"):
     from tinyassets.provider_serving_binding import resolve_serving_agent_binding
 
     return resolve_serving_agent_binding(tmp_path, universe_id=uid, owner_user_id=owner)
+
+
+def _manifest_setup(tmp_path, monkeypatch, *, custom=False, http=False):
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: SimpleNamespace(
+        _providers={name: SimpleNamespace(is_available=lambda: True)
+                    for name in ("codex", "claude-code")},
+    ))
+    universe = _seed(tmp_path)
+    set_founder_home(
+        tmp_path, founder_sub="owner-1", universe_id="u-owner", platform_generated=True,
+    )
+    credentials = [
+        {"credential_type": "llm_subscription", "service": "codex", "auth_json_b64": "e30="},
+        {"credential_type": "llm_subscription", "service": "claude",
+         "oauth_token": "sk-ant-fixture"},
+    ]
+    write_credential_vault(universe, credentials, owner_user_id="owner-1", universe_id="u-owner")
+    if custom:
+        from tinyassets.custom_agents import create_binding, publish_definition
+
+        definition = publish_definition(
+            tmp_path, author_id="owner-1",
+            payload={**sv._PLATFORM_DEFINITION, "name": "Owner's own design"},
+        )
+        first = create_binding(
+            tmp_path, universe_id="u-owner", created_by="owner-1",
+            definition_id=definition["agent_definition_id"],
+            payload={**sv._BINDING_PAYLOAD, "persona": "Keep my exact content"},
+        )
+    else:
+        first = sv.ensure_founder_serving(
+            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+            universe_id="u-owner", service="codex",
+        )
+        assert first["status"] == "serving", first
+    access = {
+        "codex": ModelAccess("discovered"),
+        "claude-code": ModelAccess("explicit", ("", "sonnet"), (("prompt_tokens", 17),)),
+    }
+    if http:
+        from tinyassets.providers.definition import register_definition
+        from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+
+        ledger = ConnectionLedger(
+            tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-1",
+        )
+        connection_id, grant_id = "http_" + "c" * 32, "http_grant_" + "d" * 32
+        ledger.create_connection(
+            connection_id=connection_id, owner_user_id="owner-1", connection_class="http",
+            connection_type="http", auth_scheme="bearer", scopes=("http",), provider="http",
+            destination="compute:fixture", credential_ref="vault://http/compute:fixture",
+            allowed_endpoints=[{"host": "api.example.com", "methods": ["POST"],
+                                "path_template": "/v1/chat/completions"}],
+        )
+        ledger.grant_connection(
+            grant_id=grant_id, connection_id=connection_id, owner_user_id="owner-1",
+            universe_id="u-owner", unprompted_action_cap=ActionCap("http_requests", 10, "requests"),
+        )
+        definition = register_definition(
+            universe_id="u-owner", owner_user_id="owner-1", access_method="api_key_http",
+            protocol="openai_chat", model="opaque-fixture-model", ref=grant_id,
+        )
+        access[definition.id] = ModelAccess("discovered")
+    manifest = bind_serving_provider(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+        universe_id="u-owner", agent_binding_id=first["agent_binding_id"],
+        expected_revision=first["revision"], provider="codex",
+        model_access=access,
+    )
+    bound = manifest["agent_binding"]
+    set_serving(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+        universe_id="u-owner", agent_binding_id=bound["agent_binding_id"],
+        expected_revision=bound["revision"], enabled=True,
+    )
+    before = load_provider_assignment(tmp_path, universe_id="u-owner")
+    return universe, credentials, first, before
+
+
+@pytest.mark.parametrize("service", ["codex", "claude"])
+@pytest.mark.parametrize("rotate", [False, True])
+def test_reconnect_preserves_accepted_models_and_root(tmp_path, monkeypatch, service, rotate):
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.custom_agents import get_binding
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    universe, credentials, first, before = _manifest_setup(tmp_path, monkeypatch)
+    if rotate:
+        # Synthetic owner-supplied credential only; no provider or network call.
+        if service == "claude":
+            credentials[1]["oauth_token"] = "sk-ant-replacement-fixture"
+        else:
+            credentials[0]["auth_json_b64"] = base64.b64encode(
+                b'{"tokens":{"access_token":"replacement-fixture"}}'
+            ).decode()
+        write_credential_vault(
+            universe, credentials, owner_user_id="owner-1", universe_id="u-owner",
+        )
+    result = sv.ensure_founder_serving(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+        universe_id="u-owner", service=service,
+    )
+    assert result["status"] == "serving", result
+    after = load_provider_assignment(tmp_path, universe_id="u-owner")
+    assert after.provider == before.provider
+    assert after.manifest_digest
+    assert {m.provider: m.access for m in after.candidates} == {
+        m.provider: m.access for m in before.candidates
+    }
+    assert result["agent_binding_id"] == first["agent_binding_id"]
+    current = get_binding(tmp_path, universe_id="u-owner", binding_id=first["agent_binding_id"])
+    assert current["status"] == "serving"
+    assert after.generation == before.generation + int(rotate)
+    assert result["replayed"] is (not rotate)
+
+
+@pytest.mark.parametrize("failure", [
+    "unrelated_credential_removed", "collaborator_edited", "ambiguous",
+    "home_changed", "admin_revoked", "unaccepted", "failed", "pending", "host_opt_out",
+    "last_writer_changed",
+])
+def test_manifest_reconnect_holds_without_mutation(tmp_path, monkeypatch, failure):
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.custom_agents import create_binding, get_binding, list_bindings, update_binding
+    from tinyassets.daemon_server import revoke_universe_access, set_founder_home
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    universe, credentials, first, assignment = _manifest_setup(tmp_path, monkeypatch)
+    current = get_binding(tmp_path, universe_id="u-owner", binding_id=first["agent_binding_id"])
+    service = "codex"
+    if failure == "unrelated_credential_removed":
+        write_credential_vault(
+            universe, [], owner_user_id="owner-1", universe_id="u-owner",
+        )
+        write_credential_vault(
+            universe, credentials[:1], owner_user_id="owner-1", universe_id="u-owner",
+        )
+    elif failure == "collaborator_edited":
+        update_binding(
+            tmp_path, universe_id="u-owner", binding_id=current["agent_binding_id"],
+            expected_revision=current["revision"], updated_by="collaborator",
+            payload={"schema_version": 1, "role": "writer", "name": "Changed by collaborator"},
+        )
+    elif failure == "ambiguous":
+        other = create_binding(
+            tmp_path, universe_id="u-owner", created_by="owner-1",
+            definition_id=current["agent_definition_id"], payload=sv._BINDING_PAYLOAD,
+        )
+        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+            conn.execute("UPDATE agent_bindings SET status='serving' WHERE agent_binding_id=?",
+                         (other["agent_binding_id"],))
+            conn.commit()
+    elif failure == "home_changed":
+        set_founder_home(
+            tmp_path, founder_sub="owner-1", universe_id="another-home", platform_generated=True,
+        )
+    elif failure == "admin_revoked":
+        revoke_universe_access(tmp_path, universe_id="u-owner", actor_id="owner-1")
+    elif failure == "last_writer_changed":
+        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+            conn.execute("UPDATE agent_bindings SET updated_by='collaborator' "
+                         "WHERE agent_binding_id=?", (current["agent_binding_id"],))
+            conn.commit()
+    elif failure == "unaccepted":
+        service = "unaccepted-connection"
+    elif failure in {"pending", "failed"}:
+        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+            conn.execute("UPDATE provider_assignments SET state=? WHERE universe_id=?",
+                         (failure, "u-owner"))
+            conn.commit()
+    elif failure == "host_opt_out":
+        monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING")
+    before = load_provider_assignment(tmp_path, universe_id="u-owner")
+    bindings_before = list_bindings(tmp_path, universe_id="u-owner", limit=100)
+    result = sv.ensure_founder_serving(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+        universe_id="u-owner", service=service,
+    )
+    assert result["status"] == "held", result
+    assert load_provider_assignment(tmp_path, universe_id="u-owner") == before
+    assert list_bindings(tmp_path, universe_id="u-owner", limit=100) == bindings_before
+
+
+@pytest.mark.parametrize("http", [False, True])
+@pytest.mark.parametrize("configured", [False, True])
+def test_reconnect_preserves_custom_agent_preferences_and_full_membership(
+    tmp_path, monkeypatch, http, configured,
+):
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.custom_agents import create_binding, get_binding
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.providers.model_preferences import ModelPreferences
+    from tinyassets.storage.model_preferences import ModelPreferenceStore
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    universe, credentials, first, before = _manifest_setup(
+        tmp_path, monkeypatch, custom=True, http=http,
+    )
+    binding = get_binding(tmp_path, universe_id="u-owner", binding_id=first["agent_binding_id"])
+    store = ModelPreferenceStore(tmp_path)
+    saved = store.save("owner-1", "u-owner", expected_generation=0,
+                       policy=ModelPreferences("automatic", None, ()))
+    # A full inventory page of newer inactive agents cannot hide the selected one.
+    for index in range(101):
+        create_binding(
+            tmp_path, universe_id="u-owner", created_by="owner-1",
+            definition_id=binding["agent_definition_id"],
+            payload={**sv._BINDING_PAYLOAD, "name": f"Other agent {index}"},
+        )
+    if configured:
+        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+            conn.execute("UPDATE agent_bindings SET status='configured' WHERE agent_binding_id=?",
+                         (binding["agent_binding_id"],))
+            conn.commit()
+    credentials[1]["oauth_token"] = "sk-ant-renewal-fixture"
+    write_credential_vault(universe, credentials, owner_user_id="owner-1", universe_id="u-owner")
+    result = sv.ensure_founder_serving(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+        universe_id="u-owner", service="claude",
+    )
+    assert result["status"] == "serving", result
+    after = load_provider_assignment(tmp_path, universe_id="u-owner")
+    assert after.provider == before.provider
+    assert after.generation == before.generation + 1
+    assert {m.provider: m.access for m in after.candidates} == {
+        m.provider: m.access for m in before.candidates
+    }
+    current = get_binding(tmp_path, universe_id="u-owner", binding_id=result["agent_binding_id"])
+    assert current["agent_binding_id"] == binding["agent_binding_id"]
+    assert current["configuration"] == binding["configuration"]
+    assert current["agent_definition_id"] == binding["agent_definition_id"]
+    assert store.get("owner-1", "u-owner") == saved
 
 
 def test_fresh_universe_gets_definition_binding_and_serving(tmp_path):

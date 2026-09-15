@@ -986,6 +986,32 @@ def _custody_reference_digest(
     })
 
 
+def _owned_subscription_record(
+    conn: sqlite3.Connection, *, universe_dir: Path, owner: str, uid: str, service: str,
+) -> dict[str, Any]:
+    """Validate a current deposit, including rotation, without adopting custody."""
+    record = _usable_subscription_record(universe_dir, service)
+    depositor = conn.execute(
+        "SELECT owner_user_id FROM llm_credential_deposit_owners "
+        "WHERE universe_id = ? AND service = ?", (uid, service),
+    ).fetchone()
+    if depositor is None or str(depositor[0]) != owner:
+        raise PermissionError("caller is not the server-recorded credential owner")
+    return record
+
+
+def validate_llm_subscription_deposit(
+    conn: sqlite3.Connection, *, universe_dir: Path, owner: str, uid: str, service: str,
+) -> None:
+    """Read-only renewal preflight; never returns credentials or execution authority."""
+    if not conn.in_transaction:
+        raise ValueError("subscription deposit preflight requires an active transaction")
+    record = _owned_subscription_record(
+        conn, universe_dir=universe_dir, owner=owner, uid=uid, service=service,
+    )
+    _subscription_record_digest(universe_dir, service, record)
+
+
 def adopt_llm_subscription_custody(
     conn: sqlite3.Connection,
     *,
@@ -1004,18 +1030,11 @@ def adopt_llm_subscription_custody(
     if not owner or not uid or canonical_service not in {"claude", "codex"}:
         raise ValueError("LLM custody root is invalid")
     universe = Path(universe_dir)
-    record = _usable_subscription_record(universe, canonical_service)
-    record_digest = _subscription_record_digest(universe, canonical_service, record)
     _ensure_llm_deposit_owner_schema(conn)
-    depositor = conn.execute(
-        """
-        SELECT owner_user_id FROM llm_credential_deposit_owners
-         WHERE universe_id = ? AND service = ?
-        """,
-        (uid, canonical_service),
-    ).fetchone()
-    if depositor is None or str(depositor[0]) != owner:
-        raise PermissionError("caller is not the server-recorded credential owner")
+    record = _owned_subscription_record(
+        conn, universe_dir=universe, owner=owner, uid=uid, service=canonical_service,
+    )
+    record_digest = _subscription_record_digest(universe, canonical_service, record)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS llm_credential_custody (
