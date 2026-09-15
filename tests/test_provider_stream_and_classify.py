@@ -260,6 +260,59 @@ def test_assistant_error_does_not_override_a_later_successful_terminal():
     assert _run_stream(proc, _FAST).text == "recovered"
 
 
+def test_native_error_text_is_not_a_successful_reply():
+    event = _assistant_text("Invalid authentication credentials")
+    event["error"] = "authentication_failed"
+    proc = FakeStreamProcess([_line(event), _line(_result("", is_error=False))])
+    with pytest.raises(ProviderError, match="no assistant text"):
+        _run_stream(proc, _FAST)
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_native_auth_error_text_then_terminal_keeps_clue(returncode):
+    event = _assistant_text("Invalid authentication credentials")
+    event["error"] = "authentication_failed"
+    proc = FakeStreamProcess([
+        _line(INIT), _line(event), _line(_result("", is_error=True)),
+    ], returncode=returncode)
+    with pytest.raises(ProviderError) as raised:
+        _run_stream(proc, _FAST)
+    assert type(raised.value) is ProviderError
+    assert raised.value.attempt_telemetry["phase"] == "init"
+    assert raised.value.attempt_telemetry["last_assistant_error"] == "authentication_failed"
+    assert raised.value.native_evidence.protocol_complete is False
+
+
+@pytest.mark.parametrize("progress", [
+    _assistant_text("recovered progress"), _tool_use("example"), _tool_result(),
+])
+def test_native_auth_clue_is_superseded_by_later_useful_progress(progress):
+    event = _assistant_text("Sign-in problem")
+    event["error"] = "authentication_failed"
+    proc = FakeStreamProcess([
+        _line(event), _line(progress), _line(_result("", is_error=True)),
+    ])
+    with pytest.raises(ProviderError) as raised:
+        _run_stream(proc, _FAST)
+    assert raised.value.attempt_telemetry["last_assistant_error"] is None
+    assert "last_assistant_error=not_reported" in str(raised.value)
+
+
+def test_native_auth_clue_after_prior_tool_progress_does_not_prove_safe_retry():
+    event = _assistant_text("Sign-in problem")
+    event["error"] = "authentication_failed"
+    proc = FakeStreamProcess([
+        _line(_tool_use("example")), _line(_tool_result()), _line(event),
+        _line({"type": "system", "subtype": "status"}),
+        _line({"type": "future_opaque_event"}), _line(_result("", is_error=True)),
+    ])
+    with pytest.raises(ProviderError) as raised:
+        _run_stream(proc, _FAST)
+    assert raised.value.attempt_telemetry["last_assistant_error"] == "authentication_failed"
+    assert raised.value.attempt_telemetry["side_effect_state"] == "committed"
+    assert raised.value.native_evidence.protocol_complete is False
+
+
 # ---------------------------------------------------------------------------
 # 5.1 Behavior parity: recorded stream assembles the SAME final text
 # ---------------------------------------------------------------------------

@@ -757,9 +757,9 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     if "expired" in msg or "unauthor" in msg or "forbidden" in msg or "401" in msg:
         return (
             "auth_invalid",
-            "The universe's model credential is no longer valid. Reconnecting "
-            "the provider for this universe will fix it; this is not a usage "
-            "or billing limit.",
+            "The universe's model provider reported a sign-in problem. Check "
+            "the connection and reconnect the provider for this universe if "
+            "needed; this is not evidence of a usage or billing limit.",
         )
     if "provider" in msg or "api key" in msg or "api_key" in msg:
         return (
