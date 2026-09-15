@@ -5,6 +5,27 @@ the founder's September14 PDT direction in PLAN Providers. This is the remaining
 unpowered model-selection slice, not a new workflow or competing delivery lane.
 Live second-user success is not claimed. Local implementation progress follows.
 
+## 2026-09-15 05:08UTC release integration
+
+Draft PR3853 opened at c9c8bb277db5b098e3d1a2fd02967723535dcd86 after final
+Fable5.1 round3 APPROVE (491s). Integrating deployed reconnect main89a335578a15
+required resolving only the design.md introductory supplements; both are kept.
+The browser recovery catch now distinguishes no eligible free model, unusable
+authorization, changed setup and incomplete saved setup, with no automatic
+retry or raw upstream error display. The key-management link uses the existing
+readable legal-link style; loopback Chrome visual verification passed05:07UTC.
+No credential, account consent, model grant or private workflow was changed.
+
+Windows command: prior18-suite browser checkpoint command plus
+tests/test_onboarding_serving.py =>606passed70.11s, zero skips. Core browser/
+bootstrap/route subset47passed10.61s. Ruff and450-file plugin mirror/import pass.
+These use synthetic network/DOM and real local authority stores, not live OAuth.
+The integration changes the reviewed head: keep PR3853 draft until fresh exact-
+head approval and required CI. Three Fable rounds consumed; founder approval
+for one additional review requested, not yet received or dispatched. No deploy.
+Original live app refreshed05:03UTC: no newer reply than21:50PDT, confirming
+reconnect preservation; six smoke PASS on89a335578a15 do not prove this bootstrap.
+
 ## 2026-09-15 04:44UTC browser integration checkpoint
 
 The hosted web browser now routes on setup, handles the distinct model callback

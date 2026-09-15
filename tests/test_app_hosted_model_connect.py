@@ -139,6 +139,43 @@ def test_uncertain_exchange_is_not_retried_and_exposes_explicit_resume():
     assert not result["stored"] and not result["navigations"]
 
 
+@pytest.mark.parametrize("code,expected", [
+    ("no_eligible_free_agent_model", "no eligible free model"),
+    ("model_authorization_required", "Choose Continue with OpenRouter"),
+    ("model_connection_expired", "Choose Continue with OpenRouter"),
+    ("unknown_model_connection", "Choose Continue with OpenRouter"),
+    ("model_setup_changed", "existing setup needs review"),
+    ("current_home_changed", "existing setup needs review"),
+    ("model_confirmation_requires_review", "existing setup needs review"),
+    ("model_connection_incomplete", "saved connection is not ready yet"),
+    ("raw upstream error must not be shown", "saved connection is not ready yet"),
+])
+def test_recovery_message_matches_safe_error_without_automatic_retry(code, expected):
+    result = run_browser("exchangeResult={error:" + json.dumps(code) + "};await boot();"
+                         "await HostedModelConnect.complete();")
+    assert expected in result["status"]
+    assert len(result["requests"]) == 1
+    assert not result["answers"] and not result["navigations"]
+    assert result["busy"] is False
+    assert "raw upstream error" not in result["status"]
+
+
+def test_missing_authorization_does_not_offer_disabled_restart_for_existing_setup():
+    result = run_browser("me={setup:'recovery'};"
+                         "exchangeResult={error:'model_authorization_required'};await boot();"
+                         "await HostedModelConnect.complete();")
+    assert "Existing setup was preserved" in result["status"]
+    assert "Choose Continue with OpenRouter" not in result["status"]
+    assert result["setup"] == "recovery"
+    assert not result["answers"] and not result["navigations"]
+
+
+def test_key_management_link_uses_readable_existing_link_style():
+    html, _ = render_app_html()
+    assert ('class="legal-link" data-external href="https://openrouter.ai/settings/keys"'
+            in html)
+
+
 def test_resume_fetches_pending_request_without_any_authorization_or_approval():
     result = run_browser(confirmation() + "me={setup:'recovery'};await boot();"
                          "await HostedModelConnect.complete();")

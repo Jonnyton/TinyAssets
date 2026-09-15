@@ -370,7 +370,7 @@
             <button id="btn-hosted-accept" class="btn btn--primary">Approve free models</button>
             <button id="btn-hosted-decline" class="btn btn--ghost">Not now</button>
           </div>
-          <p><a data-external href="https://openrouter.ai/settings/keys" rel="noreferrer noopener"
+          <p><a class="legal-link" data-external href="https://openrouter.ai/settings/keys" rel="noreferrer noopener"
             target="_blank">Manage your OpenRouter keys</a></p>
           <p class="muted">You can skip for now or connect another source below.</p>
         </div>
@@ -3024,10 +3024,29 @@
         $("hosted-model-body").textContent=req.body;
         $("hosted-model-grant").textContent=req.grant_sentence||"";
         this.status("Review your pending free-model request below. Approval checks the connection again before powering your universe.");
-      }catch(_e){
+      }catch(error){
         if(epoch!==this.epoch) return;
         await enterSignedIn();showConnect(true);
-        this.status("Setup did not finish. A key may already exist in OpenRouter. Try Resume saved connection; if authorization must restart, manage unused keys using the link below. Existing model choices have not been replaced.");
+        if(epoch!==this.epoch) return;
+        const code=error&&error.message;
+        if(code==="no_eligible_free_agent_model"){
+          this.status("OpenRouter returned no eligible free model that can run your agent. Check your OpenRouter account's model availability and privacy settings, then try Resume saved connection, or connect another source below. No paid-model access was approved.");
+        }else if(["model_authorization_required","model_connection_expired","unknown_model_connection",
+                  "invalid_pkce_verifier","invalid_authorization_code","model_authorization_not_completed"].includes(code)){
+          this.status(this.setup==="empty"
+            ?"Authorization is missing or no longer usable. Choose Continue with OpenRouter to start again. If a key was created during an earlier attempt, manage unused keys using the link below."
+            :"Authorization could not be resumed. Existing setup was preserved; connect or renew a source below. You can manage unused OpenRouter keys using the link below.");
+        }else if(code==="sign_in_required"){
+          this.status("Your app sign-in expired. Sign in again, then resume your saved connection. No model access was approved.");
+        }else if(["model_setup_changed","current_home_changed","model_connection_requires_recovery",
+                  "model_candidate_requires_review","model_discovery_requires_review",
+                  "model_confirmation_requires_review","model_connection_preset_changed"].includes(code)){
+          this.status("Your existing setup needs review before this connection can continue. It has not been replaced. Check your model settings or connect or renew a source below. If OpenRouter created an unused key, manage it using the link below.");
+        }else{
+          this.status(callback
+            ?"Setup did not finish. A key may already exist in OpenRouter. Try Resume saved connection; if authorization must restart, manage unused keys using the link below. Existing model choices have not been replaced."
+            :"Your saved connection is not ready yet. Try Resume saved connection again later, or connect another source below. Existing model choices have not been replaced.");
+        }
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
     },
     async answer(accepted){

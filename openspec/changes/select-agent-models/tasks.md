@@ -1,5 +1,13 @@
 ## 1. Reviewed foundation
 
+2026-09-15 05:08UTC: full hosted bootstrap is built in draft PR3853. Reconnect
+main integration preserved both design supplements; typed browser recovery and
+key-link contrast corrected.606focused Windows tests pass70.11s/no skips,
+450-file mirror/import and Ruff pass. c9c8bb27 had Fable round3 APPROVE491s;
+the changed integration head needs a fresh receipt. One additional review was
+requested after the three-round cap, not yet authorized/dispatched. Draft/CI,
+not deployed; separate free-user signup/consent/real answer proof remains open.
+
 2026-09-15 04:23UTC: backend bootstrap composition and authenticated endpoints
 now locally implemented,421focused Windows passes32.43s/no skips,450-file mirror
 pass. Frontend remains unwired and must handle model callback before WorkOS;
@@ -169,6 +177,18 @@ Claude enumeration and final release work remain open; task1.3 stays open.
   alone is not agent authority/readiness; native/all-universe choices are still open.
 
 ## 2. Owner policy and execution
+
+The existing2.1/2.2 authority scope includes the September15
+`model-preserving-reconnect.md` supplement; its four red-first reproductions
+now pass after Fable5.1 shape round1 ADAPT and its recorded disposition. The
+preserving runtime is implemented locally: owner-selected custom content,
+root/membership/model scopes/cost ceilings/preferences survive renewal; unsafe
+selection and unrelated unavailable authority hold without publication. Windows
+September15 six-suite candidate:123passed/1skip,16.77s; same-file base comparison:
+105passed/1skip,11.01s. The skip is POSIX file modes on Windows. Ruff and443-file
+plugin mirror/import pass. Local Linux oracle attempted but Docker engine is
+unavailable; no Linux pass claimed. Exact implementation round2 review, CI,
+deployment and credential-renewal rendered proof remain pending.
 
 - [ ] 2.1 Add versioned universe-local policy and current-choice input through authenticated app ingress; test generation conflicts, isolation and legacy-pin preservation.
 

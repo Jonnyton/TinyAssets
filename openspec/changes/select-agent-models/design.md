@@ -6,6 +6,10 @@ free-only owner consent and generic additional-source request. Fable5.1 round2
 ADAPT and lead corrections are recorded before code. This is the existing
 unpowered slice, not permission for platform-created provider accounts or spending.
 
+September15 reconnect supplement: `model-preserving-reconnect.md` specifies the
+accepted-manifest preservation boundary before runtime edits. Four synthetic
+tests reproduce legacy reconnect dropping the manifest/changing its root.
+
 September14 next-slice supplement: `served-model-setup.md` records the Fable5.1
 reviewed model-setup facade and owner-consent boundary before implementation.
 The native-picker release candidate remains unchanged while its CI completes.

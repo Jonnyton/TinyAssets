@@ -16,6 +16,9 @@ capability; a successful OpenRouter workflow call does not establish it.
   free onboarding remains free unless the user explicitly permits spending.
 - Persist universe-local default and ordered accepted fallback choices separately
   from connection identity, with per-turn choices and actual response receipts.
+- Preserve accepted model membership, ceilings, root and saved preferences during
+  an owner-driven credential reconnect; never reset private agent content as a
+  side effect of refreshing a source already in that setup.
 - Distinguish model capacity from shared account limits; retry only safely and
   preserve completed tool results. A model switch grants no additional tools.
 - Add a clickable model/provider status control in typed chat, distinct from the
