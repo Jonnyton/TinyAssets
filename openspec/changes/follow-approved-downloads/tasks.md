@@ -11,6 +11,12 @@
 
 ## 3. Delivery and acceptance
 
+September15 live follow-up: task3.2 remains OPEN. The app cannot create its
+redirect permission request for a legacy blank connection incarnation. Matching
+exact/full failures reproduced; pre-code repair design is
+[legacy-incarnation-repair.md](legacy-incarnation-repair.md). Existing passing
+transport evidence below does not close this live approval blocker.
+
 - [x] 3.1 Run focused Windows and actual Linux tests plus independent exact-head implementation review; address concrete findings and pass CI without weakening gates.
 - [ ] 3.2 Deploy, verify protected SHA/canary evidence, and obtain rendered app proof of owner-approved redirected download capability through ordinary conversation; keep both-client compatibility and owner approval boundaries.
 - [ ] 3.3 Sync only shipped requirements, archive this delivery and update the broader goal without declaring unrelated channel migration complete.

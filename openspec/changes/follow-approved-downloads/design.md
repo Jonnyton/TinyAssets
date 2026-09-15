@@ -1,5 +1,9 @@
 # Approved download redirects: pre-build proposal
 
+September15 follow-up: [legacy connection identity repair](legacy-incarnation-repair.md)
+records a newly reproduced request-creation blocker and its pre-code migration
+design. The original transport contract below is unchanged.
+
 September 11, 2026. This is a focused addition to D3, not a new channel or MCP
 handle. No implementation or live permission change is claimed. The existing
 app agent cannot read an approved CI job log because the general HTTP driver
