@@ -19,3 +19,12 @@ approved the MVP with these non-blocking observations, not demonstrated outages:
 
 No credential renewal, saved default change, workflow edit or unsafe replay is
 authorized by these findings. Canonical review: ../reviews/2026-09-15-automatic-source-recovery.md.
+
+Post-deploy watch, September15 23:03UTC: release cee95ccbde4c passed protected
+deployment/public-canary checks. An ordinary new Automatic message completed
+through Codex after the prior turn's sign-in failure, without settings changes or
+replay. Narrow live acceptance is recorded in
+../../openspec/changes/select-agent-models/automatic-source-health-live.md.
+No subsequent owner-initiated clean-use evidence is visible yet. Watch returning
+user history for recovery/repeated failures; do not equate this advisory routing
+repair with restored Claude authentication or durable multi-worker health.
