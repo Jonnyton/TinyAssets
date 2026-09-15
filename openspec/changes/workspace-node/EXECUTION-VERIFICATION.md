@@ -260,3 +260,59 @@ failure. Ruff passed; generated plugin447files and import probe passed.
 Tasks2.1-2.3 remain open. Next is acquisition/offline process coordination and
 connection-sourced consent, lease/byte reservation and publication integration.
 No production caller, push, rollout or new independent review in this checkpoint.
+
+## Acquisition/offline jail supervisor — September 15, 2026 21:03 UTC
+
+Added workspace_provision_process.run_provision_stage. It accepts only the
+typed bubblewrap provisioning launcher, requires a started broker for acquisition
+and refuses a broker for offline installation. Trusted stage code applies the
+existing workspace rlimit helper before running. Parent reuses bounded drains,
+the process-tree RSS reader and verified whole-jail termination. Combined jail
+plus broker RSS, cumulative output, deadline, cancellation and a required trusted
+storage measurement are checked. Measurement failures refuse rather than disable
+the guard. Every acquisition result closes/reaps the broker; stage failure keeps
+the maximum transfer charge, including a failure found after output drains finish.
+RegistryBrokerProcess.finish now accepts a tighter caller deadline so finalizing
+a broker cannot wait for its longer independent timeout. Unconfirmed jail or
+drain death propagates SandboxTerminationError, not a publishable normal result.
+
+This is still an internal component, not a public command executor or permission
+grant. Storage/cancellation callbacks must be bounded server-owned operations;
+the caller must supply held-handle measurements, consent, ledger reservation and
+lease ownership. The manual smoke's path-based fixture measurement is explicitly
+not that production callback. Returned stdout/stderr are bounded internal data,
+not public evidence and not safe to emit verbatim from user package logs.
+
+Real tests prove a detached setsid child actually starts (host /proc marker
+observed), then is absent after cancellation. Additional coverage: isolated
+environment and descriptors, offline network exclusion, actual rlimit values,
+failure to apply limits stops code, output floods on both streams, timeout,
+storage/RSS bounds and measurement refusal, launch failure, broker revocation,
+conservative charge and broker finalization under the stage deadline.
+
+The manual pip/npm smoke now uses the supervisor for BOTH phases. Same Docker
+command as above with --ecosystem node exits0:8871bytes,1connection,offline
+picocolors1.1.1. --ecosystem python exits0:1926478bytes,2connections,offline
+pytest9.1.1. TLS remains verified. No production data, credentials or workflows.
+
+Final nine-file cohort adds tests/test_workspace_provision_process.py to the
+eight paths in the preceding checkpoint. Same Windows pytest command:
+617passed,80POSIXskips,58subtests,24.90s. Same WSL Linux oracle command:
+697passed,63subtests,zero skips,27.06s. Ruff passed; plugin448files/import probe
+passed. No source/mirror edits during the Linux snapshot or test execution.
+
+Next integration details reverified at this checkpoint: checkout's insertion
+point is after checked staging deletion and before reconcile/publish/register.
+Connection access_mode must come from connection_access_mode(resource), never
+the packet. workspace_pool.reserve_operation_bytes exists, but its idempotent
+operation id returns the existing (possibly downward-reconciled) amount: a new
+download attempt must not reuse an old receipt as a fresh maximum reservation.
+Resolve that against the caller's existing intent/attempt lifecycle. No bounded
+held-dirfd tree-size helper was found in workspace modules; one is needed for
+the required storage callback, including failure/entry/time bounds. Ordinary
+effect checkout currently has no cancellation callback; connect the existing
+run cancellation lifecycle rather than silently supplying False.
+
+Tasks2.1-2.3 remain open. No rollout, independent review, production caller or
+claim that browser dependencies/preview now work. Shared repair3860 still gates
+landing, and the requested review-model/extra-round decisions remain unanswered.

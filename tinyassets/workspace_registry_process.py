@@ -11,6 +11,7 @@ to this process. Its only network protocol is workspace_registry's CONNECT.
 from __future__ import annotations
 
 import json
+import math
 import os
 import select
 import socket
@@ -185,17 +186,22 @@ class RegistryBrokerProcess:
             self.control.close()
             self.control = None
 
-    def finish(self) -> BrokerReceipt:
+    def finish(self, *, deadline: float | None = None) -> BrokerReceipt:
         """Reap and verify the terminal receipt; unfinished attempts charge the maximum."""
         if self._result is not None:
             return self._result
         if self.process is None:
             raise ValueError("registry process was not started")
+        if deadline is not None and (isinstance(deadline, bool)
+                                     or not isinstance(deadline, (int, float))
+                                     or not math.isfinite(deadline)):
+            raise ValueError("registry finish deadline must be finite")
+        end = self._deadline if deadline is None else min(self._deadline, deadline)
         self.release_control()
         failure = "cancelled" if self._closed else None
         try:
             while failure is None and self.process.poll() is None:
-                remaining = self._deadline - time.monotonic()
+                remaining = end - time.monotonic()
                 if self._breaches:
                     failure = "invalid_receipt"
                 elif remaining <= 0:

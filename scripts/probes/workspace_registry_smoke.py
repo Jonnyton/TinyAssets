@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -23,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 from tinyassets import node_sandbox as sandbox  # noqa: E402
 from tinyassets import workspace_registry_proxy as proxy  # noqa: E402
 from tinyassets import workspace_resolver as resolver  # noqa: E402
+from tinyassets.workspace_provision_process import run_provision_stage  # noqa: E402
 from tinyassets.workspace_registry_process import RegistryBrokerProcess  # noqa: E402
 
 
@@ -39,6 +39,18 @@ def main():
         manifests, cache, checkout = (root / name for name in ("manifests", "cache", "checkout"))
         for directory in (manifests, cache, checkout):
             directory.mkdir()
+        def storage_usage():
+            # Manual fixture measurement only. Production must use its bounded
+            # held-handle lease/cache measurement, not this path-based probe.
+            total = 0
+            for _, _, names, directory_fd in os.fwalk(root, follow_symlinks=False):
+                for name in names:
+                    try:
+                        total += os.stat(name, dir_fd=directory_fd,
+                                         follow_symlinks=False).st_size
+                    except FileNotFoundError:
+                        pass  # npm renames transient files while we sample.
+            return total
         fixtures = ROOT / "tests/fixtures/workspace"
         if ecosystem == "python":
             (checkout / "requirements.txt").write_bytes(
@@ -112,26 +124,19 @@ finally:
                 sandbox.ProvisionMount(handles[0], handles[1], "acquire"))
             broker = RegistryBrokerProcess(
                 max_bytes=32*1024*1024, max_connections=32, max_active=8, timeout_s=45)
-            process = None
             try:
                 broker.start()
-                process = subprocess.Popen(
-                    launcher.build_argv(
-                        proxy_source + "\n" + acquire_tail, [json.dumps(acquisition)]),
-                    pass_fds=launcher.pass_fds, stdin=broker.control, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, close_fds=True, env=launcher.env("/tmp"), text=True)
-                broker.release_control()
-                output, errors = process.communicate(timeout=40)
-                receipt = broker.finish()
-                if process.returncode:
-                    raise RuntimeError(str(receipt) + "\n" + errors[-5000:])
-                assert json.loads(output) == {"acquired": True}
+                result = run_provision_stage(
+                    launcher, proxy_source + "\n" + acquire_tail, [json.dumps(acquisition)],
+                    timeout_s=40, storage_bound=256*1024*1024, storage_usage=storage_usage,
+                    cancelled=lambda: False, broker=broker)
+                receipt = result.broker
+                if result.failure:
+                    raise RuntimeError(result.failure + "\n" + result.stderr[-5000:].decode())
+                assert json.loads(result.stdout) == {"acquired": True}
                 assert receipt.failure is None, receipt.failure
             finally:
                 broker.close()
-                if process is not None and process.poll() is None:
-                    process.kill()
-                    process.communicate(timeout=5)
             # All acquisition processes and relay workers are gone. A new jail
             # sees a read-only cache and checkout, with no broker/socket stdin.
             install = sandbox.BwrapLauncher().for_workspace(sandbox.WorkspaceMount(
@@ -181,12 +186,12 @@ for command in commands:
         raise RuntimeError('offline command failed: '+result.stderr[-1000:])
 print(json.dumps({'offline':True, 'executed':result.stdout.strip()}))
 '''
-            result = subprocess.run(
-                install.build_argv(offline_source, [json.dumps(configuration)]),
-                pass_fds=install.pass_fds, stdin=subprocess.DEVNULL, close_fds=True,
-                env=install.env("/tmp"), capture_output=True, text=True, timeout=70)
-            if result.returncode:
-                raise RuntimeError(result.stderr[-1500:])
+            result = run_provision_stage(
+                install, offline_source, [json.dumps(configuration)], timeout_s=70,
+                storage_bound=256*1024*1024, storage_usage=storage_usage,
+                cancelled=lambda: False)
+            if result.failure:
+                raise RuntimeError(result.failure + "\n" + result.stderr[-1500:].decode())
             print(json.dumps({
                 "namespace_acquisition": True, "broker_bytes": receipt.bytes_observed,
                 "broker_connections": receipt.connections,
