@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Reconnecting an accepted source preserves model setup
-An owner-driven reconnect of a source in a ready accepted model manifest SHALL preserve the existing root, accepted membership, model scopes, spending ceilings, model preferences and owner-selected agent content. Credential replacement SHALL NOT imply consent to replace that manifest with legacy single-provider setup or add a new source.
+An owner-driven reconnect of a source in a ready accepted model manifest SHALL preserve the existing root, accepted membership, model scopes, spending ceilings, model preferences and the selected agent content last authored by that owner. Credential replacement SHALL NOT imply consent to replace that manifest with legacy single-provider setup, adopt collaborator edits or add a new source.
 
 #### Scenario: Refreshing a non-root accepted source
 - **WHEN** the owner reconnects a source already accepted alongside other models

@@ -1102,6 +1102,26 @@ def serving_binding_candidates(
         return [_binding_from_row(row) for row in rows]
 
 
+def reconnect_binding_candidates_in_transaction(
+    conn: sqlite3.Connection, *, universe_id: str, owner: str, provider_ref: str,
+) -> list[dict[str, Any]]:
+    """Select serving first, or unique configured recovery, in one read snapshot."""
+    rows = conn.execute(
+        "SELECT * FROM agent_bindings WHERE universe_id = ? AND created_by = ? "
+        "AND status = 'serving' ORDER BY agent_binding_id LIMIT 2",
+        (universe_id, owner),
+    ).fetchall()
+    if not rows:
+        rows = conn.execute(
+            "SELECT * FROM agent_bindings WHERE universe_id = ? AND created_by = ? "
+            "AND status = 'configured' "
+            "AND json_extract(configuration_json, '$.provider_ref') = ? "
+            "ORDER BY agent_binding_id LIMIT 2",
+            (universe_id, owner, provider_ref),
+        ).fetchall()
+    return [_binding_from_row(row) for row in rows]
+
+
 def list_bindings(
     base_path: str | Path,
     *,

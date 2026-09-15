@@ -152,7 +152,15 @@ Claude enumeration and final release work remain open; task1.3 stays open.
 
 The existing2.1/2.2 authority scope includes the September15
 `model-preserving-reconnect.md` supplement; its four red-first reproductions
-exist, runtime implementation and independent shape approval remain pending.
+now pass after Fable5.1 shape round1 ADAPT and its recorded disposition. The
+preserving runtime is implemented locally: owner-selected custom content,
+root/membership/model scopes/cost ceilings/preferences survive renewal; unsafe
+selection and unrelated unavailable authority hold without publication. Windows
+September15 six-suite candidate:123passed/1skip,16.77s; same-file base comparison:
+105passed/1skip,11.01s. The skip is POSIX file modes on Windows. Ruff and443-file
+plugin mirror/import pass. Local Linux oracle attempted but Docker engine is
+unavailable; no Linux pass claimed. Exact implementation round2 review, CI,
+deployment and credential-renewal rendered proof remain pending.
 
 - [ ] 2.1 Add versioned universe-local policy and current-choice input through authenticated app ingress; test generation conflicts, isolation and legacy-pin preservation.
 

@@ -217,6 +217,127 @@ def ensure_founder_serving(
         )
 
 
+def _reconnect_manifest(
+    base: Path, *, universe_dir: str | Path, owner: str, uid: str, provider: str,
+    expected_digest: str,
+) -> dict[str, Any]:
+    """Renew an accepted source without interpreting renewal as new model consent."""
+    from tinyassets.credential_vault import validate_llm_subscription_deposit
+    from tinyassets.custom_agents import reconnect_binding_candidates_in_transaction
+    from tinyassets.provider_assignment import (
+        load_provider_assignment,
+        load_provider_assignment_in_transaction,
+        provider_assignment_admission,
+    )
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import (
+        _PROVIDER_SERVICE,
+        _canonical_universe,
+        _current_bound_member_authority,
+        _resolve_serving_source,
+        _source_custody,
+        bind_serving_provider,
+        set_serving,
+    )
+    from tinyassets.storage.current_home import check_current_home
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    universe = _canonical_universe(base, universe_dir, uid)
+    store = SQLiteProviderWorkAuthorityStore(base)
+    with provider_assignment_admission().shared(universe):
+        with store.connection() as conn:
+            conn.execute("BEGIN")
+            try:
+                check_current_home(conn, owner, uid)
+                assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
+                if (assignment is None or assignment.assignment_digest != expected_digest
+                        or assignment.owner_user_id != owner or assignment.state != "ready"
+                        or not assignment.manifest_digest):
+                    raise PermissionError(
+                        "Current model setup is not ready or changed; use model-access "
+                        "confirmation to recover it. Existing choices were not replaced."
+                    )
+                source = _resolve_serving_source(
+                    base, uid, owner, provider.removeprefix("api_key_http:"), ModelAccess(),
+                )
+                if source.provider not in {m.provider for m in assignment.candidates}:
+                    raise PermissionError(
+                        "This source is not in your accepted model setup; confirm model "
+                        "access before adding it. Existing choices were not replaced."
+                    )
+                matches = reconnect_binding_candidates_in_transaction(
+                    conn, universe_id=uid, owner=owner, provider_ref=assignment.binding_id,
+                )
+                if len(matches) != 1:
+                    raise PermissionError("Reconnect requires one unambiguous owner agent.")
+                binding = matches[0]
+                if (binding["updated_by"] != owner
+                        or binding["configuration"].get("provider_ref") != assignment.binding_id):
+                    raise PermissionError(
+                        "The selected agent was changed; confirm its content before reconnecting."
+                    )
+                # Do not publish pending and destroy a usable independent member
+                # merely because another member is currently unavailable.
+                for member in assignment.candidates:
+                    member_source = _resolve_serving_source(
+                        base, uid, owner, member.provider.removeprefix("api_key_http:"),
+                        member.access,
+                    )
+                    if member.provider != source.provider:
+                        _current_bound_member_authority(
+                            conn, store=store, universe_dir=universe, base_path=base,
+                            owner_user_id=owner, universe_id=uid, assignment=assignment,
+                            member=member,
+                        )
+                    else:
+                        # Renewal may replace custody, never a revoked work grant.
+                        if not store.validate_in_transaction(
+                            conn, binding_id=member.binding_id,
+                            binding_generation=member.binding_generation,
+                            binding_digest=member.binding_digest, owner_user_id=owner,
+                            universe_id=uid, provider=member.provider,
+                            operation="converse", role="writer",
+                        ):
+                            raise PermissionError("Accepted provider binding is no longer valid.")
+                        if member_source.open_grant is None:
+                            validate_llm_subscription_deposit(
+                                conn, universe_dir=universe, owner=owner, uid=uid,
+                                service=_PROVIDER_SERVICE[member.provider],
+                            )
+                        else:
+                            _source_custody(
+                                conn, member_source, base=base, universe=universe,
+                                owner=owner, uid=uid, adopt=False,
+                            )
+                model_access = {
+                    m.provider.removeprefix("api_key_http:"): m.access
+                    for m in assignment.candidates
+                }
+            finally:
+                conn.rollback()
+    bound = bind_serving_provider(
+        base_path=base, universe_dir=universe, owner_user_id=owner, universe_id=uid,
+        agent_binding_id=binding["agent_binding_id"], expected_revision=binding["revision"],
+        provider=assignment.provider.removeprefix("api_key_http:"), model_access=model_access,
+        expected_assignment_digest=expected_digest, require_current_home=True,
+    )
+    final = bound["agent_binding"]
+    if final["status"] != "serving":
+        published = load_provider_assignment(base, universe_id=uid)
+        enabled = set_serving(
+            base_path=base, universe_dir=universe, owner_user_id=owner, universe_id=uid,
+            agent_binding_id=final["agent_binding_id"], expected_revision=final["revision"],
+            enabled=True, expected_assignment_digest=published.assignment_digest,
+            require_current_home=True,
+        )
+        final = enabled["agent_binding"]
+    return {
+        "status": "serving", "provider": assignment.provider,
+        "agent_binding_id": final["agent_binding_id"], "revision": int(final["revision"]),
+        "replayed": bool(bound.get("replayed")),
+    }
+
+
 def _ensure_founder_serving_locked(
     base: Path, *, universe_dir: str | Path, owner: str, uid: str, provider: str,
 ) -> dict[str, Any]:
@@ -229,6 +350,14 @@ def _ensure_founder_serving_locked(
 
     try:
         _require_current_admin(base, universe_id=uid, owner=owner)
+        from tinyassets.provider_assignment import load_provider_assignment
+
+        assignment = load_provider_assignment(base, universe_id=uid)
+        if assignment is not None and assignment.manifest_digest:
+            return _reconnect_manifest(
+                base, universe_dir=universe_dir, owner=owner, uid=uid, provider=provider,
+                expected_digest=assignment.assignment_digest,
+            )
         binding = _platform_binding(base, universe_id=uid, owner=owner)
         bound = bind_serving_provider(
             base_path=base,

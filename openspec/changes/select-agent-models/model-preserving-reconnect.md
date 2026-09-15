@@ -19,7 +19,21 @@ root, saved preferences or private agent/workflow content. Preserve the current
 model setup when refreshing one of its accepted sources. This is not permission
 to add sources, broaden model scope, grant spending, or change workflows.
 
-## Proposed existing-seam repair (shape review required)
+## Reviewed existing-seam repair
+
+Fable5.1 round1 (79934, terminal ADAPT) confirmed all four reproductions.
+Codex disposition: accept owner-last-writer selection, all-member preflight,
+open-source bind-key normalization and enable-only-after-publication. This is
+already cross-family review of Codex-authored work; no redundant Codex dispatch.
+One reviewer suggestion is refuted by credential_vault.py's current-custody
+digest check: rotation intentionally makes current custody None. Validate the
+nominated source's current owner-deposited material and existing work binding,
+not equality to its old custody. Reuse the adoption validator without writes.
+Other members must still have exact current authority before any pending row is
+published. An unavailable member holds without destroying the ready assignment.
+The shared read admission ends before publication's existing exclusive/CAS path;
+this does not claim to close concurrent credential changes after preflight.
+Record member removal/reconsent separately; do not shrink the accepted set.
 
 1. Keep /mcp/app/serving/bind as the authenticated owner/current-home ingress;
    no additional top-level MCP tool, duplicate vault, model-policy store or
@@ -33,7 +47,10 @@ to add sources, broaden model scope, grant spending, or change workflows.
    Pending/failed or foreign assignments cannot be rewritten by inference.
 3. Resolve the current owner-selected agent binding by its authoritative provider
    reference and existing serving selection, not an arbitrary matching definition.
-   Require exactly one eligible owner binding; ambiguity refuses without edits.
+   Require exactly one eligible owner binding, last updated by that owner;
+   ambiguity refuses without edits. With no serving match, resume only a unique
+   configured owner binding matching the accepted provider reference, filtered
+   before the ambiguity bound, never a first-page inventory sample.
    Preserve its definition/configuration and any other private bindings. Do not
    invoke the platform-template reset or quiesce unrelated agent bindings here.
    Review must check the historical collaborator-confused-deputy protection:
@@ -44,7 +61,10 @@ to add sources, broaden model scope, grant spending, or change workflows.
    explicit model sets, discovered/default modes and cost ceilings. Bind fresh
    custody through bind_serving_provider with expected_revision and the observed
    expected_assignment_digest. Never fall back to legacy single-source setup
-   when one source is unavailable. Preserve ModelPreferenceStore untouched.
+   when one source is unavailable. Preflight all members before publication;
+   normalize stored open-provider names back to the existing resolver's bind key.
+   Preserve ModelPreferenceStore untouched. Current-home checks run in the read
+   transaction and again in bind/enable with require_current_home=True.
 5. Enable only that same binding through set_serving with the newly observed
    digest/current-home fence. Retain existing partial-failure behavior: saved
    credential is not a successful reconnect, and publication is not successful
