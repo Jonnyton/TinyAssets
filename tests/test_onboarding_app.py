@@ -1472,7 +1472,7 @@ console.log(JSON.stringify({{
     assert 'document.createElement(stamp?"time":"span")' in html
     assert "when.dateTime=stamp.iso" in html
     assert "Date and time unavailable" in html
-    assert "appendMessage(who, t.text, null, t.ts)" in html
+    assert 'who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts)' in html
     assert '? "universe" : "founder"' in html
     assert 'role==="system"?"Notice":"You"' in html
     assert 'className="msg msg--system"' not in html, (
@@ -1514,6 +1514,8 @@ const els={
 const $=id=>els[id];
 const Voice={isActive:()=>!!SCENARIO.voiceActive,conversationSettled:()=>{}};
 const messages=[], executionDetails=[];
+const observedModels=[];
+const ModelPicker={observe(text){observedModels.push(text);}};
 function appendMessage(role,text,extra){
   if(role!=="system") messages.push({role,text});
   if(role==="universe"&&extra) executionDetails.push({
@@ -1696,6 +1698,7 @@ __APP_FUNCTIONS__
     out.reloaded=reloaded; out.fetched=fetched;
   }
   out.executionDetails=executionDetails;
+  out.observedModels=observedModels;
   out.converseChoices=converseChoices;
   console.log(JSON.stringify(out));
 })().catch(e=>{ console.error(e&&e.stack||e); process.exit(1); });
@@ -2022,6 +2025,33 @@ def _turn(speaker, text, age_s):
     import time
 
     return {"speaker": speaker, "text": text, "ts": time.time() - age_s, "truncated": False}
+
+
+def test_history_restores_reply_receipt_and_latest_unknown(tmp_path):
+    known = {**_turn("universe", "first answer", 20), "execution": {
+        "provider": "owned-provider", "model": "actual-model", "model_status": "reported",
+    }}
+    founder = {**_turn("founder", "second question", 10), "execution": known["execution"]}
+    out = _run_app(tmp_path, {"kind": "restore", "history": [
+        known, founder, _turn("universe", "second answer", 5),
+    ]})
+    expected = ["Answered by owned-provider · actual-model", "Provider and model not reported"]
+    assert [d["text"] for d in out["executionDetails"]] == expected
+    assert out["observedModels"] == expected
+    assert out["converseCalls"] == []
+
+
+def test_history_receipt_labels_stay_literal_unicode_text(tmp_path):
+    receipt = {"provider": "自分 <provider>", "model": "模型 <img src=x>",
+               "model_status": "reported"}
+    out = _run_app(tmp_path, {"kind": "restore", "history": [
+        {**_turn("universe", "unchanged answer", 5), "execution": receipt},
+    ]})
+    assert out["executionDetails"] == [{
+        "tag": "DIV", "cls": "msg-execution",
+        "text": "Answered by 自分 <provider> · 模型 <img src=x>",
+        "children": 0,
+    }]
 
 
 def test_a_held_message_is_restored_on_an_empty_thread(tmp_path):

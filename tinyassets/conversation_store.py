@@ -26,7 +26,8 @@ Contract
 * Keyed by ``session_id`` (``slack:<channel>`` / ``converse:<universe_id>:<actor>``);
   ``turn_no`` is per-session and monotonic. ``speaker`` is DISPLAY metadata only
   (Founder vs the universe's own voice) — it is never read as authentication.
-* **Memory is never consent** — this only stores/loads text; the fenced
+* **Memory is never consent** — stored text and optional reply-owned model
+  observations grant no authority; the fenced
   not-consent formatter and the fresh-consent gate live elsewhere and are
   unchanged.
 * **Best-effort, single boundary**: every function catches its own storage
@@ -50,6 +51,7 @@ it integrates; until then it stays deliberately lightweight.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import sqlite3
@@ -59,6 +61,7 @@ from collections import Counter
 from pathlib import Path
 
 from tinyassets.conversation_memory import DEFAULT_LIMIT, Msg
+from tinyassets.providers.execution_receipt import ExecutionReceipt, normalize_execution_receipt
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +77,7 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     content    TEXT    NOT NULL,
     ts         REAL    NOT NULL,
     ext_id     TEXT    NOT NULL DEFAULT '',
+    execution_json TEXT NOT NULL DEFAULT '',
     UNIQUE(session_id, turn_no)
 );
 CREATE INDEX IF NOT EXISTS ix_turns_session
@@ -136,7 +140,41 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         logger.warning(
             "conversation_store: ext_id uniqueness index not created: %s", exc
         )
+    try:
+        conn.execute(
+            "ALTER TABLE conversation_turns ADD COLUMN execution_json TEXT NOT NULL DEFAULT ''"
+        )
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            logger.warning("conversation_store: execution receipt migration failed: %s", exc)
     return conn
+
+
+def _has_execution_column(conn: sqlite3.Connection) -> bool:
+    # A read-only caller must never run DDL or lose a legacy transcript.
+    columns = conn.execute("PRAGMA table_info(conversation_turns)")
+    return any(row[1] == "execution_json" for row in columns)
+
+
+def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int) -> list[Msg]:
+    receipt_column = "execution_json" if _has_execution_column(conn) else "''"
+    rows = conn.execute(
+        "SELECT speaker, content, ts, " + receipt_column + " FROM conversation_turns "
+        "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
+        (session_id, max(1, int(limit))),
+    ).fetchall()
+    result = []
+    for speaker, content, ts, raw in reversed(rows):
+        receipt = None
+        if speaker == "universe" and isinstance(raw, str) and 0 < len(raw) <= 4096:
+            try:
+                normalized = normalize_execution_receipt(json.loads(raw))
+                if normalized is not None:
+                    receipt = ExecutionReceipt(**normalized)
+            except (ValueError, RecursionError):
+                pass  # Corrupt optional metadata never discards the message text.
+        result.append(Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts), receipt))
+    return result
 
 
 def load_recent_readonly(
@@ -161,17 +199,10 @@ def load_recent_readonly(
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
-            rows = conn.execute(
-                "SELECT speaker, content, ts FROM conversation_turns "
-                "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
-                (session_id, max(1, int(limit))),
-            ).fetchall()
+            messages = _read_messages(conn, session_id, limit)
         finally:
             conn.close()
-        return [
-            Msg(speaker=str(sp or ""), text=str(ct or ""), ts=_coerce_ts(t))
-            for sp, ct, t in reversed(rows)
-        ]
+        return messages
     except Exception:  # noqa: BLE001 - read-only peek is a bonus, never a blocker
         return []
 
@@ -305,6 +336,7 @@ def record_exchange(
     universe_text: str,
     *,
     ts: float | None = None,
+    execution: object = None,
 ) -> bool:
     """Append a founder turn AND the universe's reply in ONE transaction.
 
@@ -319,6 +351,10 @@ def record_exchange(
         return False
     try:
         when = _when(ts)
+        normalized = normalize_execution_receipt(execution)
+        execution_json = (
+            json.dumps(normalized, ensure_ascii=False) if normalized is not None else ""
+        )
         db_path = _db_path(universe_dir)
         lock = _lock_for(db_path)
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
@@ -336,15 +372,25 @@ def record_exchange(
                         (session_id,),
                     ).fetchone()
                     turn_no = int(row[0])
-                    conn.executemany(
-                        "INSERT INTO conversation_turns "
-                        "(session_id, turn_no, speaker, content, ts, ext_id) "
-                        "VALUES (?, ?, ?, ?, ?, '')",
-                        [
-                            (session_id, turn_no, "founder", founder_text, when),
-                            (session_id, turn_no + 1, "universe", universe_text, when),
-                        ],
-                    )
+                    rows = [
+                        (session_id, turn_no, "founder", founder_text, when),
+                        (session_id, turn_no + 1, "universe", universe_text, when),
+                    ]
+                    if _has_execution_column(conn):
+                        conn.executemany(
+                            "INSERT INTO conversation_turns "
+                            "(session_id, turn_no, speaker, content, ts, ext_id, execution_json) "
+                            "VALUES (?, ?, ?, ?, ?, '', ?)",
+                            [(*rows[0], ""), (*rows[1], execution_json)],
+                        )
+                    else:
+                        # Optional metadata must not prevent a text-only exchange
+                        # when an old writable database could not be migrated.
+                        conn.executemany(
+                            "INSERT INTO conversation_turns "
+                            "(session_id, turn_no, speaker, content, ts, ext_id) "
+                            "VALUES (?, ?, ?, ?, ?, '')", rows,
+                        )
                     conn.execute(
                         "DELETE FROM conversation_turns WHERE session_id = ? AND turn_no <= "
                         "(SELECT COALESCE(MAX(turn_no), 0) FROM conversation_turns "
@@ -388,11 +434,7 @@ def load_recent(
     try:
         conn = _connect(db_path)
         try:
-            rows = conn.execute(
-                "SELECT speaker, content, ts FROM conversation_turns "
-                "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
-                (session_id, max(1, int(limit))),
-            ).fetchall()
+            messages = _read_messages(conn, session_id, limit)
         finally:
             conn.close()
         # Order by the real Slack ts (CHRONOLOGY), turn_no only as a tiebreaker.
@@ -404,10 +446,7 @@ def load_recent(
         # the turn knows WHEN each message was sent (SDK createdAt metadata). The
         # ts coercion stays INSIDE the try so malformed stored data degrades to
         # "no memory", never a raise (fail-open contract).
-        return [
-            Msg(speaker=str(sp or ""), text=str(ct or ""), ts=_coerce_ts(t))
-            for sp, ct, t in reversed(rows)
-        ]
+        return messages
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
         logger.warning("conversation_store: load failed", exc_info=True)
         return []

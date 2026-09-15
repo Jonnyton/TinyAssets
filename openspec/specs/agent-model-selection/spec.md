@@ -187,3 +187,20 @@ The typed-chat interface SHALL show a clickable active provider/model control, d
 #### Scenario: Model metadata is unavailable
 - **WHEN** a response does not report a usable model identifier
 - **THEN** the answer remains usable and the display marks the actual model unknown instead of presenting the requested alias as verified
+
+#### Scenario: Answering receipt survives history reload
+- **WHEN** a reply has a valid server-observed provider/model receipt and its history write succeeds
+- **THEN** the receipt is stored atomically on that reply's row, not the founder row
+- **AND** the own-principal history projection and reloaded app restore that exact receipt
+- **AND** the latest restored answer controls the answering-model display without changing preferences
+
+#### Scenario: Missing or corrupt historical receipt
+- **WHEN** an old database lacks the receipt column or a reply's optional receipt is missing or invalid
+- **THEN** read-only history preserves the transcript without migrations or invented telemetry
+- **AND** the reply displays unknown rather than inheriting another answer's receipt
+- **AND** receipt fields never enter prompt history, permissions or model routing
+
+#### Scenario: Optional persistence fails
+- **WHEN** storing conversation history fails after a successful model reply
+- **THEN** the immediate answer and its observed receipt remain available without repeating inference
+- **AND** an unavailable optional receipt migration permits otherwise-valid text-only storage

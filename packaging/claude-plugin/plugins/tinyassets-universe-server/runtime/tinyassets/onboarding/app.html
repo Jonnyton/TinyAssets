@@ -3939,7 +3939,8 @@
       const ordered = stamped ? turns.slice().sort((a,b)=>a.ts-b.ts) : turns.slice();
       ordered.forEach(t=>{
         const who = (t && t.speaker === "universe") ? "universe" : "founder";
-        if(t && typeof t.text === "string" && t.text) appendMessage(who, t.text, null, t.ts);
+        if(t && typeof t.text === "string" && t.text) appendMessage(who, t.text,
+          who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
       });
       restoreInflight(turns);
     }catch(_e){

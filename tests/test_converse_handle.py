@@ -130,8 +130,14 @@ def test_converse_pairs_reported_model_with_this_reply_only(monkeypatch, tmp_pat
     assert result["execution"] == {
         "provider": "owned-provider", "model": "actual-model", "model_status": "reported",
     }
+    from tinyassets.conversation_store import load_recent_readonly
+    from tinyassets.providers.execution_receipt import normalize_execution_receipt
+
+    stored = load_recent_readonly(tmp_path / "u-x", "principal:founder-1")
+    assert normalize_execution_receipt(stored[-1].execution) == result["execution"]
     monkeypatch.setattr(ui, "converse", lambda *args, **kwargs: "without evidence")
     assert "execution" not in json.loads(us.converse(message="next", graph_id="u-x"))
+    assert load_recent_readonly(tmp_path / "u-x", "principal:founder-1")[-1].execution is None
 
 
 def test_mcp_converse_keeps_execution_in_both_response_channels(monkeypatch, tmp_path):
@@ -303,18 +309,31 @@ def test_converse_carries_memory_across_turns_and_principals_are_isolated(monkey
 def test_converse_memory_failure_never_costs_the_turn(monkeypatch, tmp_path):
     import tinyassets.conversation_store as cs
     import tinyassets.universe_intelligence as ui
+    from tinyassets.providers.base import ProviderResponse
 
     (tmp_path / "u-x").mkdir()
     monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
     _founder_auth(monkeypatch, base=tmp_path)
-    monkeypatch.setattr(ui, "converse", lambda uid, msg, **_kw: "ok")
+    calls = []
+
+    def answer(uid, msg, *, response_observer, **kwargs):
+        calls.append(msg)
+        response_observer(ProviderResponse("ok", "owned-provider", "alias", "family", 1,
+                                           reported_model="actual-model"))
+        return "ok"
+
+    monkeypatch.setattr(ui, "converse", answer)
     monkeypatch.setattr(
         cs, "load_recent", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db"))
     )
     monkeypatch.setattr(
         cs, "record_exchange", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db"))
     )
-    assert json.loads(us.converse(message="hi", graph_id="u-x"))["reply"] == "ok"
+    result = json.loads(us.converse(message="hi", graph_id="u-x"))
+    assert result["reply"] == "ok"
+    assert result["execution"] == {"provider": "owned-provider", "model": "actual-model",
+                                   "model_status": "reported"}
+    assert calls == ["hi"]
 
 
 def test_history_records_are_single_line_so_roles_cannot_be_forged():

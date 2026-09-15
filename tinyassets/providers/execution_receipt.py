@@ -11,6 +11,32 @@ def _label(value: object, maximum: int) -> str:
     return value.strip()
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionReceipt:
+    """Hashable historical observation; never model choice or access authority."""
+
+    provider: str
+    model: str
+    model_status: str
+
+
+def normalize_execution_receipt(value: object) -> dict[str, str] | None:
+    """Return only consistent, bounded labels, without retaining caller objects."""
+    if isinstance(value, ExecutionReceipt):
+        value = {"provider": value.provider, "model": value.model,
+                 "model_status": value.model_status}
+    if not isinstance(value, dict) or set(value) != {"provider", "model", "model_status"}:
+        return None
+    provider, model, status = value["provider"], value["model"], value["model_status"]
+    if not isinstance(provider, str) or not provider or _label(provider, 400) != provider:
+        return None
+    if not isinstance(model, str) or (model and _label(model, 200) != model):
+        return None
+    if status != ("reported" if model else "unknown"):
+        return None
+    return {"provider": provider, "model": model, "model_status": status}
+
+
 @dataclass(slots=True)
 class WriterExecutionReceipt:
     """Create once per reply; pass observe ONLY to that reply's writer call.

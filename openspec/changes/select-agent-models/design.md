@@ -193,3 +193,11 @@ HTTP tool-loop dependency and safe continuation; model-catalogue grants for
 existing connections; benchmark coverage/matching/freshness; authenticated
 account identity and shared cooldown storage. These are engineering work, not
 requests for the owner to supply a model ranking or repair workflows.
+
+## Durable answering-receipt follow-up (September 14)
+
+The request-owned display receipt now needs to survive transcript reload. The
+reviewed additive storage/projection design and Fable pre-code dispositions are
+in [persist-answer-receipts.md](persist-answer-receipts.md). It uses the existing
+conversation store, preserves legacy read-only history, and introduces no new
+authority or model-selection input. This is separate from PR3844's setup tools.
