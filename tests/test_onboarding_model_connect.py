@@ -127,3 +127,54 @@ def test_preset_change_during_exchange_cannot_deposit(monkeypatch):
                                  "code_verifier": VERIFIER})
     assert response.status_code == 409
     assert response.json()["error"] == "model_connection_preset_changed"
+
+
+def test_new_owner_begin_provisions_own_empty_home_without_llm(request, monkeypatch):
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.daemon_server import get_founder_home
+
+    base = request.getfixturevalue("rig")
+    monkeypatch.setattr(onboarding, "_read_home",
+                        lambda identity, **kw: get_founder_home(base, identity.user_id) or "")
+    new_owner = Identity(user_id="brand-new-owner", username="new-owner", capabilities=["write"])
+    with identity_context(new_owner):
+        assert not get_founder_home(base, new_owner.user_id)
+        response = begin()
+        assert response.status_code == 200, response.text
+        home = get_founder_home(base, new_owner.user_id)
+        assert home and home != "u-owner"
+        pending = hosted._pending[response.json()["flow"]]
+        assert pending.owner == new_owner.user_id and pending.universe_id == home
+
+
+def test_anonymous_cannot_start_or_resume_or_exchange():
+    from tinyassets.auth.middleware import identity_context
+
+    with identity_context(None):
+        for operation, data in [
+            ("begin", {"preset_id": "openrouter_user_models_v1", "code_challenge": CHALLENGE}),
+            ("resume", {"preset_id": "openrouter_user_models_v1"}),
+            ("exchange", {"flow": "f" * 43, "code": "code", "code_verifier": VERIFIER}),
+        ]:
+            assert post(operation, data).status_code == 401
+    assert not hosted._pending
+
+
+def test_callback_is_nonmutating_shell_with_private_headers(monkeypatch):
+    from starlette.responses import HTMLResponse
+
+    async def shell(request):
+        return HTMLResponse("<html>synthetic app shell</html>")
+    monkeypatch.setattr(onboarding, "_handle_app", shell)
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(
+            app=Starlette(routes=onboarding.onboarding_routes())), base_url="https://tinyassets.io",
+        ) as client:
+            return await client.get(hosted.CALLBACK_PREFIX + "f" * 43 + "?code=synthetic-code")
+    response = asyncio.run(run())
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "synthetic-code" not in response.text
+    assert not hosted._pending

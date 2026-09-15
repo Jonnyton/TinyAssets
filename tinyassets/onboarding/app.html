@@ -344,16 +344,36 @@
 
     <section id="view-connect" class="view view--connect" hidden>
       <header class="chat-header">
-        <div class="chat-title">Connect your subscription</div>
+        <div class="chat-title">Connect a model</div>
         <nav class="chat-actions">
           <button id="btn-connect-account" class="btn btn--link">Account</button>
           <button id="btn-connect-back" class="btn btn--link">Back to chat</button>
         </nav>
       </header>
       <div class="connect-body">
-        <p>Your universe thinks on <strong>your own</strong> Claude or OpenAI subscription. It never
-        runs on anyone else's account. Connect one and it starts speaking on the very next turn.</p>
+        <p>Your universe uses <strong>your own</strong> authorized model connections:
+        a subscription, a model API, or your own endpoint. It never borrows another user's account.</p>
         <div id="connect-status" class="connect-status" role="status"></div>
+
+        <div id="hosted-model-setup" class="provider-card" hidden>
+          <strong>Start with free models</strong>
+          <p>Continue to OpenRouter to create an account or connect your existing one.
+          On return, approve eligible free models for this universe. Provider privacy settings
+          and free limits apply; this does not authorize paid models or buying credits.</p>
+          <div id="hosted-model-status" role="status" aria-live="polite"></div>
+          <button id="btn-hosted-model" class="btn btn--primary">Continue with OpenRouter</button>
+          <button id="btn-hosted-resume" class="btn btn--ghost">Resume saved connection</button>
+          <div id="hosted-model-confirmation" hidden>
+            <h3 id="hosted-model-title"></h3>
+            <p id="hosted-model-body"></p>
+            <p id="hosted-model-grant"></p>
+            <button id="btn-hosted-accept" class="btn btn--primary">Approve free models</button>
+            <button id="btn-hosted-decline" class="btn btn--ghost">Not now</button>
+          </div>
+          <p><a data-external href="https://openrouter.ai/settings/keys" rel="noreferrer noopener"
+            target="_blank">Manage your OpenRouter keys</a></p>
+          <p class="muted">You can skip for now or connect another source below.</p>
+        </div>
 
         <div class="provider-card">
           <div class="provider-head"><strong>OpenAI</strong> <span class="muted">ChatGPT Plus / Pro / Team</span></div>
@@ -2734,17 +2754,17 @@
       return await r.json();
     }catch(_e){ return null; }
   }
-  async function enterSignedIn(){
+  async function enterSignedIn(autoBootstrap=false){
     ModelPicker.reset();
     const me = await fetchMe();
     if(me===null && !token()) return;            // fetchMe signed us out
-    if(!(me && me.engine_connected===true)){
-      // Connect-until-ready: only an explicit "connected" opens chat. Unknown
-      // (daemon hiccup) still lands on Connect, with the reason, and "Skip for
-      // now" remains available.
-      engineConnected = me ? false : null;
+    HostedModelConnect.setup=me&&me.setup||"unavailable";
+    if(HostedModelConnect.setup!=="connected"){
+      engineConnected = HostedModelConnect.setup==="unavailable" ? null : false;
       showConnect(true);
-      if(!me) $("connect-status").textContent += " (Couldn't confirm your universe's status just now — you can connect anyway or skip.)";
+      if(HostedModelConnect.setup==="unavailable") $("connect-status").textContent="Could not confirm your universe's connections. Retry when available; no new connection has been started.";
+      else if(HostedModelConnect.setup==="recovery") $("connect-status").textContent="Your universe already has connection setup. Resume it or repair that connection; your existing settings are preserved.";
+      if(autoBootstrap && !NATIVE && HostedModelConnect.setup==="empty") await HostedModelConnect.begin();
       return;
     }
     engineConnected = true;
@@ -2897,20 +2917,148 @@
     setTimeout(()=>{ showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null; Voice.stop(false);
+    HostedModelConnect.reset();
     modelChoiceForNextTurn=null;
     ModelPicker.reset();
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
   function showConnect(asGate,guidance){ Voice.stop(false); showView("connect");
+    HostedModelConnect.paint();
     // Web has no loopback listener: the guided device-code path IS the path.
     if(!openaiBusy) resetOpenAIUI();
     $("btn-connect-back").textContent = asGate ? "Skip for now" : "Back to chat";
     $("connect-status").textContent = guidance || (asGate
-      ? "Your universe needs a mind to think with. Connect the subscription it should run on — credentials go straight to the connector over TLS, never through chat, never logged."
+      ? "Connect a model to power your universe. Credentials go straight to the connector over TLS, never through chat, never logged."
       : "Credentials go straight to the connector over TLS — never through chat, never logged."); }
 
   function autoGrow(el){ el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,window.innerHeight*0.4)+"px"; }
 
   function authHeaders(){ const h={}; const tk=token(); if(tk) h["Authorization"]="Bearer "+tk; return h; }
+
+  // Hosted authorization is separate from account sign-in. Only explicit sign-in
+  // may auto-start; reload, refresh, cancellation and recovery never do.
+  const HostedModelConnect={
+    storageKey:"ta_hosted_model_pkce_v1",preset:"openrouter_user_models_v1",
+    setup:"unavailable",busy:false,request:null,epoch:0,
+    status(text){$("hosted-model-status").textContent=text;},
+    paint(){
+      $("hosted-model-setup").hidden=NATIVE||this.setup==="connected";
+      $("btn-hosted-model").disabled=this.busy||this.setup!=="empty";
+      $("btn-hosted-resume").disabled=this.busy||this.setup==="unavailable";
+      $("btn-hosted-accept").disabled=this.busy;
+      $("btn-hosted-decline").disabled=this.busy;
+      $("hosted-model-confirmation").hidden=!this.request;
+    },
+    reset(){
+      this.epoch++;this.busy=false;this.request=null;this.setup="unavailable";
+      sessionStorage.removeItem(this.storageKey);
+    },
+    takeCallback(){
+      const match=window.location.pathname.match(/^\/mcp\/app\/model-callback\/([A-Za-z0-9_-]{43})$/);
+      if(!match) return null;
+      const query=new URLSearchParams(window.location.search);
+      // Strip before WorkOS handling, token refresh, network calls or rendering.
+      history.replaceState({},"","/mcp/app");
+      let saved=null;
+      try{saved=JSON.parse(sessionStorage.getItem(this.storageKey)||"null");}catch(_e){}
+      sessionStorage.removeItem(this.storageKey); // one browser redemption attempt
+      if(NATIVE||!saved||saved.flow!==match[1]||saved.preset!==this.preset||
+         typeof saved.verifier!=="string"||!/^[A-Za-z0-9_-]{43}$/.test(saved.verifier)||
+         !Number.isFinite(saved.expires)||saved.expires<=Date.now()||query.has("error")||
+         query.getAll("code").length!==1||!query.get("code")||query.get("code").length>2048){
+        return {error:true};
+      }
+      return {flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier};
+    },
+    async post(operation,payload){
+      await ensureFreshToken();
+      if(!token()) throw new Error("sign_in_required");
+      // No automatic retry: exchange outcomes may be uncertain.
+      const response=await fetch("/mcp/app/model-connect/"+operation,{
+        method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify(payload),
+      });
+      const result=await response.json();
+      if(!response.ok||result.error) throw new Error(result.error||"model_connection_incomplete");
+      return result;
+    },
+    async begin(){
+      if(this.busy||NATIVE||this.setup!=="empty") return;
+      const epoch=this.epoch;this.busy=true;this.paint();
+      this.status("Opening OpenRouter signup or sign-in. You choose whether to authorize access there.");
+      try{
+        const verifier=randToken(32),code_challenge=await challengeFor(verifier);
+        // Verify tab storage works before starting a flow requiring that verifier.
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset:this.preset}));
+        const result=await this.post("begin",{preset_id:this.preset,code_challenge});
+        if(epoch!==this.epoch) return;
+        const url=new URL(result.authorize_url);
+        if(url.protocol!=="https:"||url.username||url.password||
+           !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||
+           !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600) throw new Error("invalid_connection_response");
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset:this.preset,
+          flow:result.flow,expires:Date.now()+result.expires_in*1000}));
+        window.location.assign(url.href);
+      }catch(_e){
+        if(epoch!==this.epoch) return;
+        sessionStorage.removeItem(this.storageKey);
+        this.status("Could not start the connection. Refresh its status, then explicitly continue when ready.");
+      }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
+    },
+    async complete(callback=null){
+      if(this.busy||NATIVE) return;
+      if(callback&&callback.error){
+        showConnect(true);this.status("Connection cancelled or expired. You can continue again, resume a saved connection, or choose another source.");return;
+      }
+      const epoch=this.epoch;this.busy=true;this.paint();
+      this.status("Checking your connection. No model access is approved automatically.");
+      try{
+        const result=await this.post(callback?"exchange":"resume",callback||{preset_id:this.preset});
+        if(epoch!==this.epoch) return;
+        if(result.status==="connected"){await enterSignedIn();return;}
+        const req=result.request;
+        if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
+           !req.action||req.action.type!=="bind_model_access") throw new Error("invalid_connection_response");
+        this.setup="recovery";this.request=req;showConnect(true);
+        $("hosted-model-title").textContent=req.title;
+        $("hosted-model-body").textContent=req.body;
+        $("hosted-model-grant").textContent=req.grant_sentence||"";
+        this.status("Review your pending free-model request below. Approval checks the connection again before powering your universe.");
+      }catch(_e){
+        if(epoch!==this.epoch) return;
+        await enterSignedIn();showConnect(true);
+        this.status("Setup did not finish. A key may already exist in OpenRouter. Try Resume saved connection; if authorization must restart, manage unused keys using the link below. Existing model choices have not been replaced.");
+      }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
+    },
+    async answer(accepted){
+      if(this.busy||!this.request) return;
+      const epoch=this.epoch;this.busy=true;this.paint();
+      this.status(accepted?"Applying your free-model approval…":"Leaving model access unapproved…");
+      try{
+        const payload={request_id:this.request.request_id};
+        if(accepted) payload.values={};else payload.decision="declined";
+        const result=await MCP.answerRequest(payload);
+        if(epoch!==this.epoch) return;
+        if(!result||result.error){
+          this.status("Setup is not confirmed. "+(result&&result.request_pending
+            ?"This request remains open; you can retry your approval."
+            :"Resume setup to check the current request."));return;
+        }
+        this.request=null;await enterSignedIn();
+        if(this.setup!=="connected") this.status(accepted
+          ?"Your answer was recorded, but your universe is not ready yet. Resume setup to check it."
+          :"Free-model access was not approved. You can connect another model below.");
+      }catch(_e){this.status("Could not confirm your answer. Resume setup to check it before trying again.");}
+      finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
+    },
+    wire(){
+      $("btn-hosted-model").addEventListener("click",()=>this.begin());
+      $("btn-hosted-resume").addEventListener("click",()=>this.complete());
+      $("btn-hosted-accept").addEventListener("click",()=>this.answer(true));
+      $("btn-hosted-decline").addEventListener("click",()=>this.answer(false));
+    },
+  };
+  // End hosted model connection controller.
 
   // A deposit is only half of "connect": the universe must also SERVE on it, or
   // chat works while every run fails with provider_not_bound. Same route the
@@ -3715,7 +3863,7 @@
     }
     if(req.action && req.action.type === "connect_llm"){
       const go = document.createElement("button");
-      go.className = "btn btn--primary"; go.textContent = "Connect a model";
+      go.className = "btn btn--primary"; go.textContent = req.sticky ? "Connect a model" : "Connect another LLM";
       go.addEventListener("click",()=>showConnect(false));
       box.appendChild(go);
       return box;   // no fields, no feedback, no dismiss — it is not a question
@@ -4045,12 +4193,20 @@
   }
 
   async function boot(){
+    const modelCallback=HostedModelConnect.takeCallback();
     wire();
+    HostedModelConnect.wire();
     wireNativeReturn();
     loadOpenAIPending();   // drops an expired pending flow (and its verifier) on start
-    const signedInNow = await completeSignInIfCallback();
+    const signedInNow = modelCallback ? false : await completeSignInIfCallback();
     if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the stored handle / refresh cookie
-    if(token() || signedInNow){ enterSignedIn(); } else { enterSignedOut(); }
+    if(token() || signedInNow){
+      await enterSignedIn(signedInNow&&!modelCallback);
+      if(modelCallback) await HostedModelConnect.complete(modelCallback);
+    } else {
+      enterSignedOut();
+      if(modelCallback) $("signin-notice").textContent="Sign in again, then resume your model connection. The expired return code has been discarded.";
+    }
     startSessionKeepAlive();
   }
   boot();

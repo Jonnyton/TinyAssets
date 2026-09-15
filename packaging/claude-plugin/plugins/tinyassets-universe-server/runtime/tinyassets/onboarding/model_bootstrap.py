@@ -39,6 +39,9 @@ def _resume_key(base: Path, *, universe: Path, uid: str, owner: str, destination
     with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
         conn.execute("BEGIN")
         check_current_home(conn, owner, uid)
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                        "AND name = 'llm_credential_deposit_owners'").fetchone() is None:
+            raise HostedAuthError("model_authorization_required", 409)
         recorded = conn.execute(
             "SELECT owner_user_id FROM llm_credential_deposit_owners "
             "WHERE universe_id = ? AND service = ?", (uid, "http:" + destination),
@@ -79,6 +82,11 @@ def complete_bootstrap(*, base: Path, uid: str, owner: str, preset: AcquisitionP
             raise HostedAuthError("model_setup_changed", 409)
         if state == "connected":
             return {"status": "connected", "universe_id": uid}
+        if key is None:
+            pending = _pending_confirmation(base, universe=universe, uid=uid,
+                                            owner=owner, preset=preset)
+            if pending is not None:
+                return pending
         if load_provider_assignment(base, universe_id=uid) is not None:
             raise HostedAuthError("model_connection_requires_recovery", 409)
         if key is None:
@@ -114,3 +122,51 @@ def complete_bootstrap(*, base: Path, uid: str, owner: str, preset: AcquisitionP
         raise HostedAuthError("model_confirmation_requires_review", 409)
     return {"status": "confirmation_required", "universe_id": uid,
             "request_id": request["request_id"], "request": request}
+
+
+def _pending_confirmation(base: Path, *, universe: Path, uid: str, owner: str,
+                          preset: AcquisitionPreset) -> dict | None:
+    """Redisplay this owner's existing free-only request after partial activation.
+
+    Read-only: never redeposit (which could rotate custody), recreate consent or
+    relax the existing answer action's revision/home/authority checks. Ambiguity
+    holds instead of picking a request. Revoked access may be shown for recovery;
+    only the existing answer path decides whether it can actually activate.
+    """
+    from tinyassets.api.model_access_requests import grant_sentence
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.providers.definition import get_definition
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+    from tinyassets.storage.pending_requests import MAX_PENDING, list_pending
+
+    matches = []
+    ledger = ConnectionLedger(base / "outbound.db")
+    for request in list_pending(universe, limit=MAX_PENDING):
+        action = request.get("action") or {}
+        if action.get("type") != "bind_model_access":
+            continue
+        did = action.get("provider", "")
+        access = action.get("model_access")
+        if access != {did: ModelAccess("discovered").document()}:
+            continue
+        definition = get_definition(uid, did)
+        if (definition is None or definition.owner_user_id != owner
+                or definition.access_method != "api_key_http"):
+            continue
+        grant = ledger.get_grant(definition.ref)
+        if grant is None or grant.owner_user_id != owner or grant.universe_id != uid:
+            continue
+        connection = ledger.get_connection(grant.connection_id)
+        profile = ledger.get_connection_capability(grant.connection_id, "model_discovery")
+        if (connection is None or connection.owner_user_id != owner
+                or connection.destination != "model:" + preset.id or profile is None
+                or profile.descriptor() != {"protocol": preset.id,
+                    "catalogue_url": preset.catalogue_url, "benchmark_url": preset.benchmark_url}):
+            continue
+        matches.append({**request, "grant_sentence": grant_sentence(action)})
+    if len(matches) > 1:
+        raise HostedAuthError("model_confirmation_requires_review", 409)
+    if not matches:
+        return None
+    return {"status": "confirmation_required", "universe_id": uid,
+            "request_id": matches[0]["request_id"], "request": matches[0]}

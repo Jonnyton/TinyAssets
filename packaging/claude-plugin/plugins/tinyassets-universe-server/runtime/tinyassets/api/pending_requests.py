@@ -1077,18 +1077,13 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
         return False
 
 
-def _connect_llm_request() -> dict[str, object]:
-    """The sticky tab shown while no model is connected.
-
-    ``sticky`` means the rail renders it expanded and offers no dismiss: this is
-    a precondition, not a request the user can decline and still have a working
-    universe. It disappears by being satisfied, which is the only honest way for
-    a blocking ask to go away.
-    """
+def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
+    """A blocking setup entry, or an optional additional-source entry when ready."""
     return {
         "request_id": _LLM_REQUEST_ID,
         "kind": "LLM",
-        "title": "Connect the model your universe runs on",
+        "title": ("Connect another LLM" if connected
+                  else "Connect the model your universe runs on"),
         "body": (
             "Connect a model you control: a subscription, an API, or your own "
             "model endpoint. Your universe uses only connections you authorize."
@@ -1096,7 +1091,7 @@ def _connect_llm_request() -> dict[str, object]:
         "fields": [],
         "action": {"type": "connect_llm"},
         "status": "pending",
-        "sticky": True,
+        "sticky": not connected,
         "created_at": 0.0,
         "resolved_at": None,
         "answer": None,
@@ -1109,9 +1104,8 @@ def _connect_llm_request() -> dict[str, object]:
 def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     """What the app's rail renders, and what the phone reads too.
 
-    Carries the agent's asks, plus the one the platform raises for itself: while
-    no model is connected the universe cannot ask for anything, so that request
-    is synthesized rather than stored.
+    Carries the agent's asks plus a derived connection entry: required without
+    current serving authority, optional once powered. No agent is needed to ask.
     """
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path
@@ -1129,8 +1123,9 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     # Prepended, not stored: derived from current serving authority, so it
     # cannot go stale, cannot be dismissed into a state where the universe is
     # mute with no way back, and needs no migration.
-    if not _serving_llm_bound(_base_path(), uid, permissions.current_actor_id().strip()):
-        rows = [_connect_llm_request(), *rows]
+    connected = _serving_llm_bound(_base_path(), uid, permissions.current_actor_id().strip())
+    entry = _connect_llm_request(connected=connected)
+    rows = [*rows, entry] if connected else [entry, *rows]
     return {
         "universe_id": uid,
         "pending": [{**r, "grant_sentence": _grant_sentence(r)} for r in rows],

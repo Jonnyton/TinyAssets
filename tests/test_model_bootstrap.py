@@ -18,6 +18,7 @@ def rig(tmp_path, monkeypatch):
     from tinyassets.providers import discovery_http
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
     (tmp_path / "u-owner").mkdir()
     set_founder_home(tmp_path, founder_sub="owner", universe_id="u-owner", platform_generated=True)
     grant_universe_access(tmp_path, universe_id="u-owner", actor_id="owner", permission="admin")
@@ -86,3 +87,48 @@ def test_home_rebinding_refuses_new_deposit(rig):
     with pytest.raises(PermissionError):
         finish(rig, key="must-not-land")
     assert load_credential_vault(rig / "u-owner") == []
+
+
+def test_empty_resume_requires_authorization_not_generic_server_error(rig):
+    with pytest.raises(HostedAuthError, match="model_authorization_required"):
+        finish(rig)
+
+
+def test_owner_approval_uses_existing_enable_path(rig):
+    from tinyassets.api.pending_requests import answer_request
+    from tinyassets.onboarding.model_setup import model_setup_state
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    result = finish(rig, key="synthetic-key")
+    answered = answer_request(universe_id="u-owner", payload={
+        "request_id": result["request_id"], "values": {},
+    })
+    assert not answered.get("error"), answered
+    assert load_provider_assignment(rig, universe_id="u-owner") is not None
+    assert model_setup_state(rig, universe=rig / "u-owner", uid="u-owner",
+                             owner="owner") == "connected"
+    assert finish(rig)["status"] == "connected"
+
+
+def test_partial_activation_resumes_same_request_without_rotating_custody(rig, monkeypatch):
+    from tinyassets import provider_serving_binding
+    from tinyassets.api.pending_requests import answer_request
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    result = finish(rig, key="synthetic-key")
+    real_enable = provider_serving_binding.set_serving
+    def interrupted(**kwargs):
+        raise PermissionError("synthetic activation interruption")
+    monkeypatch.setattr(provider_serving_binding, "set_serving", interrupted)
+    payload = {"request_id": result["request_id"], "values": {}}
+    first = answer_request(universe_id="u-owner", payload=payload)
+    assert first["request_pending"] is True
+    assignment = load_provider_assignment(rig, universe_id="u-owner")
+    assert assignment is not None
+    resumed = finish(rig)
+    assert resumed["request_id"] == result["request_id"]
+    assert "free models only" in resumed["request"]["grant_sentence"]
+    assert load_provider_assignment(rig, universe_id="u-owner") == assignment
+    monkeypatch.setattr(provider_serving_binding, "set_serving", real_enable)
+    assert not answer_request(universe_id="u-owner", payload=payload).get("error")
+    assert finish(rig)["status"] == "connected"

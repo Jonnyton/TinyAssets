@@ -5,6 +5,38 @@ the founder's September14 PDT direction in PLAN Providers. This is the remaining
 unpowered model-selection slice, not a new workflow or competing delivery lane.
 Live second-user success is not claimed. Local implementation progress follows.
 
+## 2026-09-15 04:44UTC browser integration checkpoint
+
+The hosted web browser now routes on setup, handles the distinct model callback
+before WorkOS, strips code immediately, and starts same-tab authorization only
+after an explicit sign-in to an empty universe. Native, reload/silent refresh,
+recovery, cancellation and unavailable status do not auto-start. Tab-scoped PKCE
+state is one-attempt; uncertain exchanges offer explicit resume/key management.
+The return screen renders the existing free-only request and calls the existing
+owner answer path only on an approval/decline click. Connected state is reread,
+not inferred from credential deposit. The ordinary manual form stays generic;
+the authorized OpenRouter signup preset is a separate entry. Once serving,
+sys_connect_llm remains collapsed/nonblocking as Connect another LLM.
+
+Resume now redisplays a matching existing owner/free-only request after partial
+activation without redepositing/rotating its custody or creating new consent.
+Real-store tests prove owner approval reaches serving and interruption after
+publication can resume/enable through the same request. Anonymous ingress,
+fresh-owner home provisioning, callback headers/no mutation and browser
+cancel/expiry/foreign-state/no-loop behavior are covered. Tests originally ran
+with engine MCP tools dark; enabling the production feature in the fixture
+allows HTTP agent eligibility without changing runtime policy.
+
+Windows verification (this worktree, September15): the prior421-test command
+plus test_app_hosted_model_connect.py, test_app_model_picker.py,
+test_app_request_rail_executes.py, test_pending_requests.py,
+test_pending_requests_power.py and test_request_rail_honest_asks.py returns
+566passed54.98s/no skips. Ruff and450-file mirror/import pass. Synthetic browser
+DOM, hosted exchange and catalogue; real state/authority/enable stores.
+No actual OpenRouter account/consent/key/answer proof. No workflow was edited.
+Final Fable5.1 round3 remains required before push/PR/deploy; not deployed.
+Follow with local visual check, CI and rendered separate free-user onboarding.
+
 ## 2026-09-15 04:23UTC backend composition checkpoint
 
 The authenticated begin/exchange/resume endpoints and exact public callback shell
