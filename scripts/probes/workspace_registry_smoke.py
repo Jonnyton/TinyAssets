@@ -42,14 +42,22 @@ def main():
         for directory in (manifests, cache, checkout):
             directory.mkdir()
         fixtures = ROOT / "tests/fixtures/workspace"
+        original_node_files = {}
         if ecosystem == "python":
             (checkout / "requirements.txt").write_bytes(
                 (fixtures / "requirements-locked.txt").read_bytes())
         else:
             for name in ("package.json", "package-lock.json"):
                 (checkout / name).write_bytes((fixtures / "node" / name).read_bytes())
+            package = json.loads((checkout / "package.json").read_bytes())
+            package["scripts"] = {"preinstall": "node -e \"require('fs').writeFileSync("
+                                  "'/workspace/root-script-ran','unexpected')\""}
+            (checkout / "package.json").write_text(json.dumps(package, indent=2) + "\n")
+            original_node_files = {name: (checkout / name).read_bytes()
+                                   for name in ("package.json", "package-lock.json")}
         handles = [os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                    for path in (manifests, cache, checkout)]
+        overlay_fds = []
         def storage_usage():
             total = 0
             bound = 256 * 1024 * 1024
@@ -143,9 +151,14 @@ finally:
                 broker.close()
             # All acquisition processes and relay workers are gone. A new jail
             # sees a read-only cache and checkout, with no broker/socket stdin.
+            if ecosystem == "node":
+                for name in ("package.json", "package-lock.json"):
+                    overlay_fds.append(os.open(
+                        name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=handles[0]))
             install = sandbox.BwrapLauncher().for_workspace(sandbox.WorkspaceMount(
                 f"/proc/self/fd/{handles[2]}", pass_fds=(handles[2],))).for_provision(
-                    sandbox.ProvisionMount(handles[0], handles[1], "install"))
+                    sandbox.ProvisionMount(handles[0], handles[1], "install",
+                                           tuple(overlay_fds) if overlay_fds else None))
             if ecosystem == "python":
                 offline_argv = resolver.pip_offline_install_argv(
                     inside, "/provision/cache", "/workspace/.venv/bin/python")
@@ -177,7 +190,7 @@ else:
              for name in ('package.json', 'package-lock.json')]
     assert hashlib.sha256(b'\0'.join(blobs)).hexdigest() == settings['digest']
     for name, blob in zip(('package.json', 'package-lock.json'), blobs):
-        (Path('/workspace') / name).write_bytes(blob)
+        assert (Path('/workspace') / name).read_bytes() == blob
     commands = [settings['argv'], ['node', '-e',
         "const p=require('picocolors'); const assert=require('assert'); "
         "assert(require.resolve('picocolors').startsWith('/workspace/node_modules/')); "
@@ -196,14 +209,19 @@ print(json.dumps({'offline':True, 'executed':result.stdout.strip()}))
                 cancelled=lambda: False)
             if result.failure:
                 raise RuntimeError(result.failure + "\n" + result.stderr[-1500:].decode())
+            for name, original in original_node_files.items():
+                assert (checkout / name).read_bytes() == original
+            assert not (checkout / "root-script-ran").exists()
             print(json.dumps({
                 "namespace_acquisition": True, "broker_bytes": receipt.bytes_observed,
                 "broker_connections": receipt.connections,
                 "ecosystem": ecosystem, "diagnostic": options.diagnose_npm,
+                **({"original_manifests_preserved": True, "root_script_ran": False}
+                   if original_node_files else {}),
                 **json.loads(result.stdout),
             }))
         finally:
-            for handle in handles:
+            for handle in (*handles, *overlay_fds):
                 os.close(handle)
 
 

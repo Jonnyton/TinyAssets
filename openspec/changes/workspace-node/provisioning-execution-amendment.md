@@ -83,6 +83,16 @@ jail, package installation or browser runtime.
    canonical manifests plus writable cache, installation gets /workspace plus
    read-only cache. No generic arbitrary extra-bind escape hatch. Only
    verified canonical manifests/digests cross from acquisition to installation.
+   Offline npm uses two fixed read-only file overlays at /workspace/package.json
+   and /workspace/package-lock.json instead of rewriting the user's originals.
+   Their held regular-file descriptors must match the canonical manifest directory's
+   named entries, have bounded size, and be included in the exact typed inheritance
+   set. Checkout destinations must be regular files, not symlinks. Bind setup
+   consumes those descriptors before package code, as with directory handles.
+   No arbitrary file destination or additional network/credential access is added.
+   Real npm proof must preserve both original files byte-for-byte and keep the
+   original root lifecycle scripts unexecuted; dependency scripts remain permitted
+   offline. This implementation detail remains subject to exact-head review.
 7. Publish the workspace capability only with a truthful provisioning result.
    Exact typed failure must remain visible; partial installation is not success.
    Cleanup follows the lease/outbox lifecycle and preserves the existing

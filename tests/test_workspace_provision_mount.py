@@ -90,12 +90,12 @@ class ProvisionMountTests(unittest.TestCase):
             )
 
     def test_installation_rejects_any_additional_descriptor(self):
-        with self.assertRaisesRegex(ValueError, "only three distinct"):
+        with self.assertRaisesRegex(ValueError, "distinct typed descriptors"):
             argv(sandbox.ProvisionMount(30, 31, "install"),
                  workspace="/proc/self/fd/32", inherited=(30, 31, 32, 33))
 
     def test_checkout_cannot_reuse_provisioning_descriptor(self):
-        with self.assertRaisesRegex(ValueError, "only three distinct"):
+        with self.assertRaisesRegex(ValueError, "distinct typed descriptors"):
             argv(sandbox.ProvisionMount(30, 31, "install"),
                  workspace="/proc/self/fd/30", inherited=(30, 31))
 
@@ -300,3 +300,92 @@ print(json.dumps({'phase': phase, 'mounts_verified': True}))
     assert (directories[1] / "new").exists() == (phase == "acquire")
     assert (directories[2] / "installed").exists() == (phase == "install")
     assert not (directories[0] / "forbidden").exists()
+
+
+@pytest.mark.parametrize("phase,pair", [
+    ("acquire", (33, 34)), ("install", (33,)), ("install", [33, 34]),
+    ("install", (33, True)), ("install", (30, 34)), ("install", (33, 33)),
+])
+def test_npm_overlay_shape_refuses_noncanonical_descriptor_sets(phase, pair):
+    with pytest.raises(ValueError):
+        sandbox.ProvisionMount(30, 31, phase, pair)
+
+
+@pytest.fixture
+def npm_overlay(tmp_path):
+    if sys.platform != "linux" or not shutil.which("bwrap"):
+        pytest.skip("real npm manifest overlays require Linux bubblewrap")
+    paths = [tmp_path / name for name in ("manifests", "cache", "checkout")]
+    for path in paths:
+        path.mkdir()
+    for name in ('package.json', 'package-lock.json'):
+        (paths[0] / name).write_text('{"canonical":true}\n')
+        (paths[2] / name).write_text('{"original":true}\n')
+    fds = [os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW) for path in paths]
+    for name in ('package.json', 'package-lock.json'):
+        fds.append(os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fds[0]))
+    try:
+        yield paths, fds
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def test_real_npm_overlays_are_readonly_and_leave_originals_unchanged(npm_overlay):
+    paths, fds = npm_overlay
+    launch = sandbox.BwrapLauncher().for_workspace(sandbox.WorkspaceMount(
+        f"/proc/self/fd/{fds[2]}", pass_fds=(fds[2],))).for_provision(
+            sandbox.ProvisionMount(fds[0], fds[1], "install", tuple(fds[3:])))
+    source = '''
+import errno, os
+from pathlib import Path
+for name in ('package.json', 'package-lock.json'):
+    path = Path('/workspace') / name
+    assert path.read_text() == '{"canonical":true}\\n'
+    try:
+        path.write_text('forbidden')
+    except OSError as error:
+        assert error.errno in (errno.EROFS, errno.EACCES)
+    else:
+        raise AssertionError('canonical overlay writable')
+for name in os.listdir('/proc/self/fd'):
+    if int(name) > 2:
+        try:
+            os.fstat(int(name))
+        except OSError:
+            continue
+        raise AssertionError('host manifest descriptor survived')
+print('overlays verified')
+'''
+    result = subprocess.run(launch.build_argv(source, []), pass_fds=launch.pass_fds,
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                            env=launch.env('/tmp'), timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'overlays verified'
+    for name in ('package.json', 'package-lock.json'):
+        assert (paths[0] / name).read_text() == '{"canonical":true}\n'
+        assert (paths[2] / name).read_text() == '{"original":true}\n'
+
+
+@pytest.mark.parametrize('kind', ['wrong-file', 'directory', 'symlink-target', 'unadmitted'])
+def test_npm_overlay_refuses_wrong_files_or_targets(npm_overlay, kind):
+    paths, fds = npm_overlay
+    pair = tuple(fds[3:])
+    inherited = tuple(fds)
+    if kind == 'wrong-file':
+        pair = tuple(reversed(pair))
+    if kind == 'directory':
+        # A duplicate fd number would be refused even before the regular-file
+        # check; use a genuinely distinct descriptor naming a directory.
+        extra = os.dup(fds[0])
+        fds.append(extra)
+        pair = (extra, pair[1])
+        inherited = tuple(fds)
+    if kind == 'symlink-target':
+        (paths[2] / 'package.json').unlink()
+        (paths[2] / 'package.json').symlink_to(paths[0] / 'package.json')
+    if kind == 'unadmitted':
+        inherited = tuple(fds[:3])
+    mount = sandbox.ProvisionMount(fds[0], fds[1], 'install', pair)
+    with pytest.raises(ValueError):
+        mount.bind_argv(inherited, checkout_fd=fds[2])

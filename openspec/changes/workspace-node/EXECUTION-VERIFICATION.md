@@ -403,3 +403,37 @@ when composing offline installation; the diagnostic fixture's canonical rewrite
 is not permission to rewrite an arbitrary user's repository. Verified process
 death must remain a prerequisite for success/publication through the effector's
 existing error/cleanup wrappers, not just inside the isolated stage helper.
+
+## Preserve original npm manifests — September 15, 2026 21:24 UTC
+
+ProvisionMount now optionally carries the two held canonical npm regular-file
+descriptors, only during offline installation. They are matched by device/inode
+to package.json/package-lock.json beneath the held canonical directory; original
+checkout targets must be regular files, not links. Files are bounded to4MiB each.
+The exact inherited descriptor set now includes the pair, and the existing isolated
+post-mount bootstrap closes them before package code. Fixed read-only overlays at
+the workspace manifest paths replace the manual probe's original-file rewrites.
+No arbitrary target, caller path, host network or credential is added. The execution
+amendment records this detail for the pending independent exact-head review.
+
+Tests cover malformed pairs, acquisition refusal, duplicate descriptors,
+unadmitted handles, reversed/wrong files, directories and symlink destinations.
+A real jail sees canonical contents read-only, cannot retain any host file/directory
+descriptor, and leaves the two underlying original files unchanged.
+
+The manual real npm smoke includes a root preinstall script in its temporary
+original fixture, then uses canonical overlays. It exits0 with
+original_manifests_preserved=true, root_script_ran=false, offline=true,
+picocolors1.1.1,8870brokerbytes/1connection. No user repository or workflow was
+edited; this synthetic root script is test data. Python also exits0 with
+pytest9.1.1,1926808brokerbytes/2connections. Same explicit Docker commands above.
+
+Final ten-file cohort: provision_mount, provision_process, tree_usage,
+registry_process, registry_proxy, registry, resolver, provision, node_sandbox,
+node_sandbox_workspace (all tests/test_<name>.py, with workspace_ prefix except
+the two node_sandbox names). Windows python -m pytest -q:623passed,104skips,
+58subtests,21.78s. Same WSL scripts/linux_oracle.py command with -q -rs:
+727passed,63subtests,zero skips,27.85s. Ruff and plugin448files/import probe passed.
+No edits during snapshot/test execution. No production caller, task closure,
+new review, push or deployment. Next is consent/reservation/stage composition;
+the npm data-preservation obstacle no longer requires rewriting original files.

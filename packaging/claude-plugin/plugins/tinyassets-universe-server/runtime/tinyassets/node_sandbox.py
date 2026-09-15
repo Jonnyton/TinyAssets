@@ -285,28 +285,38 @@ class ProvisionMount:
     The provisioning coordinator owns both descriptors until the jail exits.
     It must acquire distinct sibling directories from its reserved, per-attempt
     lease scratch, outside the checkout. This object conveys mounts, not consent.
-    Only these two fixed destinations exist; no arbitrary extra bind is exposed.
+    Only fixed destinations exist: these two directories, and optionally the
+    canonical npm manifest pair read-only over the checkout's original files
+    during offline installation. No arbitrary extra bind is exposed.
     """
 
     manifests_fd: int
     cache_fd: int
     phase: str
+    node_manifest_fds: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if type(self.phase) is not str or self.phase not in ("acquire", "install"):
             raise ValueError("invalid provisioning mount phase")
+        if self.node_manifest_fds is not None:
+            if (self.phase != "install" or type(self.node_manifest_fds) is not tuple
+                    or len(self.node_manifest_fds) != 2):
+                raise ValueError("npm manifest overlays require an offline pair of descriptors")
         if any(type(fd) is not int or fd < 3 for fd in self.pass_fds):
             raise ValueError("provisioning mounts require owned directory descriptors")
         if self.manifests_fd == self.cache_fd:
             raise ValueError("provisioning manifests and cache must be distinct")
+        if len(set(self.pass_fds)) != len(self.pass_fds):
+            raise ValueError("provisioning descriptors must be distinct")
 
     @property
-    def pass_fds(self) -> tuple[int, int]:
-        return self.manifests_fd, self.cache_fd
+    def pass_fds(self) -> tuple[int, ...]:
+        return (self.manifests_fd, self.cache_fd, *(self.node_manifest_fds or ()))
 
     def bind_argv(self, inherited: tuple[int, ...], *, checkout_fd: int | None = None) -> list[str]:
         """Revalidate live descriptors immediately before building the launch."""
-        descriptors = self.pass_fds + ((checkout_fd,) if checkout_fd is not None else ())
+        descriptors = (self.manifests_fd, self.cache_fd)
+        descriptors += ((checkout_fd,) if checkout_fd is not None else ())
         if any(type(fd) is not int or fd < 3 for fd in descriptors):
             raise ValueError("provisioning mounts require owned directory descriptors")
         if any(fd not in inherited for fd in descriptors):
@@ -319,12 +329,31 @@ class ProvisionMount:
             identities.append((info.st_dev, info.st_ino))
         if len(set(identities)) != len(identities):
             raise ValueError("provisioning mounts alias the same directory")
-        return [
+        result = [
             "--dir", "/provision",
             "--ro-bind", f"/proc/self/fd/{self.manifests_fd}", "/provision/manifests",
             "--bind" if self.phase == "acquire" else "--ro-bind",
             f"/proc/self/fd/{self.cache_fd}", "/provision/cache",
         ]
+        for name, fd in zip(("package.json", "package-lock.json"), self.node_manifest_fds or ()):
+            if checkout_fd is None:
+                raise ValueError("npm overlays require the held checkout descriptor")
+            if fd not in inherited:
+                raise ValueError("npm manifest descriptor was not admitted for inheritance")
+            info = os.fstat(fd)
+            named = os.stat(name, dir_fd=self.manifests_fd, follow_symlinks=False)
+            target = os.stat(name, dir_fd=checkout_fd, follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or not stat.S_ISREG(named.st_mode)
+                    or not stat.S_ISREG(target.st_mode)
+                    or not 0 < info.st_size <= 4 * 1024 * 1024
+                    or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)):
+                raise ValueError("npm overlay must be the bounded canonical manifest file")
+            identity = (info.st_dev, info.st_ino)
+            if identity in identities:
+                raise ValueError("npm manifest descriptors alias")
+            identities.append(identity)
+            result.extend(("--ro-bind", f"/proc/self/fd/{fd}", f"/workspace/{name}"))
+        return result
 
 
 @dataclass
@@ -1719,9 +1748,10 @@ def _bwrap_argv(
                 raise ValueError("provisioning installation requires a held checkout descriptor")
             checkout_fd = int(workspace_fd.group(1))
             permitted = {*provision_mount.pass_fds, checkout_fd}
-            if set(pass_fds) != permitted or len(permitted) != 3:
+            expected = 3 + len(provision_mount.node_manifest_fds or ())
+            if set(pass_fds) != permitted or len(permitted) != expected:
                 raise ValueError(
-                    "offline installation inherits only three distinct directory descriptors"
+                    "offline installation inherits only its distinct typed descriptors"
                 )
         provision_binds = provision_mount.bind_argv(pass_fds, checkout_fd=checkout_fd)
 
