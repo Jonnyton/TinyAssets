@@ -14,12 +14,14 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from tinyassets import node_sandbox as sandbox  # noqa: E402
+from tinyassets import workspace_fs  # noqa: E402
 from tinyassets import workspace_registry_proxy as proxy  # noqa: E402
 from tinyassets import workspace_resolver as resolver  # noqa: E402
 from tinyassets.workspace_provision_process import run_provision_stage  # noqa: E402
@@ -39,18 +41,6 @@ def main():
         manifests, cache, checkout = (root / name for name in ("manifests", "cache", "checkout"))
         for directory in (manifests, cache, checkout):
             directory.mkdir()
-        def storage_usage():
-            # Manual fixture measurement only. Production must use its bounded
-            # held-handle lease/cache measurement, not this path-based probe.
-            total = 0
-            for _, _, names, directory_fd in os.fwalk(root, follow_symlinks=False):
-                for name in names:
-                    try:
-                        total += os.stat(name, dir_fd=directory_fd,
-                                         follow_symlinks=False).st_size
-                    except FileNotFoundError:
-                        pass  # npm renames transient files while we sample.
-            return total
         fixtures = ROOT / "tests/fixtures/workspace"
         if ecosystem == "python":
             (checkout / "requirements.txt").write_bytes(
@@ -60,6 +50,19 @@ def main():
                 (checkout / name).write_bytes((fixtures / "node" / name).read_bytes())
         handles = [os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                    for path in (manifests, cache, checkout)]
+        def storage_usage():
+            total = 0
+            bound = 256 * 1024 * 1024
+            deadline = time.monotonic() + 1
+            for handle in handles:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("storage measurement deadline exceeded")
+                total += workspace_fs.measure_tree_beneath(
+                    handle, max_bytes=bound-total, timeout_s=remaining)
+                if total > bound:
+                    break
+            return total
         try:
             admitted = resolver.read_provision_manifests(
                 handles[2], python_path="requirements.txt" if ecosystem == "python" else None,
@@ -72,7 +75,7 @@ def main():
                     inside, "/provision/cache", python=sys.executable)
             else:
                 staged = resolver.stage_node_plan(admitted.node, manifests)
-                prefix = Path("/tmp/npm-acquire")
+                prefix = Path("/provision/cache/npm-acquire")
                 inside = resolver.StagedNodeManifests(
                     prefix, prefix / "package.json", prefix / "package-lock.json", staged.digest)
                 acquisition_argv = resolver.npm_fetch_argv(inside, "/provision/cache")
@@ -93,7 +96,8 @@ assert not _apply_rlimits(resource, 40, settings['limits'])
 if settings['ecosystem'] == 'node':
     # npm ci extracts node_modules: give it its own disposable prefix, never
     # the read-only canonical manifests or the real checkout.
-    prefix = Path('/tmp/npm-acquire')
+    # Extraction is charged storage too; do not hide it in an unmeasured tmpfs.
+    prefix = Path('/provision/cache/npm-acquire')
     prefix.mkdir()
     blobs = [(Path('/provision/manifests') / name).read_bytes()
              for name in ('package.json', 'package-lock.json')]

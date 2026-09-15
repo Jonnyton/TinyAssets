@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from tinyassets import node_sandbox as sandbox
+from tinyassets import workspace_fs
 from tinyassets.workspace_provision_process import run_provision_stage
 from tinyassets.workspace_registry_process import RegistryBrokerProcess
 
@@ -146,6 +147,33 @@ def test_running_stage_is_reaped_on_every_guard(stage, mode):
 def test_nonzero_exit_is_not_success(stage):
     launcher, _ = stage
     assert invoke(launcher(), "raise SystemExit(17)").failure == "process_failed"
+
+
+@pytest.mark.parametrize("phase", ["acquire", "install"])
+def test_actual_storage_growth_is_measured_and_ends_jail(stage, phase):
+    launcher, paths = stage
+    disk_path = paths[1] if phase == "acquire" else paths[2]
+    inside = "/provision/cache" if phase == "acquire" else "/workspace"
+    held = workspace_fs.open_dir_nofollow(disk_path)
+    broker = RegistryBrokerProcess(max_bytes=4096) if phase == "acquire" else None
+    try:
+        if broker:
+            broker.start()
+        result = invoke(
+            launcher(phase),
+            f"from pathlib import Path; import time; "
+            f"Path('{inside}/expanded').write_bytes(b'x' * 262144); time.sleep(60)",
+            broker=broker, storage_bound=65536,
+            storage_usage=lambda: workspace_fs.measure_tree_beneath(held, max_bytes=65536))
+        assert result.failure == "storage_limit"
+        assert (disk_path / "expanded").stat().st_size > 65536
+        if broker:
+            assert broker.process.poll() is not None
+            assert result.broker.bytes_to_charge == 4096
+    finally:
+        if broker:
+            broker.close()
+        os.close(held)
 
 
 def test_resource_setup_failure_never_executes_install(stage):

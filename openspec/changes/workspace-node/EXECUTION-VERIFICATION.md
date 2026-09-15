@@ -316,3 +316,46 @@ run cancellation lifecycle rather than silently supplying False.
 Tasks2.1-2.3 remain open. No rollout, independent review, production caller or
 claim that browser dependencies/preview now work. Shared repair3860 still gates
 landing, and the requested review-model/extra-round decisions remain unanswered.
+
+## Held-handle storage meter — September 15, 2026 21:11 UTC
+
+Implemented workspace_fs.measure_tree_beneath, reusing the existing no-follow
+child-directory opener and depth bound. It starts from the held root, reopens
+dot relative to that fd for an independent directory offset, streams entries,
+never follows symlinks or opens file contents, verifies child inode/device and
+closes handles/iterators on every exit. It counts max(apparent,allocated) bytes;
+hard links may count twice conservatively. It returns bound+1 when already over,
+or a fixed error for incomplete/unknown measurement. Iteration is deadline-bound;
+it does not claim to interrupt a blocked kernel filesystem syscall or provide
+an atomic snapshot/kernel quota. A final stable scan after writer exit is required.
+
+Tests cover repeat scans/offsets, held-root rename and replacement, directory
+link and inode swaps, symlinks to large outside files, broken links/FIFO without
+blocking, sparse/hardlinked files, exceeded byte/time/depth bounds, fd cleanup
+and private-name-safe errors. Real acquisition and offline jails each write a
+file past their storage bound; the real meter observes it and the supervisor
+terminates the jail, retaining full broker charge for interrupted acquisition.
+
+The manual smoke now uses held-handle measurements, replacing its path walker.
+Found and fixed an important integration premise: npm acquisition extracted
+node_modules under /tmp, which was outside the measured cache. Its fixed private
+prefix is now /provision/cache/npm-acquire, still without checkout access, so
+expanded package bytes count too. This remains test-probe composition, not the
+production caller. Other private tmpfs usage and kernel disk quotas remain the
+documented best-effort resource-control residual; do not call this a quota.
+Real normal npm proof exits0:8872bytes/1connection/offline picocolors1.1.1;
+Python exits0:1926764bytes/2connections/offline pytest9.1.1. Commands as above.
+
+Final eleven-file suite is the preceding nine plus tests/test_workspace_fs.py
+and tests/test_workspace_tree_usage.py. Windows python -m pytest -q:626passed,
+141skips,58subtests,22.48s. Same WSL Linux oracle command with -q -rs:
+765passed,2skips,63subtests,28.52s. Both Linux skips explicitly test off-POSIX
+refusal (test_workspace_fs.py441 and1020), not unexecuted Linux jail coverage.
+Ruff and plugin448files/import probe passed; no edits during oracle copying.
+
+Cancellation source reverified: runs.is_cancel_requested reads run_cancels,
+and runs.py3619/5246 passes a root-run closure to compile_branch. The code-node
+adapter receives it, but workspace effector dispatch currently does not. Thread
+that existing predicate through the effect wrapper/adapter; do not query the
+universe's distinct workspace database or invent an always-false callback.
+No consent/reservation/caller integration, task closure, rollout or new review.
