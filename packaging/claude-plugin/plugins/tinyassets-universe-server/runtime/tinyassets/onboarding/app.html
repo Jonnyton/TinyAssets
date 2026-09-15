@@ -2145,7 +2145,8 @@
       const draft=this.draft||this.automatic(),chosen=draft.saved_default;
       for(const row of rows){
         const ref=row.reference,key=this.key(ref),reasons=(row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ");
-        const label=this.label(ref)+(reasons ? " — "+reasons : "");
+        const health=(row.labels||[]).includes("recent_sign_in_failure") ? "recent sign-in failure; check connection" : "";
+        const label=this.label(ref)+(reasons ? " — "+reasons : health ? " — "+health : "");
         this.option(primary,key,label,!this.usable(row));
         if(this.usable(row)&&(!chosen||this.key(chosen)!==key)&&!draft.fallbacks.some(r=>this.key(r)===key)) this.option(add,key,this.label(ref),false);
       }
@@ -2171,13 +2172,15 @@
       const inventory=$("model-inventory");inventory.replaceChildren();
       for(const row of rows){
         const li=document.createElement("li");
+        const signInFailed=(row.labels||[]).includes("recent_sign_in_failure");
         li.textContent=this.label(row.reference)+" — "+(this.stale ? "stale; " : "")+
-          ((row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ")|| (row.availability_basis==="owner_declared"?"owner-selected; availability not verified":this.usable(row)?"available":"availability unconfirmed"));
+          ((row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ")|| (signInFailed?"recent sign-in failure":row.availability_basis==="owner_declared"?"owner-selected; availability not verified":this.usable(row)?"available":"availability unconfirmed"));
         if(row.availability_basis==="executor_default"){
           const enumerated=rows.some(other=>other.reference.provider_ref===row.reference.provider_ref&&other.availability_basis==="executor_enumerated");
           li.textContent+=" — provider chooses the model"+(enumerated?"":"; full model list not yet verified");
         }
         if(row.availability_basis==="executor_enumerated") li.textContent+=" — listed by the connected provider";
+        if(signInFailed) li.textContent+=" — Automatic prefers other eligible sources. You can select this source to try again or reconnect it.";
         if(row.availability_basis==="owner_configured_contract") li.textContent+=" — availability, privacy and charges are declared by this configured source, not independently verified";
         inventory.appendChild(li);
       }

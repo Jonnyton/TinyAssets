@@ -217,10 +217,16 @@ def test_unsuccessful_terminal_keeps_only_typed_error_evidence(category):
     with pytest.raises(ProviderError) as raised:
         _run_stream(proc, _FAST)
     exc = raised.value
-    assert type(exc) is ProviderError
-    assert exc.failure_class is None
-    assert category in str(exc)
-    assert "is_error=true" in str(exc)
+    if category == "authentication_failed":
+        from tinyassets.exceptions import ProviderAuthenticationError
+
+        assert type(exc) is ProviderAuthenticationError
+        assert exc.failure_class == "auth_invalid"
+    else:
+        assert type(exc) is ProviderError
+        assert exc.failure_class is None
+        assert category in str(exc)
+        assert "is_error=true" in str(exc)
     assert "private" not in str(exc)
     assert exc.attempt_telemetry["last_assistant_error"] == category
     assert exc.attempt_telemetry["terminal_is_error"] == "true"
@@ -277,7 +283,9 @@ def test_native_auth_error_text_then_terminal_keeps_clue(returncode):
     ], returncode=returncode)
     with pytest.raises(ProviderError) as raised:
         _run_stream(proc, _FAST)
-    assert type(raised.value) is ProviderError
+    from tinyassets.exceptions import ProviderAuthenticationError
+
+    assert type(raised.value) is ProviderAuthenticationError
     assert raised.value.attempt_telemetry["phase"] == "init"
     assert raised.value.attempt_telemetry["last_assistant_error"] == "authentication_failed"
     assert raised.value.native_evidence.protocol_complete is False

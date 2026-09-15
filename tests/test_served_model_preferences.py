@@ -179,6 +179,58 @@ def test_mixed_automatic_prefers_owned_native_default(agent, monkeypatch):
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+@pytest.mark.parametrize("recovery", ["automatic", "explicit"])
+def test_auth_failure_affects_only_new_auto_turn_not_failed_native_replay(
+    agent, monkeypatch, recovery,
+):
+    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthenticationError
+    from tinyassets.providers import source_health
+    from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+    from tinyassets.providers.served_model_plan import prepare_owned_model_plan
+
+    monkeypatch.setattr(source_health, "SOURCE_HEALTH", source_health.SourceHealth())
+    native = agent.served.native
+    original = native.complete
+
+    async def fail(*args, **kwargs):
+        native.calls += 1
+        error = ProviderAuthenticationError("fixture sign-in refusal")
+        error.attempt_telemetry = {"side_effect_state": "committed"}
+        error.native_evidence = NativeCompletionEvidence("codex", False, True, "committed")
+        raise error
+
+    monkeypatch.setattr(native, "complete", fail)
+    with pytest.raises(AllProvidersExhaustedError) as raised:
+        _converse(agent, monkeypatch)
+    assert raised.value.failure_class == "auth_invalid"
+    assert native.calls == 1 and agent.wires == [] and agent.tools == []
+    assert agent.latest().state == "held_native_unknown"
+    assert agent.served.router._quota.available("codex")
+
+    def prepare(current=None):
+        return prepare_owned_model_plan(
+            base=agent.served.rig.base, universe=agent.served.context.universe_dir,
+            owner="owner", agent=agent.served.agent, current=current,
+        ).plan
+
+    alternative = prepare().next_candidate("owner", "u-models")
+    assert alternative.connection_id.startswith("api_key_http:")
+    explicit = ModelPreferences("explicit", ModelRef("codex", ""), ())
+    assert prepare(explicit).next_candidate("owner", "u-models") == ModelRef("codex", "")
+    if recovery == "explicit":
+        # A fresh, explicitly selected successful attempt clears only its own hint.
+        monkeypatch.setattr(native, "complete", original)
+        assert _converse(agent, monkeypatch, explicit.document()) == "codex:hello"
+        assert prepare().next_candidate("owner", "u-models") == ModelRef("codex", "")
+    else:
+        agent.requested_rounds = 0
+        assert _converse(agent, monkeypatch) == "finished exact answer"
+        assert native.calls == 1 and len(agent.wires) == 1
+        assert prepare().next_candidate("owner", "u-models") == alternative
+    assert ModelPreferenceStore(agent.served.rig.base).get("owner", "u-models").policy is None
+
+
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
 def test_mixed_explicit_http_overrides_native_preference(agent, monkeypatch):
     choice = ModelPreferences("explicit", ModelRef(
         f"api_key_http:{agent.served.rig.definition.id}", authority.MODEL,

@@ -46,6 +46,10 @@ def model_options_document(
                 raise ValueError("duplicate model option")
             seen.add(ref)
             candidate = candidates.get(ref)
+            labels = [] if candidate is None else list(candidate.labels)
+            if (ref.connection_id in plan.reconnect_sources
+                    and "recent_sign_in_failure" not in labels):
+                labels.append("recent_sign_in_failure")
             row_reasons = list(reasons.get(ref, []))
             for reason in source_reasons.get(ref.connection_id, []):
                 # Missing enumeration is a source diagnostic, not a refusal of
@@ -83,7 +87,7 @@ def model_options_document(
                 "in_candidate_catalog": ref in admitted,
                 "order_index": positions.get(ref),
                 "basis": None if candidate is None else candidate.basis,
-                "labels": [] if candidate is None else list(candidate.labels),
+                "labels": labels,
                 "reasons": row_reasons,
             })
     primary = plan.policy.current_selection or plan.policy.saved_default

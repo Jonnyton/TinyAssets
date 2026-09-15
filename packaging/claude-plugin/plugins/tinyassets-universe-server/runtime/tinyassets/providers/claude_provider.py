@@ -29,6 +29,7 @@ from pathlib import Path
 
 from tinyassets.exceptions import (
     InteractiveDeadlineError,
+    ProviderAuthenticationError,
     ProviderError,
     ProviderIdleTimeoutError,
     ProviderOverloadedError,
@@ -827,6 +828,11 @@ class ClaudeProvider(BaseProvider):
                 # Keep the observed terminal verdict and last typed category,
                 # never upstream result/errors/content or arbitrary subtype text.
                 subtype = "success" if terminal.get("subtype") == "success" else "non_success"
+                if (terminal.get("is_error") is True
+                        and last_assistant_error == "authentication_failed"):
+                    raise _attach(ProviderAuthenticationError(
+                        "The provider reported a sign-in failure during this turn"
+                    ))
                 raise _attach(ProviderError(
                     f"claude -p terminal result was not success "
                     f"(subtype={subtype}, is_error={_terminal_error_flag(terminal)}, "
