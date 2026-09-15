@@ -449,6 +449,38 @@ A universe owner SHALL be able to serve converse/writer turns on a registered op
 - **WHEN** it is evaluated
 - **THEN** it fails closed — the missing snapshot is NOT treated as a `connection_grant` (kind is explicit, never inferred)
 
+### Requirement: Connection readiness recognizes current accepted manifest members without authorizing execution
+
+The connection-request rail SHALL determine whether an owner has exactly one
+current serving binding using local assignment and custody evidence. For a
+manifest assignment, any currently accepted member that passes the existing
+owner, universe, assignment and custody checks SHALL satisfy connection readiness;
+the anchor alone SHALL NOT determine whether setup is required. Legacy fixed
+assignments SHALL retain their existing current-authority checks. This read SHALL
+NOT discover models, probe remote quota, invoke a provider, enable an executor,
+or authorize any model or work; each real invocation retains its own admission.
+
+#### Scenario: A manifest-backed conversation does not request redundant setup
+- **GIVEN** an owner with exactly one serving binding and a current manifest member with valid custody
+- **WHEN** the app lists pending requests
+- **THEN** it does not synthesize a missing-model connection request merely because the binding uses a manifest
+- **AND** the actual model choice and invocation remain subject to their normal authorization checks
+
+#### Scenario: Another accepted member remains usable
+- **GIVEN** an accepted member is refused by current custody checks while another accepted member passes them
+- **WHEN** local connection readiness is evaluated
+- **THEN** the refused member does not make the remaining valid connection disappear
+
+#### Scenario: No current owner-bound connection exists
+- **GIVEN** no unique owner-bound serving binding exists, or no accepted member passes current assignment and custody checks
+- **WHEN** connection readiness is evaluated
+- **THEN** the missing-model request remains necessary rather than borrowing another owner's connection
+
+#### Scenario: Polling cannot activate inference
+- **GIVEN** a connection-request poll
+- **WHEN** local connection readiness is read
+- **THEN** no model catalogue request, provider execution, remote quota probe or executor activation occurs
+
 ### Requirement: Foreground prompt runs derive exact provider authority from the active serving assignment
 A user-authorized foreground Branch run that reaches a prompt node SHALL derive
 provider authority from the owner's current ACTIVE serving assignment for that
