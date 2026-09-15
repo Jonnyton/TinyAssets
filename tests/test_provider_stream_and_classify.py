@@ -202,6 +202,64 @@ _FAST = ModelConfig(
 )
 
 
+@pytest.mark.parametrize("category", [
+    "authentication_failed", "oauth_org_not_allowed", "billing_error", "rate_limit",
+    "overloaded", "invalid_request", "model_not_found", "server_error",
+    "max_output_tokens", "unknown",
+])
+def test_unsuccessful_terminal_keeps_only_typed_error_evidence(category):
+    event = _assistant_text("private upstream request content")
+    event["error"] = category
+    proc = FakeStreamProcess([
+        _line(INIT), _line(event),
+        _line(_result("private result content", is_error=True, errors=["private error content"])),
+    ])
+    with pytest.raises(ProviderError) as raised:
+        _run_stream(proc, _FAST)
+    exc = raised.value
+    assert type(exc) is ProviderError
+    assert exc.failure_class is None
+    assert category in str(exc)
+    assert "is_error=true" in str(exc)
+    assert "private" not in str(exc)
+    assert exc.attempt_telemetry["last_assistant_error"] == category
+    assert exc.attempt_telemetry["terminal_is_error"] == "true"
+    assert exc.native_evidence.protocol_complete is False
+    from tinyassets.providers.agent_capacity_boundary import capacity_boundary
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+    from tinyassets.providers.model_policy import ModelRef
+
+    assert capacity_boundary(
+        ModelRef("claude-code", ""), [ProviderAttemptDiagnostic(
+            "claude-code", "failed", "provider_error", failure_class=exc.failure_class,
+            side_effect_state=exc.attempt_telemetry["side_effect_state"],
+        )], execution_kind="native_agent", native_evidence=(exc.native_evidence,),
+    ) is None
+
+
+@pytest.mark.parametrize("value", [
+    "private token=not-for-logs", {"secret": "private"}, ["private"],
+])
+def test_unknown_native_error_values_never_enter_failure_diagnostics(value):
+    event = _assistant_text("private text")
+    event["error"] = value
+    proc = FakeStreamProcess([
+        _line(event), _line(_result("private result", subtype="private subtype", is_error=value)),
+    ])
+    with pytest.raises(ProviderError) as raised:
+        _run_stream(proc, _FAST)
+    assert "private" not in str(raised.value)
+    assert "unrecognized" in str(raised.value)
+    assert raised.value.attempt_telemetry["terminal_is_error"] == "non_boolean"
+
+
+def test_assistant_error_does_not_override_a_later_successful_terminal():
+    event = _assistant_text("temporary error")
+    event["error"] = "server_error"
+    proc = FakeStreamProcess([_line(event), _line(_result("recovered", is_error=False))])
+    assert _run_stream(proc, _FAST).text == "recovered"
+
+
 # ---------------------------------------------------------------------------
 # 5.1 Behavior parity: recorded stream assembles the SAME final text
 # ---------------------------------------------------------------------------
