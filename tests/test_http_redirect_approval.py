@@ -105,7 +105,10 @@ def test_legacy_identity_repair_is_stable_and_changes_no_policy_or_grants(base):
     assert all(char in "0123456789abcdef" for char in tokens[0])
     with ledger._connect() as conn:
         after = dict(conn.execute("SELECT * FROM outbound_connections").fetchone())
-        assert [dict(row) for row in conn.execute("SELECT * FROM outbound_connection_grants")] == grants
+        after_grants = [
+            dict(row) for row in conn.execute("SELECT * FROM outbound_connection_grants")
+        ]
+        assert after_grants == grants
     assert after == {**before, "incarnation": tokens[0]}
 
 

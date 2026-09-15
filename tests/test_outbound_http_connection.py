@@ -164,6 +164,24 @@ def test_legacy_identity_repair_mints_per_row_and_skips_initialized_writes(tmp_p
     assert not any(sql.lstrip().upper().startswith("UPDATE") for sql in statements)
 
 
+def test_legacy_identity_repair_fails_loudly_if_database_is_readonly(tmp_path, monkeypatch):
+    db_path = tmp_path / "readonly-legacy.db"
+    ledger = ConnectionLedger(db_path)
+    _create_http_connection(ledger)
+    with ledger._connect() as conn:
+        conn.execute("UPDATE outbound_connections SET incarnation = ''")
+
+    def readonly_connect(self):
+        conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    monkeypatch.setattr(ConnectionLedger, "_connect", readonly_connect)
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        ConnectionLedger(db_path)
+    assert ledger.incarnation("conn-http") == ""
+
+
 # --------------------------------------------------------------------------- #
 # ConnectionView redaction — credential_ref never leaks
 # --------------------------------------------------------------------------- #

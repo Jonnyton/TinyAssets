@@ -20,6 +20,12 @@ redirect_mode is public_https_get. Omitted and none SHALL be equivalent.
 - **THEN** redirect enablement refuses without changing policy
 - **AND** old writers that discard the property leave no-follow and require fresh approval to re-enable it
 
+#### Scenario: Legacy connection has no deposit identity marker
+- **WHEN** ledger initialization finds an existing connection with an empty incarnation
+- **THEN** it persists a fresh opaque per-row identity without changing policy, credentials, ownership, revocation or grants
+- **AND** subsequent opens preserve that identity and perform no repair write when no empty identities remain
+- **AND** the owner can request fresh redirect consent without redepositing a key; missing or stale redirect snapshots still refuse
+
 ### Requirement: Redirect chains remain bounded and credential isolated
 The existing broker SHALL validate every redirect before its socket using the
 existing canonical URL, public-address, DNS pinning, TLS and peer checks. It
