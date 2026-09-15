@@ -1175,7 +1175,7 @@ def serving_connection_is_current(
                                 owner_user_id=owner, universe_id=uid, agent=agent,
                                 provider=member.provider,
                             )
-                        except PermissionError:
+                        except (PermissionError, UnknownServingProvider):
                             continue
                         return True
                     return False
@@ -1319,7 +1319,7 @@ def list_serving_universes(base_path: str | Path) -> list[str]:
                                         universe_id=uid, agent=current_agent,
                                         provider=member.provider,
                                     )
-                                except PermissionError:
+                                except (PermissionError, UnknownServingProvider):
                                     continue
                                 break
                             else:
