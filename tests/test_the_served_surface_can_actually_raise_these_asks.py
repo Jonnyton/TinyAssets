@@ -99,16 +99,16 @@ def test_a_labelled_credential_ask_survives_the_served_door(monkeypatch, univers
 def test_the_served_door_still_refuses_what_it_always_refused(monkeypatch, universe):
     """The fix widened one action type, not the door.
 
-    Connections, automations, agents and goals are still not built from here --
-    that invariant is why removal became an ASK rather than a new target.
+    Discovery-only connection setup is now allowed, but removal remains a
+    person-confirmed ASK; that permission boundary must not widen.
     """
     s = _served(monkeypatch)
     out = json.loads(s.write_graph(
         target="connection", operation="remove_http",
         payload_json=json.dumps({"destination": "github"}),
     ))
-    assert out.get("error"), "target='connection' became reachable from the served surface"
-    assert "branch" in out["error"] and "pending_request" in out["error"]
+    assert out.get("error"), "connection removal became reachable from the served surface"
+    assert out["error"] == "connection supports operation='configure_provider_capability' only"
 
 
 def test_the_agent_cannot_answer_its_own_ask_through_the_served_door(monkeypatch, universe):

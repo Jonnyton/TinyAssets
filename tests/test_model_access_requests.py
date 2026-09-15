@@ -2,6 +2,7 @@
 
 import json
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,11 @@ def rig(tmp_path, monkeypatch):
     set_founder_home(tmp_path, founder_sub="owner-1", universe_id="u-owner",
                      platform_generated=True)
     grant_universe_access(tmp_path, universe_id="u-owner", actor_id="owner-1", permission="admin")
+    # Exercise real assignment/custody/readiness logic with a deterministic
+    # executor boundary, not whichever subscription CLI the test host installed.
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: SimpleNamespace(
+        _providers={"codex": SimpleNamespace(is_available=lambda: True)},
+    ))
     return tmp_path, universe, binding
 
 
@@ -58,11 +64,26 @@ def test_model_request_is_non_authorizing_until_owner_answers(rig):
     assert "disconnects and reconnects" in row["grant_sentence"]
     assert "free models only" in row["grant_sentence"]
     result = answer(row)
-    assert result["status"] == "answered", result
+    assert result.get("status") == "answered", result
     assert get_request(rig[1], row["request_id"])["status"] == "answered"
     assignment = load_provider_assignment(rig[0], universe_id="u-owner")
     assert assignment.state == "ready" and assignment.generation == 1
     assert assignment.candidates[0].access == ModelAccess("explicit", ("",))
+
+
+@pytest.mark.parametrize("router", [None, SimpleNamespace(_providers={}),
+    SimpleNamespace(_providers={"codex": SimpleNamespace(is_available=lambda: False)})])
+def test_missing_executor_keeps_approved_setup_pending(rig, monkeypatch, router):
+    from tinyassets.custom_agents import get_binding
+
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: router)
+    row = ask(rig)
+    result = answer(row)
+    assert result["error"] == "provider_authority_denied", result
+    assert get_request(rig[1], row["request_id"])["status"] == "pending"
+    assert load_provider_assignment(rig[0], universe_id="u-owner").state == "ready"
+    binding = get_binding(rig[0], universe_id="u-owner", binding_id=rig[2]["agent_binding_id"])
+    assert binding["status"] != "serving"
 
 
 @pytest.mark.parametrize("change", [
