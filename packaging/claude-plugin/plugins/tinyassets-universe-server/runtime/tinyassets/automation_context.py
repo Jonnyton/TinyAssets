@@ -6,11 +6,13 @@ promotes conversation or prior model output into instructions or brain facts.
 from __future__ import annotations
 
 import copy
-from contextlib import closing
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
+
+from tinyassets.conversation_failure import failure_column_sql, project_failure_row
 
 CONTEXT_REF = {"$automation_context": "v1"}
 MAX_CONTEXT_BYTES = 1024 * 1024
@@ -41,20 +43,24 @@ def _brain(root: Path) -> dict[str, Any]:
     return result
 
 
-def _conversation(root: Path) -> dict[str, Any]:
+def _conversation(root: Path, owner_principal_id: str) -> dict[str, Any]:
+    if not isinstance(owner_principal_id, str) or not owner_principal_id.strip():
+        raise ValueError("automation_context_owner_required")
     path = _contained(root, root / ".conversation_memory.db")
     if not path.exists():
         return {"available": False, "messages": [], "older_messages_omitted": False}
     # No schema writes, migrations, caller-selected session or foreign path.
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
+        failure_column = failure_column_sql(conn)
         rows = conn.execute(
-            "SELECT id, session_id, turn_no, speaker, content, ts, ext_id "
-            "FROM conversation_turns ORDER BY id DESC LIMIT ?",
-            (CONVERSATION_LIMIT + 1,),
+            "SELECT id, session_id, turn_no, speaker, content, ts, ext_id, "
+            f"{failure_column} AS failure_json "
+            "FROM conversation_turns WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            (f"principal:{owner_principal_id}", CONVERSATION_LIMIT + 1),
         ).fetchall()
     omitted = len(rows) > CONVERSATION_LIMIT
-    messages = [dict(row) for row in reversed(rows[:CONVERSATION_LIMIT])]
+    messages = [project_failure_row(row) for row in reversed(rows[:CONVERSATION_LIMIT])]
     return {
         "available": True,
         "messages": messages,
@@ -204,7 +210,7 @@ def resolve_automation_inputs(
         "universe_id": uid,
         "automation_id": automation.automation_id,
         "brain": _brain(root),
-        "conversation": _conversation(root),
+        "conversation": _conversation(root, getattr(automation, "owner_principal_id", "")),
         "previous_run": previous,
         "last_completed_run": completed,
     }

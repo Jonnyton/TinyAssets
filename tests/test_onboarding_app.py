@@ -1473,7 +1473,7 @@ console.log(JSON.stringify({{
     assert "when.dateTime=stamp.iso" in html
     assert "Date and time unavailable" in html
     assert 'who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts)' in html
-    assert '? "universe" : "founder"' in html
+    assert 'appendFailureNotice(t.text,paired?previous:null,t.ts' in html
     assert 'role==="system"?"Notice":"You"' in html
     assert 'className="msg msg--system"' not in html, (
         "every visible notice must use the same timestamped message renderer"
@@ -1522,7 +1522,7 @@ function appendMessage(role,text,extra){
     tag:extra.tagName,cls:extra.className,text:extra.textContent,children:extra.children.length});
   const el=new El("div"); el.className="msg msg--"+role; el.textContent=text;
   if(extra) el.appendChild(extra);
-  if(role==="system") els.thread.appendChild(el);
+  if(role==="system"||role==="platform") els.thread.appendChild(el);
   return el;
 }
 function setStatusLine(t){ els["status-line"].textContent=t||""; }
@@ -1613,8 +1613,11 @@ __APP_FUNCTIONS__
     out.composer=els["composer-input"] ? els["composer-input"].value : null;
     out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
   }else if(SCENARIO.kind==="voice"){
-    out.spokenReply=await sendVoiceTurn(SCENARIO.message);
+    try{out.spokenReply=await sendVoiceTurn(SCENARIO.message);}
+    catch(error){if(!SCENARIO.expectFailure)throw error;out.voiceError=error.message;}
     out.converseCalls=converseCalls; out.converseMethods=converseMethods;
+    out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
+    out.messages=messages;
   }else if(SCENARIO.kind==="rail"){
     const req=SCENARIO.request;
     els["fb_"+req.request_id]=new El("input");
@@ -1732,7 +1735,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
         "copyModelChoice", "captureTurnOptions",
-        "executionLabel", "answerExecutionDetail",
+        "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
         "offerResend", "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
         "restoreInflight",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
@@ -2017,7 +2020,8 @@ def test_a_delivered_reply_forgets_the_in_flight_record(tmp_path):
 def test_a_transport_failure_still_offers_the_resend(tmp_path):
     out = _run_app(tmp_path, {"kind": "send", "message": "hi", "transportError": True})
     assert out["inflight"]["message"] == "hi"
-    assert any("didn’t get through" in n["text"] for n in out["notes"])
+    assert any("Delivery could not be confirmed" in n["text"] for n in out["notes"])
+    assert any("may already have acted" in n["text"] for n in out["notes"])
 
 
 def _turn(speaker, text, age_s):
@@ -2127,7 +2131,7 @@ def test_an_unconfirmed_message_survives_a_reload_and_says_so():
     assert "inputMethod:turnInputMethod(inputMethod)" in html
     # Cleared on success, KEPT on failure — a failed send is still the user's.
     assert "forgetInflight();" in html
-    assert "the send failed, so the message is still the" in html
+    assert "Unsaved or unconfirmed: the local recovery record is still needed" in html
     # Restored only when history does not already contain it.
     assert "function restoreInflight(turns)" in html
     assert "This message was never confirmed" in html
