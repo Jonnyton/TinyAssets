@@ -76,6 +76,42 @@ test("private source and non-JSON data refuse with value-free errors", () => {
   assert.throws(() => experience.inspect(cyclic));
 });
 
+
+test("credential text vectors agree with the native Python validator", () => {
+  const vectors = [
+    "plain public note", "Bearer", "sk-short",
+    "bEaReR abc.DEF-123", "GHP_abcdefghijklmnop", "xoxb-abcdefghijklmnop",
+    "sk-abcdefghijklmnop", "eyJabcdefgh.abcdefgh.abcdefgh",
+    "prefix ghp_abcdefghijklmnop suffix"
+  ];
+  const {spawnSync} = require("node:child_process");
+  const python = process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
+  const result = spawnSync(python, ["-c", [
+    "import json,sys",
+    "from tinyassets.custom_agents import AgentValidationError, _check_secret_fields",
+    "results=[]",
+    "for value in json.load(sys.stdin):",
+    "    try:",
+    "        _check_secret_fields({'text': value})",
+    "        results.append(True)",
+    "    except AgentValidationError:",
+    "        results.append(False)",
+    "print(json.dumps(results))"
+  ].join("\n")], {input: JSON.stringify(vectors), encoding: "utf8",
+    cwd: require("node:path").resolve(__dirname, "..")});
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+  const native = JSON.parse(result.stdout);
+  assert.deepEqual(native, [true, true, true, false, false, false, false, false, false]);
+  vectors.forEach((value, i) => {
+    const source = fixture();
+    source.components.future.config.text = value;
+    if (native[i]) assert.doesNotThrow(() => experience.inspect(source));
+    else assert.throws(() => experience.inspect(source),
+      /^Error: Definition contains credential-shaped content$/);
+  });
+});
+
 // This small DOM double checks interpretation and text sinks; it is NOT browser
 // rendering evidence. The HTML fixture is the separately inspectable surface.
 class Element {

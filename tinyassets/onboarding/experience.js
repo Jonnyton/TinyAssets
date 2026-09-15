@@ -11,6 +11,8 @@
     "password", "secret", "bindings", "universe_id", "branch_id", "run_id",
     "conversation_id", "device_token", "conversations", "learned_memory"
   ]);
+  // Native _CREDENTIAL_VALUE contract; cross-language vectors detect drift.
+  const credentialValue = /bearer\s+[a-z0-9._~+\/-]{3,}|gh[pousr]_[a-z0-9_=-]{12,}|xox[baprs]-[a-z0-9-]{12,}|sk-[a-z0-9_-]{16,}|eyj[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}/i;
   const name = /^[a-z][a-z0-9_-]{0,63}$/;
   function fail(reason) { throw new Error(reason); }
   function clone(value) {
@@ -44,7 +46,7 @@
   function inspect(definition) {
     const source = clone(definition);
     function publicOnly(v) {
-      if (typeof v === "string" && /Bearer\s+|gh[pousr]_[A-Za-z0-9]+/.test(v))
+      if (typeof v === "string" && credentialValue.test(v))
         fail("Definition contains credential-shaped content");
       if (!v || typeof v !== "object") return;
       for (const [key, value] of Object.entries(v)) {

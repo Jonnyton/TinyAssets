@@ -74,11 +74,13 @@ malformed IDs and conversations go to canonical history; automatic retry remains
 disabled. Malformed fixtures receive a value-free validation error before the
 previous rendered view is replaced. Regression tests cover these boundaries.
 
-The preview's credential-shaped-text regex is still narrower than native Python
-validation. This is an inert preview, not a shared import authorization or secret
-scrubbing boundary. Before integrating a shared import path, route validation
-through the native contract and use common cross-language conformance vectors;
-do not claim parity from the preview heuristic.
+The preview credential-text pattern now follows native Python's case-insensitive
+token families and minimum lengths. A Node test sends the same synthetic vectors
+to the actual native Python validator and the preview, checking both acceptance
+and refusal. This closes the posted narrower-text-pattern finding; it does not
+establish full schema or private-field validation parity. Shared import must
+still use the native validation contract. Neither heuristic proves arbitrary
+source contains no secret.
 
 ### Browser evidence blocked
 
@@ -97,3 +99,22 @@ advertised `file://` opening path with its CSP unchanged; if the relative script
 is blocked, fix that loading path and repeat rather than claiming a successful
 HTTP render also proves direct-file loading. Preserve the captures with this change.
 These checks prove the local example only, not native-device or live-user adoption.
+
+## Non-rendered follow-up (2026-09-15 UTC)
+
+The founder reports that their browser tools also refuse local-file pages.
+The capture request stays open; no file-scheme or HTTP rendering is certified.
+The credential-text conformance update is independently testable without captures:
+`node --test tests/test_experience_preview.cjs` runs eight tests, including
+a real Python/native comparison. Python is required for that comparison.
+
+GitHub checks on preceding head `9b66d0dde6b529ce11f72c07ec47a58552780be1`
+passed required-tests, slow-tests, invariants, preview trust-boundary, plugin/bundle
+import probes and Windows/Linux builds. The overall rollup was FAILURE:
+[macOS packaging job](https://github.com/Jonnyton/TinyAssets/actions/runs/34910269769/job/104196019798),
+step 7, "Build macOS app and image", failed. Its cause is not established.
+Log read `a79b7953f2f745b0` returned HTTP 302 without a body; the connection
+does not follow redirects. The attempted narrow redirect extension failed with
+`request_invalid: Could not capture this connection's redirect approval policy.`
+No request tab was created and no new credential is needed.
+Fresh CI is required for this follow-up; older check results do not certify it.
