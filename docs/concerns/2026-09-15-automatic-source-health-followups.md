@@ -10,7 +10,7 @@ approved the MVP with these non-blocking observations, not demonstrated outages:
 - Legacy api/runs.py classification still reports provider_unavailable for this
   message. The old native authentication message also missed its auth tells;
   the served chat path now carries typed auth_invalid. Separate legacy follow-up.
-- Process-local five-minute hints are intentionally advisory and disappear on
+- Process-local hints are intentionally advisory and disappear on
   restart; multiple workers do not share them. This is not durable availability
   tracking. Any persistence expansion needs a reviewed storage/authority design.
 - Current tests cover adapter normalization and real router/plan composition in
@@ -25,6 +25,8 @@ deployment/public-canary checks. An ordinary new Automatic message completed
 through Codex after the prior turn's sign-in failure, without settings changes or
 replay. Narrow live acceptance is recorded in
 ../../openspec/changes/select-agent-models/automatic-source-health-live.md.
-No subsequent owner-initiated clean-use evidence is visible yet. Watch returning
-user history for recovery/repeated failures; do not equate this advisory routing
+Subsequent owner use contradicted lasting recovery: September15 failures at
+16:10,16:19,16:26PDT were each followed by a repeated request answered by Codex.
+PR3862 removes the timer expiry; deployed long-gap proof remains pending.
+Watch returning user history for recovery/repeated failures; do not equate this advisory routing
 repair with restored Claude authentication or durable multi-worker health.
