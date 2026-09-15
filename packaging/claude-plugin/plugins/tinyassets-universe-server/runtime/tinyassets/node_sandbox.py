@@ -1909,6 +1909,20 @@ def _terminate_child(
         ) from exc
 
 
+_CLOSE_MOUNT_FDS_SCRIPT = """\
+import errno, os, sys
+for descriptor in map(int, sys.argv[1].split(',')):
+    try:
+        os.close(descriptor)
+    except OSError as error:
+        if error.errno != errno.EBADF:
+            raise
+source = sys.argv[2]
+sys.argv = ['-c', *sys.argv[3:]]
+exec(compile(source, '<sandbox-runner>', 'exec'), {'__name__': '__main__'})
+"""
+
+
 class BwrapLauncher:
     """Production launcher: the child runs inside a bubblewrap jail.
 
@@ -1964,6 +1978,17 @@ class BwrapLauncher:
         )
 
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
+        command = [sys.executable, "-c", runner_script, *args]
+        if self.pass_fds:
+            if any(type(fd) is not int or fd < 3 for fd in self.pass_fds):
+                raise ValueError("mount descriptors must be integers above standard IO")
+            # bwrap needs these host directory handles to set up its mounts,
+            # but DOES NOT consume/close them. Leaving them open in the child
+            # bypasses read-only mounts and exposes the directory's ancestors.
+            # Close them after mount setup and before running any supplied code.
+            # Isolated startup excludes checkout/user-site imports in this step.
+            command = [sys.executable, "-I", "-c", _CLOSE_MOUNT_FDS_SCRIPT,
+                       ",".join(map(str, self.pass_fds)), runner_script, *args]
         return [
             *_bwrap_argv(
                 bwrap_path=self.bwrap_path,
@@ -1972,7 +1997,7 @@ class BwrapLauncher:
                 pass_fds=self.pass_fds,
                 provision_mount=self.provision_mount,
             ),
-            sys.executable, "-c", runner_script, *args,
+            *command,
         ]
 
     def workspace_root(self) -> str:

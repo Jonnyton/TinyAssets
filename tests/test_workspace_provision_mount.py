@@ -1,11 +1,17 @@
-"""Typed provisioning binds; argv proof is not a live-jail acceptance test."""
+"""Typed provisioning binds and real-jail mount/descriptor isolation."""
 
+import json
 import os
+import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from tinyassets import node_sandbox as sandbox
 
@@ -141,7 +147,9 @@ class ProvisionMountTests(unittest.TestCase):
         with patch.object(sandbox.os, "fstat", side_effect=directory):
             result = install.build_argv("print('ok')", [])
         self.assertIn("/provision/cache", result)
-        self.assertEqual(result[-2:], ["-c", "print('ok')"])
+        self.assertEqual(result[-2:], ["32,30,31", "print('ok')"])
+        self.assertIn("-I", result)
+        self.assertIn(sandbox._CLOSE_MOUNT_FDS_SCRIPT, result)
 
     def test_cannot_reuse_provisioning_launcher_for_another_stage(self):
         acquire = sandbox.BwrapLauncher().for_provision(sandbox.ProvisionMount(30, 31, "acquire"))
@@ -176,3 +184,73 @@ class ProvisionMountTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.skipif(sys.platform != "linux" or not shutil.which("bwrap"),
+                    reason="real provisioning mounts require Linux bubblewrap")
+@pytest.mark.parametrize("phase", ["acquire", "install"])
+def test_real_jail_mounts_do_not_leak_writable_directory_descriptors(tmp_path, phase):
+    """Prove kernel permissions, not merely the presence of --ro-bind in argv."""
+    directories = [tmp_path / name for name in ("manifests", "cache", "checkout")]
+    for directory_path in directories:
+        directory_path.mkdir()
+        (directory_path / "marker").write_text(directory_path.name, encoding="utf-8")
+    descriptors = [os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                   for path in directories]
+    manifest_fd, cache_fd, checkout_fd = descriptors
+    launcher = sandbox.BwrapLauncher()
+    if phase == "install":
+        launcher = launcher.for_workspace(sandbox.WorkspaceMount(
+            f"/proc/self/fd/{checkout_fd}", pass_fds=(checkout_fd,)))
+    launcher = launcher.for_provision(sandbox.ProvisionMount(manifest_fd, cache_fd, phase))
+    script = r'''
+import errno, json, os, socket, sys
+from pathlib import Path
+phase = sys.argv[1]
+assert Path('/provision/manifests/marker').read_text() == 'manifests'
+assert Path('/provision/cache/marker').read_text() == 'cache'
+assert Path('/workspace').exists() == (phase == 'install')
+for path in ('/provision/manifests/forbidden', '/provision/cache/new'):
+    try:
+        Path(path).write_text('test')
+    except OSError as error:
+        assert error.errno in (errno.EROFS, errno.EACCES), (path, error)
+        assert path != '/provision/cache/new' or phase == 'install'
+    else:
+        assert path == '/provision/cache/new' and phase == 'acquire'
+if phase == 'install':
+    Path('/workspace/installed').write_text('offline')
+# A surviving host dirfd would bypass the read-only bind and expose its parents.
+live_fds = []
+for number in os.listdir('/proc/self/fd'):
+    fd = int(number)
+    if fd > 2:
+        try:
+            os.fstat(fd)
+        except OSError:
+            pass
+        else:
+            live_fds.append(fd)
+assert not live_fds, live_fds
+network = socket.socket()
+network.settimeout(0.2)
+assert network.connect_ex(('1.1.1.1', 443)) != 0
+network.close()
+assert 'TA_PROVISION_HOST_SECRET' not in os.environ
+print(json.dumps({'phase': phase, 'mounts_verified': True}))
+'''
+    try:
+        result = subprocess.run(
+            launcher.build_argv(script, [phase]),
+            pass_fds=launcher.pass_fds,
+            env={**launcher.env(str(tmp_path)), "TA_PROVISION_HOST_SECRET": "not-for-child"},
+            capture_output=True, text=True, timeout=15,
+        )
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"phase": phase, "mounts_verified": True}
+    assert (directories[1] / "new").exists() == (phase == "acquire")
+    assert (directories[2] / "installed").exists() == (phase == "install")
+    assert not (directories[0] / "forbidden").exists()

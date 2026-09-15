@@ -130,3 +130,19 @@ Native Docker makes that diagnosis unnecessary. This was not a PR3859 review.
 No push/deploy. Exact-head cross-family review remains required before rollout.
 Tasks2.1-2.3 stay open: listener/supervision,
 consent/reservation/caller, actual pip/npm and rendered cloud use are unfinished.
+
+19:55UTC real mount regression: two new Linux tests found bwrap preserves the
+host manifest/cache/checkout fds after mount setup. Read-only pathname binds alone
+are insufficient. Added an isolated post-mount Python bootstrap that consumes
+mount fds before runner execution; standard IO stays intact. New real-jail tests
+verify writable acquisition cache, read-only offline cache/manifests, usable
+offline checkout, absent host fds/env and unavailable direct network.
+Before fix:2failed18passed; after fix full Linux257passed13subtests/no skips21.41s.
+Windows237passed20skips18.22s; Ruff and generated plugin445files/import pass.
+
+Ordinary main8be980c6 launcher independently reproduced the surviving handle.
+Shared fix isolated in codex/close-sandbox-mount-handles at75c7daf1; that safety
+repair displaces provisioning integration. Its Fable5.1 review could not start:
+CLI reports requested model unavailable or inaccessible, not proven quota.
+Founder choice of available Claude reviewer is pending. This cloud copy and
+all provisioning remain unpublished/unreviewed; no task closure or live claim.
