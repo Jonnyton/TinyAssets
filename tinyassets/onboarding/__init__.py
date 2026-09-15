@@ -1607,10 +1607,13 @@ def onboarding_routes() -> list[Any]:
     """
     from starlette.routing import Route
 
+    from tinyassets.onboarding.model_connect import handle_model_callback, handle_model_connect
     from tinyassets.onboarding.model_preferences import handle_model_preferences
 
     return [
         Route("/mcp/app", _handle_app, methods=["GET", "HEAD"]),
+        Route("/mcp/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
+        Route("/mcp/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
         Route("/mcp/app/token", _handle_token, methods=["POST"]),
         Route("/mcp/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
         Route("/mcp/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),

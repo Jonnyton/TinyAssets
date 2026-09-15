@@ -562,6 +562,11 @@ def _auth_challenge_path(path: str) -> bool:
     """
     if path in _DISCOVERY_PATHS:
         return False
+    if path.startswith("/mcp/app/model-callback/"):
+        from tinyassets.onboarding.hosted_model_auth import is_callback_path
+
+        if is_callback_path(path):
+            return False  # Shell only; authenticated exchange remains challenged.
     if path == "/mcp/app" or path == "/mcp/app/token":
         # The onboarding SPA (tinyassets/onboarding) is a public page that MUST
         # load before sign-in, and /mcp/app/token is its same-origin PKCE

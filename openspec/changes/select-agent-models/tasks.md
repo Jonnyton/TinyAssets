@@ -1,5 +1,10 @@
 ## 1. Reviewed foundation
 
+2026-09-15 04:23UTC: backend bootstrap composition and authenticated endpoints
+now locally implemented,421focused Windows passes32.43s/no skips,450-file mirror
+pass. Frontend remains unwired and must handle model callback before WorkOS;
+this branch is NOT deploy-ready. Final Fable round3 remains after integration.
+
 September15 04:03UTC checkpoint: generic hosted PKCE transport and inert
 first-binding preparation now locally implemented,217focused Windows passes/no
 skips,447-file mirror/import pass. Public routes, credential/consent composition

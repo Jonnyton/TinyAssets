@@ -5,6 +5,42 @@ the founder's September14 PDT direction in PLAN Providers. This is the remaining
 unpowered model-selection slice, not a new workflow or competing delivery lane.
 Live second-user success is not claimed. Local implementation progress follows.
 
+## 2026-09-15 04:23UTC backend composition checkpoint
+
+The authenticated begin/exchange/resume endpoints and exact public callback shell
+are now implemented locally. Begin validates canonical same-origin JSON and
+challenge before provisioning the current owner's home. Exchange binds one flow,
+rechecks home/admin/empty setup before network and again before deposit, checks
+the frozen preset digest, and never returns the key. Callback GET only serves
+the no-store/no-referrer shell; invalid handles/deeper paths stay challenged.
+
+The composer uses existing connect_http, candidate registration, discovery,
+first-agent preparation and request_from_user. It derives an actual eligible
+free tool-model seed from the granted catalogue, using the existing free-model
+policy, not a bundled release or router alias. Discovery's exact granted GET is
+factored for pre-registration use; the verified-definition wrapper remains.
+No serving assignment is created until the owner answers the existing request.
+Partial catalogue failures resume from the owner's existing vault deposit;
+foreign/deleted-home/changed-source attempts hold. Existing custom discovery
+metadata is not overwritten. No separate secret or approval store was added.
+
+Verification: Windows automatic-model-bootstrap worktree, command
+`python -m pytest -q tests/test_onboarding_model_connect.py tests/test_model_bootstrap.py tests/test_model_bootstrap_candidate.py tests/test_discovery_http.py tests/test_discovery_snapshot.py tests/test_discovery_exact_numbers.py tests/test_onboarding_app.py tests/test_onboarding_auth_boundary.py tests/test_hosted_model_auth.py tests/test_model_bootstrap_binding.py tests/test_onboarding_model_setup.py tests/test_onboarding_openai_device.py`
+=>421passed32.43s, no skips. Ruff,450-file plugin mirror/import, diff check,
+OpenSpec validation and lane admission pass. Synthetic exchange/catalogue,
+real vault/connection/definition/binding/pending-request stores; no live keys.
+Integration exposed and corrected the existing action's bare definition-id
+input convention; its capture still owns normalized manifest identities.
+
+NOT READY TO DEPLOY: frontend has not yet replaced engine_connected routing,
+handled this callback before WorkOS, implemented same-tab once-per-sign-in
+navigation/resume/cancel, or rendered the free-model confirmation and optional
+generic additional-source rail. Preserve one return confirmation, no auto-answer.
+Also test fresh-home bootstrap, anonymous ingress/callback headers, grant-only
+partial failures, no-model recovery, and actual approval/enable continuation.
+Full Fable round3 review remains after integration, then CI/deploy and separate
+free-user browser proof. No peer currently active for bootstrap; no push/PR.
+
 ## September15 04:03UTC implementation checkpoint
 
 Setup projection is committed at b334127d. The next local component adds bundled

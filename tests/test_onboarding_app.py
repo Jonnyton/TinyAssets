@@ -219,6 +219,7 @@ def test_route_is_mcp_app_get(monkeypatch):
     # the one-tap OpenAI device-auth broker (POST only, identity-gated).
     assert set(by_path) == {
         "/mcp/app", "/mcp/app/token", "/mcp/app/me",
+        "/mcp/app/model-connect/{operation}", "/mcp/app/model-callback/{flow}",
         "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
         "/mcp/app/voice/status", "/mcp/app/voice/session",
