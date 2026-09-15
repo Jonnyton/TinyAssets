@@ -3,7 +3,37 @@
 September15,2026 pre-build design supplement. Owner: Codex Patches. Implements
 the founder's September14 PDT direction in PLAN Providers. This is the remaining
 unpowered model-selection slice, not a new workflow or competing delivery lane.
-No runtime implementation or live second-user success is claimed.
+Live second-user success is not claimed. Local implementation progress follows.
+
+## September15 04:03UTC implementation checkpoint
+
+Setup projection is committed at b334127d. The next local component adds bundled
+acquisition metadata next to discovery contracts and a generic pkce_user_key_v1
+transport. It binds expiring single-attempt flows to owner/home/preset digest and
+S256 challenge, constructs a separate canonical HTTPS callback path, bounds the
+exchange deadline/body/key, refuses redirects, and reports uncertain outcomes
+without upstream secrets. No public route invokes it yet. Tests include an
+alternate source using the same protocol, not only the OpenRouter preset.
+
+An inert first-agent helper composes existing home/admin and binding primitives.
+It resumes only an untouched canonical configured binding; custom, edited,
+foreign, ambiguous or already-assigned agents are held, never reset or enabled.
+This component does not yet deposit keys, register models or raise model consent.
+
+Windows verification in automatic-model-bootstrap worktree:
+`python -m pytest -q tests/test_hosted_model_auth.py tests/test_model_bootstrap_binding.py tests/test_onboarding_model_setup.py tests/test_onboarding_openai_device.py tests/test_onboarding_app.py tests/test_onboarding_auth_boundary.py`
+=>217passed25.16s, no skips. This includes44 new transport/binding cases; the
+unchanged prior173-case projection/onboarding surface remains green. Ruff and
+447-file plugin mirror/import probe pass. No Linux or live OAuth proof claimed.
+
+Still required: authenticated begin/exchange/resume composition with fresh
+home/admin/empty-state fences; exact grant/vault/candidate/discovery chain;
+return callback before WorkOS, routing/confirmation and optional generic rail;
+real separate-user flow. Candidate registration currently requires a nonempty
+model before discovery: derive a real eligible seed from the granted catalogue
+without a hardcoded release or legacy fallback, then retain discovered/free-only
+execution authority. Final round3 Fable review gates the completed integration,
+not these unexposed components. No push, PR, signup, consent or credential change.
 
 ## Outcome and current seams
 

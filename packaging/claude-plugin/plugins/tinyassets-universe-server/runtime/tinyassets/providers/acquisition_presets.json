@@ -1,0 +1,12 @@
+{
+  "openrouter_user_models_v1": {
+    "protocol": "pkce_user_key_v1",
+    "display_name": "OpenRouter",
+    "authorize_url": "https://openrouter.ai/auth",
+    "exchange_url": "https://openrouter.ai/api/v1/auth/keys",
+    "manage_url": "https://openrouter.ai/settings/keys",
+    "inference_url": "https://openrouter.ai/api/v1/chat/completions",
+    "catalogue_url": "https://openrouter.ai/api/v1/models/user?output_modalities=all",
+    "benchmark_url": "https://openrouter.ai/api/v1/benchmarks"
+  }
+}

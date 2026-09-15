@@ -1,5 +1,11 @@
 ## 1. Reviewed foundation
 
+September15 04:03UTC checkpoint: generic hosted PKCE transport and inert
+first-binding preparation now locally implemented,217focused Windows passes/no
+skips,447-file mirror/import pass. Public routes, credential/consent composition
+and browser return are not wired yet. See automatic-model-bootstrap.md;
+task3.1 remains open. This supersedes the initial-component stage below.
+
 September15 automatic bootstrap supplement: reviewed shape/disposition in
 automatic-model-bootstrap.md. Initial server setup projection is implemented
 locally; seven red-first cases now pass,173focused onboarding tests pass24.73s.

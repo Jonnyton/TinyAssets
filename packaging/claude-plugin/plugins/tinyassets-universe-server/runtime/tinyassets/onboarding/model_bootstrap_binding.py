@@ -1,0 +1,45 @@
+"""Prepare an inert first agent for explicit model consent; never reset content."""
+
+from pathlib import Path
+
+
+def ensure_bootstrap_binding(base: Path, *, uid: str, owner: str) -> dict:
+    """Create once or resume the untouched first binding, without provider access.
+
+    A noncanonical, edited, foreign, serving or ambiguous binding is recovery,
+    not permission to replace the user's agent. Model approval is a separate
+    existing request whose capture/publication rechecks home and exact revisions.
+    """
+    from tinyassets.custom_agents import create_binding, list_bindings
+    from tinyassets.onboarding.serving import (
+        _BINDING_PAYLOAD,
+        _gesture_lock,
+        _platform_definition,
+        _require_current_admin,
+    )
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.shared_self import require_founder_home
+
+    with _gesture_lock(uid):
+        require_founder_home(base, uid, owner)
+        _require_current_admin(base, universe_id=uid, owner=owner)
+        if load_provider_assignment(base, universe_id=uid) is not None:
+            raise PermissionError("existing_model_setup_requires_recovery")
+        # Any second row proves ambiguity; no truncated owner-specific search.
+        bindings = list_bindings(base, universe_id=uid, limit=2)
+        if len(bindings) > 1:
+            raise PermissionError("existing_agent_requires_review")
+        definition = _platform_definition(base)
+        did = definition["agent_definition_id"]
+        if bindings:
+            binding = bindings[0]
+            if (binding["created_by"] != owner or binding["updated_by"] != owner
+                    or binding["agent_definition_id"] != did
+                    or binding["configuration"] != _BINDING_PAYLOAD
+                    or binding["revision"] != 1 or binding["status"] != "configured"):
+                raise PermissionError("existing_agent_requires_review")
+            return binding
+        require_founder_home(base, uid, owner)
+        _require_current_admin(base, universe_id=uid, owner=owner)
+        return create_binding(base, universe_id=uid, definition_id=did,
+                              created_by=owner, payload=dict(_BINDING_PAYLOAD))
