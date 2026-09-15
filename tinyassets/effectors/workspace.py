@@ -23,7 +23,7 @@ import re
 import secrets
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tinyassets.storage.workspace_authority import (
     CONSENT_CHECKOUT,
@@ -775,6 +775,7 @@ def _checkout(
     execute: Any,
     timeout_seconds: float,
     admission: AdmissionObservation,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     from tinyassets import workspace_pool
     from tinyassets.workspace_git import populate_workspace_from_bundle
@@ -1601,6 +1602,7 @@ def run_workspace_effector(
     chain: Any = None,
     execute: Any = None,
     timeout_seconds: float = 0.0,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Dispatch one ``workspace`` packet. NEVER raises.
 
@@ -1622,6 +1624,7 @@ def run_workspace_effector(
             ancestors=ancestors,
             timeout_seconds=timeout_seconds,
             admission=admission,
+            should_cancel=should_cancel,
         )
     except _Refused as refused:
         result = {"error": refused.error, "error_kind": refused.kind, **refused.extra}
@@ -1648,6 +1651,7 @@ def _run(
     admission: AdmissionObservation,
     ancestors: set[str] | None = None,
     timeout_seconds: float = 0.0,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
     if packet is None:
@@ -1802,6 +1806,7 @@ def _run(
             **{k: v for k, v in common.items() if k != "ancestors"},
             timeout_seconds=timeout_seconds,
             admission=admission,
+            should_cancel=should_cancel,
         )
     else:
         evidence = _push(**common)

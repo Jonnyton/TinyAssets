@@ -127,6 +127,25 @@ class FakeWorker:
         return self.answer
 
 
+def test_checkout_receives_only_server_owned_cancel_predicate(tmp_path, monkeypatch):
+    _, universe = _setup(tmp_path)
+    chain = EffectChain(run_id="r-cancel-forward", base_path=universe)
+    def should_cancel():
+        return False
+    seen = []
+    def checkout(**kwargs):
+        seen.append(kwargs["should_cancel"])
+        return {"op": "checkout"}
+    monkeypatch.setattr(wse, "_checkout", checkout)
+    packet = _packet(should_cancel=True)
+    result = run_workspace_effector(
+        node_id="checkout", output_keys=["packet"], run_state={"packet": json.dumps(packet)},
+        base_path=universe, run_id="r-cancel-forward", chain=chain,
+        should_cancel=should_cancel)
+    assert "error" not in result, result
+    assert seen == [should_cancel]
+
+
 @pytest.fixture()
 def fs_spy(monkeypatch: pytest.MonkeyPatch):
     """Inject the pool lane's directory-handle helpers.

@@ -119,6 +119,63 @@ _OK_GET = {"delivered": True, "verb": "GET",
 _OK_PUT = {"delivered": True, "verb": "PUT", "response": {"status": 201, "body": "{}"}}
 
 
+def test_compiled_workspace_effect_receives_the_root_run_cancellation_closure(monkeypatch):
+    seen = []
+    def cancelled():
+        return False
+    def adapter(*, should_cancel, **kwargs):
+        seen.append(should_cancel)
+        assert "should_cancel" not in kwargs["run_state"]
+        return {"op": "checkout"}
+    monkeypatch.setitem(effectors._EFFECTORS, EXTERNAL_WRITE_SINK_WORKSPACE, adapter)
+    node = _effect_node("checkout")
+    node.effects = [EXTERNAL_WRITE_SINK_WORKSPACE]
+    branch = _linear(node)
+    chain = EffectChain(run_id="cancel-closure", base_path=None)
+    compiled = compile_branch(
+        branch, provider_call=_provider_for({"checkout": json.dumps({"op": "checkout"})}),
+        effect_chain=chain, should_cancel=cancelled)
+    compiled.graph.compile(checkpointer=InMemorySaver()).invoke(
+        {}, config={"configurable": {"thread_id": "cancel-closure"}})
+    assert seen == [cancelled]
+
+
+def test_cancellation_after_model_returns_prevents_effect_dispatch(monkeypatch):
+    from tinyassets.graph_compiler import NodeCancelledError
+    stop = []
+    adapter = _Adapter({"write": _OK_PUT})
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    branch = _linear(_effect_node("write", "PUT"))
+    chain = EffectChain(run_id="cancel-before-effect", base_path=None)
+    def provider(*args, **kwargs):
+        stop.append(True)
+        return _packet("PUT")
+    compiled = compile_branch(branch, provider_call=provider, effect_chain=chain,
+                              should_cancel=lambda: bool(stop))
+    with pytest.raises(NodeCancelledError, match="before effects") as caught:
+        compiled.graph.compile(checkpointer=InMemorySaver()).invoke(
+            {}, config={"configurable": {"thread_id": "cancel-before-effect"}})
+    assert caught.value.node_id == "write"
+    assert adapter.calls == []
+    assert chain.fired == []
+    assert chain.dispatches == 0
+
+
+def test_workspace_adapter_forwards_cancellation_without_serializing_it(monkeypatch):
+    seen = []
+    def cancelled():
+        return True
+    def effector(**kwargs):
+        seen.append(kwargs)
+        return {"op": "checkout"}
+    monkeypatch.setattr(effectors, "run_workspace_effector", effector)
+    effectors._workspace_adapter(node_id="checkout", output_keys=[], run_state={},
+                                 base_path=None, run_id="r", dry_run=False,
+                                 should_cancel=cancelled)
+    assert seen[0]["should_cancel"] is cancelled
+    assert seen[0]["run_state"] == {}
+
+
 def test_workspace_effect_receives_the_nodes_contention_wait_budget(monkeypatch):
     seen: list[float] = []
 

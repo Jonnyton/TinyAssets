@@ -359,3 +359,47 @@ adapter receives it, but workspace effector dispatch currently does not. Thread
 that existing predicate through the effect wrapper/adapter; do not query the
 universe's distinct workspace database or invent an always-false callback.
 No consent/reservation/caller integration, task closure, rollout or new review.
+
+## Root-run cancellation plumbing — September 15, 2026 21:18 UTC
+
+The existing compile_branch should_cancel closure now flows through the compiled
+effect wrapper, dispatch_node_effects, workspace adapter and effector into
+_checkout. It remains an internal callable, never a packet/state field. Other
+adapter argument contracts are unchanged; legacy callers retain None. The
+checkout does not yet start provisioning or consume this callback in a git
+worker. Its purpose is to supply the forthcoming installer with the actual
+root-run cancellation signal instead of reading the universe's distinct database.
+
+Added one immediate guard: if the owner cancelled while the model/node was
+producing its delta, the effect wrapper raises the existing NodeCancelledError
+before dispatching any pending effect. It uses the existing cancellation-check
+policy; predicate exceptions are logged and retried on later checks rather than
+inventing cancellation. The existing run classifier recognizes this exception.
+
+Tests execute a compiled graph and confirm exact callback identity reaches the
+workspace adapter; forwarding through the real adapter/effector to checkout is
+tested separately with real stored connection/grant/consent checks. A packet's
+should_cancel field cannot replace the host callback. Another compiled graph
+cancels as the provider returns: no adapter call, fired effect or dispatch charge
+occurs, and the exception retains the graph node identity. This is not yet proof
+of a live provisioning run stopping after user cancellation.
+
+Final nine-file cohort: tests/test_effects_at_node_time.py,
+tests/test_workspace_effector.py, tests/test_cancel_reaches_the_running_child.py,
+tests/test_workspace_run_wiring.py, tests/test_graph_compiler_failed_event.py,
+tests/test_graph_compiler_reducer_law.py, tests/test_workspace_provision_process.py,
+tests/test_workspace_tree_usage.py, tests/test_workspace_registry_process.py.
+Windows python -m pytest -q with these paths:289passed,60skips,24.36s (229
+dependency deprecation warnings). Same WSL scripts/linux_oracle.py command with
+-q -rs:347passed,2off-POSIX-test skips,23.65s,one dependency deprecation warning.
+An earlier oracle invocation named nonexistent tests/test_graph_compiler.py and
+collected NOTHING; it is not evidence. The corrected command used the existing
+compiler regression files above. Ruff and plugin448files/import probe passed.
+
+No source/mirror edits during oracle copying. No new independent review, push,
+deployment, public provisioning call or task closure. Next: consent, reservation,
+stage composition and truthful publication. Preserve original npm manifest files
+when composing offline installation; the diagnostic fixture's canonical rewrite
+is not permission to rewrite an arbitrary user's repository. Verified process
+death must remain a prerequisite for success/publication through the effector's
+existing error/cleanup wrappers, not just inside the isolated stage helper.
