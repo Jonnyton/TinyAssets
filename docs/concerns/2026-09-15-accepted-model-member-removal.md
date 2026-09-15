@@ -1,5 +1,7 @@
 # Removing an unavailable accepted model source needs owner reconsent
 
+**Filed:** 2026-09-15
+
 September15,2026: Fable reconnect shape review79934 identified that
 tinyassets/api/model_access_requests.py::capture_action requires every previous
 member to remain in a proposed manifest. Reverified in source before reconnect
