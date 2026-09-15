@@ -1,9 +1,11 @@
 """Tests for tinyassets.context.guardrails module."""
 
+import pytest
 
 from tinyassets.context.guardrails import (
     FilterGuardrail,
     GuardrailPipeline,
+    GuardrailPipelineError,
     PaginationGuardrail,
     SummarizationGuardrail,
     build_retrieval_pipeline,
@@ -377,11 +379,15 @@ class TestGuardrailPipeline:
         assert result == [2, 4, 6]
 
     def test_pipeline_handles_error(self):
-        """Test that pipeline continues after error."""
+        """A failed guardrail aborts before any later step sees unguarded data."""
+        cause = ValueError("Test error")
+        downstream_inputs = []
+
         def failing_step(x):
-            raise ValueError("Test error")
+            raise cause
 
         def identity_step(x):
+            downstream_inputs.append(x)
             return x
 
         pipeline = GuardrailPipeline()
@@ -389,10 +395,13 @@ class TestGuardrailPipeline:
         pipeline.add_step(identity_step)
 
         data = [1, 2, 3]
-        result = pipeline.apply(data)
+        with pytest.raises(GuardrailPipelineError) as caught:
+            pipeline.apply(data)
 
-        # Should return input from identity step after failing step
-        assert result == data
+        assert downstream_inputs == []
+        assert caught.value.step is failing_step
+        assert caught.value.step_index == 0
+        assert caught.value.__cause__ is cause
 
 
 class TestBuildRetrievalPipeline:
