@@ -54,6 +54,16 @@ def test_all_choices_visible_without_adding_implicit_fallbacks():
     assert "private-home" not in encoded
 
 
+def test_health_hint_visible_on_models_outside_explicit_order():
+    catalog = Catalog("private-owner", "private-home", (connection("first", "other"),))
+    selected = replace(plan(catalog, primary=ModelRef("owned-source", "first")),
+                       reconnect_sources=("owned-source",))
+    result = model_options_document(catalog, selected)
+    assert all("recent_sign_in_failure" in row["labels"] for row in result["options"])
+    assert all(row["in_candidate_catalog"] for row in result["options"])
+    assert result["order"] == [{"provider_ref": "owned-source", "model_id": "first"}]
+
+
 def test_zero_eligible_models_still_shows_reason_and_original_price():
     source = connection("costly")
     source = replace(source, models=(replace(source.models[0], pricing=Pricing("fresh", (
