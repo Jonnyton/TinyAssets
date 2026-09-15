@@ -476,3 +476,53 @@ No private workflow changed, no fourth review dispatched, no push or deployment.
 Exact-head cross-family execution review and shared sandbox repair3860 still
 gate rollout. Browser binaries/libraries, hosted preview, governed arbitrary
 artifact acquisition and the app's own project proof remain unfinished.
+
+## September15 21:58UTC — actual browser compatibility finding
+
+Built a disposable diagnostic image from oracle7693b1a8f805 plus Debian's
+chromium/fonts-liberation packages; this is NOT production's image. Dockerfile:
+docker/workspace-browser-probe.Dockerfile. Installed Chromium152.0.7977.82 on
+Debian13, image1b69d8536490. Source runtime remains e2d3edcc; no production limit,
+mount, Dockerfile, provider setting or user workflow changed.
+
+Reproduction build:
+`wsl -d Ubuntu -- docker build -f /mnt/c/Users/Jonathan/.codex/worktrees/repair-resolver-pip-configuration/TinyAssets/docker/workspace-browser-probe.Dockerfile --build-arg ORACLE_IMAGE=tinyassets-linux-oracle:7693b1a8f805 -t tinyassets-workspace-browser-probe:e2d3edcc /mnt/c/Users/Jonathan/.codex/worktrees/repair-resolver-pip-configuration/TinyAssets/docker`
+
+Run command prefix:
+`wsl -d Ubuntu -- docker run --rm --network=none --memory=2g --pids-limit=1024 --security-opt seccomp=unconfined -v /mnt/c/Users/Jonathan/.codex/worktrees/repair-resolver-pip-configuration/TinyAssets:/src:ro --workdir /src -e PYTHONDONTWRITEBYTECODE=1 tinyassets-workspace-browser-probe:e2d3edcc python scripts/probes/workspace_browser_compatibility.py`
+
+- No options: exit1, no PNG; Debian /usr/bin/chromium wrapper exits2 because
+  /etc/chromium.d is not inside the unchanged jail.
+- `--native`: exit1, no PNG; /usr/lib/chromium/chromium version and capture
+  both exit-5 (SIGTRAP) under the unchanged1610612736-byte RLIMIT_AS.
+- `--native --address-space-control`: exit0, native version and capture both
+  exit0, actual960x640 PNG created. Only this diagnostic's RLIMIT_AS is unset;
+  cgroup memory.max is read and verified2147483648, existing2GiB RSS watchdog,
+  CPU/output/process limits, nonroot uid1001 and bwrap isolation remain. No
+  --no-sandbox, host IPC/network/port or extra host-directory bind. Repeat with
+  the guarded diagnostic measured whole-container memory.peak533499904 bytes.
+
+The comparison isolates virtual-address admission as a browser blocker; physical
+usage is not the same thing. Chromium's [PartitionAlloc design](https://github.com/chromium/chromium/blob/main/base/allocator/partition_allocator/PartitionAlloc.md)
+documents reserved address regions retained separately from committed physical
+pages. This is supporting mechanism context, not a stack trace for the SIGTRAP.
+The [Playwright container guidance](https://playwright.dev/docs/docker) separately
+requires browser OS dependencies and warns against treating its default image
+as a secure untrusted-browser deployment; we did not copy host-IPC/root shortcuts.
+
+Fontconfig reports missing configuration and D-Bus is absent in the successful
+diagnostic. PNG existence/dimensions are checked, but visual fidelity and desktop/
+phone/browser-driver compatibility are NOT established. The temporary PNG is
+not an app-owned PR capture and was not submitted as one.
+
+Next decision needs independent review: generic resource accounting that permits
+large virtual reservations while bounding attributable physical memory, without
+per-browser exceptions or exposing the daemon to child OOM. Existing source has
+RSS polling but no per-workspace cgroup implementation (rg cgroup/memory.max in
+tinyassets); an outer diagnostic-container cap is NOT that production guarantee.
+Keep production caps unchanged pending that decision. Fixed toolchain config,
+browser driver/runtime, arbitrary governed artifacts and app proof remain open.
+
+Diagnostic guard tests: `python -m pytest -q tests/test_workspace_browser_probe.py`
+Windows8pass0.24s; same file in diagnostic Linux image (TMPDIR=/tmp, network none,
+memory2g, `-p no:cacheprovider`)8pass2.70s. Ruff passes. No release claim.
