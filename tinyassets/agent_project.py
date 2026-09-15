@@ -247,3 +247,42 @@ def inspect_project(raw: str) -> dict[str, Any]:
             "reason": "runtime execution and private binding have not been evaluated",
         },
     }
+
+
+def edit_project_sources(
+    raw: str,
+    *,
+    expected_digest: str,
+    changes: dict[str, str | None],
+) -> str:
+    """Return a validated candidate with explicit source replacements/deletions.
+
+    None deletes an existing source. agent.json and the descriptor stay unchanged.
+    This in-memory precondition is not a lock on any caller's persistent storage.
+    No source executes and no binding is activated.
+    """
+    receipt = inspect_project(raw)
+    if expected_digest != receipt["project_digest"]:
+        _fail("project changed; inspect it again before editing")
+    if not isinstance(changes, dict):
+        _fail("source changes must be an explicit path map")
+    package = _json(raw)
+    sources = {p: text for p, text in package["files"].items() if p != "agent.json"}
+    for path, text in changes.items():
+        _path(path)
+        if path.casefold() == "agent.json":
+            _fail("source edits must not replace the native definition")
+        if text is None:
+            if path not in sources:
+                _fail("cannot delete an absent source")
+            del sources[path]
+        else:
+            _text_bytes(text)
+            sources[path] = text
+    if sources == {p: text for p, text in package["files"].items() if p != "agent.json"}:
+        return raw
+    return export_project(
+        receipt["portable_definition"], sources=sources,
+        entry_points=package["descriptor"]["entry_points"],
+        runtime_requirements=package["descriptor"]["runtime_requirements"],
+    )

@@ -90,4 +90,25 @@ The source secret scan remains heuristic defense in depth; credential-shaped
 comments may be refused. That limitation is accepted for this inert profile,
 not a claim of complete secret discovery. The approval comments are retained
 alongside this change; the fixes do not turn the older exact-head review into
-an approval of a new head. Full CI and execution/adoption evidence remain open.
+an approval of a new head. Execution/adoption evidence remains open.
+
+## Explicit source editing (2026-09-15 UTC)
+
+`edit_project_sources(raw, expected_digest=..., changes=...)` produces a new
+validated candidate from an already validated package. The explicit path map
+adds/replaces UTF-8 sources; `None` deletes an existing source. The native
+definition and descriptor remain unchanged, unrelated source bytes survive,
+and no-op edits retain even the original envelope bytes. A stale project digest,
+tampered base, missing entry point, invalid source or forbidden private content
+refuses the entire candidate. The caller retains the original package.
+
+This is in-memory authoring, not a persistent-storage lock or execution adapter.
+A future store must independently guard its current revision at write time.
+The source fixture still does not execute. Browser staging, runtime materialization,
+served replacement and the full offline execution acceptance task remain open.
+
+Validation: governed Linux workspace, dependency-free unittest suite (14 cases,
+including independent Node digest validation), admission and diff checks.
+The preceding head `383174fab4aabf84b37fd477d62e6f66afb6cfb7` had a SUCCESS
+GitHub check rollup on 2026-09-15 UTC. That evidence applies to the preceding
+head only; this source-editing update requires fresh CI and implementation review.

@@ -11,6 +11,7 @@ import unittest
 
 from tinyassets.agent_project import (
     ProjectValidationError,
+    edit_project_sources,
     export_project,
     inspect_project,
 )
@@ -61,6 +62,62 @@ class SourceProjectTests(unittest.TestCase):
         after = inspect_project(self.package(sources=sources))
         self.assertNotEqual(before["project_digest"], after["project_digest"])
         self.assertEqual(before["native_fingerprint"], after["native_fingerprint"])
+
+
+    def test_source_edit_preserves_other_bytes_and_descriptor(self):
+        raw = self.package()
+        before = json.loads(raw)
+        digest = inspect_project(raw)["project_digest"]
+        changed = edit_project_sources(raw, expected_digest=digest, changes={
+            "src/transform.py": "def run(state): return {'value': 9}\n",
+            "notes.txt": "Retain exact Unicode: é 😀\r\n",
+        })
+        after = json.loads(changed)
+        self.assertEqual(after["descriptor"], before["descriptor"])
+        for path in ["agent.json", "fixtures/input.json"]:
+            self.assertEqual(after["files"][path], before["files"][path])
+        self.assertEqual(after["lock"]["native_fingerprint"], before["lock"]["native_fingerprint"])
+        self.assertNotEqual(after["lock"]["project_digest"], digest)
+        self.assertEqual(json.loads(raw), before)
+        self.assertFalse(inspect_project(changed)["compatibility"]["executable"])
+        self.assertEqual(edit_project_sources(
+            changed, expected_digest=after["lock"]["project_digest"],
+            changes={"notes.txt": None},
+        ), self.package(sources={
+            **self.sources, "src/transform.py": "def run(state): return {'value': 9}\n",
+        }))
+
+    def test_source_edit_rejects_stale_base_and_tampered_package(self):
+        raw = self.package()
+        digest = inspect_project(raw)["project_digest"]
+        changed = edit_project_sources(raw, expected_digest=digest, changes={"notes.txt": "new"})
+        with self.assertRaisesRegex(ProjectValidationError, "project changed"):
+            edit_project_sources(changed, expected_digest=digest, changes={"notes.txt": "stale"})
+        tampered = json.loads(raw)
+        tampered["files"]["fixtures/input.json"] = '{"value": 100}'
+        with self.assertRaises(ProjectValidationError):
+            edit_project_sources(json.dumps(tampered), expected_digest=digest, changes={})
+
+    def test_source_edit_refusals_preserve_original(self):
+        raw = self.package()
+        digest = inspect_project(raw)["project_digest"]
+        invalid = [
+            {"agent.json": "{}"}, {"AGENT.JSON": "{}"}, {"../escape": "x"},
+            {"src/transform.py": None}, {"absent.txt": None},
+            {"SRC/transform.py": "collision"}, {"src": "collision"},
+            {"notes.txt": b"binary"}, {"notes.txt": "Bearer private-sentinel"},
+            {"extra.json": "{broken"}, {"huge.txt": "x" * (1024 * 1024)},
+        ]
+        for changes in invalid:
+            with self.subTest(paths=list(changes)), self.assertRaises(ProjectValidationError):
+                edit_project_sources(raw, expected_digest=digest, changes=changes)
+            self.assertEqual(inspect_project(raw)["project_digest"], digest)
+
+    def test_source_edit_noop_preserves_original_envelope_bytes(self):
+        raw = "  " + self.package() + "\n"
+        digest = inspect_project(raw)["project_digest"]
+        for changes in [{}, {"src/transform.py": self.sources["src/transform.py"]}]:
+            self.assertEqual(edit_project_sources(raw, expected_digest=digest, changes=changes), raw)
 
     def test_tamper_missing_extra_or_false_lock_refuses(self):
         package = json.loads(self.package())
