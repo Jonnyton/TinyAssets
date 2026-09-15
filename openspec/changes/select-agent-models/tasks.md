@@ -1,12 +1,15 @@
 ## 1. Reviewed foundation
 
-2026-09-15 05:08UTC: full hosted bootstrap is built in draft PR3853. Reconnect
+2026-09-15 UTC: full hosted bootstrap is built in draft PR3853. Reconnect
 main integration preserved both design supplements; typed browser recovery and
 key-link contrast corrected.606focused Windows tests pass70.11s/no skips,
 450-file mirror/import and Ruff pass. c9c8bb27 had Fable round3 APPROVE491s;
 the changed integration head needs a fresh receipt. One additional review was
 requested after the three-round cap, not yet authorized/dispatched. Draft/CI,
 not deployed; separate free-user signup/consent/real answer proof remains open.
+First CI exposed stale generated app provenance; canonical brand generator
+corrected only its hash. Local brand tests and all pre-commit invariants pass;
+scope guard remains correctly red until the exact-head approval exists.
 
 2026-09-15 04:23UTC: backend bootstrap composition and authenticated endpoints
 now locally implemented,421focused Windows passes32.43s/no skips,450-file mirror

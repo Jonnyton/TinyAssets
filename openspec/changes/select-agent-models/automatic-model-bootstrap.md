@@ -5,7 +5,7 @@ the founder's September14 PDT direction in PLAN Providers. This is the remaining
 unpowered model-selection slice, not a new workflow or competing delivery lane.
 Live second-user success is not claimed. Local implementation progress follows.
 
-## 2026-09-15 05:08UTC release integration
+## 2026-09-15 UTC release integration
 
 Draft PR3853 opened at c9c8bb277db5b098e3d1a2fd02967723535dcd86 after final
 Fable5.1 round3 APPROVE (491s). Integrating deployed reconnect main89a335578a15
@@ -13,7 +13,7 @@ required resolving only the design.md introductory supplements; both are kept.
 The browser recovery catch now distinguishes no eligible free model, unusable
 authorization, changed setup and incomplete saved setup, with no automatic
 retry or raw upstream error display. The key-management link uses the existing
-readable legal-link style; loopback Chrome visual verification passed05:07UTC.
+readable legal-link style; loopback Chrome visual verification passed this turn.
 No credential, account consent, model grant or private workflow was changed.
 
 Windows command: prior18-suite browser checkpoint command plus
@@ -25,6 +25,13 @@ head approval and required CI. Three Fable rounds consumed; founder approval
 for one additional review requested, not yet received or dispatched. No deploy.
 Original live app refreshed05:03UTC: no newer reply than21:50PDT, confirming
 reconnect preservation; six smoke PASS on89a335578a15 do not prove this bootstrap.
+
+First integration CI found stale generated app provenance in invariants34931465623
+and preview-security34931465638. Regenerated with the canonical
+python WebSite/brand/render_marks.py: only generated-assets.json hash changed;
+brand-parity Node tests and all pre-commit invariants now pass locally. Scope
+guard34931463291 correctly refuses the missing new exact-head review receipt.
+No gate/quarantine/workflow was weakened to pass. Fresh CI remains required.
 
 ## 2026-09-15 04:44UTC browser integration checkpoint
 
