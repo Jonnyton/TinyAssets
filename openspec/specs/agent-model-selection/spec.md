@@ -115,6 +115,7 @@ NOT publish or widen assignments, grants or permitted spending.
 
 #### Scenario: Mixed-source automatic mode
 - **WHEN** a native default and HTTP models are eligible
+- **AND** no recent scoped authentication-failure hint demotes the native source
 - **THEN** automatic selection uses the native default through its real executor
 - **AND** an HTTP-only catalog cannot silently remove that preference
 
@@ -142,6 +143,45 @@ NOT publish or widen assignments, grants or permitted spending.
 #### Scenario: Another owned universe retains legacy execution
 - **WHEN** the owner converses with a non-home universe without an override
 - **THEN** home-only preferences neither block nor alter its existing binding
+
+### Requirement: Recent source authentication failures influence new Automatic plans
+
+Automatic planning SHALL move a source with a recent scoped authentication-failure
+hint after other already-eligible sources. The hint SHALL NOT grant access, change
+spending permission, modify saved preferences, or authorize replay of a failed
+request. Explicit current and saved choices SHALL retain their exact ordering.
+The initial implementation SHALL use bounded process-local advisory memory,
+scoped by resolved base, owner, universe, provider and credential-reference identity,
+generation and digest. Hints SHALL expire after five minutes; the store SHALL
+retain no more than 4096 entries and SHALL store no credentials or raw errors.
+Restart or eviction MAY lose advisory health; it SHALL NOT change authority.
+
+#### Scenario: A new Automatic message follows an authentication failure
+- **WHEN** a served source reports the typed authentication-failure signal
+- **AND** another source is independently eligible for the next Automatic plan
+- **THEN** the next plan prefers the other source without changing the owner's preferences
+- **AND** the failed turn is not replayed and retains truthful uncertainty about effects
+
+#### Scenario: Explicit choices remain exact
+- **WHEN** the owner explicitly chooses a recently failed source or has an explicit saved order
+- **THEN** advisory source health does not silently substitute or reorder that choice
+- **AND** execution still validates current authority before launch
+
+#### Scenario: Success, expiry or new credential custody permits recovery
+- **WHEN** a source succeeds under the same exact custody scope
+- **THEN** its hint clears
+- **AND** expiry or changed credential custody cannot become a permanent lockout
+- **AND** one owner's success or failure cannot clear or create another owner's hint
+
+#### Scenario: All eligible sources have recent failure hints
+- **WHEN** every eligible source has a recent hint
+- **THEN** Automatic retains candidates in their relative order rather than manufacturing an unavailable replacement
+- **AND** ordinary execution and error reporting still apply
+
+#### Scenario: The picker explains recent source trouble
+- **WHEN** a scoped hint is current
+- **THEN** the picker displays a non-blocking reconnect warning
+- **AND** it does not disable manual selection, claim successful sign-in or expose raw provider errors
 
 ### Requirement: Connection-scoped model choices
 The app SHALL expose model choices from the universe owner's authorized connections with freshness and capability information, without a compiled model-release list.
