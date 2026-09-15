@@ -103,13 +103,13 @@
     .msg{max-width:min(38rem,88%);padding:.7rem .9rem;border-radius:var(--radius);white-space:pre-wrap;word-wrap:break-word}
     .msg--founder{align-self:flex-end;background:var(--accent);color:var(--accent-ink);border-bottom-right-radius:4px}
     .msg--universe{align-self:flex-start;background:var(--surface-2);border:1px solid var(--line);border-bottom-left-radius:4px}
-    .msg--system{align-self:center;background:transparent;color:var(--warn);font-size:.85rem;text-align:center;max-width:90%}
+    .msg--system,.msg--platform{align-self:center;background:transparent;color:var(--warn);font-size:.85rem;text-align:center;max-width:90%}
     .msg-meta{display:flex;align-items:baseline;justify-content:space-between;gap:.15rem 1rem;flex-wrap:wrap;
               margin-bottom:.25rem;font-size:.72rem;letter-spacing:.3px;opacity:.85}
     .msg-role{font-weight:600}
     .msg-time{font-variant-numeric:tabular-nums;letter-spacing:0;white-space:nowrap}
     .msg--universe .msg-role{color:var(--universe)}
-    .msg--system .msg-meta{justify-content:center;gap:.65rem}
+    .msg--system .msg-meta,.msg--platform .msg-meta{justify-content:center;gap:.65rem}
     .msg-execution{margin-top:.55rem;color:var(--ink-dim);font-size:.75rem;
       white-space:normal;overflow-wrap:anywhere}
     .setup-cta{margin-top:.6rem}
@@ -1189,7 +1189,7 @@
     el.className="msg msg--"+role;
     const meta=document.createElement("span"); meta.className="msg-meta";
     const l=document.createElement("span"); l.className="msg-role";
-    l.textContent=role==="universe"?"Universe":role==="system"?"Notice":"You";
+    l.textContent=role==="universe"?"Universe":role==="platform"?"Platform notice":role==="system"?"Notice":"You";
     meta.appendChild(l);
     // A missing legacy timestamp stays visibly unknown. Using render/load time
     // here would invent history and make the page look more certain than its data.
@@ -1986,7 +1986,46 @@
     if(typeof ModelPicker!=="undefined") ModelPicker.observe(detail.textContent);
     return detail;
   }
+  function servedFailureError(payload){
+    const failure=payload&&payload.turn_failure;
+    const recorded=!!failure&&failure.version===1&&failure.kind==="turn_failed"&&
+      typeof payload.failure_notice==="string"&&!!payload.failure_notice;
+    const error=new Error(recorded?payload.failure_notice:payload.error);
+    error.served=true;
+    error.failureRecorded=recorded;
+    error.historySaved=recorded&&payload.history_saved===true;
+    error.failureCode=recorded?failure.code:"";
+    return error;
+  }
+  function appendFailureNotice(text,original,instant,failureCode){
+    // No guessed/page-truncated original, no automatic replay. A saved failure
+    // remains history; a user click starts a NEW turn rather than erasing it.
+    let again=null;
+    if(original&&original.speaker==="founder"&&original.truncated===false&&
+       typeof original.text==="string"&&original.text.trim()){
+      again=document.createElement("button");
+      again.className="btn btn--link"; again.textContent="Send it again";
+      again.addEventListener("click",()=>{
+        if(again.disabled)return;
+        again.disabled=true;
+        sendTurn(original.text,original.display,{keepComposer:true,inputMethod:"unknown"});
+      });
+    }else{
+      text+=" Retrieve the full original request before retrying; no partial text will be sent.";
+    }
+    const note=instant===undefined?appendMessage("platform",text,again):appendMessage("platform",text,again,instant);
+    if(failureCode==="setup_required"){
+      const connect=document.createElement("button");
+      connect.className="btn btn--link"; connect.textContent="Connect a source";
+      connect.addEventListener("click",()=>showConnect(true));
+      note.appendChild(connect);
+    }
+    return note;
+  }
   function renderConverse(payload){
+    if(payload&&payload.turn_failure&&(payload.error||payload.status==="held")){
+      throw servedFailureError(payload);
+    }
     if(payload&&typeof payload.reply==="string"){
       appendMessage("universe",payload.reply,answerExecutionDetail(payload)); return;
     }
@@ -1997,16 +2036,13 @@
       cta.appendChild(b);
       appendMessage("universe", payload.note||"This universe has no engine yet.", cta); return;
     }
-    // A served error is NOT a delivered turn: the universe never answered, and
-    // the exchange was not recorded, so the message must stay the user's to
-    // resend (and survive a reload). Raised so sendTurn's catch keeps the
-    // in-flight record; drawing it inline here forgot the message and a
-    // build-change reload then wiped both it and the error (founder, 2026-08-29).
-    if(payload&&payload.error){ const e=new Error(payload.error); e.served=true; throw e; }
+    // Older servers lack durable-failure metadata. Keep their local recovery
+    // path; a rendered error is not evidence of either storage or no effects.
+    if(payload&&payload.error)throw servedFailureError(payload);
     appendMessage("system","Your universe returned an unexpected response.");
   }
 
-  // A turn is recorded server-side only when the exchange COMPLETES, so a reload
+  // A turn is saved after an answer or admitted terminal failure. A reload
   // mid-reply has nothing to restore from history — and the web app is a primary
   // surface, not a debug view (founder, 2026-08-28). The message is kept locally
   // until the reply lands, and shown with its REAL state rather than as though
@@ -2596,9 +2632,13 @@
       // dropped, so the next attempt rebuilds it. Say what actually went wrong
       // and put the retry one click away, instead of leaving the user staring
       // at a parser string with nothing to do (founder, 2026-08-28).
-      offerResend(message, display, err, opts);
-      // Deliberately NOT forgotten: the send failed, so the message is still the
-      // user's to resend.
+      if(err.historySaved){
+        if(!opts.keepInflight)forgetInflight();
+        appendFailureNotice(err.message,{speaker:"founder",text:message,display,truncated:false},undefined,err.failureCode);
+      }else{
+        offerResend(message, display, err, opts);
+        // Unsaved or unconfirmed: the local recovery record is still needed.
+      }
     }finally{
       $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
       flushSendQueue();Voice.conversationSettled(delivered);
@@ -2619,7 +2659,7 @@
     try{
       const payload=await MCP.converse(message,"spoken",opts.modelChoice);
       if(!payload||typeof payload.reply!=="string"){
-        if(payload&&payload.error){const served=new Error(payload.error);served.served=true;throw served;}
+        if(payload&&(payload.error||payload.turn_failure))throw servedFailureError(payload);
         throw new Error("voice_converse_invalid");
       }
       appendMessage("universe",payload.reply,answerExecutionDetail(payload));
@@ -2627,7 +2667,12 @@
       return payload.reply;
     }catch(error){
       if(error&&error.authRequired){ sessionExpired(); throw error; }
-      offerResend(message,message,error,Object.assign({},opts,{echoed:true,keepComposer:true}));
+      if(error.historySaved){
+        forgetInflight();
+        appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode);
+      }else{
+        offerResend(message,message,error,Object.assign({},opts,{echoed:true,keepComposer:true}));
+      }
       throw error;
     }finally{
       $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
@@ -2640,9 +2685,9 @@
   // reply from the universe and is reported as it came.
   function offerResend(message, display, err, opts){
     const notice=(err&&err.transport)
-      ? "That didn\u2019t get through \u2014 "+err.message+". Your message is safe."
+      ? "Delivery could not be confirmed: "+err.message+". Check progress before sending again; the request may already have acted."
       : (err&&err.served)
-        ? err.message   // the server already wrote the user-facing sentence
+        ? err.message+(err.failureRecorded?" This failure was not saved to conversation history. Keep this message to retry.":"")
         : "Couldn\u2019t reach your universe: "+((err&&err.message)||"unknown error");
     const again=document.createElement("button");
     again.className="btn btn--link"; again.textContent="Send it again";
@@ -3937,10 +3982,16 @@
       // their given order.
       const stamped = turns.every(t=>t && typeof t.ts==="number");
       const ordered = stamped ? turns.slice().sort((a,b)=>a.ts-b.ts) : turns.slice();
-      ordered.forEach(t=>{
-        const who = (t && t.speaker === "universe") ? "universe" : "founder";
-        if(t && typeof t.text === "string" && t.text) appendMessage(who, t.text,
-          who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
+      ordered.forEach((t,index)=>{
+        if(!t||typeof t.text!=="string"||!t.text)return;
+        if(t.speaker==="platform"){
+          const previous=ordered[index-1];
+          const paired=previous&&typeof t.ts==="number"&&Number.isFinite(t.ts)&&previous.ts===t.ts;
+          appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code);
+          return;
+        }
+        const who=t.speaker==="universe"?"universe":t.speaker==="founder"?"founder":"system";
+        appendMessage(who,t.text,who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
       });
       restoreInflight(turns);
     }catch(_e){
@@ -3969,9 +4020,9 @@
     // ("continue") delete the record of the new one (Codex round 3, P1).
     // History stamps are epoch seconds; the record's is epoch milliseconds;
     // a minute of slack covers clock skew without reaching an earlier send.
-    const founderTurns = (turns||[]).filter(t => t && t.speaker !== "universe");
+    const founderTurns = (turns||[]).filter(t => t && t.speaker === "founder");
     const last = founderTurns[founderTurns.length-1];
-    const already = !!last && last.text === pending.message &&
+    const already = !!last && last.truncated!==true && last.text === pending.message &&
       (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
     if(already){ forgetInflight(); restoreQueue(); return; }
     inflightRestored = true;

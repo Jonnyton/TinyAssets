@@ -56,7 +56,7 @@ permissions, default/fallback behavior, FIFO executor or private workflows.
    existing _TURN_ENDED_FAILURE_CLASSES plus native_auth_clue/setup_required/
    unknown. The existing unknown live error text can differ from its safe
    retained notice; new failure metadata and notice never contain raw strings.
-   Add optional `turn_failure` and `history_saved` to the existing error/hold
+   Add optional `turn_failure`, fixed `failure_notice` and `history_saved` to the existing error/hold
    response; retain existing keys for clients. Persistence failure returns the
    original usable failure and `history_saved=false`, never replaces it with
    success or hides unsaved history. No persistence on pre-auth, invalid model
@@ -133,4 +133,5 @@ one transaction/retry/retention boundary. Reviewer did not trace deletion end to
 end; acceptance still must. Lead adds truncated-retry safety and explicit owner
 filtering for automation context after reading that consumer. Codes alone do not
 prove zero side effects: only proven pre-admission refusals may say work never
-started; otherwise retain uncertainty. No runtime implementation yet.
+started; otherwise retain uncertainty. Implementation is in progress; exact-head
+review and live proof remain.

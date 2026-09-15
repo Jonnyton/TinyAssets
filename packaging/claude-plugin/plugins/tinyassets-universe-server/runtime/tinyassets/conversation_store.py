@@ -60,6 +60,13 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from tinyassets.conversation_failure import (
+    failure_column_sql,
+    failure_notice,
+    normalize_turn_failure,
+    read_turn_failure,
+    turn_failure,
+)
 from tinyassets.conversation_memory import DEFAULT_LIMIT, Msg
 from tinyassets.providers.execution_receipt import ExecutionReceipt, normalize_execution_receipt
 
@@ -78,6 +85,7 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     ts         REAL    NOT NULL,
     ext_id     TEXT    NOT NULL DEFAULT '',
     execution_json TEXT NOT NULL DEFAULT '',
+    failure_json TEXT NOT NULL DEFAULT '',
     UNIQUE(session_id, turn_no)
 );
 CREATE INDEX IF NOT EXISTS ix_turns_session
@@ -147,6 +155,13 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     except sqlite3.OperationalError as exc:
         if "duplicate column" not in str(exc).lower():
             logger.warning("conversation_store: execution receipt migration failed: %s", exc)
+    try:
+        conn.execute(
+            "ALTER TABLE conversation_turns ADD COLUMN failure_json TEXT NOT NULL DEFAULT ''"
+        )
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            logger.warning("conversation_store: failure metadata migration failed: %s", exc)
     return conn
 
 
@@ -158,13 +173,14 @@ def _has_execution_column(conn: sqlite3.Connection) -> bool:
 
 def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int) -> list[Msg]:
     receipt_column = "execution_json" if _has_execution_column(conn) else "''"
+    failure_column = failure_column_sql(conn)
     rows = conn.execute(
-        "SELECT speaker, content, ts, " + receipt_column + " FROM conversation_turns "
+        f"SELECT speaker, content, ts, {receipt_column}, {failure_column} FROM conversation_turns "
         "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
         (session_id, max(1, int(limit))),
     ).fetchall()
     result = []
-    for speaker, content, ts, raw in reversed(rows):
+    for speaker, content, ts, raw, failure_raw in reversed(rows):
         receipt = None
         if speaker == "universe" and isinstance(raw, str) and 0 < len(raw) <= 4096:
             try:
@@ -173,7 +189,8 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int) -> lis
                     receipt = ExecutionReceipt(**normalized)
             except (ValueError, RecursionError):
                 pass  # Corrupt optional metadata never discards the message text.
-        result.append(Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts), receipt))
+        result.append(Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts), receipt,
+                          read_turn_failure(speaker, failure_raw)))
     return result
 
 
@@ -345,6 +362,29 @@ def record_exchange(
     together or not at all. Also applies ``RETENTION_TURNS``. Best-effort by
     contract: returns False and logs on any failure, never raises.
     """
+    return _record_pair(universe_dir, session_id, founder_text, universe_text,
+                        speaker="universe", ts=ts, execution=execution)
+
+
+def record_failure(
+    universe_dir: "str | Path", session_id: str, founder_text: str, code: object,
+    *, ts: float | None = None,
+) -> bool:
+    """Save a fixed platform notice plus original text, without an answer receipt.
+
+    True confirms the pair, not optional metadata: writable legacy stores can
+    retain text-only platform rows when an additive migration is unavailable.
+    """
+    failure = turn_failure(code)
+    return _record_pair(universe_dir, session_id, founder_text, failure_notice(failure.code),
+                        speaker="platform", ts=ts, failure=failure)
+
+
+def _record_pair(
+    universe_dir, session_id, founder_text, universe_text, *, speaker, ts=None,
+    execution=None, failure=None,
+) -> bool:
+    """The shared transaction, retry and retention boundary for terminal pairs."""
     if not session_id or not isinstance(founder_text, str) or not founder_text.strip():
         return False
     if not isinstance(universe_text, str) or not universe_text.strip():
@@ -355,6 +395,8 @@ def record_exchange(
         execution_json = (
             json.dumps(normalized, ensure_ascii=False) if normalized is not None else ""
         )
+        normalized_failure = normalize_turn_failure(failure)
+        failure_json = json.dumps(normalized_failure) if normalized_failure is not None else ""
         db_path = _db_path(universe_dir)
         lock = _lock_for(db_path)
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
@@ -374,23 +416,23 @@ def record_exchange(
                     turn_no = int(row[0])
                     rows = [
                         (session_id, turn_no, "founder", founder_text, when),
-                        (session_id, turn_no + 1, "universe", universe_text, when),
+                        (session_id, turn_no + 1, speaker, universe_text, when),
                     ]
+                    # Column names are fixed internal constants, never caller data.
+                    # Text-only fallback preserves the speaker discriminator.
+                    columns = "session_id, turn_no, speaker, content, ts, ext_id"
+                    placeholders = "?, ?, ?, ?, ?, ''"
                     if _has_execution_column(conn):
-                        conn.executemany(
-                            "INSERT INTO conversation_turns "
-                            "(session_id, turn_no, speaker, content, ts, ext_id, execution_json) "
-                            "VALUES (?, ?, ?, ?, ?, '', ?)",
-                            [(*rows[0], ""), (*rows[1], execution_json)],
-                        )
-                    else:
-                        # Optional metadata must not prevent a text-only exchange
-                        # when an old writable database could not be migrated.
-                        conn.executemany(
-                            "INSERT INTO conversation_turns "
-                            "(session_id, turn_no, speaker, content, ts, ext_id) "
-                            "VALUES (?, ?, ?, ?, ?, '')", rows,
-                        )
+                        columns += ", execution_json"
+                        placeholders += ", ?"
+                        rows = [(*rows[0], ""), (*rows[1], execution_json)]
+                    if failure_column_sql(conn) == "failure_json":
+                        columns += ", failure_json"
+                        placeholders += ", ?"
+                        rows = [(*rows[0], ""), (*rows[1], failure_json)]
+                    conn.executemany(
+                        f"INSERT INTO conversation_turns ({columns}) VALUES ({placeholders})", rows,
+                    )
                     conn.execute(
                         "DELETE FROM conversation_turns WHERE session_id = ? AND turn_no <= "
                         "(SELECT COALESCE(MAX(turn_no), 0) FROM conversation_turns "

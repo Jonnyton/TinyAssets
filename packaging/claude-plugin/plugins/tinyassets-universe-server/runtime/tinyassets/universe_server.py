@@ -2190,6 +2190,23 @@ def _has_native_auth_clue(exc: BaseException) -> bool:
     return False
 
 
+def _served_failure_code(exc: BaseException) -> str:
+    """Reduce observed diagnostics to a closed code before any durable write."""
+    from tinyassets.conversation_failure import FAILURE_CODES
+
+    try:
+        if any(tell in str(exc).lower() for tell in _PLATFORM_FAULT_TELLS):
+            return "platform_fault"
+        for code in (getattr(exc, "failure_class", None), _attempt_class(exc)):
+            if isinstance(code, str) and code in FAILURE_CODES:
+                return code
+        if _has_native_auth_clue(exc):
+            return "native_auth_clue"
+    except Exception:  # Malformed diagnostic attributes are not another failure.
+        pass
+    return "unknown"
+
+
 def _served_failure_notice(exc: BaseException) -> str:
     """The user-facing sentence for a failed served turn.
 
@@ -2420,12 +2437,31 @@ def converse(
         from tinyassets.api.universe import engine_setup_required_payload
 
         held = engine_setup_required_payload(uid, exc)
+        from tinyassets.conversation_failure import (
+            failure_notice,
+            normalize_turn_failure,
+            turn_failure,
+        )
+        from tinyassets.conversation_store import record_failure
+
+        code = "setup_required" if held is not None else _served_failure_code(exc)
+        try:
+            saved = record_failure(memory_universe_dir, memory_session, message, code)
+        except Exception:  # Original failure remains usable even if memory fails.
+            logger.warning("converse: failed-turn history could not be saved")
+            saved = False
+        history = {
+            "turn_failure": normalize_turn_failure(turn_failure(code)),
+            "failure_notice": failure_notice(code),
+            "history_saved": saved,
+        }
         if held is not None:
-            return json.dumps(held)
+            return json.dumps({**held, **history})
         _record_served_failure(uid, exc)
         return json.dumps({
             "error": _served_failure_notice(exc),
             **_served_failure_diagnosis(exc),
+            **history,
         })
     execution = execution_receipt.projection()
     try:

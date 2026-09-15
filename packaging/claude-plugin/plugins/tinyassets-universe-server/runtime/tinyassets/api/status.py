@@ -1727,6 +1727,7 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
     if include_conversation:
         try:
             if universe_exists and permissions.universe_access_allows(uid, write=True):
+                from tinyassets.conversation_failure import normalize_turn_failure
                 from tinyassets.conversation_store import load_recent_readonly
                 from tinyassets.providers.execution_receipt import normalize_execution_receipt
 
@@ -1744,6 +1745,10 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
                             "text": (getattr(t, "text", "") or "")[:_cap],
                             "truncated": len(getattr(t, "text", "") or "") > _cap,
                             "ts": getattr(t, "ts", None),
+                            **({"failure": failure} if (
+                                getattr(t, "speaker", "") == "platform" and
+                                (failure := normalize_turn_failure(getattr(t, "failure", None)))
+                            ) else {}),
                             **({"execution": receipt} if (
                                 getattr(t, "speaker", "") == "universe" and
                                 (receipt := normalize_execution_receipt(

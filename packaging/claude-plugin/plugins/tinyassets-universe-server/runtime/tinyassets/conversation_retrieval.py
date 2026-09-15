@@ -9,6 +9,8 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+from tinyassets.conversation_failure import failure_column_sql, project_failure_row
+
 PAGE_SIZE = 20
 
 
@@ -27,17 +29,19 @@ def read_conversation_page(universe_dir, session_id, *, field_name="", offset=0,
         return {"available": False, "messages": [], "next_offset": None}
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5.0)) as conn:
         conn.row_factory = sqlite3.Row
+        failure_column = failure_column_sql(conn)
         if field_name:
             if not field_name.isascii() or not field_name.isdecimal() or len(field_name) > 18:
                 raise ValueError("conversation_message_id_invalid")
             row = conn.execute(
-                "SELECT id, speaker, ts, content FROM conversation_turns "
+                f"SELECT id, speaker, ts, content, {failure_column} AS failure_json "
+                "FROM conversation_turns "
                 "WHERE session_id = ? AND id = ?",
                 (session_id, int(field_name)),
             ).fetchone()
             if row is None:
                 return {"available": True, "error": "conversation_message_not_found"}
-            value = dict(row)
+            value = project_failure_row(row)
             content = value.pop("content")
             value["total_chars"] = len(content)
             value["chunk"] = content[offset:offset + max_chars]
@@ -51,15 +55,21 @@ def read_conversation_page(universe_dir, session_id, *, field_name="", offset=0,
         where = "session_id = ?" + (" AND id < ?" if offset else "")
         args = (session_id, offset, PAGE_SIZE + 1) if offset else (session_id, PAGE_SIZE + 1)
         rows = conn.execute(
-             "SELECT id, speaker, ts, length(CAST(content AS BLOB)) AS total_bytes "
+            "SELECT id, speaker, ts, length(CAST(content AS BLOB)) AS total_bytes, "
+            f"{failure_column} AS failure_json "
             f"FROM conversation_turns WHERE {where} ORDER BY id DESC LIMIT ?", args,
         ).fetchall()
         kept = rows[:PAGE_SIZE]
         return {
             "available": True,
-            "messages": [dict(row) for row in kept],
+            "messages": [project_failure_row(row) for row in kept],
             "next_offset": kept[-1]["id"] if len(rows) > PAGE_SIZE else None,
             "offset_unit": "before_message_id",
-            "read": "Use field_name=<id> to read a message; output_offset then counts Unicode characters.",
-            "retention": "Only retained messages are available; deleted history cannot be reconstructed.",
+            "read": (
+                "Use field_name=<id> to read a message; "
+                "output_offset then counts Unicode characters."
+            ),
+            "retention": (
+                "Only retained messages are available; deleted history cannot be reconstructed."
+            ),
         }

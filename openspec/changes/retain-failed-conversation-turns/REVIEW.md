@@ -27,4 +27,7 @@ still needs an actual coverage test; reviewer did not trace it end to end.
 Rollback retains platform-aware readers/UI and bytes, reverting only writes.
 No changes to app-agent workflow definitions or the background-self project.
 
-No implementation, exact-head code approval, PR, deployment or live proof yet.
+Implementation checkpoint, September 15, 2026 UTC: the adapted storage, five
+readers and UI are implemented locally. The focused Windows cohort passed
+320 tests in 46.78s (session 14767); see VERIFICATION.md. Exact-head independent
+code review, Linux proof, PR, deployment and live failure-history proof remain.
