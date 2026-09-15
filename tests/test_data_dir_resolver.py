@@ -84,7 +84,7 @@ def test_expanduser_honored(clean_env):
 # ---- platform-appropriate default path ------------------------------------
 
 
-def test_linux_mac_default_dot_workflow_under_home(clean_env):
+def test_linux_mac_default_dot_tinyassets_under_home(clean_env):
     """On non-Windows, default is ~/.tinyassets."""
     from tinyassets.storage import data_dir
 
@@ -92,7 +92,7 @@ def test_linux_mac_default_dot_workflow_under_home(clean_env):
         pytest.skip("test targets non-Windows default branch")
 
     result = data_dir()
-    assert result == (Path.home() / ".workflow").resolve()
+    assert result == (Path.home() / ".tinyassets").resolve()
 
 
 @pytest.mark.skipif(os.name != "nt", reason=_NT_FAKE_UNSAFE)
