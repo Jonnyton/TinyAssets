@@ -47,6 +47,22 @@ from tinyassets.providers.base import (
 
 logger = logging.getLogger(__name__)
 
+# SDKAssistantMessage.error is an enum, not the free-text message.content.
+# https://code.claude.com/docs/en/agent-sdk/typescript (September 15, 2026).
+# Unknown future values remain usable protocol events but never enter logs raw.
+_ASSISTANT_ERROR_CATEGORIES = frozenset({
+    "authentication_failed", "oauth_org_not_allowed", "billing_error", "rate_limit",
+    "overloaded", "invalid_request", "model_not_found", "server_error",
+    "max_output_tokens", "unknown",
+})
+
+
+def _terminal_error_flag(terminal: dict | None) -> str:
+    if terminal is None or "is_error" not in terminal:
+        return "absent"
+    value = terminal["is_error"]
+    return ("true" if value else "false") if type(value) is bool else "non_boolean"
+
 # Windows-specific crash codes: treat as unavailable so the router applies a
 # cooldown instead of retrying immediately.
 #   0xC0000374 (3221225588) = heap corruption
@@ -177,6 +193,11 @@ def _normalize_stream_obj(obj: dict) -> list[tuple[str, dict]]:
             # hook_response / tool_heartbeat / ... — recognized activity.
             events.append(("heartbeat", {}))
     elif kind == "assistant":
+        if "error" in obj and obj["error"] is not None:
+            error = obj["error"]
+            category = (error if type(error) is str and error in _ASSISTANT_ERROR_CATEGORIES
+                        else "unrecognized")
+            events.append(("assistant_error", {"category": category}))
         for block in _content_blocks(obj.get("message")):
             block_type = block.get("type")
             if block_type == "text":
@@ -567,6 +588,7 @@ class ClaudeProvider(BaseProvider):
         partial: list[str] = []
         terminal: dict | None = None
         last_retry: dict | None = None
+        last_assistant_error: str | None = None
         seen_init = False
         seen_progress = False
         ttft_ms: float | None = None
@@ -594,6 +616,8 @@ class ClaudeProvider(BaseProvider):
                 "last_progress_age_ms": (time.monotonic() - last_progress) * 1000,
                 "exit_code": _coerce_int(proc.returncode),
                 "terminal": terminal is not None,
+                "terminal_is_error": _terminal_error_flag(terminal),
+                "last_assistant_error": last_assistant_error,
             }
             # Liveness normalization deliberately tolerates unknown events; it
             # is not a complete effects trace and cannot attest a safe retry.
@@ -709,6 +733,10 @@ class ClaudeProvider(BaseProvider):
                             pending_retry_delay = float(retry_after)
                         if payload.get("failure_class"):
                             last_retry = payload
+                    elif kind == "assistant_error":
+                        # Diagnostic only: not proof of the final cause, no
+                        # capacity/retry classification or authority change.
+                        last_assistant_error = payload["category"]
                     elif kind == "result":
                         terminal = payload.get("obj")
                 if progressed:
@@ -789,9 +817,13 @@ class ClaudeProvider(BaseProvider):
                     "— subprocess failure, applying cooldown"
                 ))
             if terminal is not None:
+                # Keep the observed terminal verdict and last typed category,
+                # never upstream result/errors/content or arbitrary subtype text.
+                subtype = "success" if terminal.get("subtype") == "success" else "non_success"
                 raise _attach(ProviderError(
                     f"claude -p terminal result was not success "
-                    f"(subtype={terminal.get('subtype')!r})"
+                    f"(subtype={subtype}, is_error={_terminal_error_flag(terminal)}, "
+                    f"last_assistant_error={last_assistant_error or 'not_reported'})"
                 ))
             if returncode not in (0, None):
                 raise _attach(ProviderError(
