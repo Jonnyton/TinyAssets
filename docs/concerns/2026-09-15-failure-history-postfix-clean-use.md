@@ -1,6 +1,6 @@
 # Failure-history post-fix independent clean-use watch
 
-September15,2026 UTC. PR3856 deployed43479ccda600; descendant2c902151a47a
+Filed 2026-09-15 UTC. PR3856 deployed43479ccda600; descendant2c902151a47a
 also verified by protected deployment/public canary. Rendered original-owner
 app test00:49-00:53PDT confirms real failure -> refresh -> successful next-model
 diagnosis -> refresh retains both pairs. The disappearing-history bug is fixed.
