@@ -179,16 +179,20 @@ def test_mixed_automatic_prefers_owned_native_default(agent, monkeypatch):
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-@pytest.mark.parametrize("recovery", ["automatic", "explicit"])
+@pytest.mark.parametrize("recovery", ["automatic", "explicit", "reconnect"])
+@pytest.mark.parametrize("elapsed", [0, 420, 86400])
 def test_auth_failure_affects_only_new_auto_turn_not_failed_native_replay(
-    agent, monkeypatch, recovery,
+    agent, monkeypatch, recovery, elapsed,
 ):
     from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthenticationError
     from tinyassets.providers import source_health
     from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
     from tinyassets.providers.served_model_plan import prepare_owned_model_plan
 
-    monkeypatch.setattr(source_health, "SOURCE_HEALTH", source_health.SourceHealth())
+    now = [0]
+    monkeypatch.setattr(
+        source_health, "SOURCE_HEALTH", source_health.SourceHealth(clock=lambda: now[0]),
+    )
     native = agent.served.native
     original = native.complete
 
@@ -213,11 +217,38 @@ def test_auth_failure_affects_only_new_auto_turn_not_failed_native_replay(
             owner="owner", agent=agent.served.agent, current=current,
         ).plan
 
+    now[0] = elapsed
     alternative = prepare().next_candidate("owner", "u-models")
     assert alternative.connection_id.startswith("api_key_http:")
     explicit = ModelPreferences("explicit", ModelRef("codex", ""), ())
     assert prepare(explicit).next_candidate("owner", "u-models") == ModelRef("codex", "")
-    if recovery == "explicit":
+    if recovery == "reconnect":
+        from tinyassets.credential_vault import write_credential_vault
+        from tinyassets.onboarding.serving import ensure_founder_serving
+
+        daemon_server.grant_universe_access(
+            agent.served.rig.base, universe_id="u-models", actor_id="owner",
+            permission="admin", granted_by="owner",
+        )
+        write_credential_vault(
+            agent.served.context.universe_dir, [{
+                "credential_type": "llm_subscription", "service": "codex",
+                "auth_json_b64": "eyJuZXciOiJjcmVkZW50aWFsIn0=",
+            }], owner_user_id="owner", universe_id="u-models",
+        )
+        result = ensure_founder_serving(
+            base_path=agent.served.rig.base, universe_dir=agent.served.context.universe_dir,
+            owner_user_id="owner", universe_id="u-models", service="codex",
+        )
+        assert result["status"] == "serving", result
+        agent.served.agent = get_binding(
+            agent.served.rig.base, universe_id="u-models",
+            binding_id=agent.served.agent["agent_binding_id"],
+        )
+        # A real renewed assignment is eligible before any successful model call.
+        assert prepare().next_candidate("owner", "u-models") == ModelRef("codex", "")
+        assert native.calls == 1
+    elif recovery == "explicit":
         # A fresh, explicitly selected successful attempt clears only its own hint.
         monkeypatch.setattr(native, "complete", original)
         assert _converse(agent, monkeypatch, explicit.document()) == "codex:hello"

@@ -28,36 +28,42 @@ def source_key(base, owner, universe, member):
 
 
 class SourceHealth:
-    def __init__(self, *, clock=monotonic, ttl=300, capacity=4096):
-        if ttl <= 0 or capacity < 1:
+    def __init__(self, *, clock=monotonic, capacity=4096):
+        if capacity < 1:
             raise ValueError("invalid source health bounds")
-        self._clock, self._ttl, self._capacity = clock, ttl, capacity
+        self._clock, self._capacity = clock, capacity
         self._failed = OrderedDict()
         self._lock = Lock()
 
-    def _prune(self, now):
-        for key, expires in tuple(self._failed.items()):
-            if expires <= now:
-                del self._failed[key]
+    def _discard_older_generations(self, key):
+        for previous in tuple(self._failed):
+            if (previous.generation < key.generation
+                    and previous.base == key.base
+                    and previous.owner == key.owner
+                    and previous.universe == key.universe
+                    and previous.provider == key.provider
+                    and previous.reference == key.reference):
+                del self._failed[previous]
 
     def authentication_failed(self, key):
         if type(key) is not SourceKey:
             raise TypeError("source health requires exact custody scope")
         with self._lock:
-            now = self._clock()
-            self._prune(now)
-            self._failed[key] = now + self._ttl
+            self._discard_older_generations(key)
+            # Observation time is diagnostic metadata, never recovery evidence.
+            # In particular, waiting cannot make an unchanged credential valid.
+            self._failed[key] = self._clock()
             self._failed.move_to_end(key)
             while len(self._failed) > self._capacity:
                 self._failed.popitem(last=False)
 
     def succeeded(self, key):
         with self._lock:
+            self._discard_older_generations(key)
             self._failed.pop(key, None)
 
     def needs_reconnect(self, key):
         with self._lock:
-            self._prune(self._clock())
             return key in self._failed
 
 
