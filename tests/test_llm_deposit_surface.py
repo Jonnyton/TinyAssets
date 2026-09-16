@@ -180,6 +180,41 @@ def test_owner_deposits_claude_round_trips(base: Path) -> None:
     assert _owner_rows(base, "u-owner") == [("claude", "founder")]
 
 
+@pytest.mark.parametrize("wrong", [
+    "browser-authorization-code#state", "not-a-token",
+    "sk-ant-oat01-first\nsecond", "export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-value",
+    '{"access_token":"sk-ant-oat01-value"}', "sk-ant-value#state",
+])
+def test_wrong_claude_artifact_preserves_existing_connection(base, caplog, wrong):
+    from tinyassets.credential_vault import credential_vault_path, resolve_claude_oauth_token
+
+    udir = _make_universe(base, "u-reconnect", admin="founder")
+    _login("founder")
+    old = "sk-ant-oat01-existing-fixture"
+    assert _deposit("u-reconnect", "claude", _b64(old))["status"] == "deposited"
+    before = credential_vault_path(udir).read_bytes()
+    owners = _owner_rows(base, "u-reconnect")
+    result = _deposit("u-reconnect", "claude", _b64(wrong))
+    assert result["error"] == "connection_setup_invalid"
+    assert "back in the terminal" in result["detail"]
+    assert credential_vault_path(udir).read_bytes() == before
+    assert _owner_rows(base, "u-reconnect") == owners
+    assert resolve_claude_oauth_token(udir) == old
+    assert wrong not in json.dumps(result) + caplog.text
+    assert _b64(wrong) not in json.dumps(result) + caplog.text
+
+
+def test_browser_code_cannot_create_first_claude_connection(base):
+    from tinyassets.credential_vault import credential_vault_path
+
+    udir = _make_universe(base, "u-first", admin="founder")
+    _login("founder")
+    result = _deposit("u-first", "claude", _b64("browser-code#state"))
+    assert result["error"] == "connection_setup_invalid"
+    assert not credential_vault_path(udir).exists()
+    assert not _owners_table_exists(base)
+
+
 def test_owner_deposits_codex_materializes_auth_json(base: Path) -> None:
     from tinyassets.credential_vault import (
         codex_subscription_auth_available,
@@ -231,7 +266,7 @@ def test_deposit_routes_through_write_graph(base: Path) -> None:
             operation="connect_llm",
             graph_id="u-route",
             payload_json=json.dumps(
-                {"service": "claude", "auth_material_b64": _b64("tok-route")}
+                {"service": "claude", "auth_material_b64": _b64("sk-ant-tok-route")}
             ),
         )
         payload = json.loads(raw)
@@ -287,8 +322,8 @@ def test_redeposit_upserts_and_preserves_unrelated(base: Path) -> None:
     slack_before = _by("social", "slack")
 
     # First claude deposit, then a re-deposit — must upsert the single slot.
-    assert _deposit("u-mix", "claude", _b64("claude-v1"))["status"] == "deposited"
-    assert _deposit("u-mix", "claude", _b64("claude-v2"))["status"] == "deposited"
+    assert _deposit("u-mix", "claude", _b64("sk-ant-claude-v1"))["status"] == "deposited"
+    assert _deposit("u-mix", "claude", _b64("sk-ant-claude-v2"))["status"] == "deposited"
 
     claude_records = [
         r
@@ -296,7 +331,7 @@ def test_redeposit_upserts_and_preserves_unrelated(base: Path) -> None:
         if r.get("credential_type") == "llm_subscription" and r.get("service") == "claude"
     ]
     assert len(claude_records) == 1
-    assert resolve_claude_oauth_token(udir) == "claude-v2"
+    assert resolve_claude_oauth_token(udir) == "sk-ant-claude-v2"
 
     # Every unrelated credential is byte-for-byte intact.
     assert _by("llm_subscription", "codex") == codex_before
@@ -346,7 +381,7 @@ def test_admin_can_where_write_cannot(base: Path) -> None:
     assert _deposit("u-both", "claude", _b64("x"))["error"] == "not_found"
 
     _login("founder")
-    assert _deposit("u-both", "claude", _b64("y"))["status"] == "deposited"
+    assert _deposit("u-both", "claude", _b64("sk-ant-y"))["status"] == "deposited"
     assert _owner_rows(base, "u-both") == [("claude", "founder")]
 
 
@@ -377,17 +412,17 @@ def test_non_owner_admin_cannot_overwrite_owned_credential(base: Path) -> None:
     )
 
     _login("founder")
-    assert _deposit("u-co", "claude", _b64("founder-token"))["status"] == "deposited"
+    assert _deposit("u-co", "claude", _b64("sk-ant-founder-token"))["status"] == "deposited"
     vault_bytes = credential_vault_path(udir).read_bytes()
     owners_before = _owner_rows(base, "u-co")
 
     _login("coadmin")  # also admin, but NOT the credential owner
-    result = _deposit("u-co", "claude", _b64("coadmin-token"))
+    result = _deposit("u-co", "claude", _b64("sk-ant-coadmin-token"))
 
     assert result["error"] == "credential_ownership_transfer_unsupported"
     # Existing owned record unchanged, ownership not transferred.
     assert credential_vault_path(udir).read_bytes() == vault_bytes
-    assert resolve_claude_oauth_token(udir) == "founder-token"
+    assert resolve_claude_oauth_token(udir) == "sk-ant-founder-token"
     assert _owner_rows(base, "u-co") == owners_before == [("claude", "founder")]
 
 
@@ -495,8 +530,8 @@ def test_failed_deposit_is_atomic_prior_token_unchanged(
     _login("founder")
 
     # First deposit succeeds and binds the owner.
-    assert _deposit("u-atom", "claude", _b64("old-token"))["status"] == "deposited"
-    assert resolve_claude_oauth_token(udir) == "old-token"
+    assert _deposit("u-atom", "claude", _b64("sk-ant-old-token"))["status"] == "deposited"
+    assert resolve_claude_oauth_token(udir) == "sk-ant-old-token"
     owners_before = _owner_rows(base, "u-atom")
 
     # Inject a failure in the owner-row INSERT of the NEXT (re)deposit. The proxy
@@ -532,11 +567,11 @@ def test_failed_deposit_is_atomic_prior_token_unchanged(
 
     monkeypatch.setattr(cv.sqlite3, "connect", _fake_connect)
 
-    result = _deposit("u-atom", "claude", _b64("new-token"))
+    result = _deposit("u-atom", "claude", _b64("sk-ant-new-token"))
 
     # Handler fails closed; the prior credential and ownership are untouched.
     assert result["error"] == "deposit_failed"
-    assert resolve_claude_oauth_token(udir) == "old-token"
+    assert resolve_claude_oauth_token(udir) == "sk-ant-old-token"
     assert _owner_rows(base, "u-atom") == owners_before == [("claude", "founder")]
 
 
@@ -552,7 +587,7 @@ def test_reader_never_sees_new_token_and_file_failure_rolls_back_owner(
 
     udir = _make_universe(base, "u-read", admin="founder")
     _login("founder")
-    assert _deposit("u-read", "claude", _b64("old-token"))["status"] == "deposited"
+    assert _deposit("u-read", "claude", _b64("sk-ant-old-token"))["status"] == "deposited"
     owners_before = _owner_rows(base, "u-read")
 
     observed: dict[str, str] = {}
@@ -566,13 +601,13 @@ def test_reader_never_sees_new_token_and_file_failure_rolls_back_owner(
 
     monkeypatch.setattr(cv, "_persist_credential_vault_file", _spy_persist)
 
-    result = _deposit("u-read", "claude", _b64("new-token"))
+    result = _deposit("u-read", "claude", _b64("sk-ant-new-token"))
 
     assert result["error"] == "deposit_failed"
     # The reader never observed the not-yet-committed token.
-    assert observed["mid_deposit"] == "old-token"
+    assert observed["mid_deposit"] == "sk-ant-old-token"
     # After the failure the file is unchanged and the owner row is compensated.
-    assert resolve_claude_oauth_token(udir) == "old-token"
+    assert resolve_claude_oauth_token(udir) == "sk-ant-old-token"
     assert _owner_rows(base, "u-read") == owners_before == [("claude", "founder")]
 
 
@@ -597,7 +632,7 @@ def test_file_failure_on_first_deposit_leaves_no_orphan_owner(
 
     monkeypatch.setattr(cv, "_persist_credential_vault_file", _fail_persist)
 
-    result = _deposit("u-orphan", "claude", _b64("first-token"))
+    result = _deposit("u-orphan", "claude", _b64("sk-ant-first-token"))
 
     assert result["error"] == "deposit_failed"
     assert not credential_vault_path(udir).exists()  # no vault file
@@ -623,11 +658,11 @@ def test_post_commit_durability_failure_still_succeeds(
 
     monkeypatch.setattr(cv, "_post_commit_durability", _boom)
 
-    result = _deposit("u-dur", "claude", _b64("durable-token"))
+    result = _deposit("u-dur", "claude", _b64("sk-ant-durable-token"))
 
     # The credential is committed (file visible) and its owner row is present.
     assert result["status"] == "deposited"
-    assert resolve_claude_oauth_token(udir) == "durable-token"
+    assert resolve_claude_oauth_token(udir) == "sk-ant-durable-token"
     assert _owner_rows(base, "u-dur") == [("claude", "founder")]
 
 
