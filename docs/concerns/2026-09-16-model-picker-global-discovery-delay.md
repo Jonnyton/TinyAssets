@@ -1,6 +1,6 @@
 # Model switching waits on unrelated source discovery
 
-Filed September16,2026. Original-owner live app picker disables choice while
+Filed 2026-09-16. Original-owner live app picker disables choice while
 refreshing the entire catalogue. Fable5.1 confirms global client freshness and
 synchronous per-member discovery in providers/served_model_plan.py. A slow or
 expired source can delay selecting a different accepted source and its execution.

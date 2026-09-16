@@ -109,7 +109,7 @@ def _build_record(service: str, material: str) -> dict[str, Any]:
         # and falsely reported a successful connection. Shape is not validity.
         if not token.startswith("sk-ant-") or any(c.isspace() for c in token) or "#" in token:
             raise ValueError(
-                "Paste the final token printed by claude setup-token, not the "
+                "Paste the final token printed by the setup command, not the "
                 "browser authorization code. Enter that code back in the terminal "
                 "first, then copy its token (starting with sk-ant-). "
                 "Your existing connection has not changed."
