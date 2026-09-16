@@ -231,6 +231,27 @@ The app SHALL allow switching the interactive agent, saving a default and orderi
 ### Requirement: Actual execution is visible and actionable
 The typed-chat interface SHALL show a clickable active provider/model control, distinguish preference from actual execution, and remain usable without a working LLM.
 
+#### Scenario: Applying a model choice is an ordinary visible action
+- **WHEN** the owner opens the prominent model control
+- **THEN** the primary selector contains usable choices plus any unavailable currently selected choice
+- **AND** every unavailable model and reason remains in the full inventory
+- **AND** using a tab-local choice closes the dialog without changing the saved default
+- **AND** confirmed default saving clears the tab override so the next message uses the saved choice
+- **AND** failed or ambiguous saves do not clear that override
+
+#### Scenario: Reopening model selection with fresh evidence
+- **WHEN** the owner reopens the picker before its owner-scoped catalogue expires
+- **THEN** the picker reuses that snapshot without an unnecessary discovery wait
+- **AND** expired or failed refresh evidence still prevents application
+- **AND** execution independently rechecks authority; UI evidence never grants access
+
+#### Scenario: Claude browser code is not a subscription token
+- **WHEN** the owner submits a browser authorization code or malformed token text to the dedicated Claude subscription deposit
+- **THEN** the canonical handler rejects it before any credential or ownership mutation
+- **AND** the error explains that the browser code goes back into the setup terminal and the terminal's final token goes into the app
+- **AND** neither credential bytes nor digests appear in errors or logs
+- **AND** a successful shape check and serving bind report credential saved, not verified provider authentication
+
 #### Scenario: A router answers with another model
 - **WHEN** a response reports a model different from the requested alias
 - **THEN** the answering-model display uses the reported model without rewriting the saved default
