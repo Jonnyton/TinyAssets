@@ -1,5 +1,10 @@
 # Automatic source-health MVP — live evidence
 
+**Not completed:** the short proof below was contradicted by real-owner use on
+the same release: sign-in failures16:10,16:19,16:26PDT, with repeated requests
+answered by Codex16:11,16:21,16:27. PR3862 corrects the five-minute expiry;
+its deployment and long-gap ordinary app verification are not established here.
+
 September 15, 2026, production https://tinyassets.io/mcp/app, original
 subscription owner through the owner's requested Chrome-extension conversation.
 This is returning-user proof, not a fresh identity or first-contact test.
@@ -28,9 +33,10 @@ This is returning-user proof, not a fresh identity or first-contact test.
 
 No operator workflow, credential, permission or brain edits were made. The exact
 independent `Retest your workflow checklist` request was sent at16:05PDT; its
-outcome is separate from this narrow routing acceptance. No subsequent
-owner-initiated clean-use evidence was visible yet; watch the existing follow-up
-concern. Process-local five-minute hints can expire or disappear on restart.
+outcome is separate from this narrow routing acceptance. At that moment no
+subsequent owner-initiated use was visible; later failures are recorded above.
+This MVP's five-minute expiry was insufficient. The correction retains unresolved
+hints without timer expiry, but process restart or bounded eviction can lose them.
 
 Specification validation: `openspec validate agent-model-selection --type spec
 --strict` passed September15 in the Windows spec-sync worktree. The canonical

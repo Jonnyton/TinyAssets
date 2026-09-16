@@ -30,9 +30,8 @@ def test_exact_scope_isolation(field, value):
     assert not health.needs_reconnect(replace(KEY, **{field: value}))
 
 
-def test_expiry_capacity_and_success():
-    now = [0]
-    health = SourceHealth(clock=lambda: now[0], ttl=10, capacity=2)
+def test_capacity_and_exact_success():
+    health = SourceHealth(capacity=2)
     second, third = replace(KEY, owner="2"), replace(KEY, owner="3")
     for key in (KEY, second, third):
         health.authentication_failed(key)
@@ -40,9 +39,49 @@ def test_expiry_capacity_and_success():
     assert health.needs_reconnect(second)
     health.succeeded(second)
     assert not health.needs_reconnect(second)
-    now[0] = 10
-    assert not health.needs_reconnect(third)
-    assert not health._failed
+    assert health.needs_reconnect(third)
+
+
+@pytest.mark.parametrize("elapsed", [420, 86400])
+def test_elapsed_time_is_not_authentication_recovery(elapsed):
+    now = [0]
+    health = SourceHealth(clock=lambda: now[0])
+    health.authentication_failed(KEY)
+    now[0] = elapsed
+    assert health.needs_reconnect(KEY)
+    health.succeeded(KEY)
+    assert not health.needs_reconnect(KEY)
+
+
+def test_new_custody_has_no_failure_and_supersedes_older_generation():
+    health = SourceHealth()
+    newer = replace(KEY, generation=2, digest="new-digest")
+    health.authentication_failed(KEY)
+    assert not health.needs_reconnect(newer)
+    health.authentication_failed(newer)
+    assert not health.needs_reconnect(KEY)
+    assert health.needs_reconnect(newer)
+    # A late old-generation completion cannot clear the newer failure.
+    health.succeeded(KEY)
+    assert health.needs_reconnect(newer)
+
+
+def test_success_under_new_custody_removes_obsolete_generation():
+    health = SourceHealth()
+    health.authentication_failed(KEY)
+    health.succeeded(replace(KEY, generation=2, digest="new-digest"))
+    assert not health.needs_reconnect(KEY)
+
+
+@pytest.mark.parametrize("field", ["base", "owner", "universe", "provider", "reference"])
+def test_supersession_never_clears_another_source(field):
+    health = SourceHealth()
+    other = replace(KEY, **{field: "other"})
+    health.authentication_failed(KEY)
+    health.authentication_failed(other)
+    health.succeeded(replace(KEY, generation=2, digest="new-digest"))
+    assert not health.needs_reconnect(KEY)
+    assert health.needs_reconnect(other)
 
 
 def plan(policy=None, failed=("a",)):

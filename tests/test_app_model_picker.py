@@ -53,10 +53,10 @@ def test_sign_in_hint_warns_without_disabling_manual_choice(tmp_path):
     doc["options"][0]["labels"] = ["recent_sign_in_failure"]
     result = run_picker(tmp_path, "", doc=doc)
     rows = result["ui"]["model-inventory"]["children"]
-    assert "recent sign-in failure" in rows[0]["text"]
+    assert "sign-in failure" in rows[0]["text"]
     assert "reconnect" in rows[0]["text"]
     primary = result["ui"]["model-primary"]["children"]
-    warned = next(row for row in primary if "recent sign-in failure" in row["text"])
+    warned = next(row for row in primary if "sign-in failure" in row["text"])
     assert warned["disabled"] is False
     assert result["requests"] == [] and result["writes"] == []
 

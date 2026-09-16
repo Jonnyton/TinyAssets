@@ -115,7 +115,7 @@ NOT publish or widen assignments, grants or permitted spending.
 
 #### Scenario: Mixed-source automatic mode
 - **WHEN** a native default and HTTP models are eligible
-- **AND** no recent scoped authentication-failure hint demotes the native source
+- **AND** no unresolved scoped authentication-failure hint demotes the native source
 - **THEN** automatic selection uses the native default through its real executor
 - **AND** an HTTP-only catalog cannot silently remove that preference
 
@@ -144,16 +144,20 @@ NOT publish or widen assignments, grants or permitted spending.
 - **WHEN** the owner converses with a non-home universe without an override
 - **THEN** home-only preferences neither block nor alter its existing binding
 
-### Requirement: Recent source authentication failures influence new Automatic plans
+### Requirement: Unresolved source authentication failures influence new Automatic plans
 
-Automatic planning SHALL move a source with a recent scoped authentication-failure
+Automatic planning SHALL move a source with an unresolved scoped authentication-failure
 hint after other already-eligible sources. The hint SHALL NOT grant access, change
 spending permission, modify saved preferences, or authorize replay of a failed
 request. Explicit current and saved choices SHALL retain their exact ordering.
 The initial implementation SHALL use bounded process-local advisory memory,
 scoped by resolved base, owner, universe, provider and credential-reference identity,
-generation and digest. Hints SHALL expire after five minutes; the store SHALL
+generation and digest. Elapsed time alone SHALL NOT clear a hint. The store SHALL
 retain no more than 4096 entries and SHALL store no credentials or raw errors.
+Success under the exact custody SHALL clear its hint. New credential custody SHALL
+be eligible without inheriting the previous custody's hint. Recording success or
+failure SHALL discard lower-generation hints only for the same resolved base,
+owner, universe, provider and credential-reference identity.
 Restart or eviction MAY lose advisory health; it SHALL NOT change authority.
 
 #### Scenario: A new Automatic message follows an authentication failure
@@ -163,22 +167,29 @@ Restart or eviction MAY lose advisory health; it SHALL NOT change authority.
 - **AND** the failed turn is not replayed and retains truthful uncertainty about effects
 
 #### Scenario: Explicit choices remain exact
-- **WHEN** the owner explicitly chooses a recently failed source or has an explicit saved order
+- **WHEN** the owner explicitly chooses a failed source or has an explicit saved order
 - **THEN** advisory source health does not silently substitute or reorder that choice
 - **AND** execution still validates current authority before launch
 
-#### Scenario: Success, expiry or new credential custody permits recovery
+#### Scenario: Time alone does not establish recovery
+- **WHEN** seven minutes or a day pass after an authentication failure without success or custody change
+- **AND** the process-local hint has not been evicted
+- **THEN** a new Automatic plan still prefers another independently eligible source
+- **AND** the failed request is not replayed
+
+#### Scenario: Success or new credential custody permits recovery
 - **WHEN** a source succeeds under the same exact custody scope
 - **THEN** its hint clears
-- **AND** expiry or changed credential custody cannot become a permanent lockout
+- **AND** renewed credential custody is eligible before any successful model call
 - **AND** one owner's success or failure cannot clear or create another owner's hint
+- **AND** a late old-generation success cannot clear a newer-generation failure
 
-#### Scenario: All eligible sources have recent failure hints
-- **WHEN** every eligible source has a recent hint
+#### Scenario: All eligible sources have unresolved failure hints
+- **WHEN** every eligible source has an unresolved hint
 - **THEN** Automatic retains candidates in their relative order rather than manufacturing an unavailable replacement
 - **AND** ordinary execution and error reporting still apply
 
-#### Scenario: The picker explains recent source trouble
+#### Scenario: The picker explains unresolved source trouble
 - **WHEN** a scoped hint is current
 - **THEN** the picker displays a non-blocking reconnect warning
 - **AND** it does not disable manual selection, claim successful sign-in or expose raw provider errors
