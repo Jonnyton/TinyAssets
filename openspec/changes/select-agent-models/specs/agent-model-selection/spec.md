@@ -213,6 +213,12 @@ The app SHALL expose model choices from the universe owner's authorized connecti
 - **AND** cleanup observes inherited-pipe closure within a bounded interval rather than discarding a complete catalogue at the discovery timeout
 - **AND** cancellation propagates, process output is not relayed and existing custody checks remain unchanged
 
+#### Scenario: Native discovery reaches the public picker
+- **WHEN** native metadata discovery succeeds for an accepted source
+- **THEN** the public model-options read lists its provider default and eligible discovered models without assuming HTTP-only metadata fields
+- **AND** freshness and exact custody are rechecked before display without opening another credential-store connection inside the admission transaction
+- **AND** native revocation removes that source without hiding independently authorized HTTP choices
+
 #### Scenario: Discovery fails
 - **WHEN** discovery cannot refresh
 - **THEN** cached choices are labelled stale and the app does not claim current availability
