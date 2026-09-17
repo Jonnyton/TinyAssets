@@ -213,6 +213,12 @@ The app SHALL expose model choices from the universe owner's authorized connecti
 - **AND** the app labels the enumeration gap rather than claiming a complete model list
 - **AND** a nonempty discovered choice is refused without silently substituting the default
 
+#### Scenario: Native metadata uses a launcher with child processes
+- **WHEN** a registered native metadata executor launches inherited-pipe children on POSIX
+- **THEN** the transport isolates and terminates its invocation's process group on success, refusal, timeout or cancellation, including after launcher exit
+- **AND** cleanup observes inherited-pipe closure within a bounded interval rather than discarding a complete catalogue at the discovery timeout
+- **AND** cancellation propagates, process output is not relayed and existing custody checks remain unchanged
+
 #### Scenario: Discovery fails
 - **WHEN** discovery cannot refresh
 - **THEN** cached choices are labelled stale and the app does not claim current availability
