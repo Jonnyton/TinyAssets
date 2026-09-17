@@ -254,6 +254,15 @@ The typed-chat interface SHALL show a clickable active provider/model control, d
 - **WHEN** a response does not report a usable model identifier
 - **THEN** the answer remains usable and the display marks the actual model unknown instead of presenting the requested alias as verified
 
+#### Scenario: Native root-answer model observation
+- **WHEN** a successful Claude stream has explicit root assistant frames reporting a usable model
+- **AND** their final message text matches the returned answer, including split blocks with one message ID
+- **THEN** the answer receipt records that reported model, independently of the requested alias
+- **AND** child-agent frames, initial configuration and aggregate usage cannot replace that evidence
+- **AND** absent, conflicting, malformed, synthetic or mismatched evidence remains unknown without discarding the answer
+- **AND** metadata-only observation cannot extend the provider idle watchdog
+- **AND** native protocols without answer-owned evidence continue to report unknown
+
 #### Scenario: Answering receipt survives history reload
 - **WHEN** a reply has a valid server-observed provider/model receipt and its history write succeeds
 - **THEN** the receipt is stored atomically on that reply's row, not the founder row

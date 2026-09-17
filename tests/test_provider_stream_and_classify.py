@@ -202,6 +202,130 @@ _FAST = ModelConfig(
 )
 
 
+def _root_answer(text="hello", model="actual-model", message_id="answer-1", **extra):
+    # CLI 2.1.261 live capture, 2026-09-17: assistant.message.{id,model,content}
+    # with explicit parent_tool_use_id:null; result carries the final text.
+    return {
+        "type": "assistant", "parent_tool_use_id": None,
+        "message": {"id": message_id, "model": model,
+                    "content": [{"type": "text", "text": text}]},
+        **extra,
+    }
+
+
+def _answer_response(*frames, text="hello"):
+    return _run_stream(
+        FakeStreamProcess([_line(INIT), *map(_line, frames), _line(_result(text))]),
+        ModelConfig(native_model_id="requested-alias"),
+    )
+
+
+def test_root_answer_reports_observed_model_through_receipt_and_native_record():
+    from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+    from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
+
+    response = _answer_response(_root_answer(model=" actual-model "))
+    assert response.model == "requested-alias"
+    assert response.reported_model == "actual-model"
+    receipt = WriterExecutionReceipt()
+    receipt.observe(response)
+    assert receipt.projection() == {
+        "provider": "claude-code", "model": "actual-model", "model_status": "reported",
+    }
+    candidate = NativeInput(
+        source_ref="claude-code", model="requested-alias", binding_id="binding",
+        reservation_id="reservation", binding_generation=1,
+        binding_digest="sha256:" + "a" * 64, request_digest="sha256:" + "b" * 64,
+    )
+    terminal = NativeTerminal(
+        "completed", evidence=response.native_evidence, text=response.text,
+        configured_model=response.model, reported_model=response.reported_model,
+    )
+    assert json.loads(terminal.canonical_json(candidate))["reported_model"] == "actual-model"
+
+
+def test_children_and_partial_frames_never_replace_root_answer_evidence():
+    response = _answer_response(
+        _root_answer(),
+        _root_answer(model="child-model", parent_tool_use_id="tool-child"),
+        _partial_text("hello"),
+    )
+    assert response.reported_model == "actual-model"
+
+
+def test_split_root_content_blocks_share_the_answer_model():
+    response = _answer_response(
+        _root_answer("hel"),
+        _root_answer("ignored", model="child-model", parent_tool_use_id="child"),
+        _root_answer("lo"),
+    )
+    assert response.reported_model == "actual-model"
+
+
+@pytest.mark.parametrize("bad", [None, True, 123, "", " ", "bad\nlabel", "a" * 201,
+                                      "<synthetic>", " <synthetic> "])
+def test_bad_last_root_model_clears_earlier_evidence(bad):
+    response = _answer_response(_root_answer(), _root_answer(model=bad, message_id="answer-2"))
+    assert response.text == "hello"
+    assert response.reported_model == ""
+
+
+@pytest.mark.parametrize("change", [
+    "missing_model", "missing_parent", "bad_parent", "empty_content", "error",
+    "wrong_text", "wrong_model_same_id",
+])
+def test_incomplete_or_ambiguous_final_evidence_is_unknown(change):
+    frame = _root_answer(message_id="answer-2")
+    if change == "missing_model":
+        del frame["message"]["model"]
+    elif change == "missing_parent":
+        del frame["parent_tool_use_id"]
+    elif change == "bad_parent":
+        frame["parent_tool_use_id"] = False
+    elif change == "empty_content":
+        frame["message"]["content"] = []
+    elif change == "error":
+        frame["error"] = "unknown"
+    elif change == "wrong_text":
+        frame["message"]["content"][0]["text"] = "different"
+    else:
+        frame["message"].update(id="answer-1", model="different-model")
+    assert _answer_response(_root_answer(), frame).reported_model == ""
+
+
+def test_init_and_aggregate_model_are_not_answer_evidence():
+    response = _run_stream(FakeStreamProcess([
+        _line({**INIT, "model": "init-model"}),
+        _line(_assistant_text("hello")),
+        _line(_result("hello", modelUsage={"aggregate-model": {}})),
+    ]), _FAST)
+    assert response.reported_model == ""
+
+
+def test_empty_assistant_metadata_does_not_extend_idle_watchdog():
+    frame = _root_answer()
+    frame["message"]["content"] = []
+    proc = FakeStreamProcess([
+        _line(INIT), _line(_root_answer()),
+        (0.10, _line(frame)), (0.10, _line(_result("hello"))),
+    ])
+    with pytest.raises(ProviderIdleTimeoutError):
+        _run_stream(proc, _FAST)
+
+
+def test_interleaved_streams_have_request_local_model_evidence():
+    async def run():
+        async def answer(model, delay):
+            proc = FakeStreamProcess([
+                _line(INIT), _line(_root_answer(model=model)),
+                (delay, _line(_result("hello"))),
+            ])
+            return await ClaudeProvider()._read_stream(proc, "prompt", _FAST)
+        return await asyncio.gather(answer("model-a", 0.04), answer("model-b", 0.01))
+
+    assert [r.reported_model for r in asyncio.run(run())] == ["model-a", "model-b"]
+
+
 @pytest.mark.parametrize("category", [
     "authentication_failed", "oauth_org_not_allowed", "billing_error", "rate_limit",
     "overloaded", "invalid_request", "model_not_found", "server_error",
