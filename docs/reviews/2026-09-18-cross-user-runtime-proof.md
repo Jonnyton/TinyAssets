@@ -113,3 +113,29 @@ delivery exception from disabling budget cleanup.
 Plugin regenerated (464 files, import probe passed), full mirror parity and Ruff
 passed. Final exact-head independent review, CI and ordinary two-user rendered
 acceptance still gate exposed delivery; none are inferred from these local tests.
+
+## Required-test contract correction — September 18 follow-up
+
+Required-tests run 35307374803 reported four new failures on the prior candidate:
+two action-inventory tests still expected 24 instead of 33 handlers, the added
+cross-user concern lacked its index link, and the legacy extensions docstring
+omitted the nine delivery actions. The seven other reported failures/errors were
+already covered by the required-test gate's existing main quarantine; no entries
+were added or loosened here.
+
+Targeted Windows reproduction: four failed, 103 passed, 4.46s. The equivalent
+main source (the retention-proposal worktree had no changes to these test/runtime/
+concern paths) passed all 106 applicable tests in 5.77s. Corrected the exact
+action count and explicit expected set, added the existing concern's index row,
+and documented all nine verbs with sender/receiver receipt scope and unsupported
+file-reference delivery. No runtime behavior or authority changes.
+
+Final command: `python -m pytest -q tests/test_api_runs.py
+tests/test_concerns_index_matches_the_directory.py
+tests/test_mcp_dispatch_docstring_parity.py tests/test_delivery_public.py`.
+Windows Python 3.14: **139 passed**, 6.46s (four existing dependency warnings).
+Native WSL Linux oracle, Python 3.11.16/git 2.47.3/bwrap 0.12.0: **139 passed**,
+no skips, 4.30s. Ruff, plugin generation/import probe, strict OpenSpec validation
+and diff checks passed. Existing draft PR stays draft. Previous exact-head
+approval does not cover this new head; new review, CI and release proof remain
+required before landing or claiming deployed.

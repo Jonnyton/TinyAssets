@@ -2931,6 +2931,9 @@ def extensions(
       run_branch_version, stream_run, wait_for_run.
     - Inbound channels: mint_webhook, revoke_webhook, list_webhooks,
       create_source, revoke_source, list_sources.
+    - Structured cross-owner delivery: create_receiver, update_receiver,
+      revoke_receiver, connect_output, disconnect_output, deliver_output,
+      inspect_receiver, list_output_links, get_delivery.
     - Judgments: compare_runs, get_node_output, judge_run, list_judgments,
       list_node_versions, rollback_node, suggest_node_edit.
     - Project memory: project_memory_get, project_memory_list,
@@ -2944,6 +2947,8 @@ def extensions(
       local time, and may not fire more often than every 5 minutes).
 
     Pass `action` plus the matching ids or JSON payload fields.
+    Delivery receipts are scoped to sender or receiver; file-reference delivery
+    is not supported.
     Receipt actions use `run_id`, `receipt_type`, `payload_json`, and optional
     `node_id` / `subject_id` to preserve source acquisition, claim lineage,
     and revision evidence for later gates and runs.
