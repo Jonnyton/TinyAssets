@@ -239,6 +239,18 @@ The operator does not alter the users' private workflows to manufacture a pass.
 
 ## Migration Plan
 
+Account deletion explicitly enumerates indirect delivery children before the
+existing schema-derived satellite sweep: attempts, two-party delivery receipts,
+dependent links, then receivers. Endpoint selection follows existing home-universe
+scope; receipt identity fields also match either deleted principal. Surviving peer
+receivers remove that exact identity from their permitted-sender list without
+rewriting unrelated entries. Peer-owned runs and accepted input content remain
+peer operational data, not a generic cascade target. Count each union-selected row
+before deletion and commit counts only after the existing per-store transaction
+succeeds. Failure rolls that store back and the account workflow records its
+unfinished store phase while continuing billing/identity cleanup. Erasure support
+must remain deployed even if public delivery intake is rolled back or darkened.
+
 Additive tables only; no destructive report-record migration. Default all new
 exposures to absent. Review shape before runtime edits; implement and compare
 baseline/candidate on Windows and Linux for storage, workspace and process changes.

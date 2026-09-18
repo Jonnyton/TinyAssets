@@ -1,6 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Graph handles manage cross-user node connections
+The canonical top-level handle signatures SHALL remain unchanged. The served engine
+`read_graph` wrapper adds an optional `query` argument for the existing validated
+receiver/link/delivery read dispatch; this is an additive served schema change,
+not a new canonical top-level tool or an unchanged served signature.
+
 Canonical graph handles SHALL expose receiver contracts and lifecycle, sender
 output links, delivery and receipt inspection through the same validated boundary
 for connector callers and every provider-backed served app agent.

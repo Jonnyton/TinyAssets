@@ -3988,8 +3988,11 @@ def main(
         from tinyassets.api.runs import _ensure_runs_recovery
         from tinyassets.delivery_runtime import reconcile_deliveries
 
-        _ensure_runs_recovery()
-        reconcile_deliveries(_sb_data_dir())
+        try:
+            _ensure_runs_recovery()
+            reconcile_deliveries(_sb_data_dir())
+        except Exception:  # noqa: BLE001 - delivery must not disable budget recovery
+            logger.exception("delivery: boot reconciliation failed")
         if _reclaimed:
             logger.info(
                 "served budget: released %d orphaned reservation(s) at boot",
@@ -4003,6 +4006,9 @@ def main(
                 _time.sleep(300.0)
                 try:
                     reconcile_deliveries(_sb_data_dir())
+                except Exception:  # noqa: BLE001 - do not starve budget settlement
+                    logger.exception("delivery: reconciliation tick failed")
+                try:
                     _n = reconcile_served_budget_leases(_sb_data_dir())
                     if _n:
                         logger.info(

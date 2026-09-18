@@ -76,3 +76,40 @@ This supersedes only the earlier public structured intake/wiring limitation.
 Full artifact transfer, in-node RPC/effect provenance and explicit receiver retry
 remain open. Exact-head approval, CI, deploy and rendered two-owner acceptance
 are not claimed by local tests.
+
+## Release-blocking account erasure correction — 04:30 UTC
+
+Fable's public-candidate verdict was conditional DARK ONLY until delivery records
+participate in account erasure. This correction is a release blocker fix, not a
+claim the original approval covered the new head. Main `1bd4b4f4` was merged
+forward cleanly; its changes since base `64e29743` contain no changes to
+`tinyassets/runs.py` or `tinyassets/api/runs.py`, preserving the reviewed run seam.
+
+Explicit satellite-store targets delete attempts before personal two-party
+receipts, dependent links, then scoped receiver endpoints. Each union predicate
+is counted once before writes; failure rolls back the store and reports an
+unfinished phase while billing and identity cleanup continue. Surviving receiver
+allowlists remove only the exact deleted principal. Existing universe-scoped
+ownership semantics remain intact: peer-owned accepted runs and their input
+content are not erased as a generic cascade. Public intake rollback must retain
+this cleanup support for persisted delivery tables.
+
+Canonical handle signatures remain unchanged; the served `read_graph` wrapper
+DOES gain optional `query` for validated collaboration reads. Saying all served
+signatures were unchanged would be incorrect.
+
+Windows focused delivery/account cohort: 107 passed in 31.54s. Native WSL Docker
+Linux oracle: same 107 passed, no skips, 23.60s; Python 3.11.16/git 2.47.3/bwrap
+0.12.0. The Windows Docker Desktop pipe was absent, so the existing WSL engine
+ran the unchanged oracle with its repo-root locator overridden in memory (a
+Windows linked-worktree git path cannot resolve inside WSL). No service or repo
+configuration changed. Final additional full-failure receipt and isolated actual
+maintenance-loop test: four targeted Windows tests passed; final complete Linux
+cohort passed 108 tests with no skips in 23.72s; final Windows cohort passed the
+same 108 tests in 30.63s (ten existing dependency warnings). The delivery boot and
+tick exception handling is separate from budget reconciliation, preventing a
+delivery exception from disabling budget cleanup.
+
+Plugin regenerated (464 files, import probe passed), full mirror parity and Ruff
+passed. Final exact-head independent review, CI and ordinary two-user rendered
+acceptance still gate exposed delivery; none are inferred from these local tests.
