@@ -83,5 +83,27 @@ acceptance; no app prompt. Rollback reverts the additive code without changing d
 
 ## Open Questions
 
+## September 18 legacy observation freshness follow-up
+
+The existing `storage_utilization` response gains additive fields without a
+schema-version bump: `observed_at` (UTC ISO-8601 scan-start time),
+`observation_age_seconds` (nonnegative elapsed monotonic seconds since scan
+start, recalculated per read), `cache_ttl_seconds` (configured nonnegative memo
+reuse duration after scan completion, not a maximum total observation age),
+`volume_scope=filesystem_containing_data_root`,
+`volume_percent_formula=1 - volume_bytes_free / volume_bytes_total`,
+`subsystem_scope=partial_enumerated_daemon_paths`, and fixed explanatory
+`accounting_caveats`. A private monotonic capture marker stays inside the memo
+and is removed before returning. Cache hits preserve original capture time.
+Status overlays a few universe-specific measurements after the memo; caveats
+explicitly mark this non-atomic mixed-scope observation. Largest listed subsystem
+is not largest filesystem consumer, attributable owner usage or billable storage;
+Docker images and unlisted paths are not inventoried. No extra traversal,
+content access, identities, paths, quotas, cleanup or persisted records are added.
+Existing zeros on failed disk probes are retained for compatibility but labeled
+with additive `volume_availability=unavailable`; successful probes report
+`available`. This prevents claiming healthy evidence from unavailable numbers.
+The broader attribution/policy work and owner acceptance remain open.
+
 No founder policy choice is required. Full attribution, retained-disk enforcement
 and simpler admission policy remain in the existing concern rather than this slice.

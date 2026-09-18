@@ -105,5 +105,28 @@ verified before claiming the normal OAuth path repaired.
 
 Non-blocking inherited hardening is recorded in
 `docs/concerns/2026-09-18-bootstrap-deletion-hardening.md`. No multi-worker
-serialization guarantee is claimed. Spec delta remains in-flight until land;
-no deployment or completed onboarding claim is made here.
+serialization guarantee is claimed. The approved delta is synced into the main
+spec before exact-head review; the change remains in-flight, live acceptance
+and archive remain open, and no deployment or completed onboarding is claimed.
+
+## Forward merge before exact-head review
+
+Forward-merged current main `d538970bda2f9dc6e1b057779d1985e07b74e2a4`, preserving
+portable layout init/reset/current-owner enable hooks and all manual recovery
+controls. Only conflict was the generated brand receipt; regenerated from the
+merged canonical app. No reset, rebase or force push.
+
+September18 Windows merged combined suite:322passed1platformskip45.33s using
+the above ten files plus `test_app_layout_controller.py`,
+`test_app_layout_bindings.py` and `test_onboarding_model_setup.py`. An additional
+actual-controller integration test verifies layout stays reset while manual
+approval is pending and enables only with the connected owner's home/principal
+after explicit answer; final controller/layout subset46passed7.23s.
+
+Linux merged authority suite141passed0skips20.97s: previous seven backend files
+plus `test_onboarding_model_setup.py` and `test_app_layout_bindings.py`, via
+native WSL Ubuntu Docker canonical `scripts/linux_oracle.py` with explicit
+GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE paths for the Windows linked worktree.
+Actual Chromium390/1280 manual flow repeated green. Lint, diff-check, brand52,
+mirror458 and strict OpenSpec validation passed. The approved manual-recovery
+delta was additively synced, preserving all pre-existing Claude requirements.

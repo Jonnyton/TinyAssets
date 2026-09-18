@@ -21,4 +21,4 @@ parameters, public analytics or an authorization-heading guarantee.
 - [x] 3.1 Prove route authority, lifecycle races, exact preset/no-paid boundaries, approval reuse and secret-free failures with focused tests.
 - [x] 3.2 Prove actual controller/DOM submission, timeout/login fencing, one input and no URL/storage/log leakage; capture isolated phone/desktop browser proof.
 - [ ] 3.3 Run focused combined onboarding/model/auth regressions, lint, brand and plugin mirror parity; commit and submit a draft PR with exact-head independent review.
-- [ ] 3.4 Lead verifies deployment and ordinary live owner approval/model connection; sync the as-built delta and archive in the same delivery lane.
+- [ ] 3.4 Lead verifies deployment and ordinary live owner approval/model connection, then archives in the same delivery lane (approved delta already synced into the main spec before exact-head review; live acceptance remains open).

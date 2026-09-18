@@ -36,6 +36,7 @@ import json
 import os
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -660,11 +661,17 @@ def inspect_storage_utilization() -> dict[str, Any]:
     box saturates at about that concurrency, and a cache that stampedes there makes
     the worst moment worse (Codex ADAPT 2026-08-28).
     """
-    return _storage_snapshot_memo.get(
+    ttl = max(0.0, _read_ttl(_STORAGE_SNAPSHOT_TTL_VAR, _DEFAULT_STORAGE_SNAPSHOT_TTL_S))
+    snapshot = _storage_snapshot_memo.get(
         str(data_dir()),
         _inspect_storage_utilization_uncached,
-        ttl=_read_ttl(_STORAGE_SNAPSHOT_TTL_VAR, _DEFAULT_STORAGE_SNAPSHOT_TTL_S),
+        ttl=ttl,
     )
+    # The memo deep-copies its value: strip process-local timing before disclosure.
+    started = snapshot.pop("_observed_monotonic")
+    snapshot["observation_age_seconds"] = round(max(0.0, time.monotonic() - started), 3)
+    snapshot["cache_ttl_seconds"] = ttl
+    return snapshot
 
 
 def _inspect_storage_utilization_uncached() -> dict[str, Any]:
@@ -698,8 +705,11 @@ def _inspect_storage_utilization_uncached() -> dict[str, Any]:
     """
     import shutil as _shutil
 
+    observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    observed_monotonic = time.monotonic()
     root = data_dir()
 
+    volume_availability = "available"
     try:
         usage = _shutil.disk_usage(str(root if root.exists() else root.parent))
         volume_bytes_total = int(usage.total)
@@ -708,7 +718,10 @@ def _inspect_storage_utilization_uncached() -> dict[str, Any]:
             0.0 if volume_bytes_total == 0
             else 1.0 - (volume_bytes_free / volume_bytes_total)
         )
+        if volume_bytes_total == 0:
+            volume_availability = "unavailable"
     except OSError:
+        volume_availability = "unavailable"
         volume_bytes_total = 0
         volume_bytes_free = 0
         volume_percent = 0.0
@@ -764,6 +777,24 @@ def _inspect_storage_utilization_uncached() -> dict[str, Any]:
         subsystem_caps = {}
 
     return {
+        "observed_at": observed_at,
+        "_observed_monotonic": observed_monotonic,
+        "volume_availability": volume_availability,
+        "volume_scope": "filesystem_containing_data_root",
+        "volume_percent_formula": "1 - volume_bytes_free / volume_bytes_total",
+        "subsystem_scope": "partial_enumerated_daemon_paths",
+        "accounting_caveats": [
+            "The largest listed subsystem is not necessarily the largest filesystem consumer.",
+            "Docker images and unlisted paths are excluded from subsystem accounting.",
+            "Subsystem bytes are not complete owner-attributed or billable storage.",
+            "This is not an atomic snapshot; status may overlay newer universe-scoped "
+            "subsystem values on root-scoped observations.",
+            "Cache TTL is reuse time after scan completion, not a maximum observation age.",
+            "Filesystem percentage uses total capacity and available bytes, including "
+            "reserved-space effects; it can differ from df's used/(used+available).",
+            "When volume_availability is unavailable, legacy zero values and pressure "
+            "labels are not evidence of healthy storage.",
+        ],
         "volume_percent": round(volume_percent, 4),
         "volume_bytes_total": volume_bytes_total,
         "volume_bytes_free": volume_bytes_free,

@@ -173,6 +173,15 @@
       overflow-x:auto;font-size:.8rem;white-space:pre-wrap}
     .dev-note{color:var(--ink-dim);font-size:.8rem}
     code{background:var(--surface-2);padding:.1rem .35rem;border-radius:6px;font-size:.85em}
+    .layout-root{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column}
+    .layout-slot{min-width:0;flex-shrink:0}.layout-slot--conversation{display:flex;flex-direction:column;min-height:18rem;flex:1}
+    .layout-slot--conversation .thread{min-height:10rem}.layout-slot--requests .rail{width:auto;max-width:none}
+    .layout-active>.chat-body,.layout-omitted{display:none!important}
+    .layout-density--compact .model-bar,.layout-density--compact .composer{padding:.3rem .6rem}
+    .layout-dialog{width:min(40rem,94vw);max-height:90vh;overflow:auto;background:var(--bg);color:var(--text);padding:1.2rem;border:1px solid var(--line);border-radius:12px}
+    .layout-dialog input:not([type=checkbox]),.layout-dialog textarea{width:100%;box-sizing:border-box;margin:.35rem 0}
+    .layout-dialog li{margin:.35rem 0}.layout-actions{display:flex;flex-wrap:wrap;gap:.5rem}
+    #layout-mode{font-size:.8rem} .chat-actions{flex-wrap:wrap}
   </style>
 </head>
 <body>
@@ -204,6 +213,9 @@
           <span id="universe-name" class="universe-name">Your universe</span>
         </div>
         <nav class="chat-actions">
+          <span id="layout-mode" hidden></span>
+          <button id="btn-layouts" class="btn btn--link" hidden>Layouts</button>
+          <button id="btn-layout-restore" class="btn btn--link" hidden>Restore default</button>
           <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
           <button id="btn-account" class="btn btn--link">Account</button>
           <button id="btn-signout" class="btn btn--link">Sign out</button>
@@ -223,7 +235,7 @@
         </aside>
       </div>
       <div id="attachments" class="attachments" hidden></div>
-      <div class="model-bar">
+      <div id="model-bar" class="model-bar">
         <button id="btn-models" class="btn btn--ghost" type="button" aria-haspopup="dialog" aria-controls="model-dialog">Change model ▾</button>
         <span id="model-next" class="muted">Next message: saved default</span>
       </div>
@@ -248,6 +260,21 @@
            aria-live="polite" aria-label="Voice status" hidden></div>
     </section>
 
+    <dialog id="layout-dialog" class="layout-dialog" aria-labelledby="layout-title">
+      <h2 id="layout-title">Your app layout</h2>
+      <p>Arrange existing controls. Your conversations, model access and private settings stay yours.</p>
+      <p id="layout-status" role="status" aria-live="polite"></p>
+      <label for="layout-search">Find public layouts</label><input id="layout-search" type="search">
+      <div class="layout-actions"><button id="btn-layout-search" class="btn">Search</button><button id="btn-layout-default" class="btn">Start from default</button><button id="btn-layout-refresh" class="btn">Refresh installation</button></div>
+      <ul id="layout-results"></ul><ul id="layout-candidates"></ul><div id="layout-inspect"></div>
+      <ol id="layout-editor"></ol>
+      <label for="layout-density">Spacing</label><select id="layout-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select>
+      <div class="layout-actions"><button id="btn-layout-preview" class="btn">Preview in this app</button><button id="btn-layout-apply" class="btn">Apply saved design</button></div>
+      <h3>Publish a design or remix</h3><p>Its name, description and design become public. Private messages and settings are never included. Publishing does not apply it.</p>
+      <label for="layout-publish-name">Public name</label><input id="layout-publish-name" maxlength="120">
+      <label for="layout-publish-description">Public description</label><textarea id="layout-publish-description"></textarea>
+      <div class="layout-actions"><button id="btn-layout-publish" class="btn">Publish publicly</button><button id="btn-layout-close" class="btn">Close</button></div>
+    </dialog>
     <dialog id="model-dialog" class="model-dialog" aria-labelledby="model-title">
       <h2 id="model-title">Your agent's model</h2>
       <p id="model-actual" class="muted">No answering model reported yet.</p>
@@ -2870,6 +2897,7 @@
     if(me===null && !token()) return;            // fetchMe signed us out
     HostedModelConnect.setup=me&&me.setup||"unavailable";
     if(HostedModelConnect.setup!=="connected"){
+      if(typeof AppLayout!=="undefined") AppLayout.reset();
       engineConnected = HostedModelConnect.setup==="unavailable" ? null : false;
       showConnect(true);
       if(HostedModelConnect.setup==="unavailable") $("connect-status").textContent="Could not confirm your universe's connections. Retry when available; no new connection has been started.";
@@ -2878,6 +2906,7 @@
       return;
     }
     engineConnected = true;
+    if(typeof AppLayout!=="undefined") AppLayout.enable(me.universe_id,me.principal_id);
     showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
     // Build 3's App Review Notes and submitted product surface are voice-dark.
     // The hosted web app may expose Voice, but a Capacitor shell must not make it
@@ -3027,6 +3056,7 @@
     setTimeout(()=>{ if(!stillCurrent()) return; showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.endLogin(); resetClaudeConnection(); Voice.stop(false);
+    if(typeof AppLayout!=="undefined") AppLayout.reset();
     HostedModelConnect.reset();
     modelChoiceForNextTurn=null;
     ModelPicker.reset();
@@ -4466,9 +4496,12 @@
     }catch(_e){ /* offline or blocked: try again next time */ }
   }
 
+  __TA_APP_LAYOUT__
+
   async function boot(){
     const modelCallback=HostedModelConnect.takeCallback();
     wire();
+    if(typeof AppLayout!=="undefined") AppLayout.init();
     HostedModelConnect.wire();
     wireNativeReturn();
     loadOpenAIPending();   // drops an expired pending flow (and its verifier) on start

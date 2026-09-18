@@ -223,6 +223,26 @@ await HostedModelConnect.depositKey();await HostedModelConnect.depositKey();
     assert not result["answers"] and not result["stored"]
 
 
+def test_manual_approval_keeps_portable_layout_current_owner_hooks():
+    result = run_browser(confirmation() + r"""
+const assert=require('node:assert/strict'),layoutCalls=[];
+globalThis.AppLayout={init(){layoutCalls.push(['init']);},
+ reset(){layoutCalls.push(['reset']);},
+ enable(home,principal){layoutCalls.push(['enable',home,principal]);}};
+await boot();
+assert(layoutCalls.some(call=>call[0]==='init'));
+assert(layoutCalls.some(call=>call[0]==='reset'));
+HostedModelConnect.showKeyEntry();$('paste-blob').value='synthetic-private-key';
+await HostedModelConnect.depositKey();
+assert(!layoutCalls.some(call=>call[0]==='enable'));
+me={setup:'connected',universe_id:'u-owner',principal_id:'owner'};
+await HostedModelConnect.answer(true);
+assert.deepEqual(layoutCalls.filter(call=>call[0]==='enable'),[['enable','u-owner','owner']]);
+""")
+    assert len(result["answers"]) == 1
+    assert result["setup"] == "connected"
+
+
 def confirmation():
     return """
 exchangeResult={status:'confirmation_required',request_id:'request-a',request:{
