@@ -500,6 +500,10 @@ def read_graph(
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
+    Cross-user delivery: target=receiver with query=receiver_id reads the allowed
+    sender's contract; target=output_links lists your graph_id's links;
+    target=delivery with query=delivery_id reads your side's safe receipt.
+
     Args:
         target: What to read: status, graphs, graph, branches (your own workflows
             by name + branch_def_id), goals, goal, runs, run, run_output,
@@ -530,6 +534,13 @@ def read_graph(
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
     """
     normalized = (target or "status").strip().lower()
+    if normalized in {"receiver", "output_links", "delivery"}:
+        action = {"receiver": "inspect_receiver", "output_links": "list_output_links",
+                  "delivery": "get_delivery"}[normalized]
+        payload = ({"receiver_id": query} if normalized == "receiver"
+                   else {"delivery_id": query} if normalized == "delivery" else {})
+        return _extensions_impl(action=action, universe_id=graph_id,
+                                payload_json=json.dumps(payload))
     if normalized == "status":
         return _get_status_impl(universe_id=graph_id)
     if normalized == "graphs":
@@ -788,6 +799,16 @@ def write_graph(
 ) -> str:
     """Create or queue TinyAssets graph state.
 
+    Cross-user structured delivery: target=receiver operation=create takes
+    payload_json {branch_def_id,node_id,input_keys,allowed_senders,description}.
+    It exposes a pinned selected entry only to those exact sender principals;
+    an empty list permits nobody. Update adds receiver_id and expected_generation;
+    revoke takes those two fields. target=output_link operation=connect takes
+    {branch_def_id,node_id,receiver_id,expected_generation,mapping}, where mapping
+    maps source output names to advertised receiver input names. Disconnect takes
+    {link_id}. Accepted transfers cannot be retracted by disconnect/revoke.
+    Exact file transfer is not implemented; use structured values only.
+
     Args:
         target: What to write: goal, request, branch, universe, automation,
             agent, agent_binding, or connection. With target=goal, the default operation proposes a
@@ -982,6 +1003,14 @@ def write_graph(
     if rejection:
         return rejection
     normalized = target.strip().lower()
+    if normalized in {"receiver", "output_link"}:
+        actions = ({"create": "create_receiver", "update": "update_receiver",
+                    "revoke": "revoke_receiver"} if normalized == "receiver"
+                   else {"connect": "connect_output", "disconnect": "disconnect_output"})
+        action = actions.get(operation)
+        if action is None:
+            return json.dumps({"error": "unsupported receiver/link operation"})
+        return _extensions_impl(action=action, universe_id=graph_id, payload_json=payload_json)
     if normalized == "model_preferences":
         from tinyassets.api.helpers import _request_universe
         from tinyassets.api.model_preferences import save_model_preferences
@@ -1518,6 +1547,12 @@ def run_graph(
     """Run a TinyAssets graph branch or the caller's Goal canonical, or manage the
     inbound triggers that let an external channel run a branch.
 
+    operation=deliver_output takes inputs_json {link_id,occurrence_id,outputs}
+    under your graph_id. Reuse occurrence_id only to retry the same exact send;
+    distinct IDs intentionally deliver again. Returns delivery_id, never the
+    receiver's private run ID. Accepted is not completed. Read target=delivery
+    with query=delivery_id to observe processing. File references are refused.
+
     Args:
         branch_def_id: Branch definition identifier to run. Leave empty when
             running a Goal canonical.
@@ -1543,6 +1578,12 @@ def run_graph(
         run_id: Required for operation=cancel; not accepted for operation=run.
     """
     normalized_operation = (operation or "run").strip().lower()
+    if normalized_operation == "deliver_output":
+        if any((branch_def_id, run_name, recursion_limit_override, goal_id,
+                webhook_op, source_op, token, source_id, run_id)):
+            return json.dumps({"error": "deliver_output cannot combine run/trigger selectors"})
+        return _extensions_impl(action="deliver_output", universe_id=graph_id,
+                                inputs_json=inputs_json)
     if normalized_operation not in {"run", "cancel"}:
         return json.dumps({"error": "operation must be run or cancel."})
     if normalized_operation == "cancel":

@@ -285,8 +285,13 @@ def read_graph(
     output_offset: int = 0,
     output_max_chars: int = 8192,
     agent_binding_id: str = "",
+    query: str = "",
 ) -> str:
     """Read your OWN universe's status or graph, without changing anything.
+
+    Native delivery: target=receiver query=receiver_id reads a contract shared
+    with you; target=output_links lists your links; target=delivery query=delivery_id
+    reads your side of the receipt. Accepted does not mean processed successfully.
 
     Scoped to YOUR universe — you cannot read another one.
 
@@ -360,6 +365,17 @@ def read_graph(
     if err is not None:
         return err
     normalized = (target or "status").strip().lower()
+    if normalized in {"receiver", "output_links", "delivery"}:
+        from tinyassets.auth.middleware import _current_identity
+        from tinyassets.universe_server import read_graph as _read_delivery
+
+        token = _bind_founder_identity((*_READ_CAPABILITIES, "tinyassets.extensions.read"))
+        try:
+            return _untrusted("delivery:"+query, _read_delivery(
+                target=normalized, graph_id=_GRAPH_ID, query=query,
+            ))
+        finally:
+            _current_identity.reset(token)
     if normalized not in _PINNED_READ_TARGETS:
         return json.dumps({
             "error": (
@@ -481,6 +497,11 @@ def run_graph(
 ) -> str:
     """Run one of YOUR OWN universe's graph branches end-to-end.
 
+    operation=deliver_output sends structured values through your output link.
+    inputs_json is {link_id,occurrence_id,outputs}. Keep the same occurrence_id
+    for retries of the exact send. File references are unsupported. Read the
+    returned delivery_id through read_graph target=delivery query=delivery_id.
+
     This FIRES the branch's effects — e.g. an effect-only delivery branch opens a
     real GitHub pull request. Use it to actually DO the thing you built a graph
     for, rather than describing it: read your graph with ``read_graph
@@ -529,6 +550,22 @@ def run_graph(
             ),
         })
     normalized_operation = (operation or "run").strip().lower()
+    if normalized_operation == "deliver_output":
+        if any((branch_def_id, run_name, run_id)):
+            return json.dumps({"error": "deliver_output cannot combine run selectors"})
+        if not _engine_run_admit(fail_closed=True):
+            return _engine_refusal("deliver_output", None)
+        from tinyassets.auth.middleware import _current_identity
+        from tinyassets.universe_server import run_graph as _deliver
+
+        token = _bind_founder_identity((*_RUN_CAPABILITIES, "tinyassets.extensions.write",
+                                       "tinyassets.extensions.costly"))
+        try:
+            return _untrusted("delivery", _deliver(
+                operation="deliver_output", inputs_json=inputs_json, graph_id=_GRAPH_ID,
+            ))
+        finally:
+            _current_identity.reset(token)
     if normalized_operation not in {"run", "cancel"}:
         return json.dumps({"error": "operation must be run or cancel."})
     if normalized_operation == "cancel":
@@ -1092,6 +1129,15 @@ def write_graph(
 ) -> str:
     """Build or EDIT one of YOUR OWN universe's workflow shapes (branches).
 
+    Native structured delivery: target=receiver create takes payload_json
+    {branch_def_id,node_id,input_keys,allowed_senders,description}; update also
+    takes receiver_id and expected_generation; revoke takes those two fields.
+    Empty allowed_senders permits nobody. target=output_link connect takes
+    {branch_def_id,node_id,receiver_id,expected_generation,mapping}; mapping maps
+    your source outputs to advertised receiver inputs. Disconnect takes {link_id}.
+    Accepted transfers survive revoke/disconnect. Exact file delivery is not
+    implemented. All management stays pinned to your universe and ownership.
+
     The build half of build+run parity (run it afterward with run_graph).
 
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
@@ -1548,6 +1594,19 @@ def write_graph(
     # Each target delegates to its own confined adapter, never broad connector
     # write_graph. Raw connection secrets and person-only request answers stay out.
     t = (target or "").strip().lower()
+    if t in {"receiver", "output_link"}:
+        from tinyassets.auth.middleware import _current_identity
+        from tinyassets.universe_server import write_graph as _write_delivery
+
+        if not _engine_run_admit(fail_closed=True, kind="engine"):
+            return _engine_refusal("write_graph", None)
+        token = _bind_founder_identity((*_REMIX_CAPABILITIES, "tinyassets.extensions.write"))
+        try:
+            return _untrusted("delivery-management", _write_delivery(
+                target=t, operation=operation, graph_id=_GRAPH_ID, payload_json=payload_json,
+            ))
+        finally:
+            _current_identity.reset(token)
     if t == "automation":
         return _write_served_automation(
             operation=operation,

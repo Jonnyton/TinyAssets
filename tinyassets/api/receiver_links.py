@@ -18,8 +18,17 @@ from tinyassets.storage import receiver_links as store
 def _principal(*, write):
     identity = current_identity_or_none()
     scope = "tinyassets.extensions.write" if write else "tinyassets.extensions.read"
-    if identity is None or not identity.user_id or not identity.can(scope).allowed:
+    if identity is None or not identity.user_id:
         raise store.ReceiverAccessDenied()
+    if not identity.can(scope).allowed:
+        # Match the canonical dispatcher's WorkOS coarse-grant compatibility;
+        # strict OAuth identities still require the exact named scope.
+        from tinyassets.auth.middleware import _get_provider
+
+        provider = _get_provider()
+        if not (provider.resolve_always_writes() and not provider.is_auth_required()
+                and ("write" if write else "read") in identity.capabilities):
+            raise store.ReceiverAccessDenied()
     return identity.user_id
 
 

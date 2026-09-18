@@ -47,3 +47,32 @@ immutable run-owned artifact bundles, exact-byte chunk reads and accounting rema
 unimplemented. File delivery is not promised or represented as ordinary JSON.
 Public/served wiring, exact-head independent review, CI, deployment and two-user
 rendered acceptance remain open; the full OpenSpec change is not complete.
+
+## Structured public wiring follow-through — 03:45 UTC
+
+The subsequent bounded implementation connects receiver/create/update/revoke,
+output_link/connect/disconnect, run_graph deliver_output and receiver/output_links/
+delivery reads through canonical scopes/dispatch/ledger and graph-pinned served
+wrappers. Inputs require exact JSON, declared source outputs, receiver input types,
+current owner/admin authority, permitted sender/generation and actual receiver
+resource admission. Unsupported file-reference envelopes fail before run
+reservation. The sender ledger targets delivery_id and cannot carry private run IDs.
+
+Eight public-control regressions pass: real canonical expose/connect/send/process/
+two-sided read; replay/conflict/foreign-owner denial; invalid input; foreign file
+reference; disconnect; revoke; receiver admission refusal; safe ledger target;
+and served wrapper confinement (some cases contain several related assertions).
+
+Command: `python -m pytest -q tests/test_delivery_public.py
+tests/test_delivery_runtime.py tests/test_receiver_links.py
+tests/test_engine_mcp_server.py tests/test_canonical_dispatch.py --tb=short`.
+Windows: 181 passed, 3 platform skips, 22.35s. Native WSL Linux oracle with the
+same selection: 184 passed, no skips, 24.56s, same Python/git/bwrap versions above.
+The tar warning concerned concurrent Python bytecode cache metadata only; no
+runtime source was edited during the Linux snapshot. Ruff, mirror and diff checks
+passed after all code edits.
+
+This supersedes only the earlier public structured intake/wiring limitation.
+Full artifact transfer, in-node RPC/effect provenance and explicit receiver retry
+remain open. Exact-head approval, CI, deploy and rendered two-owner acceptance
+are not claimed by local tests.

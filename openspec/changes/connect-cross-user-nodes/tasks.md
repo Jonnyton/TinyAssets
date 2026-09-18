@@ -9,8 +9,8 @@
 - [x] 2.2 Compile and preflight pinned selected-node entry projections, preserving downstream semantics and skipping predecessor-only effects (pure helper + 24 Windows tests; exposure wiring and Linux/live evidence remain subsequent gates).
 - [ ] 2.3 Add durable occurrence acceptance and atomic unique receiver-run insertion/recovery with concurrent and crash-point tests. Internal reservation/attempt-lock/recovery and common worker seams are implemented. September 18 adds dispatch through the existing executor in a fresh receiver context, current receiver ACL/graph checks, persistent start fencing, safe settlement and startup/maintenance reconciliation. Public validated intake, explicit receiver retry and final integration proof remain; this task is not complete.
 - [ ] 2.4 Transfer exact structured/file deliverables through scoped artifact copies, resource reservations and cleanup with integrity and cross-owner denial tests.
-- [ ] 2.5 Wire sender node output/effect provenance and two-party receipts, retries, disconnect and safe processing outcomes.
-- [ ] 2.6 Expose management/send/readback through canonical graph handles and shared served wrappers; verify provider-neutral tool parity and mirror output.
+- [ ] 2.5 Wire sender node output/effect provenance and two-party receipts, retries, disconnect and safe processing outcomes. September 18: explicit owner structured sends, output mappings, stable occurrence retries, disconnect and safe two-party receipts work in focused tests. Trusted in-node RPC/effect provenance and receiver-directed execution retry remain open.
+- [ ] 2.6 Expose management/send/readback through canonical graph handles and shared served wrappers; verify provider-neutral tool parity and mirror output. September 18: receiver/create/update/revoke, output_link/connect/disconnect, deliver_output and receiver/output_links/delivery reads wired through canonical extensions scopes and served graph pinning. Focused Windows/Linux proof is green; exact-head review, public live acceptance and full file capability remain open.
 
 ## 3. Deliver and prove
 
