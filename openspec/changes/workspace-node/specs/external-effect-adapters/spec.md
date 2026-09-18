@@ -89,14 +89,16 @@ beneath/no-symlink semantics as bounded regular files. Admission and
 consent refusals are `workspace_provision_refused`; resolver transport,
 cache-bound and offline-install failures are `workspace_provision_failed`.
 
-**Scope of THIS release** *(R3)*: everything in the paragraph above is slice
-B. What ships here is the grammar and the command layer as library code with
-no caller, plus one behaviour: a `checkout` declaring `provision` completes as
-a checkout and refuses the provisioning half as `workspace_provision_refused`
-**before any manifest is read**, saying that provisioning is unavailable
-rather than naming a missing consent. No file is opened through the lease
-handle, no grammar runs, no command is built, no consent is consulted, and
-nothing raises `workspace_provision_failed`.
+**Slice B implementation (not yet deployed):** checkout SHALL check consent
+using the resolved connection, admit every requested manifest, and reserve the
+maximum transfer for a fresh acquisition attempt before starting the resolver.
+It SHALL never reuse a previous attempt's reconciled byte charge for another
+download. Both ecosystems SHALL share one acquisition budget and deadline;
+the broker SHALL be stopped before offline installation. Failure or cancellation
+SHALL prevent publication and owe the unpublished lease its existing cleanup.
+Original npm manifests SHALL remain byte-for-byte intact under canonical
+read-only overlays. Python SHALL use isolated interpreter startup and a fresh
+`.venv`; an existing checkout `.venv` SHALL not be reused or removed.
 
 #### Scenario: an sdist-only or URL requirement is refused before any network
 - **WHEN** the requirements file contains `git+https://…`, a local path, `-r other.txt`, `pkg>=1.0`, or a pinned package with no wheel available

@@ -89,6 +89,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -275,6 +276,84 @@ class WorkspaceMount:
     #: Roots a PLAIN path may sit beneath. The descriptor form needs none:
     #: its identity is the fd, not the string.
     allowed_roots: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProvisionMount:
+    """Worker-owned scratch descriptors, never paths supplied by user code.
+
+    The provisioning coordinator owns both descriptors until the jail exits.
+    It must acquire distinct sibling directories from its reserved, per-attempt
+    lease scratch, outside the checkout. This object conveys mounts, not consent.
+    Only fixed destinations exist: these two directories, and optionally the
+    canonical npm manifest pair read-only over the checkout's original files
+    during offline installation. No arbitrary extra bind is exposed.
+    """
+
+    manifests_fd: int
+    cache_fd: int
+    phase: str
+    node_manifest_fds: tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.phase) is not str or self.phase not in ("acquire", "install"):
+            raise ValueError("invalid provisioning mount phase")
+        if self.node_manifest_fds is not None:
+            if (self.phase != "install" or type(self.node_manifest_fds) is not tuple
+                    or len(self.node_manifest_fds) != 2):
+                raise ValueError("npm manifest overlays require an offline pair of descriptors")
+        if any(type(fd) is not int or fd < 3 for fd in self.pass_fds):
+            raise ValueError("provisioning mounts require owned directory descriptors")
+        if self.manifests_fd == self.cache_fd:
+            raise ValueError("provisioning manifests and cache must be distinct")
+        if len(set(self.pass_fds)) != len(self.pass_fds):
+            raise ValueError("provisioning descriptors must be distinct")
+
+    @property
+    def pass_fds(self) -> tuple[int, ...]:
+        return (self.manifests_fd, self.cache_fd, *(self.node_manifest_fds or ()))
+
+    def bind_argv(self, inherited: tuple[int, ...], *, checkout_fd: int | None = None) -> list[str]:
+        """Revalidate live descriptors immediately before building the launch."""
+        descriptors = (self.manifests_fd, self.cache_fd)
+        descriptors += ((checkout_fd,) if checkout_fd is not None else ())
+        if any(type(fd) is not int or fd < 3 for fd in descriptors):
+            raise ValueError("provisioning mounts require owned directory descriptors")
+        if any(fd not in inherited for fd in descriptors):
+            raise ValueError("provisioning mount descriptor was not admitted for inheritance")
+        identities = []
+        for fd in descriptors:
+            info = os.fstat(fd)
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError("provisioning mount descriptor is not a directory")
+            identities.append((info.st_dev, info.st_ino))
+        if len(set(identities)) != len(identities):
+            raise ValueError("provisioning mounts alias the same directory")
+        result = [
+            "--dir", "/provision",
+            "--ro-bind", f"/proc/self/fd/{self.manifests_fd}", "/provision/manifests",
+            "--bind" if self.phase == "acquire" else "--ro-bind",
+            f"/proc/self/fd/{self.cache_fd}", "/provision/cache",
+        ]
+        for name, fd in zip(("package.json", "package-lock.json"), self.node_manifest_fds or ()):
+            if checkout_fd is None:
+                raise ValueError("npm overlays require the held checkout descriptor")
+            if fd not in inherited:
+                raise ValueError("npm manifest descriptor was not admitted for inheritance")
+            info = os.fstat(fd)
+            named = os.stat(name, dir_fd=self.manifests_fd, follow_symlinks=False)
+            target = os.stat(name, dir_fd=checkout_fd, follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or not stat.S_ISREG(named.st_mode)
+                    or not stat.S_ISREG(target.st_mode)
+                    or not 0 < info.st_size <= 4 * 1024 * 1024
+                    or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)):
+                raise ValueError("npm overlay must be the bounded canonical manifest file")
+            identity = (info.st_dev, info.st_ino)
+            if identity in identities:
+                raise ValueError("npm manifest descriptors alias")
+            identities.append(identity)
+            result.extend(("--ro-bind", f"/proc/self/fd/{fd}", f"/workspace/{name}"))
+        return result
 
 
 @dataclass
@@ -1614,6 +1693,7 @@ def _bwrap_argv(
     workspace_bind: str | None = None,
     allowed_workspace_roots: tuple[str, ...] = (),
     pass_fds: tuple[int, ...] = (),
+    provision_mount: ProvisionMount | None = None,
 ) -> list[str]:
     """Build the bubblewrap prefix for a code-node child process.
 
@@ -1632,6 +1712,11 @@ def _bwrap_argv(
     directory in place of ``/tmp``. Nothing else changes -- still no network,
     still no ``/data``, still no credential mount.
 
+    A typed provisioning mount adds only canonical manifests and the per-attempt
+    cache at fixed destinations. Acquisition excludes the checkout; installation
+    requires its held descriptor and admits no extra inherited descriptor.
+    This builds mounts, not a resolver connection or permission to provision.
+
     Returns argv ending in ``--``; append the child command.
     """
     if exists is None:
@@ -1649,6 +1734,26 @@ def _bwrap_argv(
             realpath,
             tuple(pass_fds or ()),
         )
+
+    provision_binds = []
+    if provision_mount is not None:
+        checkout_fd = None
+        if type(provision_mount) is not ProvisionMount:
+            raise ValueError("provisioning requires an exact typed mount")
+        if (provision_mount.phase == "acquire") == (workspace_bind is not None):
+            raise ValueError("acquisition excludes checkout; installation requires checkout")
+        if provision_mount.phase == "install":
+            workspace_fd = _PROC_FD_BIND.fullmatch(workspace_bind or "")
+            if workspace_fd is None:
+                raise ValueError("provisioning installation requires a held checkout descriptor")
+            checkout_fd = int(workspace_fd.group(1))
+            permitted = {*provision_mount.pass_fds, checkout_fd}
+            expected = 3 + len(provision_mount.node_manifest_fds or ())
+            if set(pass_fds) != permitted or len(permitted) != expected:
+                raise ValueError(
+                    "offline installation inherits only its distinct typed descriptors"
+                )
+        provision_binds = provision_mount.bind_argv(pass_fds, checkout_fd=checkout_fd)
 
     argv: list[str] = [
         bwrap_path,
@@ -1672,6 +1777,17 @@ def _bwrap_argv(
         if exists(system_path):
             argv.extend(("--ro-bind", system_path, system_path))
             bound.append(system_path)
+
+    if provision_mount is not None and provision_mount.phase == "acquire":
+        # The shipped Debian Node/OpenSSL toolchain uses the public system CA
+        # bundle, outside /usr. TLS must keep verifying the registry, not fall
+        # back to strict-ssl=false. Expose this one public file read-only only
+        # during acquisition; never mount /etc or its private-key directory.
+        ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
+        if exists(ca_bundle):
+            if realpath(ca_bundle) != ca_bundle:
+                raise ValueError("system CA bundle must not redirect outside its fixed path")
+            argv.extend(("--ro-bind", ca_bundle, ca_bundle))
 
     # The interpreter may live outside /usr (a venv, /opt, a symlink farm).
     # Bind the directories it actually needs, read-only.
@@ -1704,6 +1820,7 @@ def _bwrap_argv(
              "--chdir", WORKSPACE_MOUNT_POINT)
         )
 
+    argv.extend(provision_binds)
     argv.append("--")
     return argv
 
@@ -1864,14 +1981,18 @@ class BwrapLauncher:
         workspace_bind: str | None = None,
         allowed_workspace_roots: tuple[str, ...] = (),
         pass_fds: tuple[int, ...] = (),
+        provision_mount: ProvisionMount | None = None,
     ) -> None:
         self.bwrap_path = bwrap_path
         self.workspace_bind = workspace_bind
         self.allowed_workspace_roots = tuple(allowed_workspace_roots or ())
         self.pass_fds = tuple(pass_fds or ())
+        self.provision_mount = provision_mount
 
     def for_workspace(self, mount: WorkspaceMount) -> BwrapLauncher:
         """A launcher that binds *mount*, inheriting whatever fds it names."""
+        if self.provision_mount is not None:
+            raise ValueError("a provisioning launcher cannot be rebound to another checkout")
         return type(self)(
             bwrap_path=self.bwrap_path,
             workspace_bind=mount.bind_source,
@@ -1879,6 +2000,22 @@ class BwrapLauncher:
                 mount.allowed_roots or self.allowed_workspace_roots
             ),
             pass_fds=mount.pass_fds,
+        )
+
+    def for_provision(self, mount: ProvisionMount) -> BwrapLauncher:
+        """Keep staging and checkout launches distinct; never add host network."""
+        if type(mount) is not ProvisionMount:
+            raise ValueError("provisioning requires an exact typed mount")
+        if self.provision_mount is not None:
+            raise ValueError("create a fresh launcher for each provisioning stage")
+        if (mount.phase == "acquire") == (self.workspace_bind is not None):
+            raise ValueError("acquisition excludes checkout; installation requires checkout")
+        return type(self)(
+            bwrap_path=self.bwrap_path,
+            workspace_bind=self.workspace_bind,
+            allowed_workspace_roots=self.allowed_workspace_roots,
+            pass_fds=tuple(dict.fromkeys((*self.pass_fds, *mount.pass_fds))),
+            provision_mount=mount,
         )
 
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
@@ -1899,6 +2036,7 @@ class BwrapLauncher:
                 workspace_bind=self.workspace_bind,
                 allowed_workspace_roots=self.allowed_workspace_roots,
                 pass_fds=self.pass_fds,
+                provision_mount=self.provision_mount,
             ),
             *command,
         ]

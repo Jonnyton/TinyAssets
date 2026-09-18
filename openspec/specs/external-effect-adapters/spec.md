@@ -398,36 +398,52 @@ that is present but does not validate SHALL be refused, never dropped, and
 `scripts` SHALL NOT be carried into the reconstructed manifest at all, so the
 offline install cannot run a lifecycle script the root manifest asked for.
 
-**Provisioning is wholly unavailable in this release.** A `checkout` that
-declares `provision` SHALL complete as a checkout and SHALL refuse the
-provisioning half as `workspace_provision_refused` **before any manifest is
-read** — no file is opened through the lease handle, no grammar runs, no command
-is built, and no consent is consulted. The refusal SHALL say that provisioning
-is unavailable rather than name a missing consent, because a hint naming a
-consent implies that granting it would make provisioning run.
+Checkout SHALL check provisioning consent from the resolved connection before
+reading every requested manifest through the held lease directory descriptor.
+All manifests SHALL be admitted before acquisition, and each fresh acquisition
+attempt SHALL reserve the maximum transfer against the existing byte ledger.
+A previous attempt's reconciled charge SHALL NOT authorize a new download.
 
-The grammar (`tinyassets.workspace_provision`) and the command layer
-(`tinyassets.workspace_resolver`) exist as LIBRARY CODE WITH NO CALLER, so their
-rules bind nothing yet and are recorded here as what slice B will wire, not as
-what this release does: only Python records that parse as a PEP 508 requirement
-with no URL, one `==` specifier, a PEP 440 version, at least one
-`--hash=sha256:<64 hex>` and a marker over the seven admitted variables; only
-Node projects whose lockfile (version 2 or 3) has no `workspaces` key and no
-`link:` entry and whose every installable entry resolves to an
-`https://registry.npmjs.org/…tgz` with a `sha512-` integrity; reconstructed
-canonical texts rather than the original files; a staged digest recomputed from
-the bytes on disk; `--only-binary=:all:` with `--require-hashes` and without
-`--no-deps`; `--ignore-scripts`; and an offline install with no index.
-`workspace_provision_failed` is classified in the taxonomy and is not raised by
-anything in this release.
+Acquisition SHALL execute in its own network namespace, without checkout or
+credentials. Its isolated registry broker SHALL accept only HTTPS CONNECT on
+port 443 to pypi.org, files.pythonhosted.org and registry.npmjs.org, validate
+every resolved address and connect to a validated pinned address. Both package
+ecosystems SHALL share the attempt's transfer budget and deadline. Python
+acquisition SHALL use `--only-binary=:all:` and `--require-hashes`; Node
+acquisition SHALL use `--ignore-scripts`. No build backend SHALL execute with
+network access. Public TLS roots SHALL be mounted read-only during acquisition.
 
-#### Scenario: a checkout that asks for provisioning gets a checkout and a refusal
-- **WHEN** a `checkout` packet declares `provision`
-- **THEN** the checkout completes, the evidence records `workspace_provision_refused` saying provisioning is unavailable in this release, no manifest is opened and no consent is looked up
+The broker SHALL be stopped and its authority revoked before offline installation
+in a separate workspace jail. Canonical manifests and acquired cache SHALL be
+read-only there, staged digests SHALL be verified, and inherited host mount
+descriptors SHALL be closed before payload execution. Original Node manifests
+SHALL remain byte-for-byte intact beneath fixed canonical read-only overlays.
+Python SHALL use isolated startup and a fresh `.venv`; a repository's existing
+`.venv` SHALL never be reused or removed.
 
-#### Scenario: an sdist-only or URL requirement is refused before any network
-- **WHEN** slice B wires the grammar and the requirements file contains `git+https://…`, a local path, `-r other.txt`, or `pkg>=1.0`
+Both stages SHALL enforce existing workspace process, output, memory, storage,
+cancellation and deadline limits. Unconfirmed process death SHALL fail loudly
+without releasing live writers or publishing the checkout. Unknown transfer
+completion SHALL retain the maximum reservation. Admission/consent refusals SHALL
+report `workspace_provision_refused`; acquisition and installation failures SHALL
+report `workspace_provision_failed` and owe the lease its existing cleanup.
+This requirement does not claim an executable browser, browser driver, or preview.
+
+#### Scenario: admitted dependencies are installed before checkout publication
+- **WHEN** a consented checkout declares admitted Python or Node provisioning
+- **THEN** registry acquisition and offline installation complete before publication, original manifests are preserved, and the receipt reports actual success or its fixed failure class
+
+#### Scenario: cancellation prevents a partially installed checkout from escaping
+- **WHEN** the owning root run is cancelled during provisioning
+- **THEN** the supervised processes terminate, no workspace is published, and cleanup follows the existing lease lifecycle
+
+#### Scenario: a URL or unpinned requirement is refused before any network
+- **WHEN** the requirements file contains `git+https://…`, a local path, `-r other.txt`, or `pkg>=1.0`
 - **THEN** provisioning is refused as `workspace_provision_refused` naming the offending line, and no resolver command is built
+
+#### Scenario: a pinned package without a wheel never executes a build backend
+- **WHEN** an admitted pinned package has no compatible wheel in the registry
+- **THEN** wheel-only acquisition fails as `workspace_provision_failed` and no source build executes
 
 #### Scenario: a lockfile resolution outside the registry is refused
 - **WHEN** the lockfile carries an entry resolved to `git+https://…`, `file:…`, `https://registry.npmjs.org.evil.example/…`, `https://cdn.registry.npmjs.org/…`, or one with a `sha256-` integrity

@@ -23,7 +23,7 @@ import re
 import secrets
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tinyassets.storage.workspace_authority import (
     CONSENT_CHECKOUT,
@@ -415,10 +415,8 @@ def _check_provision_consent(
     """Provisioning is separately consented; its absence is NOT a checkout
     failure (D-spec scenario: the checkout completes, provisioning does not).
 
-    A ``full`` channel pre-authorizes it for the release that enables it. There
-    is no call site today and checkout refuses requested provisioning outright,
-    so this changes nothing that runs; it is written now so the grant does not
-    silently mean less than the sentence the owner accepted."""
+    A ``full`` channel pre-authorizes it. The caller obtains access_mode from
+    the resolved connection record, never the workflow packet."""
     if str(access_mode).strip().lower() == "full":
         return True
     try:
@@ -761,6 +759,66 @@ def _pool_db(base_path: Path) -> Path:
     return runs.runs_db_path(base_path)
 
 
+def _provision_checkout(
+    requested: Any, *, base_path: Path, resource: Any, host: str, repo: str,
+    lease: Any, lease_fd: int, repo_fd: int, run_id: str, node_id: str,
+    universe_id: str, timeout_seconds: float, should_cancel: Callable[[], bool] | None,
+) -> dict[str, Any]:
+    """Consent -> complete manifest admission -> fresh reservation -> execution.
+
+    Refused admission preserves an unmodified checkout. Once execution starts,
+    failure prevents publication and the checkout owner owes its lease a wipe.
+    """
+    from tinyassets.workspace_provision import ProvisionRefused
+    from tinyassets.workspace_provision_execution import execute_provision
+    from tinyassets.workspace_resolver import read_provision_manifests
+
+    def refuse(reason: str, detail: str) -> dict[str, Any]:
+        return {"provision": "workspace_provision_refused", "provision_reason": reason,
+                "provision_detail": detail}
+
+    if not _check_provision_consent(
+        base_path, host, repo, str(getattr(resource, "connection_id", "")),
+        access_mode=connection_access_mode(resource),
+    ):
+        return refuse("missing_consent", "workspace_provision consent is required")
+    if (type(requested) is not dict or set(requested) - {"python", "node"}
+            or ("python" in requested and (type(requested["python"]) is not str
+                                           or not requested["python"]))
+            or ("node" in requested and type(requested["node"]) is not bool)
+            or not (requested.get("python") or requested.get("node"))):
+        return refuse("invalid_request", "provision requires a Python manifest path or node: true")
+    try:
+        manifests = read_provision_manifests(
+            repo_fd, python_path=requested.get("python"), node=requested.get("node", False))
+    except ProvisionRefused as exc:
+        evidence = refuse(exc.reason, "dependency manifest is outside the supported grammar")
+        if exc.line_no is not None:
+            evidence["provision_line"] = exc.line_no
+        return evidence
+
+    # Every actual acquisition attempt needs its own maximum reservation. A
+    # deterministic retried id may have already been reconciled DOWN and cannot
+    # fund another download. No automatic retry is performed here.
+    operation_id = f"{run_id}:{node_id}:provision:{secrets.token_hex(16)}"
+    bound = lease.reserved_bytes
+    _reserve_operation(
+        base_path, universe_id=universe_id, run_id=run_id, operation_id=operation_id,
+        max_bytes=bound, refusal="workspace_provision_failed")
+    result = execute_provision(
+        manifests, lease_fd=lease_fd, repo_fd=repo_fd, max_transfer_bytes=bound,
+        storage_bound=bound, timeout_s=timeout_seconds,
+        cancelled=should_cancel if should_cancel is not None else lambda: False)
+    _reconcile_operation(base_path, operation_id, result.bytes_to_charge)
+    if result.failure:
+        raise _Refused("workspace_provision_failed", "dependency installation did not complete",
+                       provision_reason=result.failure)
+    return {"provision": "completed", "provision_bytes": result.bytes_to_charge,
+            "provision_digests": {key: plan.digest for key, plan in
+                                  (("python", manifests.python), ("node", manifests.node))
+                                  if plan is not None}}
+
+
 def _checkout(
     *,
     packet: dict[str, Any],
@@ -775,6 +833,7 @@ def _checkout(
     execute: Any,
     timeout_seconds: float,
     admission: AdmissionObservation,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     from tinyassets import workspace_pool
     from tinyassets.workspace_git import populate_workspace_from_bundle
@@ -924,6 +983,20 @@ def _checkout(
                 f"staging could not be removed, so nothing was published: {exc}",
             ) from None
 
+        provision_evidence = {}
+        if packet.get("provision") is not None:
+            provision_evidence = _provision_checkout(
+                packet["provision"], base_path=base_path, resource=resource,
+                host=host, repo=repo, lease=lease, lease_fd=lease_fd, repo_fd=repo_fd,
+                run_id=run_id, node_id=node_id, universe_id=universe_id,
+                timeout_seconds=timeout_seconds, should_cancel=should_cancel)
+        # A cancellation arriving between the final stage and publication still
+        # cannot expose the new capability. The same root-owned predicate flows
+        # through the entire effect call; no workspace-local run DB is consulted.
+        if should_cancel is not None and should_cancel():
+            raise _Refused("workspace_provision_failed", "checkout cancelled before publication",
+                           provision_reason="cancelled")
+
         measured = int(answer.get("bytes") or 0)
         try:
             workspace_pool.reconcile_bytes(db, lease.lease_id, measured)
@@ -969,14 +1042,7 @@ def _checkout(
     }
     if replaced is not None:
         evidence["replaced_generation"] = replaced
-    if packet.get("provision"):
-        # The admission grammar exists (workspace_provision.py) but nothing
-        # installs from it yet. Say THAT, not "you lack a consent" -- a hint
-        # naming a consent implies granting it would make provisioning run.
-        evidence["provision"] = "workspace_provision_refused"
-        evidence["provision_detail"] = (
-            "provisioning is not available in this release (admission only)"
-        )
+    evidence.update(provision_evidence)
     del mount
     return evidence
 
@@ -1601,6 +1667,7 @@ def run_workspace_effector(
     chain: Any = None,
     execute: Any = None,
     timeout_seconds: float = 0.0,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Dispatch one ``workspace`` packet. NEVER raises.
 
@@ -1622,6 +1689,7 @@ def run_workspace_effector(
             ancestors=ancestors,
             timeout_seconds=timeout_seconds,
             admission=admission,
+            should_cancel=should_cancel,
         )
     except _Refused as refused:
         result = {"error": refused.error, "error_kind": refused.kind, **refused.extra}
@@ -1648,6 +1716,7 @@ def _run(
     admission: AdmissionObservation,
     ancestors: set[str] | None = None,
     timeout_seconds: float = 0.0,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
     if packet is None:
@@ -1802,6 +1871,7 @@ def _run(
             **{k: v for k, v in common.items() if k != "ancestors"},
             timeout_seconds=timeout_seconds,
             admission=admission,
+            should_cancel=should_cancel,
         )
     else:
         evidence = _push(**common)

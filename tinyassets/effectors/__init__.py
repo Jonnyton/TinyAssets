@@ -247,6 +247,7 @@ def _wiki_write_back_adapter(
 def _workspace_adapter(
     *, node_id, output_keys, run_state, base_path, run_id, dry_run,
     allowed_state_keys=None, prior_effects=None, ancestors=None, timeout_seconds=0.0,
+    should_cancel=None,
 ):
     return run_workspace_effector(
         node_id=node_id,
@@ -258,6 +259,7 @@ def _workspace_adapter(
         allowed_state_keys=allowed_state_keys,
         ancestors=ancestors,
         timeout_seconds=timeout_seconds,
+        should_cancel=should_cancel,
     )
 
 
@@ -732,6 +734,7 @@ def dispatch_node_effects(
     state_schema=None,
     ancestors: set[str] | None = None,
     node_key: str | None = None,
+    should_cancel=None,
 ) -> dict[str, dict]:
     """Fire ``node.effects`` NOW, against ``run_state`` = the state the node saw
     merged with the delta it returned (the packet lives in that delta). Records
@@ -776,6 +779,7 @@ def dispatch_node_effects(
             node, run_state, chain=chain,
             schema_defaulted=_schema_defaulted_keys(state_schema),
             ancestors=ancestors, node_key=key,
+            should_cancel=should_cancel,
         )
         accept = packet_accept_statuses(
             output_keys=list(getattr(node, "output_keys", None) or []),
@@ -859,6 +863,7 @@ def first_effect_failure(
 def _fire_node_effects(
     node, run_state, *, chain: EffectChain, schema_defaulted: set,
     ancestors: set[str] | None = None, node_key: str | None = None,
+    should_cancel=None,
 ) -> dict:
     """Run every sink one node declares and return its bounded evidence
     ({sink: result}); full authenticated-call results and fired verbs land on
@@ -918,6 +923,9 @@ def _fire_node_effects(
                 # Workspace capabilities follow graph ancestry, not HTTP-result
                 # membership: workspace ancestors produce no HTTP response.
                 adapter_kwargs["ancestors"] = ancestors
+                # A server-owned closure over the actual root run database,
+                # not a packet field or a query against workspace storage.
+                adapter_kwargs["should_cancel"] = should_cancel
                 adapter_kwargs["timeout_seconds"] = float(
                     getattr(node, "timeout_seconds", 0.0) or 0.0
                 )

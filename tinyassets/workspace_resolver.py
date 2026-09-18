@@ -28,13 +28,18 @@ import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
+
+if TYPE_CHECKING:
+    from tinyassets.workspace_provision import NodePlan, PythonPlan
 
 __all__ = [
     "FIXED_FLAGS",
     "NULL_DEVICE",
+    "REGISTRY_PROXY_URL",
     "PYTHON_MANIFEST_NAME",
     "ResolverError",
+    "ProvisionManifests",
     "StagedManifest",
     "StagedNodeManifests",
     "npm_fetch_argv",
@@ -42,6 +47,7 @@ __all__ = [
     "pip_download_argv",
     "pip_offline_install_argv",
     "resolver_environment",
+    "read_provision_manifests",
     "stage_node_plan",
     "stage_python_plan",
 ]
@@ -54,6 +60,9 @@ NODE_LOCKFILE_NAME: Final[str] = "package-lock.json"
 
 DEFAULT_INDEX_URL: Final[str] = "https://pypi.org/simple"
 NPM_REGISTRY_URL: Final[str] = "https://registry.npmjs.org"
+# This listener exists ONLY inside the resolver's private network namespace.
+# No workflow input or ambient proxy may replace it. Offline argv omits it.
+REGISTRY_PROXY_URL: Final[str] = "http://127.0.0.1:3128"
 
 #: ``npm`` is told to read its user config from the null device rather than the
 #: home directory: the resolver jail has a home, and a config file appearing in
@@ -64,6 +73,7 @@ NULL_DEVICE: Final[str] = "NUL" if os.name == "nt" else "/dev/null"
 #: dash and not in this set is an injected option wearing a path's clothes.
 FIXED_FLAGS: Final[frozenset[str]] = frozenset(
     {
+        "-I",
         "-m",
         "-r",
         "--isolated",
@@ -83,6 +93,9 @@ FIXED_FLAGS: Final[frozenset[str]] = frozenset(
         "--registry",
         "--prefix",
         "--offline",
+        "--proxy",
+        "--https-proxy",
+        "--noproxy=",
     }
 )
 
@@ -97,6 +110,62 @@ class ResolverError(RuntimeError):
     the plan says, which is a bug or an interference, and either way not
     something to continue past.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionManifests:
+    """All declared inputs admitted together, before any resolver can run."""
+
+    python: PythonPlan | None
+    node: NodePlan | None
+
+
+def read_provision_manifests(
+    repo_fd: int, *, python_path: str | None = None, node: bool = False,
+) -> ProvisionManifests:
+    """Extract only bounded regular manifests through the caller's held handle.
+
+    This reads no credentials and starts no process or network operation. The
+    returned canonical plans, not the original checkout files, feed staging.
+    A failure never returns a partial plan. The caller retains descriptor
+    ownership and must check provisioning consent before invoking this reader.
+    """
+    from tinyassets import workspace_fs
+    from tinyassets.workspace_provision import (
+        ProvisionRefused,
+        admit_manifest_bytes,
+        admit_node,
+        admit_requirements,
+    )
+
+    if type(node) is not bool:
+        raise ValueError("node provisioning must be boolean")
+    if python_path is not None and (not isinstance(python_path, str) or not python_path):
+        raise ValueError("python provisioning must name a manifest")
+
+    def read(path: str, bound: int, *, lockfile: bool = False) -> str:
+        try:
+            data = workspace_fs.read_regular_file_beneath(repo_fd, path, max_bytes=bound)
+        except FileNotFoundError:
+            reason = "missing_lockfile" if lockfile else "not_regular_file"
+            raise ProvisionRefused(reason, "required manifest is unavailable") from None
+        except OSError:
+            # Reader exceptions can contain private absolute paths. They never
+            # become evidence or a guessed successful/empty manifest.
+            raise ProvisionRefused(
+                "not_regular_file", "manifest is not a bounded regular file beneath the checkout"
+            ) from None
+        return admit_manifest_bytes(data, max_bytes=bound)
+
+    python_plan = None
+    node_plan = None
+    if python_path is not None:
+        python_plan = admit_requirements(read(python_path, 256 * 1024))
+    if node:
+        package = read(NODE_MANIFEST_NAME, 4 * 1024 * 1024)
+        lock = read(NODE_LOCKFILE_NAME, 4 * 1024 * 1024, lockfile=True)
+        node_plan = admit_node(package, lock)
+    return ProvisionManifests(python=python_plan, node=node_plan)
 
 
 @dataclass(frozen=True)
@@ -302,6 +371,7 @@ def pip_download_argv(
     return _admitted_argv(
         [
             _check_program(python, "python"),
+            "-I",
             "-m",
             "pip",
             "download",
@@ -310,6 +380,8 @@ def pip_download_argv(
             "--no-input",
             "--only-binary=:all:",
             "--require-hashes",
+            "--proxy",
+            REGISTRY_PROXY_URL,
             "--index-url",
             _check_url(index_url, "index url", expected=DEFAULT_INDEX_URL),
             "--dest",
@@ -329,6 +401,7 @@ def pip_offline_install_argv(
     return _admitted_argv(
         [
             _check_program(venv_python, "venv python"),
+            "-I",
             "-m",
             "pip",
             "install",
@@ -356,7 +429,7 @@ def _npm_argv(
     argv = [
         _check_program(npm, "npm"),
         "ci",
-        "--ignore-scripts",
+        *([] if offline else ["--ignore-scripts"]),
         "--no-audit",
         "--no-fund",
         "--cache",
@@ -370,6 +443,12 @@ def _npm_argv(
     ]
     if offline:
         argv.append("--offline")
+    else:
+        argv.extend((
+            "--proxy", REGISTRY_PROXY_URL,
+            "--https-proxy", REGISTRY_PROXY_URL,
+            "--noproxy=",
+        ))
     return _admitted_argv(argv)
 
 
@@ -389,7 +468,12 @@ def npm_offline_install_argv(
     *,
     npm: Path | str = "npm",
 ) -> list[str]:
-    """Install from the cache only; ``--offline`` makes a registry read an error."""
+    """Install offline with dependency scripts allowed, after broker revocation.
+
+    The caller must stage the canonical, root-script-free manifests at the
+    installation prefix. The network-less jail, not ignore-scripts, isolates
+    dependency code; no proxy is available during this phase.
+    """
     return _npm_argv(staged, cache_dir, npm=npm, offline=True)
 
 
