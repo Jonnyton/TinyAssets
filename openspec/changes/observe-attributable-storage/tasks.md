@@ -13,6 +13,11 @@
 - [x] 3.1 Deploy with authenticated public canary/revision proof and synchronize shipped spec; report readiness only.
 - [ ] 3.2 Record owner-provided rendered acceptance before closure; no autonomous app prompt or production load test, broader simplification remains open.
 
+## 4. September 18 legacy freshness follow-up
+
+- [x] 4.1 Add observation freshness and explicit partial accounting labels with regressions and plugin parity.
+- [ ] 4.2 Obtain focused Linux proof, independent review, CI, deployment proof and spec sync; broader resource-policy closure stays open.
+
 2026-09-08 Windows/Python 3.14: focused six-file suite (`test_storage_observations`,
 `test_resource_usage_status`, `test_ttl_memo`, `test_api_status`,
 `test_get_status_primitive`, `test_workspace_fs`) = 117 passed, 66 skipped.
