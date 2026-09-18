@@ -1065,55 +1065,27 @@ def _platform_has_work() -> bool:
 
 
 def _platform_worker_liveness() -> dict[str, Any]:
-    """The worst worker on this daemon, across every universe.
+    """Private-free liveness of the current daemon-owned coordinator.
 
-    ``last_activity_at`` alone cannot tell a wedged worker from a quiet one --
-    it goes stale for both -- so the activity canary reads this beside it. One
-    wedged worker is a wedged platform, so the summary is the worker with the
-    OLDEST heartbeat, not an average and not the healthiest.
-
-    ``{"present": False}`` when no universe has a worker heartbeat at all,
-    which is the same shape the per-universe view uses for "nothing to say".
-    Never raises: an unreadable universe contributes nothing rather than
-    breaking the surface the probes ride on.
+    Historical shared/named files are not an inventory of expected executors.
+    The real per-universe writers/readers remain in use for their scoped queue
+    and watchdog contracts; this platform projection uses process lifecycle.
     """
-    from tinyassets.api.universe import _worker_liveness
+    from tinyassets.runtime.assigned_queue_consumer import current_consumer_liveness
 
-    base = _base_path()
-    if not base.is_dir():
-        return {"present": False}
-
-    worst: dict[str, Any] | None = None
-    for child in sorted(base.iterdir()):
-        if not child.is_dir() or child.name.startswith("."):
-            continue
-        try:
-            summary = _worker_liveness(child)
-        except Exception:  # noqa: BLE001 - observability never breaks a read
-            _LOGGER.exception("worker liveness unreadable for %s", child.name)
-            continue
-        if not summary.get("present"):
-            continue
-        if worst is None or float(summary.get("beat_age_s") or 0.0) > float(
-            worst.get("beat_age_s") or 0.0
-        ):
-            worst = summary
-
-    if worst is None:
-        return {"present": False}
-    # AN ALLOWLIST, not a denylist. Stripping only `workers` left worker_id,
-    # runtime_instance_id, worker_count, runtime_instance_count, spawn and
-    # crash counters and -- when the queue descriptor carries it -- a
-    # universe_id, on a surface whose whole purpose is to name no universe.
-    # Adding `universes_with_workers` made it worse: an explicit tenant count
-    # (Codex design review 2026-09-03). These five are what a liveness probe
-    # actually reads, and nothing else goes out.
+    try:
+        summary = current_consumer_liveness(_base_path())
+    except Exception:  # noqa: BLE001 - keep observation failure visible
+        _LOGGER.exception("current coordinator liveness unavailable")
+        summary = {"present": True, "alive": None, "phase": "unavailable"}
+    if not summary.get("present"):
+        return {"present": False, "phase": summary.get("phase")}
     return {
         "present": True,
-        "alive": worst.get("alive"),
-        "beat_age_s": worst.get("beat_age_s"),
-        "phase": worst.get("phase"),
-        "consec_crashes": worst.get("consec_crashes"),
+        "alive": summary.get("alive"),
+        "beat_age_s": summary.get("beat_age_s"),
+        "phase": summary.get("phase"),
+        "consec_crashes": summary.get("consec_crashes"),
     }
 
 
