@@ -19,6 +19,7 @@ def test_http_only_serving_is_connected_not_bootstrap(tmp_path, monkeypatch):
     status, doc = _me(tmp_path, monkeypatch)
     assert status == 200
     assert doc["engine_connected"] is True
+    assert doc["principal_id"] == "owner-1"
     assert doc["setup"] == "connected"
 
 
@@ -54,6 +55,7 @@ def test_unreadable_vault_is_not_empty_or_ready(tmp_path, monkeypatch):
     assert doc["setup"] == "unavailable"
     assert doc["engine_connected"] is False
     assert "private diagnostic" not in str(doc)
+    assert doc["principal_id"] == "owner-1"
 
 
 def test_other_owners_serving_does_not_power_this_home(tmp_path, monkeypatch):
@@ -61,6 +63,7 @@ def test_other_owners_serving_does_not_power_this_home(tmp_path, monkeypatch):
     (tmp_path / "u-other").mkdir()
     _, doc = _me(tmp_path, monkeypatch, owner="owner-2", uid="u-other")
     assert doc["universe_id"] == "u-other"
+    assert doc["principal_id"] == "owner-2"
     assert doc["setup"] == "empty"
     assert doc["engine_connected"] is False
 
@@ -74,5 +77,5 @@ def test_no_home_get_does_not_bootstrap(tmp_path, monkeypatch):
         raise AssertionError("GET must not create a home")
     monkeypatch.setattr(onboarding, "_bootstrap_home", forbidden)
     _, doc = _drive_get("/mcp/app/me", identity=_user("owner-1"), monkeypatch=monkeypatch)
-    assert doc == {"universe_id": "", "home_bound": False,
+    assert doc == {"principal_id": "owner-1", "universe_id": "", "home_bound": False,
                    "engine_connected": False, "setup": "empty"}
