@@ -109,6 +109,7 @@ NOT publish or widen assignments, grants or permitted spending.
 
 #### Scenario: Mixed-source automatic mode
 - **WHEN** a native default and HTTP models are eligible
+- **AND** no unresolved scoped authentication-failure hint demotes the native source
 - **THEN** automatic selection uses the native default through its real executor
 - **AND** an HTTP-only catalog cannot silently remove that preference
 
@@ -137,6 +138,56 @@ NOT publish or widen assignments, grants or permitted spending.
 - **WHEN** the owner converses with a non-home universe without an override
 - **THEN** home-only preferences neither block nor alter its existing binding
 
+### Requirement: Unresolved source authentication failures influence new Automatic plans
+
+Automatic planning SHALL move a source with an unresolved scoped authentication-failure
+hint after other already-eligible sources. The hint SHALL NOT grant access, change
+spending permission, modify saved preferences, or authorize replay of a failed
+request. Explicit current and saved choices SHALL retain their exact ordering.
+The initial implementation SHALL use bounded process-local advisory memory,
+scoped by resolved base, owner, universe, provider and credential-reference identity,
+generation and digest. Elapsed time alone SHALL NOT clear a hint. The store SHALL
+retain no more than 4096 entries and SHALL store no credentials or raw errors.
+Success under the exact custody SHALL clear its hint. New credential custody SHALL
+be eligible without inheriting the previous custody's hint. Recording success or
+failure SHALL discard lower-generation hints only for the same resolved base,
+owner, universe, provider and credential-reference identity.
+Restart or eviction MAY lose advisory health; it SHALL NOT change authority.
+
+#### Scenario: A new Automatic message follows an authentication failure
+- **WHEN** a served source reports the typed authentication-failure signal
+- **AND** another source is independently eligible for the next Automatic plan
+- **THEN** the next plan prefers the other source without changing the owner's preferences
+- **AND** the failed turn is not replayed and retains truthful uncertainty about effects
+
+#### Scenario: Explicit choices remain exact
+- **WHEN** the owner explicitly chooses a failed source or has an explicit saved order
+- **THEN** advisory source health does not silently substitute or reorder that choice
+- **AND** execution still validates current authority before launch
+
+#### Scenario: Time alone does not establish recovery
+- **WHEN** seven minutes or a day pass after an authentication failure without success or custody change
+- **AND** the process-local hint has not been evicted
+- **THEN** a new Automatic plan still prefers another independently eligible source
+- **AND** the failed request is not replayed
+
+#### Scenario: Success or new credential custody permits recovery
+- **WHEN** a source succeeds under the same exact custody scope
+- **THEN** its hint clears
+- **AND** renewed credential custody is eligible before any successful model call
+- **AND** one owner's success or failure cannot clear or create another owner's hint
+- **AND** a late old-generation success cannot clear a newer-generation failure
+
+#### Scenario: All eligible sources have unresolved failure hints
+- **WHEN** every eligible source has an unresolved hint
+- **THEN** Automatic retains candidates in their relative order rather than manufacturing an unavailable replacement
+- **AND** ordinary execution and error reporting still apply
+
+#### Scenario: The picker explains unresolved source trouble
+- **WHEN** a scoped hint is current
+- **THEN** the picker displays a non-blocking reconnect warning
+- **AND** it does not disable manual selection, claim successful sign-in or expose raw provider errors
+
 ### Requirement: Connection-scoped model choices
 The app SHALL expose model choices from the universe owner's authorized connections with freshness and capability information, without a compiled model-release list.
 
@@ -156,6 +207,18 @@ The app SHALL expose model choices from the universe owner's authorized connecti
 - **AND** the app labels the enumeration gap rather than claiming a complete model list
 - **AND** a nonempty discovered choice is refused without silently substituting the default
 
+#### Scenario: Native metadata uses a launcher with child processes
+- **WHEN** a registered native metadata executor launches inherited-pipe children on POSIX
+- **THEN** the transport isolates and terminates its invocation's process group on success, refusal, timeout or cancellation, including after launcher exit
+- **AND** cleanup observes inherited-pipe closure within a bounded interval rather than discarding a complete catalogue at the discovery timeout
+- **AND** cancellation propagates, process output is not relayed and existing custody checks remain unchanged
+
+#### Scenario: Native discovery reaches the public picker
+- **WHEN** native metadata discovery succeeds for an accepted source
+- **THEN** the public model-options read lists its provider default and eligible discovered models without assuming HTTP-only metadata fields
+- **AND** freshness and exact custody are rechecked before display without opening another credential-store connection inside the admission transaction
+- **AND** native revocation removes that source without hiding independently authorized HTTP choices
+
 #### Scenario: Discovery fails
 - **WHEN** discovery cannot refresh
 - **THEN** cached choices are labelled stale and the app does not claim current availability
@@ -174,6 +237,27 @@ The app SHALL allow switching the interactive agent, saving a default and orderi
 ### Requirement: Actual execution is visible and actionable
 The typed-chat interface SHALL show a clickable active provider/model control, distinguish preference from actual execution, and remain usable without a working LLM.
 
+#### Scenario: Applying a model choice is an ordinary visible action
+- **WHEN** the owner opens the prominent model control
+- **THEN** the primary selector contains usable choices plus any unavailable currently selected choice
+- **AND** every unavailable model and reason remains in the full inventory
+- **AND** using a tab-local choice closes the dialog without changing the saved default
+- **AND** confirmed default saving clears the tab override so the next message uses the saved choice
+- **AND** failed or ambiguous saves do not clear that override
+
+#### Scenario: Reopening model selection with fresh evidence
+- **WHEN** the owner reopens the picker before its owner-scoped catalogue expires
+- **THEN** the picker reuses that snapshot without an unnecessary discovery wait
+- **AND** expired or failed refresh evidence still prevents application
+- **AND** execution independently rechecks authority; UI evidence never grants access
+
+#### Scenario: Claude browser code is not a subscription token
+- **WHEN** the owner submits a browser authorization code or malformed token text to the dedicated Claude subscription deposit
+- **THEN** the canonical handler rejects it before any credential or ownership mutation
+- **AND** the error explains that the browser code goes back into the setup terminal and the terminal's final token goes into the app
+- **AND** neither credential bytes nor digests appear in errors or logs
+- **AND** a successful shape check and serving bind report credential saved, not verified provider authentication
+
 #### Scenario: A router answers with another model
 - **WHEN** a response reports a model different from the requested alias
 - **THEN** the answering-model display uses the reported model without rewriting the saved default
@@ -181,6 +265,15 @@ The typed-chat interface SHALL show a clickable active provider/model control, d
 #### Scenario: Model metadata is unavailable
 - **WHEN** a response does not report a usable model identifier
 - **THEN** the answer remains usable and the display marks the actual model unknown instead of presenting the requested alias as verified
+
+#### Scenario: Native root-answer model observation
+- **WHEN** a successful Claude stream has explicit root assistant frames reporting a usable model
+- **AND** their final message text matches the returned answer, including split blocks with one message ID
+- **THEN** the answer receipt records that reported model, independently of the requested alias
+- **AND** child-agent frames, initial configuration and aggregate usage cannot replace that evidence
+- **AND** absent, conflicting, malformed, synthetic or mismatched evidence remains unknown without discarding the answer
+- **AND** metadata-only observation cannot extend the provider idle watchdog
+- **AND** native protocols without answer-owned evidence continue to report unknown
 
 #### Scenario: Answering receipt survives history reload
 - **WHEN** a reply has a valid server-observed provider/model receipt and its history write succeeds

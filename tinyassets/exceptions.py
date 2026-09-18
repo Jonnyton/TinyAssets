@@ -37,6 +37,12 @@ class ProviderTimeoutError(ProviderError):
     """A provider subprocess exceeded the activity timeout."""
 
 
+class ProviderAuthenticationError(ProviderError):
+    """Closed adapter-reported sign-in failure, NOT evidence of no side effects."""
+
+    failure_class = "auth_invalid"
+
+
 class ProviderIdleTimeoutError(ProviderTimeoutError):
     """A streamed served attempt stopped emitting real protocol events.
 

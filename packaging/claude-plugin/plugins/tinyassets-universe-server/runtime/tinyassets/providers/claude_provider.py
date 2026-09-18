@@ -25,10 +25,12 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from tinyassets.exceptions import (
     InteractiveDeadlineError,
+    ProviderAuthenticationError,
     ProviderError,
     ProviderIdleTimeoutError,
     ProviderOverloadedError,
@@ -44,6 +46,7 @@ from tinyassets.providers.base import (
     check_bwrap_failure,
     subprocess_env_for_provider,
 )
+from tinyassets.providers.protocol_encoders import model_receipt
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +83,51 @@ _STDOUT_READER_LIMIT = 2 ** 22  # 4 MiB
 # to cover a documented retry wait (blocker B): the CLI needs a little slack
 # beyond its own stated wait to re-issue the request and resume streaming.
 _RETRY_GRACE_MARGIN_S = 5.0
+
+
+@dataclass
+class _AnswerModelEvidence:
+    """Attempt-local, answer-owned metadata; never routing or liveness evidence."""
+
+    message_id: str | None = None
+    model: str = ""
+    parts: list[str] = field(default_factory=list)
+
+    def observe(self, obj: dict) -> None:
+        parent = obj.get("parent_tool_use_id")
+        if isinstance(parent, str) and parent.strip() and parent.isprintable():
+            return  # A child cannot replace the root answer's evidence.
+        message = obj.get("message")
+        if ("parent_tool_use_id" not in obj or parent is not None
+                or not isinstance(message, dict)):
+            self.message_id, self.model, self.parts = None, "", []
+            return
+        message_id = message.get("id")
+        if not isinstance(message_id, str) or not message_id:
+            message_id = None
+        model = model_receipt(message.get("model"))
+        if obj.get("error") is not None or model == "<synthetic>":
+            model = ""
+        # Claude emits separate assistant frames for blocks of one API message.
+        # Only explicitly equal nonempty IDs permit accumulation. Conflicting or
+        # missing model evidence taints that message, even if a later block has it.
+        if message_id is not None and message_id == self.message_id:
+            if model != self.model:
+                self.model = ""
+        else:
+            self.message_id, self.model, self.parts = message_id, model, []
+        for block in _content_blocks(message):
+            if block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    self.parts.append(text)
+                else:
+                    self.model = ""
+
+    def for_answer(self, text: str) -> str:
+        # Terminal text owns the answer. Init/configuration and aggregate usage
+        # cannot prove its model. Drift or incomplete evidence stays unknown.
+        return self.model if "".join(self.parts).strip() == text else ""
 
 
 def _coerce_int(value: object) -> int | None:
@@ -171,6 +219,8 @@ def _normalize_stream_obj(obj: dict) -> list[tuple[str, dict]]:
     """Collapse one stream-json object to normalized (kind, payload) events.
 
     RELAY only assistant text (``text_delta``) and the terminal ``result``.
+    ``answer_evidence`` is optional internal metadata, never relayed or counted
+    as liveness; the stream reader matches it to the final returned text.
     Every OTHER recognized protocol event — reasoning/thinking, hooks, status,
     notification, structural stream framing, ``tool_progress``,
     ``system/tool_heartbeat``, an informational ``rate_limit_event`` — is a
@@ -193,6 +243,7 @@ def _normalize_stream_obj(obj: dict) -> list[tuple[str, dict]]:
             # hook_response / tool_heartbeat / ... — recognized activity.
             events.append(("heartbeat", {}))
     elif kind == "assistant":
+        events.append(("answer_evidence", {"obj": obj}))
         has_error = "error" in obj and obj["error"] is not None
         if has_error:
             error = obj["error"]
@@ -589,6 +640,7 @@ class ClaudeProvider(BaseProvider):
         # below read these by late binding.
         assembled: list[str] = []
         partial: list[str] = []
+        answer_model = _AnswerModelEvidence()
         terminal: dict | None = None
         last_retry: dict | None = None
         last_assistant_error: str | None = None
@@ -693,6 +745,9 @@ class ClaudeProvider(BaseProvider):
                     ))
                 progressed = False
                 for kind, payload in events:
+                    if kind == "answer_evidence":
+                        answer_model.observe(payload["obj"])
+                        continue  # Optional metadata must not reset the watchdog.
                     progressed = True
                     if kind == "init":
                         seen_init = True
@@ -782,6 +837,7 @@ class ClaudeProvider(BaseProvider):
                     text=final_text,
                     provider=self.name,
                     model=config.native_model_id or self.native_credential_service,
+                    reported_model=answer_model.for_answer(final_text),
                     family=self.family,
                     latency_ms=elapsed_ms,
                     input_tokens=_coerce_int(usage.get("input_tokens")),
@@ -827,6 +883,11 @@ class ClaudeProvider(BaseProvider):
                 # Keep the observed terminal verdict and last typed category,
                 # never upstream result/errors/content or arbitrary subtype text.
                 subtype = "success" if terminal.get("subtype") == "success" else "non_success"
+                if (terminal.get("is_error") is True
+                        and last_assistant_error == "authentication_failed"):
+                    raise _attach(ProviderAuthenticationError(
+                        "The provider reported a sign-in failure during this turn"
+                    ))
                 raise _attach(ProviderError(
                     f"claude -p terminal result was not success "
                     f"(subtype={subtype}, is_error={_terminal_error_flag(terminal)}, "

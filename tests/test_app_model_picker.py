@@ -48,6 +48,75 @@ def test_declared_models_are_not_labelled_verified_available(tmp_path):
     assert "full model list not yet verified" in rows[1]["text"]
 
 
+def test_reopen_reuses_fresh_catalogue_and_switch_closes_dialog(tmp_path):
+    result = run_picker(tmp_path, choose("first") + """
+      ModelPicker.use();
+      if($("model-dialog").open) throw new Error('switch did not close');
+      MCP.getModelOptions=async()=>{throw new Error('unnecessary refresh');};
+      await ModelPicker.open();
+    """)
+    assert result["dialogOpen"]
+    assert not result["stale"] and not result["busy"]
+    assert result["choice"]["saved_default"] == ref("first")
+    assert result["ui"]["btn-models"]["text"].startswith("Model: ")
+
+
+def test_reopen_expired_catalogue_still_requires_refresh(tmp_path):
+    result = run_picker(tmp_path, """
+      expire();MCP.getModelOptions=async()=>{throw new Error('offline');};
+      await ModelPicker.open();ModelPicker.use();
+    """)
+    assert result["stale"] and result["choice"] is None
+    assert result["ui"]["btn-model-use"]["disabled"]
+
+
+def test_saved_unavailable_choice_remains_visible_but_not_applicable(tmp_path):
+    doc = catalogue()
+    doc["options"][0]["reasons"] = [{"reason": "source_revoked"}]
+    doc["preferences"]["policy"] = {
+        "version": 1, "mode": "explicit", "saved_default": ref("first"), "fallbacks": [],
+    }
+    result = run_picker(tmp_path, "", doc)
+    options = result["ui"]["model-primary"]["children"]
+    assert options[1]["disabled"] and "source revoked" in options[1]["text"]
+    assert result["ui"]["btn-model-use"]["disabled"]
+
+
+def test_setting_default_removes_temporary_override_after_confirmed_save(tmp_path):
+    policy = {"version": 1, "mode": "explicit", "saved_default": ref("second"), "fallbacks": []}
+    result = run_picker(
+        tmp_path,
+        choose("first") + "ModelPicker.use();" + choose("second") + "await ModelPicker.save();",
+        response={"universe_id": "home-a", "generation": 3, "policy": policy, "updated_at": "now"},
+    )
+    assert result["choice"] is None
+    assert result["snapshot"]["preferences"]["policy"] == policy
+    assert "second" in result["ui"]["btn-models"]["text"]
+    assert not result["dialogOpen"]
+
+
+def test_failed_default_save_preserves_temporary_choice(tmp_path):
+    result = run_picker(
+        tmp_path, choose("first") + "ModelPicker.use();await ModelPicker.save();",
+        response={"error": "model_preferences_conflict"},
+    )
+    assert result["choice"]["saved_default"] == ref("first")
+    assert result["snapshot"]["preferences"]["generation"] == 2
+
+
+def test_sign_in_hint_warns_without_disabling_manual_choice(tmp_path):
+    doc = catalogue()
+    doc["options"][0]["labels"] = ["recent_sign_in_failure"]
+    result = run_picker(tmp_path, "", doc=doc)
+    rows = result["ui"]["model-inventory"]["children"]
+    assert "sign-in failure" in rows[0]["text"]
+    assert "reconnect" in rows[0]["text"]
+    primary = result["ui"]["model-primary"]["children"]
+    warned = next(row for row in primary if "sign-in failure" in row["text"])
+    assert warned["disabled"] is False
+    assert result["requests"] == [] and result["writes"] == []
+
+
 def test_enumerated_models_and_provider_default_have_distinct_truthful_labels(tmp_path):
     doc = catalogue()
     doc["options"][0]["availability_basis"] = "executor_enumerated"
@@ -157,7 +226,8 @@ def test_selection_order_is_copied_and_actual_receipt_is_separate(tmp_path):
     )
     assert result["choice"]["saved_default"] == ref("first")
     assert result["choice"]["fallbacks"] == [ref("third"), ref("second")]
-    assert "reported model" in result["ui"]["btn-models"]["text"]
+    assert "first" in result["ui"]["btn-models"]["text"]
+    assert "reported model" in result["ui"]["model-actual"]["text"]
     assert "first" in result["ui"]["model-next"]["text"]
     assert result["snapshot"]["preferences"]["policy"] is None
     assert result["requests"] == []
@@ -215,7 +285,8 @@ def test_unavailable_model_visible_but_cannot_be_selected_or_authorize_cost(tmp_
     doc["options"][0]["in_candidate_catalog"] = False
     result = run_picker(tmp_path, choose("first"), doc)
     assert result["draft"]["mode"] == "automatic"
-    assert result["ui"]["model-primary"]["children"][1]["disabled"]
+    assert all(row["value"] != json.dumps(ref("first"), separators=(",", ":"))
+               for row in result["ui"]["model-primary"]["children"])
     assert failure.replace("_", " ") in result["ui"]["model-inventory"]["children"][0]["text"]
     assert result["requests"] == []
 
