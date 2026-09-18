@@ -1,10 +1,10 @@
 """Real temporary SQLite/file tests; no model-output simulation."""
 import importlib.util
-from pathlib import Path
 import sqlite3
-from types import SimpleNamespace
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location(
     "automation_context", Path(__file__).parents[1] / "tinyassets/automation_context.py"
@@ -21,7 +21,7 @@ class AutomationContextTests(unittest.TestCase):
         self.root = self.base / "u-owner"
         self.root.mkdir()
         self.auto = SimpleNamespace(
-            universe_id="u-owner", automation_id="a-owner",
+            universe_id="u-owner", automation_id="a-owner", owner_principal_id="owner",
             branch_def_id="b-owner", last_run_id="",
             inputs={"context": dict(module.CONTEXT_REF), "literal": "keep"},
         )
@@ -40,7 +40,7 @@ class AutomationContextTests(unittest.TestCase):
                          "speaker TEXT, content TEXT, ts REAL, ext_id TEXT)")
             conn.execute("INSERT INTO conversation_turns "
                          "(session_id, turn_no, speaker, content, ts, ext_id) "
-                         "VALUES ('s', 1, 'founder', ?, 1.0, '')", (content,))
+                         "VALUES ('principal:owner', 1, 'founder', ?, 1.0, '')", (content,))
 
     def prior(self, **updates):
         record = dict(run_id="r1", queue_universe_id="u-owner",

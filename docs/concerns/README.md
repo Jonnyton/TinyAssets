@@ -25,6 +25,9 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P2** | [Model picker global discovery delay](2026-09-16-model-picker-global-discovery-delay.md) — first-open selection and execution still wait on unrelated source discovery | 2026-09-16 |
+| **note** | [Automatic source-health follow-ups](2026-09-15-automatic-source-health-followups.md) — bounded advisory memory approved for MVP; post-live isolation, legacy classification and coverage observations remain | 2026-09-15 |
+| **note** | [Failure-history clean-use watch](2026-09-15-failure-history-postfix-clean-use.md) — deployed retention fix has rendered founder proof; independent customer clean use remains unobserved | 2026-09-15 |
 | **note** | [Removing an accepted model source needs owner reconsent](2026-09-15-accepted-model-member-removal.md) — reconnect preserves membership; explicit removal of an unavailable source remains a separate owner-approved action | 2026-09-15 |
 | **note** | [Peer review output loses its deliverable](2026-09-14-peer-review-final-output-omits-deliverable.md) — shared-ledger stop hook can replace a completed review with a recap; scoped recovery retains the review, but the hook still needs repair | 2026-09-14 |
 | **note** | [Background self awaits deployed continuity proof](background-self-live-proof.md) — runtime recovery and checkpoint validation are implemented; independent review, deployment and automatic-cycle proof remain open | 2026-09-09 |

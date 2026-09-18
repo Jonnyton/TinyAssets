@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 
 import pytest
@@ -211,7 +212,8 @@ def test_the_download_argv_is_exactly_this(python_plan, tmp_path) -> None:
         "python3",
         "-m", "pip", "download",
         "--isolated",
-        "--no-config",
+        "--disable-pip-version-check",
+        "--no-input",
         "--only-binary=:all:",
         "--require-hashes",
         "--index-url", "https://pypi.org/simple",
@@ -237,7 +239,8 @@ def test_the_offline_install_argv_is_exactly_this(python_plan, tmp_path) -> None
         str(venv),
         "-m", "pip", "install",
         "--isolated",
-        "--no-config",
+        "--disable-pip-version-check",
+        "--no-input",
         "--no-index",
         "--find-links", str(cache),
         "--require-hashes",
@@ -252,6 +255,47 @@ def test_the_offline_install_reaches_no_index(python_plan, tmp_path) -> None:
     assert "--no-index" in argv
     assert "--index-url" not in argv
     assert not [item for item in argv if item.startswith("http")]
+
+
+@pytest.mark.parametrize("command", ["download", "install"])
+def test_pip_really_accepts_builder_options(
+    python_plan, tmp_path, monkeypatch, command
+) -> None:
+    """Parse the real command, without installing, fetching or host config."""
+    from pip._internal.commands import create_command
+
+    monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+    staged = stage_python_plan(python_plan, tmp_path)
+    argv = (
+        pip_download_argv(staged, tmp_path / "cache", python="python3")
+        if command == "download"
+        else pip_offline_install_argv(staged, tmp_path / "cache", tmp_path / "python")
+    )
+    options, args = create_command(command, isolated=True).parse_args(argv[4:])
+    assert args == []
+    assert options.isolated_mode is True
+    assert options.no_input is True
+    assert options.disable_pip_version_check is True
+    assert options.require_hashes is True
+    assert options.requirements == [str(staged.path)]
+    assert options.format_control.only_binary == {":all:"}
+    if command == "download":
+        assert options.index_url == wr.DEFAULT_INDEX_URL
+        assert options.download_dir == str(tmp_path / "cache")
+    else:
+        assert options.no_index is True
+        assert options.find_links == [str(tmp_path / "cache")]
+
+
+@pytest.mark.parametrize("command", ["download", "install"])
+def test_pip_rejects_the_old_no_config_option(monkeypatch, capsys, command) -> None:
+    from pip._internal.commands import create_command
+
+    monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+    with pytest.raises(SystemExit) as error:
+        create_command(command, isolated=True).parse_args(["--isolated", "--no-config"])
+    assert error.value.code == 2
+    assert "no such option: --no-config" in capsys.readouterr().err
 
 
 def test_the_npm_fetch_argv_is_exactly_this(node_plan, tmp_path) -> None:
@@ -402,16 +446,59 @@ def test_the_index_url_cannot_be_redirected(python_plan, tmp_path) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def test_the_environment_is_exactly_these_six(tmp_path) -> None:
+def test_the_environment_is_exactly_these_seven(tmp_path) -> None:
     built = resolver_environment(tmp_path, str(tmp_path / "bin"))
     assert built == {
         "HOME": str(tmp_path),
         "PATH": str(tmp_path / "bin"),
         "LANG": "C.UTF-8",
+        "PIP_CONFIG_FILE": os.devnull,
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         "PIP_NO_INPUT": "1",
         "NPM_CONFIG_UPDATE_NOTIFIER": "false",
     }
+
+
+def test_resolver_disables_real_pip_global_user_and_site_config(tmp_path, monkeypatch):
+    from pip._internal import configuration
+    from pip._internal.exceptions import ConfigurationError
+
+    files = {}
+    expected = {}
+    for kind, section in (
+        (configuration.kinds.GLOBAL, "global"),
+        (configuration.kinds.USER, "install"),
+        (configuration.kinds.SITE, "download"),
+    ):
+        fixture = tmp_path / (kind + ".ini")
+        value = "https://" + kind + ".invalid/simple"
+        fixture.write_text(f"[{section}]\nindex-url = {value}\n", encoding="utf-8")
+        files[kind] = [str(fixture)]
+        expected[section + ".index-url"] = value
+    monkeypatch.setattr(configuration, "get_configuration_files", lambda: files)
+    monkeypatch.delenv("PIP_CONFIG_FILE", raising=False)
+
+    # Isolated does not prevent global/site files from changing the index.
+    control = configuration.Configuration(isolated=True)
+    control.load()
+    assert control.get_value("global.index-url") == expected["global.index-url"]
+    assert control.get_value("download.index-url") == expected["download.index-url"]
+    with pytest.raises(ConfigurationError):
+        control.get_value("install.index-url")
+
+    built = resolver_environment(tmp_path, str(tmp_path / "bin"))
+    assert built["PIP_CONFIG_FILE"] == os.devnull
+    monkeypatch.setenv("PIP_CONFIG_FILE", built["PIP_CONFIG_FILE"])
+    isolated = configuration.Configuration(isolated=True)
+    isolated.load()
+    assert dict(isolated.items()) == {}
+
+
+def test_resolver_environment_does_not_inherit_host_settings(tmp_path, monkeypatch):
+    clean = resolver_environment(tmp_path, str(tmp_path / "bin"))
+    for key in ("PIP_CONFIG_FILE", "PIP_INDEX_URL", "HTTPS_PROXY", "OPENROUTER_API_KEY"):
+        monkeypatch.setenv(key, "host-value-must-not-reach-child")
+    assert resolver_environment(tmp_path, str(tmp_path / "bin")) == clean
 
 
 def test_the_environment_refuses_a_home_or_path_it_cannot_vouch_for(tmp_path) -> None:

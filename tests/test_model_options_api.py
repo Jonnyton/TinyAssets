@@ -66,6 +66,50 @@ def test_live_binding_uses_shared_plan_and_preserves_accepted_constraints(catalo
     }}
 
 
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+@pytest.mark.parametrize("revoke_native", [False, True])
+def test_mixed_native_catalogue_keeps_independent_http_choices(
+    catalogue, monkeypatch, revoke_native,
+):
+    from tests.test_native_discovery_integration import catalogue as native_catalogue
+    from tinyassets.api import model_options
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    connected = bind_serving_provider(
+        base_path=catalogue.rig.base, universe_dir=catalogue.rig.base / "u-models",
+        owner_user_id="owner", universe_id="u-models",
+        agent_binding_id=catalogue.binding["agent_binding_id"],
+        expected_revision=catalogue.binding["revision"], provider=catalogue.rig.definition.id,
+        model_access={"codex": ModelAccess("discovered"),
+                      catalogue.rig.definition.id: ModelAccess("discovered")},
+    )
+    catalogue.binding = connected["agent_binding"]
+    catalogue.binding = integration.enable(catalogue)
+    monkeypatch.setattr(catalogue.native, "native_credential_service", "codex")
+
+    async def enumerate_models(**kwargs):
+        return native_catalogue(["future-native-choice"])
+
+    monkeypatch.setattr(catalogue.native, "enumerate_models", enumerate_models)
+    prepare = model_options.prepare_owned_model_plan
+
+    def prepare_then_revoke(**kwargs):
+        prepared = prepare(**kwargs)
+        if revoke_native:
+            write_credential_vault(catalogue.rig.base / "u-models", [],
+                                   owner_user_id="owner", universe_id="u-models")
+        return prepared
+
+    monkeypatch.setattr(model_options, "prepare_owned_model_plan", prepare_then_revoke)
+    result = read()
+    providers = {row["reference"]["provider_ref"] for row in result["options"]}
+    assert "api_key_http:" + catalogue.rig.definition.id in providers
+    assert ("codex" in providers) is not revoke_native
+    assert catalogue.native.calls == 0
+
+
 def test_registered_but_unaccepted_models_are_visible_and_not_authorized(catalogue):
     catalogue.binding = integration.enable(catalogue)
     extra = definition.register_definition(

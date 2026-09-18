@@ -20,7 +20,10 @@ Modes:
             directory is added. Point --cwd at a worktree, not the live
             checkout; worktree/claim/review gates are the safety boundary.
 
-Output contract: on success the --out file holds the peer's final message;
+Output contract: on success --out holds all Claude assistant text blocks in
+order (including Stop-hook continuations), or Codex's final message. The wrapper
+does not select a review verdict; multiple verdicts remain visible. Only a
+duplicate terminal-result echo of the last Claude text block is omitted;
 on failure it holds a `[peer_agent] ERROR ...` block and the exit code is
 non-zero (2 provider/usage error, 124 timeout, 127 CLI not launchable).
 Argparse usage errors are the only failure that cannot write --out (the path
@@ -48,6 +51,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 
 from tinyassets.providers.base import subprocess_env_for_provider  # noqa: E402
+from tinyassets.providers.claude_provider import _normalize_stream_obj  # noqa: E402
 
 # codex v0.122+ can exit 0 with empty output on auth failure (see
 # workflow/providers/codex_provider.py). Same heuristic here — stderr only,
@@ -58,7 +62,7 @@ _AUTH_PATTERNS = ("401", "unauthorized", "reconnecting", "auth", "login")
 # cmd.exe metacharacters. When the resolved CLI is a .cmd/.bat, Windows routes
 # argv through cmd.exe parsing even with shell=False (BatBadBut class):
 # list2cmdline quoting does NOT protect these, so reject them loudly instead.
-_CMD_METACHARS = frozenset("&|%<>^\"")
+_CMD_METACHARS = frozenset('&|%<>^"')
 
 
 # --- absorbed from scripts/codex_review.py (deleted 2026-08-26) ---------------
@@ -66,6 +70,7 @@ _CMD_METACHARS = frozenset("&|%<>^\"")
 # anti-pattern Anthropic names: if a human cannot definitively choose between
 # them, neither can an agent. peer_agent is the survivor because it handles
 # both CLIs; these helpers were the only part of codex_review it still needed.
+
 
 def to_native_path(path: str) -> str:
     """Convert an MSYS / Git-Bash path (/c/foo) to a native Windows path (C:/foo).
@@ -142,12 +147,75 @@ def build_claude_cmd(args: argparse.Namespace) -> list[str]:
     # a working one from outside. Four lanes were lost that way on 2026-07-21 before
     # anyone noticed. An explicit --model still wins.
     model = args.model or os.environ.get("WORKFLOW_CLAUDE_MODEL", "").strip() or "fable"
-    cmd = [resolve_claude(), "-p", "--model", model]
+    cmd = [resolve_claude(), "-p", "--model", model, "--output-format", "stream-json", "--verbose"]
     if args.write:
         cmd.append("--dangerously-skip-permissions")
     if args.system:
         cmd.extend(["--system-prompt", args.system])
     return cmd
+
+
+def claude_retained_text(stdout: str) -> str:
+    """Validate the completed capture and retain text using the shared normalizer.
+
+    Unlike the live writer, a review artifact must keep earlier messages. The
+    envelope checks are deliberately stricter than the liveness normalizer:
+    malformed/lost text must not look like a successful review. Diagnostics
+    never include raw events (which contain tool inputs and thinking).
+    """
+    blocks: list[str] = []
+    terminal: dict | None = None
+    for line_number, line in enumerate(stdout.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            raise ValueError(
+                f"invalid Claude JSON at line {line_number} (length {len(line)})"
+            ) from None
+        if not isinstance(obj, dict) or not isinstance(obj.get("type"), str):
+            raise ValueError(f"invalid Claude event at line {line_number}")
+        kind = obj["type"]
+        if kind not in ("assistant", "result"):
+            # No partial messages requested; ignore framing, user/tool/system
+            # payloads, and future metadata rather than rendering them.
+            continue
+        if terminal is not None:
+            raise ValueError("Claude text/result event after terminal result")
+        if kind == "assistant":
+            message = obj.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, (str, list)):
+                raise ValueError(f"invalid Claude assistant at line {line_number}")
+            if isinstance(content, list):
+                for block in content:
+                    if (
+                        not isinstance(block, dict)
+                        or not isinstance(block.get("type"), str)
+                        or (block["type"] == "text" and not isinstance(block.get("text"), str))
+                    ):
+                        raise ValueError(f"invalid Claude content block at line {line_number}")
+        else:
+            if (
+                obj.get("is_error") is not False
+                or obj.get("subtype") != "success"
+                or not isinstance(obj.get("result"), str)
+            ):
+                raise ValueError("Claude terminal result is not a valid success")
+        for event, payload in _normalize_stream_obj(obj):
+            if event == "text_delta":
+                blocks.append(payload["text"])
+            elif event == "result":
+                terminal = payload["obj"]
+    if terminal is None:
+        raise ValueError(
+            "Claude stream has no successful terminal result (empty output or incomplete stream)"
+        )
+    result = terminal["result"]
+    if result.strip() and (not blocks or result.strip() != blocks[-1].strip()):
+        blocks.append(result)
+    return "\n\n".join(blocks)
 
 
 def resolve_git_common_dir(
@@ -239,9 +307,7 @@ def unsafe_cmd_argv(cmd: list[str]) -> str | None:
 def kill_tree(proc: subprocess.Popen) -> None:
     """Kill the whole process tree (Windows .cmd -> node grandchildren)."""
     if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True
-        )
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
     else:
         proc.kill()
     try:
@@ -263,18 +329,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Dispatch a task to the claude/codex CLI as a peer agent."
     )
     p.add_argument("provider", choices=["claude", "codex"])
-    p.add_argument(
-        "--prompt", default=None, help="Task text (else --prompt-file, else stdin)."
-    )
+    p.add_argument("--prompt", default=None, help="Task text (else --prompt-file, else stdin).")
     p.add_argument("--prompt-file", default=None, help="Read task text from a file (utf-8).")
+    p.add_argument("--system", default=None, help="System prompt (codex: prepended to prompt).")
     p.add_argument(
-        "--system", default=None, help="System prompt (codex: prepended to prompt)."
+        "--out", default=None, help="File for retained Claude text or Codex's final message."
     )
-    p.add_argument("--out", default=None, help="File for the peer's final message.")
     p.add_argument("--cwd", default=".", help="Working dir the peer operates in.")
-    p.add_argument(
-        "--timeout", type=int, default=1800, help="Seconds before kill (default 1800)."
-    )
+    p.add_argument("--timeout", type=int, default=1800, help="Seconds before kill (default 1800).")
     p.add_argument(
         "--write", action="store_true", help="Grant write/exec autonomy (see docstring)."
     )
@@ -336,17 +398,13 @@ def _main() -> int:
         if args.system:
             prompt = f"{args.system}\n\n{prompt}"
         if not out_path:
-            fd, owned_temp = tempfile.mkstemp(
-                prefix="peer_agent_codex_", suffix=".md"
-            )
+            fd, owned_temp = tempfile.mkstemp(prefix="peer_agent_codex_", suffix=".md")
             os.close(fd)
             out_path = owned_temp
         else:
             # Never accept a pre-existing -o file as a fresh codex result.
             Path(out_path).unlink(missing_ok=True)
-        git_common_dir = (
-            resolve_git_common_dir(args.cwd) if args.write else None
-        )
+        git_common_dir = resolve_git_common_dir(args.cwd) if args.write else None
         cmd = build_codex_cmd(
             args,
             out_path,
@@ -359,7 +417,7 @@ def _main() -> int:
             f"argv value {bad_arg!r} contains a cmd.exe metacharacter, unsafe "
             f"for batch-file target {cmd[0]!r}. Point "
             f"{args.provider.upper()}_BIN at a native .exe, or remove the "
-            "metacharacter (& % | < > ^ \").",
+            'metacharacter (& % | < > ^ ").',
             2,
         )
 
@@ -418,17 +476,23 @@ def _main() -> int:
                 else ""
             )
         else:
-            text = stdout.strip()
+            try:
+                text = claude_retained_text(stdout)
+            except ValueError as exc:
+                return fail(str(exc), 2)
 
         if not text.strip():
             hint = ""
-            if args.provider == "codex" and any(
-                pat in stderr.lower() for pat in _AUTH_PATTERNS
-            ):
+            if args.provider == "codex" and any(pat in stderr.lower() for pat in _AUTH_PATTERNS):
                 hint = " (auth/login signal detected)"
+            stdout_hint = (
+                f"stdout tail: {stdout[-800:].strip() or '(empty)'}\n"
+                if args.provider == "codex"
+                else ""
+            )
             return fail(
                 f"{args.provider} produced empty output{hint}.\n"
-                f"stdout tail: {stdout[-800:].strip() or '(empty)'}\n"
+                f"{stdout_hint}"
                 f"stderr tail: {stderr[-800:].strip() or '(empty)'}",
                 2,
             )
@@ -437,8 +501,7 @@ def _main() -> int:
             Path(out_path).write_text(text + "\n", encoding="utf-8")
         print(text)
         print(
-            f"[peer_agent] {args.provider} done in {elapsed:.0f}s -> "
-            f"{args.out or 'stdout'}",
+            f"[peer_agent] {args.provider} done in {elapsed:.0f}s -> {args.out or 'stdout'}",
             file=sys.stderr,
         )
         return 0

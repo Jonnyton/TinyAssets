@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     InteractiveDeadlineError,
+    ProviderAuthenticationError,
     ProviderAuthorityHeldError,
     ProviderError,
     ProviderIdleTimeoutError,
@@ -1238,6 +1239,13 @@ class ProviderRouter:
                         cost_microunits=resp.cost_microunits,
                     )
                 self._quota.record_success(provider_name)
+                if served_authority is not None:
+                    from tinyassets.providers.source_health import SOURCE_HEALTH, source_key
+
+                    SOURCE_HEALTH.succeeded(source_key(
+                        universe_context.universe_dir.parent, served_authority.owner_user_id,
+                        served_authority.universe_id, served_authority,
+                    ))
             except _ProviderBusy:
                 # Nothing launched: not a provider failure, so no cooldown and no
                 # "exhausted" verdict about a provider that was never asked. Codex
@@ -1247,6 +1255,28 @@ class ProviderRouter:
                 raise
             except ProviderAuthorityHeldError:
                 raise
+            except ProviderAuthenticationError as exc:
+                from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+                from tinyassets.providers.source_health import SOURCE_HEALTH, source_key
+
+                if served_authority is not None:
+                    SOURCE_HEALTH.authentication_failed(source_key(
+                        universe_context.universe_dir.parent, served_authority.owner_user_id,
+                        served_authority.universe_id, served_authority,
+                    ))
+                else:
+                    # Preserve legacy host routing. Owned serving failures must
+                    # not quarantine another owner's credential on this host.
+                    self._quota.cooldown(provider_name, COOLDOWN_OTHER)
+                proof = getattr(exc, "native_evidence", None)
+                if type(proof) is NativeCompletionEvidence and proof.provider == provider_name:
+                    native_proofs[len(attempts)] = proof
+                attempts.append(ProviderAttemptDiagnostic(
+                    provider=provider_name, status="failed", skip_class="auth_invalid",
+                    detail="Provider reported a sign-in failure",
+                    failure_class=exc.failure_class, side_effect_state=_side_effect_from(exc),
+                ))
+                continue
             except SelectedModelCapacityError as exc:
                 # One model's capacity is not evidence its whole connection is
                 # unhealthy. Shared/unknown scope keeps the conservative cooldown.

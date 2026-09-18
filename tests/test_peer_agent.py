@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "peer_agent.py"
 SPEC = importlib.util.spec_from_file_location("peer_agent_contract", SCRIPT)
 assert SPEC is not None
@@ -56,9 +58,7 @@ def test_git_common_dir_is_resolved_as_an_absolute_path(tmp_path: Path) -> None:
             stderr="",
         )
 
-    assert peer_agent.resolve_git_common_dir(tmp_path, runner=runner) == str(
-        common.resolve()
-    )
+    assert peer_agent.resolve_git_common_dir(tmp_path, runner=runner) == str(common.resolve())
     assert calls == [
         [
             "git",
@@ -173,9 +173,7 @@ class _FakeProc:
         return 4242
 
 
-def _run_main(
-    monkeypatch, tmp_path, proc, *, provider="claude", extra=(), out_file_text=None
-):
+def _run_main(monkeypatch, tmp_path, proc, *, provider="claude", extra=(), out_file_text=None):
     """Invoke peer_agent.main() with a scripted subprocess.
 
     Returns (rc, out_text, argv). `out_file_text` simulates the codex CLI's
@@ -252,8 +250,14 @@ def test_non_launchable_binary_writes_an_error_marker(monkeypatch, tmp_path):
         peer_agent.sys,
         "argv",
         [
-            "peer_agent.py", "codex", "--prompt", "x",
-            "--cwd", str(tmp_path), "--out", str(out),
+            "peer_agent.py",
+            "codex",
+            "--prompt",
+            "x",
+            "--cwd",
+            str(tmp_path),
+            "--out",
+            str(out),
         ],
     )
     assert peer_agent.main() == 127
@@ -262,9 +266,7 @@ def test_non_launchable_binary_writes_an_error_marker(monkeypatch, tmp_path):
     assert "not launchable" in text
 
 
-def test_zero_exit_with_empty_output_is_a_failure_not_a_silent_pass(
-    monkeypatch, tmp_path
-):
+def test_zero_exit_with_empty_output_is_a_failure_not_a_silent_pass(monkeypatch, tmp_path):
     # The whole point: exit 0 + nothing produced must NOT read as a clean review.
     rc, out, _ = _run_main(monkeypatch, tmp_path, _FakeProc(returncode=0, stdout=b"  \n"))
     assert rc == 2
@@ -286,7 +288,9 @@ def test_nonzero_exit_writes_an_error_marker_carrying_stderr(monkeypatch, tmp_pa
 def test_prompt_reaches_the_provider_on_stdin_not_argv(monkeypatch, tmp_path):
     # Windows cmd.exe truncates argv at a newline, which silently shortened
     # multi-line review prompts -- stdin is the contract.
-    proc = _FakeProc(returncode=0, stdout=b"VERDICT: APPROVE")
+    proc = _FakeProc(
+        returncode=0, stdout=_stream(_assistant("VERDICT: APPROVE"), _result("VERDICT: APPROVE"))
+    )
     rc, _, argv = _run_main(monkeypatch, tmp_path, proc)
     assert rc == 0
     assert proc.communicate_input == b"review this"
@@ -297,11 +301,178 @@ def test_prompt_reaches_the_provider_on_stdin_not_argv(monkeypatch, tmp_path):
 
 def test_success_leaves_the_provider_output_intact(monkeypatch, tmp_path):
     rc, out, _ = _run_main(
-        monkeypatch, tmp_path, _FakeProc(returncode=0, stdout=b"VERDICT: REJECT\n")
+        monkeypatch,
+        tmp_path,
+        _FakeProc(
+            returncode=0, stdout=_stream(_assistant("VERDICT: REJECT"), _result("VERDICT: REJECT"))
+        ),
     )
     assert rc == 0
     assert "VERDICT: REJECT" in out
     assert "[peer_agent] ERROR" not in out
+
+
+def _assistant(text):
+    # Same full-message shape as test_provider_stream_and_classify.py.
+    return {
+        "type": "assistant",
+        "message": {"id": "shared-id", "content": [{"type": "text", "text": text}]},
+    }
+
+
+def _result(text=""):
+    return {"type": "result", "subtype": "success", "is_error": False, "result": text}
+
+
+def _stream(*events):
+    return ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+
+
+def test_claude_capture_flags_preserve_model_permissions_and_hooks(monkeypatch):
+    monkeypatch.setattr(peer_agent, "resolve_claude", lambda: "claude.exe")
+    args = argparse.Namespace(model="claude-fable-5-1", write=False, system=None)
+    command = peer_agent.build_claude_cmd(args)
+    assert command == [
+        "claude.exe",
+        "-p",
+        "--model",
+        "claude-fable-5-1",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
+    args.write = True
+    args.system = "Review this scope only"
+    assert peer_agent.build_claude_cmd(args) == command + [
+        "--dangerously-skip-permissions",
+        "--system-prompt",
+        args.system,
+    ]
+
+
+def test_claude_retains_review_and_stop_continuation_without_payloads(
+    monkeypatch, tmp_path, capsys
+):
+    stdout = _stream(
+        {"type": "system", "subtype": "init", "secret": "SYSTEM_SENTINEL"},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "THINKING_SENTINEL"},
+                    {"type": "tool_use", "name": "Read", "input": {"secret": "INPUT_SENTINEL"}},
+                    {"type": "text", "text": "Evidence A: fix the missing check.\nVERDICT: ADAPT"},
+                    {"type": "text", "text": "Evidence B: keep this separate block."},
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "content": "RESULT_SENTINEL"}]},
+        },
+        {"type": "future_metadata", "value": "FUTURE_SENTINEL"},
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "PARTIAL_SENTINEL"},
+            },
+        },
+        _assistant("Stop-hook recap: the review above stands."),
+        _result("Stop-hook recap: the review above stands."),
+    )
+    rc, out, _ = _run_main(monkeypatch, tmp_path, _FakeProc(stdout=stdout))
+    assert rc == 0
+    assert out == (
+        "Evidence A: fix the missing check.\nVERDICT: ADAPT\n\n"
+        "Evidence B: keep this separate block.\n\n"
+        "Stop-hook recap: the review above stands.\n"
+    )
+    captured = capsys.readouterr()
+    assert "SENTINEL" not in out + captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    "events, expected",
+    [
+        ([_assistant("Same"), _assistant("Same"), _result(" Same \n")], "Same\n\nSame\n"),
+        ([_assistant("Review"), _result("Different final")], "Review\n\nDifferent final\n"),
+        ([_result("Only final")], "Only final\n"),
+        (
+            [{"type": "assistant", "message": {"content": "String content"}}, _result()],
+            "String content\n",
+        ),
+    ],
+)
+def test_claude_echo_dedupe_never_discards_distinct_blocks(monkeypatch, tmp_path, events, expected):
+    rc, out, _ = _run_main(monkeypatch, tmp_path, _FakeProc(stdout=_stream(*events)))
+    assert rc == 0
+    assert out == expected
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        b"plain text PRIVATE_SENTINEL",
+        _stream(_assistant("VERDICT: APPROVE")),
+        _stream(
+            _assistant("VERDICT: APPROVE"),
+            {**_result(), "is_error": True, "result": "PRIVATE_SENTINEL"},
+        ),
+        _stream({**_result(), "is_error": "false"}),
+        _stream({**_result(), "subtype": "error_max_turns"}),
+        _stream({"type": "result", "result": "PRIVATE_SENTINEL"}),
+        _stream({**_result(), "result": {"secret": "PRIVATE_SENTINEL"}}),
+        _stream({"type": "assistant", "message": None}, _result("VERDICT: APPROVE")),
+        _stream({"type": "assistant", "message": {"content": ["PRIVATE_SENTINEL"]}}, _result()),
+        _stream(_assistant(123), _result()),
+        _stream(["PRIVATE_SENTINEL"]),
+        _stream(_result("VERDICT: APPROVE"), _assistant("PRIVATE_SENTINEL")),
+        _stream(_result("VERDICT: APPROVE"), _result("PRIVATE_SENTINEL")),
+        _stream(_result("VERDICT: APPROVE")) + b"PRIVATE_SENTINEL",
+    ],
+)
+def test_invalid_claude_stream_fails_without_exposing_payloads(
+    monkeypatch, tmp_path, capsys, stdout
+):
+    (tmp_path / "verdict.txt").write_text("STALE APPROVAL", encoding="utf-8")
+    rc, out, _ = _run_main(monkeypatch, tmp_path, _FakeProc(stdout=stdout))
+    assert rc == 2
+    assert out.startswith("[peer_agent] ERROR")
+    captured = capsys.readouterr()
+    assert "PRIVATE_SENTINEL" not in out + captured.out + captured.err
+    assert "STALE APPROVAL" not in out
+    assert "VERDICT: APPROVE" not in out
+
+
+def test_empty_claude_result_does_not_dump_raw_stream(monkeypatch, tmp_path, capsys):
+    rc, out, _ = _run_main(
+        monkeypatch,
+        tmp_path,
+        _FakeProc(stdout=_stream({"type": "system", "data": "PRIVATE_SENTINEL"}, _result())),
+    )
+    assert rc == 2
+    assert "empty output" in out
+    captured = capsys.readouterr()
+    assert "PRIVATE_SENTINEL" not in out + captured.out + captured.err
+
+
+@pytest.mark.parametrize("timeout, returncode, expected", [(False, 1, 2), (True, 0, 124)])
+def test_valid_claude_review_cannot_override_process_failure(
+    monkeypatch, tmp_path, timeout, returncode, expected
+):
+    rc, out, _ = _run_main(
+        monkeypatch,
+        tmp_path,
+        _FakeProc(
+            stdout=_stream(_assistant("VERDICT: APPROVE"), _result("VERDICT: APPROVE")),
+            timeout=timeout,
+            returncode=returncode,
+        ),
+    )
+    assert rc == expected
+    assert "[peer_agent] ERROR" in out
+    assert "VERDICT: APPROVE" not in out
 
 
 # --- The codex branch is different code -------------------------------------

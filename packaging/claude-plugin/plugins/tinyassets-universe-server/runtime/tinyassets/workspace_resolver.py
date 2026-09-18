@@ -67,7 +67,8 @@ FIXED_FLAGS: Final[frozenset[str]] = frozenset(
         "-m",
         "-r",
         "--isolated",
-        "--no-config",
+        "--disable-pip-version-check",
+        "--no-input",
         "--only-binary=:all:",
         "--require-hashes",
         "--index-url",
@@ -305,7 +306,8 @@ def pip_download_argv(
             "pip",
             "download",
             "--isolated",
-            "--no-config",
+            "--disable-pip-version-check",
+            "--no-input",
             "--only-binary=:all:",
             "--require-hashes",
             "--index-url",
@@ -331,7 +333,8 @@ def pip_offline_install_argv(
             "pip",
             "install",
             "--isolated",
-            "--no-config",
+            "--disable-pip-version-check",
+            "--no-input",
             "--no-index",
             "--find-links",
             _check_path(cache_dir, "cache directory"),
@@ -394,14 +397,19 @@ def resolver_environment(home: Path | str, path: str) -> dict[str, str]:
     """The resolver jail's environment, built from empty.
 
     Nothing is inherited and nothing is read from this process: the returned
-    mapping is the whole of what the child sees. The three tool settings are
-    there so neither installer decides on its own to phone home for a version
-    check, block on a prompt, or write an update notice into the cache.
+    mapping is the whole of what the child sees. Pip's isolated mode still reads
+    its config-file selector; the null device suppresses global and site files
+    too. Its version-check/no-input environment settings are ignored in isolated
+    mode, so both pip builders enforce those settings with explicit flags.
+    The npm setting disables its update notice.
     """
     return {
         "HOME": _check_path(home, "home"),
         "PATH": _check_search_path(path),
         "LANG": "C.UTF-8",
+        # pip compares this exact string to os.devnull (lowercase on Windows).
+        # Do not substitute npm's differently spelled NULL_DEVICE constant.
+        "PIP_CONFIG_FILE": os.devnull,
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         "PIP_NO_INPUT": "1",
         "NPM_CONFIG_UPDATE_NOTIFIER": "false",

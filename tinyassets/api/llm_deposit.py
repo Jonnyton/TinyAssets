@@ -103,6 +103,17 @@ def _build_record(service: str, material: str) -> dict[str, Any]:
             raise ValueError("auth_material_b64 is not a UTF-8 token") from None
         if not token:
             raise ValueError("auth_material_b64 decoded content is empty")
+        # Match the dedicated browser deposit's existing token contract here,
+        # before ANY vault write. The in-app form uses this handler directly;
+        # accepting the browser authorization code overwrote working credentials
+        # and falsely reported a successful connection. Shape is not validity.
+        if not token.startswith("sk-ant-") or any(c.isspace() for c in token) or "#" in token:
+            raise ValueError(
+                "Paste the final token printed by the setup command, not the "
+                "browser authorization code. Enter that code back in the terminal "
+                "first, then copy its token (starting with sk-ant-). "
+                "Your existing connection has not changed."
+            )
         return {
             "credential_type": "llm_subscription",
             "service": "claude",

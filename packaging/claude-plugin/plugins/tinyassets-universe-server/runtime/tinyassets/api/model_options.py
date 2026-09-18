@@ -25,7 +25,6 @@ from tinyassets.providers.agent_model_plan import AgentModelPlan
 from tinyassets.providers.definition import list_definitions
 from tinyassets.providers.discovery_snapshot import (
     ModelDiscoveryUnavailable,
-    assert_discovery_snapshot_current,
     refresh_model_discovery,
 )
 from tinyassets.providers.model_options import model_options_document
@@ -37,8 +36,10 @@ from tinyassets.providers.model_policy import (
     ModelRef,
 )
 from tinyassets.providers.model_preferences import capture_preference_policy
+from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
 from tinyassets.providers.served_model_plan import (
     ModelSourceUnavailable,
+    _assert_plan_snapshot,
     _http_models,
     _native_models,
     prepare_owned_model_plan,
@@ -245,7 +246,10 @@ def _collect(base, owner, uid):
                     failed[provider] = "source_revoked"
             for provider, snapshot in snapshots.items():
                 try:
-                    assert_discovery_snapshot_current(snapshot)
+                    _assert_plan_snapshot(snapshot)
+                    if (type(snapshot) is NativeDiscoverySnapshot
+                            and current_native.get(provider) != snapshot.custody):
+                        failed[provider] = "source_revoked"
                 except ModelDiscoveryUnavailable as exc:
                     failed[provider] = exc.reason
                 except ProviderError:
@@ -268,7 +272,8 @@ def _collect(base, owner, uid):
                 "observed_at": snapshot.observed_at.isoformat(),
                 "completed_at": snapshot.completed_at.isoformat(),
                 "expires_at": (snapshot.observed_at + timedelta(minutes=5)).isoformat(),
-                "warnings": list(snapshot.warnings),
+                "warnings": ([] if type(snapshot) is NativeDiscoverySnapshot
+                             else list(snapshot.warnings)),
             })
     legacy_source = None
     if legacy is not None and legacy[0].provider not in failed:

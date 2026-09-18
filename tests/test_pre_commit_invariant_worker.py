@@ -162,13 +162,16 @@ def test_main_no_args_staged_passes():
         assert inv.main([]) == 0
 
 
-def test_main_no_args_staged_but_get_returns_none():
-    """Staged but content unreadable (e.g. deletion) → skip."""
+def test_main_no_args_staged_but_get_returns_none(capsys):
+    """A staged but unreadable public Worker must fail closed, not disappear."""
     with (
         patch.object(inv, "_is_worker_staged", return_value=True),
         patch.object(inv, "_get_staged_content", return_value=None),
     ):
-        assert inv.main([]) == 0
+        assert inv.main([]) == 2
+    error = capsys.readouterr().err
+    assert "INVARIANT VIOLATED" in error
+    assert "no readable staged content" in error
 
 
 # ---------------------------------------------------------------------------

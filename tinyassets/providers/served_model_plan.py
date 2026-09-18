@@ -237,6 +237,17 @@ def _http_models(owner, uid, member, *, snapshot=None):
     return snapshot, replace(snapshot.models, models=tuple(models)), interaction, caps, rejected
 
 
+def _reconnect_sources(base, owner, uid, chains):
+    from tinyassets.providers.source_health import SOURCE_HEALTH, source_key
+
+    return tuple(
+        provider for provider, chain in chains
+        if SOURCE_HEALTH.needs_reconnect(source_key(
+            base, owner, uid, next(m for m in chain[0].candidates if m.provider == provider),
+        ))
+    )
+
+
 def prepare_owned_model_plan(
     *, base, universe, owner, agent, current=None, config=None, allow_empty=False,
 ):
@@ -377,6 +388,7 @@ def prepare_owned_model_plan(
     plan = AgentModelPlan(
         Catalog(owner, universe.name, tuple(admitted)), policy, interaction, source,
         tuple(source_policies),
+        _reconnect_sources(base, owner, universe.name, chains),
     )
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
         raise PermissionError("no eligible model in the accepted assignment")

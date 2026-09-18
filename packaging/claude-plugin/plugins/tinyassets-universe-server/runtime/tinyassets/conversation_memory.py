@@ -26,6 +26,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from tinyassets.conversation_failure import TurnFailure
 from tinyassets.providers.execution_receipt import ExecutionReceipt
 
 #: How many recent messages to carry by default. Enough to hold a multi-step
@@ -46,6 +47,7 @@ _LABELS = {
     "assistant": "Me",
     "agent": "Me",
     "user": "Founder",
+    "platform": "Platform notice",
 }
 
 
@@ -53,7 +55,7 @@ _LABELS = {
 class Msg:
     """One loaded conversation message.
 
-    ``speaker`` is founder|universe. ``ts`` is the epoch seconds it was sent
+    ``speaker`` is founder|universe|platform. ``ts`` is the epoch seconds it was sent
     (``None`` if unknown) — carried so the turn can reason about WHEN each thing
     was said and how long ago, the way the SDK's ``createdAt`` metadata does.
     """
@@ -62,6 +64,7 @@ class Msg:
     text: str
     ts: float | None = None
     execution: ExecutionReceipt | None = None
+    failure: TurnFailure | None = None
 
 
 #: Longest interlocutor name allowed into the fence — bounds the header/footer so
