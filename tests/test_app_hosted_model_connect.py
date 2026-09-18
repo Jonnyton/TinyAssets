@@ -116,6 +116,8 @@ def test_signup_handoff_and_key_shortcut_use_one_existing_secure_form():
     assert html.index('id="btn-hosted-key"') < html.index('id="btn-openai-connect"')
     assert "Your workspace is ready" in html and "TinyAssets authorization" in html
     assert "No key needs to be copied or pasted" in html
+    assert "Signed up, but landed on your OpenRouter workspace?" in html
+    assert "You will return here automatically" not in html
     assert "does not by itself enable a chat model or approve free-model access" in html
     assert 'aria-controls="api-key-connection"' in html
     assert 'aria-describedby="paste-key-guidance"' in html
