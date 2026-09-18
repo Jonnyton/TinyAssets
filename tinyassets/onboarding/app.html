@@ -861,7 +861,12 @@
     // overlap constantly, and a late reply would otherwise re-adopt a session
     // that had already been replaced, or tear down a healthy one a moment after
     // somebody else had just built it.
-    _gen:0,
+    _gen:0, _loginEpoch:0,
+    endLogin(){ this._loginEpoch++; this.invalidateSession(); this._initing=null; },
+    _assertLogin(epoch){
+      if(epoch!==this._loginEpoch) throw transportError("login_changed",
+        "the signed-in user changed; this request was not sent again", false);
+    },
     // Dropping the handle is cheap and always safe: the next call rebuilds it.
     invalidateSession(){ this.sessionId=null; this._gen++; },
     _pause(ms){ return new Promise(r=>setTimeout(r,ms)); },
@@ -924,9 +929,11 @@
     // the second failure inside one call could never recover.
     async _rpc(method, params, opts, attempt){
       opts=opts||{};
-      attempt=attempt||{auth:0, session:0, gateway:0};
+      attempt=attempt||{auth:0, session:0, gateway:0, loginEpoch:this._loginEpoch};
+      this._assertLogin(attempt.loginEpoch);
       const isHandshake = (method==="initialize" || method==="notifications/initialized");
       await ensureFreshToken();
+      this._assertLogin(attempt.loginEpoch);
       // A proactive token refresh (above) resets the session — it was bound to
       // the now-rotated bearer (see MCP.sessionId=null in refreshAccessToken).
       // Re-establish it BEFORE a non-handshake call, or the server rejects the
@@ -934,6 +941,7 @@
       // the 401 retry path never runs. Without this the first turn after every
       // ~5-min refresh fails until a reload.
       if(this.sessionId===null && !isHandshake) await this.ensureInit();
+      this._assertLogin(attempt.loginEpoch);
       const frame={jsonrpc:"2.0", method, params:params||{}};
       if(opts.expectResult!==false) frame.id=this.nextId++;
       const headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"};
@@ -960,6 +968,7 @@
         throw transportError("offline", "couldn\u2019t reach the network", false);
       }
 
+      this._assertLogin(attempt.loginEpoch);
       if(resp.status===401){
         if(attempt.auth<1 && token() && await refreshAccessToken()){
           attempt.auth++;
@@ -971,6 +980,7 @@
           // the very promise it is inside and the client wedges permanently -
           // no timeout, no further request. ensureInit repairs a half-finished
           // handshake itself instead (see its catch).
+          this._assertLogin(attempt.loginEpoch);
           if(!isHandshake) await this.ensureInit();
           return this._rpc(method, params, opts, attempt);
         }
@@ -1007,6 +1017,7 @@
       // Session gone. This is provably PRE-DISPATCH - the transport rejected the
       // envelope, so the tool never ran - which makes replaying safe even for a
       // state-changing turn. Re-initialize once and run it for real.
+      this._assertLogin(attempt.loginEpoch);
       if(!isHandshake && this._isSessionGone(resp, bodyText)){
         // Retire FIRST, and unconditionally. The server has just disowned this
         // handle, so keeping it is never right - not even when the retry budget
@@ -1092,7 +1103,8 @@
       // Serialize concurrent initializers: two post-refresh calls must share ONE
       // initialize handshake, or the second's session orphans the first's.
       if(this._initing){ await this._initing; return; }
-      this._initing=(async()=>{
+      const loginEpoch=this._loginEpoch;
+      const initializing=(async()=>{
         try{ await this._handshake(); }
         catch(err){
           // Half a handshake is worthless: the bearer can rotate BETWEEN the two
@@ -1102,6 +1114,7 @@
           // call ensureInit() from inside the handshake: that awaits the promise
           // it is already inside, and the client wedges for good.
           if(!err || !(err.authRequired || err.transport)) throw err;
+          this._assertLogin(loginEpoch);
           this.sessionId=null;
           try{ await this._handshake(); }
           catch(again){
@@ -1109,17 +1122,20 @@
             // (it would destroy the session `initialize` just produced), so
             // nothing else disarms the second attempt's session - and it has
             // been disowned exactly like the first. Drop it explicitly.
-            this.invalidateSession();
+            if(this._loginEpoch===loginEpoch) this.invalidateSession();
             throw again;
           }
         }
       })();
-      try{ await this._initing; } finally { this._initing=null; }
+      this._initing=initializing;
+      try{ await initializing; } finally { if(this._initing===initializing) this._initing=null; }
     },
     // The handshake carries no user intent, so every step is safe to repeat.
     async _handshake(){
+      const loginEpoch=this._loginEpoch;
       await this._rpc("initialize",{protocolVersion:"2024-11-05",capabilities:{},
         clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}},{idempotent:true});
+      this._assertLogin(loginEpoch);
       await this._rpc("notifications/initialized",{},
         {expectResult:false, idempotent:true});
     },
@@ -1127,8 +1143,11 @@
     // an unmarked tool call is treated as state-changing and is never replayed
     // on an ambiguous failure.
     async callTool(name,args,opts){
+      const loginEpoch=this._loginEpoch;
       await this.ensureInit();
-      const r=await this._rpc("tools/call",{name,arguments:args||{}},opts);
+      this._assertLogin(loginEpoch);
+      const r=await this._rpc("tools/call",{name,arguments:args||{}},opts,
+        {auth:0, session:0, gateway:0, loginEpoch});
       if(r&&typeof r.structuredContent==="object"&&r.structuredContent) return r.structuredContent;
       const block=(r&&r.content||[]).find(c=>c&&c.type==="text"&&typeof c.text==="string");
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
@@ -2979,12 +2998,12 @@
   // the very first message fail with "no JSON or SSE frame" and then self-recover on the
   // 2nd message. Fire-and-forget: a real error still surfaces on the first actual turn.
   function warmSession(){ try{ MCP.ensureInit().catch(()=>{}); }catch(_e){} }
-  function onEngineConnected(){
+  function onEngineConnected(stillCurrent=()=>true){
     engineConnected = true;
     $("btn-connect-back").textContent = "Go to your universe";
-    setTimeout(()=>{ showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
+    setTimeout(()=>{ if(!stillCurrent()) return; showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
   }
-  function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null; Voice.stop(false);
+  function enterSignedOut(){ clearInterval(statusTimer); MCP.endLogin(); resetClaudeConnection(); Voice.stop(false);
     HostedModelConnect.reset();
     modelChoiceForNextTurn=null;
     ModelPicker.reset();
@@ -3412,23 +3431,81 @@
     flow.hidden=true; btn.disabled=false; openaiBusy=false; $("openai-setup").hidden=false;
   }
 
-  async function connectClaude(){
-    const el=$("claude-material"), btn=$("btn-claude-connect"), res=$("claude-result");
-    const material=el.value.trim();
-    if(!material){ res.textContent="Paste the token from `claude setup-token` first."; return; }
-    el.value="";  // clear the secret from the DOM BEFORE any await
-    btn.disabled=true; res.textContent="Connecting…";
-    try{
-      const payload=await MCP.connectLLM("claude", btoa(unescape(encodeURIComponent(material))));
-      if(payload&&payload.error){ res.textContent="Couldn't connect: "+(payload.detail||payload.error); }
-      else{
-        // Deposit is write-only; make it SERVE the universe too.
-        let sv=null; try{ const r=await fetch("/mcp/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service:"claude"})}); sv=(await r.json()).serving; }catch(_e){}
-        if(sv&&sv.status==="serving"){ res.textContent="Claude credential saved. Your saved model choices are unchanged. Select Claude to test the connection."; btn.textContent="Claude credential saved"; onEngineConnected(); }
-        else{ res.textContent="Claude credential saved, but serving isn't enabled yet"+(sv&&sv.detail?(": "+sv.detail):"")+"."; btn.disabled=false; }
+  // ---- Subscription connection progress ----
+  let claudeConnection={pending:false,saved:false};
+  function resetClaudeConnection(){
+    claudeConnection={pending:false,saved:false};
+    $("claude-material").value="";
+    $("btn-claude-connect").disabled=false;
+    $("btn-claude-connect").textContent="Connect Claude";
+    $("claude-result").textContent="";
+  }
+  // A deadline bounds observation, not execution. The original write stays
+  // alive, and owns the submit guard until it settles. Never replay a secret.
+  function observeClaudeStage(promise,current,settled,timedOut){
+    return new Promise(resolve=>{
+      let late=false;
+      const timer=setTimeout(()=>{
+        late=true;
+        if(current()) timedOut();
+        resolve(false);
+      },30000);
+      Promise.resolve(promise).then(value=>finish(value,null),error=>finish(null,error));
+      function finish(value,error){
+        clearTimeout(timer);
+        if(!current()){ resolve(false); return; }
+        settled(value,error,late);
+        resolve(!late&&!error);
       }
-    }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } res.textContent="Couldn't connect: "+err.message; }
-    finally{ btn.disabled=false; }
+    });
+  }
+  async function connectClaude(){
+    const state=claudeConnection;
+    if(state.pending) return;
+    const current=()=>claudeConnection===state;
+    const el=$("claude-material"), btn=$("btn-claude-connect"), res=$("claude-result");
+    const uncertain="We couldn't confirm the result. Check the model picker for an existing connection before trying again. If this stays pending, reload to start over.";
+    function unlock(){ state.pending=false; btn.disabled=false; btn.textContent=state.saved?"Enable Claude":"Connect Claude"; }
+    if(!state.saved){
+      const material=el.value.trim();
+      if(!material){ res.textContent="Paste the token from `claude setup-token` first."; return; }
+      el.value=""; // clear the secret from the DOM BEFORE any await
+      state.pending=true; btn.disabled=true; res.textContent="Saving token…";
+      const observed=await observeClaudeStage(
+        MCP.connectLLM("claude",btoa(unescape(encodeURIComponent(material)))),current,
+        (payload,error)=>{
+          unlock();
+          if(error){
+            if(error.authRequired){ enterSignedOut(); return; }
+            res.textContent=uncertain; return;
+          }
+          if(payload&&payload.error){ res.textContent="Couldn't connect: "+(payload.detail||payload.error); return; }
+          if(payload&&payload.status==="deposited"){
+            state.saved=true; btn.textContent="Enable Claude";
+            res.textContent="Token saved. Select Enable Claude to finish connecting.";
+          }else res.textContent=uncertain;
+        },()=>{res.textContent=uncertain;});
+      if(!observed||!current()||!state.saved||views.connect.hidden) return;
+    }
+    if(!current()) return;
+    state.pending=true; btn.disabled=true; res.textContent="Token saved. Enabling Claude…";
+    const binding=(async()=>{
+      const response=await fetch("/mcp/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service:"claude"})});
+      if(response.status===401){ const error=new Error("authentication_required"); error.authRequired=true; throw error; }
+      if(!response.ok) throw new Error("bind_unconfirmed");
+      return (await response.json()).serving;
+    })();
+    await observeClaudeStage(binding,current,(serving,error,late)=>{
+      unlock();
+      if(error&&error.authRequired){ enterSignedOut(); return; }
+      if(error){ res.textContent="Token saved. "+uncertain; return; }
+      if(serving&&serving.status==="serving"){
+        res.textContent="Claude credential saved and enabled. Your saved model choices are unchanged. Select Claude to test the connection.";
+        if(!late&&!views.connect.hidden) onEngineConnected(()=>current()&&!views.connect.hidden);
+      }else{
+        res.textContent="Token saved, but Claude isn't enabled yet"+(serving&&serving.detail?": "+serving.detail:". "+uncertain);
+      }
+    },()=>{res.textContent="Token saved, but enabling Claude is unconfirmed. "+uncertain;});
   }
 
   function wire(){
@@ -3514,7 +3591,7 @@
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
     $("btn-rail-add").addEventListener("click",()=>showConnect(false));
     $("btn-connect-back").addEventListener("click",()=>{ showView("chat"); startHeartbeat(); loadPlan(); });
-    $("btn-signout").addEventListener("click",async()=>{ sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
+    $("btn-signout").addEventListener("click",async()=>{ MCP.endLogin(); resetClaudeConnection(); sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
     // Legal links open OUTSIDE the app. In the Capacitor shell a plain <a> would
     // navigate the WebView itself to tinyassets.io and strand the user with no
     // way back to their universe; openExternal uses the in-app browser instead.
