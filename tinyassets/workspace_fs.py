@@ -26,6 +26,7 @@ The descriptor helpers are POSIX only; on Windows they raise
 from __future__ import annotations
 
 import errno
+import math
 import os
 import stat
 import time
@@ -276,6 +277,114 @@ def open_subdir_nofollow(parent_fd: int, name: str) -> int:
         os.close(fd)
         raise
     return fd
+
+
+def measure_tree_beneath(
+    root_fd: int, *, max_bytes: int, timeout_s: float = 1.0,
+) -> int:
+    """Bounded-work, no-follow storage sample through an already held root.
+
+    Return measured bytes, or max_bytes + 1 as soon as the bound is exceeded.
+    Count the greater of apparent and allocated size for each entry (hard links
+    may be conservatively counted twice); count symlinks themselves, NEVER their
+    targets. Directory handles and scan iterators are bounded by the existing
+    tree-depth limit and closed on every failure. No file contents are opened.
+
+    This is a best-effort live sample, not a kernel quota or an atomic snapshot.
+    Deleted entries can disappear during a scan; replaced directories refuse.
+    Iteration has a monotonic deadline, not a promise to interrupt a blocked
+    filesystem syscall. Call again after all writers have exited before accepting
+    installation. Unknown/incomplete samples raise a fixed error, never zero.
+    """
+    _require_posix("measure_tree_beneath")
+    if type(root_fd) is not int or root_fd < 0:
+        raise ValueError("storage measurement requires a held directory descriptor")
+    if type(max_bytes) is not int or max_bytes < 0:
+        raise ValueError("storage measurement bound must be a nonnegative integer")
+    if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
+            or not math.isfinite(timeout_s) or timeout_s <= 0):
+        raise ValueError("storage measurement timeout must be positive and finite")
+    deadline = time.monotonic() + timeout_s
+    total = 0
+    device = None
+
+    def check_time():
+        if time.monotonic() >= deadline:
+            raise UnsafePoolPath("storage measurement deadline exceeded")
+
+    def add(info):
+        nonlocal total
+        size = max(info.st_size, getattr(info, "st_blocks", 0) * 512)
+        if size < 0:
+            raise UnsafePoolPath("storage measurement returned invalid size")
+        total += size
+
+    def scan(fd, depth):
+        check_time()
+        if depth > _MAX_TREE_DEPTH:
+            raise UnsafePoolPath("storage measurement depth exceeded")
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                check_time()
+                try:
+                    info = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if info.st_dev != device:
+                    raise UnsafePoolPath("storage measurement crossed a filesystem")
+                add(info)
+                if total > max_bytes:
+                    return
+                if stat.S_ISDIR(info.st_mode):
+                    child = None
+                    try:
+                        check_time()
+                        try:
+                            child = _open_child_dir(fd, entry.name)
+                        except FileNotFoundError:
+                            continue
+                        except OSError:
+                            raise UnsafePoolPath(
+                                "storage measurement directory unavailable"
+                            ) from None
+                        opened = os.fstat(child)
+                        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                            raise UnsafePoolPath("storage measurement directory changed")
+                        scan(child, depth + 1)
+                    except FileNotFoundError:
+                        continue  # A vanished subtree will be covered by the final stable scan.
+                    finally:
+                        if child is not None:
+                            os.close(child)
+                    if total > max_bytes:
+                        return
+
+    owned = None
+    try:
+        check_time()
+        original = os.fstat(root_fd)
+        if not stat.S_ISDIR(original.st_mode):
+            raise UnsafePoolPath("storage measurement root is not a directory")
+        # A new open-file description, not dup(): scandir advances directory
+        # offsets, and sharing one would make the next sample miss everything.
+        owned = os.open(".", os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=root_fd)
+        info = os.fstat(owned)
+        if (info.st_dev, info.st_ino) != (original.st_dev, original.st_ino):
+            raise UnsafePoolPath("storage measurement root changed")
+        device = info.st_dev
+        add(info)
+        if total <= max_bytes:
+            scan(owned, 0)
+        check_time()
+        return min(total, max_bytes + 1)
+    except UnsafePoolPath:
+        raise
+    except OSError:
+        # Paths may contain private names; no raw filesystem exception escapes.
+        raise UnsafePoolPath("storage measurement unavailable") from None
+    finally:
+        if owned is not None:
+            os.close(owned)
 
 
 def _open_dir_making_one_level(path: Path) -> int:

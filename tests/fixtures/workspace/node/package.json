@@ -1,0 +1,8 @@
+{
+  "name": "workspace-node-proof",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "picocolors": "1.1.1"
+  }
+}

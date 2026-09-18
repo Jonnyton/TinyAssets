@@ -298,8 +298,11 @@ def run_canary(
                 f"{liveness.get('beat_age_s')}s old "
                 f"(phase={liveness.get('phase')!r}, "
                 f"consec_crashes={liveness.get('consec_crashes')}); "
-                "worker is wedged or dead - restart the worker container"
+                "inspect the active daemon coordinator; historical worker "
+                "files do not authorize restarting a retired worker"
             )
+        if alive is not True:
+            return 3, "current daemon coordinator liveness is unavailable"
         if alive is True and not daemon.get("has_work", False):
             return 0, (
                 "FRESH (worker alive, no active work): supervisor beat "

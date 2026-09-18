@@ -10,6 +10,7 @@ import re
 import threading
 import time
 import uuid
+import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _DEFAULT_GLOBAL_CONCURRENCY = 2
 _DEFAULT_POLL_SECONDS = 2.0
+_CONSUMER_REGISTRY_LOCK = threading.Lock()
+_STARTED_CONSUMERS: weakref.WeakSet[AssignedQueueConsumer] = weakref.WeakSet()
 
 # Supervisor heartbeat naming + writer-model defaults. These moved here from
 # the retired host-run `tinyassets.cloud_worker` fleet supervisor: the served
@@ -157,6 +160,33 @@ def _global_concurrency() -> int:
     return value
 
 
+def current_consumer_liveness(base_path: Path) -> dict[str, Any]:
+    """Observe this daemon's actual coordinator, never historical tenant files.
+
+    This is liveness of the poll loop, not proof that a particular user's work
+    succeeded. Per-universe heartbeat/queue descriptor readers keep their own
+    scope and authority. No identity, path, tenant count or task data escapes.
+    """
+    if not assigned_queue_consumer_enabled():
+        return {"present": False, "phase": "disabled"}
+    if os.environ.get("TINYASSETS_ENGINE_GRAPH_ID", "").strip():
+        # Engine MCP children inherit the enable flag but do not own the daemon
+        # coordinator. Their process-local registry cannot attest its liveness.
+        return {"present": True, "alive": None, "beat_age_s": None,
+                "phase": "external_coordinator", "consec_crashes": 0}
+    root = Path(base_path).resolve()
+    with _CONSUMER_REGISTRY_LOCK:
+        consumers = [consumer for consumer in _STARTED_CONSUMERS
+                     if consumer.base_path.resolve() == root]
+    if not consumers:
+        return {"present": True, "alive": False, "beat_age_s": None,
+                "phase": "not_started", "consec_crashes": 0}
+    snapshots = [consumer._liveness_snapshot() for consumer in consumers]
+    # A fresh peer cannot conceal a stopped or stalled expected coordinator.
+    return max(snapshots, key=lambda item: (
+        item["alive"] is False, float(item["beat_age_s"] or 0.0)))
+
+
 class AssignedQueueConsumer:
     """One coordinator and fixed executor; never owns the HTTP main thread."""
 
@@ -192,6 +222,10 @@ class AssignedQueueConsumer:
         self._runtimes: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._automation_runs: set[str] = set()
         self._recorded: dict[str, tuple[str, float]] = {}
+        self._liveness_lock = threading.Lock()
+        self._started_monotonic = 0.0
+        self._last_poll_completed: float | None = None
+        self._last_poll_failed = False
 
     def start(self) -> None:
         # Gate start() itself (Codex #6, #2516): with the flag unset, constructing +
@@ -207,7 +241,31 @@ class AssignedQueueConsumer:
             name="assigned-queue-consumer",
             daemon=True,
         )
+        self._started_monotonic = time.monotonic()
         self._thread.start()
+        with _CONSUMER_REGISTRY_LOCK:
+            _STARTED_CONSUMERS.add(self)
+
+    def _liveness_snapshot(self) -> dict[str, Any]:
+        with self._liveness_lock:
+            completed = self._last_poll_completed
+            failed = self._last_poll_failed
+        age = max(0.0, time.monotonic() - (
+            self._started_monotonic if completed is None else completed))
+        running = self._thread is not None and self._thread.is_alive()
+        alive = running and not self._stop.is_set() and age <= max(
+            300.0, self.poll_seconds + 120.0)
+        phase = "polling" if completed is not None else "starting"
+        if failed:
+            phase = "poll_failed"
+        if not running:
+            phase = "stopped"
+        elif self._stop.is_set():
+            phase = "stopping"
+        elif not alive:
+            phase = "stalled"
+        return {"present": True, "alive": alive, "beat_age_s": round(age, 1),
+                "phase": phase, "consec_crashes": 0}
 
     def _scavenge_orphaned_credentials(self) -> None:
         """Startup reclamation of orphaned provider-launch-credential dirs a crash left
@@ -233,6 +291,11 @@ class AssignedQueueConsumer:
         if self._thread is not None:
             self._thread.join(timeout=max(0.0, timeout))
         self._executor.shutdown(wait=False, cancel_futures=True)
+        # Retire only after the actual coordinator exits. A timed-out join must
+        # remain visible as stopping, not disappear from expected execution.
+        if self._thread is None or not self._thread.is_alive():
+            with _CONSUMER_REGISTRY_LOCK:
+                _STARTED_CONSUMERS.discard(self)
 
     def _cancel_automation_runs(self) -> None:
         from tinyassets.runs import request_cancel
@@ -251,7 +314,13 @@ class AssignedQueueConsumer:
             try:
                 self.poll_once()
             except Exception:  # noqa: BLE001 - task scanning cannot kill daemon
+                with self._liveness_lock:
+                    self._last_poll_failed = True
                 logger.exception("assigned queue consumer poll failed")
+            else:
+                with self._liveness_lock:
+                    self._last_poll_completed = time.monotonic()
+                    self._last_poll_failed = False
             self._stop.wait(self.poll_seconds)
 
     def poll_once(self) -> int:
