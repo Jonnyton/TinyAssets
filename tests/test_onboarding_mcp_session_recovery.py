@@ -52,8 +52,9 @@ _HARNESS = """
 const PLAN = __PLAN__;
 const SENT = [];
 let refreshes = 0;
+let bearer = "test-bearer";
 
-function token(){ return "test-bearer"; }
+function token(){ return bearer; }
 async function ensureFreshToken(){ }
 // Mirrors the real refreshAccessToken's effect on the session. The real one
 // lives OUTSIDE the extracted transport block, so the behavioural tests can only
@@ -84,6 +85,7 @@ async function fetch(url, init){
     method: frame.method,
     tool: (frame.params && frame.params.name) || null,
     sessionId: init.headers["mcp-session-id"] || null,
+    bearer: init.headers["Authorization"] || null,
   });
   const spec = PLAN.shift();
   if(spec === undefined) throw new Error("harness ran out of scripted responses");
@@ -774,3 +776,67 @@ def test_a_failed_turn_offers_to_send_again():
     # the retry is the same send with the same options (a side send stays a
     # side send), echoed because the bubble is already on screen
     assert "sendTurn(message, display, Object.assign({}, opts||{}, {echoed:true}))" in html
+
+
+@pytest.mark.parametrize("status,body_delay", [(401, False), (404, False), (404, True)])
+def test_deposit_cannot_replay_under_a_different_login(tmp_path, status, body_delay):
+    rejection = {"status": status, "body": "", "delayMs" if body_delay else "headersDelayMs": 80}
+    out = _drive(
+        tmp_path,
+        _handshake() + [rejection] + _handshake_with(_SID2)
+        + [_ok({"status": "deposited"}, _SID2)],
+        '(async()=>{ const pending=MCP.connectLLM("claude","synthetic-secret");'
+        ' while(!SENT.some(s=>s.tool==="write_graph")) await new Promise(r=>setTimeout(r,1));'
+        ' if(MCP.endLogin) MCP.endLogin(); else MCP.invalidateSession();'
+        ' bearer="different-login"; return await pending; })()',
+    )
+    assert out["ok"] is False
+    assert out["error"]["transport"] == "login_changed"
+    assert len([s for s in out["sent"] if s["tool"] == "write_graph"]) == 1
+    assert all(s["bearer"] == "Bearer test-bearer" for s in out["sent"])
+    assert out["refreshes"] == 0
+    assert out["sessionIdAfter"] is None
+
+
+def test_delayed_handshake_cannot_send_a_secret_under_the_next_login(tmp_path):
+    plan = _handshake()
+    plan[0]["headersDelayMs"] = 80
+    out = _drive(
+        tmp_path, plan + [_ok({"status": "deposited"})],
+        '(async()=>{ const pending=MCP.connectLLM("claude","synthetic-secret");'
+        ' while(!SENT.length) await new Promise(r=>setTimeout(r,1));'
+        ' if(MCP.endLogin) MCP.endLogin(); else MCP.invalidateSession();'
+        ' bearer="different-login"; return await pending; })()',
+    )
+    assert out["ok"] is False
+    assert out["error"]["transport"] == "login_changed"
+    assert len(out["sent"]) == 1
+    assert out["sessionIdAfter"] is None
+
+
+def test_stale_repair_handshake_cannot_discard_the_new_login_session(tmp_path):
+    repair = _handshake_with(_SID2)
+    repair[0]["headersDelayMs"] = 80
+    out = _drive(
+        tmp_path, [_handshake()[0], _session_gone()] + repair,
+        '(async()=>{ const pending=MCP.connectLLM("claude","synthetic-secret");'
+        ' while(SENT.length<3) await new Promise(r=>setTimeout(r,1));'
+        ' MCP.endLogin(); bearer="different-login"; MCP.sessionId="new-login-session";'
+        ' return await pending; })()',
+    )
+    assert out["ok"] is False
+    assert out["error"]["transport"] == "login_changed"
+    assert out["sessionIdAfter"] == "new-login-session"
+    assert len(out["sent"]) == 3
+
+
+def test_gateway_pause_cannot_resume_under_another_login(tmp_path):
+    out = _drive(
+        tmp_path, _handshake() + [{"status": 503, "body": "unavailable"}],
+        '(async()=>{ MCP._pause=async()=>{MCP.endLogin(); bearer="different-login";};'
+        ' return await MCP.getStatus(); })()',
+    )
+    assert out["ok"] is False
+    assert out["error"]["transport"] == "login_changed"
+    assert len(out["sent"]) == 3
+    assert out["sessionIdAfter"] is None

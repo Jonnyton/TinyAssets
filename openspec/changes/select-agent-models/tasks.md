@@ -1,5 +1,36 @@
 ## 1. Reviewed foundation
 
+2026-09-15 UTC: full hosted bootstrap is built in draft PR3853. Reconnect
+main integration preserved both design supplements; typed browser recovery and
+key-link contrast corrected.606focused Windows tests pass70.11s/no skips,
+450-file mirror/import and Ruff pass. c9c8bb27 had Fable round3 APPROVE491s;
+the changed integration head needs a fresh receipt. One additional review was
+requested after the three-round cap, not yet authorized/dispatched. Draft/CI,
+not deployed; separate free-user signup/consent/real answer proof remains open.
+First CI exposed stale generated app provenance; canonical brand generator
+corrected only its hash. Local brand tests and all pre-commit invariants pass;
+scope guard remains correctly red until the exact-head approval exists.
+
+2026-09-15 04:23UTC: backend bootstrap composition and authenticated endpoints
+now locally implemented,421focused Windows passes32.43s/no skips,450-file mirror
+pass. Frontend remains unwired and must handle model callback before WorkOS;
+this branch is NOT deploy-ready. Final Fable round3 remains after integration.
+
+September15 04:03UTC checkpoint: generic hosted PKCE transport and inert
+first-binding preparation now locally implemented,217focused Windows passes/no
+skips,447-file mirror/import pass. Public routes, credential/consent composition
+and browser return are not wired yet. See automatic-model-bootstrap.md;
+task3.1 remains open. This supersedes the initial-component stage below.
+
+September15 automatic bootstrap supplement: reviewed shape/disposition in
+automatic-model-bootstrap.md. Initial server setup projection is implemented
+locally; seven red-first cases now pass,173focused onboarding tests pass24.73s.
+Same-source baseline166pass23.03s; Ruff,444-file mirror/import and spec validation
+pass. Not pushed or deployed; this is an initial component, not completed OAuth.
+HTTP bound setup was already recognized via config; old presence/readiness and
+unreadable-state conflation is the corrected premise. OAuth flow, return-page
+confirmation, UI routing/optional request, exact-head review and live proof remain.
+
 September14 served-setup follow-up: reviewed proposal in served-model-setup.md;
 pinned model/binding reads, preference save and discovery-only configuration
 implemented locally on codex/served-model-setup, now including canonical shared
