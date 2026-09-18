@@ -2,6 +2,7 @@
 # ruff: noqa: F811 -- imported shared pytest fixture is requested by name
 
 import asyncio
+import copy
 import json
 
 import httpx
@@ -17,6 +18,33 @@ from tinyassets.onboarding import hosted_model_auth as hosted
 
 pytestmark = pytest.mark.usefixtures("rig", "ingress")
 PRESET = "openrouter_user_models_v1"
+
+
+@pytest.fixture
+def installed_policy(monkeypatch):
+    """Edit only a synthetic copy of installed data, never owner request metadata."""
+    path = hosted.Path(hosted.__file__).parent.parent / "providers" / "acquisition_presets.json"
+    documents = json.loads(path.read_text(encoding="utf-8"))
+    discovery = hosted.bundled_discovery_documents()
+    original = hosted.Path.read_text
+
+    def read(self, *args, **kwargs):
+        if self == path:
+            return json.dumps(documents)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(hosted.Path, "read_text", read)
+    monkeypatch.setattr(hosted, "bundled_discovery_documents", lambda: copy.deepcopy(discovery))
+    return documents, discovery
+
+
+def forbid_home_creation(monkeypatch):
+    monkeypatch.setattr(onboarding, "_read_home", lambda *args, **kwargs: "")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unapproved acquisition data cannot create a home")
+
+    monkeypatch.setattr(onboarding, "_bootstrap_home", forbidden)
 
 
 def deposit(key="synthetic-private-key", **kwargs):
@@ -57,7 +85,7 @@ def test_manual_owner_reaches_existing_approval_then_connects(rig, monkeypatch):
     {"preset_id": PRESET, "key": "a" * 2049}, {"preset_id": PRESET, "key": "has space"},
     {"preset_id": PRESET, "key": "key\n"}, {"preset_id": PRESET, "key": "é"},
     {"preset_id": PRESET, "key": "key", "model": "paid-model"},
-    {"preset_id": "future-installed-preset", "key": "key"},
+    {"preset_id": PRESET, "key": "key", "manual_key_entry": True},
     {"preset_id": PRESET, "key": "key", "owner": "another-owner"},
 ])
 def test_manual_invalid_input_refused_before_preset_or_home(data, monkeypatch):
@@ -68,6 +96,84 @@ def test_manual_invalid_input_refused_before_preset_or_home(data, monkeypatch):
     response = post("deposit_key", data)
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_model_connection"}
+
+
+@pytest.mark.parametrize("flag", [False, None, "true", 1, {}, [], "absent"])
+def test_manual_installed_opt_in_is_explicit_boolean_before_home(
+    installed_policy, monkeypatch, flag,
+):
+    document = installed_policy[0][PRESET]
+    if flag == "absent":
+        document.pop("manual_key_entry")
+    else:
+        document["manual_key_entry"] = flag
+    forbid_home_creation(monkeypatch)
+    # Normal PKCE acquisition remains available independently of this capability.
+    assert hosted.load_preset(PRESET).id == PRESET
+    response = deposit()
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_model_connection"}
+
+
+def test_second_installed_preset_does_not_silently_gain_manual_ingress(
+    installed_policy, monkeypatch,
+):
+    documents, discovery = installed_policy
+    second = "another_user_models_v1"
+    documents[second] = {key: value for key, value in documents[PRESET].items()
+                         if key != "manual_key_entry"}
+    discovery[second] = copy.deepcopy(discovery[PRESET])
+    assert hosted.load_preset(second).id == second  # Installed and otherwise valid.
+    forbid_home_creation(monkeypatch)
+    response = post("deposit_key", {"preset_id": second, "key": "synthetic-key"})
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_model_connection"}
+
+
+def test_unknown_preset_cannot_create_home(monkeypatch):
+    forbid_home_creation(monkeypatch)
+    response = post("deposit_key", {"preset_id": "not-installed", "key": "synthetic-key"})
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("mutation", [
+    "http_endpoint", "credential_url", "protocol", "mismatched_catalogue",
+    "mismatched_benchmark", "malformed_discovery", "not_owner_filtered", "wrong_auth",
+    "missing_discovery",
+])
+def test_manual_opt_in_still_validates_endpoints_and_contract_before_home(
+    installed_policy, monkeypatch, mutation,
+):
+    documents, discovery = installed_policy
+    doc = documents[PRESET]
+    if mutation == "http_endpoint":
+        doc["inference_url"] = "http://provider.invalid/infer"
+    elif mutation == "credential_url":
+        doc["inference_url"] = "https://user:secret@provider.invalid/infer"
+    elif mutation == "protocol":
+        doc["protocol"] = "unsupported"
+    elif mutation == "mismatched_catalogue":
+        doc["catalogue_url"] = "https://provider.invalid/other"
+    elif mutation == "mismatched_benchmark":
+        doc["benchmark_url"] = "https://provider.invalid/other"
+    elif mutation == "malformed_discovery":
+        discovery[PRESET] = {"transport": {}}
+    elif mutation == "not_owner_filtered":
+        discovery[PRESET]["transport"]["account_filtered"] = False
+    elif mutation == "wrong_auth":
+        discovery[PRESET]["transport"]["auth_scheme"] = "none"
+    else:
+        discovery.pop(PRESET)
+    forbid_home_creation(monkeypatch)
+    response = deposit()
+    assert response.status_code == (404 if mutation == "missing_discovery" else 503)
+    assert "synthetic-private-key" not in response.text
+
+
+def test_installed_manual_policy_participates_in_preset_digest(installed_policy):
+    original = hosted.load_preset(PRESET)
+    installed_policy[0][PRESET]["manual_key_entry"] = False
+    assert hosted.load_preset(PRESET).digest != original.digest
 
 
 @pytest.mark.parametrize("origin", ["", "http://tinyassets.io", "https://foreign.invalid"])

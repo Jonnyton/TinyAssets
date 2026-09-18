@@ -59,6 +59,11 @@ connection ingress, without requiring existing inference or an OAuth callback.
 The operation MUST reuse the owner-scoped bootstrap and its ordinary unanswered
 model-access request; depositing a key MUST NOT enable model execution, approve
 access, change saved preferences, or permit paid models or paid fallback.
+Manual recovery SHALL require `manual_key_entry` equal to boolean true in the
+trusted installed acquisition document, never caller metadata. Absence, false,
+non-boolean values and a newly installed preset without opt-in MUST refuse.
+The installed endpoint and matching owner-filtered bearer discovery contract
+MUST validate before home creation or credential deposit.
 
 #### Scenario: Unpowered owner supplies their key
 - **WHEN** the current live owner of an empty home explicitly submits a valid key
@@ -75,6 +80,11 @@ access, change saved preferences, or permit paid models or paid fallback.
 - **WHEN** a request includes a caller-selected endpoint, owner, model, grant or policy, or an unsupported preset
 - **THEN** the server refuses it before any credential deposit or provider request
 - **AND** a key with broader provider permissions cannot enable paid model selection
+
+#### Scenario: Another preset is installed without manual recovery authority
+- **WHEN** an otherwise valid installed preset lacks the explicit trusted boolean opt-in
+- **THEN** manual acquisition refuses before home creation or credential deposit
+- **AND** adding a request field cannot grant that capability
 
 ### Requirement: Manual key handling is bounded and non-replaying
 

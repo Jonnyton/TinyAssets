@@ -38,9 +38,14 @@ and no-referrer responses remain. No caller-selected owner, universe, URL,
 model, grant, price policy, or approval is accepted.
 
 The installed preset must resolve before creating any home or making an
-external request. V1 accepts only the existing installed OpenRouter free-model
-bootstrap preset; a caller cannot substitute another installed acquisition
-preset or weaken its free-only policy. Match the existing provider-key
+external request. V1's bundled acquisition document explicitly opts only the
+existing OpenRouter free-model bootstrap preset into `manual_key_entry: true`.
+The generic loader requires that exact boolean from trusted installed data;
+absence, false or non-boolean values refuse. Merely installing another preset
+does not admit it, and callers cannot supply the opt-in field. The loader also
+compiles the matching discovery contract, checks its catalogue/benchmark URLs
+and requires owner-filtered bearer discovery before home creation. A caller
+cannot weaken the existing bootstrap's free-only policy. Match the provider-key
 validation: 1..2048 printable ASCII characters without whitespace/control
 characters; do not truncate or silently transform the credential. `preset_id`
 retains the existing bounded-string validation. Reject unknown/extra fields,
@@ -65,8 +70,14 @@ requests, or manual plus OAuth, must not replace credentials or overwrite a
 newly connected setup. A loser must refuse or recover existing state without
 redepositing the supplied key.
 
-Reviewed implementation boundary (Claude Fable ADAPT, September 18): pin the
-literal `openrouter_user_models_v1` before `load_preset`. Deletion takes the
+Original implementation boundary (Claude Fable ADAPT, September 18) required a
+literal preset guard. CI exposed that guard as new provider-specific substrate
+code; the correction above replaces it with installed-data capability admission,
+not a relocated/disguised vendor branch. Fresh independent review must assess
+its authority equivalence; the original review is not approval of this change.
+The trusted metadata participates in the existing preset digest, so changing it
+invalidates outstanding older flows fail-closed. Deploy must not interrupt a
+user's in-flight consent ceremony. Deletion takes the
 existing exclusive provider admission only while writing the tombstone, then
 releases before renaming the home (Windows open-handle semantics). The vault
 writer checks that tombstone inside its existing `BEGIN IMMEDIATE` before DML,

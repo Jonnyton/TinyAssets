@@ -58,10 +58,15 @@ class AcquisitionPreset:
     benchmark_url: str
 
 
-def load_preset(preset_id: str) -> AcquisitionPreset:
+def load_preset(preset_id: str, *, require_manual_key: bool = False) -> AcquisitionPreset:
     """Only installed data, including its matching discovery contract, is trusted."""
     path = Path(__file__).parent.parent / "providers" / "acquisition_presets.json"
     docs = json.loads(path.read_text(encoding="utf-8"))
+    if require_manual_key and (
+        not isinstance(docs.get(preset_id), dict)
+        or docs[preset_id].get("manual_key_entry") is not True
+    ):
+        raise HostedAuthError("invalid_model_connection")
     discovery = bundled_discovery_documents()
     if preset_id not in docs or preset_id not in discovery:
         raise HostedAuthError("unknown_model_connection", 404)
@@ -77,6 +82,16 @@ def load_preset(preset_id: str) -> AcquisitionPreset:
             raise HostedAuthError("invalid_acquisition_preset", 503)
         if field in {"authorize_url", "exchange_url"} and parts.query:
             raise HostedAuthError("invalid_acquisition_preset", 503)
+    if require_manual_key:
+        from tinyassets.providers.discovery_protocols import DiscoveryProtocol
+
+        try:
+            contract = DiscoveryProtocol.from_bundled_document(discovery[preset_id])
+            contract.validate_urls(doc["catalogue_url"], doc["benchmark_url"])
+            if contract.auth_scheme != "bearer" or not contract.account_filtered:
+                raise ValueError("manual acquisition requires owner-filtered bearer discovery")
+        except (KeyError, TypeError, ValueError):
+            raise HostedAuthError("invalid_acquisition_preset", 503) from None
     digest = hashlib.sha256(json.dumps(
         [doc, discovery[preset_id]], sort_keys=True, separators=(",", ":"),
     ).encode()).hexdigest()

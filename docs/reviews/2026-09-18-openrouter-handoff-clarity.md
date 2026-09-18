@@ -13,8 +13,9 @@ existing-key button clears and focuses the single existing paste box in an
 explicit OpenRouter free-model mode, hiding generic-service actions and copy.
 
 Manual submission now uses the exact authenticated same-origin `deposit_key`
-operation with literal `openrouter_user_models_v1` and a2048-character printable
-ASCII key. It bypasses generic credential inference and reuses complete_bootstrap
+operation with trusted installed-data manual opt-in (currently only the bundled
+`openrouter_user_models_v1`) and a2048-character printable ASCII key. It bypasses
+generic credential inference and reuses complete_bootstrap
 to prepare the ordinary unanswered model-access request. Explicit approval is
 still required. The input clears before awaiting; there is no browser secret
 storage, URL leakage, automatic approval or secret replay. Login/view changes
@@ -130,3 +131,28 @@ GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE paths for the Windows linked worktree.
 Actual Chromium390/1280 manual flow repeated green. Lint, diff-check, brand52,
 mirror458 and strict OpenSpec validation passed. The approved manual-recovery
 delta was additively synced, preserving all pre-existing Claude requirements.
+
+## Required CI correction: installed acquisition policy, not vendor branching
+
+Required run35309802490 failed exactly two channel-ratchet tests. Local pinned
+head397d84cd reproduced2failed13passed5.09s. In-memory git-archive comparison
+using the unchanged ratchet algorithm found base
+d538970bda2f9dc6e1b057779d1985e07b74e2a4 exactly matches its baseline; head397d84cd
+adds only `('tinyassets/onboarding/model_connect.py','openrouter'):1`. No removed
+counts or other growth. Probe: `PYTHONPATH=. python output/probe_pinned_channel_ratchet.py`.
+
+Correction moves authority into existing bundled acquisition data, not a
+provider-named code branch: boolean `manual_key_entry: true` is set for the
+sole intended preset. `load_preset(require_manual_key=True)` rejects absent,
+false and non-boolean opt-ins, compiles the matching discovery contract and
+checks catalogue/benchmark URL consistency plus owner-filtered bearer transport
+before any home creation. User JSON still accepts only preset_id and key.
+New presets do not inherit authority merely by being installed; request metadata
+cannot opt in. No ratchet baseline, quarantine, exemptions or test disable changed.
+
+Fresh review must explicitly assess equivalent-or-tighter authority compared to
+the original literal guard; prior shape approval does not cover this correction.
+New tests cover unknown/second non-opted presets, invalid opt-in values, untrusted
+request opt-in, unsafe endpoints, mismatched URLs and malformed/missing discovery.
+The added trusted field changes preset digest, so deployment must be serialized
+against in-flight user authorization; old digest mismatches fail closed.

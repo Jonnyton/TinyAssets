@@ -54,10 +54,7 @@ async def handle_model_connect(request):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
     if operation == "begin" and not hosted._HANDLE.fullmatch(data["code_challenge"]):
         return JSONResponse({"error": "invalid_pkce_challenge"}, 400, headers=_HEADERS)
-    if operation == "deposit_key" and (
-        data["preset_id"] != "openrouter_user_models_v1"
-        or any(not 33 <= ord(char) <= 126 for char in data["key"])
-    ):
+    if operation == "deposit_key" and any(not 33 <= ord(char) <= 126 for char in data["key"]):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
     identity = current_identity()
 
@@ -91,8 +88,8 @@ async def handle_model_connect(request):
 
     def deposit_key():
         with identity_context(identity):
-            # The literal preset was checked before loading or creating a home.
-            preset = hosted.load_preset(data["preset_id"])
+            # Only trusted installed data can opt in; validate before home creation.
+            preset = hosted.load_preset(data["preset_id"], require_manual_key=True)
             base, home = scope(create=True, empty=True)
             return complete_bootstrap(base=base, uid=home, owner=identity.user_id,
                                       preset=preset, key=data["key"])
