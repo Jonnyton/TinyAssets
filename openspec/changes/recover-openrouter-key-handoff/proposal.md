@@ -41,3 +41,22 @@ independent Fable shape review before runtime implementation. Root owns review,
 release and the real user's browser; no user credential enters agent chat/tools.
 
 The current UI-only commit is incomplete recovery, not a shipped solution.
+
+## Research pickup (September 18)
+
+Lead's primary-source report is `docs/audits/2026-09-18-openrouter-onboarding-implications.md`,
+currently in the primary documentation worktree at
+`C:/Users/Jonathan/.codex/worktrees/0a7f/TinyAssets`. Fold its independent Claude
+research review and any required adaptations into this existing lane; do not
+open a new implementation lane. OAuth PKCE remains the primary normal path;
+manual key entry is recovery only. The report found documented `key_label`,
+but no documented signup-skip/forced-continuation control in the sources it
+reviewed. This is not proof such a control cannot exist.
+
+New key-label or waiting/new-tab UX derived from that research is held for its
+independent research-review supplement. That supplement does not block fixes
+for the measured signup handoff, incomplete manual activation or lost pending
+authorization; their existing shape and release gates still apply. Do not
+invent a public `limit` query parameter, add public analytics, or promise
+control over the provider authorization page's app heading. Management-key
+and Stripe provisioning are outside this free-only, user-owned browser flow.
