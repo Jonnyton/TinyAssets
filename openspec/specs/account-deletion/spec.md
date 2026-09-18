@@ -158,3 +158,11 @@ Deletion SHALL be refused, with nothing changed, for an empty or `anonymous` pri
 
 - **WHEN** `app.html` is served
 - **THEN** it contains the `btn-account`, `btn-connect-account` and `btn-delete-account` controls, posts to `/mcp/app/account/delete` with `confirm:"DELETE"`, and states that deletion cannot be undone
+
+### Requirement: Pending hosted authorizations follow personal erasure
+The existing satellite deletion sweep SHALL remove pending hosted authorization
+metadata by owner, including former-home bindings, while preserving other owners.
+
+#### Scenario: The account is deleted before callback
+- **WHEN** an owner with pending hosted flows deletes their account
+- **THEN** their pending rows disappear and cannot be used to authorize later
