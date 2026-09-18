@@ -1,5 +1,6 @@
 """Storage samples must stay anchored, bounded and honest about uncertainty."""
 
+import errno
 import os
 import stat
 from unittest.mock import patch
@@ -29,6 +30,22 @@ def measure(fd, **kwargs):
 def footprint(path):
     info = path.lstat()
     return max(info.st_size, info.st_blocks * 512)
+
+
+def open_handle_identities():
+    """Detect new handles even when unrelated collected objects close theirs."""
+    identities = set()
+    for name in os.listdir('/proc/self/fd'):
+        descriptor = int(name)
+        try:
+            info = os.fstat(descriptor)
+        except OSError as exc:
+            # listdir's own directory descriptor is already closed.
+            if exc.errno != errno.EBADF:
+                raise
+            continue
+        identities.add((descriptor, info.st_dev, info.st_ino, info.st_mode))
+    return identities
 
 
 def test_repeated_samples_include_all_files_without_consuming_root_offset(held):
@@ -94,11 +111,11 @@ def test_expired_sample_is_unknown_not_zero(held):
 def test_mid_scan_deadline_closes_owned_handles(held):
     fd, root = held
     (root / 'child').mkdir()
-    before = len(os.listdir('/proc/self/fd'))
+    before = open_handle_identities()
     with patch.object(fs.time, 'monotonic', side_effect=[0, 0, 0, 0, 0, 2]):
         with pytest.raises(fs.UnsafePoolPath, match='deadline'):
             measure(fd, timeout_s=1)
-    assert len(os.listdir('/proc/self/fd')) == before
+    assert open_handle_identities() <= before
 
 
 def test_directory_replacement_is_refused_not_followed(held):
@@ -112,11 +129,11 @@ def test_directory_replacement_is_refused_not_followed(held):
             (root / 'child').rename(root / 'old-child')
             os.symlink(outside, root / 'child')
         return opened(parent, name)
-    before = len(os.listdir('/proc/self/fd'))
+    before = open_handle_identities()
     with patch.object(fs, '_open_child_dir', side_effect=replace):
         with pytest.raises(fs.UnsafePoolPath):
             measure(fd)
-    assert len(os.listdir('/proc/self/fd')) == before
+    assert open_handle_identities() <= before
 
 
 def test_replaced_real_directory_inode_is_refused(held):
@@ -135,11 +152,11 @@ def test_replaced_real_directory_inode_is_refused(held):
 def test_depth_guard_closes_every_open_descriptor(held):
     fd, root = held
     (root / 'child' / 'grandchild').mkdir(parents=True)
-    before = len(os.listdir('/proc/self/fd'))
+    before = open_handle_identities()
     with patch.object(fs, '_MAX_TREE_DEPTH', 1):
         with pytest.raises(fs.UnsafePoolPath, match='depth'):
             measure(fd)
-    assert len(os.listdir('/proc/self/fd')) == before
+    assert open_handle_identities() <= before
 
 
 @pytest.mark.parametrize('kwargs', [{'max_bytes': -1}, {'max_bytes': True},
