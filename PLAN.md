@@ -530,6 +530,21 @@ _Last audited: 2026-05-19_
 - *Agent definitions are provider-portable; subscriptions are private bindings.* A public definition declares capabilities and optional provider/model requirements, never credentials. At installation, the universe binds it to the user's existing Claude, Codex, API-key, local-model, or future provider resources under the resource ledger and `allowed_providers` policy. Provider choice may change without forking the reusable agent definition.
 - *Model choice belongs to the user and their connection, not a compiled model list* (founder directive, revised 2026-09-09). Explicit user selections, saved defaults and fallback order take precedence. Without a user override, prefer the user's available subscription or locally running LLM sources over OpenRouter. For an OpenRouter-powered interactive agent, automatically select the best eligible available model and order fallbacks from most to least suitable, moving through them when limits are reached. Selection and ordering use current connection-scoped availability and required agent capabilities, not hardcoded model releases; the free OpenRouter onboarding path must not silently enable paid fallback. Where no more specific user-selected policy applies, retain the provider's own model default. Users can see the provider/model actually powering the interactive agent and click that indicator to switch, save a default, or edit fallback order. Distinguish actual execution (including fallback) from configured preference; do not label an unknown resolved model as known. Preserve explicit choices across provider updates and never borrow unbound authority. This revises the September 4 provider-default policy for OpenRouter and mixed-source selection. These are design requirements, not claims that current adapters, ranking, controls or failover already implement them.
 - *Error loudly when the remaining provider can't produce acceptable work.* Fake success is worse than failure. (Hard Rule #8.)
+- *First sign-in should power an unconnected universe* (founder directive,
+  September14,2026 PDT). After TinyAssets authentication establishes the user's
+  own universe, a universe with no connected LLM automatically continues to
+  OpenRouter's hosted signup/sign-in and OAuth authorization flow. New users
+  create their own OpenRouter account there; existing users authorize theirs.
+  TinyAssets securely completes the owner/universe-bound connection and enables
+  eligible free-only agent execution without requiring manual key creation or
+  an already-running LLM. Provider consent remains the user's action, not implied
+  by TinyAssets sign-in. Cancellation or failure leaves an honest resumable setup,
+  never a redirect loop or a borrowed credential. Existing connections that are
+  expired, unavailable or exhausted are recovery cases, not evidence of an empty
+  setup. Once powered, a generic request to connect any additional supported LLM
+  remains available; OpenRouter bootstrap does not restrict later provider choice
+  or override saved choices. No paid fallback or account purchase is implied.
+  This is required behavior, not a claim of current implementation.
 - *User-owned compute precedes market compute.* A user MUST be able to bind and
   use their own compute/provider authority before TinyAssets offers that user
   market-supplied compute. Market compute is an optional later extension or

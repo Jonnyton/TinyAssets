@@ -345,16 +345,36 @@
 
     <section id="view-connect" class="view view--connect" hidden>
       <header class="chat-header">
-        <div class="chat-title">Connect your subscription</div>
+        <div class="chat-title">Connect a model</div>
         <nav class="chat-actions">
           <button id="btn-connect-account" class="btn btn--link">Account</button>
           <button id="btn-connect-back" class="btn btn--link">Back to chat</button>
         </nav>
       </header>
       <div class="connect-body">
-        <p>Your universe thinks on <strong>your own</strong> Claude or OpenAI subscription. It never
-        runs on anyone else's account. Connect one and it starts speaking on the very next turn.</p>
+        <p>Your universe uses <strong>your own</strong> authorized model connections:
+        a subscription, a model API, or your own endpoint. It never borrows another user's account.</p>
         <div id="connect-status" class="connect-status" role="status"></div>
+
+        <div id="hosted-model-setup" class="provider-card" hidden>
+          <strong>Start with free models</strong>
+          <p>Continue to OpenRouter to create an account or connect your existing one.
+          On return, approve eligible free models for this universe. Provider privacy settings
+          and free limits apply; this does not authorize paid models or buying credits.</p>
+          <div id="hosted-model-status" role="status" aria-live="polite"></div>
+          <button id="btn-hosted-model" class="btn btn--primary">Continue with OpenRouter</button>
+          <button id="btn-hosted-resume" class="btn btn--ghost">Resume saved connection</button>
+          <div id="hosted-model-confirmation" hidden>
+            <h3 id="hosted-model-title"></h3>
+            <p id="hosted-model-body"></p>
+            <p id="hosted-model-grant"></p>
+            <button id="btn-hosted-accept" class="btn btn--primary">Approve free models</button>
+            <button id="btn-hosted-decline" class="btn btn--ghost">Not now</button>
+          </div>
+          <p><a class="legal-link" data-external href="https://openrouter.ai/settings/keys" rel="noreferrer noopener"
+            target="_blank">Manage your OpenRouter keys</a></p>
+          <p class="muted">You can skip for now or connect another source below.</p>
+        </div>
 
         <div class="provider-card">
           <div class="provider-head"><strong>OpenAI</strong> <span class="muted">ChatGPT Plus / Pro / Team</span></div>
@@ -841,7 +861,12 @@
     // overlap constantly, and a late reply would otherwise re-adopt a session
     // that had already been replaced, or tear down a healthy one a moment after
     // somebody else had just built it.
-    _gen:0,
+    _gen:0, _loginEpoch:0,
+    endLogin(){ this._loginEpoch++; this.invalidateSession(); this._initing=null; },
+    _assertLogin(epoch){
+      if(epoch!==this._loginEpoch) throw transportError("login_changed",
+        "the signed-in user changed; this request was not sent again", false);
+    },
     // Dropping the handle is cheap and always safe: the next call rebuilds it.
     invalidateSession(){ this.sessionId=null; this._gen++; },
     _pause(ms){ return new Promise(r=>setTimeout(r,ms)); },
@@ -904,9 +929,11 @@
     // the second failure inside one call could never recover.
     async _rpc(method, params, opts, attempt){
       opts=opts||{};
-      attempt=attempt||{auth:0, session:0, gateway:0};
+      attempt=attempt||{auth:0, session:0, gateway:0, loginEpoch:this._loginEpoch};
+      this._assertLogin(attempt.loginEpoch);
       const isHandshake = (method==="initialize" || method==="notifications/initialized");
       await ensureFreshToken();
+      this._assertLogin(attempt.loginEpoch);
       // A proactive token refresh (above) resets the session — it was bound to
       // the now-rotated bearer (see MCP.sessionId=null in refreshAccessToken).
       // Re-establish it BEFORE a non-handshake call, or the server rejects the
@@ -914,6 +941,7 @@
       // the 401 retry path never runs. Without this the first turn after every
       // ~5-min refresh fails until a reload.
       if(this.sessionId===null && !isHandshake) await this.ensureInit();
+      this._assertLogin(attempt.loginEpoch);
       const frame={jsonrpc:"2.0", method, params:params||{}};
       if(opts.expectResult!==false) frame.id=this.nextId++;
       const headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"};
@@ -940,6 +968,7 @@
         throw transportError("offline", "couldn\u2019t reach the network", false);
       }
 
+      this._assertLogin(attempt.loginEpoch);
       if(resp.status===401){
         if(attempt.auth<1 && token() && await refreshAccessToken()){
           attempt.auth++;
@@ -951,6 +980,7 @@
           // the very promise it is inside and the client wedges permanently -
           // no timeout, no further request. ensureInit repairs a half-finished
           // handshake itself instead (see its catch).
+          this._assertLogin(attempt.loginEpoch);
           if(!isHandshake) await this.ensureInit();
           return this._rpc(method, params, opts, attempt);
         }
@@ -987,6 +1017,7 @@
       // Session gone. This is provably PRE-DISPATCH - the transport rejected the
       // envelope, so the tool never ran - which makes replaying safe even for a
       // state-changing turn. Re-initialize once and run it for real.
+      this._assertLogin(attempt.loginEpoch);
       if(!isHandshake && this._isSessionGone(resp, bodyText)){
         // Retire FIRST, and unconditionally. The server has just disowned this
         // handle, so keeping it is never right - not even when the retry budget
@@ -1072,7 +1103,8 @@
       // Serialize concurrent initializers: two post-refresh calls must share ONE
       // initialize handshake, or the second's session orphans the first's.
       if(this._initing){ await this._initing; return; }
-      this._initing=(async()=>{
+      const loginEpoch=this._loginEpoch;
+      const initializing=(async()=>{
         try{ await this._handshake(); }
         catch(err){
           // Half a handshake is worthless: the bearer can rotate BETWEEN the two
@@ -1082,6 +1114,7 @@
           // call ensureInit() from inside the handshake: that awaits the promise
           // it is already inside, and the client wedges for good.
           if(!err || !(err.authRequired || err.transport)) throw err;
+          this._assertLogin(loginEpoch);
           this.sessionId=null;
           try{ await this._handshake(); }
           catch(again){
@@ -1089,17 +1122,20 @@
             // (it would destroy the session `initialize` just produced), so
             // nothing else disarms the second attempt's session - and it has
             // been disowned exactly like the first. Drop it explicitly.
-            this.invalidateSession();
+            if(this._loginEpoch===loginEpoch) this.invalidateSession();
             throw again;
           }
         }
       })();
-      try{ await this._initing; } finally { this._initing=null; }
+      this._initing=initializing;
+      try{ await initializing; } finally { if(this._initing===initializing) this._initing=null; }
     },
     // The handshake carries no user intent, so every step is safe to repeat.
     async _handshake(){
+      const loginEpoch=this._loginEpoch;
       await this._rpc("initialize",{protocolVersion:"2024-11-05",capabilities:{},
         clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}},{idempotent:true});
+      this._assertLogin(loginEpoch);
       await this._rpc("notifications/initialized",{},
         {expectResult:false, idempotent:true});
     },
@@ -1107,8 +1143,11 @@
     // an unmarked tool call is treated as state-changing and is never replayed
     // on an ambiguous failure.
     async callTool(name,args,opts){
+      const loginEpoch=this._loginEpoch;
       await this.ensureInit();
-      const r=await this._rpc("tools/call",{name,arguments:args||{}},opts);
+      this._assertLogin(loginEpoch);
+      const r=await this._rpc("tools/call",{name,arguments:args||{}},opts,
+        {auth:0, session:0, gateway:0, loginEpoch});
       if(r&&typeof r.structuredContent==="object"&&r.structuredContent) return r.structuredContent;
       const block=(r&&r.content||[]).find(c=>c&&c.type==="text"&&typeof c.text==="string");
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
@@ -2802,17 +2841,17 @@
       return await r.json();
     }catch(_e){ return null; }
   }
-  async function enterSignedIn(){
+  async function enterSignedIn(autoBootstrap=false){
     ModelPicker.reset();
     const me = await fetchMe();
     if(me===null && !token()) return;            // fetchMe signed us out
-    if(!(me && me.engine_connected===true)){
-      // Connect-until-ready: only an explicit "connected" opens chat. Unknown
-      // (daemon hiccup) still lands on Connect, with the reason, and "Skip for
-      // now" remains available.
-      engineConnected = me ? false : null;
+    HostedModelConnect.setup=me&&me.setup||"unavailable";
+    if(HostedModelConnect.setup!=="connected"){
+      engineConnected = HostedModelConnect.setup==="unavailable" ? null : false;
       showConnect(true);
-      if(!me) $("connect-status").textContent += " (Couldn't confirm your universe's status just now — you can connect anyway or skip.)";
+      if(HostedModelConnect.setup==="unavailable") $("connect-status").textContent="Could not confirm your universe's connections. Retry when available; no new connection has been started.";
+      else if(HostedModelConnect.setup==="recovery") $("connect-status").textContent="Your universe already has connection setup. Resume it or repair that connection; your existing settings are preserved.";
+      if(autoBootstrap && !NATIVE && HostedModelConnect.setup==="empty") await HostedModelConnect.begin();
       return;
     }
     engineConnected = true;
@@ -2959,26 +2998,173 @@
   // the very first message fail with "no JSON or SSE frame" and then self-recover on the
   // 2nd message. Fire-and-forget: a real error still surfaces on the first actual turn.
   function warmSession(){ try{ MCP.ensureInit().catch(()=>{}); }catch(_e){} }
-  function onEngineConnected(){
+  function onEngineConnected(stillCurrent=()=>true){
     engineConnected = true;
     $("btn-connect-back").textContent = "Go to your universe";
-    setTimeout(()=>{ showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
+    setTimeout(()=>{ if(!stillCurrent()) return; showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
   }
-  function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null; Voice.stop(false);
+  function enterSignedOut(){ clearInterval(statusTimer); MCP.endLogin(); resetClaudeConnection(); Voice.stop(false);
+    HostedModelConnect.reset();
     modelChoiceForNextTurn=null;
     ModelPicker.reset();
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
   function showConnect(asGate,guidance){ Voice.stop(false); showView("connect");
+    HostedModelConnect.paint();
     // Web has no loopback listener: the guided device-code path IS the path.
     if(!openaiBusy) resetOpenAIUI();
     $("btn-connect-back").textContent = asGate ? "Skip for now" : "Back to chat";
     $("connect-status").textContent = guidance || (asGate
-      ? "Your universe needs a mind to think with. Connect the subscription it should run on — credentials go straight to the connector over TLS, never through chat, never logged."
+      ? "Connect a model to power your universe. Credentials go straight to the connector over TLS, never through chat, never logged."
       : "Credentials go straight to the connector over TLS — never through chat, never logged."); }
 
   function autoGrow(el){ el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,window.innerHeight*0.4)+"px"; }
 
   function authHeaders(){ const h={}; const tk=token(); if(tk) h["Authorization"]="Bearer "+tk; return h; }
+
+  // Hosted authorization is separate from account sign-in. Only explicit sign-in
+  // may auto-start; reload, refresh, cancellation and recovery never do.
+  const HostedModelConnect={
+    storageKey:"ta_hosted_model_pkce_v1",preset:"openrouter_user_models_v1",
+    setup:"unavailable",busy:false,request:null,epoch:0,
+    status(text){$("hosted-model-status").textContent=text;},
+    paint(){
+      $("hosted-model-setup").hidden=NATIVE||this.setup==="connected";
+      $("btn-hosted-model").disabled=this.busy||this.setup!=="empty";
+      $("btn-hosted-resume").disabled=this.busy||this.setup==="unavailable";
+      $("btn-hosted-accept").disabled=this.busy;
+      $("btn-hosted-decline").disabled=this.busy;
+      $("hosted-model-confirmation").hidden=!this.request;
+    },
+    reset(){
+      this.epoch++;this.busy=false;this.request=null;this.setup="unavailable";
+      sessionStorage.removeItem(this.storageKey);
+    },
+    takeCallback(){
+      const match=window.location.pathname.match(/^\/mcp\/app\/model-callback\/([A-Za-z0-9_-]{43})$/);
+      if(!match) return null;
+      const query=new URLSearchParams(window.location.search);
+      // Strip before WorkOS handling, token refresh, network calls or rendering.
+      history.replaceState({},"","/mcp/app");
+      let saved=null;
+      try{saved=JSON.parse(sessionStorage.getItem(this.storageKey)||"null");}catch(_e){}
+      sessionStorage.removeItem(this.storageKey); // one browser redemption attempt
+      if(NATIVE||!saved||saved.flow!==match[1]||saved.preset!==this.preset||
+         typeof saved.verifier!=="string"||!/^[A-Za-z0-9_-]{43}$/.test(saved.verifier)||
+         !Number.isFinite(saved.expires)||saved.expires<=Date.now()||query.has("error")||
+         query.getAll("code").length!==1||!query.get("code")||query.get("code").length>2048){
+        return {error:true};
+      }
+      return {flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier};
+    },
+    async post(operation,payload){
+      await ensureFreshToken();
+      if(!token()) throw new Error("sign_in_required");
+      // No automatic retry: exchange outcomes may be uncertain.
+      const response=await fetch("/mcp/app/model-connect/"+operation,{
+        method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify(payload),
+      });
+      const result=await response.json();
+      if(!response.ok||result.error) throw new Error(result.error||"model_connection_incomplete");
+      return result;
+    },
+    async begin(){
+      if(this.busy||NATIVE||this.setup!=="empty") return;
+      const epoch=this.epoch;this.busy=true;this.paint();
+      this.status("Opening OpenRouter signup or sign-in. You choose whether to authorize access there.");
+      try{
+        const verifier=randToken(32),code_challenge=await challengeFor(verifier);
+        // Verify tab storage works before starting a flow requiring that verifier.
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset:this.preset}));
+        const result=await this.post("begin",{preset_id:this.preset,code_challenge});
+        if(epoch!==this.epoch) return;
+        const url=new URL(result.authorize_url);
+        if(url.protocol!=="https:"||url.username||url.password||
+           !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||
+           !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600) throw new Error("invalid_connection_response");
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset:this.preset,
+          flow:result.flow,expires:Date.now()+result.expires_in*1000}));
+        window.location.assign(url.href);
+      }catch(_e){
+        if(epoch!==this.epoch) return;
+        sessionStorage.removeItem(this.storageKey);
+        this.status("Could not start the connection. Refresh its status, then explicitly continue when ready.");
+      }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
+    },
+    async complete(callback=null){
+      if(this.busy||NATIVE) return;
+      if(callback&&callback.error){
+        showConnect(true);this.status("Connection cancelled or expired. You can continue again, resume a saved connection, or choose another source.");return;
+      }
+      const epoch=this.epoch;this.busy=true;this.paint();
+      this.status("Checking your connection. No model access is approved automatically.");
+      try{
+        const result=await this.post(callback?"exchange":"resume",callback||{preset_id:this.preset});
+        if(epoch!==this.epoch) return;
+        if(result.status==="connected"){await enterSignedIn();return;}
+        const req=result.request;
+        if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
+           !req.action||req.action.type!=="bind_model_access") throw new Error("invalid_connection_response");
+        this.setup="recovery";this.request=req;showConnect(true);
+        $("hosted-model-title").textContent=req.title;
+        $("hosted-model-body").textContent=req.body;
+        $("hosted-model-grant").textContent=req.grant_sentence||"";
+        this.status("Review your pending free-model request below. Approval checks the connection again before powering your universe.");
+      }catch(error){
+        if(epoch!==this.epoch) return;
+        await enterSignedIn();showConnect(true);
+        if(epoch!==this.epoch) return;
+        const code=error&&error.message;
+        if(code==="no_eligible_free_agent_model"){
+          this.status("OpenRouter returned no eligible free model that can run your agent. Check your OpenRouter account's model availability and privacy settings, then try Resume saved connection, or connect another source below. No paid-model access was approved.");
+        }else if(["model_authorization_required","model_connection_expired","unknown_model_connection",
+                  "invalid_pkce_verifier","invalid_authorization_code","model_authorization_not_completed"].includes(code)){
+          this.status(this.setup==="empty"
+            ?"Authorization is missing or no longer usable. Choose Continue with OpenRouter to start again. If a key was created during an earlier attempt, manage unused keys using the link below."
+            :"Authorization could not be resumed. Existing setup was preserved; connect or renew a source below. You can manage unused OpenRouter keys using the link below.");
+        }else if(code==="sign_in_required"){
+          this.status("Your app sign-in expired. Sign in again, then resume your saved connection. No model access was approved.");
+        }else if(["model_setup_changed","current_home_changed","model_connection_requires_recovery",
+                  "model_candidate_requires_review","model_discovery_requires_review",
+                  "model_confirmation_requires_review","model_connection_preset_changed"].includes(code)){
+          this.status("Your existing setup needs review before this connection can continue. It has not been replaced. Check your model settings or connect or renew a source below. If OpenRouter created an unused key, manage it using the link below.");
+        }else{
+          this.status(callback
+            ?"Setup did not finish. A key may already exist in OpenRouter. Try Resume saved connection; if authorization must restart, manage unused keys using the link below. Existing model choices have not been replaced."
+            :"Your saved connection is not ready yet. Try Resume saved connection again later, or connect another source below. Existing model choices have not been replaced.");
+        }
+      }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
+    },
+    async answer(accepted){
+      if(this.busy||!this.request) return;
+      const epoch=this.epoch;this.busy=true;this.paint();
+      this.status(accepted?"Applying your free-model approval…":"Leaving model access unapproved…");
+      try{
+        const payload={request_id:this.request.request_id};
+        if(accepted) payload.values={};else payload.decision="declined";
+        const result=await MCP.answerRequest(payload);
+        if(epoch!==this.epoch) return;
+        if(!result||result.error){
+          this.status("Setup is not confirmed. "+(result&&result.request_pending
+            ?"This request remains open; you can retry your approval."
+            :"Resume setup to check the current request."));return;
+        }
+        this.request=null;await enterSignedIn();
+        if(this.setup!=="connected") this.status(accepted
+          ?"Your answer was recorded, but your universe is not ready yet. Resume setup to check it."
+          :"Free-model access was not approved. You can connect another model below.");
+      }catch(_e){this.status("Could not confirm your answer. Resume setup to check it before trying again.");}
+      finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
+    },
+    wire(){
+      $("btn-hosted-model").addEventListener("click",()=>this.begin());
+      $("btn-hosted-resume").addEventListener("click",()=>this.complete());
+      $("btn-hosted-accept").addEventListener("click",()=>this.answer(true));
+      $("btn-hosted-decline").addEventListener("click",()=>this.answer(false));
+    },
+  };
+  // End hosted model connection controller.
 
   // A deposit is only half of "connect": the universe must also SERVE on it, or
   // chat works while every run fails with provider_not_bound. Same route the
@@ -3245,23 +3431,81 @@
     flow.hidden=true; btn.disabled=false; openaiBusy=false; $("openai-setup").hidden=false;
   }
 
-  async function connectClaude(){
-    const el=$("claude-material"), btn=$("btn-claude-connect"), res=$("claude-result");
-    const material=el.value.trim();
-    if(!material){ res.textContent="Paste the token from `claude setup-token` first."; return; }
-    el.value="";  // clear the secret from the DOM BEFORE any await
-    btn.disabled=true; res.textContent="Connecting…";
-    try{
-      const payload=await MCP.connectLLM("claude", btoa(unescape(encodeURIComponent(material))));
-      if(payload&&payload.error){ res.textContent="Couldn't connect: "+(payload.detail||payload.error); }
-      else{
-        // Deposit is write-only; make it SERVE the universe too.
-        let sv=null; try{ const r=await fetch("/mcp/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service:"claude"})}); sv=(await r.json()).serving; }catch(_e){}
-        if(sv&&sv.status==="serving"){ res.textContent="Claude credential saved. Your saved model choices are unchanged. Select Claude to test the connection."; btn.textContent="Claude credential saved"; onEngineConnected(); }
-        else{ res.textContent="Claude credential saved, but serving isn't enabled yet"+(sv&&sv.detail?(": "+sv.detail):"")+"."; btn.disabled=false; }
+  // ---- Subscription connection progress ----
+  let claudeConnection={pending:false,saved:false};
+  function resetClaudeConnection(){
+    claudeConnection={pending:false,saved:false};
+    $("claude-material").value="";
+    $("btn-claude-connect").disabled=false;
+    $("btn-claude-connect").textContent="Connect Claude";
+    $("claude-result").textContent="";
+  }
+  // A deadline bounds observation, not execution. The original write stays
+  // alive, and owns the submit guard until it settles. Never replay a secret.
+  function observeClaudeStage(promise,current,settled,timedOut){
+    return new Promise(resolve=>{
+      let late=false;
+      const timer=setTimeout(()=>{
+        late=true;
+        if(current()) timedOut();
+        resolve(false);
+      },30000);
+      Promise.resolve(promise).then(value=>finish(value,null),error=>finish(null,error));
+      function finish(value,error){
+        clearTimeout(timer);
+        if(!current()){ resolve(false); return; }
+        settled(value,error,late);
+        resolve(!late&&!error);
       }
-    }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } res.textContent="Couldn't connect: "+err.message; }
-    finally{ btn.disabled=false; }
+    });
+  }
+  async function connectClaude(){
+    const state=claudeConnection;
+    if(state.pending) return;
+    const current=()=>claudeConnection===state;
+    const el=$("claude-material"), btn=$("btn-claude-connect"), res=$("claude-result");
+    const uncertain="We couldn't confirm the result. Check the model picker for an existing connection before trying again. If this stays pending, reload to start over.";
+    function unlock(){ state.pending=false; btn.disabled=false; btn.textContent=state.saved?"Enable Claude":"Connect Claude"; }
+    if(!state.saved){
+      const material=el.value.trim();
+      if(!material){ res.textContent="Paste the token from `claude setup-token` first."; return; }
+      el.value=""; // clear the secret from the DOM BEFORE any await
+      state.pending=true; btn.disabled=true; res.textContent="Saving token…";
+      const observed=await observeClaudeStage(
+        MCP.connectLLM("claude",btoa(unescape(encodeURIComponent(material)))),current,
+        (payload,error)=>{
+          unlock();
+          if(error){
+            if(error.authRequired){ enterSignedOut(); return; }
+            res.textContent=uncertain; return;
+          }
+          if(payload&&payload.error){ res.textContent="Couldn't connect: "+(payload.detail||payload.error); return; }
+          if(payload&&payload.status==="deposited"){
+            state.saved=true; btn.textContent="Enable Claude";
+            res.textContent="Token saved. Select Enable Claude to finish connecting.";
+          }else res.textContent=uncertain;
+        },()=>{res.textContent=uncertain;});
+      if(!observed||!current()||!state.saved||views.connect.hidden) return;
+    }
+    if(!current()) return;
+    state.pending=true; btn.disabled=true; res.textContent="Token saved. Enabling Claude…";
+    const binding=(async()=>{
+      const response=await fetch("/mcp/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service:"claude"})});
+      if(response.status===401){ const error=new Error("authentication_required"); error.authRequired=true; throw error; }
+      if(!response.ok) throw new Error("bind_unconfirmed");
+      return (await response.json()).serving;
+    })();
+    await observeClaudeStage(binding,current,(serving,error,late)=>{
+      unlock();
+      if(error&&error.authRequired){ enterSignedOut(); return; }
+      if(error){ res.textContent="Token saved. "+uncertain; return; }
+      if(serving&&serving.status==="serving"){
+        res.textContent="Claude credential saved and enabled. Your saved model choices are unchanged. Select Claude to test the connection.";
+        if(!late&&!views.connect.hidden) onEngineConnected(()=>current()&&!views.connect.hidden);
+      }else{
+        res.textContent="Token saved, but Claude isn't enabled yet"+(serving&&serving.detail?": "+serving.detail:". "+uncertain);
+      }
+    },()=>{res.textContent="Token saved, but enabling Claude is unconfirmed. "+uncertain;});
   }
 
   function wire(){
@@ -3347,7 +3591,7 @@
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
     $("btn-rail-add").addEventListener("click",()=>showConnect(false));
     $("btn-connect-back").addEventListener("click",()=>{ showView("chat"); startHeartbeat(); loadPlan(); });
-    $("btn-signout").addEventListener("click",async()=>{ sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
+    $("btn-signout").addEventListener("click",async()=>{ MCP.endLogin(); resetClaudeConnection(); sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
     // Legal links open OUTSIDE the app. In the Capacitor shell a plain <a> would
     // navigate the WebView itself to tinyassets.io and strand the user with no
     // way back to their universe; openExternal uses the in-app browser instead.
@@ -3783,7 +4027,7 @@
     }
     if(req.action && req.action.type === "connect_llm"){
       const go = document.createElement("button");
-      go.className = "btn btn--primary"; go.textContent = "Connect a model";
+      go.className = "btn btn--primary"; go.textContent = req.sticky ? "Connect a model" : "Connect another LLM";
       go.addEventListener("click",()=>showConnect(false));
       box.appendChild(go);
       return box;   // no fields, no feedback, no dismiss — it is not a question
@@ -4119,12 +4363,20 @@
   }
 
   async function boot(){
+    const modelCallback=HostedModelConnect.takeCallback();
     wire();
+    HostedModelConnect.wire();
     wireNativeReturn();
     loadOpenAIPending();   // drops an expired pending flow (and its verifier) on start
-    const signedInNow = await completeSignInIfCallback();
+    const signedInNow = modelCallback ? false : await completeSignInIfCallback();
     if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the stored handle / refresh cookie
-    if(token() || signedInNow){ enterSignedIn(); } else { enterSignedOut(); }
+    if(token() || signedInNow){
+      await enterSignedIn(signedInNow&&!modelCallback);
+      if(modelCallback) await HostedModelConnect.complete(modelCallback);
+    } else {
+      enterSignedOut();
+      if(modelCallback) $("signin-notice").textContent="Sign in again, then resume your model connection. The expired return code has been discarded.";
+    }
     startSessionKeepAlive();
   }
   boot();

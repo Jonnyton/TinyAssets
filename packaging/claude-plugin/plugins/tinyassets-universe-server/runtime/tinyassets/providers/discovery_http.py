@@ -93,8 +93,28 @@ def read_http_discovery_document(
         or definition.access_method != "api_key_http"
     ):
         raise ModelDiscoveryUnavailable("source_revoked")
+    return read_granted_discovery_document(
+        db_path=db_path, grant_id=definition.ref, owner_user_id=owner_user_id,
+        universe_id=universe_id, url=url, json_mode=json_mode,
+    )
+
+
+def read_granted_discovery_document(
+    *, db_path: Path, grant_id: str, owner_user_id: str, universe_id: str,
+    url: str, json_mode: str = "legacy",
+) -> dict[str, Any] | list[Any]:
+    """Same exact broker authority, usable before a model descriptor exists.
+
+    An owned HTTP grant is sufficient for its allowed catalogue GET. Requiring
+    a model descriptor first would force bootstrap to invent a model identifier.
+    This grants no inference, follows no links and never handles credentials.
+    """
+    if type(json_mode) is not str or json_mode not in {"legacy", "exact"}:
+        raise ValueError("invalid discovery JSON mode")
+    if not owner_user_id or not universe_id or not grant_id:
+        raise ModelDiscoveryUnavailable("source_revoked")
     ledger = ConnectionLedger(Path(db_path), verify_authenticated_principal=lambda: owner_user_id)
-    grant = ledger.get_grant(definition.ref)
+    grant = ledger.get_grant(grant_id)
     if (
         grant is None
         or grant.revoked_at is not None

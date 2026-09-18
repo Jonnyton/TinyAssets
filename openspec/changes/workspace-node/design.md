@@ -212,6 +212,10 @@ succeed.
 
 ### D3. Provisioning (slice B): a platform-owned resolver, an offline install, and a real grammar
 
+The execution boundary is specified in [the reviewed execution amendment](provisioning-execution-amendment.md).
+Its Fable5.1 ADAPT corrections are incorporated; it is not a reopening of the
+original checkout/push review. Runtime implementation and live proof remain.
+
 No user code ever runs with both network and the checkout *(R1)*.
 `checkout` may declare `provision: {"python": "<requirements path>",
 "node": true}`:

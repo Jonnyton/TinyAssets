@@ -839,9 +839,8 @@ def test_the_model_ask_cannot_be_answered_or_dismissed_away(base):
     assert _raw_rail("u-1")["pending"][0]["request_id"] == "sys_connect_llm"
 
 
-def test_the_model_ask_disappears_once_something_serves(base, monkeypatch):
-    """It is derived, not stored — so it cannot go stale, and it goes away by
-    being satisfied rather than by being cleared."""
+def test_the_model_ask_becomes_optional_once_something_serves(base, monkeypatch):
+    """September14 direction: retain a generic additional-source entry when ready."""
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     monkeypatch.setattr(
@@ -849,5 +848,9 @@ def test_the_model_ask_disappears_once_something_serves(base, monkeypatch):
         lambda *a, **k: True,
     )
 
-    ids = [r["request_id"] for r in _raw_rail("u-1")["pending"]]
-    assert "sys_connect_llm" not in ids
+    _ask("u-1")
+    rows = _raw_rail("u-1")["pending"]
+    assert rows[-1]["request_id"] == "sys_connect_llm"
+    assert rows[-1]["title"] == "Connect another LLM"
+    assert rows[-1]["sticky"] is False
+    assert rows[0]["kind"] == "API"

@@ -1518,10 +1518,18 @@ def write_graph(
     as ``tiny/<universe>/<slug>`` (never the default branch; open the PR with
     the generic call), and a push against a created workspace is refused
     because it has no remote. ``{"sink": "workspace", "op": "discard",
-    "workspace": "<node>"}`` drops any workspace early (no consent needed). Dependency provisioning
-    (``provision`` on a checkout) is not available in this release - a
-    checkout that declares it is refused ``workspace_provision_refused``; run
-    what the project can run with the shipped Python and Node.
+    "workspace": "<node>"}`` drops any workspace early (no consent needed).
+    A checkout can add ``"provision": {"python": "requirements.lock", "node": true}``
+    (either family is optional). Python needs exact versions and SHA256 hashes
+    for the full wheel dependency closure; Node needs package.json and a v2/v3
+    package-lock.json using public npm registry tarballs. Provisioning needs
+    separate workspace_provision consent on the connection/repository. Missing
+    consent or invalid manifests preserve checkout with workspace_provision_refused;
+    download/install failure prevents publication with workspace_provision_failed.
+    Installation is offline: Python uses a fresh .venv (an existing .venv is not
+    overwritten), Node uses node_modules, and original manifests are preserved.
+    Dependency scripts may run offline; root package scripts do not. No arbitrary
+    OS package, browser binary or non-registry download is provided by this option.
 
     A CHECKOUT needs TWO things per ``(connection, repo)``, once, both through
     the request rail - a created workspace needs neither: the repository SCOPE
