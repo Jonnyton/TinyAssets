@@ -15,8 +15,9 @@ import hmac
 import json
 import re
 import secrets
-import threading
+import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -96,18 +97,58 @@ class PendingFlow:
     expires_at: float
 
 
-_pending: dict[str, PendingFlow] = {}
-_lock = threading.Lock()
+@contextmanager
+def _authority(owner: str, universe_id: str):
+    """Fence deletion/home/ACL changes through the short satellite commit."""
+    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.shared_self import require_founder_home
+    from tinyassets.storage import _connect, data_dir
+    from tinyassets.storage.current_home import CurrentHomeChanged, check_current_home
+
+    base = data_dir()
+    initialize_author_server(base)
+    with _connect(base) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            check_current_home(conn, owner, universe_id)
+            require_founder_home(base, universe_id, owner)
+        except (CurrentHomeChanged, PermissionError):
+            raise HostedAuthError("current_home_changed", 409) from None
+        yield base
+
+
+@contextmanager
+def _flows(base):
+    """No bearer material: only hashed handles and short-lived PKCE bindings."""
+    conn = sqlite3.connect(base / ".hosted-model-auth.db", timeout=5, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA secure_delete=ON")
+        conn.execute("CREATE TABLE IF NOT EXISTS hosted_model_flows ("
+                     "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
+                     "bound_home_id TEXT NOT NULL, preset_id TEXT NOT NULL, "
+                     "preset_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
+                     "callback_origin TEXT NOT NULL, created_at REAL NOT NULL, "
+                     "expires_at REAL NOT NULL)")
+        conn.execute("BEGIN IMMEDIATE")
+        now = time.time()
+        conn.execute("DELETE FROM hosted_model_flows WHERE expires_at <= ? "
+                     "OR created_at > ? OR expires_at <= created_at "
+                     "OR expires_at - created_at > ?",
+                     (now, now, FLOW_TTL_SECONDS))
+        yield conn, now
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _challenge(verifier: str) -> str:
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-
-
-def _sweep(now: float) -> None:
-    for handle in [h for h, flow in _pending.items() if flow.expires_at <= now]:
-        del _pending[handle]
 
 
 def is_callback_path(path: str) -> bool:
@@ -116,7 +157,7 @@ def is_callback_path(path: str) -> bool:
 
 def begin_flow(*, owner: str, universe_id: str, preset_id: str,
                challenge: str, public_resource: str) -> dict[str, str | int]:
-    """No network or storage writes. Caller resolves home and empty state first."""
+    """No network; caller resolves home and empty state before durable binding."""
     if not owner or not universe_id:
         raise HostedAuthError("current_home_required", 409)
     if not isinstance(challenge, str) or not _HANDLE.fullmatch(challenge):
@@ -131,16 +172,20 @@ def begin_flow(*, owner: str, universe_id: str, preset_id: str,
     if not valid:
         raise HostedAuthError("public_callback_unavailable", 503)
     preset = load_preset(preset_id)
-    with _lock:
-        now = time.monotonic()
-        _sweep(now)
-        mine = sum(f.owner == owner for f in _pending.values())
-        if len(_pending) >= MAX_PENDING or mine >= MAX_PER_OWNER:
+    with _authority(owner, universe_id) as base, _flows(base) as (conn, now):
+        total, mine = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(owner_user_id = ?), 0) FROM hosted_model_flows",
+            (owner,),
+        ).fetchone()
+        if total >= MAX_PENDING or mine >= MAX_PER_OWNER:
             raise HostedAuthError("too_many_pending_connections", 429)
         handle = secrets.token_urlsafe(32)
-        callback = f"{origin.scheme}://{origin.netloc}{CALLBACK_PREFIX}{handle}"
-        _pending[handle] = PendingFlow(owner, universe_id, preset.id, preset.digest,
-                                       challenge, callback, now + FLOW_TTL_SECONDS)
+        callback_origin = f"{origin.scheme}://{origin.netloc}"
+        callback = f"{callback_origin}{CALLBACK_PREFIX}{handle}"
+        conn.execute("INSERT INTO hosted_model_flows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (hashlib.sha256(handle.encode()).hexdigest(), owner, universe_id,
+                      preset.id, preset.digest, challenge, callback_origin, now,
+                      now + FLOW_TTL_SECONDS))
     return {
         "flow": handle,
         "authorize_url": preset.authorize_url + "?" + urlencode({
@@ -159,11 +204,20 @@ def take_flow(*, handle: str, owner: str, universe_id: str, verifier: str) -> Pe
     an uncertain network outcome requires explicit reauthorization, never replay.
     Current-home equality is necessary but callers must also recheck admin/setup.
     """
-    with _lock:
-        _sweep(time.monotonic())
-        flow = _pending.get(handle)
-        if flow is None or not owner or owner != flow.owner:
+    if not isinstance(handle, str) or not _HANDLE.fullmatch(handle) or not owner:
+        raise HostedAuthError("unknown_model_connection", 404)
+    with _authority(owner, universe_id) as base, _flows(base) as (conn, now):
+        digest = hashlib.sha256(handle.encode()).hexdigest()
+        row = conn.execute("SELECT * FROM hosted_model_flows WHERE handle_digest = ?",
+                           (digest,)).fetchone()
+        if row is None or owner != row["owner_user_id"]:
             raise HostedAuthError("unknown_model_connection", 404)
+        flow = PendingFlow(row["owner_user_id"], row["bound_home_id"], row["preset_id"],
+                           row["preset_digest"], row["challenge"],
+                           row["callback_origin"] + CALLBACK_PREFIX + handle, row["expires_at"])
+        if not (row["created_at"] <= now < flow.expires_at
+                and 0 < flow.expires_at - row["created_at"] <= FLOW_TTL_SECONDS):
+            raise HostedAuthError("model_connection_expired", 409)
         if universe_id != flow.universe_id:
             raise HostedAuthError("current_home_changed", 409)
         if not isinstance(verifier, str) or not _VERIFIER.fullmatch(verifier):
@@ -172,7 +226,9 @@ def take_flow(*, handle: str, owner: str, universe_id: str, verifier: str) -> Pe
             raise HostedAuthError("invalid_pkce_verifier")
         if load_preset(flow.preset_id).digest != flow.preset_digest:
             raise HostedAuthError("model_connection_preset_changed", 409)
-        del _pending[handle]
+        if conn.execute("DELETE FROM hosted_model_flows WHERE handle_digest = ?",
+                        (digest,)).rowcount != 1:
+            raise HostedAuthError("unknown_model_connection", 404)
         return flow
 
 
@@ -191,7 +247,7 @@ async def exchange_key(*, flow: PendingFlow, code: str, verifier: str,
     if not hmac.compare_digest(_challenge(verifier), flow.challenge):
         raise HostedAuthError("invalid_pkce_verifier")
     preset = load_preset(flow.preset_id)
-    if preset.digest != flow.preset_digest or flow.expires_at <= time.monotonic():
+    if preset.digest != flow.preset_digest or flow.expires_at <= time.time():
         raise HostedAuthError("model_connection_expired", 409)
     try:
         async with asyncio.timeout(EXCHANGE_TIMEOUT):
