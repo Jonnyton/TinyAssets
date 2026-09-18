@@ -6,7 +6,7 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
-from tests.test_hosted_model_auth import CHALLENGE, VERIFIER
+from tests.test_hosted_model_auth import CHALLENGE, VERIFIER, pending
 from tests.test_model_bootstrap import rig  # noqa: F401 - shared real-store fixture
 from tinyassets import onboarding
 from tinyassets.onboarding import hosted_model_auth as hosted
@@ -19,11 +19,6 @@ def ingress(monkeypatch):
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
     monkeypatch.setattr(onboarding, "_read_home", lambda identity, **kw: "u-owner")
-    with hosted._lock:
-        hosted._pending.clear()
-    yield
-    with hosted._lock:
-        hosted._pending.clear()
 
 
 def post(operation, data, *, origin="https://tinyassets.io"):
@@ -69,7 +64,7 @@ def test_begin_requires_exact_canonical_origin_before_state_changes(origin):
     response = post("begin", {"preset_id": "openrouter_user_models_v1",
                               "code_challenge": CHALLENGE}, origin=origin)
     assert response.status_code == 403
-    assert not hosted._pending
+    assert not pending()
 
 
 def test_foreign_home_cannot_redeem_or_start(monkeypatch):
@@ -86,7 +81,7 @@ def test_foreign_home_cannot_redeem_or_start(monkeypatch):
                                    "code_verifier": VERIFIER})
         assert result.status_code == 409
         assert begin().status_code == 409
-    assert first.json()["flow"] in hosted._pending
+    assert pending(first.json()["flow"])
 
 
 def test_only_callback_shell_is_exempt_from_bearer_challenge():
@@ -144,8 +139,8 @@ def test_new_owner_begin_provisions_own_empty_home_without_llm(request, monkeypa
         assert response.status_code == 200, response.text
         home = get_founder_home(base, new_owner.user_id)
         assert home and home != "u-owner"
-        pending = hosted._pending[response.json()["flow"]]
-        assert pending.owner == new_owner.user_id and pending.universe_id == home
+        record = pending(response.json()["flow"])
+        assert record["owner_user_id"] == new_owner.user_id and record["bound_home_id"] == home
 
 
 def test_anonymous_cannot_start_or_resume_or_exchange():
@@ -158,7 +153,7 @@ def test_anonymous_cannot_start_or_resume_or_exchange():
             ("exchange", {"flow": "f" * 43, "code": "code", "code_verifier": VERIFIER}),
         ]:
             assert post(operation, data).status_code == 401
-    assert not hosted._pending
+    assert not pending()
 
 
 def test_callback_is_nonmutating_shell_with_private_headers(monkeypatch):
@@ -177,4 +172,24 @@ def test_callback_is_nonmutating_shell_with_private_headers(monkeypatch):
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert "synthetic-code" not in response.text
-    assert not hosted._pending
+    assert not pending()
+
+
+def test_deletion_between_ingress_scope_and_durable_begin_cannot_recreate_metadata(monkeypatch):
+    from tinyassets.account_deletion import delete_account
+    from tinyassets.storage import data_dir
+
+    original = hosted.begin_flow
+
+    def delayed_begin(**kwargs):
+        receipt = delete_account(data_dir(), founder_sub=kwargs["owner"],
+                                 cancel_billing=lambda _: "cancelled",
+                                 delete_identity=lambda _: "deleted")
+        assert receipt["unfinished_phases"] == []
+        return original(**kwargs)
+
+    monkeypatch.setattr(hosted, "begin_flow", delayed_begin)
+    response = begin()
+    assert response.status_code == 409
+    assert response.json()["error"] == "current_home_changed"
+    assert not (data_dir() / ".hosted-model-auth.db").exists()
