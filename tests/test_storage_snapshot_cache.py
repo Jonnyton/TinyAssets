@@ -97,10 +97,10 @@ def test_a_caller_cannot_poison_the_next_callers_snapshot(monkeypatch):
     """
     storage.inspect_storage_utilization()  # miss: populates the memo
     hit = storage.inspect_storage_utilization()  # hit: this is the risky one
-    hit["pressure_level"] = "critical"
+    hit["pressure_level"] = "poisoned-test-marker"
     hit["per_subsystem"].clear()
     after = storage.inspect_storage_utilization()
-    assert after["pressure_level"] != "critical", (
+    assert after["pressure_level"] != "poisoned-test-marker", (
         "a cache HIT handed out the stored dict itself; mutating it poisoned "
         "every later reader"
     )

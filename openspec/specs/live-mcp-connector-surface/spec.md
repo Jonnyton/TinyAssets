@@ -517,6 +517,27 @@ only the enforced total (900) and write-run (300) admission ceilings per rolling
 - **WHEN** authorized status reports engine mutations
 - **THEN** activity contains their count and includes them in total, but `activity.limits` contains only `total` and `write_runs`
 
+### Requirement: Legacy storage telemetry labels freshness and accounting scope
+The existing storage-utilization status SHALL preserve prior response keys while
+reporting scan-start UTC observation time, elapsed observation age, cache reuse
+TTL, filesystem denominator and partial enumerated daemon accounting scope.
+It SHALL NOT represent the largest listed subsystem as the largest host consumer
+or as complete owner-attributed or billable storage.
+
+#### Scenario: Cached status follows a storage change
+- **WHEN** storage status reuses a cached measurement
+- **THEN** its original observation time remains unchanged and elapsed age is refreshed
+- **AND** declared cache TTL means reuse after scan completion, not atomicity or a hard maximum observation age
+
+#### Scenario: Subsystems do not cover the filesystem
+- **WHEN** status returns filesystem pressure beside enumerated subsystem bytes
+- **THEN** it declares the filesystem-containing-data-root scope and formula `1 - volume_bytes_free / volume_bytes_total`
+- **AND** caveats identify partial coverage, excluded Docker images/unlisted paths, mixed universe/root scope and no ownership attribution without exposing additional paths or identities
+
+#### Scenario: Filesystem pressure cannot be measured
+- **WHEN** the disk probe fails or reports zero total capacity
+- **THEN** additive availability is unavailable and prior numeric keys remain compatible rather than constituting healthy evidence
+
 ### Requirement: Storage observations distinguish measurable footprint from complete attribution
 Existing admin-only resource status SHALL report bounded metadata-only logical
 file-footprint observations separately from unavailable complete attributed

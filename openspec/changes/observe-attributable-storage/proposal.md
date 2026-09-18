@@ -6,6 +6,11 @@ and the host-wide storage report cannot substitute for an owner's footprint.
 
 ## What Changes
 
+- September 18 additive follow-up (`codex/storage-observation-freshness`, Codex):
+  label legacy `storage_utilization` with observation time, elapsed age, cache
+  reuse TTL, filesystem denominator and partial enumerated-subsystem scope.
+  Preserve prior fields, authority and scans; no new paths or owner identities.
+
 - Add bounded metadata-only storage observations to existing admin-only status.
 - Separate permanent workspaces, provider runtime, other universe files and
   lease-attributed shared scratch/quarantine; report partial and excluded scope.
