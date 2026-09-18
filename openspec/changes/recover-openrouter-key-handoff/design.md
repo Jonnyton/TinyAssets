@@ -41,7 +41,7 @@ The installed preset must resolve before creating any home or making an
 external request. V1 accepts only the existing installed OpenRouter free-model
 bootstrap preset; a caller cannot substitute another installed acquisition
 preset or weaken its free-only policy. Match the existing provider-key
-validation: 1..4096 printable ASCII characters without whitespace/control
+validation: 1..2048 printable ASCII characters without whitespace/control
 characters; do not truncate or silently transform the credential. `preset_id`
 retains the existing bounded-string validation. Reject unknown/extra fields,
 malformed bodies and invalid keys with stable non-secret error codes.
@@ -64,6 +64,25 @@ scope; do not invent a manual-only resurrection path. Two concurrent manual
 requests, or manual plus OAuth, must not replace credentials or overwrite a
 newly connected setup. A loser must refuse or recover existing state without
 redepositing the supplied key.
+
+Reviewed implementation boundary (Claude Fable ADAPT, September 18): pin the
+literal `openrouter_user_models_v1` before `load_preset`. Deletion takes the
+existing exclusive provider admission only while writing the tombstone, then
+releases before renaming the home (Windows open-handle semantics). The vault
+writer checks that tombstone inside its existing `BEGIN IMMEDIATE` before DML,
+while holding admission through owner-row commit and file persistence. The
+shared check does not require founder-home scope: legitimate non-home admin
+deposits remain supported. Missing legacy tombstone tables are empty; malformed
+or unreadable tables fail closed. See `shape-review.md` for the independent
+verdict and required T1–T4 proofs.
+
+The gesture lock is process-local and authoritative for the deployed
+single-process daemon only; it is not a multi-worker serialization guarantee.
+Future multi-worker activation must replace that assumption. Inherited inert
+post-discovery orphan rows, empty lock-created ghost directories, first-contact
+TOCTOU and SQLite busy-timeout tuning are non-blocking follow-up hardening, not
+claims fixed by this patch. The secret-bearing vault resurrection race is fixed
+in this lane before manual acquisition is enabled.
 
 No success result implies activation: reuse `confirmation_required` and the
 existing request ID/summary; only the existing owner-approved request answer
