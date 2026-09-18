@@ -17,7 +17,9 @@ def run_browser(steps):
     program = r"""
 const elements=new Map(),storage=new Map(),requests=[],navigations=[],answers=[];
 const $=id=>{if(!elements.has(id)) elements.set(id,{textContent:'',hidden:false,
- disabled:false,focus(){},addEventListener(){}});return elements.get(id);};
+ disabled:false,focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;},
+ addEventListener(event,handler){this.listeners=this.listeners||{};this.listeners[event]=handler;}
+ });return elements.get(id);};
 const sessionStorage={getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),
  removeItem:k=>storage.delete(k)};
 let NATIVE=false,me={setup:'empty'},auth='owner-token';
@@ -69,6 +71,54 @@ sessionStorage.setItem(HostedModelConnect.storageKey,JSON.stringify({flow:'f'.re
 window.location.pathname='/mcp/app/model-callback/'+'f'.repeat(43);
 window.location.search=__QUERY__;
 """.replace("__QUERY__", json.dumps(query))
+
+
+def test_existing_key_shortcut_focuses_original_box_without_credentials_or_authority():
+    result = run_browser(r"""
+const assert=require('node:assert/strict');
+$('paste-blob').value='synthetic-private-key';
+$('paste-intent').value='Keep my existing intent';
+$('api-key-connection').hidden=true;$('paste-key-guidance').hidden=true;
+HostedModelConnect.wire();
+$('btn-hosted-key').listeners.click();
+assert.equal($('api-key-connection').hidden,false);
+assert.equal($('paste-key-guidance').hidden,false);
+assert.equal($('api-key-connection').scrolled,true);
+assert.equal($('paste-blob').focused,true);
+assert.equal($('paste-blob').value,'synthetic-private-key');
+assert.equal($('paste-intent').value,'Keep my existing intent');
+// Navigation must not even inspect a credential value.
+Object.defineProperty($('paste-blob'),'value',{get(){throw Error('credential read');}});
+$('btn-hosted-key').listeners.click();
+""")
+    assert result["requests"] == result["navigations"] == result["answers"] == []
+    assert result["stored"] == []
+    assert result["path"] == "/mcp/app" and result["search"] == ""
+    assert "synthetic-private-key" not in json.dumps(result)
+
+
+def test_signup_handoff_and_key_shortcut_use_one_existing_secure_form():
+    from html.parser import HTMLParser
+
+    class IDs(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.ids = []
+
+        def handle_starttag(self, tag, attrs):
+            self.ids.extend(value for key, value in attrs if key == "id")
+
+    html, _ = render_app_html()
+    parser = IDs()
+    parser.feed(html)
+    assert len(parser.ids) == len(set(parser.ids))
+    assert parser.ids.count("paste-blob") == 1
+    assert html.index('id="btn-hosted-key"') < html.index('id="btn-openai-connect"')
+    assert "Your workspace is ready" in html and "TinyAssets authorization" in html
+    assert "No key needs to be copied or pasted" in html
+    assert "does not by itself enable a chat model or approve free-model access" in html
+    assert 'aria-controls="api-key-connection"' in html
+    assert 'aria-describedby="paste-key-guidance"' in html
 
 
 def confirmation():

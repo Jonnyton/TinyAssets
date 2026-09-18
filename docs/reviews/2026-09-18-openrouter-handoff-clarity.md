@@ -1,0 +1,39 @@
+# OpenRouter signup handoff clarity
+
+User-reported live issue: a new account saw OpenRouter's starter-key overlay
+before the actual TinyAssets authorization screen. After copying that key and
+opening a fresh app tab, the existing secure deposit box was hard to find.
+
+## Bounded correction
+
+The hosted free-model card explains Continue, TinyAssets authorization,
+automatic return, and subsequent free-model approval in the original tab.
+Copying a starter key is not required for that guided flow. A prominent
+existing-key button scrolls to and focuses the single existing paste box;
+it reads no key, submits nothing, and grants no authority.
+
+The manual form is explicitly credential storage, not model activation. Its
+existing resolveConnection/connectHTTP path does not bind serving or approve
+free models. An unpowered user may not have inference available for generic
+connection resolution; this patch does not claim otherwise or invent a bypass.
+The guided authorization flow remains unchanged.
+
+## Verification — Windows, 2026-09-18 04:32–04:34 UTC
+
+- `python -m pytest -q tests/test_app_hosted_model_connect.py
+  tests/test_onboarding_connection_progress.py tests/test_onboarding_model_connect.py
+  tests/test_onboarding_app.py`: 182 passed,31.21s.
+- After harness formatting, hosted-controller suite:29 passed,4.27s.
+- Actual shipped controller tests click the wired shortcut; assert original
+  field/intent preservation, focus/reveal, no credential-value read, duplicate
+  IDs, requests, navigation, approval, storage or credential output.
+- Offline actual Chromium DOM at390px and1280px: original field focused,
+  instruction shown, one paste box, no network/log activity or horizontal
+  overflow. Local `output/probe_openrouter_handoff.py` uses rendered markup
+  and the shipped controller, blocks all network, and uses no account/secret.
+- Ruff, diff check, brand-parity52 assets and mirror-parity457 files passed.
+
+No provider account actions, live browser ownership, deployment, merge or
+independent review performed by this author. Lead owns those gates and the
+live signup acceptance. No endpoint, provider grant, inference or vault code
+changed. Public website code was not changed; app brand receipt was refreshed.

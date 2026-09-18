@@ -361,9 +361,18 @@
           <p>Continue to OpenRouter to create an account or connect your existing one.
           On return, approve eligible free models for this universe. Provider privacy settings
           and free limits apply; this does not authorize paid models or buying credits.</p>
+          <p id="hosted-model-handoff"><strong>Signing up for the first time?</strong>
+          OpenRouter may show &ldquo;Your workspace is ready&rdquo; and offer a starter API key.
+          Choose <strong>Continue</strong>, then review the <strong>TinyAssets authorization</strong>
+          screen and choose <strong>Authorize</strong> if you want to connect.
+          You will return here automatically to review free-model access.
+          <strong>No key needs to be copied or pasted for this guided connection.</strong>
+          Keep using the tab where you started.</p>
           <div id="hosted-model-status" role="status" aria-live="polite"></div>
           <button id="btn-hosted-model" class="btn btn--primary">Continue with OpenRouter</button>
           <button id="btn-hosted-resume" class="btn btn--ghost">Resume saved connection</button>
+          <p><button id="btn-hosted-key" class="btn btn--ghost" type="button"
+            aria-controls="api-key-connection">Already have an OpenRouter API key?</button></p>
           <div id="hosted-model-confirmation" hidden>
             <h3 id="hosted-model-title"></h3>
             <p id="hosted-model-body"></p>
@@ -419,15 +428,21 @@
           <div id="claude-result" class="notice" role="status"></div>
         </div>
 
-        <div class="provider-card">
+        <div id="api-key-connection" class="provider-card">
           <div class="provider-head"><strong>Any API service</strong>
             <span class="muted">OpenRouter, Slack, X, any HTTPS API</span></div>
           <p>Paste whatever the service gave you &mdash; a key, a page of values, all
           four OAuth values, extra things it doesn't need. Your universe works out
           what the service is and what it may call. The key goes straight to the
           secure vault over TLS, <strong>never through chat</strong>.</p>
+          <p id="paste-key-guidance" role="status" hidden>This form stores an API connection;
+          it does not by itself enable a chat model or approve free-model access.
+          For guided free-model setup, finish OpenRouter authorization in the tab where you started.
+          To store a key instead, paste it only in the box below, describe its service and intended use,
+          then choose Add it. Never paste a key into chat.</p>
           <label class="field"><span>Paste it here</span>
-            <textarea id="paste-blob" rows="4" placeholder="Paste keys, tokens, or the whole credentials page"></textarea></label>
+            <textarea id="paste-blob" rows="4" autocomplete="off" spellcheck="false"
+              aria-describedby="paste-key-guidance" placeholder="Paste keys, tokens, or the whole credentials page"></textarea></label>
           <label class="field"><span>What should it do?
               <span class="muted">(optional &mdash; helps when the key alone doesn't say)</span></span>
             <input id="paste-intent" type="text" placeholder="e.g. open pull requests on my repo" /></label>
@@ -3039,6 +3054,13 @@
       this.epoch++;this.busy=false;this.request=null;this.setup="unavailable";
       sessionStorage.removeItem(this.storageKey);
     },
+    showKeyEntry(){
+      // Navigation only: do not read, copy, persist or submit credential values.
+      const card=$("api-key-connection"), input=$("paste-blob");
+      card.hidden=false; $("paste-key-guidance").hidden=false;
+      card.scrollIntoView({block:"start",behavior:"smooth"});
+      input.focus({preventScroll:true});
+    },
     takeCallback(){
       const match=window.location.pathname.match(/^\/mcp\/app\/model-callback\/([A-Za-z0-9_-]{43})$/);
       if(!match) return null;
@@ -3159,6 +3181,7 @@
     },
     wire(){
       $("btn-hosted-model").addEventListener("click",()=>this.begin());
+      $("btn-hosted-key").addEventListener("click",()=>this.showKeyEntry());
       $("btn-hosted-resume").addEventListener("click",()=>this.complete());
       $("btn-hosted-accept").addEventListener("click",()=>this.answer(true));
       $("btn-hosted-decline").addEventListener("click",()=>this.answer(false));
