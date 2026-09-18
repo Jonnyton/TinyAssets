@@ -3941,6 +3941,14 @@ def main(
         from tinyassets.storage import data_dir as _sb_data_dir
 
         _reclaimed = reconcile_orphaned_reservations_on_boot(_sb_data_dir())
+        # Delivery intent survives queued-run startup interruption. Reconcile
+        # ordinary runs first, then let the fenced receiver worker distinguish
+        # proven unstarted attempts from possibly executed work.
+        from tinyassets.api.runs import _ensure_runs_recovery
+        from tinyassets.delivery_runtime import reconcile_deliveries
+
+        _ensure_runs_recovery()
+        reconcile_deliveries(_sb_data_dir())
         if _reclaimed:
             logger.info(
                 "served budget: released %d orphaned reservation(s) at boot",
@@ -3953,6 +3961,7 @@ def main(
             while True:
                 _time.sleep(300.0)
                 try:
+                    reconcile_deliveries(_sb_data_dir())
                     _n = reconcile_served_budget_leases(_sb_data_dir())
                     if _n:
                         logger.info(

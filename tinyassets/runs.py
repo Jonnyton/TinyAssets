@@ -1452,36 +1452,77 @@ def create_run(
         if owner_user_id is not None
         else _resolve_owner_user_id(base_path, daemon_id)
     )
+    with _connect(base_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _insert_run_in_transaction(
+            conn, run_id=run_id, branch_def_id=branch_def_id, thread_id=thread_id,
+            inputs=inputs, run_name=run_name, actor=actor,
+            owner_user_id=resolved_owner_user_id, branch_version_id=branch_version_id,
+            daemon_id=daemon_id, runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id, branch_task_id=branch_task_id,
+            queue_universe_id=queue_universe_id,
+        )
+    return run_id
+
+
+def _insert_run_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    branch_def_id: str,
+    thread_id: str,
+    inputs: dict[str, Any],
+    actor: str,
+    owner_user_id: str,
+    run_name: str = "",
+    branch_version_id: str | None = None,
+    daemon_id: str | None = None,
+    runtime_instance_id: str | None = None,
+    worker_id: str | None = None,
+    branch_task_id: str | None = None,
+    queue_universe_id: str | None = None,
+) -> None:
+    """Insert a run alongside a durable intent in its caller-owned transaction.
+
+    Internal persistence seam, not an authorization or execution entry point.
+    The caller initializes the runs schema before acquiring this transaction,
+    derives ownership from trusted authority and commits related intent/attempt
+    rows atomically. Never resolve another database or create a nested connection
+    here. Ordinary create_run keeps its existing ownership-resolution contract.
+    """
+    if not conn.in_transaction:
+        raise ValueError("run insertion requires an active caller-owned transaction")
+    actor = named_principal(actor)
+    if not actor:
+        raise ValueError("create_run actor must be a real principal; an unowned value is not one")
     try:
-        with _connect(base_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO runs (
-                    run_id, branch_def_id, run_name, thread_id,
-                    status, actor, owner_user_id, inputs_json, started_at,
-                    branch_version_id, daemon_id, runtime_instance_id,
-                    worker_id, branch_task_id, queue_universe_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id, branch_def_id, run_name, thread_id,
-                    RUN_STATUS_QUEUED, actor, resolved_owner_user_id,
-                    json.dumps(inputs, default=str), _now(),
-                    branch_version_id,
-                    daemon_id,
-                    runtime_instance_id,
-                    worker_id,
-                    branch_task_id,
-                    queue_universe_id,
-                ),
-            )
+        conn.execute(
+            """
+            INSERT INTO runs (
+                run_id, branch_def_id, run_name, thread_id,
+                status, actor, owner_user_id, inputs_json, started_at,
+                branch_version_id, daemon_id, runtime_instance_id,
+                worker_id, branch_task_id, queue_universe_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id, branch_def_id, run_name, thread_id,
+                RUN_STATUS_QUEUED, actor, owner_user_id,
+                json.dumps(inputs, default=str), _now(),
+                branch_version_id,
+                daemon_id,
+                runtime_instance_id,
+                worker_id,
+                branch_task_id,
+                queue_universe_id,
+            ),
+        )
     except sqlite3.IntegrityError as exc:
         if branch_task_id and "runs.branch_task_id" in str(exc):
             raise BranchTaskRunReservationConflict(
                 f"BranchTask {branch_task_id!r} already has a run reservation"
             ) from exc
         raise
-    return run_id
 
 
 def update_run_status(
@@ -3288,6 +3329,19 @@ def _prepare_run(
         branch_task_id=branch_task_id,
         queue_universe_id=queue_universe_id,
     )
+    _initialize_prepared_run(base_path, run_id=run_id, branch=branch, actor=actor)
+    return run_id
+
+
+def _initialize_prepared_run(
+    base_path: str | Path, *, run_id: str, branch: BranchDefinition, actor: str,
+) -> None:
+    """Initialize events/lineage for a newly reserved, never-executed run.
+
+    Internal seam for durable intents. The caller must prove execution has not
+    started before invoking this helper; it does not authorize retry/resume.
+    Ordinary _prepare_run calls it exactly once after creating its new run.
+    """
     thread_id = run_id
     with _connect(base_path) as conn:
         conn.execute(
@@ -3341,7 +3395,6 @@ def _prepare_run(
         branch_version=branch_version,
         edits_since_parent=edits_since_parent,
     )
-    return run_id
 
 
 #: Default LangGraph recursion-limit ceiling, raised from LangGraph's
@@ -4553,6 +4606,84 @@ def wait_for(run_id: str, timeout: float | None = None) -> None:
         fut.result(timeout=timeout)
 
 
+def _invoke_prepared_branch(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    branch: BranchDefinition,
+    inputs: dict[str, Any],
+    actor: str,
+    provider_call: Callable[..., str] | None,
+    recursion_limit: int,
+    concurrency_budget_override: int | None = None,
+    on_node_status: Callable[[str, str], None] | None = None,
+    invocation_depth: int = 0,
+    enqueue_universe_id: str = "",
+) -> RunOutcome:
+    """Execute an already reserved/admitted run and settle its provider claim.
+
+    Internal worker body, not an authorization or replay API. The caller owns
+    dispatch exclusion, context and admission; this function never creates a
+    run, reloads a mutable definition or submits another executor task. Normal
+    foreground and durable-delivery workers share the same invocation path.
+    """
+    try:
+        outcome = _invoke_graph(
+            base_path,
+            run_id=run_id, branch=branch, inputs=inputs,
+            provider_call=provider_call,
+            recursion_limit=recursion_limit,
+            concurrency_budget_override=concurrency_budget_override,
+            on_node_status=on_node_status,
+            invocation_depth=invocation_depth,
+            enqueue_context=(
+                NodeEnqueueContext(
+                    universe_id=enqueue_universe_id,
+                    actor=actor,
+                    parent_branch_task_id="",
+                    origin_branch_task_id=f"run:{run_id}",
+                )
+                if enqueue_universe_id
+                else None
+            ),
+        )
+    except Exception:
+        # _invoke_graph normally records failures itself; preserve the outer
+        # worker guard for errors that escape it.
+        logger.exception("Background worker for run %s crashed", run_id)
+        update_run_status(
+            base_path, run_id,
+            status=RUN_STATUS_FAILED,
+            error="Background worker crashed; see server logs.",
+            finished_at=_now(),
+        )
+        outcome = RunOutcome(
+            run_id=run_id, status=RUN_STATUS_FAILED,
+            output={}, error="Background worker crashed.",
+        )
+    try:
+        from tinyassets.foreground_run_provider import close_foreground_run_provider
+
+        close_foreground_run_provider(provider_call)
+    except Exception as exc:
+        logger.exception("Foreground provider claim release failed for %s", run_id)
+        message = f"Provider authority settlement failed: {exc}"
+        update_run_status(
+            base_path,
+            run_id,
+            status=RUN_STATUS_FAILED,
+            error=message,
+            finished_at=_now(),
+        )
+        outcome = RunOutcome(
+            run_id=run_id,
+            status=RUN_STATUS_FAILED,
+            output={},
+            error=message,
+        )
+    return outcome
+
+
 def _execute_branch_core(
     base_path: str | Path,
     *,
@@ -4634,63 +4765,16 @@ def _execute_branch_core(
     effective_limit = recursion_limit_override or DEFAULT_RECURSION_LIMIT
 
     def _worker() -> RunOutcome:
-        outcome: RunOutcome
-        try:
-            outcome = _invoke_graph(
-                base_path,
-                run_id=run_id, branch=branch, inputs=inputs,
-                provider_call=provider_call,
-                recursion_limit=effective_limit,
-                concurrency_budget_override=concurrency_budget_override,
-                on_node_status=on_node_status,
-                invocation_depth=_invocation_depth,
-                enqueue_context=(
-                    NodeEnqueueContext(
-                        universe_id=_enqueue_universe_id,
-                        actor=actor,
-                        parent_branch_task_id="",
-                        origin_branch_task_id=f"run:{run_id}",
-                    )
-                    if _enqueue_universe_id
-                    else None
-                ),
-            )
-        except Exception:
-            # Belt-and-suspenders: _invoke_graph already catches and
-            # writes status, but if something escapes we still don't
-            # want the executor to swallow it silently.
-            logger.exception("Background worker for run %s crashed", run_id)
-            update_run_status(
-                base_path, run_id,
-                status=RUN_STATUS_FAILED,
-                error="Background worker crashed; see server logs.",
-                finished_at=_now(),
-            )
-            outcome = RunOutcome(
-                run_id=run_id, status=RUN_STATUS_FAILED,
-                output={}, error="Background worker crashed.",
-            )
-        try:
-            from tinyassets.foreground_run_provider import close_foreground_run_provider
-
-            close_foreground_run_provider(provider_call)
-        except Exception as exc:
-            logger.exception("Foreground provider claim release failed for %s", run_id)
-            message = f"Provider authority settlement failed: {exc}"
-            update_run_status(
-                base_path,
-                run_id,
-                status=RUN_STATUS_FAILED,
-                error=message,
-                finished_at=_now(),
-            )
-            outcome = RunOutcome(
-                run_id=run_id,
-                status=RUN_STATUS_FAILED,
-                output={},
-                error=message,
-            )
-        return outcome
+        return _invoke_prepared_branch(
+            base_path,
+            run_id=run_id, branch=branch, inputs=inputs, actor=actor,
+            provider_call=provider_call,
+            recursion_limit=effective_limit,
+            concurrency_budget_override=concurrency_budget_override,
+            on_node_status=on_node_status,
+            invocation_depth=_invocation_depth,
+            enqueue_universe_id=_enqueue_universe_id,
+        )
 
     # The run's worker thread must see the REQUEST's ContextVars (the
     # authenticated actor): a bare submit gives it the pool thread's empty
