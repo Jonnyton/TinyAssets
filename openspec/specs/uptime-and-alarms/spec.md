@@ -6,7 +6,7 @@
 
 Keep the operational uptime control paths explicit and testable without absorbing the MCP protocol, daemon scheduling, or community patch-loop contracts owned by neighboring capabilities.
 ## Requirements
-+### Requirement: Platform Liveness Follows The Current Executor Lifecycle
+### Requirement: Platform Liveness Follows The Current Executor Lifecycle
 
 The platform SHALL project daemon-owned coordinator liveness from actual
 started instances in the serving process, their thread lifecycle and elapsed
