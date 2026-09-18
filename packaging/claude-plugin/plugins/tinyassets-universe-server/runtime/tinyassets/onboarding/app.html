@@ -388,9 +388,23 @@
           <p>Continue to OpenRouter to create an account or connect your existing one.
           On return, approve eligible free models for this universe. Provider privacy settings
           and free limits apply; this does not authorize paid models or buying credits.</p>
+          <p id="hosted-model-handoff"><strong>Signing up for the first time?</strong>
+          OpenRouter may show &ldquo;Your workspace is ready&rdquo; and offer a starter API key.
+          Choose <strong>Continue</strong>, then review the <strong>TinyAssets authorization</strong>
+          screen and choose <strong>Authorize</strong> if you want to connect.
+          If OpenRouter sends you back here, review free-model access next.
+          <strong>No key needs to be copied or pasted for this guided connection.</strong>
+          Keep using the tab where you started.</p>
+          <p><strong>Signed up, but landed on your OpenRouter workspace?</strong>
+          Return to this TinyAssets tab and choose <strong>Continue with OpenRouter</strong>
+          below to finish linking your account. Creating an OpenRouter account alone does not
+          connect a model here. If you return here with an error, setup is still incomplete;
+          do not repeat authorization or create more keys without checking the message.</p>
           <div id="hosted-model-status" role="status" aria-live="polite"></div>
           <button id="btn-hosted-model" class="btn btn--primary">Continue with OpenRouter</button>
           <button id="btn-hosted-resume" class="btn btn--ghost">Resume saved connection</button>
+          <p><button id="btn-hosted-key" class="btn btn--ghost" type="button"
+            aria-controls="api-key-connection">Already have an OpenRouter API key?</button></p>
           <div id="hosted-model-confirmation" hidden>
             <h3 id="hosted-model-title"></h3>
             <p id="hosted-model-body"></p>
@@ -446,19 +460,27 @@
           <div id="claude-result" class="notice" role="status"></div>
         </div>
 
-        <div class="provider-card">
-          <div class="provider-head"><strong>Any API service</strong>
-            <span class="muted">OpenRouter, Slack, X, any HTTPS API</span></div>
-          <p>Paste whatever the service gave you &mdash; a key, a page of values, all
+        <div id="api-key-connection" class="provider-card">
+          <div class="provider-head"><strong id="api-key-title">Any API service</strong>
+            <span id="api-key-examples" class="muted">OpenRouter, Slack, X, any HTTPS API</span></div>
+          <p id="api-key-description">Paste whatever the service gave you &mdash; a key, a page of values, all
           four OAuth values, extra things it doesn't need. Your universe works out
           what the service is and what it may call. The key goes straight to the
           secure vault over TLS, <strong>never through chat</strong>.</p>
+          <p id="paste-key-guidance" role="status" hidden>Connect free models with your own
+          OpenRouter API key. Paste only the key below, then choose Review free-model access.
+          Your key goes to your private connection, never into chat. Saving it does not
+          approve model access: you will review that separately. No paid models or credit
+          purchase will be approved.</p>
           <label class="field"><span>Paste it here</span>
-            <textarea id="paste-blob" rows="4" placeholder="Paste keys, tokens, or the whole credentials page"></textarea></label>
-          <label class="field"><span>What should it do?
+            <textarea id="paste-blob" rows="4" autocomplete="off" spellcheck="false"
+              aria-describedby="paste-key-guidance" placeholder="Paste keys, tokens, or the whole credentials page"></textarea></label>
+          <label id="paste-intent-field" class="field"><span>What should it do?
               <span class="muted">(optional &mdash; helps when the key alone doesn't say)</span></span>
             <input id="paste-intent" type="text" placeholder="e.g. open pull requests on my repo" /></label>
           <button id="btn-paste-connect" class="btn btn--primary">Add it</button>
+          <button id="btn-hosted-deposit" class="btn btn--primary" hidden>Review free-model access</button>
+          <button id="btn-hosted-key-cancel" class="btn btn--ghost" hidden>Use this box for another API service</button>
           <div id="paste-result" class="notice" role="status"></div>
 
           <details class="connect-advanced" id="http-manual"><summary>Fill it in myself</summary>
@@ -1231,7 +1253,8 @@
   // ---- UI ----
   const $=(id)=>document.getElementById(id);
   const views={signin:$("view-signin"),chat:$("view-chat"),connect:$("view-connect"),account:$("view-account")};
-  function showView(n){ for(const k in views) views[k].hidden=(k!==n); }
+  let viewGeneration=0;
+  function showView(n){ viewGeneration++; for(const k in views) views[k].hidden=(k!==n); }
   let hasMessages=false, statusTimer=null;
 
   function formatMessageTimestamp(epochSeconds, locale, timeZone){
@@ -3055,19 +3078,94 @@
   // may auto-start; reload, refresh, cancellation and recovery never do.
   const HostedModelConnect={
     storageKey:"ta_hosted_model_pkce_v1",preset:"openrouter_user_models_v1",
-    setup:"unavailable",busy:false,request:null,epoch:0,
-    status(text){$("hosted-model-status").textContent=text;},
+    setup:"unavailable",busy:false,request:null,epoch:0,keyMode:false,
+    status(text){$("hosted-model-status").textContent=text;if(this.keyMode)$("paste-result").textContent=text;},
     paint(){
       $("hosted-model-setup").hidden=NATIVE||this.setup==="connected";
       $("btn-hosted-model").disabled=this.busy||this.setup!=="empty";
       $("btn-hosted-resume").disabled=this.busy||this.setup==="unavailable";
       $("btn-hosted-accept").disabled=this.busy;
       $("btn-hosted-decline").disabled=this.busy;
+      $("btn-hosted-key").disabled=this.busy||this.setup!=="empty";
+      $("btn-hosted-deposit").disabled=this.busy||this.setup!=="empty";
+      $("btn-hosted-key-cancel").disabled=this.busy;
       $("hosted-model-confirmation").hidden=!this.request;
     },
     reset(){
       this.epoch++;this.busy=false;this.request=null;this.setup="unavailable";
+      this.setKeyMode(false);
       sessionStorage.removeItem(this.storageKey);
+    },
+    showKeyEntry(){
+      if(this.busy||this.setup!=="empty") return;
+      this.setKeyMode(true);
+      const card=$("api-key-connection"), input=$("paste-blob");
+      card.hidden=false;
+      card.scrollIntoView({block:"start",behavior:"smooth"});
+      input.focus({preventScroll:true});
+    },
+    setKeyMode(enabled){
+      // Mode changes discard, never inspect or carry, a previous credential.
+      $("paste-blob").value="";$("paste-intent").value="";
+      this.keyMode=enabled;
+      $("paste-key-guidance").hidden=!enabled;
+      $("api-key-title").textContent=enabled?"OpenRouter free-model setup":"Any API service";
+      $("api-key-examples").hidden=enabled;$("api-key-description").hidden=enabled;
+      $("paste-intent-field").hidden=enabled;$("http-manual").hidden=enabled;
+      $("paste-blob").placeholder=enabled?"Paste only your OpenRouter API key":"Paste keys, tokens, or the whole credentials page";
+      $("btn-hosted-deposit").hidden=!enabled;
+      $("btn-hosted-key-cancel").hidden=!enabled;
+      $("btn-paste-connect").hidden=enabled;
+      $("paste-intent").disabled=enabled;
+      $("paste-result").textContent="";
+      this.paint();
+    },
+    async depositKey(){
+      if(!this.keyMode||this.busy||NATIVE||this.setup!=="empty") return;
+      let key=$("paste-blob").value;$("paste-blob").value="";
+      if(typeof key!=="string"||!key.length||key.length>2048||!/^[\x21-\x7e]+$/.test(key)){
+        key="";this.status("Paste only your OpenRouter API key, without spaces or other text.");return;
+      }
+      const epoch=this.epoch,view=viewGeneration;
+      let timedOut=false;
+      const current=()=>epoch===this.epoch&&view===viewGeneration;
+      this.busy=true;this.paint();
+      this.status("Saving your connection and preparing free-model access. Nothing is approved yet.");
+      const timer=setTimeout(()=>{
+        timedOut=true;
+        if(current())this.status("Setup is still unconfirmed. Do not paste the key again. Wait for this request to settle, then use Resume saved connection.");
+      },30000);
+      try{
+        const pending=this.post("deposit_key",{preset_id:this.preset,key});key="";
+        const result=await pending;
+        if(epoch!==this.epoch)return;
+        this.setup="recovery";
+        if(!current()||timedOut){
+          if(current())this.status("Your setup response arrived late. Use Resume saved connection to review it; no model access was approved.");
+          return;
+        }
+        const req=result.request;
+        if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
+           !req.action||req.action.type!=="bind_model_access")throw new Error("invalid_connection_response");
+        this.request=req;
+        $("hosted-model-title").textContent=req.title;
+        $("hosted-model-body").textContent=req.body;
+        $("hosted-model-grant").textContent=req.grant_sentence||"";
+        this.status("Connection saved. Review the free-model request above; your universe is not powered until you approve it.");
+        this.busy=false;
+        this.paint();$("hosted-model-confirmation").scrollIntoView({block:"center",behavior:"smooth"});
+        $("btn-hosted-accept").focus({preventScroll:true});
+      }catch(error){
+        if(epoch!==this.epoch)return;
+        const invalid=error&&error.message==="invalid_model_connection";
+        if(!invalid)this.setup="recovery";
+        if(current())this.status(invalid
+          ?"The key was not accepted. Paste only your OpenRouter API key to try again."
+          :"Setup is not confirmed. Do not paste the key again. Use Resume saved connection to check any saved setup; no model access was approved.");
+      }finally{
+        key="";clearTimeout(timer);
+        if(epoch===this.epoch){this.busy=false;this.paint();}
+      }
     },
     takeCallback(){
       const match=window.location.pathname.match(/^\/mcp\/app\/model-callback\/([A-Za-z0-9_-]{43})$/);
@@ -3087,7 +3185,9 @@
       return {flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier};
     },
     async post(operation,payload){
+      const epoch=this.epoch;
       await ensureFreshToken();
+      if(epoch!==this.epoch)throw new Error("sign_in_required");
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: exchange outcomes may be uncertain.
       const response=await fetch("/mcp/app/model-connect/"+operation,{
@@ -3189,6 +3289,9 @@
     },
     wire(){
       $("btn-hosted-model").addEventListener("click",()=>this.begin());
+      $("btn-hosted-key").addEventListener("click",()=>this.showKeyEntry());
+      $("btn-hosted-deposit").addEventListener("click",()=>this.depositKey());
+      $("btn-hosted-key-cancel").addEventListener("click",()=>{if(!this.busy)this.setKeyMode(false);});
       $("btn-hosted-resume").addEventListener("click",()=>this.complete());
       $("btn-hosted-accept").addEventListener("click",()=>this.answer(true));
       $("btn-hosted-decline").addEventListener("click",()=>this.answer(false));
@@ -3881,6 +3984,7 @@
       return (values.slice().sort((a,b)=>b.value.length-a.value.length)[0]||{}).value||"";
     }
     $("btn-paste-connect").addEventListener("click",async()=>{
+      if(HostedModelConnect.keyMode)return;
       const blobEl=$("paste-blob"), blob=blobEl.value;
       const intentEl=$("paste-intent"), intent=intentEl.value.trim();
       const out=$("paste-result"), btn=$("btn-paste-connect");

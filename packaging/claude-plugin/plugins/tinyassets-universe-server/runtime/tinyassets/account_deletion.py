@@ -859,9 +859,16 @@ def delete_account(
     if blockers:
         raise AccountDeletionBlocked("; ".join(blockers))
 
-    # The fence goes in FIRST, so no window exists in which the binding is still
-    # live and the tombstone is not (Codex round 3, finding 4).
-    write_tombstone(root, principal)
+    # Finish any admitted vault persistence before tombstoning. Later writers
+    # check the tombstone inside their transaction under this same admission.
+    # Release BEFORE staging: Windows cannot rename an open admission-lock file.
+    if home:
+        from tinyassets.provider_assignment import provider_assignment_admission
+
+        with provider_assignment_admission().exclusive(_home_dir(root, home)):
+            write_tombstone(root, principal)
+    else:
+        write_tombstone(root, principal)
     blob_sessions = _authoring_session_ids(root, principal)
 
     staged = _stage_home(root, home) if home else None

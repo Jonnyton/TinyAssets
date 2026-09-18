@@ -66,6 +66,45 @@ def test_second_oauth_result_cannot_replace_first_deposit(rig):
     assert load_credential_vault(rig / "u-owner")[0]["token"] == "first-key"
 
 
+def test_concurrent_manual_and_oauth_keys_have_one_deposit_winner(rig, monkeypatch):
+    """T4: hold the winning deposit while another acquisition contests setup."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from tinyassets.api import http_connection
+    from tinyassets.credential_vault import load_credential_vault
+
+    entered, release, contested = Event(), Event(), Event()
+    original = http_connection.connect_http
+    calls = []
+
+    def parked(**kwargs):
+        calls.append(kwargs["payload"]["secret"])
+        entered.set()
+        assert release.wait(5)
+        return original(**kwargs)
+
+    monkeypatch.setattr(http_connection, "connect_http", parked)
+
+    def run(key, second=False):
+        with identity_context(Identity(user_id="owner", username="owner", capabilities=["write"])):
+            if second:
+                contested.set()
+            return finish(rig, key=key)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(run, "winning-key")
+        assert entered.wait(5)
+        second = pool.submit(run, "losing-key", True)
+        assert contested.wait(5)
+        release.set()
+        assert first.result(timeout=15)["status"] == "confirmation_required"
+        with pytest.raises(HostedAuthError, match="model_setup_changed"):
+            second.result(timeout=15)
+    assert calls == ["winning-key"]
+    assert load_credential_vault(rig / "u-owner")[0]["token"] == "winning-key"
+
+
 def test_catalogue_failure_is_resumable_without_another_oauth_exchange(rig, monkeypatch):
     from tinyassets.onboarding import model_bootstrap_candidate
 

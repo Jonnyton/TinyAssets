@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **note** | [Bootstrap/deletion hardening](2026-09-18-bootstrap-deletion-hardening.md) — independent review distinguishes non-secret orphan/ghost-directory and future multi-worker concerns from the guarded credential resurrection race | 2026-09-18 |
 | **P2** | [Model picker global discovery delay](2026-09-16-model-picker-global-discovery-delay.md) — first-open selection and execution still wait on unrelated source discovery | 2026-09-16 |
 | **note** | [Automatic source-health follow-ups](2026-09-15-automatic-source-health-followups.md) — bounded advisory memory approved for MVP; post-live isolation, legacy classification and coverage observations remain | 2026-09-15 |
 | **note** | [Failure-history clean-use watch](2026-09-15-failure-history-postfix-clean-use.md) — deployed retention fix has rendered founder proof; independent customer clean use remains unobserved | 2026-09-15 |

@@ -40,7 +40,8 @@ async def handle_model_connect(request):
         return JSONResponse({"error": "same_origin_json_required"}, 403, headers=_HEADERS)
     operation = request.path_params.get("operation")
     fields = {"begin": {"preset_id", "code_challenge"},
-              "exchange": {"flow", "code", "code_verifier"}, "resume": {"preset_id"}}
+              "exchange": {"flow", "code", "code_verifier"}, "resume": {"preset_id"},
+              "deposit_key": {"preset_id", "key"}}
     if operation not in fields:
         return JSONResponse({"error": "not_found"}, 404, headers=_HEADERS)
     raw = await onboarding._read_bounded_body(request, 8192)
@@ -53,6 +54,8 @@ async def handle_model_connect(request):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
     if operation == "begin" and not hosted._HANDLE.fullmatch(data["code_challenge"]):
         return JSONResponse({"error": "invalid_pkce_challenge"}, 400, headers=_HEADERS)
+    if operation == "deposit_key" and any(not 33 <= ord(char) <= 126 for char in data["key"]):
+        return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
     identity = current_identity()
 
     def scope(*, create=False, expected="", empty=False):
@@ -83,6 +86,14 @@ async def handle_model_connect(request):
             return hosted.take_flow(handle=data["flow"], owner=identity.user_id,
                                     universe_id=home, verifier=data["code_verifier"])
 
+    def deposit_key():
+        with identity_context(identity):
+            # Only trusted installed data can opt in; validate before home creation.
+            preset = hosted.load_preset(data["preset_id"], require_manual_key=True)
+            base, home = scope(create=True, empty=True)
+            return complete_bootstrap(base=base, uid=home, owner=identity.user_id,
+                                      preset=preset, key=data["key"])
+
     def complete(preset, *, expected="", expected_digest="", key=None):
         with identity_context(identity):
             if expected_digest and preset.digest != expected_digest:
@@ -94,6 +105,8 @@ async def handle_model_connect(request):
     try:
         if operation == "begin":
             result = await run_in_threadpool(begin)
+        elif operation == "deposit_key":
+            result = await run_in_threadpool(deposit_key)
         elif operation == "resume":
             result = await run_in_threadpool(complete, hosted.load_preset(data["preset_id"]))
         else:
