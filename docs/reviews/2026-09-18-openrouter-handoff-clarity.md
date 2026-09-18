@@ -156,3 +156,37 @@ New tests cover unknown/second non-opted presets, invalid opt-in values, untrust
 request opt-in, unsafe endpoints, mismatched URLs and malformed/missing discovery.
 The added trusted field changes preset digest, so deployment must be serialized
 against in-flight user authorization; old digest mismatches fail closed.
+
+### Corrected candidate composed with deployed callback durability
+
+Forward-merged origin/main `cc9c037346c7dda42f694bb368e7669fd35b05d3`, without
+reset/rebase/force. The deployed durable-flow `_authority`, `_flows`, begin/take
+and exchange implementation is preserved; the acquisition loader alone gains
+the explicit installed manual capability and matching-contract validation.
+
+Windows final focused suite: **408 passed,1 platform skip,56.56s**:
+`python -m pytest -q tests/test_channel_agnostic_ratchet.py
+tests/test_hosted_model_auth.py tests/test_hosted_model_flow_persistence.py
+tests/test_manual_model_connect.py tests/test_model_bootstrap.py
+tests/test_model_bootstrap_candidate.py tests/test_app_hosted_model_connect.py
+tests/test_app_layout_controller.py tests/test_app_layout_bindings.py
+tests/test_onboarding_connection_progress.py tests/test_onboarding_model_connect.py
+tests/test_onboarding_app.py tests/test_onboarding_model_setup.py
+tests/test_vault_account_deletion_guard.py tests/test_account_deletion.py
+tests/test_credential_vault.py`.
+
+Linux oracle final: **226 passed,0 skipped,34.26s**, same command's file list
+excluding app-hosted/layout controllers, onboarding app and connection progress.
+Python3.11.16/git2.47.3/bwrap0.12.0, canonical oracle under native WSL Ubuntu
+Docker with the explicit linked-worktree git environment described above.
+This includes durable process-restart and cross-process single-use proofs,
+manual capability/approval, bootstrap concurrency, deletion barriers and both
+previously failing ratchet tests. Additional Windows connect-any-LLM suite:
+7passed2.72s. Lint, diff, brand52, mirror458 and OpenSpec strict pass.
+
+The pinned-source comparison probe read both immutable trees from git archives
+in memory and confirmed the ratchet implementation itself was byte-identical.
+Baseline and quarantine are unchanged. Required hosted CI has not yet been
+rerun for this local correction; these are focused local proofs, not a claim
+that all18566 hosted tests were run locally. Fresh exact-head cross-family
+review and lead permission still gate push/release.

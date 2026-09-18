@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from urllib.parse import parse_qs, urlsplit
@@ -12,6 +13,7 @@ import httpx
 import pytest
 
 from tinyassets.onboarding import hosted_model_auth as auth
+from tinyassets.storage import data_dir
 
 VERIFIER = "a" * 64
 CHALLENGE = base64.urlsafe_b64encode(
@@ -20,12 +22,32 @@ CHALLENGE = base64.urlsafe_b64encode(
 
 
 @pytest.fixture(autouse=True)
-def clean_flows():
-    with auth._lock:
-        auth._pending.clear()
-    yield
-    with auth._lock:
-        auth._pending.clear()
+def clean_flows(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    seed_home("user-a", "home-a")
+    seed_home("user-b", "home-b")
+
+
+def seed_home(owner, home):
+    from tinyassets.daemon_server import grant_universe_access, set_founder_home
+
+    base = data_dir()
+    (base / home).mkdir(parents=True, exist_ok=True)
+    set_founder_home(base, founder_sub=owner, universe_id=home, platform_generated=True)
+    grant_universe_access(base, universe_id=home, actor_id=owner, permission="admin")
+
+
+def pending(handle=None):
+    path = data_dir() / ".hosted-model-auth.db"
+    if not path.exists():
+        return {} if handle is not None else []
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        if handle is not None:
+            row = conn.execute("SELECT * FROM hosted_model_flows WHERE handle_digest=?",
+                               (hashlib.sha256(handle.encode()).hexdigest(),)).fetchone()
+            return dict(row) if row else {}
+        return [dict(row) for row in conn.execute("SELECT * FROM hosted_model_flows")]
 
 
 def begin(**kwargs):
@@ -71,11 +93,11 @@ def test_callback_exemption_is_narrow(path):
 def test_rejects_unsafe_canonical_callback(resource):
     with pytest.raises(auth.HostedAuthError, match="public_callback_unavailable"):
         begin(public_resource=resource)
-    assert not auth._pending
+    assert not pending()
 
 
 @pytest.mark.parametrize("changed,error", [
-    ({"owner": "user-b"}, "unknown_model_connection"),
+    ({"owner": "user-b", "universe_id": "home-b"}, "unknown_model_connection"),
     ({"universe_id": "home-b"}, "current_home_changed"),
     ({"verifier": "b" * 64}, "invalid_pkce_verifier"),
     ({"verifier": "é" * 64}, "invalid_pkce_verifier"),
@@ -91,7 +113,8 @@ def test_foreign_or_mismatched_attempt_does_not_consume(changed, error):
 
 def test_expired_flow_cannot_exchange(monkeypatch):
     handle = begin()["flow"]
-    monkeypatch.setattr(auth.time, "monotonic", lambda: auth._pending[handle].expires_at)
+    expiry = pending(handle)["expires_at"]
+    monkeypatch.setattr(auth.time, "time", lambda: expiry)
     with pytest.raises(auth.HostedAuthError, match="unknown_model_connection"):
         take(handle)
 
@@ -131,10 +154,10 @@ def test_global_pending_bound_and_expiry_release_capacity(monkeypatch):
     first = begin()["flow"]
     with pytest.raises(auth.HostedAuthError, match="too_many_pending"):
         begin(owner="user-b", universe_id="home-b")
-    expiry = auth._pending[first].expires_at
-    monkeypatch.setattr(auth.time, "monotonic", lambda: expiry)
+    expiry = pending(first)["expires_at"]
+    monkeypatch.setattr(auth.time, "time", lambda: expiry)
     assert begin(owner="user-b", universe_id="home-b")
-    assert first not in auth._pending
+    assert not pending(first)
 
 
 def test_acquisition_transport_is_not_a_provider_name_switch(monkeypatch):
@@ -175,7 +198,7 @@ def test_exchange_sends_exact_protocol_and_returns_server_only_key():
         return httpx.Response(200, json={"key": "test-secret"})
     assert exchange(handler) == "test-secret"
     assert len(seen) == 1
-    assert not auth._pending
+    assert not pending()
 
 
 @pytest.mark.parametrize("status", [301, 302, 307, 400, 403, 429, 500])
@@ -189,7 +212,7 @@ def test_no_redirect_retry_or_upstream_error_leak(status):
         exchange(handler)
     assert len(seen) == 1
     assert str(error.value) == "model_authorization_not_completed"
-    assert not auth._pending
+    assert not pending()
 
 
 @pytest.mark.parametrize("body", [b"not json", b"[]", b'{"key":null}',
