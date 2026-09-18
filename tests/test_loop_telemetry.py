@@ -226,6 +226,17 @@ def test_canary_pages_on_dead_worker():
     })
     assert code == 2
     assert "worker_wedged" in msg
+    assert "restart the worker container" not in msg
+
+
+def test_canary_does_not_hide_unknown_coordinator_behind_fresh_activity():
+    code, message = _canary({
+        "has_work": False,
+        "last_activity_at": _iso(_utc(-1)),
+        "worker_liveness": {"present": True, "alive": None, "phase": "unavailable"},
+    })
+    assert code == 3
+    assert "unavailable" in message
 
 
 def test_canary_quiet_on_alive_worker_with_no_work():
