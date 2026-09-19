@@ -102,6 +102,29 @@ incident state.
 
 ## ADDED Requirements
 
+### Requirement: Community Watch Preserves Typed Canary Observation
+
+The community watch SHALL consume explicit measured Layer-1 receipts from the
+exact current Actions attempt, bound to the production workflow source, head,
+run and freshness. Whole-workflow success alone SHALL NOT establish green.
+Missing, malformed, ambiguous or superseded receipts SHALL remain unknown.
+Existing measured-red receipts and other red watch stages SHALL remain red;
+unknown SHALL NOT override them. Missing cadence remains a distinct monitoring
+failure, not a fabricated measurement of endpoint health. This internal
+consumer SHALL reuse Actions metadata without new runtime storage or authority.
+
+#### Scenario: Successful classification recorded unavailable coverage
+
+- **WHEN** the Uptime workflow succeeds without a positive measured-green receipt
+- **THEN** community watch reports the Layer-1 observation as unknown rather than green
+- **AND** its alarm sink makes no incident or dispatch mutation for unknown or yellow overall status
+
+#### Scenario: Exact measured result controls incident state
+
+- **WHEN** an exact, current, unambiguous measured-red receipt is read
+- **THEN** existing red alarm actions remain available and unknown elsewhere cannot hide the red
+- **AND** recovery remains restricted to literal green, including positive measured-green evidence for the observation stage
+
 ### Requirement: Absent Scheduled Rendered Acceptance Is Explicit
 
 The scheduled monitor SHALL report Layer-2 unknown when its runner lacks an

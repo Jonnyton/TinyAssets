@@ -121,7 +121,13 @@ jobs:
           LABEL: ${{ env.ALARM_ISSUE_LABEL }}
         with:
           script: |
-            const overall = process.env.OVERALL || 'red';
+            const overall = process.env.OVERALL || 'unknown';
+            // Incomplete/yellow evidence is not recovery and authorizes no
+            // issue, label, or dispatch mutation. Real red still takes priority.
+            if (overall !== 'red' && overall !== 'green') {
+              core.warning(`Community monitoring ${overall}; preserving incident state.`);
+              return;
+            }
             const label = process.env.LABEL;
             const probeStatus = process.env.PROBE_STATUS || '(unknown)';
             const probeMsg = process.env.PROBE_MSG || '';

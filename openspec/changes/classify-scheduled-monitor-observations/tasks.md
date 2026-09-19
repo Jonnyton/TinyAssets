@@ -12,7 +12,7 @@
 
 ## 3. Verify and land
 
-- [x] 3.1 Run focused monitor regressions, actionlint and relevant executable gates; obtain exact-head independent review.
+- [ ] 3.1 Run focused monitor regressions, actionlint and relevant executable gates; obtain exact-head independent review (renewed for community-watch typed-result follow-through).
 - [ ] 3.2 Land one PR and verify a fresh scheduled run's typed result and incident behavior without mutating accounts or private workflows.
 - [ ] 3.3 Sync the specification, archive this bounded change, and retain the separate execution-quality/rendered-acceptance concern until independently proven.
 

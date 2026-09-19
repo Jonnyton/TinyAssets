@@ -5,14 +5,23 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 
+import pytest
+
 from scripts import community_loop_watch as watch
+
+
+@pytest.fixture(autouse=True)
+def no_remote_receipts(monkeypatch):
+    # Composition tests never query live evidence. The separate typed-observation
+    # suite exercises the exact API contract; absent fixture data is unknown here.
+    monkeypatch.setattr(watch, "_gh_get_url", lambda *a, **kw: ({}, None))
 
 
 def _args() -> argparse.Namespace:
     return argparse.Namespace(
         repo="owner/repo",
         api="https://api.test",
-        token=None,
+        token="fixture-token",
         timeout=1.0,
         max_observation_age_min=90,
         json=False,
@@ -21,7 +30,12 @@ def _args() -> argparse.Namespace:
 
 def _success_run(workflow_id: str, created_at: str = "2026-06-25T12:00:00Z") -> dict:
     return {
-        "id": f"{workflow_id}:1",
+        "id": 123,
+        "run_attempt": 1,
+        "head_sha": "a" * 40,
+        "head_branch": "main",
+        "path": f".github/workflows/{workflow_id}",
+        "head_repository": {"full_name": "owner/repo"},
         "status": "completed",
         "conclusion": "success",
         "event": "schedule",
@@ -31,6 +45,9 @@ def _success_run(workflow_id: str, created_at: str = "2026-06-25T12:00:00Z") -> 
 
 
 def test_build_status_keeps_only_uptime_deploy_and_tier3_stages(monkeypatch) -> None:
+    # This test owns stage composition; exact receipt validation is exercised
+    # against API-shaped fixtures in test_community_loop_typed_observation.py.
+    monkeypatch.setattr(watch, "_canary_receipt", lambda *a, **kw: ("green", "verified fixture"))
     monkeypatch.setattr(
         watch,
         "_latest_workflow_run",

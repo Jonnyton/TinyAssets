@@ -169,6 +169,42 @@ breaks; never roll back by granting access to tenant evidence.
 
 ## Open Questions
 
+### Follow-through: community-watch consumes the same typed truth
+
+September 19 source inventory found `community_loop_watch.workflow_stage`
+mapping a fresh successful Uptime workflow to green without reading its typed
+result. Its separate alarm sink also recovered on every non-red status,
+including yellow. A classifier-success/unknown receipt could therefore erase
+the distinction downstream. The bounded correction uses the existing Actions
+run/attempt/job/step metadata contract, not logs, new JSON artifacts, public
+endpoints or runtime storage. Add a unique positive-green sentinel alongside
+the existing measured-red sentinel: green cannot be inferred from absence of
+red. Exact attempt/job identity, production branch/path/repository, source SHA,
+completion timestamps and the existing 90-minute consumer freshness policy
+must match, with a final run re-read to reject superseded attempts. Missing,
+malformed, duplicate or conflicting evidence remains unknown. Old explicit
+measured-red receipts remain red; old receiptless success is not green.
+
+The observation stage alone changes to typed semantics; ordinary deploy-stage
+conclusions stay as before. Existing stale-monitor alarms remain red with a
+diagnostic distinguishing cadence absence from endpoint measurement. Measured
+red or another existing red stage outranks unknown. The community sink exits
+before any label/issue/dispatch call unless overall is literal red or green;
+this also fixes prior yellow-as-recovery behavior. Existing permissions and
+red issue/update/stale-dispatch actions are unchanged. Only literal green can
+recover, and neither green Layer-1 nor workflow success establishes rendered
+Layer-2 acceptance or restores a scheduler cadence guarantee.
+
+Red-first command: `python -m pytest -q
+tests/test_community_loop_typed_observation.py --tb=no` yielded 27 failed,
+2 passed before implementation. The real JavaScript red/green controls passed;
+the unknown/yellow/empty recovery cases failed. After implementation the
+expanded matrix additionally checks malformed fields and retained legacy red.
+The existing quarantined `test_alarm_sink_dispatches_only_stale_uptime_canary_workflow`
+asserts an obsolete dispatch helper; it is not weakened or newly quarantined.
+Independent follow-through review and hosted CI remain required. Natural cron,
+private-free execution-quality and rendered acceptance remain open.
+
 The bounded review question: does explicit unknown plus exact-attempt measured
 red metadata preserve actionable outage handling without inventing missing
 coverage? Disagree with code evidence or a named safety concern.

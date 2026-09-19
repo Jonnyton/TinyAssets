@@ -39,7 +39,7 @@ WORKFLOWS = {
 
 P0_OUTAGE_LABEL = "p0-outage"
 TIER3_BROKEN_LABEL = "tier3-broken"
-STATUS_RANK = {"green": 0, "yellow": 1, "red": 2}
+STATUS_RANK = {"green": 0, "yellow": 1, "unknown": 2, "red": 3}
 
 
 class WatchError(Exception):
@@ -77,7 +77,7 @@ def _github_token(args: argparse.Namespace) -> str | None:
 
 
 def _parse_time(value: str | None) -> dt.datetime | None:
-    if not value:
+    if not isinstance(value, str) or not value:
         return None
     text = value.replace("Z", "+00:00") if value.endswith("Z") else value
     try:
@@ -275,6 +275,30 @@ def workflow_stage(
             url=latest.get("html_url"),
             details=details,
         )
+    if workflow_id == WORKFLOWS["observation"]:
+        if not _canary_source_matches(repo, latest, now):
+            return _stage(
+                name, "unknown", "required production canary source unavailable",
+                url=latest.get("html_url"), details=details,
+            )
+        created = _parse_time(created_at)
+        if created is not None and created <= now and max_age_min is not None and age > max_age_min:
+            # Existing missing-monitor freshness alarm, not measured endpoint red.
+            return _stage(
+                name, "red", f"{workflow_id} has not run successfully within {max_age_min} min",
+                evidence="monitoring cadence unavailable; not an endpoint-health measurement",
+                url=latest.get("html_url"), details=details,
+            )
+        measured, reason = _canary_receipt(
+            repo, latest, api=api, token=token, timeout=timeout, now=now,
+            max_age_min=max_age_min or 90,
+        )
+        details.update(measured_observation=measured, observation_reason=reason)
+        return _stage(
+            name, measured, f"Layer-1 observation {measured}: {reason}",
+            evidence=f"run {latest.get('id')} attempt {latest.get('run_attempt')}",
+            url=latest.get("html_url"), details=details,
+        )
     if conclusion != "success":
         return _stage(
             name,
@@ -302,6 +326,87 @@ def workflow_stage(
         url=latest.get("html_url"),
         details=details,
     )
+
+
+def _canary_source_matches(repo, run, now):
+    run_id, attempt, head = run.get("id"), run.get("run_attempt"), run.get("head_sha")
+    created = _parse_time(run.get("created_at"))
+    return not (
+        type(run_id) is not int or run_id < 1 or type(attempt) is not int or attempt < 1
+        or not isinstance(head, str) or len(head) != 40
+        or any(char not in "0123456789abcdef" for char in head)
+        or run.get("path") != ".github/workflows/uptime-canary.yml"
+        or run.get("head_branch") != "main"
+        or not isinstance(run.get("head_repository"), dict)
+        or run["head_repository"].get("full_name") != repo
+        or not isinstance(run.get("event"), str)
+        or run.get("event") not in {"schedule", "workflow_dispatch", "workflow_run"}
+        or run.get("status") != "completed"
+        or created is None or created > now
+    )
+
+
+def _canary_receipt(repo, run, *, api, token, timeout, now, max_age_min):
+    """Consume bounded exact-attempt step metadata, never logs or run success."""
+    unknown = ("unknown", "required Layer-1 receipt unavailable or ambiguous")
+    if not _canary_source_matches(repo, run, now):
+        return unknown
+    run_id, attempt, head = run["id"], run["run_attempt"], run["head_sha"]
+    created = _parse_time(run["created_at"])
+    try:
+        payload, _ = _gh_get_url(
+            _api_url(api, f"/repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs",
+                     {"per_page": 100}), token=token, timeout=timeout,
+        )
+        if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+            return unknown
+        jobs = payload["jobs"]
+        if type(payload.get("total_count")) is not int or payload["total_count"] != len(jobs):
+            return unknown
+        if any(not isinstance(job, dict) for job in jobs):
+            return unknown
+        probes = [job for job in jobs if job.get("name") == "probe"]
+        if len(probes) != 1:
+            return unknown
+        job = probes[0]
+        finished = _parse_time(job.get("completed_at"))
+        if (
+            job.get("run_id") != run_id or job.get("run_attempt") != attempt
+            or job.get("head_sha") != head or job.get("status") != "completed"
+            or finished is None or finished < created or finished > now
+            or (now - finished).total_seconds() > max_age_min * 60
+        ):
+            return unknown
+        steps = job.get("steps")
+        if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+            return unknown
+        markers = {}
+        for color in ("red", "green"):
+            matches = [step for step in steps if step.get("name") == f"Layer-1 measured {color} v1"]
+            if len(matches) > 1 or (matches and matches[0].get("status") != "completed"):
+                return unknown
+            if matches and not isinstance(matches[0].get("conclusion"), str):
+                return unknown
+            markers[color] = matches[0].get("conclusion") if matches else None
+        if markers == {"red": "skipped", "green": "success"}:
+            measured = "green"
+        elif markers["red"] == "failure" and markers["green"] in {None, "skipped"}:
+            # Existing pre-green-marker measured reds remain usable evidence.
+            measured = "red"
+        else:
+            return unknown
+        fresh, _ = _gh_get_url(
+            _api_url(api, f"/repos/{repo}/actions/runs/{run_id}"), token=token, timeout=timeout,
+        )
+        if not isinstance(fresh, dict) or fresh.get("status") != "completed":
+            return unknown
+        for key in ("id", "run_attempt", "head_sha", "head_branch", "path", "head_repository",
+                    "created_at", "event"):
+            if fresh.get(key) != run.get(key):
+                return unknown
+        return measured, "exact-attempt measured receipt"
+    except WatchError:
+        return "unknown", "Layer-1 receipt could not be read; monitoring coverage unavailable"
 
 
 def incident_stage(

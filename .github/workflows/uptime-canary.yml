@@ -255,6 +255,10 @@ jobs:
         if: steps.combine.outputs.overall == 'red'
         run: exit 1
 
+      - name: Layer-1 measured green v1
+        if: steps.combine.outputs.overall == 'green'
+        run: exit 0
+
   layer2-probe:
     # Hosted infrastructure has no authorized rendered-user session and must
     # not invoke an LLM or act as a universe. Record the missing observation;
