@@ -2,10 +2,12 @@
 
 ### Requirement: Host-Independent Public Canary And Incident Lifecycle
 
-The platform SHALL run the Layer-1 public uptime control path on GitHub Actions
-every five minutes, on manual dispatch, and after every completed `Deploy prod`
-workflow (`.github/workflows/uptime-canary.yml`). The probe job SHALL run only
-after a successful deploy completion, while the alarm sink SHALL distinguish
+The platform SHALL request a five-minute Layer-1 public uptime schedule on
+GitHub Actions, support manual dispatch, and react to every completed `Deploy
+prod` workflow (`.github/workflows/uptime-canary.yml`). The requested schedule
+SHALL NOT be represented as a guaranteed observation interval. For deploy
+completion events, the probe job SHALL run only after a successful deploy,
+while the alarm sink SHALL distinguish
 the probe result as literal red, literal green, or unknown. The bundle SHALL
 probe the canonical MCP handshake, a real tool call, daemon last activity,
 sustained revert-loop state, and wiki persistence plus authorization policy.
