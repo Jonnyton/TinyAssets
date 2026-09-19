@@ -1,4 +1,13 @@
-# Scheduled uptime probes remain red despite public handshake/tool success
+# Scheduled uptime acceptance lacks execution-quality and rendered coverage
+
+**Classification update, 2026-09-19 06:20 UTC:** PR #3880 is merged and
+automatic deploy-completion run 35426174606 reports explicit unknown for
+missing legacy evidence and rendered capability, without incident mutation.
+This repairs classification, not the missing observations. No post-merge
+natural cron was observed yet; the active change remains open for that proof
+and spec sync. See
+[`deployed proof`](../reviews/2026-09-19-monitor-classification-deployed-proof.md).
+The following pre-fix diagnosis explains the remaining contract mismatch.
 
 **Filed:** 2026-09-08. **Reverified:** 2026-09-19 01:03 UTC scheduled run
 35411401518, source `bcac8d1a250350ff48da2cfda3bd428831d361ea`, read with
@@ -43,7 +52,7 @@ The bounded monitoring-classification proposal is
 `openspec/changes/classify-scheduled-monitor-observations/`; it does not close
 the execution-quality or rendered-acceptance gaps.
 
-The proposed truthful unknown classification also makes automatic recovery
+The deployed truthful unknown classification also makes automatic recovery
 unreachable while required legacy evidence remains unavailable. Existing
 false-era incidents need fresh, per-incident verification and an explicit
 coordinator/incident-owner disposition; do not bulk-close or claim recovery

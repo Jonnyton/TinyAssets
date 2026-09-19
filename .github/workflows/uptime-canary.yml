@@ -10,8 +10,9 @@ name: Uptime canary
 #   - Pre-Row-H, Layer-1 uptime canary ran on the HOST's Windows Task
 #     Scheduler. Host box offline = no canary = no alarm = no signal
 #     that the platform is down. Host-fate-sharing defeats the canary.
-#   - This workflow runs on GitHub's infrastructure every 5 min (GHA
-#     cron minimum) + manual dispatch. Independent vantage point.
+#   - This workflow requests a five-minute schedule on GitHub's infrastructure
+#     plus manual/deploy-completion triggers. Independent of the daemon host,
+#     but GitHub may delay or drop scheduled jobs; this is not a cadence SLA.
 #   - On 2 consecutive reds, automation opens / updates a GitHub issue
 #     labeled `p0-outage`. Out-of-band alarm sink — zero new deps,
 #     reuses issue infrastructure, host gets emailed by GitHub.
@@ -22,8 +23,8 @@ name: Uptime canary
 
 on:
   schedule:
-    # Every 5 min — GHA cron granularity. Drift tolerance: ±1 min per
-    # GHA's best-effort schedule policy.
+    # Five-minute requested cadence, not a maximum observation gap. GitHub
+    # documents possible delays/dropped scheduled jobs, not a ±1 minute bound.
     - cron: '*/5 * * * *'
   workflow_dispatch:
   workflow_run:
@@ -45,8 +46,8 @@ env:
   # Single canonical public endpoint (host directive 2026-04-20).
   PROBE_URL: https://tinyassets.io/mcp
   ALARM_ISSUE_LABEL: p0-outage
-  # Number of consecutive reds before alarming. 2 = "≥5 min outage
-  # (at 5-min cadence)" to filter transient Cloudflare blips.
+  # Number of consecutive measured reds before alarming. This is an observation
+  # threshold, not an elapsed-outage SLA; scheduler gaps remain a coverage gap.
   ALARM_THRESHOLD: 2
 
 jobs:
@@ -253,6 +254,10 @@ jobs:
       - name: Layer-1 measured red v1
         if: steps.combine.outputs.overall == 'red'
         run: exit 1
+
+      - name: Layer-1 measured green v1
+        if: steps.combine.outputs.overall == 'green'
+        run: exit 0
 
   layer2-probe:
     # Hosted infrastructure has no authorized rendered-user session and must

@@ -12,6 +12,14 @@
 
 ## 3. Verify and land
 
-- [ ] 3.1 Run focused monitor regressions, actionlint and relevant executable gates; obtain exact-head independent review.
+- [ ] 3.1 Run focused monitor regressions, actionlint and relevant executable gates; obtain exact-head independent review (renewed for community-watch typed-result follow-through).
 - [ ] 3.2 Land one PR and verify a fresh scheduled run's typed result and incident behavior without mutating accounts or private workflows.
 - [ ] 3.3 Sync the specification, archive this bounded change, and retain the separate execution-quality/rendered-acceptance concern until independently proven.
+
+PR #3880 merged; automatic deploy-completion runs confirm typed unknown and
+no incident mutation. Natural post-merge cron acceptance is still unobserved,
+so 3.2 and archive remain open. Evidence:
+`docs/reviews/2026-09-19-monitor-classification-deployed-proof.md`.
+Fresh cadence inventory is retained separately in
+`docs/concerns/2026-09-19-hostless-monitor-schedule-cadence-gap.md`; requested
+five-minute scheduling is not a verified maximum observation interval.
