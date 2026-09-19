@@ -768,10 +768,7 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
 def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """Remove a deposited http connection: the secret, the connection, its grants.
 
-    The missing half of deposit. A user who pasted a key -- including one pasted
-    against a host they did not intend -- had no way to withdraw it through any
-    surface they could reach
-    (``docs/concerns/2026-08-27-no-reachable-remove-for-http-connections.md``).
+    Shared by approved agent requests and the unpowered Account controls.
 
     DELETES rather than revokes, and that is the whole design decision. A
     connection id is deterministic on ``(universe_id, destination)``, and
@@ -780,10 +777,9 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     FOREVER: remove ``github`` and you could never deposit ``github`` again. A
     remove the user cannot undo is not a remove, it is a trap.
 
-    Order is deliberate: the SECRET goes first. If the ledger delete then fails,
-    what is left is a connection whose credential no longer resolves -- inert,
-    and cleaned up by a retry. The reverse order would leave a secret in the
-    vault with nothing pointing at it, which is the failure that matters.
+    First fence dependent authority and custody, then erase the secret before
+    deleting ledger rows. A failed cleanup remains denied and reachable for
+    retry. In-flight effects may finish; removal cannot cancel upstream work.
 
     Idempotent: removing something already gone reports ``removed`` with zero
     counts rather than an error, because "take this away" and "it is already
