@@ -19,5 +19,10 @@ authority-refusal case proving no reservation is created before authorization.
 No quarantine, test exclusion or gate is modified.
 
 Windows focused background/readiness/foreground cohort:61 passed, no skips,
-46.65seconds. Ruff and diff checks passed. Linux and fresh exact-head independent
-review remain release gates; prior59416a78 approval is not approval of a new head.
+46.65seconds. Same cohort under native Ubuntu WSL `python3
+scripts/linux_oracle.py -- -q tests/test_background_work_agent.py
+tests/test_engine_startup_readiness.py tests/test_workflow_http_agent.py
+--tb=short --show-capture=no -rs`:61 passed, zero skips,36.14seconds,
+Python3.11.16/git2.47.3/bwrap0.12.0. Ruff and diff checks passed. Fresh exact-head
+independent review remains a release gate; prior59416a78 approval is not approval
+of a new head.
