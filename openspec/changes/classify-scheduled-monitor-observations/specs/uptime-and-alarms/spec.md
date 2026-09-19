@@ -115,6 +115,12 @@ unknown SHALL NOT override them. Missing cadence remains a distinct monitoring
 failure, not a fabricated measurement of endpoint health. This internal
 consumer SHALL reuse Actions metadata without new runtime storage or authority.
 
+The workflow SHALL validate its watcher's structured result against the actual
+process exit before passing health to the incident sink. Missing, malformed or
+inconsistent output SHALL report unknown health and fail a distinct monitor-
+unavailable job gate, without incident or dispatch mutation. A valid unknown
+classification SHALL remain distinct from a watcher that failed to classify.
+
 #### Scenario: Successful classification recorded unavailable coverage
 
 - **WHEN** the Uptime workflow succeeds without a positive measured-green receipt
@@ -126,6 +132,12 @@ consumer SHALL reuse Actions metadata without new runtime storage or authority.
 - **WHEN** an exact, current, unambiguous measured-red receipt is read
 - **THEN** existing red alarm actions remain available and unknown elsewhere cannot hide the red
 - **AND** recovery remains restricted to literal green, including positive measured-green evidence for the observation stage
+
+#### Scenario: Watcher crashes or produces incomplete output
+
+- **WHEN** the watcher or its parser fails, or its output lacks a valid current result matching its process exit
+- **THEN** an always-run gate reports monitor unavailability and fails the watch job
+- **AND** unknown health cannot create, update or recover an incident, while valid measured red and green retain their existing semantics
 
 ### Requirement: Absent Scheduled Rendered Acceptance Is Explicit
 
