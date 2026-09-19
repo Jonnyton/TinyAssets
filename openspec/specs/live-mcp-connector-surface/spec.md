@@ -718,3 +718,31 @@ replace the entire current order without modifying saved defaults or authority.
 - **WHEN** the changed tool is tested through ChatGPT and Claude
 - **THEN** both render structured results and final narration without wedging
 - **AND** protected canary --assert-handles and deployed-SHA gates remain required
+
+### Requirement: Graph handles expose structured cross-user delivery controls
+Canonical top-level handles SHALL retain their signatures. Validated graph
+dispatch SHALL expose receiver create/update/revoke, output-link connect/disconnect,
+explicit deliver_output sends, and receiver/output_links/delivery inspection.
+The served read_graph wrapper SHALL accept optional query for those reads;
+served management and sends SHALL remain graph-pinned and operation-authorized.
+These controls SHALL NOT claim file transfer, in-node delivery RPC or receiver
+execution retry, which remain outside this shipped structured MVP.
+
+#### Scenario: Each party manages only its authorized side
+- **WHEN** authenticated users manage their receiving contracts and outgoing links
+- **THEN** each action enforces current owner and universe authority
+- **AND** the shared served wrappers use the same validated dispatch as connector callers
+
+#### Scenario: Contract inspection remains narrow
+- **WHEN** a permitted sender inspects a receiver contract
+- **THEN** it receives the advertised description, contract and generation
+- **AND** not the private receiver graph, credentials, other senders or unrelated deliveries
+
+#### Scenario: Receipt read requires party authority
+- **WHEN** an unrelated or anonymous caller supplies a delivery identifier
+- **THEN** no delivery record is revealed
+- **AND** sender-side inspection never reveals private receiver run evidence
+
+#### Scenario: Delivery does not add another top-level tool
+- **WHEN** the public tool inventory is inspected after deployment
+- **THEN** the canonical handle set is unchanged and collaboration uses existing graph handles
