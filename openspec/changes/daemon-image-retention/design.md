@@ -59,7 +59,11 @@ container deletion, provider payload reads, registry retention policy or billing
    or malformed current identity, creation timestamps, configuration/receipt or
    ambiguous image mappings abort the pass. An explicitly empty rollback target
    is allowed; a nonempty unresolvable one is not silently ignored. Extra tagged
-   or foreign-repository aliases cause candidate exclusion.
+   or foreign-repository aliases cause candidate exclusion. Docker containerd
+   may repeat the row's sole exact fixed-repository immutable RepoDigest as
+   its sole RepoTag; that identical digest alias is eligible, not a mutable tag.
+   Any additional, foreign or mismatched alias remains excluded, with unchanged
+   reference protection, registry verification and under-lock re-inventory.
 3. **Recoverability.** Fixed GHCR registry and pull-only token scope; never invoke
    docker login or expose a token. Fetch exact index/manifest with bounded size
    and timeout; hash-check every manifest against its descriptor; select exact

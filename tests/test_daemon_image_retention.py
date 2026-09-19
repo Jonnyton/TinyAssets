@@ -42,12 +42,39 @@ def select(inventory, configured=reference(9)):
     return retention.candidates(images, containers, daemon, configured, receipt)
 
 
-def test_protects_current_two_older_newer_and_container_references(inventory):
+@pytest.mark.parametrize("digest_aliases", [False, True])
+def test_protects_current_two_older_newer_and_container_references(inventory, digest_aliases):
+    if digest_aliases:
+        for image in inventory[0]:
+            image["RepoTags"] = image["RepoDigests"].copy()
     inventory[1].append(dict(Image=identity(1), State={"Running": False}))
     inventory[3]["rollback_target"] = reference(2)
     rows, protected = select(inventory, reference(3))
     assert [r["ref"] for r in rows] == [reference(n) for n in (4, 5, 6)]
     assert set(protected) == {identity(n) for n in (1, 2, 3, 7, 8, 9, 10)}
+
+
+def test_containerd_captured_digest_alias_is_not_a_mutable_tag(inventory):
+    # Sanitized root-observed Docker inspect shape, September 19 2026.
+    digest = "sha256:494502b5ffffc3ba3eb50d86f1218b4195237261e520cce5220d1f1d76402f75"
+    ref = retention.REPOSITORY + "@" + digest
+    image = inventory[0][0]
+    image.update(Id=digest, RepoDigests=[ref], RepoTags=[ref])
+    assert {"image_id": digest, "ref": ref} in select(inventory)[0]
+
+
+@pytest.mark.parametrize("aliases", [
+    [retention.REPOSITORY + ":old"],
+    ["other.example/image@" + identity(1)],
+    [reference(99)],
+    [reference(1), retention.REPOSITORY + ":old"],
+    [reference(1), "other.example/image@" + identity(1)],
+    [reference(1), reference(99)],
+    [reference(1), reference(1)],
+])
+def test_digest_alias_exception_preserves_every_extra_or_mismatched_alias(inventory, aliases):
+    inventory[0][0]["RepoTags"] = aliases
+    assert reference(1) not in [row["ref"] for row in select(inventory)[0]]
 
 
 @pytest.mark.parametrize("mutation", ["tag", "foreign", "multi"])
@@ -171,6 +198,36 @@ def test_no_more_than_four_nonforce_immutable_removals(inventory, tmp_path):
     assert len(state["verified"]) == 4
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_digest_aliases_still_require_registry_proof_and_respect_dry_run(
+    inventory, tmp_path, dry_run
+):
+    for image in inventory[0]:
+        image["RepoTags"] = image["RepoDigests"].copy()
+    docker, state, options = runner(inventory, tmp_path, dry_run=dry_run)
+    report = retention.retain(**options)
+    assert state["verified"]
+    if dry_run:
+        assert report["selected"] and not docker.calls
+    else:
+        assert len(docker.calls) == 4
+        assert report["removed"] == [reference(n) for n in (1, 2, 3, 4)]
+
+
+def test_new_mutable_alias_is_rechecked_under_lock(inventory, tmp_path):
+    inventory[0][0]["RepoTags"] = [reference(1)]
+    docker, state, options = runner(inventory, tmp_path)
+
+    def race():
+        if state["locked"]:
+            inventory[0][0]["RepoTags"].append(retention.REPOSITORY + ":keep")
+
+    docker.before_inventory = race
+    report = retention.retain(**options)
+    assert state["verified"][0]["ref"] == reference(1)
+    assert reference(1) not in report["removed"]
+
+
 def test_low_watermark_stops_after_first_removal(inventory, tmp_path):
     readings = iter([90, 90, 74, 74])
     docker, _, options = runner(inventory, tmp_path, measure=lambda p: next(readings))
@@ -211,7 +268,11 @@ def test_new_stopped_reference_is_rechecked(inventory, tmp_path):
     assert reference(1) not in report["removed"]
 
 
-def test_registry_failure_causes_zero_removal(inventory, tmp_path):
+@pytest.mark.parametrize("digest_aliases", [False, True])
+def test_registry_failure_causes_zero_removal(inventory, tmp_path, digest_aliases):
+    if digest_aliases:
+        for image in inventory[0]:
+            image["RepoTags"] = image["RepoDigests"].copy()
     docker, _, options = runner(inventory, tmp_path)
 
     def unavailable(*args):

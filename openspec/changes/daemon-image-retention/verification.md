@@ -124,3 +124,32 @@ Linux covered those skipped branches. Ruff on both changed tests and
 new exact-head approval claim. Required hosted CI and refreshed independent
 approval remain release gates; no host installation, cleanup or activation
 was performed.
+
+## Containerd digest-alias compatibility amendment, September 19, 2026 UTC
+
+Lead's read-only production inventory found an image whose sole `RepoTag`
+and sole `RepoDigest` are the identical fixed-repository immutable reference
+ending `494502b5ffffc3ba3eb50d86f1218b4195237261e520cce5220d1f1d76402f75`.
+`docker image ls` showed tag `<none>`. The old selector rejected this nonempty
+tag field and therefore selected nothing on this shape. The earlier live
+below-threshold/no-candidate result correctly made no registry call; it was
+not proof of useful candidate selection or remotely verified recovery.
+
+Red-first Windows selection: **4 failed, 12 passed**, reproducing the captured
+digest-field shape, protected-image selection and positive effect/dry-run
+paths. Captured reference fields are paired with synthetic fixture ages and
+container state, not presented as a full production snapshot. Runtime now
+accepts only a sole RepoTag identical to the already-required sole immutable
+RepoDigest, or the previously accepted empty tags. Every extra, mutable,
+foreign or mismatched alias remains excluded. Current/configured/container/
+receipt/two-older/newer protection, registry recovery proof, locked rechecks,
+deadlines, exact opt-in and non-force immutable removal are unchanged.
+
+Tests also cover unsafe aliases, registry failure with digest aliases, and a
+mutable tag added between initial selection and the under-lock inventory.
+Windows retention/wrapper/unit cohort: **109 passed, 16 POSIX skips**. Canonical
+Linux oracle with the same seven-file command recorded above: **229 passed,
+zero skips**, Python3.11.16/git2.47.3/bwrap0.12.0, exit0. Ruff, whitespace and
+strict OpenSpec passed. No runtime-host command or real removal was issued by
+this builder. Fresh exact-head independent review, required CI, installed
+direct-helper dry-run and explicit activation remain separate release gates.

@@ -39,6 +39,11 @@ rotation behavior; installed dry-run proof SHALL invoke the helper directly.
 - **WHEN** lock/fence, current image, protected refs, measurement or remote recovery cannot be established
 - **THEN** retention emits a sanitized refusal or unknown result and performs no unsafe deletion
 
+#### Scenario: Containerd repeats an immutable digest in its tag field
+- **WHEN** an image's only RepoTag exactly equals its sole fixed-repository immutable RepoDigest
+- **THEN** that duplicate digest alias does not by itself disqualify the image
+- **AND** mutable, foreign, additional or mismatched aliases remain excluded, and all protection, registry and locked recheck gates still apply
+
 #### Scenario: Dry-run and weekly scheduling remain narrow
 - **WHEN** retention runs dry or through the weekly cleanup timer
 - **THEN** dry-run never deletes and weekly execution obeys the identical pressure, recovery and preservation gates

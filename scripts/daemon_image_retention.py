@@ -234,7 +234,10 @@ def candidates(images, containers, daemon, configured, receipt):
             protected.add(identity)
         else:
             older.append((created, identity))
-        if len(digests) == 1 and immutable(digests[0]) and not row.get("RepoTags"):
+        # Containerd can repeat the exact immutable digest in RepoTags. This
+        # is not a mutable alias; every extra or different alias stays excluded.
+        tags = row.get("RepoTags") or []
+        if len(digests) == 1 and immutable(digests[0]) and (not tags or tags == digests):
             eligible.append((created, identity, digests[0]))
     protected.update(identity for _, identity in sorted(older, reverse=True)[:2])
     return [
