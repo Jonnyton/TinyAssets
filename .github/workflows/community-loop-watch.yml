@@ -62,10 +62,34 @@ jobs:
           set -e
 
           cat community-loop-status.json
+          export WATCH_EXIT_CODE="$code"
           overall=$(python - <<'PY'
           import json
-          with open("community-loop-status.json", encoding="utf-8") as f:
-              print(json.load(f).get("overall", "red"))
+          import os
+
+          overall = "unknown"
+          available = False
+          try:
+              with open("community-loop-status.json", encoding="utf-8") as f:
+                  report = json.load(f)
+              code = int(os.environ["WATCH_EXIT_CODE"])
+              available = (
+                  type(report) is dict
+                  and type(report.get("version")) is int
+                  and report["version"] == 2
+                  and report.get("overall") in ("green", "yellow", "unknown", "red")
+                  and type(report.get("exit_code")) is int
+                  and report["exit_code"] == code
+                  and type(report.get("stages")) is list
+                  and (code in (2, 3) if report["overall"] == "red" else code == 0)
+              )
+              if available:
+                  overall = report["overall"]
+          except (OSError, ValueError, TypeError, KeyError):
+              pass
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("monitor_status=" + ("available" if available else "unavailable"), file=output)
+          print(overall)
           PY
           )
 
@@ -91,6 +115,7 @@ jobs:
             echo ""
             echo "- **overall**: ${{ steps.watch.outputs.overall }}"
             echo "- **exit**: ${{ steps.watch.outputs.status }}"
+            echo "- **monitor**: ${{ steps.watch.outputs.monitor_status || 'unavailable' }}"
             echo ""
             echo '<details><summary>status JSON</summary>'
             echo ""
@@ -100,6 +125,12 @@ jobs:
             echo ""
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail when monitor is unavailable
+        if: always() && (steps.watch.outputs.monitor_status != 'available' || steps.watch.outputs.overall == '')
+        run: |
+          echo "::error::Community monitor unavailable; endpoint health is unknown and incident state is preserved."
+          exit 3
 
       - name: Fail when retained uptime surface is red
         if: steps.watch.outputs.overall == 'red'

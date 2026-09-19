@@ -15,6 +15,7 @@
 - [x] 3.1 Focused monitor regressions, actionlint and exact-head independent review passed. PR3882 head c1dae683 approved by Fable55159; required Tests35430169457 SUCCESS, merged c9b8ee7e. See deployed proof for evidence and limits.
 - [ ] 3.2 Land one PR and verify a fresh scheduled run's typed result and incident behavior without mutating accounts or private workflows.
 - [ ] 3.3 Sync the specification, archive this bounded change, and retain the separate execution-quality/rendered-acceptance concern until independently proven.
+- [ ] 3.4 Close the watcher-output crash boundary after independent shape/code review, focused regression/CI and real hosted normal-path proof; do not manufacture endpoint health from monitor availability.
 
 PR #3880 merged; automatic deploy-completion runs confirm typed unknown and
 no incident mutation. PR3882 merged c9b8ee7e; its automatic push-triggered hosted

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 import yaml
-
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/community-loop-watch.yml"
 
@@ -21,7 +20,7 @@ def _workflow():
 
 def _execute_parser(tmp_path, raw, code):
     step = next(s for s in _workflow()["jobs"]["watch"]["steps"] if s.get("id") == "watch")
-    source = step["run"].split("python - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+    source = step["run"].split("python - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
     (tmp_path / "community-loop-status.json").write_text(raw, encoding="utf-8")
     output = tmp_path / "actions-output.txt"
     result = subprocess.run(
@@ -39,6 +38,9 @@ def _execute_parser(tmp_path, raw, code):
     (json.dumps({"version": 2, "overall": "red", "exit_code": 0, "stages": []}), 0),
     (json.dumps({"version": 2, "overall": "unexpected", "exit_code": 0, "stages": []}), 0),
     (json.dumps({"version": 2, "overall": "green", "exit_code": False, "stages": []}), 0),
+    (json.dumps({"version": 2, "overall": "red", "exit_code": 1, "stages": []}), 1),
+    (json.dumps({"version": 2.0, "overall": "green", "exit_code": 0, "stages": []}), 0),
+    (json.dumps({"version": 2, "overall": "green", "exit_code": 0, "stages": {}}), 0),
 ])
 def test_unavailable_watcher_never_manufactures_health(tmp_path, raw, code):
     result, outputs = _execute_parser(tmp_path, raw, code)
