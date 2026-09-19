@@ -4,7 +4,7 @@ Locks in the edit-surface confinement (served-agent-build-run §2.2): safe self-
 ops pass; publish / change-visibility / fork are refused; an add_node op is run through
 the SAME create per-node sanitizer (node_ref/invoke/bad-sink rejected, approval/author/
 fork stripped); update_node may not become a sub-branch invoker; and the whole thing is
-allowlist-gated + routed to the author-gated transactional patch_branch. A regression
+owner-admitted + routed to the author-gated transactional patch_branch. A regression
 turns a gate red instead of silently widening the served edit surface.
 """
 from __future__ import annotations
@@ -13,12 +13,13 @@ import json
 
 
 def _bind(monkeypatch, *, actor="sub-9", graph="u-9", allow=("u-9",)):
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     monkeypatch.setattr(s, "_ACTOR_ID", actor)
     monkeypatch.setattr(s, "_GRAPH_ID", graph)
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset(allow))
+    # Admission is isolated here; downstream operation/consent guards stay real.
+    from tests.engine_authority_helpers import mock_engine_admission
+    mock_engine_admission(monkeypatch, allow)
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     return s
 
@@ -100,11 +101,11 @@ def test_guided_edit_persists_on_owned_branch_and_refuses_foreign(tmp_path, monk
     assert json.loads(s.read_graph(target="branch", branch_id=rid)) == readback
 
 
-def test_patch_refused_off_allowlist(monkeypatch):
+def test_patch_refused_without_serving_authority(monkeypatch):
     s = _bind(monkeypatch, allow=("u-other",))
     seen = _capture(monkeypatch)
     out = _patch(s, [{"op": "set_name", "name": "x"}])
-    assert "not enabled for this universe" in out["error"]
+    assert "current serving owner" in out["error"]
     assert seen == {}
 
 

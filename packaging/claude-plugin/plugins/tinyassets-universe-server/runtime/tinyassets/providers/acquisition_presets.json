@@ -1,5 +1,6 @@
 {
   "openrouter_user_models_v1": {
+    "manual_key_entry": true,
     "protocol": "pkce_user_key_v1",
     "display_name": "OpenRouter",
     "authorize_url": "https://openrouter.ai/auth",

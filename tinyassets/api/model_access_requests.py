@@ -68,7 +68,7 @@ def _observe(base, universe, actor, uid, binding_id):
 
 
 def _membership(assignment):
-    if assignment is None:
+    if assignment is None or assignment.state == "unassigned":
         return {}
     if not assignment.candidates:
         return {assignment.provider: ModelAccess().document()}
@@ -109,9 +109,31 @@ def capture_action(uid: str, action: dict) -> dict:
         if name != root and old is not None and old != value:
             raise ValueError("model setup must preserve other providers' model scopes")
     return {**action, "consent_version": 1, "root_provider": root,
+            "connection_incarnations": _connection_incarnations(base, actor, uid, proposed),
             "proposed_membership": proposed, "previous_membership": previous,
             "expected_assignment_digest": assignment.assignment_digest if assignment else "",
             "expected_assignment_generation": assignment.generation if assignment else 0}
+
+
+def _connection_incarnations(base, owner, uid, membership):
+    from tinyassets.providers.definition import get_definition
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger = ConnectionLedger(base / "outbound.db")
+    captured = {}
+    for provider in membership:
+        if not provider.startswith("api_key_http:"):
+            continue
+        definition = get_definition(uid, provider.removeprefix("api_key_http:"))
+        grant = ledger.get_grant(definition.ref) if definition else None
+        if (definition is None or definition.owner_user_id != owner or grant is None
+                or grant.owner_user_id != owner or grant.universe_id != uid):
+            raise PermissionError("model connection changed")
+        incarnation = ledger.incarnation(grant.connection_id)
+        if not incarnation:
+            raise PermissionError("model connection changed")
+        captured[provider] = incarnation
+    return captured
 
 
 def grant_sentence(action: dict) -> str:
@@ -142,6 +164,9 @@ def execute_action(uid: str, action: dict) -> dict:
         raise ValueError("this request lacks a model-access disclosure; ask again")
     base, universe, actor = _scope(uid)
     root, proposed = _proposal(base, actor, uid, action)
+    if action.get("connection_incarnations", {}) != _connection_incarnations(
+            base, actor, uid, proposed):
+        raise PermissionError("model connection changed; review a fresh request")
     if root != action["root_provider"] or proposed != action["proposed_membership"]:
         raise PermissionError("model access changed since the request was shown")
     binding, assignment = _observe(base, universe, actor, uid, action["agent_binding_id"])

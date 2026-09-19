@@ -18,7 +18,7 @@ name: Uptime canary
 #   - On GREEN after reds, comments "RECOVERED" + closes the issue.
 #
 # Consecutive-state: open P0 issue IS the state. First red = log only.
-# Second red (prior run conclusion=failure) = open issue. Recovery = close.
+# Second measured Layer-1 red = open issue. Literal green = recovery.
 
 on:
   schedule:
@@ -32,6 +32,7 @@ on:
 
 # Permissions: canary reads repo; alarm sink writes issues.
 permissions:
+  actions: read
   contents: read
   issues: write
 
@@ -180,7 +181,7 @@ jobs:
         run: |
           set +e
           output=$(python scripts/revert_loop_canary.py \
-              --url "${PROBE_URL}" --timeout 20 --verbose 2>&1)
+              --url "${PROBE_URL}" --timeout 20 --verbose --format gha 2>&1)
           code=$?
           set -e
           _delim="EOF_$(tr -d '-' < /proc/sys/kernel/random/uuid)"
@@ -229,184 +230,53 @@ jobs:
           echo "=== wiki canary (${PROBE_URL}) exit=$code ==="
           echo "$output"
 
-      # Combine handshake + tool + last_activity + revert-loop + wiki
-      # canary results into the single probe.outputs.overall the alarm-sink
-      # reads. Red if ANY step failed. `status` reports the worst exit
-      # code so downstream paging messages surface the meaningful signal.
+      # Classification never fails the step; only a measured red emits the
+      # versioned failure receipt consumed by exact-attempt history reads.
       - name: Combine canary results
         id: combine
-        run: |
-          handshake="${{ steps.probe.outputs.handshake_status }}"
-          tool="${{ steps.tool_probe.outputs.tool_status }}"
-          activity="${{ steps.activity_probe.outputs.activity_status }}"
-          revert="${{ steps.revert_loop_probe.outputs.revert_status }}"
-          wiki="${{ steps.wiki_probe.outputs.wiki_status }}"
-          # If a downstream step was skipped (because an upstream went
-          # red), its *_status is empty. Report the real upstream exit
-          # code rather than a synthetic sentinel so operator-facing
-          # paging carries documented ladder codes. Priority: handshake
-          # > tool > activity > revert > wiki (upstream-wins; if
-          # handshake failed the downstream steps never ran meaningfully).
-          if [ "${handshake}" != "0" ]; then
-            worst="${handshake}"
-          elif [ -n "${tool}" ] && [ "${tool}" != "0" ]; then
-            worst="${tool}"
-          elif [ -n "${activity}" ] && [ "${activity}" != "0" ]; then
-            worst="${activity}"
-          elif [ -n "${revert}" ] && [ "${revert}" != "0" ]; then
-            worst="${revert}"
-          elif [ -n "${wiki}" ] && [ "${wiki}" != "0" ]; then
-            worst="${wiki}"
-          else
-            worst="0"
-          fi
-          # Display-only: if a step was skipped, label the display so
-          # the combined msg in the paging issue is clear about what
-          # ran vs. what didn't.
-          if [ -z "${tool}" ]; then
-            tool="(skipped — handshake red)"
-          fi
-          if [ -z "${activity}" ]; then
-            activity="(skipped — upstream red)"
-          fi
-          if [ -z "${revert}" ]; then
-            revert="(skipped — upstream red)"
-          fi
-          if [ -z "${wiki}" ]; then
-            wiki="(skipped — upstream red)"
-          fi
-          _delim="EOF_$(tr -d '-' < /proc/sys/kernel/random/uuid)"
-          msg_handshake="${{ steps.probe.outputs.handshake_msg }}"
-          msg_tool="${{ steps.tool_probe.outputs.tool_msg }}"
-          msg_activity="${{ steps.activity_probe.outputs.activity_msg }}"
-          msg_revert="${{ steps.revert_loop_probe.outputs.revert_msg }}"
-          msg_wiki="${{ steps.wiki_probe.outputs.wiki_msg }}"
-          {
-            echo "status=${worst}"
-            echo "msg<<${_delim}"
-            echo "--- handshake (exit ${handshake}) ---"
-            echo "${msg_handshake}"
-            echo ""
-            echo "--- tool-canary (exit ${tool}) ---"
-            echo "${msg_tool}"
-            echo ""
-            echo "--- last-activity (exit ${activity}) ---"
-            echo "${msg_activity}"
-            echo ""
-            echo "--- revert-loop (exit ${revert}) ---"
-            echo "${msg_revert}"
-            echo ""
-            echo "--- wiki-roundtrip (exit ${wiki}) ---"
-            echo "${msg_wiki}"
-            echo "${_delim}"
-            if [ "${handshake}" = "0" ] && [ "${tool}" = "0" ] \
-               && { [ "${activity}" = "0" ] \
-                   || [ "${activity}" = "(skipped — upstream red)" ]; } \
-               && { [ "${revert}" = "0" ] \
-                   || [ "${revert}" = "(skipped — upstream red)" ]; } \
-               && { [ "${wiki}" = "0" ] \
-                   || [ "${wiki}" = "(skipped — upstream red)" ]; }; then
-              echo "overall=green"
-            else
-              echo "overall=red"
-            fi
-          } >> "$GITHUB_OUTPUT"
-          echo "=== combined: handshake=${handshake} tool=${tool} activity=${activity} revert=${revert} wiki=${wiki} worst=${worst} ==="
-          # Exit non-zero on red so the run conclusion reflects canary
-          # color — alarm-sink uses prior-run conclusion to detect
-          # consecutive reds.
-          _activity_is_red="0"
-          case "${activity}" in
-            0|"(skipped"*) _activity_is_red="0" ;;
-            *) _activity_is_red="1" ;;
-          esac
-          _revert_is_red="0"
-          case "${revert}" in
-            0|"(skipped"*) _revert_is_red="0" ;;
-            *) _revert_is_red="1" ;;
-          esac
-          _wiki_is_red="0"
-          case "${wiki}" in
-            0|"(skipped"*) _wiki_is_red="0" ;;
-            *) _wiki_is_red="1" ;;
-          esac
-          if [ "${handshake}" != "0" ] || [ "${tool}" != "0" ] \
-             || [ "${_activity_is_red}" = "1" ] \
-             || [ "${_revert_is_red}" = "1" ] \
-             || [ "${_wiki_is_red}" = "1" ]; then
-            exit "${worst}"
-          fi
+        if: always()
+        env:
+          HANDSHAKE_STATUS: ${{ steps.probe.outputs.handshake_status }}
+          TOOL_STATUS: ${{ steps.tool_probe.outputs.tool_status }}
+          ACTIVITY_STATUS: ${{ steps.activity_probe.outputs.activity_status }}
+          REVERT_STATUS: ${{ steps.revert_loop_probe.outputs.revert_status }}
+          WIKI_STATUS: ${{ steps.wiki_probe.outputs.wiki_status }}
+          REVERT_OBSERVATION: ${{ steps.revert_loop_probe.outputs.revert_observation }}
+          REVERT_REASON: ${{ steps.revert_loop_probe.outputs.revert_reason }}
+          HANDSHAKE_MSG: ${{ steps.probe.outputs.handshake_msg }}
+          TOOL_MSG: ${{ steps.tool_probe.outputs.tool_msg }}
+          ACTIVITY_MSG: ${{ steps.activity_probe.outputs.activity_msg }}
+          REVERT_MSG: ${{ steps.revert_loop_probe.outputs.revert_msg }}
+          WIKI_MSG: ${{ steps.wiki_probe.outputs.wiki_msg }}
+        run: python scripts/uptime_observations.py
+
+      - name: Layer-1 measured red v1
+        if: steps.combine.outputs.overall == 'red'
+        run: exit 1
 
   layer2-probe:
-    # Layer-2: Claude.ai connector liveness. Runs headless via injectable
-    # _probe_fn — in GHA there is no real browser, so this step detects the
-    # absence of a real browser and exits SKIP (14, treated as 0).
-    # SOFT_YELLOW signals (fabrication-mode suspected) write to the alarm log
-    # and are echoed to stdout via GHA-mode in uptime_alarm.py; they do NOT
-    # open GH issues (that path is Layer-1 only).
+    # Hosted infrastructure has no authorized rendered-user session and must
+    # not invoke an LLM or act as a universe. Record the missing observation;
+    # user-directed rendered acceptance remains a separate required proof.
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 1
     outputs:
       l2_status: ${{ steps.l2probe.outputs.l2_status }}
       l2_semantic: ${{ steps.l2probe.outputs.l2_semantic }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Layer-2 connector probe
+      - name: Record unavailable rendered acceptance
         id: l2probe
-        continue-on-error: true
-        env:
-          GITHUB_ACTIONS: "true"
         run: |
-          set +e
-          python scripts/uptime_canary_layer2.py --once 2>&1
-          code=$?
-          set -e
-          # Map exit code to human-readable semantic.
-          case "$code" in
-            0)  semantic="GREEN_OR_SOFT_YELLOW" ;;
-            10) semantic="RED_tool_not_invoked" ;;
-            12) semantic="RED_field_not_matched" ;;
-            13) semantic="RED_browser_load_error" ;;
-            14) semantic="SKIP_lock_unavailable" ;;
-            15) semantic="RED_auth_expired" ;;
-            *)  semantic="RED_unexpected_exit_${code}" ;;
-          esac
-          _delim="EOF_$(tr -d '-' < /proc/sys/kernel/random/uuid)"
           {
-            echo "l2_status=$code"
-            echo "l2_semantic<<${_delim}"
-            echo "$semantic"
-            echo "${_delim}"
+            echo "l2_status=unknown"
+            echo "l2_semantic=authorized_rendered_session_unavailable"
           } >> "$GITHUB_OUTPUT"
-          echo "=== layer-2 probe exit=$code semantic=$semantic ==="
-          # SKIP (14) and GREEN/SOFT_YELLOW (0) are both non-failure for GHA.
-          # RED exits (10/12/13/15/99) make this step fail.
-          if [ "$code" != "0" ] && [ "$code" != "14" ]; then
-            exit $code
-          fi
-
-      - name: Layer-2 alarm evaluation (GHA mode)
-        if: always()
-        env:
-          GITHUB_ACTIONS: "true"
-        run: |
-          # GITHUB_ACTIONS=true: uptime_alarm.py mirrors new alarm lines to
-          # stdout so they appear in workflow output without fetching the file.
-          python scripts/uptime_alarm.py --verbose
-
-      - name: Layer-2 Summary
-        if: always()
-        run: |
           {
-            echo "### Layer-2 connector probe"
+            echo "### Layer-2 rendered acceptance: UNKNOWN"
             echo ""
-            echo "- **exit** → \`${{ steps.l2probe.outputs.l2_status }}\`"
-            echo "- **semantic** → ${{ steps.l2probe.outputs.l2_semantic }}"
+            echo "This hosted runner has no authorized rendered-user session."
+            echo "No browser or LLM was invoked; this is not a provider outage."
+            echo "Full hostless acceptance remains incomplete pending rendered proof."
           } >> "$GITHUB_STEP_SUMMARY"
 
   alarm-sink:
@@ -434,6 +304,7 @@ jobs:
           LABEL: ${{ env.ALARM_ISSUE_LABEL }}
           THRESHOLD: ${{ env.ALARM_THRESHOLD }}
           PROBE_URL: ${{ env.PROBE_URL }}
+          PRODUCTION_BRANCH: ${{ github.event.repository.default_branch }}
         with:
           script: |
             const overall = process.env.OVERALL;
@@ -460,20 +331,55 @@ jobs:
               return;
             }
 
-            // Consecutive-red detection: prior run conclusion=failure means red.
+            // Only an exact-attempt measured Layer-1 receipt proves prior red.
+            // Unknown/skipped observations break the chain; never search past
+            // them for an older red. Unrelated job failures prove nothing.
             async function previousRunWasRed() {
-              const prior = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'uptime-canary.yml',
-                status: 'completed',
-                per_page: 5,
-              });
-              const priorRuns = (prior.data.workflow_runs || []).filter(
-                r => String(r.id) !== process.env.GITHUB_RUN_ID,
-              );
-              if (!priorRuns.length) return false;
-              return priorRuns[0].conclusion === 'failure';
+              try {
+                const branch = process.env.PRODUCTION_BRANCH || 'main';
+                const prior = await github.rest.actions.listWorkflowRuns({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  workflow_id: 'uptime-canary.yml', branch,
+                  status: 'completed', per_page: 5,
+                });
+                const runs = (prior.data.workflow_runs || []).filter(
+                  r => String(r.id) !== process.env.GITHUB_RUN_ID,
+                );
+                // This bounded read never stitches across an unknown result.
+                const run = runs[0];
+                if (!run) return false;
+                const age = Date.now() - Date.parse(run.updated_at);
+                if (run.head_branch !== branch || run.status !== 'completed' ||
+                    run.path !== '.github/workflows/uptime-canary.yml' ||
+                    !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1 ||
+                    !Number.isFinite(age) || age < 0 || age > 30 * 60 * 1000) {
+                  core.warning('Prior Layer-1 receipt is unavailable, stale or wrong-source; not counted as red.');
+                  return false;
+                }
+                const response = await github.rest.actions.listJobsForWorkflowRunAttempt({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  run_id: run.id, attempt_number: run.run_attempt, per_page: 100,
+                });
+                const jobs = response.data.jobs || [];
+                if (response.data.total_count > jobs.length) return false;
+                const probeJobs = jobs.filter(j => j.name === 'probe');
+                if (probeJobs.length !== 1) return false;
+                const job = probeJobs[0];
+                if (job.run_id !== run.id || job.run_attempt !== run.run_attempt ||
+                    job.status !== 'completed' || job.head_sha !== run.head_sha) return false;
+                const receipts = (job.steps || []).filter(s => s.name === 'Layer-1 measured red v1');
+                if (receipts.length !== 1 || receipts[0].status !== 'completed' ||
+                    receipts[0].conclusion !== 'failure') return false;
+                // Do not count a receipt from an attempt superseded during the read.
+                const latest = await github.rest.actions.getWorkflowRun({
+                  owner: context.repo.owner, repo: context.repo.repo, run_id: run.id,
+                });
+                return latest.data.run_attempt === run.run_attempt &&
+                  latest.data.status === 'completed' && latest.data.head_sha === run.head_sha;
+              } catch (error) {
+                core.warning('Prior Layer-1 receipt could not be verified; not counted as red.');
+                return false;
+              }
             }
 
             function formatBody(kind) {

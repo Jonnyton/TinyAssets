@@ -198,6 +198,7 @@ def render_app_html() -> tuple[str, str]:
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
     html = (
         _HTML_PATH.read_text("utf-8")
+        .replace("__TA_APP_LAYOUT__", _HTML_PATH.with_name("app_layout.js").read_text("utf-8"))
         .replace(_NONCE_PLACEHOLDER, nonce)
         .replace(_CONFIG_PLACEHOLDER, blob)
         .replace(_REQUEST_TEXT_PLACEHOLDER, request_theme()["request_text"])
@@ -745,6 +746,7 @@ async def _handle_me(request: Any) -> Any:
     except Exception:  # noqa: BLE001 - never let a storage hiccup 500 the app shell
         doc = {"universe_id": "", "home_bound": False, "engine_connected": False,
                "setup": "unavailable", "degraded": True}
+    doc["principal_id"] = identity.user_id
     return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
 
@@ -1607,6 +1609,7 @@ def onboarding_routes() -> list[Any]:
     """
     from starlette.routing import Route
 
+    from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.model_connect import handle_model_callback, handle_model_connect
     from tinyassets.onboarding.model_preferences import handle_model_preferences
 
@@ -1630,6 +1633,7 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
         Route("/mcp/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/mcp/app/account/delete", _handle_account_delete, methods=["POST"]),
+        Route("/mcp/app/connections", handle_connections, methods=["GET", "POST"]),
     ]
 
 

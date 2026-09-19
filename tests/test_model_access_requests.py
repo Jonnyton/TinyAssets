@@ -135,7 +135,8 @@ def test_served_agent_cannot_answer_model_access_request(rig, monkeypatch):
 
     monkeypatch.setattr(engine, "_ACTOR_ID", "owner-1")
     monkeypatch.setattr(engine, "_GRAPH_ID", "u-owner")
-    monkeypatch.setattr("tinyassets.engine_mcp_http.run_graph_allowlist", lambda: {"u-owner"})
+    from tests.engine_authority_helpers import seed_bound_engine
+    seed_bound_engine(monkeypatch)
     row = ask(rig)
     result = json.loads(engine.write_graph(target="pending_request", operation="answer",
                                           payload_json=json.dumps({"request_id": row["request_id"],

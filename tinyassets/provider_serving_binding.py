@@ -1110,6 +1110,9 @@ def set_serving(
         "agent_binding": updated,
     }
     if enabled:
+        from tinyassets.engine_mcp_http import notify_engine_serving_changed
+
+        notify_engine_serving_changed(actor_id=owner, graph_id=uid, root=Path(base_path))
         response["provider"] = (
             assignment.provider if prepared is None
             else prepared.plan.next_candidate(owner, uid).connection_id

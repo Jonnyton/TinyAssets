@@ -163,7 +163,7 @@ def call_background_work_agent(session, *, prompt, system, config, policy):
 
 def _call_work_agent(session, *, prompt, system, config, policy, principal_id, universe_id):
     from tinyassets.config import load_universe_config
-    from tinyassets.engine_mcp_http import read_engine_mcp_route
+    from tinyassets.engine_mcp_http import engine_tools_authorized
     from tinyassets.provider_work_authority import ProviderInvocationReservationState
     from tinyassets.providers import call as bridge
     from tinyassets.providers.provider_resolver import register_universe_open_providers
@@ -171,9 +171,9 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
     router = bridge.get_provider_router()
     if bridge.is_force_mock() or router is None:
         raise ProviderAuthorityHeldError("workflow agent requires its real provider router")
-    if read_engine_mcp_route(
+    if not engine_tools_authorized(
         actor_id=principal_id, graph_id=universe_id, root=session._base_path,
-    ) is None:
+    ):
         raise ProviderAuthorityHeldError("engine_tools_unavailable")
     config = replace(config, engine_mcp_enabled=True, engine_mcp_actor_id=principal_id,
                      engine_mcp_graph_id=universe_id, credential_snapshot_dir=None)

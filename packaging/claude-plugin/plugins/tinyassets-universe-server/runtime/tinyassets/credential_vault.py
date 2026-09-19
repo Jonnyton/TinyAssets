@@ -615,6 +615,7 @@ def write_credential_vault(
 
     from tinyassets.provider_assignment import provider_assignment_admission
     from tinyassets.storage import db_path
+    from tinyassets.storage.current_home import check_principal_not_deleted
 
     universe = Path(universe_dir).resolve(strict=False)
     owner = (owner_user_id or "").strip()
@@ -712,6 +713,10 @@ def write_credential_vault(
 
             # 1. Owner-row DB transaction FIRST, and commit it.
             conn.execute("BEGIN IMMEDIATE")
+            if owner:
+                # Deletion takes this same admission lock while tombstoning.
+                # Keep non-home administrators valid: this is not a home check.
+                check_principal_not_deleted(conn, owner)
             placeholders = ",".join("?" for _ in final_owner_keys)
             if final_owner_keys:
                 conn.execute(

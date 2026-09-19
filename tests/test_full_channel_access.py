@@ -830,8 +830,12 @@ def test_a_full_deposit_moves_an_existing_connection(tmp_path):
 
     from tinyassets.api import http_connection as hc
 
-    # The deposit path does this itself, on an EXISTING connection.
-    body = inspect.getsource(hc.connect_http)
+    # The public lifecycle wrapper delegates to the implementation whose
+    # existing-connection mode transition these assertions protect.
+    wrapper = inspect.getsource(hc.connect_http)
+    assert "_gesture_lock(" in wrapper
+    assert "return _connect_http(universe_id=universe_id, payload=payload)" in wrapper
+    body = inspect.getsource(hc._connect_http)
     assert "set_access_mode(" in body
     assert body.index("set_access_mode(") < body.index("Idempotent grant bound")
 

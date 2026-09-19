@@ -1,4 +1,23 @@
-# An http connection cannot be removed once deposited
+# App connection removal and guided reconnection are incomplete
+
+**Correction, 2026-09-19:** source inspection of current origin/main
+(`rg -n "remove_http" tinyassets tests`) contradicts the historical finding below.
+`tinyassets/universe_server.py` routes `remove_http` to
+`tinyassets/api/http_connection.py`; approved pending requests also reach it.
+It already deletes vault records, ledger grants/capabilities and effector consent,
+and tests cover ordinary remove/redeposit. The old no-operation claim is obsolete.
+
+The remaining gap is the unpowered-safe **app control and model lifecycle**:
+Account has no connection inventory/disconnect. Removing an HTTP model leaves
+dependent assignment/custody/setup metadata; `model_setup.py` calls it recovery,
+while `model_bootstrap_binding.py` only accepts an untouched first binding.
+The user must be able to disconnect in TinyAssets and later reconnect normally,
+preserving other sources and user content, without reviving stale authority.
+Partial failures and already-dispatched outcomes must stay explicit. Track the
+general fix in `openspec/changes/remove-universe-connections/`; no live test-account
+interaction until reviewed general fixes are deployed and end-to-end ready.
+
+## Historical finding (superseded)
 
 **Filed:** 2026-08-27
 **Verified:** 2026-08-27 against `claude/paste-anything-implementation`

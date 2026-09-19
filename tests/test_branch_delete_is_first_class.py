@@ -456,13 +456,14 @@ def test_the_tool_text_names_delete_and_both_refusals(universe_surface):
 
 
 def _bind(monkeypatch, tmp_path, *, actor="sub-9", graph="u-9", allow=("u-9",)):
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(s, "_ACTOR_ID", actor)
     monkeypatch.setattr(s, "_GRAPH_ID", graph)
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset(allow))
+    # Admission is isolated here; downstream operation/consent guards stay real.
+    from tests.engine_authority_helpers import mock_engine_admission
+    mock_engine_admission(monkeypatch, allow)
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     return s
 

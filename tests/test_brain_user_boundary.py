@@ -50,12 +50,12 @@ def _seed(tmp_path: Path) -> Path:
 
 def _bind_engine(monkeypatch, *, uid: str = UID, actor: str = FOUNDER):
     """Bind the engine MCP server to this universe as its founder."""
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     monkeypatch.setattr(s, "_ACTOR_ID", actor)
     monkeypatch.setattr(s, "_GRAPH_ID", uid)
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({uid}))
+    from tests.engine_authority_helpers import seed_bound_engine
+    seed_bound_engine(monkeypatch)
     return s
 
 

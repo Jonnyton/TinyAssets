@@ -14,23 +14,23 @@ Each server is PINNED to exactly one ``(founder actor, universe graph)`` via env
 binds ``127.0.0.1`` only, and requires a per-server bearer secret on every request
 (Codex gate #6 — the loopback listener is reachable by any in-container process).
 
-Confinement (Codex ADAPT 2026-08-19): run_graph and these servers are limited to
-the ``TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES`` allowlist (empty = dark) until the
-multi-tenant hardening gate lands. A versioned owner/port/secret route map is
+Admission follows current serving ownership and admin ACL, not a vetted-universe
+list. Deleted or ambiguous owners fail closed. A versioned owner/port/secret route map is
 published (mode 0600) and consumed by the shared ``read_engine_mcp_route`` reader.
 The derived ``url`` is retained only for older readers and rollback.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -42,6 +42,71 @@ ENGINE_MCP_HTTP_BASE_PORT = 8790
 ROUTES_FILENAME = ".engine_mcp_http_routes.json"
 #: How often the supervisor respawns dead servers + reconciles serving intent.
 _SUPERVISOR_INTERVAL_S = 15.0
+_SUPERVISOR_WAKE_EVENTS: dict[Path, threading.Event] = {}
+_STARTUP_WAIT_MAX_S = 30.0
+_STARTUP_POLL_S = 0.1
+
+
+def notify_engine_serving_changed(*, actor_id: str, graph_id: str, root: Path) -> None:
+    """Warm a newly admitted universe using only this process's existing supervisor."""
+    event = _SUPERVISOR_WAKE_EVENTS.get(root.resolve())
+    if event is not None and engine_tools_authorized(
+        actor_id=actor_id, graph_id=graph_id, root=root,
+    ) and read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root) is None:
+        event.set()
+
+
+async def _probe_loopback(route: EngineMcpRoute, *, timeout: float) -> bool:
+    """Check only TCP readiness, sending no bytes and never an MCP handshake."""
+    from urllib.parse import urlsplit
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setblocking(False)
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().sock_connect(sock, ("127.0.0.1", urlsplit(route.url).port)),
+            timeout=min(timeout, 0.25),
+        )
+        return True
+    except (OSError, TimeoutError):
+        return False
+    finally:
+        sock.close()
+
+
+async def wait_for_engine_mcp_route(
+    *, actor_id: str, graph_id: str, root: Path, timeout: float,
+) -> EngineMcpRoute | None:
+    """Bound startup lag before the first protocol byte; never retry an MCP call.
+
+    No local supervisor means no wait: other processes keep the immediate route
+    contract. The reader and every per-tool authority recheck remain nonblocking.
+    """
+    event = _SUPERVISOR_WAKE_EVENTS.get(root.resolve())
+    if event is None:
+        return read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + min(timeout, _STARTUP_WAIT_MAX_S)
+    woke = False
+    while engine_tools_authorized(actor_id=actor_id, graph_id=graph_id, root=root):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return None
+        route = read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root)
+        if route is not None and await _probe_loopback(route, timeout=remaining):
+            # Authority or the route can change while the socket connect yields.
+            if read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root) == route:
+                return route
+        if not engine_tools_authorized(actor_id=actor_id, graph_id=graph_id, root=root):
+            return None
+        if not woke:
+            event.set()
+            woke = True
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return None
+        await asyncio.sleep(min(_STARTUP_POLL_S, remaining))
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,20 +135,21 @@ def read_engine_mcp_route(
 
     Callers supply their already verified principal and universe. Re-read each
     time; a prior route cannot stand in for changed configuration or permissions.
-    This checks transport consistency only; tools still enforce their authority.
+    This checks current owner admission and transport consistency; tools still
+    enforce their operation-specific authority.
     """
     if not all(
         isinstance(value, str) and value and value == value.strip() and value.isprintable()
         for value in (actor_id, graph_id)
     ):
         return None
-    if not _engine_mcp_enabled() or graph_id not in run_graph_allowlist():
-        return None
     from tinyassets.storage import data_dir
 
     try:
         base = data_dir() if root is None else Path(root)
         if not base.is_absolute():
+            return None
+        if not engine_tools_authorized(actor_id=actor_id, graph_id=graph_id, root=base):
             return None
         routes = json.loads(
             (base / ROUTES_FILENAME).read_text(encoding="utf-8"),
@@ -113,49 +179,78 @@ def _engine_mcp_enabled() -> bool:
     )
 
 
-def run_graph_allowlist() -> frozenset[str]:
-    """Universe ids for which run_graph + an HTTP engine server are allowed.
+def engine_tools_authorized(*, actor_id: str, graph_id: str, root: Path | None = None) -> bool:
+    """Recheck a process/request pin against current, non-deleted serving ownership.
 
-    Cross-family review (Codex 2026-08-19) ADAPT: the run_graph confinement is
-    safe for a SINGLE isolated founder but NOT yet multi-tenant. Until the full
-    hardening gate is met, run_graph and its HTTP server are limited to this
-    explicit allowlist (empty = fully dark). Set
-    ``TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES`` (comma-separated) to the vetted
-    test founder(s) only.
+    Neither environment pins nor private route records grant authority. A stale
+    server must refuse even before the supervisor has reconciled a revocation.
     """
-    raw = os.environ.get("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "")
-    return frozenset(u.strip() for u in raw.split(",") if u.strip())
+    from tinyassets.storage import data_dir
+
+    if not _engine_mcp_enabled() or not all(
+        isinstance(value, str) and value and value == value.strip() and value.isprintable()
+        for value in (actor_id, graph_id)
+    ):
+        return False
+    base = data_dir() if root is None else Path(root)
+    if not base.is_absolute():
+        return False
+    return (graph_id, actor_id) in _serving_universe_owners(base, graph_id=graph_id)
 
 
-def _serving_universe_owners(base: Path) -> list[tuple[str, str]]:
-    """``[(universe_id, owner_actor_id)]`` for universes with a serving binding.
+def _serving_universe_owners(base: Path, *, graph_id: str | None = None) -> list[tuple[str, str]]:
+    """Current unambiguous serving creators with admin ACL; read-only, fail closed.
 
-    The owner is the serving agent binding's ``created_by``. Fail-closed to [].
+    Do not join away competing/malformed creators: ambiguity denies the entire
+    universe. Do not impose founder-home ownership on other administered universes.
     """
     import sqlite3
 
+    from tinyassets.principals import has_named_principal
     from tinyassets.storage import db_path
+    from tinyassets.storage.current_home import CurrentHomeChanged, check_principal_not_deleted
 
     try:
-        conn = sqlite3.connect(db_path(base))
-        conn.row_factory = sqlite3.Row
+        conn = sqlite3.connect(db_path(base).as_uri() + "?mode=ro", uri=True)
         try:
+            conn.execute("BEGIN")
             rows = conn.execute(
                 "SELECT DISTINCT universe_id, created_by "
                 "FROM agent_bindings WHERE status = 'serving'"
+                + (" AND universe_id = ?" if graph_id is not None else ""),
+                (graph_id,) if graph_id is not None else (),
             ).fetchall()
+            candidates: dict[str, set] = {}
+            for uid, owner in rows:
+                candidates.setdefault(uid, set()).add(owner)
+            owners: list[tuple[str, str]] = []
+            for uid, creators in candidates.items():
+                if len(creators) != 1:
+                    continue
+                owner = next(iter(creators))
+                if not all(
+                    isinstance(value, str) and value and value == value.strip()
+                    and value.isprintable()
+                    for value in (uid, owner)
+                ) or not has_named_principal(owner):
+                    continue
+                if conn.execute(
+                    "SELECT 1 FROM universe_acl WHERE universe_id = ? "
+                    "AND actor_id = ? AND permission = 'admin'", (uid, owner),
+                ).fetchone() is None:
+                    continue
+                try:
+                    check_principal_not_deleted(conn, owner)
+                except CurrentHomeChanged:
+                    continue
+                owners.append((uid, owner))
+            return owners
         finally:
             conn.close()
-    except sqlite3.Error:
-        logger.exception("engine http: could not enumerate serving universes")
+    except (sqlite3.Error, OSError, ValueError, RuntimeError):
+        # Never log raw DB errors or authority records from this credential rail.
+        logger.warning("engine http: current serving authority unavailable")
         return []
-    owners: list[tuple[str, str]] = []
-    for row in rows:
-        uid = str(row["universe_id"] or "").strip()
-        owner = str(row["created_by"] or "").strip()
-        if uid and owner:
-            owners.append((uid, owner))
-    return owners
 
 
 class _EngineServer:
@@ -237,20 +332,20 @@ def _write_routes(root: Path, servers) -> None:
 
 
 def _desired_owners(root: Path) -> dict[str, str]:
-    allow = run_graph_allowlist()
+    if not _engine_mcp_enabled():
+        return {}
     owners: dict[str, set[str]] = {}
     for universe, owner in _serving_universe_owners(root):
-        if universe in allow:
-            owners.setdefault(universe, set()).add(owner)
+        owners.setdefault(universe, set()).add(owner)
     return {universe: next(iter(found)) for universe, found in owners.items() if len(found) == 1}
 
 
 def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
-    """Start one auth'd loopback engine server per allowlisted serving universe
+    """Start one auth'd loopback engine server per admitted serving universe
     and a daemon supervisor that respawns crashes + reconciles serving intent.
 
-    No-op returning ``[]`` when the engine-MCP flag is off or the allowlist is
-    empty. Called once, early in daemon startup.
+    No-op returning ``[]`` when the engine-MCP flag is off. Called once, early
+    in daemon startup; the supervisor also handles later serving admission.
     """
     if not _engine_mcp_enabled():
         return []
@@ -264,6 +359,7 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
 
     servers: dict[str, _EngineServer] = {}
     used_ports: set[int] = set()
+    wake = threading.Event()
 
     def _next_port() -> int:
         port = ENGINE_MCP_HTTP_BASE_PORT
@@ -287,11 +383,12 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
 
     def _supervise() -> None:
         while True:
-            time.sleep(_SUPERVISOR_INTERVAL_S)
+            wake.wait(_SUPERVISOR_INTERVAL_S)
+            wake.clear()
             try:
                 current = _desired_owners(root)
                 changed = False
-                # Retire universes that stopped serving / left the allowlist.
+                # Retire universes whose current serving authority was removed.
                 for uid in [u for u in servers if u not in current]:
                     _retire(uid)
                     changed = True
@@ -323,4 +420,5 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
     threading.Thread(
         target=_supervise, name="engine-mcp-supervisor", daemon=True
     ).start()
+    _SUPERVISOR_WAKE_EVENTS[root.resolve()] = wake
     return list(servers.values())

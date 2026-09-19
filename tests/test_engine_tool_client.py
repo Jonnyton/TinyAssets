@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
+from tests.engine_authority_helpers import seed_engine_authority
 from tinyassets import engine_mcp_http as routes
 from tinyassets import engine_tool_client as subject
+from tinyassets.storage import DB_FILENAME
 
 
 def _tool(name="read_graph", **changes):
@@ -22,7 +25,7 @@ def _tool(name="read_graph", **changes):
 def route(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-a")
+    seed_engine_authority(tmp_path)
     server = SimpleNamespace(universe_id="u-a", owner="actor-a", port=8790, secret="s" * 43)
     routes._write_routes(tmp_path, [server])
     return tmp_path, server
@@ -93,7 +96,7 @@ async def test_exact_result_and_schema_copy(fake):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["owner", "secret", "port", "disabled", "allowlist", "missing"])
+@pytest.mark.parametrize("change", ["owner", "secret", "port", "disabled", "revoked", "missing"])
 async def test_changed_route_refuses_without_dispatch(fake, route, monkeypatch, change):
     root, server = route
     async with _open() as session:
@@ -102,8 +105,9 @@ async def test_changed_route_refuses_without_dispatch(fake, route, monkeypatch, 
             routes._write_routes(root, [server])
         elif change == "disabled":
             monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
-        elif change == "allowlist":
-            monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-b")
+        elif change == "revoked":
+            with sqlite3.connect(root / DB_FILENAME) as conn:
+                conn.execute("DELETE FROM universe_acl")
         else:
             (root / routes.ROUTES_FILENAME).unlink()
         with pytest.raises(subject.EngineToolError) as caught:

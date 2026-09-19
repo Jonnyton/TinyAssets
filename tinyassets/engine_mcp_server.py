@@ -22,15 +22,14 @@ account connectors — verified 2026-08-13). This module then enforces:
   * **Graph pin.** Every handler is forced onto ``TINYASSETS_ENGINE_GRAPH_ID``.
     The agent cannot address another universe by supplying a different id — the
     pinned id is not even an exposed parameter.
-  * **Read-only slice.** This slice exposes only ``read_graph`` + ``get_status``
-    and binds only ``read``/``list`` capabilities — NO write/submit_request — so
-    even a prompt-injected engine cannot mutate DOMAIN state or spend the
-    founder's subscription through this surface. (The status read path may still
-    touch internal infra sidecars — e.g. queue / auto-ship lock markers — so it
-    is not byte-for-byte side-effect-free, but it changes no domain state or
-    cost; Codex ADAPT 2026-08-13 #5.) ``write_graph`` / ``run_graph`` /
-    ``read_page`` / ``write_page`` are deferred to reviewed follow-up slices;
-    ``converse`` is never exposed (a universe relaying to itself is a fork bomb).
+  * **Current owner authority.** Every entry rechecks that the pinned principal
+    is the unambiguous serving creator and a current admin of this universe,
+    with no account-deletion tombstone. Neither env pins nor a route map grant
+    authority. The deployment kill switch remains fail-closed.
+  * **Operation confinement.** Reads bind read/list; writes and runs bind their
+    narrower operation-specific capabilities and retain canonical ACLs, sandbox,
+    consent and admission checks. ``served_tools`` owns the common tool inventory
+    for every provider. ``converse`` is never exposed (self-relay is a fork bomb).
 
 Enabled per-deploy by the dark ``TINYASSETS_ENGINE_MCP_TOOLS`` flag (see
 ``universe_intelligence._engine_mcp_enabled``).
@@ -117,7 +116,7 @@ def _engine_run_admit(
     ledger, NOT the shared runs table (Codex 2026-08-19 (b)).
 
     ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — the
-    OS sandbox + allowlist are the primary controls, so a DB blip must
+    OS sandbox + current owner authority are the primary controls, so a DB blip must
     not wedge legitimate runs. remix/write_graph/brain pass True — the rolling cap
     IS a real safety bound on an autonomous write, so a DB error refuses. They
     also pass ``kind="engine"``: a durable mutation of the universe's own state
@@ -257,7 +256,7 @@ _PINNED_READ_TARGETS = frozenset({
 
 
 def _binding_error() -> str | None:
-    """Hard fail-closed: refuse every call unless BOTH ids are bound.
+    """Hard fail-closed: require both pins AND their current serving authority.
 
     Codex #3: an empty actor_id must not degrade to a public read — it
     must expose nothing. The wiring already refuses to launch this server without
@@ -268,6 +267,12 @@ def _binding_error() -> str | None:
     if not (_ACTOR_ID and _GRAPH_ID):
         return json.dumps({
             "error": "engine MCP is not bound to a founder + universe; refusing.",
+        })
+    from tinyassets.engine_mcp_http import engine_tools_authorized
+
+    if not engine_tools_authorized(actor_id=_ACTOR_ID, graph_id=_GRAPH_ID):
+        return json.dumps({
+            "error": "engine tools require current serving owner authority; refusing.",
         })
     return None
 
@@ -534,21 +539,6 @@ def run_graph(
     err = _binding_error()
     if err is not None:
         return err
-    # Single-founder scope gate (Codex ADAPT 2026-08-19): run_graph is a
-    # WRITE+COSTLY effect surface whose confinement is only proven for one
-    # isolated founder. Refuse unless THIS universe is on the explicit allowlist,
-    # even if a server was somehow started for it. Defense in depth alongside
-    # engine_mcp_http, which only starts a server for allowlisted universes.
-    from tinyassets.engine_mcp_http import run_graph_allowlist
-
-    if _GRAPH_ID not in run_graph_allowlist():
-        return json.dumps({
-            "error": (
-                "run_graph is not enabled for this universe yet; it is limited "
-                "to a vetted founder while its multi-tenant confinement is "
-                "hardened."
-            ),
-        })
     normalized_operation = (operation or "run").strip().lower()
     if normalized_operation == "deliver_output":
         if any((branch_def_id, run_name, run_id)):
@@ -666,12 +656,10 @@ def run_graph(
 #   (4) crash the tool with a wrong-typed field ({"name":[]} → name.strip()).
 #       FIX: type-check the spec + a byte/node cap, and wrap the build in a
 #       structured-error catch.
-# EDIT (patch) is deliberately NOT on this surface yet: patch's op set can
-# set_published / set_visibility / set_fork_from / carry approval on add_node, so
-# it needs its own reviewed op-allowlist slice (tracked: served-agent-build-run).
-# Multi-tenant note: branches are author-scoped, not universe-scoped, so cross-
-# own-universe isolation rests on the same per-universe allowlist that gates
-# run_graph (u-tiny only) until a branch↔universe binding lands (Codex finding 3).
+# Patch/delete are exposed through confined adapters below. Branches remain
+# author-scoped: a user cannot act on a different author's private branch, while
+# separation of multiple universes owned by that same author is a tracked
+# branch↔universe hardening gap (served-agent-build-run), not an env grant.
 # Caps are least-privilege (_REMIX_CAPABILITIES: no submit_request), so a build
 # turn structurally cannot fire an effect or submit a run.
 _WRITE_GRAPH_OPS = frozenset({"create", "patch", "delete"})
@@ -840,7 +828,7 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                 #     the jail the only disk bound is a 512 MiB per-file
                 #     RLIMIT_FSIZE.
                 # Neither is introduced here -- both predate this widening --
-                # and both are bounded today by the vetted-founder gate. They
+                # and neither is repaired by current serving-owner admission. They
                 # are written up with reproduction notes in
                 # docs/concerns/2026-08-31-workspace-admission-claims-are-narrower-than-stated.md
                 # Fix them there, and tighten this comment when they land.
@@ -1557,7 +1545,7 @@ def write_graph(
     credential-blind, and only in the universe that authored it (no approval
     step exists or is needed). Wiring connections/credentials stays off
     this surface, so a secret never enters a served turn. Runs as the FOUNDER, on a
-    branch you authored. Bounded by the same allowlist + rate limit as run_graph.
+    branch you authored. Bounded by current owner admission and the run_graph rate limit.
 
     Args:
         target: ``branch``, ``automation``, ``pending_request``, ``model_preferences``
@@ -1589,16 +1577,6 @@ def write_graph(
     err = _binding_error()
     if err is not None:
         return err
-    from tinyassets.engine_mcp_http import run_graph_allowlist
-
-    if _GRAPH_ID not in run_graph_allowlist():
-        return json.dumps({
-            "error": (
-                "write_graph is not enabled for this universe yet; it is limited "
-                "to a vetted founder while its multi-tenant confinement is "
-                "hardened."
-            ),
-        })
     # Each target delegates to its own confined adapter, never broad connector
     # write_graph. Raw connection secrets and person-only request answers stay out.
     t = (target or "").strip().lower()
@@ -1764,10 +1742,10 @@ def write_graph(
             # EDIT an existing OWN branch. patch_branch is author-gated (actor ==
             # branch author, no env fallback) and transactional; the sanitizer
             # allowlists safe self-edit ops and refuses publish/visibility/fork +
-            # unsanitized node content. RESIDUALS (tracked, same class as create,
-            # deferred behind the u-tiny allowlist for single-founder): (a) branches
+            # unsanitized node content. RESIDUALS (tracked, same class as create):
+            # (a) branches
             # are author-scoped not universe-scoped, so the branch↔universe binding is
-            # still owed before multi-tenant (a founder cannot cross into another
+            # remains hardening (a founder cannot cross into another
             # actor's branch, but has no per-universe isolation of their own);
             # (b) patch_branch has no expected-version CAS, so concurrent served
             # patches can lost-update — a post-live concurrency harden gate.
@@ -1843,8 +1821,8 @@ def write_graph(
 # graph-pinned: the commons IS cross-universe by design, and you can only see /
 # fork what those gates already let you read. remix is a WRITE into the founder's
 # OWN universe (a new PRIVATE branch, fires no effects, spends no budget); it is
-# gated by the same allowlist + rate-limit as run_graph while multi-tenant
-# confinement is hardened. PUBLISH to the global commons is a separate,
+# gated by the same current-owner admission + rate-limit as run_graph.
+# PUBLISH to the global commons is a separate,
 # consent-gated slice — deliberately NOT exposed here.
 _COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals"})
 #: Hard server-side cap on a commons browse (Codex ADAPT 2026-08-22 #7): the
@@ -2216,18 +2194,6 @@ def remix_shape(
     err = _binding_error()
     if err is not None:
         return err
-    # Single-founder scope gate (mirrors run_graph): remix WRITES a branch. Safe
-    # for one vetted founder; refuse until multi-tenant confinement is hardened,
-    # even if a server was somehow started here.
-    from tinyassets.engine_mcp_http import run_graph_allowlist
-
-    if _GRAPH_ID not in run_graph_allowlist():
-        return json.dumps({
-            "error": (
-                "remix is not enabled for this universe yet; it is limited to a "
-                "vetted founder while its multi-tenant confinement is hardened."
-            ),
-        })
     selector = (fork_from or "").strip()
     new_name = (name or "").strip()
     if not selector:
@@ -2303,7 +2269,7 @@ def remix_shape(
 # these files are read into the prompt as TEXT and never executed, so the write
 # surface carries no code-execution path — worst case the agent rewrites its own
 # self-description, which is its brain, not an escalation. Pinned to the agent's
-# OWN universe; allowlisted + rate-limited (fail-closed) like the other writes.
+# OWN universe; owner-admitted + rate-limited (fail-closed) like the other writes.
 _BRAIN_SECTIONS = {
     "identity": "identity.md",
     "founder": "founder.md",
@@ -2430,16 +2396,6 @@ def write_brain(
     err = _binding_error()
     if err is not None:
         return err
-    from tinyassets.engine_mcp_http import run_graph_allowlist
-
-    if _GRAPH_ID not in run_graph_allowlist():
-        return json.dumps({
-            "error": (
-                "brain writes are not enabled for this universe yet; they are "
-                "limited to a vetted founder while multi-tenant confinement is "
-                "hardened."
-            ),
-        })
     section_values = {
         "identity": identity,
         "founder": founder,
@@ -2527,8 +2483,8 @@ def write_brain(
 # (design §1). It is owner-gated (connect_compute requires an explicit admin ACL row
 # for the bound founder; unbound/non-admin get the uniform not_found), graph-PINNED
 # (universe_id is never caller-supplied, so the agent cannot register for another
-# universe), and — like remix/run_graph — held to the vetted-founder allowlist while
-# multi-tenant engine-write confinement is hardened. NO secret ever crosses this
+# universe), with current serving-owner admission like remix/run_graph.
+# NO secret ever crosses this
 # surface (connect_http, which deposits one, is deliberately NOT exposed here).
 # Strict least privilege (Codex adapt #5): registration is a pure WRITE — it needs
 # neither ``read`` nor ``list``, so bind ``write`` alone (owner authority comes from
@@ -2587,19 +2543,6 @@ def connect_compute(
     err = _binding_error()
     if err is not None:
         return err
-    # Vetted-founder gate (same bar as remix/run_graph): an engine-surface WRITE
-    # stays limited while multi-tenant confinement is hardened. Registration is
-    # candidate-only + owner-gated + graph-pinned, but we hold the uniform bar.
-    from tinyassets.engine_mcp_http import run_graph_allowlist
-
-    if _GRAPH_ID not in run_graph_allowlist():
-        return json.dumps({
-            "error": (
-                "connect_compute is not enabled for this universe yet; it is "
-                "limited to a vetted founder while multi-tenant engine-write "
-                "confinement is hardened."
-            ),
-        })
     am = (access_method or "").strip()
     if not am:
         return json.dumps({
@@ -2648,7 +2591,7 @@ def connect_compute(
 #    never caller-supplied — the agent cannot approve for another universe), secret-free
 #    (consent is a (sink, destination) allow, never a credential — the token is deposited
 #    out of band via the browser form / connect_http, deliberately NOT exposed here), and
-#    held to the vetted-founder run_graph allowlist while multi-tenant confinement hardens.
+#    requires current serving-owner admission, like every engine tool.
 #    The outbound call still needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED to fire.
 #  * Strict least privilege (mirror connect_compute): consent is a pure WRITE.
 _SOURCE_CHANNEL_CAPABILITIES = ("write",)
@@ -2681,18 +2624,6 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     err = _binding_error()
     if err is not None:
         return err
-    # Vetted-founder gate (same bar as connect_compute/run_graph): an engine-surface
-    # WRITE stays limited while multi-tenant confinement is hardened.
-    from tinyassets.engine_mcp_http import run_graph_allowlist
-
-    if _GRAPH_ID not in run_graph_allowlist():
-        return json.dumps({
-            "error": (
-                "source_channel is not enabled for this universe yet; it is "
-                "limited to a vetted founder while multi-tenant engine-write "
-                "confinement is hardened."
-            ),
-        })
     act = (action or "").strip().lower()
     if act != "approve":
         return json.dumps({
@@ -2739,8 +2670,8 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
         # widening the allowlist would be circular.
         #
         # Found by a Codex refute review of PR #2742 (Q1) and confirmed against
-        # this tree. Reachable today only from a vetted founder universe
-        # (`run_graph_allowlist`), which bounds it but does not make it true.
+        # this tree. Current serving-owner admission does not substitute for
+        # person-only consent; the agent still cannot self-grant workspace access.
         return json.dumps({
             "error": (
                 "workspace consent cannot be self-approved: it is typed per "

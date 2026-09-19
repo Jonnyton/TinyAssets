@@ -30,9 +30,7 @@ def served(monkeypatch):
 
     monkeypatch.setattr(server, "_binding_error", lambda: None)
     monkeypatch.setattr(server, "_GRAPH_ID", "u-test", raising=False)
-    import tinyassets.engine_mcp_http as http_mod
 
-    monkeypatch.setattr(http_mod, "run_graph_allowlist", lambda: {"u-test"})
     return server
 
 

@@ -1,7 +1,7 @@
 """Negative + guard tests for the founder-scoped engine MCP hardening.
 
-Covers the Codex-gated controls that keep `run_graph` safe for a single vetted
-founder: the allowlist scope gate, the effect-spam rate limit, the served-budget
+Covers the controls that keep `run_graph` scoped to its current serving owner:
+the current authority gate, the effect-spam rate limit, the served-budget
 boot reconciliation (stuck-reservation release) and bounded retention, and the
 per-request HTTP bearer auth on the loopback engine server.
 """
@@ -25,30 +25,31 @@ def test_bearer_ok_rejects_missing_wrong_and_empty(monkeypatch):
     assert ems._bearer_ok("Bearer x", "") is False  # no server secret -> never ok
 
 
-# ── allowlist scope gate (Codex #2 single-founder confinement) ───────────────
+# ── current serving-owner authority and global kill switch ────────────────
 
-def test_run_graph_allowlist_parses_and_defaults_dark(monkeypatch):
+def test_engine_global_kill_switch_defaults_dark(monkeypatch, tmp_path):
+    from tests.engine_authority_helpers import seed_engine_authority
     from tinyassets import engine_mcp_http
 
-    monkeypatch.delenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", raising=False)
-    assert engine_mcp_http.run_graph_allowlist() == frozenset()  # dark by default
+    seed_engine_authority(tmp_path)
+    monkeypatch.delenv("TINYASSETS_ENGINE_MCP_TOOLS", raising=False)
+    assert engine_mcp_http._desired_owners(tmp_path) == {}
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    assert engine_mcp_http._desired_owners(tmp_path) == {"u-a": "actor-a"}
 
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", " u-tiny , u-two ")
-    assert engine_mcp_http.run_graph_allowlist() == frozenset({"u-tiny", "u-two"})
 
-
-def test_run_graph_refuses_when_universe_not_allowlisted(monkeypatch, tmp_path):
+def test_run_graph_refuses_without_current_serving_authority(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYASSETS_ENGINE_ACTOR_ID", "founder-1")
     monkeypatch.setenv("TINYASSETS_ENGINE_GRAPH_ID", "u-not-allowed")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-only-this")
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
     # Fresh import so module-level _GRAPH_ID picks up the env.
     import tinyassets.engine_mcp_server as ems
     ems = importlib.reload(ems)
 
     _fn = getattr(ems.run_graph, "fn", ems.run_graph)  # fastmcp keeps the func
     out = _fn(branch_def_id="b1")
-    assert "not enabled for this universe" in out
+    assert "current serving owner" in out
 
 
 # ── atomic effect-spam admission (Codex #5) ──────────────────────────────────

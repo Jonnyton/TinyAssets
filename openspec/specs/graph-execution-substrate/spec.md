@@ -998,3 +998,70 @@ observation SHALL NOT claim host-global exclusion.
 #### Scenario: Broader universe storage is not measured
 - **WHEN** only retained workspace bytes are available
 - **THEN** evidence labels that coverage rather than claiming total universe storage
+
+### Requirement: Structured cross-user delivery enters a receiver-authorized node
+The engine SHALL deliver to an exposed receiver-owned node only when current
+policy permits the authenticated sender. Execution SHALL use the pinned receiver
+graph, receiver authority and ordinary resource admission, never sender or host
+credentials as a substitute.
+
+#### Scenario: Receiver selects an internal entry node
+- **WHEN** an authorized receiver exposes an internal node with valid ingress inputs
+- **THEN** delivery executes from that node through its defined downstream graph
+- **AND** predecessor-only nodes and effects do not execute or get edited
+
+#### Scenario: Projection removes a required workspace ancestor
+- **WHEN** a receiving projection loses a checkout required by the entry or downstream node
+- **THEN** exposure refuses before a sender can connect
+
+#### Scenario: Authentication and exposure remain authoritative
+- **WHEN** a payload claims another sender or a public foreign graph has no permitted exposure
+- **THEN** intake refuses without creating a receiver run
+
+#### Scenario: Receiver authority changes before execution
+- **WHEN** the receiver no longer has the required current authority
+- **THEN** execution refuses with a safe outcome rather than borrowing sender authority
+
+### Requirement: Explicit delivery validates structured values without claiming file transfer
+The engine SHALL validate explicit owner sends against declared source outputs,
+receiver input contracts and link mappings. Structured values SHALL remain data,
+not trusted execution or credential context. The current public delivery path
+SHALL refuse file-reference envelopes before receiver-run reservation; it SHALL
+NOT advertise exact-byte artifact transfer or in-node delivery RPC provenance.
+
+#### Scenario: Invalid structured input or file reference
+- **WHEN** the mapped input violates the contract or contains a file-reference envelope
+- **THEN** acceptance refuses before a receiver run is reserved
+
+#### Scenario: Control-looking structured values
+- **WHEN** accepted data contains fields named key or token or requests broader authority
+- **THEN** the values remain untrusted data and cannot replace trusted actor or provider context
+
+### Requirement: Explicit delivery occurrences have durable bounded two-party receipts
+Each accepted link and occurrence SHALL identify one durable structured delivery
+and its reserved receiver execution. Identical retries SHALL resolve to that
+delivery; changed content SHALL conflict. Receipts SHALL distinguish accepted,
+processed, failed and interrupted states without exposing private receiver run
+IDs, outputs, credentials or raw logs to the sender.
+
+#### Scenario: Retry races and distinct intentional sends
+- **WHEN** concurrent submissions use the same link, occurrence and content
+- **THEN** they resolve to the same delivery and receiver run
+- **AND** distinct occurrence IDs remain separate intentional sends even for identical content
+- **AND** changed content under an existing occurrence returns occurrence_conflict
+
+#### Scenario: Recovery distinguishes unstarted and ambiguous work
+- **WHEN** recovery proves a reserved execution never started
+- **THEN** the existing executor may run that same attempt under its execution lock
+- **AND** started work without a live execution lock becomes interrupted, not automatically replayed
+- **AND** this public MVP does not offer an explicit receiver execution-retry action
+
+#### Scenario: Disconnect or revoke prevents new occurrences
+- **WHEN** the sender disconnects or receiver revokes before acceptance
+- **THEN** the fresh occurrence creates no receiver run
+- **AND** previously accepted deliveries remain inspectable by their authorized parties
+
+#### Scenario: Receiver processing fails after acceptance
+- **WHEN** receiver execution fails
+- **THEN** each authorized party sees a safe failure receipt rather than successful processing
+- **AND** sender responses and ledger entries identify the delivery, not a private receiver run
