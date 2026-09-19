@@ -191,6 +191,14 @@ def test_below_threshold_does_not_verify_or_lock(inventory, tmp_path):
     assert not docker.calls and not state["verified"]
 
 
+def test_dry_run_below_trigger_still_proves_protected_refs(inventory, tmp_path):
+    docker, state, options = runner(inventory, tmp_path, dry_run=True, measure=lambda p: 79)
+    report = retention.retain(**options)
+    assert report["status"] == "below_threshold"
+    assert identity(9) in report["protected_image_ids"]
+    assert state["verified"] and not report["selected"] and not docker.calls
+
+
 def test_new_stopped_reference_is_rechecked(inventory, tmp_path):
     docker, state, options = runner(inventory, tmp_path)
 

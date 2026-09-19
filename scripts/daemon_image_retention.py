@@ -417,7 +417,8 @@ def retain(
         removed=[],
         selected=[],
     )
-    if before < high:
+    triggered = before >= high
+    if not triggered and not dry_run:
         return report
     platform = (
         info.get("OSType"),
@@ -450,6 +451,8 @@ def retain(
             report["protected_image_ids"] = protected
             if choice not in fresh:
                 continue
+            if not triggered:
+                continue  # Dry-run still proves preservation below the trigger.
             report["after_pct"] = measure(path)
             if report["after_pct"] <= low:
                 break
@@ -461,6 +464,8 @@ def retain(
                 report["after_pct"] = measure(path)
         if not dry_run and report["after_pct"] <= low:
             report["status"] = "pressure_relieved"
+        elif not triggered:
+            report["status"] = "below_threshold"
     return report
 
 

@@ -45,6 +45,12 @@ Ruff on changed Python files, `git diff --check`, and
 `openspec validate daemon-image-retention --strict` passed. No full-suite claim.
 Exact-head review and authoritative required CI remain pending.
 
+Follow-up before dispatch: dry-run below the trigger now still verifies and
+reports protected refs without selecting/removing anything; effectful below-
+threshold runs remain no-op. The three changed-function suites then passed
+86 tests/no skips on the same Linux image in5.98s. Installer closure and units
+were unchanged from the143-test run. Ruff passed again.
+
 ## Release boundary
 
 The helper is dry-run by default; updated units explicitly use `--apply`.
