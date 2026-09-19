@@ -51,4 +51,3 @@ Writer path is authoritative: `deploy-prod.yml:394-395` installs to `docker volu
 Retire the fence at its three call sites (task 2.5a), unify the two locks, tag-pulled image reclaim (those are excluded and will show as residual pressure in dry-run), GHCR credential scoping if the package is private (`DEPLOY.md:325` assumes public), containerd store support if ever enabled.
 
 VERDICT: ADAPT
-
