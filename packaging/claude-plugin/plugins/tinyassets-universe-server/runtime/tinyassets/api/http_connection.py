@@ -32,11 +32,9 @@ Slice 1 scope + security posture (grounded in the outbound substrate):
   policy — a different endpoint allow-list included — is refused as a conflict
   before any vault write, so a re-provision can never silently keep the old egress
   policy under a rotated secret. Changing an existing connection's policy is
-  UNSUPPORTED in Slice 1: ``revoke_connection`` only stamps ``revoked_at``, and a
-  revoked deterministic resource then trips the ``revoked_at is not None``
-  conflict on every re-provision, so there is no revoke-then-reprovision path.
-  A dedicated policy-update operation is the follow-up (tasks.md); until it lands,
-  a policy change requires a new destination.
+  possible through the dedicated extension operation or by explicit removal
+  followed by a new deposit. Removal fences dependent model authority and erases
+  the old grants/custody; it never silently revives them under a replacement key.
 - **Never echoes the secret or the credential_ref.** Errors carry no secret.
 
 A live outbound call additionally requires the owner's effector consent for the
@@ -545,9 +543,8 @@ def _connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, An
     #    so a pure reorder stays idempotent; any real change (a different endpoint
     #    list, or any field) is a conflict, never a silent reuse of the old policy
     #    under a rotated secret. Changing an existing connection's policy is
-    #    UNSUPPORTED in Slice 1 (revoke only stamps revoked_at, which then trips the
-    #    revoked_at conflict below) — a policy change needs a new destination until
-    #    the dedicated update op follow-up lands. Credential-bearing read (trusted
+    #    done through explicit extension or remove/redeposit, not silent rotation.
+    #    Credential-bearing read (trusted
     #    server code); the ref never reaches the projection.
     resource = ledger._get_connection_resource(connection_id)
     # The ONE raw snapshot the extension at the end is guarded by. The git

@@ -4058,12 +4058,9 @@
         // The sentence still gets shown — after the fact, as a receipt.
         const d=await MCP.connectHTTP(r.destination,secret,r.allowed_endpoints,r.auth_scheme);
         if(d&&d.error){ out.textContent="Couldn't add it: "+(d.detail||d.error); openManual(); return; }
-        // Says only what this surface can actually do. There is no reachable
-        // remove for an http connection yet (the ledger has revoke_connection,
-        // nothing exposes it), and promising one would be the same class of bug
-        // as the old path label that promised a default this deposit never had.
+        // Account remains reachable even if no provider can power a reply.
         out.textContent="Added as “"+r.destination+"”. "+r.receipt+
-          " To change it, fill it in below and add it again.";
+          " To disconnect it, open Account. To change it, fill it in below and add it again.";
 
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); }
         out.textContent="Couldn't add it: "+err.message; }
