@@ -1,8 +1,8 @@
 """Tests for deploy/tinyassets-prune.service and tinyassets-prune.timer.
 
 Coverage:
-  - Service file: Type=oneshot, docker image prune + builder prune present
-  - Service file: until=168h filter (prune images >7 days old)
+  - Service file: Type=oneshot, shared bounded daemon-only retention entrypoint
+  - No broad Docker prune or age-only safety policy; activation stays operator-owned
   - Timer file: weekly OnCalendar, Persistent=true
   - Bootstrap delegates both units and activation to the shared installer
 """
@@ -46,17 +46,30 @@ def test_service_type_oneshot():
     assert "Type=oneshot" in _svc()
 
 
-def test_service_docker_image_prune():
-    assert "docker image prune" in _svc()
+def test_service_uses_shared_bounded_retention_entrypoint():
+    assert "WorkingDirectory=/opt/tinyassets-host-uptime/current" in _svc()
+    assert (
+        "ExecStart=/usr/bin/python3 "
+        "/opt/tinyassets-host-uptime/current/scripts/disk_autoprune.py --apply"
+    ) in _svc()
+    hourly = (REPO / "deploy" / "tinyassets-disk-watch.service").read_text(encoding="utf-8")
+    assert "scripts/disk_autoprune.py --apply" in hourly
 
 
-def test_service_docker_builder_prune():
-    assert "docker builder prune" in _svc()
+def test_service_has_no_broad_prune_or_age_only_deletion():
+    for forbidden in (
+        "docker image prune", "docker builder prune", "docker system prune",
+        "docker volume prune", "until=168h",
+    ):
+        assert forbidden not in _svc()
 
 
-def test_service_until_168h():
-    """Prune filter must be 168h (7 days) to protect the current deploy tag."""
-    assert "until=168h" in _svc()
+def test_service_does_not_opt_itself_into_destructive_retention():
+    # --apply alone is read-only; the tested helper requires a separate exact
+    # operator opt-in. A timer must not hardcode that authority in the unit.
+    assert "EnvironmentFile=/etc/tinyassets/env" in _svc()
+    assert "TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY" not in _svc()
+    assert "SuccessExitStatus=1" in _svc()
 
 
 def test_service_after_docker():

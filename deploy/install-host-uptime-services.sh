@@ -51,6 +51,7 @@ RUNTIME_FILES=(
     scripts/mcp_public_canary.py
     scripts/disk_watch.py
     scripts/disk_autoprune.py
+    scripts/daemon_image_retention.py
     scripts/rotate_run_transcripts.py
     scripts/backup_ship_gh.py
     scripts/backup_prune.py
