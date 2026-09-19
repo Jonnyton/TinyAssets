@@ -366,6 +366,13 @@ def _canonical_policy(endpoints: list[dict[str, Any]]) -> str:
 
 
 def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    from tinyassets.onboarding.serving import _gesture_lock
+
+    with _gesture_lock(_request_universe(universe_id)):
+        return _connect_http(universe_id=universe_id, payload=payload)
+
+
+def _connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """Provision (or rotate) a generic http connection for the owner's universe.
 
     Returns a redacted projection on success and a sanitized error otherwise.
@@ -755,6 +762,13 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
 
 
 def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    from tinyassets.onboarding.serving import _gesture_lock
+
+    with _gesture_lock(_request_universe(universe_id)):
+        return _remove_http(universe_id=universe_id, payload=payload)
+
+
+def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """Remove a deposited http connection: the secret, the connection, its grants.
 
     The missing half of deposit. A user who pasted a key -- including one pasted
@@ -826,6 +840,20 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         # another principal's deposited credential.
         return dict(_NOT_FOUND)
 
+    observed = document.get("incarnation")
+    incarnation = ledger.incarnation(connection_id)
+    if observed is not None and resource is not None and observed != incarnation:
+        return {"error": "connection_changed", "resource": "connection"}
+    from tinyassets.providers.connection_lifecycle import complete_disconnect, fence_connection
+
+    if resource is not None:
+        fence_connection(base, _universe_dir(uid), owner=actor, uid=uid,
+                         connection_id=connection_id, grant_id=grant_id,
+                         incarnation=incarnation or "", destination=destination)
+        # Deny new direct HTTP dispatch before secret/ledger cleanup; an already
+        # dispatched request may still finish, which the receipt states explicitly.
+        ledger.revoke_connection(connection_id)
+
     # Read the SHAPE before destroying it. Endpoints and git scopes are the two
     # things a re-deposit has to reproduce, and scopes in particular die with
     # the grant -- forget them and the connection comes back looking healthy
@@ -871,6 +899,7 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     removed_consents = revoke_consents_for_connection(
         _universe_dir(uid), connection_id=connection_id, destination=destination
     )
+    complete_disconnect(base, owner=actor, uid=uid, connection_id=connection_id)
 
     return {
         "status": "removed",
@@ -879,6 +908,9 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         "grant_id": grant_id,
         "secrets_removed": secrets_removed,
         "connection_removed": bool(rows_removed),
+        "in_flight": "Already dispatched requests may finish; their outcomes are unchanged.",
+        "upstream": ("Disconnected from TinyAssets; your provider account "
+                     "and independent key are unchanged."),
         # What the removal took back, so a ROTATION can re-ask for exactly
         # these and the owner is never asked to remember them. Inheriting them
         # silently was the alternative, and it also survives a removal the

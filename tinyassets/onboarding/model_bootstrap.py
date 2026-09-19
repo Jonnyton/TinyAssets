@@ -66,7 +66,10 @@ def complete_bootstrap(*, base: Path, uid: str, owner: str, preset: AcquisitionP
     """
     from tinyassets.api.http_connection import connect_http
     from tinyassets.api.pending_requests import request_from_user
-    from tinyassets.onboarding.model_bootstrap_binding import ensure_bootstrap_binding
+    from tinyassets.onboarding.model_bootstrap_binding import (
+        ensure_bootstrap_binding,
+        reconnect_owned_binding,
+    )
     from tinyassets.onboarding.model_bootstrap_candidate import prepare_candidate
     from tinyassets.onboarding.model_setup import model_setup_state
     from tinyassets.onboarding.serving import _gesture_lock
@@ -78,7 +81,7 @@ def complete_bootstrap(*, base: Path, uid: str, owner: str, preset: AcquisitionP
     with _gesture_lock(uid):
         universe = require_founder_home(base, uid, owner)
         state = model_setup_state(base, universe=universe, uid=uid, owner=owner)
-        if key is not None and state != "empty":
+        if key is not None and state not in {"empty", "disconnected"}:
             raise HostedAuthError("model_setup_changed", 409)
         if state == "connected":
             return {"status": "connected", "universe_id": uid}
@@ -87,7 +90,10 @@ def complete_bootstrap(*, base: Path, uid: str, owner: str, preset: AcquisitionP
                                             owner=owner, preset=preset)
             if pending is not None:
                 return pending
-        if load_provider_assignment(base, universe_id=uid) is not None:
+        assignment = load_provider_assignment(base, universe_id=uid)
+        reconnecting = (assignment is not None and assignment.state == "unassigned"
+                        and assignment.owner_user_id == owner)
+        if assignment is not None and not reconnecting:
             raise HostedAuthError("model_connection_requires_recovery", 409)
         if key is None:
             key = _resume_key(base, universe=universe, uid=uid, owner=owner,
@@ -102,7 +108,8 @@ def complete_bootstrap(*, base: Path, uid: str, owner: str, preset: AcquisitionP
     # stores. Do not hold the gesture lock while calling its first-binding helper.
     did = prepare_candidate(base=base, uid=uid, owner=owner,
                             grant_id=provisioned["grant_id"], preset=preset)
-    binding = ensure_bootstrap_binding(base, uid=uid, owner=owner)
+    binding = (reconnect_owned_binding(base, uid=uid, owner=owner) if reconnecting
+               else ensure_bootstrap_binding(base, uid=uid, owner=owner))
     require_founder_home(base, uid, owner)
     # The existing public binding action accepts the registered definition id;
     # capture_action normalizes it into the manifest's api_key_http identity.

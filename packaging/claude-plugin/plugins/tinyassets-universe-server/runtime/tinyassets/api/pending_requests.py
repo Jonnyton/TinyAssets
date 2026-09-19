@@ -695,6 +695,14 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
             action = capture_action(_uid, action)
         except (ValueError, LookupError, PermissionError, CurrentHomeChanged) as exc:
             return _bad(str(exc))
+    if action.get("type") == "remove_http":
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.api.http_connection import _ids
+        from tinyassets.storage.outbound_connections import ConnectionLedger
+
+        connection_id, _ = _ids(universe_id=_uid, destination=action["destination"])
+        action = {**action, "incarnation": ConnectionLedger(
+            _base_path() / "outbound.db").incarnation(connection_id) or "absent"}
     if action.get("type") == "extend_http":
         captured_preview: dict[str, Any] = {}
         held = _extend_ask_verdict(_uid, action, captured_preview=captured_preview)
@@ -1492,7 +1500,8 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
 
         gone = remove_http(
             universe_id=universe_id,
-            payload=json.dumps({"destination": action["destination"]}),
+            payload=json.dumps({"destination": action["destination"],
+                                "incarnation": action.get("incarnation", "uncaptured")}),
         )
         if gone.get("error"):
             return gone

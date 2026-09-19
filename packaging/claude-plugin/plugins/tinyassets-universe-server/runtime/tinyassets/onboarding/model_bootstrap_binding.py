@@ -3,6 +3,31 @@
 from pathlib import Path
 
 
+def reconnect_owned_binding(base: Path, *, uid: str, owner: str) -> dict:
+    """Explicit reconnect after withdrawal; preserve every agent content field."""
+    from tinyassets.custom_agents import reconnect_binding_candidates_in_transaction
+    from tinyassets.onboarding.serving import _require_current_admin
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+    from tinyassets.shared_self import require_founder_home
+    from tinyassets.storage.current_home import check_current_home
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    require_founder_home(base, uid, owner)
+    _require_current_admin(base, universe_id=uid, owner=owner)
+    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
+        conn.execute("BEGIN")
+        check_current_home(conn, owner, uid)
+        assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
+        if (assignment is None or assignment.owner_user_id != owner
+                or assignment.state != "unassigned"):
+            raise PermissionError("explicit_disconnection_required")
+        bindings = reconnect_binding_candidates_in_transaction(conn, universe_id=uid,
+            owner=owner, provider_ref=assignment.binding_id)
+        if len(bindings) != 1:
+            raise PermissionError("existing_agent_requires_review")
+        return bindings[0]
+
+
 def ensure_bootstrap_binding(base: Path, *, uid: str, owner: str) -> dict:
     """Create once or resume the untouched first binding, without provider access.
 
