@@ -129,6 +129,13 @@ def _run_actor_for_kwargs(kwargs: dict[str, Any]) -> str:
     return branch_run_actor(str(kwargs.get("universe_id") or ""))
 
 
+def _run_owner_for_request() -> str:
+    """Capture at authenticated intake, never rediscover in a worker or RPC."""
+    from tinyassets.api.permissions import current_request_actor_id
+
+    return current_request_actor_id()
+
+
 #: Owner-scoped inbound-trigger ops (mint/revoke/list a webhook, create/revoke/list a
 #: Source). They mutate or disclose a universe's inbound ingress secrets, so — like a
 #: branch run — they are gated to a caller with WRITE access to their OWN universe
@@ -981,6 +988,7 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
             _enqueue_universe_id=_request_universe(kwargs.get("universe_id") or ""),
+            owner_user_id=_run_owner_for_request(),
         )
     except MissingRequiredInputs as exc:
         return _missing_required_inputs_response(exc)
@@ -1105,6 +1113,7 @@ def enqueue_universe_branch_run(
         actor=actor,
         provider_call=provider_call,
         _enqueue_universe_id=uid,
+        owner_user_id=principal_id,
     )
     try:
         _append_global_ledger(
@@ -2241,6 +2250,8 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
             inputs=inputs,
             run_name=kwargs.get("run_name", ""),
             actor=_run_actor_for_kwargs(kwargs),
+            owner_user_id=_run_owner_for_request(),
+            _enqueue_universe_id=_request_universe(kwargs.get("universe_id") or ""),
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
         )
