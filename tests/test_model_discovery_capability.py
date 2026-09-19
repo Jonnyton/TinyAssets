@@ -152,7 +152,8 @@ def test_served_discovery_setup_preserves_existing_connection_and_grant(rig, mon
     monkeypatch.setattr(engine, "_ACTOR_ID", "owner")
     monkeypatch.setattr(engine, "_GRAPH_ID", "u-models")
     monkeypatch.setattr(engine, "_engine_run_admit", lambda **kw: True)
-    monkeypatch.setattr("tinyassets.engine_mcp_http.run_graph_allowlist", lambda: {"u-models"})
+    from tests.engine_authority_helpers import seed_bound_engine
+    seed_bound_engine(monkeypatch)
     before = rig.ledger.get_connection_view("conn-models")
     document = {"capability_kind": "model_discovery", "enabled": True,
                 "definition_id": rig.definition.id, "descriptor": DESCRIPTOR}
@@ -179,7 +180,8 @@ def test_served_discovery_setup_preserves_existing_connection_and_grant(rig, mon
 
     # A current tool identity does not turn a foreign universe's definition into access.
     monkeypatch.setattr(engine, "_GRAPH_ID", "u-other")
-    monkeypatch.setattr("tinyassets.engine_mcp_http.run_graph_allowlist", lambda: {"u-other"})
+    from tests.engine_authority_helpers import seed_bound_engine
+    seed_bound_engine(monkeypatch)
     assert configure(document)["error"] == "not_found"
     assert rig.ledger.get_grant("grant-models") == rig.grant
 

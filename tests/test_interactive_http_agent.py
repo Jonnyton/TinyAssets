@@ -29,7 +29,8 @@ def agent(served, monkeypatch):
     uid = served.context.universe_dir.name
     set_founder_home(base, founder_sub="owner", universe_id=uid, platform_generated=True)
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", uid)
+    from tests.engine_authority_helpers import seed_engine_authority
+    seed_engine_authority(base, actor="owner", graph=uid)
     engine_mcp_http._write_routes(
         base,
         [

@@ -35,9 +35,13 @@ No live user branch was used as a fixture or mutated during this audit.
    bound universe. The served `graph_id` pin does not close that gap because
    branch resolution is still author-based. An explicit branch-to-universe
    binding is the pre-multi-user authority gate.
-2. **The bound-agent lifecycle is not generally available.** Served `write_graph`
-   and `run_graph` remain behind `TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES`; the
-   allowlist is deliberately dark for universes that have not been vetted.
+2. **General owner admission is being repaired.** The legacy vetted-universe
+   gate prevents ordinary HTTP-powered users from speaking at all. Change
+   `admit-owner-bound-engine-tools` replaces it with current serving-creator,
+   admin ACL and deletion checks, retaining operation-specific confinement.
+   Deployment and full fresh-user acceptance remain required; local code is not
+   closure. Same-author multi-universe separation in row1 is distinct from
+   cross-user isolation and remains tracked.
 3. **Concurrent edits can lose updates.** `patch_branch` is all-or-nothing for
    one request, but the served surface has no expected revision / compare-and-
    swap guard between inspect and edit.

@@ -24,7 +24,8 @@ def controls(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(served, "_GRAPH_ID", "ours")
     monkeypatch.setattr(served, "_ACTOR_ID", "owner")
-    monkeypatch.setattr("tinyassets.engine_mcp_http.run_graph_allowlist", lambda: {"ours"})
+    from tests.engine_authority_helpers import seed_bound_engine
+    seed_bound_engine(monkeypatch)
     # Cancellation must not consume a run admission, including under exhaustion.
     def no_admission(**kwargs):
         pytest.fail("cancel reached run admission")

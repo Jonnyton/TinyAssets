@@ -82,9 +82,6 @@ jobs:
               vpat='^[01]$' ;;
             TINYASSETS_ONBOARDING_APP_CLIENT_ID)
               vpat='^client_[A-Za-z0-9]+$' ;;
-            TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES)
-              # Comma-separated universe ids (the engine write/run allowlist).
-              vpat='^[A-Za-z0-9_,-]+$' ;;
             *)
               echo "::error::key ${INPUT_KEY} is not in the feature-flag allowlist (this workflow cannot set images, secrets, or deploy config)"; exit 1 ;;
           esac

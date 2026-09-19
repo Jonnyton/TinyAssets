@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 
 import pytest
 
+from tests.engine_authority_helpers import seed_engine_authority
 from tinyassets.providers.base import ModelConfig
+from tinyassets.storage import DB_FILENAME
 
 
 @pytest.fixture(autouse=True)
 def _enable_routes(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-a,u-b")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    seed_engine_authority(tmp_path)
 
 
 def _config():
@@ -156,12 +159,13 @@ def test_valid_port_boundaries(tmp_path, port):
     assert _read().url == f"http://127.0.0.1:{port}/mcp"
 
 
-def test_reader_ignores_stale_routes_when_disabled_or_unlisted(tmp_path, monkeypatch):
+def test_reader_ignores_stale_routes_when_disabled_or_revoked(tmp_path, monkeypatch):
     _write(tmp_path, _entry())
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
     assert _read() is None
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-other")
+    with sqlite3.connect(tmp_path / DB_FILENAME) as conn:
+        conn.execute("DELETE FROM universe_acl")
     assert _read() is None
 
 
@@ -178,7 +182,7 @@ def test_reader_does_not_infer_or_normalize_missing_scope(tmp_path, changes):
 def test_opaque_unicode_owner_and_graph(tmp_path, monkeypatch):
     from tinyassets.engine_mcp_http import _EngineServer, _write_routes
 
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "宇宙")
+    seed_engine_authority(tmp_path, actor="人/🪐", graph="宇宙")
     _write_routes(tmp_path, [_EngineServer("宇宙", "人/🪐", 8790, str(tmp_path))])
     assert _read(actor_id="人/🪐", graph_id="宇宙").actor_id == "人/🪐"
 
@@ -192,6 +196,9 @@ def test_replacement_record_cannot_be_used_by_previous_owner(tmp_path):
     assert _read().secret == first.secret
     _write_routes(tmp_path, [second])
     assert _read() is None
+    with sqlite3.connect(tmp_path / DB_FILENAME) as conn:
+        conn.execute("UPDATE agent_bindings SET created_by = 'actor-b'")
+        conn.execute("UPDATE universe_acl SET actor_id = 'actor-b'")
     assert _read(actor_id="actor-b").secret == second.secret != first.secret
 
 
@@ -210,10 +217,13 @@ def test_codex_drops_stale_bearer_and_ignores_child_env_root(tmp_path):
 def test_conflicting_serving_owners_are_not_picked_by_order(tmp_path, monkeypatch):
     from tinyassets import engine_mcp_http as http
 
-    rows = [("u-a", "actor-a"), ("u-a", "actor-b"), ("u-b", "actor-c"), ("u-b", "actor-c")]
-    monkeypatch.setattr(http, "_serving_universe_owners", lambda root: rows)
-    assert http._desired_owners(tmp_path) == {"u-b": "actor-c"}
-    rows.reverse()
+    seed_engine_authority(tmp_path, graph="u-b", actor="actor-c")
+    with sqlite3.connect(tmp_path / DB_FILENAME) as conn:
+        # A second current creator must make u-a unavailable, regardless of row order.
+        conn.execute("UPDATE agent_bindings SET status = 'configured' WHERE universe_id = 'u-a'")
+    seed_engine_authority(tmp_path, graph="u-a", actor="actor-b")
+    with sqlite3.connect(tmp_path / DB_FILENAME) as conn:
+        conn.execute("UPDATE agent_bindings SET status = 'serving' WHERE universe_id = 'u-a'")
     assert http._desired_owners(tmp_path) == {"u-b": "actor-c"}
 
 
@@ -222,10 +232,13 @@ def test_supervisor_uses_one_root_for_database_routes_and_child(tmp_path, monkey
 
     chosen = tmp_path / "chosen"
     chosen.mkdir()
+    seed_engine_authority(chosen)
     observed = []
-    monkeypatch.setattr(http, "_serving_universe_owners", lambda root: (
-        observed.append(root) or [("u-a", "actor-a")]
-    ))
+    original = http._serving_universe_owners
+    def observed_owners(root, **kwargs):
+        observed.append(root)
+        return original(root, **kwargs)
+    monkeypatch.setattr(http, "_serving_universe_owners", observed_owners)
     child_envs = []
 
     def spawn_without_process(*args, **kwargs):

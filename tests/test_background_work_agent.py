@@ -185,11 +185,13 @@ def test_background_agent_cannot_exceed_existing_attempt_count(tmp_path, monkeyp
                for step in work_agent.latest().rounds for tool in step.tools)
 
 
-@pytest.mark.parametrize("phase", ["route", "discovery"])
+@pytest.mark.parametrize("phase", ["authority", "route", "discovery"])
 def test_background_prelaunch_failures_do_not_spend_provider_budget(
     tmp_path, monkeypatch, work_agent, phase,
 ):
-    if phase == "route":
+    if phase == "authority":
+        monkeypatch.setattr("tinyassets.engine_mcp_http.engine_tools_authorized", lambda **k: False)
+    elif phase == "route":
         monkeypatch.setattr("tinyassets.engine_mcp_http.read_engine_mcp_route", lambda **k: None)
     else:
         work_agent.mode = "discovery_failure"
@@ -200,7 +202,10 @@ def test_background_prelaunch_failures_do_not_spend_provider_budget(
         rows = [json.loads(row[0]) for row in conn.execute(
             "SELECT record_json FROM provider_invocation_reservations",
         )]
-    assert len(rows) == (0 if phase == "route" else 1)
+    # Authority is checked before admission. Route readiness is now awaited
+    # after admission so a cold server can start; failure settles that existing
+    # reservation without launching a provider or spending its budget.
+    assert len(rows) == (0 if phase == "authority" else 1)
     assert all(row["state"] == "cancelled_before_launch" for row in rows)
     assert all(row["actual_total_tokens"] == row["actual_cost_microunits"] == 0 for row in rows)
 

@@ -23,7 +23,11 @@ http_wire = work_model_tests.http_wire
 @pytest.fixture
 def work_agent(tmp_path, monkeypatch, http_wire):
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "universe_alice")
+    # _run_branch establishes the real serving binding; do not invent a second
+    # binding before that setup. Tool admission needs the same owner's admin ACL.
+    from tinyassets.daemon_server import grant_universe_access
+    grant_universe_access(tmp_path, universe_id="universe_alice", actor_id="acct_alice",
+                          permission="admin", granted_by="acct_alice")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("tinyassets.providers.call._force_mock", False)
     engine_mcp_http._write_routes(tmp_path, [SimpleNamespace(
@@ -195,7 +199,7 @@ def test_member_revoked_after_known_tool_does_not_start_second_inference(
     assert "known work result" in work_agent.latest().rounds[0].tools[0].result_json
 
 
-def test_no_engine_route_refuses_before_reservation(
+def test_no_engine_route_settles_reservation_without_inference(
     tmp_path, monkeypatch, authenticate_request, work_agent,
 ):
     monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **k: None)
@@ -204,9 +208,10 @@ def test_no_engine_route_refuses_before_reservation(
     assert "engine_tools_unavailable" in result["terminal_error"]
     assert work_agent.wires == [] and work_agent.tools == []
     with sqlite3.connect(db_path(tmp_path)) as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM provider_invocation_reservations",
-        ).fetchone() == (0,)
+        rows = [json.loads(row[0]) for row in conn.execute(
+            "SELECT record_json FROM provider_invocation_reservations",
+        )]
+    assert len(rows) == 1 and rows[0]["state"] == "cancelled_before_launch"
 
 
 @pytest.mark.parametrize("phase", ["adapter", "turn", "discovery", "observer"])

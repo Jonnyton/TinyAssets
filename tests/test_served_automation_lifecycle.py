@@ -27,7 +27,8 @@ def bound(tmp_path, monkeypatch):
     _seed_branch(tmp_path)
     monkeypatch.setattr(engine, "_GRAPH_ID", UNIVERSE)
     monkeypatch.setattr(engine, "_ACTOR_ID", OWNER)
-    monkeypatch.setattr("tinyassets.engine_mcp_http.run_graph_allowlist", lambda: {UNIVERSE})
+    from tests.engine_authority_helpers import seed_bound_engine
+    seed_bound_engine(monkeypatch)
     token = _current_identity.set(None)
     yield tmp_path
     _current_identity.reset(token)
@@ -174,6 +175,13 @@ def test_admin_can_control_another_owners_row_but_text_is_untrusted(bound, monke
         bound, universe_id=UNIVERSE, actor_id="admin", permission="admin", granted_by=OWNER
     )
     monkeypatch.setattr(engine, "_ACTOR_ID", "admin")
+    # This admin becomes the legitimate serving creator, not an impersonator.
+    import sqlite3
+
+    from tinyassets.storage import DB_FILENAME
+    with sqlite3.connect(bound / DB_FILENAME) as conn:
+        conn.execute("UPDATE agent_bindings SET created_by = 'admin' WHERE universe_id = ?",
+                     (UNIVERSE,))
     assert read(row)["untrusted"] is True
     listed = json.loads(engine.read_graph(target="automations"))
     assert listed["untrusted"] is True
@@ -209,10 +217,10 @@ def test_unbound_identity_never_reaches_control(bound, monkeypatch, field):
     assert "not bound" in control(row, "delete")["error"]
 
 
-def test_off_allowlist_cannot_mutate(bound, monkeypatch):
+def test_disabled_engine_cannot_mutate(bound, monkeypatch):
     row = create()["automation"]
-    monkeypatch.setattr("tinyassets.engine_mcp_http.run_graph_allowlist", lambda: set())
-    assert "not enabled" in control(row, "delete")["error"]
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
+    assert "current serving owner" in control(row, "delete")["error"]
     assert not AutomationStore(bound).get(row["automation_id"]).retired_at
 
 

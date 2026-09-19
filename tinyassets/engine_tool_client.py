@@ -14,7 +14,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from tinyassets.engine_mcp_http import EngineMcpRoute, read_engine_mcp_route
+from tinyassets.engine_mcp_http import (
+    EngineMcpRoute,
+    read_engine_mcp_route,
+    wait_for_engine_mcp_route,
+)
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.storage import data_dir
 
@@ -200,7 +204,9 @@ async def open_engine_tools(
     ):
         raise EngineToolError("engine_tools_invalid_timeout")
     root = data_dir()
-    route = read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root)
+    route = await wait_for_engine_mcp_route(
+        actor_id=actor_id, graph_id=graph_id, root=root, timeout=timeout,
+    )
     if route is None:
         raise EngineToolError("engine_tools_unavailable")
     try:

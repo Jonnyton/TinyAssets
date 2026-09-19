@@ -12,6 +12,8 @@ import json
 
 import pytest
 
+from tests.engine_authority_helpers import mock_engine_admission
+
 # ── engine_mcp_server: fail-closed + confinement ────────────────────────────
 
 def test_binding_error_fails_closed_without_both_ids(monkeypatch):
@@ -19,13 +21,16 @@ def test_binding_error_fails_closed_without_both_ids(monkeypatch):
 
     monkeypatch.setattr(s, "_ACTOR_ID", "")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-x")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     assert s._binding_error() is not None
 
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
     monkeypatch.setattr(s, "_GRAPH_ID", "")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     assert s._binding_error() is not None
 
     monkeypatch.setattr(s, "_GRAPH_ID", "u-x")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     assert s._binding_error() is None
 
 
@@ -35,6 +40,7 @@ def test_read_graph_refuses_unpinned_targets(monkeypatch):
 
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-x")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     # "branch" left this list deliberately (2026-08-26): the universe had the X
     # credential deposited and still could not post, because it could list its
     # branches but not read one's node wiring. Reading a branch is strictly
@@ -59,6 +65,7 @@ def test_read_graph_pins_graph_id_and_target(monkeypatch):
     monkeypatch.setattr(us, "read_graph", lambda **kw: (captured.update(kw), "{}")[1])
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
 
     s.read_graph(target="graph")
     assert captured == {"target": "graph", "graph_id": "u-pinned"}
@@ -73,6 +80,7 @@ def test_get_status_pins_universe_id(monkeypatch):
     monkeypatch.setattr(us, "get_status", lambda **kw: (captured.update(kw), "{}")[1])
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
 
     s.get_status()
     assert captured == {"universe_id": "u-pinned"}
@@ -93,6 +101,7 @@ def test_handlers_refused_when_unbound(monkeypatch):
     monkeypatch.setattr(us, "get_status", _boom)
     monkeypatch.setattr(s, "_ACTOR_ID", "")  # unbound
     monkeypatch.setattr(s, "_GRAPH_ID", "u-x")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
 
     assert "refusing" in json.loads(s.read_graph(target="graph")).get("error", "")
     assert "refusing" in json.loads(s.get_status()).get("error", "")
@@ -135,6 +144,7 @@ def _bind_ids(monkeypatch, actor="sub-1", graph="u-x"):
 
     monkeypatch.setattr(s, "_ACTOR_ID", actor)
     monkeypatch.setattr(s, "_GRAPH_ID", graph)
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     return s
 
 
@@ -157,6 +167,7 @@ def test_browse_commons_branches_lists_published_with_read_caps(monkeypatch):
 
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-9")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-9")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     captured: dict = {}
 
     def _fake(**kw):
@@ -197,6 +208,7 @@ def test_read_commons_shape_reads_any_public_branch_by_id(monkeypatch):
 
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-9")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-9")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     captured: dict = {}
 
     def _fake(**kw):
@@ -227,41 +239,38 @@ def test_read_commons_shape_requires_exactly_one_id(monkeypatch):
 
 
 def test_remix_shape_requires_fork_from_and_name(monkeypatch):
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-ok")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-ok"}))
+    mock_engine_admission(monkeypatch, {"u-ok"})
     assert "fork_from" in json.loads(s.remix_shape(name="x")).get("error", "")
     assert "name is required" in json.loads(
         s.remix_shape(fork_from="v-1")
     ).get("error", "")
 
 
-def test_remix_shape_refused_off_allowlist(monkeypatch):
-    """remix is a WRITE — refuse unless this universe is on the run_graph allowlist."""
-    import tinyassets.engine_mcp_http as http
+def test_remix_shape_refused_without_serving_authority(monkeypatch):
+    """Remix requires current serving-owner admission before reaching writes."""
     import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-not-listed")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
+    mock_engine_admission(monkeypatch, {"u-other"})
     calls = {"n": 0}
     monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.remix_shape(fork_from="v-1", name="mine"))
-    assert "not enabled for this universe" in out.get("error", "")
+    assert "current serving owner" in out.get("error", "")
     assert calls["n"] == 0  # never reached the write
 
 
 def test_remix_shape_forks_private_with_minimal_caps(monkeypatch):
-    import tinyassets.engine_mcp_http as http
     import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
     from tinyassets.auth import middleware
 
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-9")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     captured: dict = {}
 
@@ -286,12 +295,11 @@ def test_remix_shape_forks_private_with_minimal_caps(monkeypatch):
 
 def test_remix_shape_admission_fails_closed(monkeypatch):
     """remix passes fail_closed=True so a DB blip refuses rather than admits."""
-    import tinyassets.engine_mcp_http as http
     import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     seen = {}
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or
                         s.engine_admissions.Admission(None, "ledger"))
@@ -304,12 +312,11 @@ def test_remix_shape_admission_fails_closed(monkeypatch):
 
 
 def test_remix_shape_rate_limited(monkeypatch):
-    import tinyassets.engine_mcp_http as http
     import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw:
                         s.engine_admissions.Admission(None, "total"))
     calls = {"n": 0}
@@ -333,12 +340,11 @@ def test_run_graph_refuses_foreign_private_branch(monkeypatch):
     """Codex ADAPT #1: a foreign-private branch id must be refused before the run
     path loads it — indistinguishable from missing."""
     import tinyassets.api.branches as branches
-    import tinyassets.engine_mcp_http as http
     import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     # not readable by the founder -> None (foreign-private or missing)
     monkeypatch.setattr(branches, "_resolve_readable_branch", lambda *a, **k: None)
@@ -352,12 +358,11 @@ def test_run_graph_refuses_foreign_private_branch(monkeypatch):
 def test_run_graph_names_the_cap_that_refused(monkeypatch, tmp_path):
     """Codex round 2 (P2): the refusal always said "max 20" even when the
     60-run total bound was what refused."""
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_admissions as adm
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit",
                         lambda **kw: adm.Admission(None, adm.REFUSED_BY_TOTAL))
     out = json.loads(s.run_graph(branch_def_id="b1"))
@@ -388,14 +393,13 @@ def test_run_graph_binds_its_admission_to_the_started_run(monkeypatch, tmp_path)
     import types
 
     import tinyassets.api.branches as branches
-    import tinyassets.engine_mcp_http as http
     import tinyassets.universe_server as us
     from tinyassets import engine_admissions as adm
     from tinyassets import engine_mcp_server as s
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(branches, "_resolve_readable_branch",
                         lambda *a, **k: ("b1", types.SimpleNamespace()))
     started = json.dumps({"run_id": "run-77", "status": "running"})
@@ -425,8 +429,7 @@ def _seed_brain_universe(monkeypatch, tmp_path, uid="u-brain"):
     seed_okf_bundle(udir, purpose="help the founder", loop_branch_def_id="")
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-brain")
     monkeypatch.setattr(s, "_GRAPH_ID", uid)
-    import tinyassets.engine_mcp_http as http
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({uid}))
+    mock_engine_admission(monkeypatch, {uid})
     return udir
 
 
@@ -622,14 +625,13 @@ def test_write_brain_rejects_oversized_name(monkeypatch, tmp_path):
     assert "name is too long" in out.get("error", "")
 
 
-def test_write_brain_refused_off_allowlist(monkeypatch, tmp_path):
-    import tinyassets.engine_mcp_http as http
+def test_write_brain_refused_without_serving_authority(monkeypatch, tmp_path):
     from tinyassets import engine_mcp_server as s
 
     _seed_brain_universe(monkeypatch, tmp_path)
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
+    mock_engine_admission(monkeypatch, {"u-other"})
     out = json.loads(s.write_brain(identity="x is a specific grounded fact here"))
-    assert "not enabled for this universe" in out.get("error", "")
+    assert "current serving owner" in out.get("error", "")
 
 
 def test_write_brain_requires_something_to_write(monkeypatch, tmp_path):
@@ -859,7 +861,8 @@ def test_codex_engine_mcp_args_fail_closed_without_route(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-9")
+    from tests.engine_authority_helpers import seed_engine_authority
+    seed_engine_authority(tmp_path, actor="sub", graph="u-9")
 
     env = {"TINYASSETS_DATA_DIR": str(tmp_path)}  # no routes file present
     cfg = ModelConfig(
@@ -878,7 +881,8 @@ def test_codex_engine_mcp_args_wires_trusted_http_server(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-9")
+    from tests.engine_authority_helpers import seed_engine_authority
+    seed_engine_authority(tmp_path, actor="sub", graph="u-9")
     secret = "s" * 43
     (tmp_path / ".engine_mcp_http_routes.json").write_text(
         json.dumps({"u-9": {"version": 1, "actor_id": "sub", "port": 8790,
@@ -916,7 +920,8 @@ def test_codex_engine_mcp_args_fail_closed_missing_secret(tmp_path, monkeypatch)
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-9")
+    from tests.engine_authority_helpers import seed_engine_authority
+    seed_engine_authority(tmp_path, actor="sub", graph="u-9")
 
     (tmp_path / ".engine_mcp_http_routes.json").write_text(
         json.dumps({"u-9": {"version": 1, "actor_id": "sub", "port": 8790,
@@ -938,32 +943,30 @@ def test_connect_compute_fails_closed_when_unbound(monkeypatch):
 
     monkeypatch.setattr(s, "_ACTOR_ID", "")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-x")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     out = json.loads(s.connect_compute(access_method="subscription_cli"))
     assert "not bound" in out.get("error", "")
 
 
-def test_connect_compute_refused_off_allowlist(monkeypatch):
-    """Registration is a WRITE via the engine surface — held to the vetted-founder
-    allowlist while multi-tenant confinement is hardened; the impl is never reached."""
+def test_connect_compute_refused_without_serving_authority(monkeypatch):
+    """Registration refuses failed current-owner admission before the implementation."""
     import tinyassets.api.compute_connection as cc
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-not-listed")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
+    mock_engine_admission(monkeypatch, {"u-other"})
     calls = {"n": 0}
     monkeypatch.setattr(cc, "connect_compute", lambda **kw: (calls.update(n=1), {})[1])
     out = json.loads(s.connect_compute(access_method="subscription_cli", ref="codex"))
-    assert "not enabled for this universe" in out.get("error", "")
+    assert "current serving owner" in out.get("error", "")
     assert calls["n"] == 0  # never reached the write
 
 
 def test_connect_compute_requires_access_method(monkeypatch):
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-ok")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-ok"}))
+    mock_engine_admission(monkeypatch, {"u-ok"})
     out = json.loads(s.connect_compute(access_method="  "))
     assert "access_method is required" in out.get("error", "")
 
@@ -972,13 +975,12 @@ def test_connect_compute_pins_universe_and_binds_write_caps(monkeypatch):
     """universe_id is PINNED (never caller-supplied) and least-privilege write caps
     are bound (no submit_request / costly)."""
     import tinyassets.api.compute_connection as cc
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
     from tinyassets.auth import middleware
 
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-cc")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-cc")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-cc"}))
+    mock_engine_admission(monkeypatch, {"u-cc"})
     captured: dict = {}
 
     def _fake(**kw):
@@ -1006,7 +1008,6 @@ def test_connect_compute_pins_universe_and_binds_write_caps(monkeypatch):
 def test_connect_compute_registers_subscription_cli_end_to_end(monkeypatch, tmp_path):
     """Full flow against the real impl: the served agent registers a candidate under
     the founder's own universe (admin ACL required); no secret ever appears."""
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
     from tinyassets.daemon_server import grant_universe_access
 
@@ -1019,7 +1020,7 @@ def test_connect_compute_registers_subscription_cli_end_to_end(monkeypatch, tmp_
     )
     monkeypatch.setattr(s, "_ACTOR_ID", "founder-cc")
     monkeypatch.setattr(s, "_GRAPH_ID", uid)
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({uid}))
+    mock_engine_admission(monkeypatch, {uid})
 
     out = json.loads(s.connect_compute(
         access_method="subscription_cli", protocol="cli:codex",
@@ -1039,6 +1040,8 @@ def test_connect_compute_registers_subscription_cli_end_to_end(monkeypatch, tmp_
         assert banned not in out, banned
     # A non-admin actor on the same universe is refused (owner-gate, uniform envelope).
     monkeypatch.setattr(s, "_ACTOR_ID", "intruder")
+    # Keep exercising the downstream owner envelope, independently of admission.
+    mock_engine_admission(monkeypatch, {uid})
     refused = json.loads(s.connect_compute(
         access_method="subscription_cli", protocol="cli:codex",
         model="gpt-5-codex", ref="codex",
@@ -1050,7 +1053,6 @@ def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tm
     """The served api_key_http path enforces grant isolation via _validate_http_grant:
     a same-owner/same-universe grant registers; a foreign-universe, foreign-owner, or
     nonexistent grant is refused with the uniform envelope (no grant existence leak)."""
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
     from tinyassets.daemon_server import grant_universe_access
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
@@ -1085,7 +1087,7 @@ def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tm
 
     monkeypatch.setattr(s, "_ACTOR_ID", "owner-akh")
     monkeypatch.setattr(s, "_GRAPH_ID", uid)
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({uid}))
+    mock_engine_admission(monkeypatch, {uid})
 
     def _cc(ref):
         return json.loads(s.connect_compute(
@@ -1116,7 +1118,7 @@ def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tm
     (tmp_path / "u-intruder").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(s, "_ACTOR_ID", "intruder-akh")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-intruder")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-intruder"}))
+    mock_engine_admission(monkeypatch, {"u-intruder"})
     # The grant is owned by owner-akh, not intruder-akh -> uniform not_found.
     assert _cc("grant_foreign_owner").get("error") == "not_found"
 
@@ -1165,11 +1167,13 @@ def test_read_graph_compute_target_lists_own_providers_end_to_end(monkeypatch, t
     assert "compute" in s._PINNED_READ_TARGETS
     monkeypatch.setattr(s, "_ACTOR_ID", "founder-cr")
     monkeypatch.setattr(s, "_GRAPH_ID", uid)
+    mock_engine_admission(monkeypatch, {uid})
     out = json.loads(s.read_graph(target="compute"))
     assert out.get("count") == 1, out
     assert out["providers"][0]["definition_id"] == reg["definition_id"]
     # Graph-pinned: a served read cannot address another universe (the arg is fixed).
     monkeypatch.setattr(s, "_GRAPH_ID", "u-someone-else")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     other = json.loads(s.read_graph(target="compute"))
     assert other.get("error") == "not_found"  # no admin ACL there -> uniform not_found
 
@@ -1209,6 +1213,7 @@ def test_read_graph_connections_target_lists_own_http_connections_end_to_end(
     assert "connections" in s._PINNED_READ_TARGETS
     monkeypatch.setattr(s, "_ACTOR_ID", "founder-cx")
     monkeypatch.setattr(s, "_GRAPH_ID", uid)
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     out = json.loads(s.read_graph(target="connections"))
     rows = [c for c in out.get("connections", []) if c["destination"] == "webhook:anything"]
     assert len(rows) == 1, out
@@ -1223,6 +1228,7 @@ def test_read_graph_connections_target_lists_own_http_connections_end_to_end(
     # test_connections_list_isolates_by_owner_not_just_universe, which actually
     # deposits a second owner's connection; this assertion is only a graph-pin check.)
     monkeypatch.setattr(s, "_GRAPH_ID", "u-not-mine")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     other = json.loads(s.read_graph(target="connections"))
     assert other.get("connections") == [] and other.get("count") == 0
 
@@ -1256,6 +1262,7 @@ def test_read_graph_branches_target_lists_own_workflows_end_to_end(monkeypatch, 
     assert "branches" in s._PINNED_READ_TARGETS
     monkeypatch.setattr(s, "_ACTOR_ID", "founder-br")
     monkeypatch.setattr(s, "_GRAPH_ID", uid)
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     out = json.loads(s.read_graph(target="branches"))
     names = {r["name"]: r["branch_def_id"] for r in out.get("branches", [])}
     assert names.get("Compute smoke check") == created["branch_def_id"], out
@@ -1290,11 +1297,10 @@ def test_served_write_graph_refuses_unmounted_targets(monkeypatch):
     test_served_automation_lifecycle.py.
     """
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     captured = {"n": 0, "kw": None}
 
@@ -1322,11 +1328,10 @@ def test_served_write_graph_create_and_patch_only(monkeypatch):
     are refused (publishing/forking stay in the browser flow), before any write.
     Delete joined on 2026-09-02 (branch-delete-on-write-graph)."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
@@ -1339,11 +1344,10 @@ def test_served_write_graph_create_and_patch_only(monkeypatch):
 def test_served_write_graph_requires_explicit_operation(monkeypatch):
     """Empty operation must be refused, never fall through to a default write."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
@@ -1356,11 +1360,10 @@ def test_served_write_graph_create_forces_private(monkeypatch):
     """A served create is PRIVATE to the universe — a spec cannot self-declare
     public/published (publishing is a separate, consent-gated browser step)."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     captured = {}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
@@ -1379,11 +1382,10 @@ def test_served_write_graph_strips_node_approval_and_fork(monkeypatch):
     a forged author, or a per-node fork. Every approval/author/fork field is
     stripped from every node before build_branch, and the top-level fork_from too."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     captured = {}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
@@ -1420,11 +1422,10 @@ def test_served_write_graph_strips_approval_in_alt_containers(monkeypatch):
     `node_defs`), so approval-stripping must cover EVERY container. A hostile
     approved node under `nodes` must persist unapproved."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     captured = {}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
@@ -1447,11 +1448,10 @@ def test_served_write_graph_rejects_nested_graph_blob(monkeypatch):
     (build_branch reads graph.node_defs). The served create rejects the blob
     outright rather than chase every container."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
@@ -1470,11 +1470,10 @@ def test_served_write_graph_rejects_node_ref(monkeypatch):
     computable) approval — a pre-forged public node copied this way would run.
     Reject node_ref (top-level and per-node) before it can reach build_branch."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
@@ -1496,11 +1495,10 @@ def test_served_write_graph_preserves_opaque_workflow_data(monkeypatch):
     contain a key named 'author'/'public') must survive untouched, while the
     node's OWN top-level approval/author fields are still stripped."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     captured = {}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: captured.update(kw) or "{}")
@@ -1535,11 +1533,10 @@ def test_served_write_graph_rejects_invoke_allows_channel_effect(monkeypatch):
     fires nothing; its outbound call stays gated at run time by the connection grant +
     per-destination consent + the outbound flag + SSRF."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
 
@@ -1578,11 +1575,10 @@ def test_served_write_graph_rejects_invoke_allows_channel_effect(monkeypatch):
 def test_served_write_graph_effects_must_be_string_list(monkeypatch):
     """A malformed effects declaration is a structured rejection, never reaches build."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
@@ -1600,11 +1596,10 @@ def test_served_write_graph_rejects_duplicate_effect_sinks(monkeypatch):
     effect sink — the wording moved from "the channel sink at most once" when
     `workspace` joined the allowlist (2026-08-31); the rule did not."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
@@ -1623,11 +1618,10 @@ def test_served_write_graph_has_no_shape_cap(monkeypatch):
     surface refuses none of it. Usage (admissions, consent, at-most-once) is
     what bounds a big graph; its shape is the user's."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
@@ -1645,11 +1639,10 @@ def test_served_write_graph_byte_cap_counts_utf8(monkeypatch):
     """The payload DoS bound counts ENCODED UTF-8 bytes, not str length — a
     multibyte payload just under the char count but over the byte cap is refused."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
@@ -1665,11 +1658,10 @@ def test_served_write_graph_rejects_bad_types(monkeypatch):
     """A wrong-typed field ({"name":[]}) returns a STRUCTURED rejection, never
     crashes the served MCP server, and never reaches build_branch (Codex #6)."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
@@ -1683,11 +1675,10 @@ def test_served_write_graph_rejects_bad_types(monkeypatch):
 def test_served_write_graph_payload_too_large(monkeypatch):
     """A served build payload past the DoS bound is refused before parse/persist."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
@@ -1699,29 +1690,27 @@ def test_served_write_graph_payload_too_large(monkeypatch):
     # graph under it builds (see test_served_write_graph_has_no_shape_cap).
 
 
-def test_served_write_graph_refused_off_allowlist(monkeypatch):
-    """write_graph is a WRITE — refuse unless this universe is on the allowlist."""
+def test_served_write_graph_refused_without_serving_authority(monkeypatch):
+    """Failed current-owner admission refuses writes before the implementation."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-not-listed")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-other"}))
+    mock_engine_admission(monkeypatch, {"u-other"})
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation="create"))
-    assert "not enabled for this universe" in out.get("error", "")
+    assert "current serving owner" in out.get("error", "")
     assert calls["n"] == 0
 
 
 def test_served_write_graph_admission_fails_closed(monkeypatch):
     """Admission is fail-closed: a DB blip refuses the write rather than admits."""
     import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    mock_engine_admission(monkeypatch, {"u-9"})
     seen = {}
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or
                         s.engine_admissions.Admission(None, "ledger"))
@@ -1745,6 +1734,7 @@ def test_read_graph_reads_one_branch_by_id(monkeypatch):
     monkeypatch.setattr(us, "read_graph", lambda **kw: (captured.update(kw), "{}")[1])
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
 
     s.read_graph(target="branch", branch_id="  8157e928f42c  ")
     assert captured == {
@@ -1771,6 +1761,7 @@ def test_read_graph_reads_one_run_by_id(monkeypatch):
     monkeypatch.setattr(us, "read_graph", lambda **kw: (captured.update(kw), "{}")[1])
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-1")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
 
     s.read_graph(target="run", run_id="  08a17f75653b4fe3  ")
     assert captured == {

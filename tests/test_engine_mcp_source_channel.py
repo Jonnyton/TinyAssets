@@ -1,7 +1,7 @@
 """Served-surface source_channel consent verb (channel-add parity, §2.2).
 
 Locks in the confinement for the CONSENT half of "add a channel via the
-channel-agnostic node": vetted-founder allowlist gate, graph-pin, least-privilege
+channel-agnostic node": current-owner admission, graph-pin, least-privilege
 caps, sink-consent-only (source_code approval refused to preserve the create-only
 write_graph RCE closure), and action=approve only. A regression turns a gate red
 instead of silently widening the served effect-consent surface.
@@ -14,12 +14,13 @@ _AEC = '{"channel_type":"authenticated_external_call","destination":"d"}'
 
 
 def _bind(monkeypatch, *, actor="sub-9", graph="u-9", allow=("u-9",)):
-    import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
     monkeypatch.setattr(s, "_ACTOR_ID", actor)
     monkeypatch.setattr(s, "_GRAPH_ID", graph)
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset(allow))
+    # Admission is isolated here; downstream operation/consent guards stay real.
+    from tests.engine_authority_helpers import mock_engine_admission
+    mock_engine_admission(monkeypatch, allow)
     return s
 
 
@@ -50,11 +51,11 @@ def test_source_channel_fails_closed_unbound(monkeypatch):
     assert cap == {}  # impl never reached
 
 
-def test_source_channel_refused_off_allowlist(monkeypatch):
+def test_source_channel_refused_without_serving_authority(monkeypatch):
     s = _bind(monkeypatch, graph="u-9", allow=("u-other",))
     cap = _patch_impl(monkeypatch)
     out = json.loads(s.source_channel(action="approve", payload=_AEC))
-    assert "not enabled for this universe" in out["error"]
+    assert "current serving owner" in out["error"]
     assert cap == {}  # never reached the impl
 
 

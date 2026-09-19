@@ -35,11 +35,10 @@ principal:
    resolve against `ctx.universe_id` / the verified principal (never the actor_id
    param, never an env fallback).
 2. **`run_graph`** — the served agent may execute its own universe's approved
-   automations. Reuses the existing `run_graph` gate
-   (`TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES` allowlist) and the u-tiny hardening
+   automations. Reuses current serving-owner admission and the hardening
    already shipped (per-request HTTP bearer auth, crash-supervisor + dynamic
    reconcile, effect-spam rate-limit, budget boot-reconcile + retention,
-   immutable-version via approved-source-hash). Execution rides the sanitized
+   immutable-version and OS code isolation). Execution rides the sanitized
    `invoke_branch` path (#2498) for any sub-branch invocation.
 3. **`remix_shape`** — re-includable now that invoke is sanitized; remix stays
    execution-closure-gated (re-approval before a remixed shape can run/publish).
@@ -53,10 +52,11 @@ is in BOTH the engine-MCP server (`@mcp.tool`) AND the provider allowlist.
 
 ## Boundaries (defer, do not duplicate)
 
-- Multi-tenant removal of the `TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES` allowlist is
-  a SEPARATE change; this one keeps the founder-universe allowlist and the
-  still-owed multi-tenant items (explicit branch↔universe binding, one-use ingress
-  permit, true rolling cumulative budget).
+- General engine admission is owned by `admit-owner-bound-engine-tools`: current
+  serving creator/admin/deletion checks replace the vetted-universe env list.
+  Still-owed hardening here: explicit same-author branch↔universe binding,
+  one-use ingress permit and true rolling cumulative budget. These do not grant
+  cross-user authority and are not grounds for provider-specific tool denial.
 - The compute SDK access method (`compute-sdk-access-method`) is a parallel lane.
 - No new authority model: reuse the `serve-open-compute-provider` connection-grant
   path + the invoke_branch `BranchExecutionContext` from #2498.
@@ -65,7 +65,7 @@ is in BOTH the engine-MCP server (`@mcp.tool`) AND the provider allowlist.
 
 - Served build/run acts ONLY as the verified request principal in
   `ctx.universe_id`; no cross-universe write/read/execute; no env-actor fallback.
-- `run_graph` stays behind its universe allowlist + immutable approved-source-hash;
+- `run_graph` stays behind current serving-owner admission and OS code isolation;
   nothing EXECUTES unless attached to the acting universe's own authored + approved
   shape (founder hard rule 2026-08-22).
 - Sub-branch invocation uses the sanitized #2498 path (delegated authz, fail-closed
