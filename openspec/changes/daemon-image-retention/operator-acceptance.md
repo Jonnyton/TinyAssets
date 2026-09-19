@@ -47,7 +47,8 @@ is not disabled by the new flag; the whole service is not a no-effect probe.
    transcript rotation (its separate --dry-run CLI is the only dry-run control
    it reads). Confirm current/all stopped and
    running container references, configured image, explicit receipt rollback,
-   two newer rollback candidates and all newer-than-current images protected.
+   two most recent older rollback candidates and all images at least as new as
+   the current image protected.
    Unknown store mapping is a blocker, not a reason to guess a path or skip it.
 3. Only after that proof does root use the existing environment installer to
    set `TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY` to exact1. It affects retention
