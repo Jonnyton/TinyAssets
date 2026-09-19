@@ -1599,6 +1599,8 @@ _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
     # by default; the production deploy explicitly enables it).
     "enqueue_branch_run": ("dispatch", "enqueue"),
     "dispatch.enqueue": ("dispatch", "enqueue"),
+    # Native delivery reuses explicit link authority; no arbitrary graph writes.
+    "deliver_output": ("delivery", "deliver_output"),
 }
 
 
@@ -1882,6 +1884,8 @@ def _build_node_mcp_invoker(
     base_path: str | Path | None = None,
     enqueue_context: "NodeEnqueueContext | None" = None,
     enqueue_budget: "NodeEnqueueBudget | None" = None,
+    delivery_source: Any = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Callable[..., dict[str, Any]]:
     allowed = set(node.tools_allowed or [])
     shared_enqueue_budget = enqueue_budget or NodeEnqueueBudget()
@@ -1923,6 +1927,17 @@ def _build_node_mcp_invoker(
                 )
 
         tool_name, action = resolved
+        if tool_name == "delivery":
+            from tinyassets.api.deliveries import deliver_node_output
+
+            if set(kwargs) != {"link_id", "occurrence_id", "outputs"}:
+                raise CompilerError("invalid_delivery_parameters")
+            if base_path is None:
+                raise CompilerError("delivery_source_unavailable")
+            return deliver_node_output(
+                base_path, source=delivery_source, should_cancel=should_cancel or (lambda: False),
+                **kwargs,
+            )
         if tool_name == "goals":
             from tinyassets.api.market import goals
 
@@ -1998,6 +2013,7 @@ def _build_source_code_node(
     ancestors: set[str] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     execution_context: "BranchExecutionContext | None" = None,
+    delivery_source: Any = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that runs the node's ``source_code`` in the OS
     sandbox (``tinyassets.node_sandbox``, design D2): a child process that
@@ -2017,6 +2033,7 @@ def _build_source_code_node(
         node, event_sink=event_sink, invocation_depth=invocation_depth,
         base_path=base_path, enqueue_context=enqueue_context,
         enqueue_budget=enqueue_budget,
+        delivery_source=delivery_source, should_cancel=should_cancel,
     )
     provenance = "own"
     if execution_context is not None:
@@ -2588,18 +2605,21 @@ def _emit_invoke_design_used(
 class BranchExecutionContext:
     """Immutable per-run authority carried through every invoke_branch edge.
 
-    Built ONCE at the authenticated top-level run entry (never re-derived from the
-    mutable run record or a node spec) and threaded compile -> node builder -> invoke
+    Built ONCE at authenticated run entry (never filled from a node spec) and
+    threaded compile -> node builder -> invoke
     closure -> child run -> child's builders. It is the single source of truth for who
     the run executes as (``actor``), where (``universe_id``), and how much the running
     definition is trusted (``caller_provenance``: ``own`` = authored by ``actor``, else
     ``public-foreign``). A nested edge can only NARROW it; it never widens authority.
+    Current run/ACL reads may narrow freshness, never manufacture missing context.
     """
 
     actor: str = ""
     universe_id: str = ""
     caller_provenance: str = "own"  # "own" | "public-foreign"
     depth: int = 0
+    owner_user_id: str = ""  # persisted authenticated owner, not the universe actor
+    definition_author: str = ""  # actual compiled definition, not fork attribution
 
 
 #: Uniform refusal for any child ref that is absent OR not authorized — never reveal
@@ -2608,7 +2628,7 @@ _CHILD_UNAVAILABLE = "invoke_branch child is not available"
 
 
 def _authorize_child_ref(
-    base: "Path", child_def_id: str, ctx: "BranchExecutionContext"
+    base: "Path", child_def_id: str, ctx: "BranchExecutionContext", *, parent_run_id: str = ""
 ) -> "Any":
     """Authorize an AUTHOR-chosen child branch ref under DELEGATED authority.
 
@@ -2616,8 +2636,9 @@ def _authorize_child_ref(
     against what the AUTHORING definition may reference — NOT the runner's ambient
     readability (the run actor is the potential victim; their own readability would
     authorize a foreign spec's reference to the victim's private branch). Rule:
-      * ``own`` provenance (running def authored by ``ctx.actor``): may reference an
-        own-authored child (any visibility) OR any public child.
+      * ``own`` provenance: may reference an actor-authored child or any public
+        child. An owner-authored parent may also reference that owner's private
+        child while current owner and persisted running-parent authority agree.
       * ``public-foreign`` provenance: may reference ONLY a public child.
     Returns the child ``BranchDefinition`` on success; raises ``CompilerError`` with a
     uniform message otherwise (absent and unauthorized are indistinguishable).
@@ -2642,6 +2663,27 @@ def _authorize_child_ref(
     is_public = visibility == "public"
     if ctx.caller_provenance == "own":
         authorized = is_public or (bool(author) and author == ctx.actor)
+        if (not authorized and author and author == ctx.owner_user_id
+                and ctx.definition_author == ctx.owner_user_id and parent_run_id):
+            from tinyassets import runs
+            from tinyassets.api.source_channel import universe_owner_actor
+
+            if universe_owner_actor(base, ctx.universe_id, ctx.owner_user_id):
+                try:
+                    with runs._connect(base) as conn:
+                        row = conn.execute(
+                            "SELECT actor, owner_user_id, queue_universe_id, status "
+                            "FROM runs WHERE run_id=?", (parent_run_id,),
+                        ).fetchone()
+                    authorized = bool(
+                        row is not None and row["status"] == "running"
+                        and row["actor"] == ctx.actor
+                        and row["owner_user_id"] == ctx.owner_user_id
+                        and row["queue_universe_id"] == ctx.universe_id
+                    )
+                except Exception:  # noqa: BLE001 - uniform authority refusal
+                    logger.debug("invoke_branch parent authority unavailable", exc_info=True)
+                    authorized = False
     else:
         authorized = is_public
     if not authorized:
@@ -2765,7 +2807,9 @@ def _build_invoke_branch_node(
         # absent/private children by differing errors.
         actor_arg = _resolve_actor()
         # Then delegated authorization of the author-chosen child BEFORE any execute.
-        child_branch = _authorize_child_ref(_base, child_branch_def_id, _ctx)
+        child_branch = _authorize_child_ref(
+            _base, child_branch_def_id, _ctx, parent_run_id=parent_run_id,
+        )
 
         child_inputs: dict[str, Any] = {
             child_key: state.get(parent_key)
@@ -2782,6 +2826,8 @@ def _build_invoke_branch_node(
                 outcome = execute_branch(
                     _base, branch=child_branch, inputs=child_inputs,
                     actor=actor_arg,
+                    owner_user_id=_ctx.owner_user_id or None,
+                    _enqueue_universe_id=_ctx.universe_id,
                     provider_call=provider_call,
                     on_node_status=on_node_status,
                     _invocation_depth=depth + 1,
@@ -2831,6 +2877,8 @@ def _build_invoke_branch_node(
             outcome = execute_branch_async(
                 _base, branch=child_branch, inputs=child_inputs,
                 actor=actor_arg,
+                owner_user_id=_ctx.owner_user_id or None,
+                _enqueue_universe_id=_ctx.universe_id,
                 provider_call=provider_call,
                 on_node_status=on_node_status,
                 _invocation_depth=depth + 1,
@@ -2936,7 +2984,7 @@ def _build_invoke_branch_version_node(
             raise CompilerError(_CHILD_UNAVAILABLE) from None
         if not ver_def_id:
             raise CompilerError(_CHILD_UNAVAILABLE)
-        child = _authorize_child_ref(_base, ver_def_id, _ctx)
+        child = _authorize_child_ref(_base, ver_def_id, _ctx, parent_run_id=parent_run_id)
         child_def_id = (getattr(child, "branch_def_id", "") or "").strip()
         if not child_def_id or child_def_id != ver_def_id:
             raise CompilerError(_CHILD_UNAVAILABLE)
@@ -2982,6 +3030,8 @@ def _build_invoke_branch_version_node(
                     branch_version_id=child_branch_version_id,
                     inputs=child_inputs,
                     actor=actor_arg,
+                    owner_user_id=_ctx.owner_user_id or None,
+                    _enqueue_universe_id=_ctx.universe_id,
                     provider_call=provider_call,
                     on_node_status=on_node_status,
                     _invocation_depth=depth + 1,
@@ -3040,6 +3090,8 @@ def _build_invoke_branch_version_node(
                 branch_version_id=child_branch_version_id,
                 inputs=child_inputs,
                 actor=actor_arg,
+                owner_user_id=_ctx.owner_user_id or None,
+                _enqueue_universe_id=_ctx.universe_id,
                 provider_call=provider_call,
                 on_node_status=on_node_status,
                 _invocation_depth=depth + 1,
@@ -3320,6 +3372,7 @@ def _build_node(
     merge_fields: set[str] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     graph_node_id: str = "",
+    delivery_source: Any = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build the node function for ``node``: the inner adapter, then the
     single-merge-writer guard (when ``merge_fields`` is given), then the
@@ -3353,6 +3406,7 @@ def _build_node(
         enqueue_budget=enqueue_budget,
         universe_context=universe_context,
         execution_context=execution_context,
+        delivery_source=delivery_source,
         on_node_status=on_node_status,
         effect_chain=effect_chain,
         ancestors=ancestors,
@@ -3403,6 +3457,7 @@ def _build_node_inner(
     enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
+    delivery_source: Any = None,
     on_node_status: Callable[[str, str], None] | None = None,
     effect_chain: Any = None,
     should_cancel: Callable[[], bool] | None = None,
@@ -3438,6 +3493,7 @@ def _build_node_inner(
             enqueue_budget=enqueue_budget,
             effect_chain=effect_chain, state_schema=state_schema,
             ancestors=ancestors, execution_context=execution_context,
+            delivery_source=delivery_source,
             should_cancel=should_cancel,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
@@ -3730,6 +3786,16 @@ def compile_branch(
         effective_policy = node_def.llm_policy or getattr(
             branch, "default_llm_policy", None,
         )
+        delivery_source = None
+        if execution_context is not None:
+            from tinyassets.api.deliveries import NodeDeliverySource
+
+            delivery_source = NodeDeliverySource(
+                owner_user_id=execution_context.owner_user_id,
+                universe_id=execution_context.universe_id, actor=execution_context.actor,
+                run_id=parent_run_id, branch_def_id=branch.branch_def_id,
+                node_id=gn.id, output_keys=tuple(node_def.output_keys),
+            )
         fn = _build_node(
             node_def,
             provider_call=provider_call,
@@ -3750,6 +3816,7 @@ def compile_branch(
             ancestors=ancestors_by_gid.get(gn.id, set()) if effect_chain is not None else None,
             merge_fields=merge_fields,
             graph_node_id=gn.id,
+            delivery_source=delivery_source,
             should_cancel=should_cancel,
         )
         graph.add_node(gn.id, fn)

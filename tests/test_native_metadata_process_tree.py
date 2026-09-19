@@ -17,6 +17,46 @@ from tinyassets.providers.native_jsonrpc_discovery import read_native_catalogue
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX process-group lifecycle")
 
 
+def _assert_reaped_or_zombie(status):
+    try:
+        state = status.read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        # init can reap a killed orphan between opening and reading /proc.
+        # Only absence is success; permission and other I/O failures propagate.
+        return
+    assert state.split(") ", 1)[1].startswith("Z")
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, ProcessLookupError])
+def test_reaped_process_disappearing_during_status_read_is_not_a_live_leak(error):
+    status = Mock()
+    status.exists.return_value = True
+    status.read_text.side_effect = error()
+    _assert_reaped_or_zombie(status)
+
+
+def test_process_status_permission_failure_is_not_hidden():
+    status = Mock()
+    status.exists.return_value = True
+    status.read_text.side_effect = PermissionError()
+    with pytest.raises(PermissionError):
+        _assert_reaped_or_zombie(status)
+
+
+def test_process_status_live_child_still_fails():
+    status = Mock()
+    status.exists.return_value = True
+    status.read_text.return_value = "123 (child) S 1 2 3"
+    with pytest.raises(AssertionError):
+        _assert_reaped_or_zombie(status)
+
+
+def test_process_status_zombie_has_released_execution_resources():
+    status = Mock()
+    status.read_text.return_value = "123 (child) Z 1 2 3"
+    _assert_reaped_or_zombie(status)
+
+
 @pytest.mark.parametrize("mode", ["success", "launcher_exited", "timeout", "cancel", "malformed"])
 def test_launcher_and_inherited_pipe_child_are_cleaned_without_losing_result(tmp_path, mode):
     pid_file = tmp_path / "child.pid"
@@ -81,8 +121,7 @@ if {mode!r} != 'launcher_exited':
             # longer runs or retains pipes; don't confuse that with a live leak.
             child_pid = int(pid_file.read_text())
             status = Path(f"/proc/{child_pid}/stat")
-            if status.exists():
-                assert status.read_text().split(") ", 1)[1].startswith("Z")
+            _assert_reaped_or_zombie(status)
             import fcntl
             with lock_file.open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

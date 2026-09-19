@@ -3299,6 +3299,7 @@ def _prepare_run(
     inputs: dict[str, Any],
     run_name: str,
     actor: str,
+    owner_user_id: str | None = None,
     branch_version_id: str | None = None,
     daemon_id: str | None = None,
     runtime_instance_id: str | None = None,
@@ -3322,6 +3323,7 @@ def _prepare_run(
         inputs=inputs,
         run_name=run_name,
         actor=actor,
+        owner_user_id=owner_user_id,
         branch_version_id=branch_version_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
@@ -3471,6 +3473,8 @@ def _invoke_graph(
         universe_id=run_universe,
         caller_provenance=_provenance,
         depth=invocation_depth,
+        owner_user_id=run_identity["owner_user_id"],
+        definition_author=_branch_author,
     )
 
     def _emit_node_status(node_id: str, status: str) -> None:
@@ -4340,15 +4344,16 @@ def _execution_context_for_run(
     definition is its own (authored by that actor). The normal path builds
     this inline; resume uses this helper - a compile without it fails open
     for foreign code (Codex round 2, P0)."""
-    run_actor, run_universe = "", ""
+    run_actor, run_universe, owner_user_id = "", "", ""
     try:
         with _connect(base_path) as conn:
             row = conn.execute(
-                "SELECT actor, queue_universe_id FROM runs WHERE run_id = ?", (run_id,),
+                "SELECT actor, queue_universe_id, owner_user_id FROM runs WHERE run_id = ?", (run_id,),
             ).fetchone()
         if row is not None:
             run_actor = (row["actor"] or "").strip()
             run_universe = (row["queue_universe_id"] or "").strip()
+            owner_user_id = (row["owner_user_id"] or "").strip()
     except Exception:  # noqa: BLE001 - no row: fall back to the caller's actor
         pass
     run_actor = run_actor or (fallback_actor or "").strip()
@@ -4359,6 +4364,8 @@ def _execution_context_for_run(
         universe_id=run_universe,
         caller_provenance=provenance,
         depth=invocation_depth,
+        owner_user_id=owner_user_id,
+        definition_author=author,
     )
 
 
@@ -4416,6 +4423,7 @@ def execute_branch(
     inputs: dict[str, Any],
     run_name: str = "",
     actor: str = "",   # no default principal; the caller names one or the write refuses
+    owner_user_id: str | None = None,
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4449,6 +4457,7 @@ def execute_branch(
         base_path,
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
+        owner_user_id=owner_user_id, queue_universe_id=_enqueue_universe_id or None,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
@@ -4691,6 +4700,7 @@ def _execute_branch_core(
     inputs: dict[str, Any],
     run_name: str = "",
     actor: str = "",   # no default principal; the caller names one or the write refuses
+    owner_user_id: str | None = None,
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4728,6 +4738,7 @@ def _execute_branch_core(
         base_path,
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
+        owner_user_id=owner_user_id,
         branch_version_id=branch_version_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
@@ -4796,6 +4807,7 @@ def execute_branch_async(
     inputs: dict[str, Any],
     run_name: str = "",
     actor: str = "",   # no default principal; the caller names one or the write refuses
+    owner_user_id: str | None = None,
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4836,6 +4848,7 @@ def execute_branch_async(
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
         branch_version_id=None,
+        owner_user_id=owner_user_id,
         _invocation_depth=_invocation_depth,
         _enqueue_universe_id=_enqueue_universe_id,
     )
@@ -4889,6 +4902,7 @@ def execute_branch_version(
     inputs: dict[str, Any],
     run_name: str = "",
     actor: str = "",   # no default principal; the caller names one or the write refuses
+    owner_user_id: str | None = None,
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4916,6 +4930,7 @@ def execute_branch_version(
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
         branch_task_id=_queue_branch_task_id or None,
+        owner_user_id=owner_user_id,
         queue_universe_id=_enqueue_universe_id or None,
     )
     enqueue_origin = (
@@ -4951,10 +4966,12 @@ def execute_branch_version_async(
     inputs: dict[str, Any],
     run_name: str = "",
     actor: str = "",   # no default principal; the caller names one or the write refuses
+    owner_user_id: str | None = None,
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
+    _enqueue_universe_id: str = "",
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
 
@@ -4998,6 +5015,8 @@ def execute_branch_version_async(
         recursion_limit_override=recursion_limit_override,
         on_node_status=on_node_status,
         branch_version_id=branch_version_id,
+        owner_user_id=owner_user_id,
+        _enqueue_universe_id=_enqueue_universe_id,
         _invocation_depth=_invocation_depth,
     )
 

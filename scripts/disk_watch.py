@@ -26,12 +26,19 @@ Stdlib only — no third-party deps.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.request
+
+try:
+    from scripts.daemon_image_retention import Docker, Refusal, pressure, storage_path
+except ModuleNotFoundError:
+    from daemon_image_retention import Docker, Refusal, pressure, storage_path
 
 GITHUB_API = "https://api.github.com"
 
@@ -42,9 +49,8 @@ _DISK_PRESSURE_LABEL = "disk-pressure"
 
 
 def _disk_usage_pct(path: str) -> float:
-    """Return used-percentage (0–100) for the filesystem containing path."""
-    usage = shutil.disk_usage(path)
-    return usage.used / usage.total * 100.0
+    """Match storage telemetry: reserved blocks count as unavailable."""
+    return pressure(path, disk_fn=shutil.disk_usage)
 
 
 def _gh_ensure_label(
@@ -93,14 +99,17 @@ def open_gh_issue(
         f"**Path:** `{path}`\n"
         f"**Usage:** {pct:.1f}%\n"
         f"**Threshold:** {threshold}%\n\n"
-        f"Recommended: `docker system prune -f` then restart compose.\n\n"
+        "Check the bounded daemon-image retention result and protected rollback "
+        "images; do not broadly prune user or rollback state.\n\n"
         f"_Auto-filed by disk_watch.py running on the Droplet._"
     )
-    payload = json.dumps({
-        "title": title,
-        "body": body,
-        "labels": [_DISK_PRESSURE_LABEL],
-    }).encode()
+    payload = json.dumps(
+        {
+            "title": title,
+            "body": body,
+            "labels": [_DISK_PRESSURE_LABEL],
+        }
+    ).encode()
     req = urllib.request.Request(
         f"{GITHUB_API}/repos/{repo}/issues",
         data=payload,
@@ -125,15 +134,15 @@ def check(
     token: str = "",
     dry_run: bool = False,
     *,
-    disk_fn=None,    # injection seam: (path) -> float
-    issue_fn=None,   # injection seam: (token, repo, path, pct, threshold) -> str
+    disk_fn=None,  # injection seam: (path) -> float
+    issue_fn=None,  # injection seam: (token, repo, path, pct, threshold) -> str
 ) -> int:
     _disk = disk_fn or _disk_usage_pct
     _issue = issue_fn or open_gh_issue
 
     try:
         pct = _disk(path)
-    except (FileNotFoundError, PermissionError) as exc:
+    except (OSError, Refusal) as exc:
         print(f"[disk-watch] WARN: cannot stat {path!r}: {exc}", file=sys.stderr)
         return 0  # non-fatal — path may not exist on all hosts
 
@@ -163,7 +172,15 @@ def check(
 
 
 def main() -> int:
-    path = os.environ.get("DISK_WATCH_PATH", _DEFAULT_PATH)
+    argparse.ArgumentParser(description=__doc__).parse_args()
+    path = os.environ.get("DISK_WATCH_PATH", "")
+    if not path:
+        try:
+            info = Docker(time.monotonic() + 10).json("info", "--format", "{{json .}}")
+            path = storage_path(info, os.environ.get("TINYASSETS_IMAGE_RETENTION_STORAGE_PATH", ""))
+        except (Refusal, OSError, ValueError, TypeError):
+            print("[disk-watch] UNKNOWN: image-store filesystem is not verified", file=sys.stderr)
+            return 1  # Visible, but preserve the rotation/retention command chain.
     threshold = int(os.environ.get("DISK_WARN_PCT", str(_DEFAULT_WARN_PCT)))
     repo = os.environ.get("GITHUB_REPOSITORY", _DEFAULT_REPO)
     token = os.environ.get("GITHUB_TOKEN", "")

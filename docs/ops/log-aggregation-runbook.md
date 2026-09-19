@@ -66,10 +66,23 @@ Verify the timers are scheduled:
 systemctl list-timers tinyassets-ship-logs.timer tinyassets-disk-watch.timer
 ```
 
-**Disk-watch** (`scripts/disk_watch.py`) fires daily at 04:30 UTC and opens a
-`disk-pressure` GH Issue when `/var/lib/docker` exceeds `DISK_WARN_PCT` (default
+**Disk-watch** (`scripts/disk_watch.py`) fires hourly at minute27 (also shortly
+after boot) and opens a `disk-pressure` GH Issue when the verified image-store
+filesystem reaches `DISK_WARN_PCT` (default
 80%). Requires `GITHUB_TOKEN` in `/etc/tinyassets/env` with `issues: write` scope.
 Optional env vars: `DISK_WATCH_PATH`, `DISK_WARN_PCT`, `GITHUB_REPOSITORY`.
+
+Both automatic cleanup services use bounded daemon-image retention, not system,
+builder, journal, volume or container cleanup. The compatibility command
+`python3 scripts/disk_autoprune.py` defaults to dry-run; both `--apply` and exact
+`TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY=1` are required for exact non-force removals
+after all protection/recovery checks. Timer installation alone cannot enable it.
+Run the helper directly for acceptance: the chained service also runs ordinary
+transcript rotation, which this flag does not affect. Containerd image
+storage needs an operator-verified `TINYASSETS_IMAGE_RETENTION_STORAGE_PATH`.
+See the [retention rollout checklist](../../openspec/changes/daemon-image-retention/operator-acceptance.md)
+before installing or activating the updated cleanup units. Unknown mapping or
+protected-image evidence is a refusal, not permission for broad prune.
 
 ---
 
