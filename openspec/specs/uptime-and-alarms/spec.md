@@ -755,7 +755,11 @@ Reconciliation SHALL enumerate successful `Deploy prod` workflow runs filtered t
 - **THEN** this reconciler can still report in sync because it does not read either live source
 
 ### Requirement: Disk-pressure timer preserves ordered alert, rotation, and disposable-host remediation
-The system SHALL provide a persistent systemd timer definition with five-minute post-boot, one-hour-since-active, and minute-27 calendar triggers plus a 180-second oneshot service sourcing `/etc/tinyassets/env`; the repository artifact alone SHALL NOT claim that a particular host installed or enabled it. The service SHALL declare three sequential commands in this order: disk alerting, run-transcript rotation, and disk auto-prune. Disk alerting SHALL return 1 at or above `DISK_WARN_PCT` (default 80) whether it opens an issue, lacks a token, or runs dry, and the service SHALL accept status 1 so that the ordered rotation and auto-prune commands still execute. Auto-prune SHALL trigger at or above `DISK_AUTOPRUNE_PCT` (default 85), run Docker system prune and builder prune without volumes plus a best-effort three-day journal vacuum, and treat a completed non-zero cleanup as logged but non-fatal. Unexpected process statuses other than 0 or 1 SHALL still fail the unit.
+The system SHALL provide a persistent systemd timer definition with five-minute post-boot, one-hour-since-active, and minute-27 calendar triggers plus a 180-second oneshot service sourcing `/etc/tinyassets/env`; the repository artifact alone SHALL NOT claim that a particular host installed or enabled it. The service SHALL declare three sequential commands in this order: disk alerting, run-transcript rotation, and bounded daemon-image retention. Disk alerting SHALL return 1 at or above `DISK_WARN_PCT` (default 80) whether it opens an issue, lacks a token, or runs dry, and the service SHALL accept status 1 so that the ordered commands still execute. Unexpected process statuses other than 0 or 1 SHALL still fail the unit.
+
+Alarm and retention SHALL measure pressure as `100 * (1 - available_bytes / total_bytes)`, with zero available and positive total measured as100%. At the default85% trigger, automatic retention SHALL remove only individually registry-verified immutable TinyAssets daemon cache images under deployment serialization, preserving all container references, current daemon, two recent older rollback candidates, configured and receipt rollback references. Hourly and weekly cleanup SHALL use this same narrow policy, never broad prune, journal vacuum, volume, container or user-data deletion. Retention SHALL stop at75% pressure, four removals or its120-second work budget, whichever comes first, and report unmet pressure and unavailable evidence.
+
+Registry verification SHALL occur before acquiring the fence-then-mutation locks; the locked phase SHALL have a maximum60-second budget. Any fence-state file SHALL refuse deletion. The current configured image and authoritative volume-root release receipt SHALL be reread before every removal. Unknown image-store filesystem mapping SHALL refuse even dry-run planning. Image removal SHALL require both an explicit apply argument and an exact retention-specific operator opt-in. Absent/0 opt-in SHALL keep retention read-only; malformed values SHALL refuse before work. Installing/enabling timers alone SHALL NOT authorize image removal. This flag SHALL NOT alter alarm or transcript rotation behavior; installed dry-run proof SHALL invoke the helper directly.
 
 #### Scenario: Below warning threshold reaches all three commands
 - **WHEN** the watched path is below the warning threshold and earlier commands otherwise succeed
@@ -770,13 +774,24 @@ The system SHALL provide a persistent systemd timer definition with five-minute 
 - **WHEN** a service command returns a status other than 0 or 1
 - **THEN** systemd treats the oneshot as failed
 
-#### Scenario: Auto-prune reclaims disposable host data without volumes
-- **WHEN** execution reaches auto-prune at or above its threshold
-- **THEN** it invokes Docker system and builder prune without `--volumes`, then attempts a three-day journal vacuum
+#### Scenario: Recoverable old daemon cache relieves pressure
+- **WHEN** pressure reaches85%, guards permit mutation and exact registry recovery is verified
+- **THEN** only unreferenced unprotected immutable daemon image refs are removed non-force, oldest first, with fresh reference and pressure checks
+- **AND** low watermark and work bounds stop further removals
 
-#### Scenario: Missing watched path is non-fatal
-- **WHEN** disk alerting or auto-prune cannot stat its configured path
-- **THEN** that script logs a warning and returns 0 rather than failing the timer solely because the path is absent
+#### Scenario: Unknown state does not authorize deletion
+- **WHEN** lock/fence, current image, protected refs, measurement or remote recovery cannot be established
+- **THEN** retention emits a sanitized refusal or unknown result and performs no unsafe deletion
+- **AND** unknown alarm mapping reports unknown/status1, permitting the ordered rotation step rather than asserting healthy pressure
+
+#### Scenario: Containerd repeats an immutable digest in its tag field
+- **WHEN** an image's only RepoTag exactly equals its sole fixed-repository immutable RepoDigest
+- **THEN** that duplicate digest alias does not by itself disqualify the image
+- **AND** mutable, foreign, additional or mismatched aliases remain excluded, and all protection, registry and locked recheck gates still apply
+
+#### Scenario: Dry-run and weekly scheduling remain narrow
+- **WHEN** retention runs dry or through the weekly cleanup timer
+- **THEN** dry-run never deletes and weekly execution obeys the identical pressure, recovery and preservation gates
 
 ### Requirement: Production deploy verifies reported LLM binding and sandbox readiness after public canaries
 

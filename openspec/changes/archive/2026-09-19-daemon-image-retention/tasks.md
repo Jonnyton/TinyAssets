@@ -11,5 +11,5 @@
 
 ## 3. Release
 
-- [ ] 3.1 Obtain exact-head cross-family approval and required CI; lead verifies installed dry-run/protected rollback evidence before enabling effects.
-- [ ] 3.2 Record protected-image/data preservation and authenticated public health plus measured free-space result; sync spec and archive only on accepted landing.
+- [x] 3.1 Exact-head Fable91136 approved4b1accc0; required Tests35428345248 passed. Deploy35429292706 proved7b51c673 and public handles; actual installed helper matched and direct dry-run protected current/rollback/data before activation.
+- [x] 3.2 Lead activated bounded retention under dual locks; four recoverable cache images removed,93.64% ->84.38%; subsequent ordinary tick78.96% removednone. Public handles passed after removal; data volume/current/rollback/sidecars preserved. Main spec synchronized; see live-acceptance.md for precise evidence and limits.
