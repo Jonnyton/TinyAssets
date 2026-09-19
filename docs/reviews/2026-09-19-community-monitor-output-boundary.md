@@ -1,8 +1,9 @@
-# Community watcher output boundary — candidate evidence
+# Community watcher output boundary — verified hosted release
 
 September 19, 2026. Isolated branch `codex/monitor-unavailable-signal`, based on
-main `4cbb3f5b`. This is candidate evidence, not a deployed or all-uptime claim.
-No live workflow failure, incident mutation, account or provider call induced.
+main `4cbb3f5b`. Candidate evidence below is followed by the exact hosted release
+receipt. This is not an all-uptime claim. No live crash, account or provider call
+was induced for this verification.
 
 ## Independent pre-build review
 
@@ -52,11 +53,42 @@ TINYASSETS_DATA_DIR=/tmp/tinyassets-test-data, PYTHONDONTWRITEBYTECODE=1 and
 `python -m pytest -q -rs -p no:cacheprovider` plus the same three file names.
 Node alarm tests executed without skips on both platforms.
 
-Final exact-head independent review, required CI, merged-source verification
-and actual hosted normal-path result remain pending.
-Failure injection is isolated test evidence, not a production crash experiment.
-Natural cron, real measured-green receipt, execution-quality and rendered-user
-coverage remain open under the existing change and concerns.
+## Verified hosted release — September19,10:12UTC
+
+Fable final review18623 exited0/224s, **APPROVE**, exact head
+`ccbf074a52c60c0efced30054d4d3219725259c2`; complete review is retained in
+[PR3885 comment5740809614](https://github.com/Jonnyton/TinyAssets/pull/3885#issuecomment-5740809614).
+Required Tests35435267457 succeeded: required-tests30m38s, slow-tests1m29s.
+Hosted actionlint35435242518, invariants and corrected scope gate35435305004
+passed. No required gate or known-failure ledger was weakened.
+
+PR3885 merged10:09:48UTC as `3a2257f221bd1faa543f15a0590896232dd42d93`.
+GitHub contents API at that revision and local reviewed-head git both return
+workflow blob `33d97bca4232ecab5905b613a3867b3d12dabb40`.
+Actual automatic push-triggered [hosted run35436644441](https://github.com/Jonnyton/TinyAssets/actions/runs/35436644441)
+checked out that merge SHA. Summary reported **monitor available**; the new
+unavailable gate skipped, while the existing red gate failed with exit2 because
+the separate incident stage retained existing incident2824. The observation
+stage stayed unknown. Alarm sink succeeded and made its ordinary retained-red
+[comment5740953838](https://github.com/Jonnyton/TinyAssets/issues/3646#issuecomment-5740953838).
+The workflow's overall failure is that preserved incident behavior, not a
+watcher/parser regression. Normal structured output was not polluted by stderr.
+
+Downloaded actual hosted junit artifact10582635771 (`junit-required-tests`)
+from the required run. XML inspection verifies all61focused cases executed:
+19 output-boundary,38typed-observation,4existing-watch; **zero skips, zero
+failures/errors**, including the actual Node alarm-script controls.
+Commands: `gh run view 35435267457 --json status,conclusion,jobs`;
+`gh run view 35436644441 --json jobs,event,headSha,conclusion,url` and `--log`;
+`gh run download 35435267457 --name junit-required-tests`; contents API for the
+exact merged workflow and `git rev-parse ccbf074a:.github/workflows/community-loop-watch.yml`.
+
+Failure injection remains isolated test evidence, not a production crash
+experiment. Natural schedule classification is separately verified in
+[the09:42receipt](2026-09-19-natural-scheduled-classification-proof.md).
+Real measured-green receipt, schedule cadence, execution-quality and rendered
+coverage remain open. Actions-only source/run proof requires no daemon restart;
+no new ordinary user-chat acceptance or all-uptime completion is claimed.
 
 ## Rollback
 
