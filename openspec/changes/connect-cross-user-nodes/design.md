@@ -288,7 +288,94 @@ must still verify them. The authorized second app identity remains live-proof wo
 
 ## Implementation interfaces — September 9 follow-through
 
+### September 19: reviewed RPC-first implementation contract
+
+Bounded Fable shape APPROVE and full review: `rpc-shape-review.md`; slice boundary
+and remaining file work: `next-slice-proposal.md`. This implements JSON in-node
+delivery only. Files, receiver-directed retries and two-owner rendered acceptance
+remain open. No private workflow or test-account manipulation is authorized.
+
+Disposition: accept the review's explicit source-owner, exact-kwargs, cancellation
+and placement requirements. Retain write settlement in this slice despite its
+non-blocking review classification. Use the existing request digest's
+`source_run_id` distinction for direct/node collisions, not a second identity
+ledger or new prefix restriction.
+
+- Extend the existing immutable execution context with the persisted
+  `runs.owner_user_id`, populated at ordinary execution and resume. A parent-only
+  frozen delivery source binds it to the compiled branch's ID, current child/run
+  ID, actual scheduled graph placement, universe/actor and declared output keys.
+  None is read from sandbox kwargs, payload or mutable graph state.
+- The shared acceptance service takes explicit principal/base/universe. Direct
+  graph calls derive these through existing request authentication; node calls
+  derive them from the frozen source and recheck the matching persisted source
+  run, current admin ACL and owned source/link. Scheduled universe actors never
+  substitute for `owner_user_id`. Owned remixes/referenced definitions remain
+  allowed under unchanged upstream code admission; original attribution is not
+  a new permission check. A child invoke binds its own compiled branch/run.
+- Reuse the existing author-store writer reservation before the runs-store
+  transaction; provider work and dispatch occur after acceptance commits.
+  Check actual source placement, compiled declared outputs and current source
+  contract before accepting. Missing identity, wrong run/branch/universe, terminal
+  source run, revoked authority or missing placement fails closed.
+- Necessary implementation prerequisite, confirmed September 19: foreground
+  `_prepare_run` currently derives owner only from an optional daemon ID, which
+  ordinary graph API runs do not pass; nested invocations also omit the universe.
+  Add explicit owner plumbing from authenticated foreground requests and stored
+  trigger principals into run preparation, and inherit the immutable owner and
+  universe on nested invocations. Do not backfill old rows, guess a founder from
+  a universe string, or consult ambient identity inside worker/RPC execution.
+- The `deliver_output` sandbox alias accepts exactly `link_id`, `occurrence_id`,
+  `outputs`, requires its existing `tools_allowed` declaration, and checks
+  `should_cancel` at handler entry and immediately before acceptance. An already
+  accepted transfer is not undone by later cancellation or source failure.
+- Reuse `derive_effect_key`: canonical domain/principal/universe/link tuple,
+  trusted source run, canonical placement/user-occurrence fingerprint. Content
+  stays in the request digest, never occurrence identity. Existing direct keys,
+  including generated-looking strings, are unchanged. Direct/node collision
+  conflicts through the existing source-run-bearing digest; never relabel rows.
+  Receipts remain unchanged and do not invent an original occurrence field.
+- After committed node acceptance call `settle_write(source_run_id)`, including
+  exact replay, before receiver dispatch. Existing final write settlement cannot
+  be downgraded by later effect-chain read settlement. Do not mark a declared
+  effect fired or alter once-per-node effect semantics.
+
 ### Execution reservation and ownership
+
+#### RPC dependency: private child ownership (reviewed adaptation)
+
+The new nested-RPC regression currently fails before RPC: `_authorize_child_ref`
+compares a private child's author only with `ctx.actor`. Served runs use
+`universe:<id>` while owned/remixed child definitions use the human owner. Merely
+persisting/inheriting owner identity does not close that mismatch. This is an
+authority change, not a test-fixture repair. The focused Fable review and required
+adaptation are preserved in `rpc-child-authority-review.md`.
+
+Proposed additional case, leaving every existing case intact: only when current
+provenance is `own`, permit the child if its author equals the frozen nonempty
+`ctx.owner_user_id`, the actual compiled parent definition's author also equals
+that owner, that principal still holds admin on `ctx.universe_id`, and
+the persisted current parent run (whose ID comes from the compiler builder)
+matches actor, owner and universe and is running. Requiring parent-run agreement
+prevents a synthetic/mismatched context from becoming new private-read authority.
+Missing owner/run/universe refuses this case. Public-foreign delegation remains
+public-only even if the runner owns the private child. Do not use a random admin,
+original contributor, payload field or child approval flag as authorization.
+The definition-author equality closes the review's co-admin counterexample:
+admin A's parent cannot use admin B's execution owner to read B's personal private
+child. `definition_author` is frozen from the same compiled branch used to derive
+provenance at foreground and resume construction. Owned remixes keep their new
+owner as author; `fork_from` attribution does not grant or remove access.
+Run reads are freshness narrowing only; they cannot fill absent context. Any
+lookup error collapses to the existing uniform unavailable response before
+private body deserialization. Only exact status `running` qualifies.
+
+Tests before release must show current owner revocation, missing or spoofed
+context/run owner and public-foreign provenance cannot use the new case; an
+admitted owned remix can invoke its own private child, and that child's delivery
+is attributed to its own run/placement. Co-admin confused-deputy and lookup-error
+tests accompany explicit owner-parent/owner-child success. Implementation follows
+the reviewed adaptation; independent exact-code release review remains required.
 
 Management implementation follow-through: receiver/link records live in the
 runs database, while ACLs and graph authorship remain in the canonical author

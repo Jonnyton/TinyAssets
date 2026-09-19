@@ -72,6 +72,28 @@ exposing private receiver execution details to the sender.
 - **THEN** each intended send is independent, while a retry of one occurrence is deduplicated
 - **AND** existing once-per-node-per-run declared-effect semantics remain unchanged
 
+#### Scenario: In-node delivery authority comes from the parent
+- **WHEN** a node declares and calls `deliver_output` with `link_id`, `occurrence_id` and `outputs`
+- **THEN** the trusted parent binds sender authority to the persisted run owner, current universe ownership, compiled branch and actual node placement
+- **AND** payload-supplied identity or additional authority selectors are rejected
+- **AND** cancellation is rechecked inside the handler before acceptance
+
+#### Scenario: Accepted transfer survives later source failure
+- **WHEN** a node's transfer commits and its source run later fails or is cancelled
+- **THEN** the accepted transfer and truthful receiver outcome remain inspectable
+- **AND** the source write settlement cannot be downgraded by later read settlement
+
+#### Scenario: Direct-send legacy identity is not relabeled
+- **WHEN** a direct send uses a key equal to an in-node derived occurrence identity
+- **THEN** differing source-run provenance returns occurrence conflict instead of reusing or relabeling the original delivery
+- **AND** existing direct keys and receipt fields remain compatible
+
+#### Scenario: Owned private composition does not borrow co-admin authority
+- **WHEN** an owned definition invokes its owner's private child
+- **THEN** the parent and child definition authors must both equal the frozen persisted owner, who still administers that universe, and the persisted parent row must match context and be running
+- **AND** foreign/public provenance or a different co-admin's parent cannot acquire private-child access through the runner's identity
+- **AND** nested delivery uses the child's own run and actual placement
+
 #### Scenario: Intentional identical sends and changed replay
 - **WHEN** identical content is sent using two distinct occurrence IDs
 - **THEN** two deliveries can be accepted

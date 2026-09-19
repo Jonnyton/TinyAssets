@@ -6,6 +6,7 @@ universe authority, and inspecting a foreign contract does not disclose its grap
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from functools import wraps
 
 from tinyassets.auth.middleware import current_identity_or_none
@@ -65,18 +66,25 @@ def _owner_write(function):
 
     @wraps(function)
     def guarded(*, universe_id, **kwargs):
-        from tinyassets.daemon_server import initialize_author_server
-        from tinyassets.storage import _connect
-
         principal = _principal(write=True)
         base = _base()
-        initialize_author_server(base)
-        with _connect(base) as authority:
-            authority.execute("BEGIN IMMEDIATE")
-            _require_admin(base, universe_id, principal)
+        with _owner_authority(base, universe_id, principal):
             return function(universe_id=universe_id, **kwargs)
 
     return guarded
+
+
+@contextmanager
+def _owner_authority(base, universe_id, principal):
+    """Shared author-store-first fence for explicit authenticated principals."""
+    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage import _connect
+
+    initialize_author_server(base)
+    with _connect(base) as authority:
+        authority.execute("BEGIN IMMEDIATE")
+        _require_admin(base, universe_id, principal)
+        yield
 
 
 def _owned_branch(base, universe_id, branch_def_id, principal):
