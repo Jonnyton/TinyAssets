@@ -42,3 +42,11 @@ Detailed source inventory and reproduction:
 The bounded monitoring-classification proposal is
 `openspec/changes/classify-scheduled-monitor-observations/`; it does not close
 the execution-quality or rendered-acceptance gaps.
+
+The proposed truthful unknown classification also makes automatic recovery
+unreachable while required legacy evidence remains unavailable. Existing
+false-era incidents need fresh, per-incident verification and an explicit
+coordinator/incident-owner disposition; do not bulk-close or claim recovery
+from the four green sub-probes. No issue mutation has been performed by this
+lane. The missing capability remains actionable even if the classifier job
+itself exits successfully.

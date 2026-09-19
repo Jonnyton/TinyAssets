@@ -38,6 +38,11 @@ const calls = [];
 const outputs = {};
 const warnings = [];
 const summaries = [];
+const measuredRun = {
+  id: 1, run_attempt: 2, status: 'completed', head_branch: 'main', head_sha: 'abc',
+  path: '.github/workflows/uptime-canary.yml', updated_at: new Date().toISOString(),
+  ...config.runOverrides,
+};
 
 function record(name, result) {
   return async (args) => {
@@ -67,8 +72,22 @@ const github = {
     issues,
     actions: {
       listWorkflowRuns: record('actions.listWorkflowRuns', {
-        data: {workflow_runs: config.priorRed ? [{id: 1, conclusion: 'failure'}] : []},
+        data: {workflow_runs: config.priorRuns || (config.measuredRed ? [measuredRun] :
+          config.priorRed ? [{id: 1, conclusion: 'failure'}] : [])},
       }),
+      listJobsForWorkflowRunAttempt: async (args) => {
+        calls.push({name: 'actions.listJobsForWorkflowRunAttempt', args});
+        if (config.historyError) throw new Error('unavailable history');
+        return {data: {total_count: 1, jobs: [{
+          name: 'probe', run_id: 1, run_attempt: 2, status: 'completed', head_sha: 'abc',
+          steps: [{name: 'Layer-1 measured red v1', status: 'completed',
+                   conclusion: 'failure', ...config.stepOverrides}],
+          ...config.jobOverrides,
+        }]}};
+      },
+      getWorkflowRun: record('actions.getWorkflowRun', {data: {
+        ...measuredRun, ...config.latestOverrides,
+      }}),
     },
   },
 };
@@ -149,13 +168,15 @@ def test_literal_green_recovers_only_an_existing_issue_without_creating_label() 
 
 
 def test_red_keeps_label_threshold_and_paging_behavior() -> None:
-    observed = _run_alarm_script("red", missingLabel=True, priorRed=True)
+    observed = _run_alarm_script("red", missingLabel=True, measuredRed=True)
 
     assert [call["name"] for call in observed["calls"]] == [
         "issues.getLabel",
         "issues.createLabel",
         "issues.listForRepo",
         "actions.listWorkflowRuns",
+        "actions.listJobsForWorkflowRunAttempt",
+        "actions.getWorkflowRun",
         "issues.create",
     ]
     assert observed["outputs"] == {
@@ -176,6 +197,80 @@ def test_unknown_guard_and_literal_green_recovery_precede_mutation_logic() -> No
 
     assert defaults < unknown_guard < label_lookup
     assert green_guard < recovery
+
+
+def test_prior_workflow_failure_without_measured_layer1_receipt_is_not_red() -> None:
+    """A previous L2/browser failure alone cannot prove a Layer-1 outage.
+
+    The legacy harness deliberately supplies only a failed workflow conclusion,
+    with no measured Layer-1 receipt. Red-first proof for the monitoring shape:
+    current code incorrectly opens an incident from that unrelated failure.
+    """
+    observed = _run_alarm_script("red", priorRed=True)
+
+    assert "issues.create" not in [call["name"] for call in observed["calls"]]
+    assert observed["outputs"]["page_eligible"] == "false"
+
+
+@pytest.mark.parametrize("config", [
+    {"stepOverrides": {"conclusion": "skipped"}},
+    {"stepOverrides": {"conclusion": "success"}},
+    {"stepOverrides": {"status": "in_progress"}},
+    {"jobOverrides": {"run_attempt": 1}},
+    {"jobOverrides": {"run_id": 9}},
+    {"jobOverrides": {"head_sha": "different"}},
+    {"jobOverrides": {"steps": []}},
+    {"jobOverrides": {"steps": [
+        {"name": "Layer-1 measured red v1", "status": "completed", "conclusion": "failure"},
+        {"name": "Layer-1 measured red v1", "status": "completed", "conclusion": "failure"},
+    ]}},
+    {"runOverrides": {"head_branch": "unrelated"}},
+    {"runOverrides": {"path": ".github/workflows/other.yml"}},
+    {"runOverrides": {"updated_at": "2020-01-01T00:00:00Z"}},
+    {"runOverrides": {"updated_at": "not a timestamp"}},
+    {"runOverrides": {"status": "queued"}},
+    {"latestOverrides": {"run_attempt": 3}},
+    {"latestOverrides": {"status": "in_progress"}},
+    {"historyError": True},
+])
+def test_unproven_history_never_counts_as_prior_red(config) -> None:
+    observed = _run_alarm_script("red", measuredRed=True, **config)
+    assert not any(call["name"] == "issues.create" for call in observed["calls"])
+    assert observed["outputs"]["page_eligible"] == "false"
+
+
+def test_unknown_prior_observation_breaks_chain_before_older_red() -> None:
+    observed = _run_alarm_script("red", priorRuns=[
+        {"id": 1, "conclusion": "success"},
+        {"id": 0, "conclusion": "failure"},
+    ])
+    assert not any(call["name"] == "issues.create" for call in observed["calls"])
+
+
+def test_receipt_read_pins_exact_run_and_attempt() -> None:
+    observed = _run_alarm_script("red", measuredRed=True)
+    call = next(
+        c for c in observed["calls"] if c["name"] == "actions.listJobsForWorkflowRunAttempt"
+    )
+    assert call["args"]["run_id"] == 1
+    assert call["args"]["attempt_number"] == 2
+
+
+def test_sentinel_only_runs_for_measured_red_and_cannot_be_softened() -> None:
+    steps = _workflow()["jobs"]["probe"]["steps"]
+    sentinel = next(s for s in steps if s.get("name") == "Layer-1 measured red v1")
+    assert sentinel["if"] == "steps.combine.outputs.overall == 'red'"
+    assert sentinel["run"] == "exit 1"
+    assert not sentinel.get("continue-on-error")
+
+
+def test_scheduled_layer2_does_not_invoke_unavailable_browser_or_llm() -> None:
+    steps = _workflow()["jobs"]["layer2-probe"]["steps"]
+    script = "\n".join(s.get("run", "") for s in steps)
+    assert "l2_status=unknown" in script
+    assert "authorized_rendered_session_unavailable" in script
+    assert "claude_chat.py" not in script
+    assert "uptime_canary_layer2.py" not in script
 
 
 def test_alarm_sink_stays_always_and_failed_deploy_still_skips_probe() -> None:

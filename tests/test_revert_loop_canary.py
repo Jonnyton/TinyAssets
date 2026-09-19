@@ -385,6 +385,8 @@ class TestFetchStatusActivityTail:
             )
         # Spec-bumped from 3 → 5 to avoid CRITICAL-exit collision.
         assert exc_info.value.code == 5
+        assert exc_info.value.observation == "red"
+        assert exc_info.value.reason == "probe_failed"
 
     def test_payload_missing_evidence_raises_step5(self):
         stub = _StubPost([
@@ -396,7 +398,10 @@ class TestFetchStatusActivityTail:
                     "result": {
                         "content": [{
                             "type": "text",
-                            "text": '{"active_host": {"host_id": "t"}}',
+                            "text": (
+                                '{"first_contact": {"event": "no_universe_yet"}, '
+                                '"daemon": {"worker_liveness": {}}, "release_state": {}}'
+                            ),
                         }],
                     },
                 },
@@ -408,6 +413,42 @@ class TestFetchStatusActivityTail:
                 "http://fake/mcp", 10.0, post_fn=stub,
         )
         assert exc_info.value.code == 5
+
+        # A successful confined response without the private legacy signal is
+        # unobserved coverage, not a measured outage or empty healthy tail.
+        assert exc_info.value.observation == "unknown"
+        assert exc_info.value.reason == "legacy_evidence_unavailable"
+        assert stub.calls[-1]["payload"]["params"]["arguments"] == {}
+
+    def test_transport_step5_is_not_downgraded_with_absent_evidence(self):
+        def fail_tool_transport(url, sid, payload, timeout, **kwargs):
+            if payload.get("method") == "initialize":
+                return _make_init_response(), "sid"
+            if payload.get("method") == "notifications/initialized":
+                return None, "sid"
+            assert kwargs["step_code"] == 5
+            raise rlc.RevertLoopError(5, "HTTP 503 from tool endpoint")
+
+        with pytest.raises(rlc.RevertLoopError) as exc_info:
+            rlc.fetch_status_activity_tail(
+                "http://fake/mcp", 10.0, post_fn=fail_tool_transport,
+            )
+
+        assert exc_info.value.code == 5
+        assert exc_info.value.observation == "red"
+        assert exc_info.value.reason == "probe_failed"
+
+    @pytest.mark.parametrize("payload", [{}, {"daemon": {}}, {"error": "denied"}])
+    def test_unrecognized_payload_remains_red(self, payload):
+        stub = _StubPost([
+            (_make_init_response(), "sid"),
+            (None, "sid"),
+            (_make_tool_response([], structured_content=payload), "sid"),
+        ])
+        with pytest.raises(rlc.RevertLoopError) as exc_info:
+            rlc.fetch_status_activity_tail("http://fake/mcp", 10, post_fn=stub)
+        assert exc_info.value.observation == "red"
+        assert exc_info.value.reason == "probe_failed"
 
     def test_activity_log_read_failed_caveat_raises_step5(self):
         stub = _StubPost([
@@ -431,6 +472,8 @@ class TestFetchStatusActivityTail:
             )
         assert exc_info.value.code == 5
         assert "read failure" in exc_info.value.msg
+        assert exc_info.value.observation == "red"
+        assert exc_info.value.reason == "probe_failed"
 
 
 class TestRunCanaryEndToEnd:

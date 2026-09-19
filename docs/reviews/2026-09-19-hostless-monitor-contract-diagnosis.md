@@ -22,6 +22,14 @@ Its actual combined observation is:
 - revert diagnostic: status has no evidence block;
 - separate Layer-2 exit 13, browser-load error.
 
+The exact-attempt jobs read (`gh api
+repos/Jonnyton/TinyAssets/actions/runs/35411401518/attempts/1/jobs`) confirms
+the Layer-2 step/job concluded success because the probe is tolerated; the
+Layer-1 combine step caused this run's failure. The history bug below concerns
+unrelated job/infra failures in general, not a claim that this particular
+Layer-2 exit caused the workflow failure. That same existing jobs API exposes
+run ID, attempt and step conclusions for the bounded receipt proposal.
+
 The first five values are independent measurements. They do not prove a
 platform-wide outage or justify restarting a retired fleet. They also do not
 prove the complete hostless-monitoring capability.
