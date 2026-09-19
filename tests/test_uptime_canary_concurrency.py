@@ -111,7 +111,21 @@ async function runEvent(event, ordinal) {
       actions: {
         listWorkflowRuns: async (args) => {
           calls.push({name: 'actions.listWorkflowRuns', args});
-          return {data: {workflow_runs: event.priorRed ? [{id: 1, conclusion: 'failure'}] : []}};
+          return {data: {workflow_runs: event.priorRed ? [{
+            id: 1, run_attempt: 1, status: 'completed', head_branch: 'main', head_sha: 'abc',
+            path: '.github/workflows/uptime-canary.yml', updated_at: new Date().toISOString(),
+          }] : []}};
+        },
+        listJobsForWorkflowRunAttempt: async (args) => {
+          calls.push({name: 'actions.listJobsForWorkflowRunAttempt', args});
+          return {data: {total_count: 1, jobs: [{
+            name: 'probe', run_id: 1, run_attempt: 1, status: 'completed', head_sha: 'abc',
+            steps: [{name: 'Layer-1 measured red v1', status: 'completed', conclusion: 'failure'}],
+          }]}};
+        },
+        getWorkflowRun: async (args) => {
+          calls.push({name: 'actions.getWorkflowRun', args});
+          return {data: {run_attempt: 1, status: 'completed', head_sha: 'abc'}};
         },
       },
     },

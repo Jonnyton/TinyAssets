@@ -1,32 +1,52 @@
 # Scheduled uptime probes remain red despite public handshake/tool success
 
-**Filed:** 2026-09-08. **Verified:** GitHub Actions production probe run
-34257452319 (17:29 UTC), read with `gh run view 34257452319 --log` during the
-workflow checklist deployment loop. No runtime restart or private-state edit.
+**Filed:** 2026-09-08. **Reverified:** 2026-09-19 01:03 UTC scheduled run
+35411401518, source `bcac8d1a250350ff48da2cfda3bd428831d361ea`, read with
+`gh run view 35411401518 --log`. No runtime restart or private-state edit.
 
-The scheduled probe reports handshake=0, tool=0, wiki=0, activity=2 and revert=5.
+The current scheduled probe reports handshake=0, tool=0, wiki=0, activity=0 and revert=5.
 It is not evidence that every public surface is down, and those three passes do
 not establish worker or background-run liveness.
 
-- Last-activity diagnostic: supervisor heartbeat 2,465,453.2 seconds old,
-  phase backoff, consecutive crashes 0; last activity was 08:47:42 UTC that day.
-  The probe labels this `worker_wedged` and recommends a restart. Establish
-  whether this supervisor is still the authoritative execution surface before
-  following that recommendation; recent foreground checklist runs completed.
+- Current coordinator: alive, heartbeat age 1.1 seconds, no active work. PR
+  #3869 repaired observation of the authoritative executor lifecycle; the old
+  September 8 heartbeat diagnostic is superseded. This does not prove useful
+  execution or authorize restarting any retired fleet.
 - Revert-loop diagnostic: get_status has no `evidence` block. Returned keys
   include daemon, release_state, identity_evidence and schema_version. Reverify
   the current response contract and source of revert evidence; do not suppress
   the check or fabricate empty evidence to turn it green.
-- Layer-2 browser probe exited 13 (`RED_browser_load_error`). Its exact browser
-  error remains uninspected; do not equate this with the app's own availability.
+- Layer-2 browser probe exited 13 (`RED_browser_load_error`). The job installs
+  Python but no browser/persona, while its subprocess harness needs Playwright
+  and a signed-in visible Claude browser on local CDP. The concrete subprocess
+  error is absent from Actions stdout/artifacts. Missing acceptance capability
+  is not evidence of a provider outage.
 
-Community-loop run 34265772504 at 18:54 UTC carries these failures and open
-incident #2824 forward. The issue's original body is September 4, not fresh
-diagnostic evidence. Production deploy 34206123316 had passed its authenticated
-public canary and protected SHA gate; that narrower deployment gate does not
-close the scheduled probe failures.
+The revert probe requests unscoped `get_status` then requires a private
+`evidence.activity_log_tail` and fantasy-scene REVERT markers. The canary's
+no-home response intentionally omits that tenant evidence. Current engine
+execution does not publish those legacy markers as a platform-health contract.
+Never grant private-universe access or synthesize empty evidence to pass it.
 
-Next: inspect current status/probe contracts and the authoritative background
-executor's liveness independently, and the browser probe's actual error. Repair
-the broken surface or diagnostic contract, then prove the scheduled monitor and
-rendered client path. Keep separate from PR #3447's automation routing change.
+Dependencies: (1) classify unavailable monitoring separately from observed
+outage and success in the existing scheduled result/alarm path; (2) define an
+authoritative private-free current-engine execution-quality observation before
+claiming sustained useful-work coverage; (3) obtain an authorized rendered
+client acceptance capability, without converting infrastructure into an LLM
+actor. None is satisfied by coordinator liveness alone. Intentional user
+workflow failures and an individual provider's exhaustion are not platform
+outage signals.
+
+Detailed source inventory and reproduction:
+[`2026-09-19-hostless-monitor-contract-diagnosis.md`](../reviews/2026-09-19-hostless-monitor-contract-diagnosis.md).
+The bounded monitoring-classification proposal is
+`openspec/changes/classify-scheduled-monitor-observations/`; it does not close
+the execution-quality or rendered-acceptance gaps.
+
+The proposed truthful unknown classification also makes automatic recovery
+unreachable while required legacy evidence remains unavailable. Existing
+false-era incidents need fresh, per-incident verification and an explicit
+coordinator/incident-owner disposition; do not bulk-close or claim recovery
+from the four green sub-probes. No issue mutation has been performed by this
+lane. The missing capability remains actionable even if the classifier job
+itself exits successfully.

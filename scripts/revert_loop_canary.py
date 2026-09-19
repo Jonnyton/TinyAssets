@@ -96,10 +96,12 @@ _INIT_PAYLOAD = _init_payload("revert-loop-canary")
 class RevertLoopError(Exception):
     """Raised by any step; carries the exit code the caller should exit with."""
 
-    def __init__(self, code: int, msg: str) -> None:
+    def __init__(self, code: int, msg: str, *, reason: str = "probe_failed") -> None:
         super().__init__(msg)
         self.code = code
         self.msg = msg
+        self.reason = reason
+        self.observation = "unknown" if reason == "legacy_evidence_unavailable" else "red"
 
 
 # `_post` is the shared HTTP+parse path from `_canary_common`, partially
@@ -284,6 +286,8 @@ def fetch_status_activity_tail(
                 5, f"get_status text not JSON: {exc}; preview={text[:200]!r}",
             ) from exc
 
+    if not isinstance(payload, dict):
+        raise RevertLoopError(5, "get_status payload is not an object")
     caveats = payload.get("evidence_caveats")
     if isinstance(caveats, dict):
         tail_caveats = caveats.get("activity_log_tail", [])
@@ -301,10 +305,24 @@ def fetch_status_activity_tail(
 
     evidence = payload.get("evidence")
     if not isinstance(evidence, dict):
+        # Recognize the existing confined no-home projection positively. Empty,
+        # denied, malformed or drifted status is still a failed probe, not an
+        # excuse to downgrade a broken endpoint to missing legacy coverage.
+        first_contact = payload.get("first_contact")
+        daemon = payload.get("daemon")
+        confined = (
+            "evidence" not in payload
+            and isinstance(first_contact, dict)
+            and first_contact.get("event") == "no_universe_yet"
+            and isinstance(daemon, dict)
+            and isinstance(daemon.get("worker_liveness"), dict)
+            and "release_state" in payload
+        )
         raise RevertLoopError(
             5,
             f"get_status payload has no evidence block; top-level keys: "
             f"{sorted(payload.keys())}",
+            reason="legacy_evidence_unavailable" if confined else "probe_failed",
         )
     tail = evidence.get("activity_log_tail")
     if not isinstance(tail, list):
@@ -341,6 +359,18 @@ def run_canary(
         critical_window_min=critical_window_min,
         critical_threshold=critical_threshold,
     )
+
+
+def _emit_observation(observation: str, reason: str, fmt: str) -> None:
+    if fmt != "gha":
+        return
+    result = f"revert_observation={observation}\nrevert_reason={reason}\n"
+    # These values are producer-owned enums, never endpoint-controlled text.
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a", encoding="utf-8") as stream:
+            stream.write(result)
+    print(result, end="")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -387,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--verbose", action="store_true",
                     help="Echo the canary classification summary.")
+    ap.add_argument("--format", choices=("text", "gha"), default="text")
     args = ap.parse_args(argv)
     # Which contract does THIS daemon keep? Asked once, after the URL is
     # known, so one run never mixes the pre- and post-cutover shapes.
@@ -402,12 +433,14 @@ def main(argv: list[str] | None = None) -> int:
             bearer_token=bearer,
         )
     except RevertLoopError as exc:
+        _emit_observation(exc.observation, exc.reason, args.format)
         print(
             f"[revert-loop] FAIL (exit {exc.code}): {exc.msg}",
             file=sys.stderr,
         )
         return exc.code
 
+    _emit_observation("green" if code == 0 else "red", "observed", args.format)
     if code == 0:
         print(f"[revert-loop] {msg}")
     else:
