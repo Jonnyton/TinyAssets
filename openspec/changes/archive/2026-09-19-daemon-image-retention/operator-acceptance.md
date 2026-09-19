@@ -1,4 +1,8 @@
-# Daemon image retention: rollout remains pending
+# Daemon image retention: rollout procedure
+
+Rollout was accepted September19,2026UTC; see `live-acceptance.md`. The
+following procedure remains the operator contract, not a claim that every
+resource-capacity gap is closed.
 
 No production cleanup or service activation was performed while preparing this
 patch. Both cleanup units change together; transcript rotation remains unchanged.
