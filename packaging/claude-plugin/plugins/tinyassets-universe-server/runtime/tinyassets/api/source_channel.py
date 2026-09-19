@@ -192,8 +192,8 @@ def source_channel(
 #: is limited to an explicit allowlist.
 #:
 #: Empty = DARK, deliberately: a deployment that has not thought about this must not
-#: hand out in-process execution. Mirrors `engine_mcp_http.run_graph_allowlist()`,
-#: which exists for the same reason and was reviewed to the same conclusion.
+#: hand out in-process execution. This source-approval control is separate from
+#: current serving-owner engine-tool admission; changing one does not relax the other.
 _SOURCE_APPROVAL_VAR = "TINYASSETS_SOURCE_APPROVAL_UNIVERSES"
 
 

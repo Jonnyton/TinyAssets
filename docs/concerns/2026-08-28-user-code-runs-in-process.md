@@ -3,7 +3,22 @@
 **Severity:** P1 · **Filed:** 2026-08-28 from a cross-family multi-user review
 **Surface:** `tinyassets/graph_compiler.py`, and everything that shares its process
 
-## The finding
+## September19 re-verification — original premise superseded
+
+The August28 source citations below are historical, not current execution truth.
+On production `bcac8d1a2503`, `graph_compiler.py` routes authored code through
+NodeSandbox; `node_sandbox.py` fails closed when its OS launcher is unavailable.
+The production container has bwrap. A September19 supporting `docker exec -i
+tinyassets-daemon python -` probe invoking NodeSandbox.run_sync for a constant
+arithmetic-only node returned success, the expected output_state and empty error.
+No user workflow/data/credential was used. Linux regressions and current engine
+admission review are tracked in `admit-owner-bound-engine-tools`.
+
+Do not use this historical in-process execution claim to retain a vetted-user
+engine-tool wall. The separate source-approval control is not changed by that
+patch; complete residual-path audit before deleting this concern and its links.
+
+## Historical finding — August28
 
 An approved `source_code` node is executed with `exec()` and full builtins
 (`graph_compiler.py:1809-1845`). The pattern denylist rejects a handful of substrings

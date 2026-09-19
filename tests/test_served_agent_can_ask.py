@@ -59,9 +59,6 @@ def test_an_unknown_pending_request_operation_is_refused(monkeypatch):
 
     monkeypatch.setattr(e, "_binding_error", lambda: None)
     monkeypatch.setattr(e, "_GRAPH_ID", "u-1", raising=False)
-    monkeypatch.setattr(
-        "tinyassets.engine_mcp_http.run_graph_allowlist", lambda: {"u-1"}
-    )
 
     fn = getattr(e.write_graph, "fn", e.write_graph)
     out = json.loads(fn(target="pending_request", operation="answer_request",

@@ -14,7 +14,8 @@ def bound(monkeypatch):
     monkeypatch.setattr(engine, "_ACTOR_ID", "owner-setup")
     monkeypatch.setattr(engine, "_GRAPH_ID", "u-setup")
     monkeypatch.setattr(engine, "_engine_run_admit", lambda **kw: True)
-    monkeypatch.setattr("tinyassets.engine_mcp_http.run_graph_allowlist", lambda: {"u-setup"})
+    from tests.engine_authority_helpers import mock_engine_admission
+    mock_engine_admission(monkeypatch, {"u-setup"})
 
 
 @pytest.mark.parametrize("target", ["model_options", "agent_bindings", "agent_binding"])
