@@ -14,7 +14,7 @@
 
 ## 3. Deliver and prove
 
-- [ ] 3.1 Pass focused baseline/candidate Windows and Linux tests, lint and exact-head independent review; resolve safety findings.
-- [ ] 3.2 Merge through CI, deploy, verify deployed-SHA containment and authenticated public canary with asserted handles.
+- [x] 3.1 Pass focused baseline/candidate Windows and Linux tests, lint and exact-head independent review; resolve safety findings for the structured MVP (77e4ed43 Fable APPROVE; full artifact/retry follow-through remains above).
+- [x] 3.2 Merge through CI and deploy structured MVP06e3a645; deployment35423267935 passed protected SHA and public asserted-handle gates September19 05:12UTC.
 - [ ] 3.3 Prove two independently authenticated app users can connect, deliver a file and process it, plus unauthorized/invalid/replay/revoked outcomes, through normal conversation.
-- [ ] 3.4 Sync shipped specs, record rendered proof, update the goal stage table and archive the completed slice without closing unfinished broader work.
+- [ ] 3.4 Sync shipped specs, record rendered proof, update the goal stage table and archive the completed slice without closing unfinished broader work. Structured-only as-built requirements synchronized separately; full file/RPC/retry deltas and two-user rendered acceptance remain open. Do not archive this unfinished broader change.

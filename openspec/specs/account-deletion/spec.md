@@ -166,3 +166,22 @@ metadata by owner, including former-home bindings, while preserving other owners
 #### Scenario: The account is deleted before callback
 - **WHEN** an owner with pending hosted flows deletes their account
 - **THEN** their pending rows disappear and cannot be used to authorize later
+
+### Requirement: Delivery control records do not block either party's erasure
+Account deletion SHALL remove indirect delivery attempts and personal two-party
+receipts before their scoped link, receiver and run parents within the existing
+satellite-store transaction. Affected rows SHALL be counted once. Surviving
+receiver allowlists SHALL remove only the deleted sender. Unrelated peer records
+and peer-owned runs SHALL remain intact; preserving a run row SHALL NOT imply
+that erased delivery inputs remain available for later execution.
+
+#### Scenario: Either delivery party deletes its account
+- **WHEN** a sender or receiver deletes its account after delivery acceptance
+- **THEN** scoped foreign-key children are removed without a foreign-key failure
+- **AND** no delivery receipt or permitted-sender reference to that principal remains
+- **AND** independent peer runs and unrelated connections survive
+
+#### Scenario: A satellite store refuses deletion
+- **WHEN** an integrity failure interrupts the transaction
+- **THEN** that store's deletes and sender-list edits roll back without committed counts
+- **AND** the existing deletion workflow records the unfinished store phase
