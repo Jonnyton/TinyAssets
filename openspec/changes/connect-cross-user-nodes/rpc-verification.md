@@ -77,3 +77,26 @@ not substitute for post-main-integration or exact-head release evidence.
 
 Ordinary main integration and final exact-code review are next. No live user
 graph/account or production action was performed.
+
+## Integrated runtime release candidate
+
+Ordinary merge of main `7b406025` produced clean runtime candidate
+`4ec8d2434002ff5bd0aee58fabf387a7c3439260`. Add/add conflicts from the earlier
+squashed delivery history were inspected by hunk; existing main deployment and
+specification records were retained. No source changes during final review.
+
+- Same complete nine-file group on Windows: **218 passed, 1 skipped**, 26.84s.
+- Same complete nine-file group on Linux, the explicit disposable configuration
+  above: **219 passed**, zero skips/deselections, 61.90s.
+- Ruff, diff check, OpenSpec strict validation pass; mirror builder staged 467
+  files with `probe-ok`, clean tree.
+- Claude Fable 5.1 exact-code review session 2924: **APPROVE**, terminal exit 0
+  after 269 seconds on 2026-09-19. Full recovered substantive result is attached
+  to [PR #3881](https://github.com/Jonnyton/TinyAssets/pull/3881#issuecomment-5740090073).
+  Four non-blocking observations are recorded in
+  `docs/concerns/2026-09-19-node-delivery-post-mvp-hardening.md`.
+
+Review is for the exact runtime head above. The follow-up commit recording these
+results and the concern is documentation-only, not a different reviewed runtime.
+Required CI, deployment/SHA/canary and ordinary rendered two-user acceptance are
+still pending; root owns release. No account or user workflow was touched.

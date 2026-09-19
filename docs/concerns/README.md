@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **note** | [In-node delivery post-MVP hardening](2026-09-19-node-delivery-post-mvp-hardening.md) — exact-code review approves JSON RPC; refusal ordering, separate-ledger crash accounting, node-kind diagnostics and legacy owner fallback remain explicit follow-through | 2026-09-19 |
 | **P2** | [Full HTTP redeposit can conflict](2026-09-19-full-http-redeposit-mode-conflict.md) — behavioral probe on unchanged base returns conflict when rotating an existing exact connection into full access; preserve authority and partial-outcome honesty in a separate fix | 2026-09-19 |
 | **note** | [Bootstrap/deletion hardening](2026-09-18-bootstrap-deletion-hardening.md) — independent review distinguishes non-secret orphan/ghost-directory and future multi-worker concerns from the guarded credential resurrection race | 2026-09-18 |
 | **P2** | [Model picker global discovery delay](2026-09-16-model-picker-global-discovery-delay.md) — first-open selection and execution still wait on unrelated source discovery | 2026-09-16 |
