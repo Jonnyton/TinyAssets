@@ -393,6 +393,7 @@ _UNIVERSE_ADMIN_ACTIONS = frozenset({
     "daemon_update_behavior",
 })
 _EXTENSIONS_COSTLY_ACTIONS = frozenset({
+    "deliver_output",
     "run_branch",
     "run_branch_version",
     "resume_run",

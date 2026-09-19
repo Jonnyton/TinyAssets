@@ -622,6 +622,38 @@ def _root_databases(root: Path) -> list[Path]:
     )
 
 
+def _delivery_deletion_targets(conn, *, principal: str, home: str):
+    """Explicit FK children of scoped graph endpoints; never delete peer runs.
+
+    Endpoint ownership keeps the existing universe-scoped deletion rule. A
+    two-party receipt naming the deleted account is personal control-plane data,
+    unlike the receiver's independently owned run and accepted input content.
+    """
+    live = set(_tables(conn))
+    targets = []
+    receiver_sql = "SELECT receiver_id FROM graph_receivers WHERE universe_id = ?"
+    link_sql = ("SELECT link_id FROM graph_output_links WHERE universe_id = ? "
+                f"OR receiver_id IN ({receiver_sql})")
+    if {"graph_receivers", "graph_output_links"} <= live:
+        if {"graph_deliveries", "graph_delivery_attempts"} <= live:
+            delivery_where = (
+                "sender_id = ? OR receiver_owner_id = ? OR sender_universe_id = ? "
+                "OR receiver_universe_id = ? "
+                f"OR link_id IN ({link_sql}) OR receiver_id IN ({receiver_sql})"
+            )
+            params = (principal, principal, home, home, home, home, home)
+            targets.extend([
+                ("graph_delivery_attempts", "delivery_id IN (SELECT delivery_id "
+                 f"FROM graph_deliveries WHERE {delivery_where})", params),
+                ("graph_deliveries", delivery_where, params),
+            ])
+        targets.extend([
+            ("graph_output_links", f"link_id IN ({link_sql})", (home, home)),
+            ("graph_receivers", "universe_id = ?", (home,)),
+        ])
+    return targets
+
+
 def _delete_satellite_rows(
     path: Path, *, principal: str, home: str, counts: dict[str, int], label: str
 ) -> None:
@@ -636,7 +668,8 @@ def _delete_satellite_rows(
         local: dict[str, int] = {}
         with conn:
             plan = deletion_plan(conn, principal=principal, home=home)
-            targets: list[tuple[str, str, tuple[Any, ...]]] = []
+            targets = _delivery_deletion_targets(conn, principal=principal, home=home)
+            delivery_tables = {target[0] for target in targets}
             # Child rows whose own columns name neither the person nor the
             # universe, but whose parent is going.
             if "outbound_connector_artifacts" in plan:
@@ -648,6 +681,8 @@ def _delete_satellite_rows(
                         (principal,),
                     ))
             for table, keys in plan.items():
+                if table in delivery_tables:
+                    continue  # one union predicate per table: count every row once
                 for column, kind in keys:
                     value = home if kind == "universe" else principal
                     targets.append((table, f'"{column}" = ?', (value,)))
@@ -662,6 +697,19 @@ def _delete_satellite_rows(
                     continue
                 if found:
                     local[table] = local.get(table, 0) + found
+            # A peer's receiver survives, but no longer advertises the deleted
+            # account as an allowed sender. Do not alter unrelated grants or
+            # generations: existing intake rechecks the current sender list.
+            if "graph_receivers" in live:
+                for receiver_id, encoded in conn.execute(
+                    "SELECT receiver_id, senders_json FROM graph_receivers"
+                ).fetchall():
+                    senders = json.loads(encoded)
+                    if principal in senders:
+                        conn.execute(
+                            "UPDATE graph_receivers SET senders_json = ? WHERE receiver_id = ?",
+                            (json.dumps([s for s in senders if s != principal]), receiver_id),
+                        )
             for table, where, params in targets:
                 try:
                     conn.execute(f'DELETE FROM "{table}" WHERE {where}', params)

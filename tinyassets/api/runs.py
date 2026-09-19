@@ -2444,6 +2444,17 @@ _RUN_WRITE_ACTIONS: frozenset[str] = frozenset(
      "mint_webhook", "revoke_webhook", "create_source", "revoke_source"}
 )
 
+# Native deliveries retain the canonical action admission and ledger boundary.
+from functools import partial as _partial  # noqa: E402
+
+from tinyassets.api.deliveries import READ_ACTIONS as _DELIVERY_READS  # noqa: E402
+from tinyassets.api.deliveries import WRITE_ACTIONS as _DELIVERY_WRITES  # noqa: E402
+from tinyassets.api.deliveries import action as _delivery_action  # noqa: E402
+
+_RUN_ACTIONS.update({name: _partial(_delivery_action, name)
+                     for name in _DELIVERY_READS | _DELIVERY_WRITES})
+_RUN_WRITE_ACTIONS = _RUN_WRITE_ACTIONS | _DELIVERY_WRITES
+
 
 def _dispatch_run_action(
     action: str,
@@ -2478,7 +2489,8 @@ def _dispatch_run_action(
         return result_str
 
     try:
-        target = result.get("run_id", "") or kwargs.get("run_id", "")
+        target = (result.get("delivery_id", "") if action == "deliver_output"
+                  else result.get("run_id", "") or kwargs.get("run_id", ""))
         summary_bits = [action]
         if kwargs.get("branch_def_id"):
             summary_bits.append(f"branch={kwargs['branch_def_id']}")
