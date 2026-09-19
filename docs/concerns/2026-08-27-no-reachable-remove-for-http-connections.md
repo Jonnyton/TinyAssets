@@ -1,6 +1,6 @@
 # App connection removal and guided reconnection are incomplete
 
-**Correction, September 19, 2026:** source inspection of current origin/main
+**Correction, 2026-09-19:** source inspection of current origin/main
 (`rg -n "remove_http" tinyassets tests`) contradicts the historical finding below.
 `tinyassets/universe_server.py` routes `remove_http` to
 `tinyassets/api/http_connection.py`; approved pending requests also reach it.
