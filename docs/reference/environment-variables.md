@@ -84,6 +84,10 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 
 | Var | Purpose | Default |
 |-----|---------|---------|
+| `DISK_AUTOPRUNE_PCT` | Trigger for bounded, registry-verified daemon image retention; not broad Docker pruning. | `85`; must satisfy `0 < low < high < 100`. |
+| `DISK_AUTOPRUNE_LOW_PCT` | Stop watermark during one bounded retention pass. | `75`. |
+| `TINYASSETS_IMAGE_RETENTION_STORAGE_PATH` | Operator-verified image-content filesystem for containerd-backed Docker. Missing mapping refuses cleanup; never a deletion target. Classic overlay2 derives DockerRootDir. | Unset. |
+| `DISK_WATCH_PATH` | Explicit disk-alarm measurement override only; does not override retention's verified image-store mapping. | Inspected image-store filesystem. |
 | `TINYASSETS_MCP_CANARY_URL` | Public MCP URL the uptime canary probes. | `https://tinyassets.io/mcp` (canonical apex; `mcp.tinyassets.io` is an Access-gated internal tunnel origin, not user-facing — host directive 2026-04-20). |
 | `TAB_WATCHDOG_INTERVAL_S` | Interval (seconds) for the tray tab-watchdog's polling. `scripts/tab_watchdog.py`. | `60`. |
 | `TINYASSETS_CLAUDE_CHAT_SCREENSHOTS` | User-sim skill flag — capture a screenshot on every `claude_chat.py` response settle. Cost: ~200 KB per response. | Unset (off). |

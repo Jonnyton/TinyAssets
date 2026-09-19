@@ -72,6 +72,7 @@ def test_above_threshold_no_token_still_returns_1():
 
 def test_path_not_found_returns_0():
     """Non-existent path is non-fatal — returns 0."""
+
     def _bad_disk(p):
         raise FileNotFoundError(f"no such file: {p}")
 
@@ -113,6 +114,30 @@ def test_issue_fn_called_with_correct_args():
         issue_fn=_issue,
     )
     assert calls == [("tok", "owner/repo", "/data", 75.0, 70)]
+
+
+def test_reserved_blocks_count_as_pressure(monkeypatch):
+    from types import SimpleNamespace
+
+    import disk_watch
+
+    monkeypatch.setattr(
+        disk_watch.shutil, "disk_usage", lambda p: SimpleNamespace(total=100, used=77, free=19)
+    )
+    assert disk_watch._disk_usage_pct("unused") == 81
+
+
+def test_unknown_store_is_visible_without_stopping_rotation(monkeypatch, capsys):
+    import disk_watch
+
+    def unavailable(*args):
+        raise disk_watch.Refusal("unknown")
+
+    monkeypatch.setattr(sys, "argv", ["disk_watch.py"])
+    monkeypatch.delenv("DISK_WATCH_PATH", raising=False)
+    monkeypatch.setattr(disk_watch.Docker, "json", unavailable)
+    assert disk_watch.main() == 1
+    assert "UNKNOWN" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -198,19 +223,16 @@ def test_disk_watch_service_accepts_alert_exit_and_preserves_remediation_order()
         if line.strip() and not line.lstrip().startswith("#")
     ]
 
-    assert [
-        line for line in directives if line.startswith("SuccessExitStatus=")
-    ] == ["SuccessExitStatus=1"]
+    assert [line for line in directives if line.startswith("SuccessExitStatus=")] == [
+        "SuccessExitStatus=1"
+    ]
     assert "WorkingDirectory=/opt/tinyassets-host-uptime/current" in directives
     assert [line for line in directives if line.startswith("ExecStart=")] == [
-        (
-            "ExecStart=/usr/bin/python3 "
-            "/opt/tinyassets-host-uptime/current/scripts/disk_watch.py"
-        ),
+        ("ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/disk_watch.py"),
         "ExecStart=/usr/bin/python3 -m scripts.rotate_run_transcripts",
         (
             "ExecStart=/usr/bin/python3 "
-            "/opt/tinyassets-host-uptime/current/scripts/disk_autoprune.py"
+            "/opt/tinyassets-host-uptime/current/scripts/disk_autoprune.py --apply"
         ),
     ]
 
@@ -226,9 +248,7 @@ def test_disk_watch_timer_exists():
 
 def test_disk_watch_timer_is_daily():
     text = DISK_WATCH_TIMER.read_text(encoding="utf-8")
-    assert "daily" in text.lower() or "UTC" in text, (
-        "disk-watch timer must fire on a daily cadence"
-    )
+    assert "daily" in text.lower() or "UTC" in text, "disk-watch timer must fire on a daily cadence"
 
 
 def test_disk_watch_timer_has_install_section():

@@ -1,164 +1,41 @@
-"""Disk auto-prune tests (BUG-023 Phase 4).
+"""Both historical cleanup entrypoints use the same safe retention command."""
 
-Covers:
-- Below threshold → no prune invocation, exit 0.
-- At threshold → prune invoked, exit 0.
-- Dry-run above threshold → prune NOT invoked, exit 1.
-- Prune subprocess failure → exit 2.
-- Missing path → exit 0 with warning (non-fatal).
-"""
-from __future__ import annotations
+import subprocess
+import sys
+from pathlib import Path
 
 from scripts import disk_autoprune
-from scripts.disk_autoprune import check
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
-class TestBelowThreshold:
-    def test_no_prune_when_below(self):
-        prune_calls: list[bool] = []
+def test_compatibility_entrypoint_is_shared_main():
+    from scripts.daemon_image_retention import main
 
-        def fake_prune():
-            prune_calls.append(True)
-            return (0, "", "")
-
-        rc = check(
-            path="/",
-            threshold=85,
-            disk_fn=lambda _p: 50.0,
-            prune_fn=fake_prune,
-        )
-        assert rc == 0
-        assert prune_calls == []
-
-    def test_just_below_threshold(self):
-        prune_calls: list[bool] = []
-
-        rc = check(
-            path="/",
-            threshold=85,
-            disk_fn=lambda _p: 84.9,
-            prune_fn=lambda: (prune_calls.append(True), (0, "", ""))[1],
-        )
-        assert rc == 0
-        assert prune_calls == []
+    assert disk_autoprune.main is main
 
 
-class TestAboveThreshold:
-    def test_prune_invoked_at_exact_threshold(self):
-        prune_calls: list[bool] = []
-
-        def fake_prune():
-            prune_calls.append(True)
-            return (0, "deleted 3 images", "")
-
-        rc = check(
-            path="/",
-            threshold=85,
-            disk_fn=lambda _p: 85.0,
-            prune_fn=fake_prune,
-        )
-        assert rc == 0
-        assert prune_calls == [True]
-
-    def test_default_reclaim_runs_system_prune_builder_prune_and_journal(self, monkeypatch):
-        calls: list[list[str]] = []
-
-        class Proc:
-            returncode = 0
-            stdout = "ok"
-            stderr = ""
-
-        def fake_run(args, **_kwargs):
-            calls.append(args)
-            return Proc()
-
-        monkeypatch.setattr(disk_autoprune.subprocess, "run", fake_run)
-
-        rc, stdout, stderr = disk_autoprune._host_disk_reclaim()
-
-        assert rc == 0
-        assert stderr == ""
-        assert "docker system prune -af" in stdout
-        assert calls == [
-            ["docker", "system", "prune", "-af"],
-            ["docker", "builder", "prune", "-af"],
-            ["journalctl", "--vacuum-time=3d"],
-        ]
-
-    def test_prune_invoked_well_above(self):
-        prune_calls: list[bool] = []
-
-        rc = check(
-            path="/",
-            threshold=85,
-            disk_fn=lambda _p: 96.5,
-            prune_fn=lambda: (prune_calls.append(True), (0, "", ""))[1],
-        )
-        assert rc == 0
-        assert prune_calls == [True]
+def test_help_does_not_touch_docker_or_network():
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/disk_autoprune.py"), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "--apply" in result.stdout
 
 
-class TestDryRun:
-    def test_dry_run_above_threshold_does_not_invoke_prune(self):
-        prune_calls: list[bool] = []
-
-        rc = check(
-            path="/",
-            threshold=85,
-            dry_run=True,
-            disk_fn=lambda _p: 90.0,
-            prune_fn=lambda: (prune_calls.append(True), (0, "", ""))[1],
-        )
-
-        assert rc == 1  # would-prune signal
-        assert prune_calls == []
-
-
-class TestPruneFailureSurface:
-    def test_subprocess_error_returns_2(self):
-        def boom_prune():
-            raise OSError("docker binary missing")
-
-        rc = check(
-            path="/",
-            threshold=85,
-            disk_fn=lambda _p: 90.0,
-            prune_fn=boom_prune,
-        )
-        assert rc == 2
-
-    def test_prune_nonzero_exit_is_logged_not_masking(self, capsys):
-        """Prune returns non-zero but autoprune still exits 0 to avoid
-        masking the underlying disk event with a secondary failure."""
-        rc = check(
-            path="/",
-            threshold=85,
-            disk_fn=lambda _p: 90.0,
-            prune_fn=lambda: (1, "", "docker daemon not running"),
-        )
-        assert rc == 0
-
-    def test_missing_path_is_non_fatal(self):
-        def boom_disk(_p):
-            raise FileNotFoundError("no such path")
-
-        rc = check(
-            path="/nope",
-            threshold=85,
-            disk_fn=boom_disk,
-            prune_fn=lambda: (0, "", ""),
-        )
-        assert rc == 0
-
-
-class TestOutputVisibility:
-    def test_stdout_includes_usage_line(self, capsys):
-        check(
-            path="/",
-            threshold=85,
-            disk_fn=lambda _p: 70.0,
-            prune_fn=lambda: (0, "", ""),
-        )
-        out = capsys.readouterr().out
-        assert "70.0%" in out or "70%" in out
-        assert "threshold 85" in out
+def test_both_cleanup_units_are_bounded_and_preserve_rotation():
+    for name in ("tinyassets-prune.service", "tinyassets-disk-watch.service"):
+        source = (ROOT / "deploy" / name).read_text()
+        assert "scripts/disk_autoprune.py --apply" in source
+        assert "EnvironmentFile=/etc/tinyassets/env" in source
+        assert "WorkingDirectory=/opt/tinyassets-host-uptime/current" in source
+        assert "TimeoutStartSec=180s" in source
+        directives = "\n".join(line for line in source.splitlines() if not line.startswith("#"))
+        for forbidden in ("system prune", "image prune", "builder prune", "journalctl", "--force"):
+            assert forbidden not in directives
+    source = (ROOT / "deploy/tinyassets-disk-watch.service").read_text()
+    assert "ExecStart=/usr/bin/python3 -m scripts.rotate_run_transcripts" in source

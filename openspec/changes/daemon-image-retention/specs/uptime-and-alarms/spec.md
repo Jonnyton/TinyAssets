@@ -13,6 +13,12 @@ Both hourly and weekly automatic cleanup entrypoints SHALL use this same narrow
 policy, never broad prune, journal vacuum, volume, container or user-data deletion.
 Retention SHALL stop at75% pressure, four removals or its120-second work budget,
 whichever comes first, and report unmet pressure and unavailable evidence.
+Registry verification SHALL occur before acquiring the fence-then-mutation
+locks; the locked phase SHALL have a maximum60-second budget. Any fence-state
+file SHALL refuse deletion. The current configured image and authoritative
+volume-root release receipt SHALL be reread before every removal. Unknown
+image-store filesystem mapping SHALL refuse even dry-run planning; zero
+available bytes with a positive total SHALL be measured as100% pressure.
 
 #### Scenario: Pressure alert preserves the cleanup chain
 - **WHEN** disk alerting crosses its default80% threshold and returns1

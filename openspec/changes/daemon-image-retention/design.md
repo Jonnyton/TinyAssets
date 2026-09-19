@@ -43,7 +43,12 @@ container deletion, provider payload reads, registry retention policy or billing
    100. On each tick below trigger do nothing; above trigger remove oldest safe
    candidates one at a time until measured pressure <= low. No persistent
    hysteresis state. If exhausted, emit unmet-pressure evidence, not success.
-   Missing/invalid/zero-total measurement means unknown and no deletion.
+   Missing/invalid/zero-total measurement means unknown and no deletion. Zero
+   available bytes with a positive total is genuine 100% pressure, not unknown.
+   Measure the image-store filesystem: classic overlay2 uses DockerRootDir;
+   containerd requires an operator-verified configured storage path because
+   DockerRootDir alone does not identify its image-content filesystem. Unknown
+   store/path mapping refuses even in dry-run; never guess from daemon.json.
 2. **Authorization boundary.** Literal repository allowlist
    `ghcr.io/jonnyton/tinyassets-daemon`; immutable sha256 refs only. Inventory all
    images and ALL containers including stopped. Preserve all container image IDs,
@@ -64,9 +69,11 @@ container deletion, provider payload reads, registry retention policy or billing
    than config hashes: accept only validated index/child/config relationships,
    never assume `.Id == config.digest`. No pull required. Unknown platform,
    corrupt/missing manifest/blob, auth/network failure => no candidate removal.
-4. **Race safety.** Invoke through existing deployment-fence guard, then acquire
-   shared host-mutation lock nonblocking; unavailable/busy lock or active/unknown
-   deploy state produces explicit skipped evidence. Re-inventory under lock and
+4. **Race safety.** Acquire existing deployment-fence lock then shared
+   host-mutation lock directly and nonblocking. Do not import the obsolete fence
+   script or its unrelated disabled-timer residue check. Any existing fence
+   state file, including restored or unreadable state, refuses cleanup.
+   Unavailable/busy lock produces explicit skipped evidence. Re-inventory under lock and
    recheck ALL references/protected refs immediately before every deletion. Use
    `docker image rm repository@sha256:digest` with no force. Concurrent unguarded
    user Docker commands remain protected by non-force Docker refusal; stop on
@@ -74,11 +81,13 @@ container deletion, provider payload reads, registry retention policy or billing
 5. **Bounds.** One process per tick, fixed maximum of four removals and 120-second
    overall work budget inside the existing 180-second unit; bounded network and
    subprocess deadlines. No removals after budget expiry; remeasure after each.
-   A tick that cannot finish safely leaves remaining pressure visible.
+   Registry verification runs before locks; the locked phase is capped at 60
+   seconds to leave headroom below deployment's 120-second lock wait. A tick
+   that cannot finish safely leaves remaining pressure visible.
 6. **Integration.** Existing hourly disk-watch and weekly prune units route to
-   the same pressure-triggered command and same guards. No new timer or rollout
+   the same pressure-triggered command and same locks/state refusal. No new timer or rollout
    hook in V1; no nested lock inside deploy. Ensure installer supplies complete
-   guard/helper runtime and invokes existing CLI help checks, without activation
+   helper runtime and invokes existing CLI help checks, without activation
    here. Dry-run emits only selected digests, protection reasons and pressure,
    never commands that mutate; no env contents/paths/secrets are logged.
 
@@ -103,12 +112,21 @@ Rollback disables the two cleanup timer entrypoints or reinstalls a reviewed saf
 no-op; do NOT restore broad-prune behavior. Removed cache can be re-pulled by
 exact verified digest while registry objects remain available. User data untouched.
 
-## Open Questions For Shape Review
+## Resolved shape review and remaining deployment evidence
 
-The deployment-fence script is not currently in the host-uptime runtime manifest.
-Review whether to add its complete stdlib closure (preferred existing guard), or
-whether shared host-mutation lock alone is sufficient with this site's current
-deploy-fence lifecycle. No implementation chooses or bypasses this gate yet.
-Confirm authoritative host location for release-state via the active daemon's
-mounted data volume/configuration without traversing user directories. Missing
-receipt refuses cleanup rather than assuming no rollback target.
+Original Fable ADAPT recovered verbatim in `shape-review-recovered.md`. Adopt
+direct dual locks and shorter locked phase, not the 5,208-line fence dependency.
+The authoritative receipt is `release-state.json` directly under the mountpoint
+of Docker volume `tinyassets-data`, confirmed by deploy-prod.yml's writer.
+Require active daemon /data to name that volume; any release-path override,
+missing/invalid receipt or mismatched mount refuses. Never traverse user folders.
+
+Correct two review premises: zero available is full, and absent snapshotter
+configuration does not prove classic storage. Docker Engine 29+ fresh installs
+default to containerd, which may store image contents under /var/lib/containerd.
+Source: [Docker's storage documentation](https://docs.docker.com/engine/storage/containerd/)
+and [daemon storage paths](https://docs.docker.com/engine/daemon/).
+No new dual-store abstraction is needed: require bounded verified descriptor
+relationships and accept local ID only as immutable root digest or selected
+config digest; record driver and unknown mapping honestly. Actual host mapping
+and protected-reference dry-run are rollout prerequisites, not presumed here.

@@ -41,6 +41,7 @@ RUNTIME_FILES = (
     "scripts/mcp_public_canary.py",
     "scripts/disk_watch.py",
     "scripts/disk_autoprune.py",
+    "scripts/daemon_image_retention.py",
     "scripts/rotate_run_transcripts.py",
     "scripts/backup_ship_gh.py",
     "scripts/backup_prune.py",
@@ -794,6 +795,7 @@ def test_fresh_install_converges_exact_manifest(tmp_path):
         "tinyassets-watchdog.service",
         "daemon-watchdog.service",
         "tinyassets-backup.service",
+        "tinyassets-prune.service",
         "tinyassets-disk-watch.service",
         "tinyassets-ship-logs.service",
     ):
@@ -1051,6 +1053,7 @@ def test_installed_operational_entrypoints_invoke_from_runtime(tmp_path):
         "python3 scripts/mcp_public_canary.py --help",
         "python3 scripts/disk_watch.py --help",
         "python3 scripts/disk_autoprune.py --help",
+        "python3 scripts/daemon_image_retention.py --help",
         "python3 scripts/backup_ship_gh.py --help",
         "python3 scripts/backup_prune.py --help",
         (

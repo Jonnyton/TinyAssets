@@ -1,7 +1,8 @@
 # Test plan (shape preparation; no runtime implementation)
 
 1. Reserved-block fixture: total100, used77, available19 =>81% uniformly, not77%;
-   exact85 triggers, below85 does not; zero/missing/non-finite fails closed.
+   exact85 triggers, below85 does not; zero total/missing/non-finite fails closed;
+   zero available with positive total is100%. Unknown store mapping refuses.
 2. Keep every running/stopped-container image, current daemon, two newest older
    daemon images, all newer images, configured digest and receipt rollback.
 3. Reject foreign repo, mutable/unmapped refs, extra foreign aliases, malformed
@@ -9,8 +10,9 @@
 4. Exact index+child+config/layer validation supports containerd index IDs and
    classic config IDs; mismatches, wrong platform, oversize or missing blobs,
    token/network timeout cause no removal. Token never appears in output.
-5. Lock/fence busy/unknown -> zero removals; a concurrent deploy cannot pass the
-   same mutation lock. New stopped-container reference before delete protects it.
+5. Either lock busy or any fence-state file -> zero removals; a concurrent deploy cannot pass the
+   same mutation lock. Registry verification occurs outside locks; locked phase
+   is at most60seconds. New stopped-container reference before delete protects it.
 6. Removal argument vector is exactly non-force immutable allowed repo digest;
    tests forbid system/image/builder prune, journal vacuum, rm-volume/container.
 7. Recheck pressure after each delete: stop at75, maximum4 or120sbudget. Docker
