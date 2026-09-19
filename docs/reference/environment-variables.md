@@ -86,6 +86,7 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 |-----|---------|---------|
 | `DISK_AUTOPRUNE_PCT` | Trigger for bounded, registry-verified daemon image retention; not broad Docker pruning. | `85`; must satisfy `0 < low < high < 100`. |
 | `DISK_AUTOPRUNE_LOW_PCT` | Stop watermark during one bounded retention pass. | `75`. |
+| `TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY` | Retention-only activation: exact `1` plus CLI `--apply` permits bounded image removal. Exact `0` or absent remains read-only; malformed values refuse. Does not change alarms/rotation. | `0` (off until installed dry-run acceptance). |
 | `TINYASSETS_IMAGE_RETENTION_STORAGE_PATH` | Operator-verified image-content filesystem for containerd-backed Docker. Missing mapping refuses cleanup; never a deletion target. Classic overlay2 derives DockerRootDir. | Unset. |
 | `DISK_WATCH_PATH` | Explicit disk-alarm measurement override only; does not override retention's verified image-store mapping. | Inspected image-store filesystem. |
 | `TINYASSETS_MCP_CANARY_URL` | Public MCP URL the uptime canary probes. | `https://tinyassets.io/mcp` (canonical apex; `mcp.tinyassets.io` is an Access-gated internal tunnel origin, not user-facing — host directive 2026-04-20). |

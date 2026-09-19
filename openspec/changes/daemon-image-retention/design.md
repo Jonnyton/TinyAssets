@@ -90,6 +90,14 @@ container deletion, provider payload reads, registry retention policy or billing
    helper runtime and invokes existing CLI help checks, without activation
    here. Dry-run emits only selected digests, protection reasons and pressure,
    never commands that mutate; no env contents/paths/secrets are logged.
+7. **Activation.** Installer always enables its timers, so a procedural pause
+   is not a safety boundary. Removal requires BOTH `--apply` and the exact
+   operator opt-in `TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY=1`. Missing or `0`
+   means read-only retention; every other value refuses before any work.
+   Opt-in alone without `--apply` remains read-only. `DRY_RUN=1` can only reduce
+   authority. The new flag is retention-specific: alarms and existing transcript
+   rotation do not read it. Root runs the installed helper directly without
+   `--apply` for acceptance; never claim the whole chained service is dry-run.
 
 ## Risks / Trade-offs
 
@@ -106,8 +114,11 @@ container deletion, provider payload reads, registry retention policy or billing
 
 Independent shape approval first; implement/tests in isolated branch. Linux
 oracle, exact-head review and required CI precede lead-owned host installer
-activation. First production run is dry-run with protected identities verified;
-lead then authorizes normal timer behavior and records health/free-space proof.
+activation. Before install, root confirms the retention opt-in is absent or0.
+Installer can then resume ordinary alarm/rotation timers without authorizing
+image removal. First direct-helper production run is dry-run with protected
+identities verified; lead then sets only the retention opt-in to1 and records
+health/free-space proof. No global DRY_RUN hold is needed or relied upon.
 Rollback disables the two cleanup timer entrypoints or reinstalls a reviewed safe
 no-op; do NOT restore broad-prune behavior. Removed cache can be re-pulled by
 exact verified digest while registry objects remain available. User data untouched.

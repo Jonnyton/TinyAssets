@@ -74,8 +74,11 @@ Optional env vars: `DISK_WATCH_PATH`, `DISK_WARN_PCT`, `GITHUB_REPOSITORY`.
 
 Both automatic cleanup services use bounded daemon-image retention, not system,
 builder, journal, volume or container cleanup. The compatibility command
-`python3 scripts/disk_autoprune.py` defaults to dry-run; `--apply` enables exact
-non-force removals only after all protection/recovery checks. Containerd image
+`python3 scripts/disk_autoprune.py` defaults to dry-run; both `--apply` and exact
+`TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY=1` are required for exact non-force removals
+after all protection/recovery checks. Timer installation alone cannot enable it.
+Run the helper directly for acceptance: the chained service also runs ordinary
+transcript rotation, which this flag does not affect. Containerd image
 storage needs an operator-verified `TINYASSETS_IMAGE_RETENTION_STORAGE_PATH`.
 See the [retention rollout checklist](../../openspec/changes/daemon-image-retention/operator-acceptance.md)
 before installing or activating the updated cleanup units. Unknown mapping or

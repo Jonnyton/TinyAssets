@@ -19,6 +19,11 @@ file SHALL refuse deletion. The current configured image and authoritative
 volume-root release receipt SHALL be reread before every removal. Unknown
 image-store filesystem mapping SHALL refuse even dry-run planning; zero
 available bytes with a positive total SHALL be measured as100% pressure.
+Image removal SHALL require both an explicit apply argument and an exact
+retention-specific operator opt-in. Absent/0 opt-in SHALL keep retention read-only;
+malformed values SHALL refuse before work. Installing/enabling timers alone
+SHALL NOT authorize image removal. This flag SHALL NOT alter alarm or transcript
+rotation behavior; installed dry-run proof SHALL invoke the helper directly.
 
 #### Scenario: Pressure alert preserves the cleanup chain
 - **WHEN** disk alerting crosses its default80% threshold and returns1

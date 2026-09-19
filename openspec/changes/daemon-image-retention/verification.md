@@ -53,10 +53,34 @@ were unchanged from the143-test run. Ruff passed again.
 
 ## Release boundary
 
-The helper is dry-run by default; updated units explicitly use `--apply`.
-Do not activate/install those units before lead-owned protected-reference
-dry-run acceptance and independent exact-head approval. Actual image-store
+The helper is dry-run by default; updated units explicitly use `--apply`, but
+after the activation amendment BOTH that argument and exact retention-only
+operator opt-in are required. Root verifies opt-in absent/0 before installation;
+timer enablement cannot itself authorize removal. Actual image-store
 mapping and registry availability on the host are unproven here. All live
 acceptance rows remain unchecked in tasks.md and operator-acceptance.md.
 This implementation does not close the broader resource-limits or cloud-browser
 capability; root-run physical-memory delegation remains an independent blocker.
+
+## Default-off activation amendment
+
+Fable exact-head review of the preceding candidate approved the data boundary
+but required an installed dry-run before --apply could fire. Inspection found
+installer success AND rollback automatically enable all timers; the workflow
+invokes it after successful deploy. No no-activate option exists. Global DRY_RUN
+does not stop transcript rotation, which checks only its CLI --dry-run.
+
+Lead authorized the smallest fail-safe amendment: exact retention-only opt-in1
+AND --apply; absent/0 is read-only, malformed values refuse, opt-in alone cannot
+authorize effects. Alarm and rotation behavior remain unchanged. Root performs
+installed direct-helper dry-run before changing the opt-in; not a full service
+start. Runtime root flags/key updates remain unperformed in this lane.
+
+Same Linux command above:155 passed/no skips,32.92s, including installer closure
+and activation matrix. Added explicit transcript-path proof afterward; the
+three helper/entrypoint suites then passed98/no skips,7.48s. The transcript test
+uses an injected callback and temporary path, not customer data: both retention
+opt-in0 and global DRY_RUN1 leave normal rotation enabled, while explicit
+rotation --dry-run prevents its callback. Ruff/diff/strict OpenSpec passed.
+The amended head needs a fresh exact-head review; the earlier approval is not
+relabelled as covering this amendment.

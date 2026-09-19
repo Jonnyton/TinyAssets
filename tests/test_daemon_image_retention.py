@@ -451,3 +451,74 @@ def test_cli_unknown_error_never_echoes_credentials(monkeypatch, capsys):
     monkeypatch.setattr(retention, "retain", fail)
     assert retention.main([]) == 2
     assert "SECRET" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "activation,argv,effect",
+    [
+        (None, ["--apply"], False),
+        ("0", ["--apply"], False),
+        ("1", [], False),
+        ("1", ["--apply"], True),
+    ],
+)
+def test_activation_requires_both_opt_in_and_apply(
+    inventory, tmp_path, monkeypatch, activation, argv, effect
+):
+    docker, _, options = runner(inventory, tmp_path)
+    actual_retain = retention.retain
+
+    def exercise(**kwargs):
+        options.update(kwargs)
+        return actual_retain(**options)
+
+    monkeypatch.setattr(retention, "retain", exercise)
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.delenv("DISK_AUTOPRUNE_PCT", raising=False)
+    monkeypatch.delenv("DISK_AUTOPRUNE_LOW_PCT", raising=False)
+    if activation is None:
+        monkeypatch.delenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", raising=False)
+    else:
+        monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", activation)
+    retention.main(argv)
+    assert bool(docker.calls) is effect
+
+
+@pytest.mark.parametrize("value", ["", "true", "yes", "2", " 1", "invalid"])
+def test_malformed_activation_refuses_before_any_work(monkeypatch, capsys, value):
+    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", value)
+    monkeypatch.setattr(retention, "retain", lambda **kw: pytest.fail("must refuse before work"))
+    assert retention.main(["--apply"]) == 2
+    assert "invalid_retention_activation" in capsys.readouterr().out
+
+
+def test_legacy_dry_run_can_only_reduce_authority(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
+    monkeypatch.setenv("DRY_RUN", "1")
+
+    def check(**kwargs):
+        assert kwargs["dry_run"] is True
+        return dict(status="dry_run")
+
+    monkeypatch.setattr(retention, "retain", check)
+    assert retention.main(["--apply"]) == 1
+
+
+def test_retention_activation_does_not_control_transcript_rotation(tmp_path, monkeypatch):
+    from scripts import rotate_run_transcripts as rotation
+
+    calls = []
+    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "0")
+    monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setattr(rotation, "data_dir", lambda: tmp_path)
+
+    def rotate(path, **kwargs):
+        calls.append(path)
+        return SimpleNamespace(as_dict=lambda: {})
+
+    monkeypatch.setattr(rotation, "rotate_run_transcripts", rotate)
+    assert rotation.main([]) == 0
+    assert calls == [tmp_path / "runs"]
+    calls.clear()
+    assert rotation.main(["--dry-run"]) == 0
+    assert calls == []

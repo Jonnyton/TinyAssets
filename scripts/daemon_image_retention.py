@@ -471,11 +471,19 @@ def retain(
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--apply", action="store_true", help="enable bounded non-force removal")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="request removal; also requires TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY=1",
+    )
     options = parser.parse_args(argv)
     try:
+        activation = os.environ.get("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "0")
+        if activation not in ("0", "1"):
+            raise Refusal("invalid_retention_activation")
         report = retain(
             dry_run=not options.apply
+            or activation != "1"
             or os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"),
             high=float(os.environ.get("DISK_AUTOPRUNE_PCT", "85")),
             low=float(os.environ.get("DISK_AUTOPRUNE_LOW_PCT", "75")),
@@ -484,6 +492,7 @@ def main(argv=None):
         reason = str(exc) if isinstance(exc, Refusal) else "evidence_unavailable"
         print(json.dumps(dict(status="refused", reason=reason)))
         return 2
+    report.update(apply_requested=options.apply, apply_enabled=activation == "1")
     print(json.dumps(report, sort_keys=True))
     return 0 if report["status"] in ("below_threshold", "pressure_relieved") else 1
 

@@ -2,10 +2,13 @@
 
 No production cleanup or service activation was performed while preparing this
 patch. Both cleanup units change together; transcript rotation remains unchanged.
-The compatibility command is dry-run by default. Only `--apply` permits removal;
-`DRY_RUN=1` overrides that switch. Installed timers pass `--apply`, so **do not
-install/activate these units until the coordinating release owner accepts the
-dry-run and exact-head review**.
+The compatibility command is dry-run by default. Removal needs BOTH `--apply`
+and exact `TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY=1`; absent/0 stays read-only,
+malformed values refuse before work. `DRY_RUN=1` can only reduce that authority.
+Installed timers pass `--apply`, but **timer installation alone does not opt in**.
+The coordinating release owner must verify the installed helper's direct dry-run
+before setting the retention-specific opt-in. Existing alarm/rotation behavior
+is not disabled by the new flag; the whole service is not a no-effect probe.
 
 ## Configuration and prerequisites
 
@@ -34,13 +37,29 @@ dry-run and exact-head review**.
 
 ## Lead-owned acceptance
 
-1. Exact-head independent review and required CI first. Publish the complete
-   checksummed runtime closure, without enabling cleanup ahead of acceptance.
-2. Inspect a dry-run of the installed command. Confirm current/all stopped and
+1. Exact-head independent review and required CI first. Root verifies the new
+   activation key in `/etc/tinyassets/env` is absent or exactly0 before installing.
+   Publish the complete checksummed runtime closure. The installer stops timers,
+   waits active services, publishes files, then restarts normal timers; retention
+   stays read-only. No race to disable it afterward and no global DRY_RUN needed.
+2. Run the installed helper directly with no `--apply`, not
+   `systemctl start tinyassets-disk-watch.service`. The latter includes real
+   transcript rotation (its separate --dry-run CLI is the only dry-run control
+   it reads). Confirm current/all stopped and
    running container references, configured image, explicit receipt rollback,
    two newer rollback candidates and all newer-than-current images protected.
    Unknown store mapping is a blocker, not a reason to guess a path or skip it.
-3. Lead authorizes one bounded effectful pass only after inspecting that proof.
+3. Only after that proof does root use the existing environment installer to
+   set `TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY` to exact1. It affects retention
+   only. New service invocations load the value via EnvironmentFile; no timer
+   restart is needed to arm the next tick. A direct `--apply` pass must likewise
+   receive the opt-in explicitly; opt-in alone never enables a direct dry-run.
+   The existing `deploy/install-tinyassets-env.sh set <KEY>` accepts the value
+   on stdin and preserves root:tinyassets/0640 via atomic replacement. Use its
+   verified release copy under the existing fence-then-host-mutation locks;
+   do not source or print the secret-bearing environment file. The key helper
+   itself does not take the shared locks. These are root-owned operations, not
+   actions performed in this preparation.
    The helper takes fence then mutation lock, makes at most four non-force
    immutable daemon removals, caps the locked phase at60s/whole pass120s, and
    rechecks live inventory/configuration before each removal. Per-removal events
@@ -48,9 +67,13 @@ dry-run and exact-head review**.
 4. Verify data volumes/containers unchanged, rollback images available, protected
    public canary green, and actual filesystem pressure measured. Registry-verified
    cache can be pulled again by exact digest; remote permanence is not promised.
-5. Only then accept normal timer operation; next healthy tick must avoid needless
-   removal. Rollback disables cleanup entrypoints or uses a reviewed safe no-op,
-   never reinstates broad prune. Sync/archive only after accepted live proof.
+5. Next healthy tick must avoid needless removal. Rollback sets the retention
+   opt-in to exact0, leaves alarm/rotation enabled, and waits for any already
+   running bounded retention pass to settle before declaring cleanup disarmed.
+   Do not roll back to broad-prune code. Installer failure may restore its prior
+   bundle, so root verifies the actual installed closure before any activation;
+   an older broad-prune bundle does not implement this new flag. Sync/archive
+   only after accepted live proof.
 
 This slice does not fix browser per-job memory isolation, arbitrary user data
 retention, build cache, journals, or the separate emergency-triage workflow.

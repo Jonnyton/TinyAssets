@@ -14,6 +14,8 @@ would remove rollback images and unrelated disposable host state.
 - Preserve all container references, the current daemon, two recent older
   rollback candidates, configured references and release-receipt rollback target.
 - Reuse host mutation serialization and existing timers; stop at a low watermark.
+- Default image-removal activation off independently of timer enablement; require
+  an exact retention-only operator opt-in plus --apply after direct-helper proof.
 - No runtime implementation until independent shape approval is relayed by lead.
 
 ## Capabilities
