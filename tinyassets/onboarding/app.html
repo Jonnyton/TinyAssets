@@ -345,7 +345,14 @@
       </header>
       <div class="connect-body">
         <p>Your account is your sign-in plus the one universe bound to it. There is nothing
-        else to manage here yet — no separate website account, no profile.</p>
+        else to sign into here — no separate website account, no profile.</p>
+        <h3>Your universe's connections</h3>
+        <p>Disconnect removes this universe's access and its saved key in TinyAssets.
+        Your history and designs stay. Your provider account is not deleted.
+        Requests already sent may still finish.</p>
+        <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
+        <div id="connection-list"></div>
+        <div id="connection-status" class="notice" role="status"></div>
         <div class="danger-zone">
           <h3>Delete your account</h3>
           <p>This deletes your universe — its memory, your conversation history, and any
@@ -3082,12 +3089,12 @@
     status(text){$("hosted-model-status").textContent=text;if(this.keyMode)$("paste-result").textContent=text;},
     paint(){
       $("hosted-model-setup").hidden=NATIVE||this.setup==="connected";
-      $("btn-hosted-model").disabled=this.busy||this.setup!=="empty";
+      $("btn-hosted-model").disabled=this.busy||!["empty","disconnected"].includes(this.setup);
       $("btn-hosted-resume").disabled=this.busy||this.setup==="unavailable";
       $("btn-hosted-accept").disabled=this.busy;
       $("btn-hosted-decline").disabled=this.busy;
-      $("btn-hosted-key").disabled=this.busy||this.setup!=="empty";
-      $("btn-hosted-deposit").disabled=this.busy||this.setup!=="empty";
+      $("btn-hosted-key").disabled=this.busy||!["empty","disconnected"].includes(this.setup);
+      $("btn-hosted-deposit").disabled=this.busy||!["empty","disconnected"].includes(this.setup);
       $("btn-hosted-key-cancel").disabled=this.busy;
       $("hosted-model-confirmation").hidden=!this.request;
     },
@@ -3097,7 +3104,7 @@
       sessionStorage.removeItem(this.storageKey);
     },
     showKeyEntry(){
-      if(this.busy||this.setup!=="empty") return;
+      if(this.busy||!["empty","disconnected"].includes(this.setup)) return;
       this.setKeyMode(true);
       const card=$("api-key-connection"), input=$("paste-blob");
       card.hidden=false;
@@ -3121,7 +3128,7 @@
       this.paint();
     },
     async depositKey(){
-      if(!this.keyMode||this.busy||NATIVE||this.setup!=="empty") return;
+      if(!this.keyMode||this.busy||NATIVE||!["empty","disconnected"].includes(this.setup)) return;
       let key=$("paste-blob").value;$("paste-blob").value="";
       if(typeof key!=="string"||!key.length||key.length>2048||!/^[\x21-\x7e]+$/.test(key)){
         key="";this.status("Paste only your OpenRouter API key, without spaces or other text.");return;
@@ -3200,7 +3207,7 @@
       return result;
     },
     async begin(){
-      if(this.busy||NATIVE||this.setup!=="empty") return;
+      if(this.busy||NATIVE||!["empty","disconnected"].includes(this.setup)) return;
       const epoch=this.epoch;this.busy=true;this.paint();
       this.status("Opening OpenRouter signup or sign-in. You choose whether to authorize access there.");
       try{
@@ -3735,7 +3742,43 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); }
+    let connectionsBusy=false;
+    async function loadConnections(){
+      if(connectionsBusy)return;
+      const ownerToken=token();
+      connectionsBusy=true;$("btn-refresh-connections").disabled=true;
+      const list=$("connection-list"),status=$("connection-status");list.replaceChildren();
+      status.textContent="Checking your connections…";
+      try{
+        const response=await fetch("/mcp/app/connections",{headers:authHeaders(),credentials:"same-origin"});
+        const doc=await response.json();
+        if(token()!==ownerToken)return;
+        if(!response.ok||doc.error||!Array.isArray(doc.connections))throw new Error("unavailable");
+        status.textContent=doc.connections.length?"":"No HTTP connections are saved for this universe.";
+        for(const row of doc.connections){
+          const item=document.createElement("p"),name=document.createElement("span"),button=document.createElement("button");
+          name.textContent=row.destination+" ";button.textContent="Disconnect";button.className="btn btn--ghost";
+          button.addEventListener("click",async()=>{
+            if(connectionsBusy||token()!==ownerToken||!confirm("Disconnect "+row.destination+" from your universe? Its saved key and model access will be removed. Your history and designs stay. Already sent requests may finish."))return;
+            connectionsBusy=true;button.disabled=true;status.textContent="Disconnecting…";
+            try{
+              const result=await fetch("/mcp/app/connections",{method:"POST",credentials:"same-origin",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({universe_id:doc.universe_id,destination:row.destination,incarnation:row.incarnation})});
+              const removed=await result.json();
+              if(token()!==ownerToken)return;
+              if(!result.ok||removed.error)throw new Error("unconfirmed");
+              item.remove();status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Return to Connect a model when you want to reconnect.";
+              const me=await fetch("/mcp/app/me",{headers:authHeaders()});
+              if(me.ok){const state=await me.json();engineConnected=state.engine_connected===true;HostedModelConnect.setup=state.setup;HostedModelConnect.paint();}
+            }catch(_e){status.textContent="Disconnect is not confirmed. Refresh connections before trying again; nothing is retried automatically.";}
+            finally{connectionsBusy=false;button.disabled=false;}
+          });
+          item.append(name,button);list.append(item);
+        }
+      }catch(_e){status.textContent="Could not load your connections. Sign in again if your session expired, then refresh.";}
+      finally{connectionsBusy=false;$("btn-refresh-connections").disabled=false;}
+    }
+    $("btn-refresh-connections").addEventListener("click",loadConnections);
     function leaveAccount(){ if(engineConnected===true){ showView("chat"); startHeartbeat(); } else { showConnect(true); } }
     $("btn-account").addEventListener("click", showAccount);
     $("btn-connect-account").addEventListener("click", showAccount);
@@ -4015,12 +4058,9 @@
         // The sentence still gets shown — after the fact, as a receipt.
         const d=await MCP.connectHTTP(r.destination,secret,r.allowed_endpoints,r.auth_scheme);
         if(d&&d.error){ out.textContent="Couldn't add it: "+(d.detail||d.error); openManual(); return; }
-        // Says only what this surface can actually do. There is no reachable
-        // remove for an http connection yet (the ledger has revoke_connection,
-        // nothing exposes it), and promising one would be the same class of bug
-        // as the old path label that promised a default this deposit never had.
+        // Account remains reachable even if no provider can power a reply.
         out.textContent="Added as “"+r.destination+"”. "+r.receipt+
-          " To change it, fill it in below and add it again.";
+          " To disconnect it, open Account. To change it, fill it in below and add it again.";
 
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); }
         out.textContent="Couldn't add it: "+err.message; }

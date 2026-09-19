@@ -32,11 +32,9 @@ Slice 1 scope + security posture (grounded in the outbound substrate):
   policy — a different endpoint allow-list included — is refused as a conflict
   before any vault write, so a re-provision can never silently keep the old egress
   policy under a rotated secret. Changing an existing connection's policy is
-  UNSUPPORTED in Slice 1: ``revoke_connection`` only stamps ``revoked_at``, and a
-  revoked deterministic resource then trips the ``revoked_at is not None``
-  conflict on every re-provision, so there is no revoke-then-reprovision path.
-  A dedicated policy-update operation is the follow-up (tasks.md); until it lands,
-  a policy change requires a new destination.
+  possible through the dedicated extension operation or by explicit removal
+  followed by a new deposit. Removal fences dependent model authority and erases
+  the old grants/custody; it never silently revives them under a replacement key.
 - **Never echoes the secret or the credential_ref.** Errors carry no secret.
 
 A live outbound call additionally requires the owner's effector consent for the
@@ -366,6 +364,13 @@ def _canonical_policy(endpoints: list[dict[str, Any]]) -> str:
 
 
 def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    from tinyassets.onboarding.serving import _gesture_lock
+
+    with _gesture_lock(_request_universe(universe_id)):
+        return _connect_http(universe_id=universe_id, payload=payload)
+
+
+def _connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """Provision (or rotate) a generic http connection for the owner's universe.
 
     Returns a redacted projection on success and a sanitized error otherwise.
@@ -538,9 +543,8 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     #    so a pure reorder stays idempotent; any real change (a different endpoint
     #    list, or any field) is a conflict, never a silent reuse of the old policy
     #    under a rotated secret. Changing an existing connection's policy is
-    #    UNSUPPORTED in Slice 1 (revoke only stamps revoked_at, which then trips the
-    #    revoked_at conflict below) — a policy change needs a new destination until
-    #    the dedicated update op follow-up lands. Credential-bearing read (trusted
+    #    done through explicit extension or remove/redeposit, not silent rotation.
+    #    Credential-bearing read (trusted
     #    server code); the ref never reaches the projection.
     resource = ledger._get_connection_resource(connection_id)
     # The ONE raw snapshot the extension at the end is guarded by. The git
@@ -755,12 +759,16 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
 
 
 def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    from tinyassets.onboarding.serving import _gesture_lock
+
+    with _gesture_lock(_request_universe(universe_id)):
+        return _remove_http(universe_id=universe_id, payload=payload)
+
+
+def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """Remove a deposited http connection: the secret, the connection, its grants.
 
-    The missing half of deposit. A user who pasted a key -- including one pasted
-    against a host they did not intend -- had no way to withdraw it through any
-    surface they could reach
-    (``docs/concerns/2026-08-27-no-reachable-remove-for-http-connections.md``).
+    Shared by approved agent requests and the unpowered Account controls.
 
     DELETES rather than revokes, and that is the whole design decision. A
     connection id is deterministic on ``(universe_id, destination)``, and
@@ -769,10 +777,9 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     FOREVER: remove ``github`` and you could never deposit ``github`` again. A
     remove the user cannot undo is not a remove, it is a trap.
 
-    Order is deliberate: the SECRET goes first. If the ledger delete then fails,
-    what is left is a connection whose credential no longer resolves -- inert,
-    and cleaned up by a retry. The reverse order would leave a secret in the
-    vault with nothing pointing at it, which is the failure that matters.
+    First fence dependent authority and custody, then erase the secret before
+    deleting ledger rows. A failed cleanup remains denied and reachable for
+    retry. In-flight effects may finish; removal cannot cancel upstream work.
 
     Idempotent: removing something already gone reports ``removed`` with zero
     counts rather than an error, because "take this away" and "it is already
@@ -826,6 +833,20 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         # another principal's deposited credential.
         return dict(_NOT_FOUND)
 
+    observed = document.get("incarnation")
+    incarnation = ledger.incarnation(connection_id)
+    if observed is not None and resource is not None and observed != incarnation:
+        return {"error": "connection_changed", "resource": "connection"}
+    from tinyassets.providers.connection_lifecycle import complete_disconnect, fence_connection
+
+    if resource is not None:
+        fence_connection(base, _universe_dir(uid), owner=actor, uid=uid,
+                         connection_id=connection_id, grant_id=grant_id,
+                         incarnation=incarnation or "", destination=destination)
+        # Deny new direct HTTP dispatch before secret/ledger cleanup; an already
+        # dispatched request may still finish, which the receipt states explicitly.
+        ledger.revoke_connection(connection_id)
+
     # Read the SHAPE before destroying it. Endpoints and git scopes are the two
     # things a re-deposit has to reproduce, and scopes in particular die with
     # the grant -- forget them and the connection comes back looking healthy
@@ -871,6 +892,7 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     removed_consents = revoke_consents_for_connection(
         _universe_dir(uid), connection_id=connection_id, destination=destination
     )
+    complete_disconnect(base, owner=actor, uid=uid, connection_id=connection_id)
 
     return {
         "status": "removed",
@@ -879,6 +901,9 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         "grant_id": grant_id,
         "secrets_removed": secrets_removed,
         "connection_removed": bool(rows_removed),
+        "in_flight": "Already dispatched requests may finish; their outcomes are unchanged.",
+        "upstream": ("Disconnected from TinyAssets; your provider account "
+                     "and independent key are unchanged."),
         # What the removal took back, so a ROTATION can re-ask for exactly
         # these and the owner is never asked to remember them. Inheriting them
         # silently was the alternative, and it also survives a removal the

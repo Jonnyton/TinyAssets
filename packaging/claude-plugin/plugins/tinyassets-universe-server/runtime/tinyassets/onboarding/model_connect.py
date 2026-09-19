@@ -67,7 +67,7 @@ async def handle_model_connect(request):
         base = _base_path()
         require_founder_home(base, home, identity.user_id)
         if empty and model_setup_state(base, universe=_universe_dir(home), uid=home,
-                                       owner=identity.user_id) != "empty":
+                                       owner=identity.user_id) not in {"empty", "disconnected"}:
             raise hosted.HostedAuthError("model_setup_changed", 409)
         return base, home
 

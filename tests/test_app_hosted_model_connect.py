@@ -71,7 +71,15 @@ sessionStorage.setItem(HostedModelConnect.storageKey,JSON.stringify({flow:'f'.re
  verifier:'v'.repeat(43),preset:HostedModelConnect.preset,expires:Date.now()+60000}));
 window.location.pathname='/mcp/app/model-callback/'+'f'.repeat(43);
 window.location.search=__QUERY__;
-""".replace("__QUERY__", json.dumps(query))
+    """.replace("__QUERY__", json.dumps(query))
+
+
+def test_deliberate_disconnect_allows_explicit_guided_reconnect():
+    result = run_browser(
+        "HostedModelConnect.setup='disconnected'; await HostedModelConnect.begin();")
+    assert len(result["requests"]) == 1
+    assert result["requests"][0]["url"].endswith("/begin")
+    assert result["navigations"] == ["https://provider.example/auth"]
 
 
 def test_existing_key_shortcut_focuses_original_box_without_credentials_or_authority():

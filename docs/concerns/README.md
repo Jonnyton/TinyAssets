@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P2** | [Full HTTP redeposit can conflict](2026-09-19-full-http-redeposit-mode-conflict.md) — behavioral probe on unchanged base returns conflict when rotating an existing exact connection into full access; preserve authority and partial-outcome honesty in a separate fix | 2026-09-19 |
 | **note** | [Bootstrap/deletion hardening](2026-09-18-bootstrap-deletion-hardening.md) — independent review distinguishes non-secret orphan/ghost-directory and future multi-worker concerns from the guarded credential resurrection race | 2026-09-18 |
 | **P2** | [Model picker global discovery delay](2026-09-16-model-picker-global-discovery-delay.md) — first-open selection and execution still wait on unrelated source discovery | 2026-09-16 |
 | **note** | [Automatic source-health follow-ups](2026-09-15-automatic-source-health-followups.md) — bounded advisory memory approved for MVP; post-live isolation, legacy classification and coverage observations remain | 2026-09-15 |
@@ -90,7 +91,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P2** | [A Stripe 4xx reads as our billing being down](2026-08-28-stripe-4xx-reads-as-an-outage.md) — every `HTTPError` becomes `BillingUnavailable`, so a config mistake of ours is reported as infrastructure sickness three layers from the truth | 2026-08-28 |
 | **P2** | [Sibling sessions have no subtree budget](2026-08-27-sibling-sessions-have-no-subtree-budget.md) — async fan-out mints a fresh per-run receipt each time, so breadth is unbounded | 2026-08-27 |
 | **P2** | [Credential deposit refusals are unobservable](2026-08-27-credential-deposit-refusals-are-unobservable.md) — `connect_http` logs no refusal and returns HTTP 200, so a failed deposit is byte-identical to a successful one in the daemon log; the founder's GitHub deposit failed twice and nobody could say why | 2026-08-27 |
-| **P2** | [No reachable remove for http connections](2026-08-27-no-reachable-remove-for-http-connections.md) — the ledger has `revoke_connection` but nothing exposes it, so a deposited key cannot be withdrawn; a naive remove would permanently burn the destination name (deterministic ids + the `revoked_at` conflict) | 2026-08-27 |
+| **P1** | [App connection removal and reconnect](2026-08-27-no-reachable-remove-for-http-connections.md) — the remove primitive exists; unpowered app controls and dependent model lifecycle remain unverified live | 2026-09-19 |
 | **P2** | [Served provider authority is converse-only](2026-08-27-served-provider-authority-is-converse-only.md) — the live paste-inference call is refused every time (`provider request source is not trusted`); widening it is the rejected keystone, and the agent-asks rail needs no widening | 2026-08-27 |
 | **P2** | [An agent can lift a mute the user set](2026-08-27-pending-request-mute-bypass.md) — `dont_ask_again` and `unmute_request` are both reachable by the served agent, which authenticates as the user's own principal; lifts are recorded and surfaced, not prevented | 2026-08-27 |
 | **P2** | [`_current_actor` env fallback](2026-06-30-current-actor-env-fallback.md) — bypasses `permissions.py` | 2026-06-30 |

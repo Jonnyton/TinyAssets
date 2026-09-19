@@ -66,6 +66,49 @@ def test_second_oauth_result_cannot_replace_first_deposit(rig):
     assert load_credential_vault(rig / "u-owner")[0]["token"] == "first-key"
 
 
+def test_disconnect_then_guided_reconnect_requires_fresh_approval(rig):
+    from tinyassets.api.http_connection import remove_http
+    from tinyassets.api.model_access_requests import execute_action
+    from tinyassets.custom_agents import get_binding
+    from tinyassets.onboarding.model_setup import model_setup_state
+    from tinyassets.provider_assignment_manifest import parse_model_access
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    first = finish(rig, key="first-test-key")
+    action = first["request"]["action"]
+    bound = bind_serving_provider(base_path=rig, universe_dir=rig / "u-owner",
+        owner_user_id="owner", universe_id="u-owner",
+        agent_binding_id=action["agent_binding_id"], expected_revision=action["expected_revision"],
+        provider=action["provider"], model_access=parse_model_access(action["model_access"]))
+    previous = bound["agent_binding"]
+    result = remove_http(universe_id="u-owner",
+                         payload={"destination": "model:openrouter_user_models_v1"})
+    assert result["status"] == "removed"
+    assert model_setup_state(rig, universe=rig / "u-owner", uid="u-owner",
+                             owner="owner") == "disconnected"
+    fresh = finish(rig, key="second-test-key")
+    assert fresh["status"] == "confirmation_required"
+    assert fresh["request_id"] != first["request_id"]
+    assert fresh["request"]["action"]["expected_revision"] == previous["revision"]
+    assert fresh["request"]["action"]["previous_membership"] == {}
+    assert get_binding(rig, universe_id="u-owner",
+                       binding_id=previous["agent_binding_id"]) == previous
+    with pytest.raises(PermissionError, match="model connection changed"):
+        execute_action("u-owner", action)
+
+
+def test_partial_bootstrap_removal_invalidates_old_pending_approval(rig):
+    from tinyassets.api.http_connection import remove_http
+    from tinyassets.api.model_access_requests import execute_action
+
+    first = finish(rig, key="first-test-key")
+    remove_http(universe_id="u-owner", payload={"destination": "model:openrouter_user_models_v1"})
+    second = finish(rig, key="second-test-key")
+    assert second["request_id"] != first["request_id"]
+    with pytest.raises(PermissionError, match="model connection changed"):
+        execute_action("u-owner", first["request"]["action"])
+
+
 def test_concurrent_manual_and_oauth_keys_have_one_deposit_winner(rig, monkeypatch):
     """T4: hold the winning deposit while another acquisition contests setup."""
     from concurrent.futures import ThreadPoolExecutor

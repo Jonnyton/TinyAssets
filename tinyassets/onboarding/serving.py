@@ -62,15 +62,15 @@ _SERVICE_TO_PROVIDER = {"codex": "codex", "claude": "claude-code"}
 #: other: zero serving, two bindings, and every later call refusing them as
 #: ambiguous (Codex on #2760, S3). The route and the deposit both run in this
 #: process, so a process lock keyed by universe closes it.
-_GESTURE_LOCKS: dict[str, threading.Lock] = {}
+_GESTURE_LOCKS: dict[str, threading.RLock] = {}
 _GESTURE_LOCKS_GUARD = threading.Lock()
 
 
-def _gesture_lock(universe_id: str) -> threading.Lock:
+def _gesture_lock(universe_id: str) -> threading.RLock:
     with _GESTURE_LOCKS_GUARD:
         lock = _GESTURE_LOCKS.get(universe_id)
         if lock is None:
-            lock = _GESTURE_LOCKS[universe_id] = threading.Lock()
+            lock = _GESTURE_LOCKS[universe_id] = threading.RLock()
         return lock
 
 

@@ -32,6 +32,13 @@ def model_setup_state(base: Path, *, universe: Path, uid: str, owner: str) -> st
     except (PermissionError, UnknownServingProvider):
         # A revoked/rotated source is existing setup, not a first-time connection.
         pass
+    from tinyassets.providers.connection_lifecycle import intentionally_disconnected
+
+    if intentionally_disconnected(base, owner=owner, uid=uid):
+        records = load_credential_vault(universe)
+        if not any(r.get("credential_type") in {"llm_subscription", "llm_api_key"}
+                   for r in records):
+            return "disconnected"
     if load_provider_assignment(base, universe_id=uid) is not None:
         return "recovery"
     if list_definitions(uid) or list_bindings(base, universe_id=uid, limit=1):
