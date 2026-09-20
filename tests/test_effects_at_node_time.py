@@ -405,10 +405,22 @@ def test_resume_carries_the_runs_authority_so_foreign_code_cannot_fail_open(tmp_
     runs.initialize_runs_db(tmp_path)
     branch = _fetch_edit_write_branch()
     branch.author = "alice"
-    ctx = runs._execution_context_for_run(tmp_path, "nope", branch, fallback_actor="alice")
+    own_run = runs.create_run(
+        tmp_path, branch_def_id="branch", thread_id="own", inputs={}, actor="alice",
+    )
+    foreign_run = runs.create_run(
+        tmp_path, branch_def_id="branch", thread_id="foreign", inputs={}, actor="mallory",
+    )
+    ctx = runs._execution_context_for_run(tmp_path, own_run, branch, fallback_actor="mallory")
     assert ctx.caller_provenance == "own" and ctx.actor == "alice"
-    ctx = runs._execution_context_for_run(tmp_path, "nope", branch, fallback_actor="mallory")
-    assert ctx.caller_provenance == "public-foreign"
+    ctx = runs._execution_context_for_run(tmp_path, foreign_run, branch, fallback_actor="alice")
+    assert ctx.caller_provenance == "public-foreign" and ctx.actor == "mallory"
+    assert ctx.workspace_family is None  # ordinary, unenrolled run remains supported
+    from tinyassets.workspace_family import FamilyRefused
+
+    # A caller hint cannot substitute for a missing persisted execution row.
+    with pytest.raises(FamilyRefused, match="unknown family member"):
+        runs._execution_context_for_run(tmp_path, "nope", branch, fallback_actor="alice")
     # the resume site passes it to compile_branch (structural pin)
     src = inspect.getsource(runs._invoke_graph_resume)
     assert "execution_context=resume_context" in src
@@ -941,8 +953,18 @@ def test_a_universes_engine_authored_branch_is_its_own(monkeypatch, tmp_path):
     branch = _fetch_edit_write_branch()
     branch.author = "user_founder"
     runs.initialize_runs_db(tmp_path)
-    ctx = runs._execution_context_for_run(tmp_path, "nope", branch, fallback_actor="universe:u-1")
-    assert ctx.caller_provenance == "public-foreign"      # no universe on a missing row
+    run_id = runs.create_run(
+        tmp_path, branch_def_id="branch", thread_id="owned", inputs={},
+        actor="universe:u-1", queue_universe_id="u-1",
+    )
+    ctx = runs._execution_context_for_run(tmp_path, run_id, branch)
+    assert ctx.caller_provenance == "own"
+    no_universe_run = runs.create_run(
+        tmp_path, branch_def_id="branch", thread_id="unscoped", inputs={},
+        actor="universe:u-1",
+    )
+    ctx = runs._execution_context_for_run(tmp_path, no_universe_run, branch)
+    assert ctx.caller_provenance == "public-foreign"  # actor text does not confer a universe
 
 
 # ---------------------------------------------------------------------------

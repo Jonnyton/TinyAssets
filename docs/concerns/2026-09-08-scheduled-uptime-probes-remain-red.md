@@ -3,9 +3,10 @@
 **Classification update, 2026-09-19 06:20 UTC:** PR #3880 is merged and
 automatic deploy-completion run 35426174606 reports explicit unknown for
 missing legacy evidence and rendered capability, without incident mutation.
-This repairs classification, not the missing observations. No post-merge
-natural cron was observed yet; the active change remains open for that proof
-and spec sync. See
+This repairs classification, not the missing observations. Superseded by the
+September 19, 09:42 UTC natural scheduled proof and completed spec sync:
+[natural classification receipt](../reviews/2026-09-19-natural-scheduled-classification-proof.md).
+The bounded classification change is archived; coverage and cadence remain open. See
 [`deployed proof`](../reviews/2026-09-19-monitor-classification-deployed-proof.md).
 The following pre-fix diagnosis explains the remaining contract mismatch.
 
@@ -48,8 +49,8 @@ outage signals.
 
 Detailed source inventory and reproduction:
 [`2026-09-19-hostless-monitor-contract-diagnosis.md`](../reviews/2026-09-19-hostless-monitor-contract-diagnosis.md).
-The bounded monitoring-classification proposal is
-`openspec/changes/classify-scheduled-monitor-observations/`; it does not close
+The bounded monitoring-classification change is archived at
+`openspec/changes/archive/2026-09-19-classify-scheduled-monitor-observations/`; it does not close
 the execution-quality or rendered-acceptance gaps.
 
 The deployed truthful unknown classification also makes automatic recovery

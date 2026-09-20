@@ -47,7 +47,10 @@ def meters(tmp_path, monkeypatch):
             ("foreign", wp.STATE_ACTIVE, "foreign"),
         ]:
             conn.execute(
-                "INSERT INTO workspace_leases VALUES "
+                "INSERT INTO workspace_leases "
+                "(lease_id, universe_id, connection_id, repo_key, storage_class, "
+                "generation, state, reserved_bytes, measured_bytes, run_id, "
+                "path, quarantine_path, created_at, updated_at) VALUES "
                 "(?,?, 'secret-connection', 'secret-repo', 'scratch', 1, ?, 50, "
                 "NULL, 'private-run', 'private-path', 'quarantine-path', ?, ?)",
                 (name, universe, state, NOW, NOW),

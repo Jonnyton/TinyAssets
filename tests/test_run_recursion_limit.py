@@ -87,14 +87,16 @@ class TestOverrideThreading:
             node_defs = []
             graph_nodes = []
 
-        # `_invoke_graph` now reads run identity (owner/daemon/runtime/worker)
-        # from the `runs` table before compiling, so the schema has to exist
-        # even though these tests patch out compilation and event recording.
-        runs.initialize_runs_db(tmp_path)
+        # Compilation requires a real persisted execution identity even when
+        # the graph/provider and event recording are stubbed.
+        run_id = runs.create_run(
+            tmp_path, branch_def_id="x", thread_id="test-run", inputs={"a": 1},
+            actor="test-owner",
+        )
 
         runs._invoke_graph(
             tmp_path,
-            run_id="test-run",
+            run_id=run_id,
             branch=_StubBranch(),
             inputs={"a": 1},
             provider_call=None,
@@ -104,7 +106,7 @@ class TestOverrideThreading:
         assert captured_configs, "app.invoke was not called"
         cfg = captured_configs[0]
         assert cfg["recursion_limit"] == 250
-        assert cfg["configurable"]["thread_id"] == "test-run"
+        assert cfg["configurable"]["thread_id"] == run_id
 
 
 class TestRecursionLimitAppliedEvent:
@@ -152,14 +154,14 @@ class TestRecursionLimitAppliedEvent:
         )
         stub = self._make_stubs(monkeypatch)
 
-        # `_invoke_graph` now reads run identity (owner/daemon/runtime/worker)
-        # from the `runs` table before compiling, so the schema has to exist
-        # even though these tests patch out compilation and event recording.
-        runs.initialize_runs_db(tmp_path)
+        run_id = runs.create_run(
+            tmp_path, branch_def_id="x", thread_id="test-run", inputs={},
+            actor="test-owner",
+        )
 
         runs._invoke_graph(
             tmp_path,
-            run_id="test-run",
+            run_id=run_id,
             branch=stub,
             inputs={},
             provider_call=None,
