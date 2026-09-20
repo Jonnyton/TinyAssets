@@ -15,6 +15,23 @@
 - [ ] 2.2 Resolver jail (no checkout, admitted manifests + empty cache, own network namespace, egress allowlist with per-address validation); `pip download --only-binary=:all: --require-hashes`; `npm ci --ignore-scripts` fetch; offline install in the workspace jail bound to the digests; `workspace_provision` consent; `workspace_provision_refused`
 - [ ] 2.3 Tests: URL/path/VCS/include/option lines refused before network; sdist-only package refused; git-URL npm dependency refused; resolver cannot reach loopback/private/neighbours; offline install runs with no network; live proof: provision the checked-in hash-locked fixture `tests/fixtures/workspace/requirements-locked.txt` and run `pytest -q tests/test_docview.py` in a workspace node
 
+## 2b. Drop-first operational exec migration
+
+Design + approved amendment + delta scenarios:
+`drop-first-operational-exec-amendment.md`. Prerequisite four of the chain at
+`design.md:416-418`. Shape APPROVED (coordinator disposition + opposite-family
+compatibility review, both 2026-09-20); no further shape review needed.
+
+- [x] 2b.1 `deploy/native/ta_op.c` + `ta_op_modes.tsv`: static root-owned 0555 `/usr/local/libexec/ta-op` outside `/app` and `/data`; exact-five-cap root branch with full UID/GID/groups/cap retirement and readback; legacy-rootless branch asserting uid/gid 1001 in all four positions, all five cap sets 0, NNP 1 and supplementary groups empty-or-gid-1001; every other entry refused; unintended descriptors closed before exec
+- [x] 2b.2 Closed eight-mode table preserving existing argv (`version`, `env-summary`, `pulse`, `canary`, `printenv`, `claude-keepalive`, `codex-keepalive`, `bwrap-oracle`); no shell, executable path or interpreter switch; `printenv` takes one post-drop-validated NAME; `env-summary` is an in-wrapper post-drop print of the four flag families matched on NAME
+- [x] 2b.3 Build/install in the existing builder stage (`build-essential` already present), static-link assertion, unknown-mode smoke at build time
+- [x] 2b.4 Migrate real callers: `droplet.py env`/`canary`, `apply-daemon-env-remote.sh:88,118`, compose healthcheck, both keepalive workflows (argv only — schedules and enabled state untouched), bwrap-oracle docstring, `DEPLOY.md`, `README.md`, `tinyassets-env.template`, `apply-daemon-env.yml` comment
+- [x] 2b.5 Version preflight above the fail-open read and above every mutation; refuse with no restart and no bare fallback
+- [x] 2b.6 `scripts/check_drop_first_exec.py` + `scripts/invariants/drop_first_exec.py` registered in the invariant framework; no grandfather allowlist; gate and runtime share `ta_op_modes.tsv` with a parity test
+- [x] 2b.7 Tests: gate red on the pre-migration content of five real callsites and green on the migrated forms; mode-table parity; fail-before-mutation/no-restart; rollback-order regression on both paths
+- [ ] 2b.8 Native proof per `deploy/native/NATIVE-TEST-PLAN.md` (rootless exact groups, root+5cap drop, cap/group/uid refusals, post-drop target identity, loader/env and descriptor boundaries) — driver authored, NOT executed; needs Linux and the disposable container slot
+- [ ] 2b.9 CI image build, `deployed_sha.py --assert-contains <sha>`, live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`
+
 ## 3. Land
 
 - [ ] 3.1 Sync the five deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`

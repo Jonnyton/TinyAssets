@@ -46,6 +46,29 @@ got_sha="$(sha256sum "$HELPER" | awk '{print $1}')"
 [ "$got_sha" = "$WANT_SHA" ] || { err "staged helper checksum mismatch (got ${got_sha}, want ${WANT_SHA})"; exit 1; }
 [ -r "$ENV_FILE" ] || { err "${ENV_FILE} not readable"; exit 1; }
 
+# Drop-first wrapper preflight. MUST sit above the first `ta_op_printenv` read
+# and above every mutation: that read is deliberately fail-open (`|| true`), so
+# a missing wrapper would come back as the empty string and be mistaken for
+# "key unset" — and we would then mutate the env file and restart the daemon on
+# a false premise. The merge->deploy window makes this real: the migrated
+# callsite can reach a box whose image predates the binary.
+#
+# Refuse loudly instead. No restart, no `docker exec ... printenv` bare
+# fallback: falling back would defeat the whole migration, and exit 1 here is
+# the pre-mutation class the caller already handles.
+TA_OP=/usr/local/libexec/ta-op
+ta_op_version="$(docker exec "$DAEMON_CONTAINER" "$TA_OP" version 2>&1)" || {
+  err "drop-first wrapper ${TA_OP} is absent or refused in the running daemon (${ta_op_version}); the deployed image predates it. Refusing before any mutation."
+  exit 1
+}
+case "$ta_op_version" in
+  "ta-op 1 "*) : ;;
+  *) err "unexpected ${TA_OP} version banner '${ta_op_version}'; refusing before any mutation"; exit 1 ;;
+esac
+
+# Every read of the running process goes through the wrapper from here down.
+ta_op_printenv() { docker exec "$DAEMON_CONTAINER" "$TA_OP" printenv "$1"; }
+
 # Snapshot prior state for rollback.
 if grep -qE "^${KEY}=" "$ENV_FILE"; then
   HAD_PRIOR=1
@@ -85,7 +108,7 @@ tunnel_up() {
 
 value_live() {  # the requested value must actually be live in the running process
   local live
-  live="$(docker exec "$DAEMON_CONTAINER" printenv "$1" 2>/dev/null || true)"
+  live="$(ta_op_printenv "$1" 2>/dev/null || true)"
   [ "$live" = "$2" ] && return 0
   err "${1} is '${live}', not '${2}' — a compose/env override is winning"
   return 1
@@ -115,7 +138,7 @@ roll_back_and_accept() {
   # Verify the restored state actually took (absent, or the prior value).
   if [ "$HAD_PRIOR" = 1 ]; then
     value_live "$KEY" "$PRIOR_VAL" || return 1
-  elif docker exec "$DAEMON_CONTAINER" printenv "$KEY" >/dev/null 2>&1; then
+  elif ta_op_printenv "$KEY" >/dev/null 2>&1; then
     err "rollback did not remove ${KEY} from the running process"; return 1
   fi
   return 0

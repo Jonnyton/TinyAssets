@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prove the workspace jail's Linux-only claims INSIDE the deployed container.
 
-    docker exec <daemon> python /app/scripts/workspace_bwrap_oracle.py
+    docker exec <daemon> /usr/local/libexec/ta-op bwrap-oracle
 
 Seven things cannot be proved on a developer box: they need Linux, a real
 ``bwrap``, a real ``git`` and this image's libcurl. The suite skips them, so

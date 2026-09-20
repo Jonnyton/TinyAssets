@@ -1,0 +1,29 @@
+# Closed operational mode table for /usr/local/libexec/ta-op.
+#
+# ONE source of truth, read by two consumers:
+#   - scripts/check_drop_first_exec.py (the repo gate: which modes are known)
+#   - deploy/native/ta_op.c            (the runtime: what each mode execs)
+# tests/test_ta_op_modes.py asserts the two agree exactly. There is no
+# generator: a parity test over one declarative file is less machinery than
+# a codegen step, and it fails just as loudly.
+#
+# Columns: mode <TAB> argc <TAB> kind <TAB> argv
+#   argc  total argv count the wrapper accepts for this mode (2, or 3 when the
+#         mode takes exactly one validated operand).
+#   kind  builtin = handled in-wrapper after the drop, no exec at all
+#         exec    = execv of the fixed absolute argv below, after the drop
+#   argv  |-separated argv elements, compile-time constant. NO mode accepts a
+#         caller-supplied executable, path, interpreter flag or shell string.
+#         `printenv` is the only mode with an operand and it is a single
+#         environment NAME matched against ^[A-Z_][A-Z0-9_]*$ post-drop.
+#
+# Every row preserves the argv a real caller runs today; this table is a
+# migration of existing operations, never a new capability.
+version	2	builtin	-
+env-summary	2	builtin	-
+pulse	2	exec	/opt/venv/bin/python|/app/scripts/mcp_public_canary.py|--pulse-only|--url|http://127.0.0.1:8001/mcp|--timeout|10
+canary	2	exec	/opt/venv/bin/python|/app/scripts/mcp_public_canary.py|--url|http://127.0.0.1:8001/mcp|--timeout|10
+printenv	3	exec	/usr/bin/printenv
+claude-keepalive	2	exec	/usr/local/bin/claude|-p|Reply with the single word OK.
+codex-keepalive	2	exec	/usr/local/bin/codex|exec|--sandbox|workspace-write|--disable|apps|--disable|plugins|--disable|remote_plugin|--skip-git-repo-check|Reply with the single word OK.
+bwrap-oracle	2	exec	/opt/venv/bin/python|/app/scripts/workspace_bwrap_oracle.py
