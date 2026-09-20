@@ -247,7 +247,7 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 _PINNED_READ_TARGETS = frozenset({
     "status", "graph", "branches", "branch", "runs", "run", "run_output",
     "compute", "connections", "automations", "automation", "conversation",
-    "model_options", "agent_bindings", "agent_binding",
+    "model_options", "agent_bindings", "agent_binding", "run_file", "run_file_limits",
     # What you have asked your user for and what came back. Read-only and
     # carries no credential material — the answer to a credential ask goes to
     # the vault, never into this read.
@@ -291,12 +291,20 @@ def read_graph(
     output_max_chars: int = 8192,
     agent_binding_id: str = "",
     query: str = "",
+    file_id: str = "",
+    file_offset: int = 0,
+    file_max_bytes: int = 524288,
 ) -> str:
     """Read your OWN universe's status or graph, without changing anything.
 
     Native delivery: target=receiver query=receiver_id reads a contract shared
     with you; target=output_links lists your links; target=delivery query=delivery_id
     reads your side of the receipt. Accepted does not mean processed successfully.
+
+    target=run_file reads an owned run-bound binary reference using run_id,
+    file_id, file_offset and file_max_bytes (default524288, maximum1048576).
+    Exact bytes return base64 with next_offset/EOF; do not retype or summarize
+    file bytes. target=run_file_limits reports capacity, source and retention limits.
 
     Scoped to YOUR universe — you cannot read another one.
 
@@ -370,6 +378,18 @@ def read_graph(
     if err is not None:
         return err
     normalized = (target or "status").strip().lower()
+    if normalized in {"run_file", "run_file_limits"}:
+        from tinyassets.auth.middleware import _current_identity
+        from tinyassets.universe_server import read_graph as _read_file
+
+        token = _bind_founder_identity((*_READ_CAPABILITIES, "tinyassets.extensions.read"))
+        try:
+            return _untrusted("run-file", _read_file(
+                target=normalized, graph_id=_GRAPH_ID, run_id=run_id, file_id=file_id,
+                file_offset=file_offset, file_max_bytes=file_max_bytes,
+            ))
+        finally:
+            _current_identity.reset(token)
     if normalized in {"receiver", "output_links", "delivery"}:
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import read_graph as _read_delivery
@@ -499,6 +519,7 @@ def run_graph(
     inputs_json: str = "",
     operation: str = "run",
     run_id: str = "",
+    branch_version_id: str = "",
 ) -> str:
     """Run one of YOUR OWN universe's graph branches end-to-end.
 
@@ -525,7 +546,9 @@ def run_graph(
 
     Args:
         branch_def_id: The branch definition id to run (from ``read_graph
-            target="graph"``). Required.
+            target="graph"``). Required unless branch_version_id is supplied.
+        branch_version_id: Alternative immutable published version. Never combine
+            with branch_def_id, cancellation or delivery.
         run_name: Optional display label for this run.
         inputs_json: Optional JSON object of run inputs.
         operation: "run" (default) or "cancel". Cancel requests cooperative
@@ -541,7 +564,7 @@ def run_graph(
         return err
     normalized_operation = (operation or "run").strip().lower()
     if normalized_operation == "deliver_output":
-        if any((branch_def_id, run_name, run_id)):
+        if any((branch_def_id, branch_version_id, run_name, run_id)):
             return json.dumps({"error": "deliver_output cannot combine run selectors"})
         if not _engine_run_admit(fail_closed=True):
             return _engine_refusal("deliver_output", None)
@@ -559,7 +582,7 @@ def run_graph(
     if normalized_operation not in {"run", "cancel"}:
         return json.dumps({"error": "operation must be run or cancel."})
     if normalized_operation == "cancel":
-        if any((branch_def_id, run_name, inputs_json)):
+        if any((branch_def_id, branch_version_id, run_name, inputs_json)):
             return json.dumps({"error": "cancel cannot be combined with run arguments."})
         rid = (run_id or "").strip()
         if not rid:
@@ -577,7 +600,10 @@ def run_graph(
     if run_id:
         return json.dumps({"error": "run_id is only accepted for operation=cancel."})
     bid = (branch_def_id or "").strip()
-    if not bid:
+    version_id = (branch_version_id or "").strip()
+    if bid and version_id:
+        return json.dumps({"error": "run_target_ambiguous"})
+    if not bid and not version_id:
         return json.dumps({
             "error": "branch_def_id is required to run a graph.",
         })
@@ -605,15 +631,22 @@ def run_graph(
         # the founder identity — and make a non-readable branch indistinguishable
         # from a missing one. (A public or founder-authored branch passes; a
         # foreign-private one is refused, never run.)
-        from tinyassets.api.branches import _base_path, _resolve_readable_branch
+        from tinyassets.api.branches import (
+            _base_path,
+            _resolve_readable_branch,
+            _resolve_readable_version,
+        )
 
-        if _resolve_readable_branch(bid, str(_base_path())) is None:
+        if version_id and _resolve_readable_version(version_id, str(_base_path())) is None:
+            return json.dumps({"error": "Branch version not found."})
+        if bid and _resolve_readable_branch(bid, str(_base_path())) is None:
             return json.dumps({"error": f"Branch '{bid}' not found."})
         # A run RESULT is generated text (model output + whatever the branch
         # fetched), so it carries the untrusted envelope like any other
         # non-founder content.
         raw = _impl(
             branch_def_id=bid,
+            branch_version_id=version_id,
             graph_id=_GRAPH_ID,
             run_name=(run_name or "").strip(),
             inputs_json=(inputs_json or "").strip(),
@@ -1123,6 +1156,14 @@ def write_graph(
     Empty allowed_senders permits nobody. target=output_link connect takes
     {branch_def_id,node_id,receiver_id,expected_generation,mapping}; mapping maps
     your source outputs to advertised receiver inputs. Disconnect takes {link_id}.
+
+    Owned binary custody: target=run_file operation=capture takes
+    payload_json {label,sources:[{session_id,handle_id}]} from existing authoring
+    uploads. References go into declared file/file_bundle inputs, never inline
+    whole-file JSON. Unbound files expire after one hour; bound files remain.
+    operation=release takes {file_id}, refuses active bindings and revokes only
+    that file. Export through read_graph target=run_file before releasing it.
+    File delivery, arbitrary paths and remote URL capture are not supported here.
     Accepted transfers survive revoke/disconnect. Exact file delivery is not
     implemented. All management stays pinned to your universe and ownership.
 
@@ -1580,6 +1621,19 @@ def write_graph(
     # Each target delegates to its own confined adapter, never broad connector
     # write_graph. Raw connection secrets and person-only request answers stay out.
     t = (target or "").strip().lower()
+    if t == "run_file":
+        from tinyassets.auth.middleware import _current_identity
+        from tinyassets.universe_server import write_graph as _write_file
+
+        if not _engine_run_admit(fail_closed=True, kind="engine"):
+            return _engine_refusal("write_graph", None)
+        token = _bind_founder_identity((*_REMIX_CAPABILITIES, "tinyassets.extensions.write"))
+        try:
+            return _untrusted("run-file", _write_file(
+                target=t, operation=operation, graph_id=_GRAPH_ID, payload_json=payload_json,
+            ))
+        finally:
+            _current_identity.reset(token)
     if t in {"receiver", "output_link"}:
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import write_graph as _write_delivery

@@ -583,6 +583,7 @@ def _validate_node(
             "edges": definition.get("edges", []),
             "conditional_edges": definition.get("conditional_edges", []),
             "state_schema": definition.get("state_schema", []),
+            "io_manifest": definition.get("io_manifest"),
             "entry_point": definition.get("entry_point", ""),
         })
     except (TypeError, ValueError, KeyError) as exc:

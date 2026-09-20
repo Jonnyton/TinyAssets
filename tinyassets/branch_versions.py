@@ -222,6 +222,7 @@ def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
         "conditional_edges": normalized.get("conditional_edges", []),
         "node_defs": normalized.get("node_defs", []),
         "state_schema": normalized.get("state_schema", []),
+        **({"io_manifest": normalized["io_manifest"]} if "io_manifest" in normalized else {}),
     }
 
 

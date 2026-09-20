@@ -948,19 +948,6 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         if isinstance(source_inputs, dict):
             inputs = {**source_inputs, **inputs}
 
-    # Real provider — lazy import so test envs without providers work.
-    provider_call: Any = None
-    try:
-        from tinyassets.providers.call import (
-            call_provider as provider_call,
-        )
-        provider_call = _bind_run_provider_call(
-            provider_call,
-            _request_universe(kwargs.get("universe_id") or ""),
-        )
-    except ImportError:
-        provider_call = None
-
     # Parse + validate recursion_limit_override (10-1000).
     _rl_raw = kwargs.get("recursion_limit_override", "")
     recursion_limit_override: int | None = None
@@ -979,17 +966,25 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         recursion_limit_override = _rl_val
 
     try:
-        outcome = execute_branch_async(
-            _base_path(),
-            branch=branch,
-            inputs=inputs,
-            run_name=kwargs.get("run_name", ""),
-            actor=actor,
-            provider_call=provider_call,
-            recursion_limit_override=recursion_limit_override,
-            _enqueue_universe_id=_request_universe(kwargs.get("universe_id") or ""),
-            owner_user_id=_run_owner_for_request(),
+        from tinyassets.api.run_files import dispatch_file_branch
+
+        outcome = dispatch_file_branch(
+            branch, inputs, universe_id=_request_universe(kwargs.get("universe_id") or ""),
+            run_name=kwargs.get("run_name", ""), recursion_limit_override=recursion_limit_override,
         )
+        if outcome is None:
+            provider_call = _legacy_request_provider(kwargs)
+            outcome = execute_branch_async(
+                _base_path(),
+                branch=branch,
+                inputs=inputs,
+                run_name=kwargs.get("run_name", ""),
+                actor=actor,
+                provider_call=provider_call,
+                recursion_limit_override=recursion_limit_override,
+                _enqueue_universe_id=_request_universe(kwargs.get("universe_id") or ""),
+                owner_user_id=_run_owner_for_request(),
+            )
     except MissingRequiredInputs as exc:
         return _missing_required_inputs_response(exc)
     except Exception as exc:
@@ -1008,8 +1003,7 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     if error_annotation:
         error_lines.append(f"Suggested action: {error_annotation[1]}")
     text = "\n".join([
-        f"**Run {outcome.status}.** TinyAssets handed to the "
-        "background executor.",
+        f"**Run {outcome.status}.** TinyAssets accepted this run.",
         "",
         *error_lines,
         "Use `read_graph target=\"run\" run_id=\"<run id>\"` for a "
@@ -1181,6 +1175,32 @@ def _branch_name_for_run(run_record: dict[str, Any]) -> str:
         return "(unknown workflow)"
 
 
+def _admission_observation(run_record):
+    """Read metadata only after the caller's normal run-read authorization."""
+    from tinyassets import runs
+    from tinyassets.api.permissions import current_request_actor_id
+    from tinyassets.run_input_origin import classify_admission_observation
+
+    if run_record.get("status") not in {"queued", "running"}:
+        return {}
+    owner = run_record.get("owner_user_id")
+    if not owner or current_request_actor_id() != owner:
+        return {}
+    with runs._connect(_base_path()) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(run_input_admissions)")}
+        if not columns:
+            return {}
+        names = [name for name in ("origin_kind", "origin_version", "origin_options_json",
+                                   "execution_started_at", "claim_token") if name in columns]
+        row = conn.execute(
+            f"SELECT {','.join(names)} FROM run_input_admissions "
+            "WHERE run_id=? AND owner_id=? AND universe_id=?",
+            (run_record["run_id"], run_record.get("owner_user_id"),
+             run_record.get("queue_universe_id")),
+        ).fetchone()
+    return classify_admission_observation(dict(row), run_record["status"]) if row else {}
+
+
 def _compose_run_snapshot(
     run_record: dict[str, Any],
     events: list[dict[str, Any]],
@@ -1340,6 +1360,12 @@ def _compose_run_snapshot(
                 "reporting an outcome."
             )
         snapshot["actionable_by"] = "chatbot"
+    observation = _admission_observation(run_record)
+    if observation:
+        snapshot.update(observation)
+        snapshot["actionable_by"] = "host"
+        snapshot["text"] += "\n\n" + observation["suggested_action"]
+        snapshot["summary"] = snapshot["text"]
     return snapshot
 
 
@@ -2180,6 +2206,18 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
     })
 
 
+def _legacy_request_provider(kwargs):
+    """Existing scalar path only; admitted origins bind after their start CAS."""
+    try:
+        from tinyassets.providers.call import call_provider
+
+        return _bind_run_provider_call(
+            call_provider, _request_universe(kwargs.get("universe_id") or ""),
+        )
+    except ImportError:
+        return None
+
+
 def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     """Execute a published branch_version snapshot.
 
@@ -2216,19 +2254,6 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
                 "error": f"inputs_json is not valid JSON: {exc}",
             })
 
-    # Real provider — lazy import so test envs without providers work.
-    provider_call: Any = None
-    try:
-        from tinyassets.providers.call import (
-            call_provider as provider_call,
-        )
-        provider_call = _bind_run_provider_call(
-            provider_call,
-            _request_universe(kwargs.get("universe_id") or ""),
-        )
-    except ImportError:
-        provider_call = None
-
     # Parse + validate recursion_limit_override (10-1000) — same shape as run_branch.
     _rl_raw = kwargs.get("recursion_limit_override", "")
     recursion_limit_override: int | None = None
@@ -2247,17 +2272,28 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
         recursion_limit_override = _rl_val
 
     try:
-        outcome = execute_branch_version_async(
-            _base_path(),
+        from tinyassets.api.run_files import dispatch_file_branch
+        from tinyassets.runs import _load_branch_version
+
+        branch = _load_branch_version(_base_path(), bvid)
+        outcome = dispatch_file_branch(
+            branch, inputs, universe_id=_request_universe(kwargs.get("universe_id") or ""),
+            run_name=kwargs.get("run_name", ""), recursion_limit_override=recursion_limit_override,
             branch_version_id=bvid,
-            inputs=inputs,
-            run_name=kwargs.get("run_name", ""),
-            actor=_run_actor_for_kwargs(kwargs),
-            owner_user_id=_run_owner_for_request(),
-            _enqueue_universe_id=_request_universe(kwargs.get("universe_id") or ""),
-            provider_call=provider_call,
-            recursion_limit_override=recursion_limit_override,
         )
+        if outcome is None:
+            provider_call = _legacy_request_provider(kwargs)
+            outcome = execute_branch_version_async(
+                _base_path(),
+                branch_version_id=bvid,
+                inputs=inputs,
+                run_name=kwargs.get("run_name", ""),
+                actor=_run_actor_for_kwargs(kwargs),
+                owner_user_id=_run_owner_for_request(),
+                _enqueue_universe_id=_request_universe(kwargs.get("universe_id") or ""),
+                provider_call=provider_call,
+                recursion_limit_override=recursion_limit_override,
+            )
     except MissingRequiredInputs as exc:
         return _missing_required_inputs_response(exc)
     except KeyError as exc:
@@ -2281,8 +2317,7 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     if error_annotation:
         error_lines.append(f"Suggested action: {error_annotation[1]}")
     text = "\n".join([
-        f"**Run {outcome.status}.** Version-based workflow handed to the "
-        "background executor.",
+        f"**Run {outcome.status}.** Version-based workflow accepted.",
         "",
         *error_lines,
         "Use `read_graph target=\"run\" run_id=\"<run id>\"` for a "

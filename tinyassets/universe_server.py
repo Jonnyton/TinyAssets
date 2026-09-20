@@ -498,12 +498,17 @@ def read_graph(
     output_offset: int = 0,
     output_max_chars: int = 8192,
     request_key: str = "",
+    file_id: str = "",
+    file_offset: int = 0,
+    file_max_bytes: int = 524288,
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
     Cross-user delivery: target=receiver with query=receiver_id reads the allowed
     sender's contract; target=output_links lists your graph_id's links;
     target=delivery with query=delivery_id reads your side's safe receipt.
+    target=run_file reads exact owned run-bound binary chunks; run_file_limits
+    reports technical intake/read/retention limits. No sender paths are exposed.
 
     Args:
         target: What to read: status, graphs, graph, branches (your own workflows
@@ -535,6 +540,10 @@ def read_graph(
             or field index when reading the catalog. Continue using next_offset.
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
         request_key: Original UUIDv4 for target=conversation_turn; observation never starts work.
+        file_id: For target=run_file, an owned opaque reference bound to run_id.
+        file_offset: Byte offset for run_file. Continue with returned next_offset.
+        file_max_bytes: Byte chunk size, up to 1048576; bytes return exact base64.
+            target=run_file_limits reports intake/read/retention technical limits.
     """
     normalized = (target or "status").strip().lower()
     if normalized == "conversation_turn":
@@ -546,6 +555,13 @@ def read_graph(
             return json.dumps({"error": "not_found"})
         return json.dumps(read_turn(_base_path(), owner=current_actor_id(),
                                     universe=_request_universe(graph_id), request_key=request_key))
+    if normalized in {"run_file", "run_file_limits"}:
+        from tinyassets.api.run_files import file_limits, read_file
+
+        if normalized == "run_file_limits":
+            return file_limits(universe_id=graph_id)
+        return read_file(universe_id=graph_id, run_id=run_id, file_id=file_id,
+                         offset=file_offset, count=file_max_bytes)
     if normalized in {"receiver", "output_links", "delivery"}:
         action = {"receiver": "inspect_receiver", "output_links": "list_output_links",
                   "delivery": "get_delivery"}[normalized]
@@ -695,6 +711,8 @@ def read_graph(
             "pending_requests",
             "compute",
             "model_options",
+            "run_file",
+            "run_file_limits",
             "agents",
             "agent",
             "agent_bindings",
@@ -820,6 +838,14 @@ def write_graph(
     maps source output names to advertised receiver input names. Disconnect takes
     {link_id}. Accepted transfers cannot be retracted by disconnect/revoke.
     Exact file transfer is not implemented; use structured values only.
+
+    Owned file custody: target=run_file operation=capture takes payload_json
+    {label,sources:[{session_id,handle_id}]} from your existing authoring uploads.
+    It returns exact opaque references for declared file/file_bundle inputs.
+    Unbound captures expire after one hour; bound files remain until release or
+    owner erasure. operation=release takes {file_id}, refuses active run bindings
+    and revokes only that file. Export via read_graph target=run_file first.
+    Capture does not enable cross-owner delivery or read arbitrary paths/URLs.
 
     Args:
         target: What to write: goal, request, branch, universe, automation,
@@ -1015,6 +1041,10 @@ def write_graph(
     if rejection:
         return rejection
     normalized = target.strip().lower()
+    if normalized == "run_file":
+        from tinyassets.api.run_files import write_file
+
+        return write_file(universe_id=graph_id, operation=operation, payload_json=payload_json)
     if normalized in {"receiver", "output_link"}:
         actions = ({"create": "create_receiver", "update": "update_receiver",
                     "revoke": "revoke_receiver"} if normalized == "receiver"
@@ -1555,6 +1585,7 @@ def run_graph(
     source_id: str = "",
     operation: str = "run",
     run_id: str = "",
+    branch_version_id: str = "",
 ) -> str:
     """Run a TinyAssets graph branch or the caller's Goal canonical, or manage the
     inbound triggers that let an external channel run a branch.
@@ -1568,6 +1599,8 @@ def run_graph(
     Args:
         branch_def_id: Branch definition identifier to run. Leave empty when
             running a Goal canonical.
+        branch_version_id: Alternative immutable published version. Do not combine
+            with branch_def_id, goal_id, cancellation, delivery or trigger selectors.
         inputs_json: Optional JSON object containing run inputs.
         run_name: Optional display name for the run.
         graph_id: Optional graph/universe identifier.
@@ -1591,7 +1624,7 @@ def run_graph(
     """
     normalized_operation = (operation or "run").strip().lower()
     if normalized_operation == "deliver_output":
-        if any((branch_def_id, run_name, recursion_limit_override, goal_id,
+        if any((branch_def_id, branch_version_id, run_name, recursion_limit_override, goal_id,
                 webhook_op, source_op, token, source_id, run_id)):
             return json.dumps({"error": "deliver_output cannot combine run/trigger selectors"})
         return _extensions_impl(action="deliver_output", universe_id=graph_id,
@@ -1599,12 +1632,25 @@ def run_graph(
     if normalized_operation not in {"run", "cancel"}:
         return json.dumps({"error": "operation must be run or cancel."})
     if normalized_operation == "cancel":
-        if any((branch_def_id, inputs_json, run_name, recursion_limit_override,
+        if any((branch_def_id, branch_version_id, inputs_json, run_name, recursion_limit_override,
                 goal_id, webhook_op, source_op, token, source_id)):
             return json.dumps({"error": "cancel cannot be combined with run or trigger arguments."})
         return _extensions_impl(action="cancel_run", run_id=run_id, universe_id=graph_id)
     if run_id:
         return json.dumps({"error": "run_id is only accepted for operation=cancel."})
+    if branch_version_id:
+        if any((branch_def_id, goal_id, webhook_op, source_op, token, source_id)):
+            return json.dumps({"error": "run_target_ambiguous"})
+        from tinyassets.api.branches import _resolve_readable_version
+        from tinyassets.api.helpers import _base_path
+
+        if _resolve_readable_version(branch_version_id, str(_base_path())) is None:
+            return json.dumps({"error": "Branch version not found."})
+        return _extensions_impl(
+            action="run_branch_version", branch_version_id=branch_version_id,
+            inputs_json=inputs_json, run_name=run_name, universe_id=graph_id,
+            recursion_limit_override=recursion_limit_override,
+        )
     if webhook_op:
         action = _WEBHOOK_OP_ACTIONS.get(webhook_op)
         if action is None:
@@ -4021,9 +4067,15 @@ def main(
         # proven unstarted attempts from possibly executed work.
         from tinyassets.api.runs import _ensure_runs_recovery
         from tinyassets.delivery_runtime import reconcile_deliveries
+        from tinyassets.run_file_retention import reconcile_run_files
         from tinyassets.run_input_origins import reconcile_admitted_runs
 
         _admitted_run_cursor = ""
+        _file_retention_cursor = ""
+        try:
+            _file_retention_cursor = reconcile_run_files(_sb_data_dir())
+        except Exception:  # noqa: BLE001 - file debt must not disable other maintenance
+            logger.exception("run files: boot retention failed")
         try:
             _ensure_runs_recovery()
             reconcile_deliveries(_sb_data_dir())
@@ -4045,9 +4097,15 @@ def main(
         def _served_budget_lease_loop() -> None:
             import time as _time
 
-            nonlocal _admitted_run_cursor
+            nonlocal _admitted_run_cursor, _file_retention_cursor
             while True:
                 _time.sleep(300.0)
+                try:
+                    _file_retention_cursor = reconcile_run_files(
+                        _sb_data_dir(), after_operation_id=_file_retention_cursor,
+                    )
+                except Exception:  # noqa: BLE001 - retain debt and continue other maintenance
+                    logger.exception("run files: retention tick failed")
                 try:
                     _admitted_run_cursor = reconcile_admitted_runs(
                         _sb_data_dir(), after_run_id=_admitted_run_cursor,

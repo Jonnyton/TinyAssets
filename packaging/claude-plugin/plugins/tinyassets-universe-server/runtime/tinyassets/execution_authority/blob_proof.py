@@ -211,7 +211,7 @@ def _windows_close_handle(handle: int) -> None:
     ctypes.windll.kernel32.CloseHandle(handle)
 
 
-def _windows_create_file(path: Path) -> int:
+def _windows_create_file(path: Path, *, existing_read: bool = False) -> int:
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -229,11 +229,11 @@ def _windows_create_file(path: Path) -> int:
     create_file.restype = wintypes.HANDLE
     handle = create_file(
         str(path),
-        0x80000000 | 0x40000000,  # GENERIC_READ | GENERIC_WRITE
+        0x80000000 if existing_read else 0x80000000 | 0x40000000,
         0x1 | 0x2 | 0x4,  # share read/write/delete; identity checked after rename
         None,
-        1,  # CREATE_NEW
-        0x80,  # FILE_ATTRIBUTE_NORMAL
+        3 if existing_read else 1,  # OPEN_EXISTING / CREATE_NEW
+        0x00200000 | 0x80,  # OPEN_REPARSE_POINT | FILE_ATTRIBUTE_NORMAL
         None,
     )
     if handle == ctypes.c_void_p(-1).value:
@@ -328,7 +328,7 @@ class _HeldRegularFile:
         self,
         *,
         fd: int,
-        content: bytes,
+        content: bytes | None,
         path: Path,
         parent: _SecureParent,
         snapshot: os.stat_result,
@@ -377,12 +377,12 @@ class _HeldRegularFile:
                     break
                 digest.update(chunk)
                 end = offset + len(chunk)
-                if chunk != self.content[offset:end]:
+                if self.content is not None and chunk != self.content[offset:end]:
                     raise BlobProofError("blob content changed before proof completion")
                 offset = end
         except OSError as exc:
             raise BlobProofError("blob leaf could not be reread safely") from exc
-        if offset != len(self.content) or digest.hexdigest() != expected_digest:
+        if offset != self.snapshot.st_size or digest.hexdigest() != expected_digest:
             raise BlobProofError("blob digest changed before proof completion")
 
     def ensure_stable(self, *, expected_digest: str | None = None) -> None:
@@ -518,6 +518,22 @@ class _BlobProofStoreBase:
     @property
     def root_identity(self) -> PhysicalRootIdentity:
         return self._identity
+
+    def stage_stream(self, relative_path, chunks, *, max_bytes, should_cancel=None):
+        """Internal bounded bytes only; caller owns authority and operation exclusion."""
+        from .blob_stream import stage_stream
+
+        return stage_stream(self, relative_path, chunks, max_bytes, should_cancel)
+
+    def open_held_stream(self, ref, *, should_cancel=None):
+        from .blob_stream import open_held_stream
+
+        return open_held_stream(self, ref, should_cancel)
+
+    def publish_staged(self, ref, relative_path, *, should_cancel=None):
+        from .blob_stream import publish_staged
+
+        return publish_staged(self, ref, relative_path, should_cancel)
 
     @contextmanager
     def coordinated(self) -> Iterator[None]:
@@ -681,15 +697,22 @@ class _BlobProofStoreBase:
         max_bytes: int | None = None,
         parent: _SecureParent | None = None,
         hold_open: bool = False,
+        stream_only: bool = False,
     ) -> bytes | _HeldRegularFile:
+        if stream_only and not hold_open:
+            raise BlobProofError("stream reads require a held regular file")
         if hold_open and parent is None:
             raise BlobProofError("held blob reads require a secure parent")
         if parent is not None:
             parent.ensure_stable()
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
+        if stream_only:
+            flags |= getattr(os, "O_NONBLOCK", 0)
         try:
-            if parent is not None and parent.parent_fd is not None:
+            if stream_only and os.name == "nt":
+                fd = _windows_create_file(path, existing_read=True)
+            elif parent is not None and parent.parent_fd is not None:
                 fd = os.open(path.name, flags, dir_fd=parent.parent_fd)
             else:
                 fd = os.open(path, flags)
@@ -709,6 +732,14 @@ class _BlobProofStoreBase:
                 raise BlobProofError("blob or index identity changed while opening")
             if max_bytes is not None and before.st_size > max_bytes:
                 raise BlobProofError("blob index exceeds its size limit")
+            if stream_only:
+                assert parent is not None
+                held = _HeldRegularFile(
+                    fd=fd, content=None, path=path, parent=parent, snapshot=before
+                )
+                held.ensure_stable()
+                keep_open = True
+                return held
             chunks: list[bytes] = []
             remaining = max_bytes
             while True:

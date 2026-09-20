@@ -202,6 +202,38 @@ class NodeDefinitionValidationError(ValueError):
 # Valid type strings for state field declarations.
 VALID_FIELD_TYPES = {"string", "number", "boolean", "list", "dict", "any"}
 
+
+def normalize_branch_io_manifest(value: Any) -> dict[str, Any] | None:
+    """Preserve optional declarations without granting file/runtime authority."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("io_manifest must be an object")
+    for direction in ("inputs", "outputs"):
+        entries = value.get(direction, [])
+        if not isinstance(entries, list) or any(not isinstance(item, dict) for item in entries):
+            raise ValueError(f"io_manifest.{direction} must be a list of objects")
+
+    def exact(item: Any) -> None:
+        if isinstance(item, dict):
+            if any(not isinstance(key, str) for key in item):
+                raise ValueError("io_manifest requires string object keys")
+            for child in item.values():
+                exact(child)
+        elif isinstance(item, list):
+            for child in item:
+                exact(child)
+        elif item is not None and type(item) not in {str, bool, int, float}:
+            raise ValueError("io_manifest requires exact JSON values")
+
+    try:
+        # Serializing first detects cycles before the recursive exact-type check.
+        encoded = json.dumps(value, allow_nan=False, ensure_ascii=False)
+        exact(value)
+        return json.loads(encoded)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"io_manifest requires exact JSON: {exc}") from exc
+
 # Valid reducer strategies — maps to how LangGraph merges parallel updates.
 VALID_REDUCERS = {"overwrite", "append", "merge"}
 
@@ -941,6 +973,10 @@ class BranchDefinition:
     # State schema — unvalidated JSON blob for now (Phase 3 will use StateFieldDecl)
     state_schema: list[dict[str, Any]] = field(default_factory=list)
 
+    # Optional declarations travel inside graph JSON, with no second schema.
+    # Absent remains absent so legacy immutable snapshot hashes do not change.
+    io_manifest: dict[str, Any] | None = None
+
     # Publication
     published: bool = False
     # Phase 6.2.2 — visibility mirrors the Goals visibility pattern.
@@ -997,6 +1033,8 @@ class BranchDefinition:
             "state_schema": self.state_schema,
             "default_llm_policy": self.default_llm_policy,
             "concurrency_budget": self.concurrency_budget,
+            **({"io_manifest": normalize_branch_io_manifest(self.io_manifest)}
+               if self.io_manifest is not None else {}),
         }
 
     def to_json(self) -> str:
@@ -1033,6 +1071,8 @@ class BranchDefinition:
                 )
             if "entry_point" not in data and graph_blob.get("entry_point"):
                 data["entry_point"] = graph_blob["entry_point"]
+            if "io_manifest" not in data and "io_manifest" in graph_blob:
+                data["io_manifest"] = graph_blob["io_manifest"]
 
         # Extract nested structures before filtering
         graph_nodes_raw = data.pop("graph_nodes", [])
@@ -1041,6 +1081,7 @@ class BranchDefinition:
         node_defs_raw = data.pop("node_defs", [])
         state_schema_raw = data.pop("state_schema", [])
         skills_raw = data.pop("skills", [])
+        manifest_raw = normalize_branch_io_manifest(data.pop("io_manifest", None))
 
         # Legacy compat: "nodes" key from old format becomes node_defs
         legacy_nodes = data.pop("nodes", [])
@@ -1057,6 +1098,7 @@ class BranchDefinition:
         branch.conditional_edges = [ConditionalEdge.from_dict(c) for c in cond_edges_raw]
         branch.node_defs = [NodeDefinition.from_dict(n) for n in node_defs_raw]
         branch.state_schema = state_schema_raw
+        branch.io_manifest = manifest_raw
         branch.skills = normalize_branch_skill_snapshots(skills_raw)
         return branch
 
@@ -1074,6 +1116,8 @@ class BranchDefinition:
             "edges": [e.to_dict() for e in self.edges],
             "conditional_edges": [c.to_dict() for c in self.conditional_edges],
             "entry_point": self.entry_point,
+            **({"io_manifest": normalize_branch_io_manifest(self.io_manifest)}
+               if self.io_manifest is not None else {}),
         }
 
     def state_schema_json(self) -> list[dict[str, Any]]:

@@ -360,6 +360,9 @@ def test_live_and_version_handlers_share_public_error_shape(monkeypatch, tmp_pat
 
     monkeypatch.setattr(run_core, "execute_branch_async", refuse)
     monkeypatch.setattr(run_core, "execute_branch_version_async", refuse)
+    # Version intake now resolves the immutable contract before selecting its
+    # scalar/file execution adapter; this fixture must supply that same source.
+    monkeypatch.setattr(run_core, "_load_branch_version", lambda *_args: branch)
 
     live = json.loads(api_runs._action_run_branch({"branch_def_id": "branch"}))
     version = json.loads(api_runs._action_run_branch_version({
