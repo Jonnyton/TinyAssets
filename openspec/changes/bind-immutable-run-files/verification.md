@@ -719,3 +719,23 @@ remain attributed, not relabeled as new or hidden.
 This closes the discovered authoring omission locally, NOT independent review,
 hosted CI, global deployment configuration, deployed SHA/canary or rendered app
 acceptance. No live user workflow, account or production setting was changed.
+
+### Reviewed foundation fixture successor
+
+Imported root-reviewed foundation test-only commit `f1f56021` by ordinary
+cherry-pick as `2a500b5d`, after committing authored runtime/docs at `3299bee7`.
+The four-file matching check initially found one additional file-layer stub
+mismatch on BOTH platforms: recursion override's MagicMock returned another
+mock from `to_dict()`, not the real scalar branch dictionary. Windows returned
+93 passed / 24 skipped / 1 failed, Linux 117 passed / 1 failed. The lead approved
+setting that fixture's `to_dict.return_value` to its existing scalar `dummy_src`;
+no runtime validation was weakened and no skip was added.
+
+`python -m pytest -q -rs tests/test_effects_at_node_time.py
+tests/test_resource_usage_status.py tests/test_run_recursion_limit.py
+tests/test_storage_observations.py` now passes **94 Windows / 24 POSIX skips**
+(9.34 seconds) and **118 Linux / zero skips** (30.49 seconds), using the same
+oracle invocation above. Ruff passes for all four files. The imported commit
+changes no runtime bytes; previous 56-file and final 36-test proof therefore
+remain evidence for the exact current runtime. Freeze for root's independent
+review; no push, merge or deployment performed by this builder.
