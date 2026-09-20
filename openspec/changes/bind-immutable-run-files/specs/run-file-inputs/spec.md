@@ -1,5 +1,27 @@
 ## ADDED Requirements
 
+### Requirement: Ordinary workflow authoring preserves editable file contracts
+The existing branch create/remix and patch operations SHALL preserve exact `io_manifest` declarations and validate the final staged contract through the
+strict shared runtime validator. Declared file input fields SHALL match their
+dict/list state types. `set_io_manifest` SHALL require an explicit member: null
+clears, an object replaces, and a missing member rejects. Remix omission SHALL
+inherit the published parent contract; explicit null SHALL clear it. Rejected
+patch batches SHALL change neither the definition nor immutable versions.
+Existing ownership, publication and scope checks SHALL remain in force on both
+canonical and served handles. Previous versions and admitted runs SHALL remain
+unchanged, and changed manifests SHALL conflict with reused create keys.
+
+#### Scenario: User authors and revises a file workflow
+- **WHEN** an owner creates a file workflow through ordinary graph handles,
+  publishes it, then edits its contract through `set_io_manifest`
+- **THEN** readback and newly published versions contain the exact new contract
+- **AND** prior versions/admissions retain their original contract and can consume
+  their accepted exact binary inputs without using an operator-created definition
+
+#### Scenario: Invalid atomic contract edit
+- **WHEN** a batch renames a branch then supplies a malformed or state-incompatible manifest
+- **THEN** the entire batch rejects and neither the rename nor a version is saved
+
 ### Requirement: First public same-owner slice discloses its actual boundary
 The first public slice SHALL expose existing graph handles rather than a new top-level tool: `write_graph target=run_file operation=capture` accepts exactly `label` and authoring `{session_id,handle_id}` sources; `operation=release` accepts exactly `file_id`. `read_graph target=run_file_limits` SHALL disclose configured capacity, finite staging retention, chunk size and unsupported intake/delivery. `read_graph target=run_file` SHALL accept an owned bound `run_id`, `file_id`, `file_offset` and bounded `file_max_bytes`, returning exact base64 bytes, the immutable reference, `next_offset` and `eof`.
 

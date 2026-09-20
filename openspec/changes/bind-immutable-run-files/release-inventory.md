@@ -90,3 +90,46 @@ Merge only these file-specific route hunks where consumer edits overlap.
 Rebuild all canonical mirrors after assembly. Evidence and remaining release
 gates are in `verification.md`; test counts from this mixed-ancestry tree do not
 substitute for rerunning the assembled candidate on Windows/Linux and CI.
+
+## Global rollout configuration proposal (not applied)
+
+No prior approved numeric capacity was selected: the reviewed contract requires
+an explicit global ceiling, and unset capacity refuses public capture. Root's
+read-only production snapshot on 2026-09-20 about 06:37 UTC, using
+`df -B1 --output=size,used,avail,pcent,target /var/lib/docker`, reported
+52,626,063,360 total bytes, 11,066,957,824 available bytes and 79% used. That is
+point-in-time rollout evidence, not an assurance about the custody filesystem.
+
+Propose normal daemon deployment environment configuration:
+`TINYASSETS_RUN_FILE_CUSTODY_MAX_BYTES=1073741824` and
+`TINYASSETS_RUN_FILE_HEADROOM_BYTES=1073741824` (1 GiB each). The subsystem
+ceiling is under 10% of that observed available space, independent of any user's
+tier or pricing. Headroom is a separate free-space admission floor, not a second
+retained allocation or new resource policy. Existing admission also considers
+pending byte debt. The release lead must freshly verify actual custody mount
+identity/free space and approved values before deployment, configure globally
+through the existing deployment environment, then prove capture availability in
+the ordinary app. Never require a per-user patch or silently ship unset.
+
+Rollback stops new intake (unset the ceiling) while preserving all custody,
+bindings, manifests and physical cleanup debt. Compatible code must remain for
+exact owned read/export/release and collection; do not deploy an old binary that
+silently discards declarations or delete retained files. Reducing the configured
+ceiling below retained allocations refuses additional intake rather than evicts
+files. Root owns actual environment changes, exact deployed proof and live
+acceptance; this builder has made no production configuration changes.
+
+Release/hold checks follow the shipping-and-launch checklist: required hosted
+CI and exact-head independent review remain mandatory, then deployed-SHA proof,
+the canonical authenticated MCP handle canary and a rendered app conversation.
+The first ordinary owner must be able to create/edit/publish the workflow,
+capture files, run the old immutable version after an edit, and export exact
+hash-matching bytes without operator workflow changes. Confirm expected refusal
+for foreign/unbound inputs and unknown capacity with disposable fixtures.
+
+For the first hour, the release lead checks daemon health, new capture/read/run
+error types, disk headroom, retained/pending allocations and cleanup debt against
+the predeploy snapshot. Hold rollout for unexplained failures or growing debt;
+stop new intake immediately for integrity or authorization failure. Preserve
+accepted runs/files for inspection and compatible export/cleanup. Report actual
+monitoring observations and rollback timing, not assumed successful recovery.

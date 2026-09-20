@@ -646,3 +646,76 @@ Windows and **42 passed** on Linux, zero skips. Ruff for all changed fixture
 files passes. The bounded canonical `openspec/specs/run-file-inputs/spec.md`
 now describes only implemented same-owner behavior; wider proposal tasks remain
 open and deployment/app acceptance have not been claimed.
+
+### Historical isolated full cohort and actual-authoring gap
+
+At `478f6ecc`, the expanded 50-file cohort completed **843 passed, 6 skipped**
+on Windows and **849 passed, zero skips** on the Linux oracle. Commands were
+`python -m pytest -q -rs` and the same test list through the recorded immutable
+WSL container. These are historical pre-authoring-fix results, not evidence for
+later changed bytes. The six native skips require POSIX bubblewrap, symlink/FIFO
+or fork behavior and are exercised by the Linux run.
+
+Subsequent source inspection found a real public authoring omission:
+`api.branches._staged_branch_from_spec` dropped `io_manifest`. Earlier public
+runtime tests saved their fixture definition directly and therefore did NOT
+establish that a user could build the workflow through ordinary graph handles.
+The release claim and proposed `478f6ecc` review were held. Red tests exercised
+actual branch create through canonical and served handles; the correction now
+preserves declarations in shared staging and readback's existing `graph` shape.
+The lead approved the bounded existing-language `set_io_manifest` amendment,
+including strict final-model validation, null/omission rules and immutable pins.
+
+The served fixture initially used legacy exact OAuth scope semantics while the
+actual engine binds coarse effect grants. Tests now exercise production WorkOS
+resolve-always mode, leaving real action-scope and owner ACL checks active; the
+foreign-actor edit refusal is tested. No runtime auth grants changed.
+
+The first new authoring cohort passed **21 Windows tests**. Final expanded
+canonical/served capture-run-export, nested graph input, matched Linux and wider
+regression results must be recorded before freezing. Three pre-existing E501
+findings in `api/branches.py` were reproduced at `478f6ecc` using
+`git show 478f6ecc:tinyassets/api/branches.py | python -m ruff check
+--stdin-filename tinyassets/api/branches.py --output-format concise -`; no
+unrelated cleanup is included.
+
+### Completed public authoring correction (2026-09-20, Windows/Linux)
+
+New actual authoring coverage now passes **23 Windows tests**: ordinary canonical
+and served WorkOS-mode create, strict final-model edit validation, atomic malformed
+or missing setter refusal, foreign-owner refusal, null clear, combined state-field
+and contract edit, idempotency conflict, canonical remix inheritance/overrides and
+nested-input top-level precedence. The end-to-end cases publish an original pin,
+edit and publish a conflicting new contract, then run the OLD pin through the
+actual canonical/served capture/run/read handles and verify independent exact
+binary hashes and 33-byte export. Publishing/remix permissions remain unchanged;
+served agents do not gain publication/fork rights from the metadata setter.
+
+The expanded **56-file cohort passed 971 tests / 6 POSIX skips on Windows**
+(260.97 seconds, 212 existing LangGraph deprecation warnings), and **977 tests /
+zero skips on Linux** (419.63 seconds). Exact native command:
+
+```text
+python -m pytest -q -rs tests/test_account_deletion.py tests/test_app_consumer_controls.py tests/test_app_consumer_turn.py tests/test_authoring_file_io.py tests/test_authoring_sessions.py tests/test_branch_definitions_db.py tests/test_consumer_origins.py tests/test_consumer_prepared_scope.py tests/test_consumer_public_turn.py tests/test_consumer_reason_actions.py tests/test_consumer_run_envelope.py tests/test_consumer_selection.py tests/test_consumer_startup.py tests/test_delivery_account_deletion.py tests/test_delivery_node_rpc.py tests/test_engine_mcp_hardening.py tests/test_engine_mcp_routes.py tests/test_engine_mcp_server.py tests/test_engine_mcp_write_graph_patch.py tests/test_node_enqueue_concurrency.py tests/test_node_enqueue_verb.py tests/test_required_run_input_preflight.py tests/test_run_branch_version.py tests/test_run_file_authoring_source.py tests/test_run_file_binding.py tests/test_run_file_capture.py tests/test_run_file_cleanup.py tests/test_run_file_contract.py tests/test_run_file_direct.py tests/test_run_file_erasure.py tests/test_run_file_foundation.py tests/test_run_file_lock.py tests/test_run_file_node.py tests/test_run_file_node_rpc.py tests/test_run_file_public.py tests/test_run_file_reader.py tests/test_run_file_retention.py tests/test_run_file_store.py tests/test_run_file_streams.py tests/test_run_input_admissions.py tests/test_run_input_erasure.py tests/test_run_input_observation.py tests/test_run_input_origin.py tests/test_run_input_origins.py tests/test_run_input_recovery.py tests/test_run_input_runtime.py tests/test_scoped_reset_mutation_proof.py tests/test_work_consumer_model_bridge.py tests/test_workspace_execution_use_lifecycle.py tests/test_workspace_pool.py tests/test_run_file_public_authoring.py tests/test_branch_authoring_actions.py tests/test_branch_mutation_authority.py tests/test_branch_read_authority.py tests/test_branch_versions_rollback_columns.py tests/test_invoke_branch_authoring.py
+```
+
+The identical test list ran on Linux with `python -m pytest -p no:cacheprovider
+-q -rs` inside the immutable WSL oracle image
+`sha256:1b69d8536490285c7c7a13f1efe53ebe847696a99ae567dbbd2b9761ee0c530a`,
+network disabled, read-only `/src` mount, Python 3.11, 2 GiB RAM, 1024 PID limit,
+`seccomp=unconfined`, `PYTHONDONTWRITEBYTECODE=1`, `TMPDIR=/tmp` and
+`TINYASSETS_DATA_DIR=/tmp/tinyassets-test-data`. Native Python is 3.14; no test
+temp roots were inside the worktree. No source changed during either full run.
+
+Afterward only the built-in guide changed: remove the obsolete creation-not-
+exposed sentence and document exact file declaration/edit/capture/node-read
+vocabulary. `python -m pytest -q tests/test_node_reuse_discovery.py
+tests/test_run_file_public_authoring.py` passed **36 Windows / 36 Linux, no
+skips**, against that successor. All 494 plugin mirrors rebuilt with successful
+import probe. New test/engine/server Ruff, diff check and strict OpenSpec change
+and canonical spec validation pass; the three exact-base API lint findings above
+remain attributed, not relabeled as new or hidden.
+
+This closes the discovered authoring omission locally, NOT independent review,
+hosted CI, global deployment configuration, deployed SHA/canary or rendered app
+acceptance. No live user workflow, account or production setting was changed.

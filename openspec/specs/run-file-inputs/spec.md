@@ -11,6 +11,26 @@ The broader origin/materialization proposal remains in
 
 ## Requirements
 
+### Requirement: Ordinary branch authoring preserves editable file contracts
+
+Branch create/remix and patch operations SHALL preserve exact `io_manifest` declarations and validate the final staged contract through the strict shared runtime parser.
+File input declarations SHALL match dict/list state fields. `set_io_manifest`
+SHALL require an explicit member: null clears, an object replaces, and omission
+rejects. Remix omission SHALL inherit its immutable parent's contract; explicit
+null SHALL override inheritance. Top-level declarations SHALL take precedence
+over the canonical nested graph form, including explicit null. Changed manifests
+SHALL conflict with reused create keys. Existing ACL/scope checks SHALL remain.
+
+#### Scenario: User creates and revises a file workflow
+- **WHEN** an owner creates, publishes and then edits a file contract through ordinary graph handles
+- **THEN** definition readback and new published versions preserve the exact new contract
+- **AND** prior versions and admitted runs retain their original contract and can read their accepted bytes
+
+#### Scenario: Invalid contract patch is atomic
+- **WHEN** a batch renames a branch and sets an invalid or state-incompatible manifest
+- **THEN** neither the rename, contract nor any new version is saved
+- **AND** a valid state-field addition and matching contract can be submitted in one batch
+
 ### Requirement: Exact same-owner capture uses existing graph handles
 
 `write_graph target=run_file operation=capture` SHALL accept exactly a label and

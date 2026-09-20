@@ -45,6 +45,28 @@ The current authoring parser silently clamps to 8 MiB and loosely coerces count 
 
 ### 2. Minimal public and sandbox boundary
 
+#### Public authoring completion amendment (lead approved 2026-09-20)
+
+Actual `write_graph target=branch operation=create` must carry `io_manifest`
+through its shared staged conversion, not merely through storage fixtures.
+Create/remix and the existing ordered patch language reuse the strict manifest
+parser with the runtime technical limits (SQLite-safe bytes, 32 files), without
+coercion or truncation. File input declarations must match dict/list state fields.
+Validate the final staged model, permitting state and manifest changes in one
+atomic patch. Rejected batches save neither metadata nor new versions.
+
+`set_io_manifest` requires an explicit `io_manifest` member: omission rejects;
+null clears; an object replaces the complete declaration. Create omission means
+no manifest, while remix omission inherits the immutable parent's declaration;
+explicit null overrides that inheritance. The canonical nested graph input uses
+the existing top-level precedence, including explicit null. Unrelated edits keep
+the declaration. Prior immutable versions and admitted input envelopes retain
+their original contracts. Build idempotency compares the manifest as executable
+content. Existing ACL, private ownership, publication and scope policies are
+unchanged; the served sanitizer allowlists only this explicit metadata operation,
+not arbitrary fields or new auth grants. Tests use actual canonical and served
+WorkOS-mode authoring, publishing, capture, execution and readback.
+
 Use existing graph action dispatch/permission mapping, no additional top-level MCP handle:
 
 - `write_graph action=capture_run_file`: promote an authenticated, still-readable authoring session handle to owner-scoped immutable custody. Accept source session/handle and a bounded caller idempotency label; owner/universe are authenticated, not payload authority. A retry with changed source bytes/metadata conflicts. This works before a direct run exists.

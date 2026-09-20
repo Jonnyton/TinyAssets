@@ -919,6 +919,7 @@ def write_graph(
             ``{"op": <name>, ...}`` with these recognized names: metadata —
             ``set_name`` {name}, ``set_description`` {description}, ``set_tags``
             {tags: FULL replacement list, so include the tags you want to keep},
+            ``set_io_manifest`` {io_manifest: complete replacement object or null to clear},
             ``set_goal`` {goal_id}, ``unset_goal``; structure — ``add_node`` {node_id,
             display_name, prompt_template|source_code, ...}, ``update_node`` {node_id,
             ...fields}, ``remove_node`` {node_id}, ``add_edge``/``remove_edge``

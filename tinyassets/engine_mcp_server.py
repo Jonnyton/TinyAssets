@@ -923,7 +923,7 @@ _SERVED_PATCH_SAFE_OPS = frozenset({
     "add_edge", "remove_edge", "add_conditional_edge", "remove_conditional_edge",
     "add_state_field", "remove_state_field", "set_entry_point", "remove_node",
     "set_name", "set_description", "set_tags", "set_goal", "unset_goal",
-    "remove_skill",
+    "remove_skill", "set_io_manifest",
 })
 #: Refused outright: these expose the branch publicly or graft a foreign lineage — the
 #: exact top-level fields the create sanitizer strips (published/public/visibility/fork_from).
@@ -950,7 +950,7 @@ _SERVED_PATCH_OP_SYNONYMS = {
     "rename": "set_name", "rename_branch": "set_name", "name": "set_name",
     "title": "set_name", "describe": "set_description",
     "description": "set_description", "tags": "set_tags", "goal": "set_goal",
-    "goal_id": "set_goal", "skills": "set_skills",
+    "goal_id": "set_goal", "skills": "set_skills", "io_manifest": "set_io_manifest",
 }
 
 
