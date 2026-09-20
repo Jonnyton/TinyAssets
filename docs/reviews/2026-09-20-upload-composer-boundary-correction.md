@@ -127,8 +127,12 @@ same conclusions independently, from a static read plus its own node probe:
   reload") and `uploadsRestored` resetting only on owner change. Both are fixed
   here.
 
-That is two families on the same three findings, so the concrete finding is not
-in doubt; what still needs Fable is the *fix*, not the diagnosis.
+Note what this is NOT: that reviewer is Claude, so this is a SAME-FAMILY second
+opinion, and AGENTS.md is explicit that it never substitutes for cross-family
+verification. Two independent Claude reads agreeing raises confidence in the
+diagnosis and nothing more. The bounded Fable verification root obtains is still
+the gate, and it should be pointed at the FIX, not the diagnosis - the defect
+itself is now pinned by tests that go red without it.
 
 ### Carried forward, deliberately not done here
 
