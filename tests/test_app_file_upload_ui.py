@@ -123,6 +123,138 @@ def test_upload_recovery_record_survives_pending_check_and_account_exit():
     assert result == {"duringUpload": 1, "duringCheck": 1, "afterExit": 1}
 
 
+def _durable_harness(html: str) -> str:
+    """The controller wired to the page's REAL durable store, keyed by the
+    page's own owner/home pair. A per-test `remember` spy would prove only that
+    a callback ran; this proves what is left on disk."""
+    store = "\n".join(_function_source(html, n) for n in
+                      ("readUploadRecords", "rememberUploadRecords"))
+    key = re.search(r'const\s+UPLOAD_RECORDS_KEY\s*=\s*"([^"]+)"', html)
+    assert key, "UPLOAD_RECORDS_KEY is no longer declared in app.html"
+    return (_extract() + "\n"
+            + 'const UPLOAD_RECORDS_KEY="%s";\n' % key.group(1)
+            + r"""
+    let queueOwner="principal-a", queueScope="universe-a";
+    const DISK=new Map();
+    const localStorage={getItem:k=>DISK.get(k)||null,
+      setItem:(k,v)=>DISK.set(k,String(v)), removeItem:k=>DISK.delete(k)};
+    function keyFor(o,h){ return UPLOAD_RECORDS_KEY+":"+JSON.stringify([o,h]); }
+    function rowFor(o,h){ const raw=DISK.get(keyFor(o,h));
+      return raw?JSON.parse(raw):null; }
+    """ + store + "\n")
+
+
+@pytest.mark.skipif(not _NODE, reason="Node required for real app JavaScript")
+def test_a_late_rejection_after_abort_does_not_erase_the_stored_recovery():
+    """`abort()` deliberately does NOT persist - the row belongs to the account
+    that made it. A transfer still in flight rejects afterwards; that retired
+    callback must not turn the abort into an erasure."""
+    result = _run_node(_durable_harness(_app_html()) + r"""
+    (async()=>{
+      let fail;
+      const ctrl=createUploadController({scope:()=>({epoch:1,universeId:"universe-a"}),
+        newLabel:()=>"stable-upload-label-0001", sha256:async()=>"a".repeat(64),
+        remember:rememberUploadRecords,
+        upload:()=>new Promise((_res,rej)=>{fail=rej;})});
+      const send=ctrl.add([{name:"private.bin",type:"application/octet-stream",size:2}]);
+      await new Promise(r=>setImmediate(r));
+      const duringUpload=(rowFor("principal-a","universe-a")||{saved:[]}).saved.length;
+      ctrl.abort();                       // sign-out / home change: keeps the row
+      const afterAbort=(rowFor("principal-a","universe-a")||{saved:[]}).saved.length;
+      // ...and only NOW does the transfer reject, in the retired callback.
+      fail(new Error("network lost"));
+      await send;
+      await new Promise(r=>setImmediate(r));
+      const afterLate=(rowFor("principal-a","universe-a")||{saved:[]}).saved.length;
+      process.stdout.write(JSON.stringify({duringUpload,afterAbort,afterLate}));
+    })().catch(e=>{console.error(e);process.exit(1);});
+    """)
+    assert result["duringUpload"] == 1, "the request was never recorded to recover"
+    assert result["afterAbort"] == 1, "abort() erased the account's own recovery"
+    assert result["afterLate"] == 1, \
+        "a rejection landing after abort erased the recovery it had kept"
+
+
+@pytest.mark.skipif(not _NODE, reason="Node required for real app JavaScript")
+def test_a_late_resolution_after_abort_does_not_erase_the_stored_recovery():
+    """The same boundary, the other direction: the upload SUCCEEDS after the
+    abort. Its references belong to an item this composer no longer holds, so
+    they are not painted and the kept row is not rewritten away."""
+    result = _run_node(_durable_harness(_app_html()) + r"""
+    (async()=>{
+      let finish;
+      const ctrl=createUploadController({scope:()=>({epoch:1,universeId:"universe-a"}),
+        newLabel:()=>"stable-upload-label-0001", sha256:async()=>"a".repeat(64),
+        remember:rememberUploadRecords,
+        upload:()=>new Promise(res=>{finish=res;})});
+      const send=ctrl.add([{name:"private.bin",type:"application/octet-stream",size:2}]);
+      await new Promise(r=>setImmediate(r));
+      ctrl.abort();
+      finish({universe_id:"universe-a",files:[{file_id:"f-1",name:"private.bin",
+        media_type:"application/octet-stream",size_bytes:2,sha256:"a".repeat(64),
+        version:1}],unbound_retention_seconds:3600,unbound_expires_at:100});
+      await send;
+      await new Promise(r=>setImmediate(r));
+      const row=rowFor("principal-a","universe-a")||{saved:[]};
+      process.stdout.write(JSON.stringify({saved:row.saved.length,
+        owner:row.owner, home:row.home, chips:ctrl.chips().length}));
+    })().catch(e=>{console.error(e);process.exit(1);});
+    """)
+    assert result["saved"] == 1, \
+        "a resolution landing after abort erased the recovery it had kept"
+    assert result["owner"] == "principal-a" and result["home"] == "universe-a"
+    assert result["chips"] == 0, "a retired item was painted back into the composer"
+
+
+@pytest.mark.skipif(not _NODE, reason="Node required for real app JavaScript")
+def test_a_late_answer_after_an_account_switch_touches_neither_pairs_row():
+    """The account and home change while a transfer is in flight. When it
+    finally answers, the PREVIOUS pair's row is still theirs and the NEW pair's
+    row is untouched by a callback that was never its own."""
+    result = _run_node(_durable_harness(_app_html()) + r"""
+    (async()=>{
+      let epoch=1, settle;
+      const ctrl=createUploadController({scope:()=>({epoch, universeId:queueScope}),
+        newLabel:()=>"stable-upload-label-0001", sha256:async()=>"a".repeat(64),
+        remember:rememberUploadRecords,
+        upload:()=>new Promise((res,rej)=>{settle={res,rej};})});
+      const send=ctrl.add([{name:"private.bin",type:"application/octet-stream",size:2}]);
+      await new Promise(r=>setImmediate(r));
+      const aBefore=rowFor("principal-a","universe-a");
+
+      // Account B signs in on the same page: the page aborts, then re-keys.
+      ctrl.abort();
+      epoch=2; queueOwner="principal-b"; queueScope="universe-b";
+      // B has a saved row of its own, from its own earlier session.
+      rememberUploadRecords([{label:"b-label",header:"h-b",name:"b.bin",
+        size:9,mediaType:"application/octet-stream",sha256:"b".repeat(64),
+        fileId:"f-b"}]);
+      const bBefore=rowFor("principal-b","universe-b");
+
+      // A's transfer now answers, under B's identity.
+      settle.rej(new Error("network lost"));
+      await send;
+      await new Promise(r=>setImmediate(r));
+
+      const aRow=rowFor("principal-a","universe-a")||{saved:[]};
+      const bRow=rowFor("principal-b","universe-b")||{saved:[]};
+      process.stdout.write(JSON.stringify({
+        aBefore:aBefore&&aBefore.saved.length, aAfter:aRow.saved.length,
+        aOwner:aRow.owner, aHome:aRow.home,
+        bBefore:bBefore&&bBefore.saved.length, bAfter:bRow.saved.length,
+        bLabel:(bRow.saved[0]||{}).label, bOwner:bRow.owner}));
+    })().catch(e=>{console.error(e);process.exit(1);});
+    """)
+    assert result["aBefore"] == 1 and result["aAfter"] == 1, \
+        "the previous account's recovery was erased by its own late callback"
+    assert result["aOwner"] == "principal-a" and result["aHome"] == "universe-a", \
+        "the stored ownership of the previous account's row was rewritten"
+    assert result["bBefore"] == 1 and result["bAfter"] == 1, \
+        "the new account's recovery was erased by the previous account's callback"
+    assert result["bLabel"] == "b-label" and result["bOwner"] == "principal-b", \
+        "the new account's stored metadata was overwritten"
+
+
 @pytest.mark.skipif(not _NODE, reason="Node required for real app JavaScript")
 def test_each_account_home_can_keep_its_own_upload_recovery():
     html = _app_html()

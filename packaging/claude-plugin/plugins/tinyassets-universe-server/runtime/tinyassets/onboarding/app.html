@@ -2641,6 +2641,10 @@
   function setQueueScope(next){
     const value=String(next||queueScope||"");
     if(queueScope && value && value!==queueScope && Uploads) Uploads.abort();
+    // The recovery row is keyed by the OWNER AND HOME pair. The same account
+    // moving to another home has a different row to be offered, so the
+    // "already restored" mark is account-scoped AND home-scoped.
+    if(queueScope && value && value!==queueScope) uploadsRestored=false;
     queueScope=value;
   }
   // The ACCOUNT half of "may this page read what this browser saved". A home id
@@ -2918,7 +2922,7 @@
     rememberInflight(message,message,undefined,"spoken",opts.modelChoice);
     // A spoken turn takes the composer too, so a typed turn's late cleanup can
     // see that it is no longer the one holding it.
-    activeTurn={};
+    const myTurn={}; activeTurn=myTurn;
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
     let delivered=false;
@@ -2941,8 +2945,15 @@
       }
       throw error;
     }finally{
-      $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
-      flushSendQueue();Voice.conversationSettled(delivered);
+      // Same rule as the typed turn: only the turn that still HOLDS the
+      // composer hands it back. A spoken turn that outlived its own login was
+      // retired at the account boundary and must not touch what is there now.
+      if(activeTurn===myTurn){
+        activeTurn=null;
+        $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
+        flushSendQueue();
+      }
+      Voice.conversationSettled(delivered);
     }
   }
 
@@ -3052,8 +3063,22 @@
   }
   async function enterSignedIn(autoBootstrap=false){
     ModelPicker.reset();
+    // The login this answer is FOR. A /mcp/app/me that lands after a sign-out
+    // or another account signed in describes somebody else: it must not be
+    // allowed to stamp its identity onto the page that is there now.
+    const epoch=MCP._loginEpoch;
     const me = await fetchMe();
+    if(epoch!==MCP._loginEpoch) return;          // a stale answer names no one
     if(me===null && !token()) return;            // fetchMe signed us out
+    // Both halves of "is this mine?", taken from the VERIFIED account the
+    // connector just described - never from a caller or a provider. They are
+    // seeded HERE, before the connect gate can return, because everything this
+    // page may restore (held lines, the in-flight record, saved attachments)
+    // is readable only once the owner and home are known. Landing on Connect
+    // first is the FIRST session's normal path; leaving the pair blank through
+    // it disabled that session's recovery entirely.
+    if(me&&me.universe_id) setQueueScope(me.universe_id);
+    if(me&&me.principal_id) setQueueOwner(me.principal_id);
     HostedModelConnect.setup=me&&me.setup||"unavailable";
     if(HostedModelConnect.setup!=="connected"){
       if(typeof AppLayout!=="undefined") AppLayout.reset();
@@ -3066,10 +3091,7 @@
     }
     engineConnected = true;
     if(typeof AppLayout!=="undefined") AppLayout.enable(me.universe_id,me.principal_id);
-    // The account half of every "is this mine?" question below: held lines and
-    // saved attachments are read only where this id matches what saved them.
-    setQueueScope(me.universe_id);
-    setQueueOwner(me.principal_id);
+    // The owner and home were taken above, from the same verified `me`.
     showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
     // Build 3's App Review Notes and submitted product surface are voice-dark.
     // The hosted web app may expose Voice, but a Capacitor shell must not make it
@@ -3216,7 +3238,12 @@
   function onEngineConnected(stillCurrent=()=>true){
     engineConnected = true;
     $("btn-connect-back").textContent = "Go to your universe";
-    setTimeout(()=>{ if(!stillCurrent()) return; showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
+    setTimeout(()=>{ if(!stillCurrent()) return; showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan();
+      // Arriving at chat THROUGH the gate is a first session reaching its
+      // universe for the first time. It reads its own history and is offered
+      // its own held state exactly as a direct sign-in does; both are no-ops
+      // once done or while the pair is still unknown.
+      loadHistory(); restoreUploadRecords(); }, 1200);
   }
   // Everything on this page that belongs to ONE verified account and home: what
   // is on screen, what is held in memory, and the "already done" marks that
@@ -3233,12 +3260,26 @@
       if(node&&node.id!=="thread-empty"&&node.remove) node.remove(); });
     hasMessages=false;
   }
+  // The composer is account-scoped state as much as the thread is: an unsent
+  // draft is the previous account's private text, and a Send left disabled by
+  // their in-flight turn would strand whoever signs in next with a dead button.
+  // `activeTurn` is retired HERE, so the old turn's `finally` sees that it no
+  // longer holds the composer and cannot re-disable or otherwise alter the
+  // next account's screen. Nothing durable is touched.
+  function clearComposerState(){
+    const input=$("composer-input");
+    if(input){ input.value=""; if(input.style) input.style.height="auto"; }
+    const send=$("btn-send"); if(send) send.disabled=false;
+    activeTurn=null; turnStartedAt=0;
+    setStatusLine("");
+  }
   function clearAccountScopedState(){
     queueScope=""; queueOwner="";
     historyLoaded=false; queueRestored=false; inflightRestored=false;
     uploadsRestored=false;
     sendQueue.length=0; retainedItems=[];
     renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
+    clearComposerState();
     clearThread();
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.endLogin(); resetClaudeConnection(); Voice.stop(false);
@@ -4092,8 +4133,17 @@
     function abortItem(item){
       cancel(item);
       const idx=items.indexOf(item);
-      if(idx>=0) items.splice(idx,1);
-      changed();
+      // PERSIST ONLY FOR AN ITEM THIS COMPOSER STILL HELD. `abort()` retires
+      // everything WITHOUT persisting, on purpose: the record belongs to the
+      // account that made it. A late upload/observe rejection arriving after
+      // that abort - or after an account or home change - still lands here,
+      // and persisting then would write `records()` (now empty, or the NEXT
+      // pair's) over a row that was never the caller's to touch, erasing the
+      // recovery the abort had deliberately kept. The screen is still
+      // repainted; only the durable write is withheld.
+      const held=idx>=0;
+      if(held) items.splice(idx,1);
+      changed(held);
     }
     async function upload(item){
       // The FIRST thing, before any read, hash or header: this work belongs to

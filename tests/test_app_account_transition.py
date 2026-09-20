@@ -27,7 +27,7 @@ _NODE = shutil.which("node")
 # import error) against a tree that does not have it yet.
 _LIFT = ("setQueueScope", "setQueueOwner", "ownsSavedRow", "savedItem",
          "flushSendQueue", "enterSignedOut", "loadHistory")
-_OPTIONAL = ("clearAccountScopedState", "clearThread")
+_OPTIONAL = ("clearAccountScopedState", "clearThread", "clearComposerState")
 
 
 def _run_node(script: str):
@@ -118,16 +118,23 @@ const LOG=[];
 function el(id){ return {id, className:"", text:"",
   remove(){ const t=DOM.thread, k=t.children.indexOf(this); if(k>=0)t.children.splice(k,1); },
   appendChild(){}}; }
+// Distinct elements per id: the composer, the Send button and the fallback are
+// three different objects, so a test cannot pass by writing one and reading
+// another. An id the page asks for that is not modelled here is its own node.
 const DOM={thread:{id:"thread",children:[]}, send:{id:"btn-send",disabled:false},
-  input:{value:"",style:{}}};
+  composer:{id:"composer-input",value:"",style:{height:""},focus(){}},
+  other:{}};
 DOM.empty=el("thread-empty");
 DOM.thread.children.push(DOM.empty);
 function $(id){
   if(id==="thread")return DOM.thread;
   if(id==="thread-empty")return DOM.thread.children.indexOf(DOM.empty)>=0?DOM.empty:null;
   if(id==="btn-send")return DOM.send;
-  return DOM.input;
+  if(id==="composer-input")return DOM.composer;
+  if(!DOM.other[id]) DOM.other[id]={id, value:"", textContent:"", style:{}};
+  return DOM.other[id];
 }
+let activeTurn=null, turnStartedAt=0;
 function appendMessage(role,text){
   if(!hasMessages){ const e=$("thread-empty"); if(e)e.remove(); hasMessages=true; }
   const m=el("msg"); m.className="msg msg--"+role; m.text=String(text||"");
@@ -329,3 +336,239 @@ def test_queued_send_does_not_ride_out_under_the_next_account(html):
     assert out["sent"] == [], "account A queued line was sent under account B"
     assert out["queued"] == 0
     assert out["savedRowsOnDisk"] == 1, "account A saved line was destroyed"
+
+
+def test_sign_out_takes_the_composer_with_the_rest_of_the_account(html):
+    """An unsent private draft and a Send left disabled by A's in-flight turn
+    are account-scoped state: B gets neither A's words nor a dead button. On
+    DISK nothing of A's is touched."""
+    out = _run_node(_script(html, r"""
+    (async()=>{
+      STORE.session[TOKEN_KEY]="t1";
+      setQueueScope("universe-a"); setQueueOwner("principal-a");
+      // A is mid-turn: Send is disabled, a turn is on the clock, and there is
+      // an unsent private draft sitting in the composer behind it.
+      DOM.composer.value="my unsent private draft: severance terms";
+      DOM.composer.style.height="96px";
+      DOM.send.disabled=true; turnStartedAt=1000; activeTurn={};
+      setStatusLine("Your universe is thinking...");
+      STORE.local[UPLOAD_KEY_A]=JSON.stringify(
+        {version:1,owner:"principal-a",home:"universe-a",saved:[{file_id:"f1"}]});
+      sendQueue.push({message:"A queued line",display:"A queued line",
+        opts:{echoed:true},ts:1000,owner:"principal-a",scope:"universe-a"});
+      saveQueue();
+
+      enterSignedOut();
+      // B signs in on the same page.
+      STORE.session[TOKEN_KEY]="t2";
+      setQueueScope("universe-b"); setQueueOwner("principal-b");
+
+      console.log(JSON.stringify({
+        draft:DOM.composer.value, height:DOM.composer.style.height,
+        sendDisabled:DOM.send.disabled, turnStartedAt,
+        activeTurn:activeTurn!==null,
+        lastStatus:(LOG.filter(l=>l[0]==="status").pop()||[null,null])[1],
+        recoveryOnDisk:!!STORE.local[UPLOAD_KEY_A],
+        savedRowsOnDisk:JSON.parse(STORE.local[QUEUE_KEY]||"[]").length}));
+    })();
+    """))
+    assert out["draft"] == "", "account A's unsent draft was left in B's composer"
+    assert out["height"] == "auto", "the composer kept A's grown height"
+    assert out["sendDisabled"] is False, "B inherited a Send disabled by A's turn"
+    assert out["turnStartedAt"] == 0, "A's turn clock still runs under B"
+    assert out["activeTurn"] is False, "A's turn still holds the composer under B"
+    assert out["lastStatus"] == "", "A's status line is still on B's screen"
+    # ...and nothing durable of A's was erased to do it.
+    assert out["recoveryOnDisk"] is True, "the composer reset erased A's upload recovery"
+    assert out["savedRowsOnDisk"] == 1, "the composer reset erased A's saved line"
+
+
+def test_a_plain_draft_with_no_pending_send_is_cleared_too(html):
+    """No in-flight turn, just typed text. It is still A's private text and it
+    still does not survive into B's composer."""
+    out = _run_node(_script(html, r"""
+    (async()=>{
+      STORE.session[TOKEN_KEY]="t1";
+      setQueueScope("universe-a"); setQueueOwner("principal-a");
+      DOM.composer.value="draft nobody sent";
+      DOM.composer.style.height="64px";
+      DOM.send.disabled=false;                 // nothing pending
+      enterSignedOut();
+      console.log(JSON.stringify({draft:DOM.composer.value,
+        height:DOM.composer.style.height, sendDisabled:DOM.send.disabled}));
+    })();
+    """))
+    assert out["draft"] == "", "a plain unsent draft crossed the account boundary"
+    assert out["height"] == "auto"
+    assert out["sendDisabled"] is False
+
+
+def test_the_previous_turns_cleanup_cannot_touch_the_next_account(html):
+    """A's turn reaches its `finally` after the boundary. The page's own test -
+    "is this still MY composer" - has to say no, or A's cleanup re-enables,
+    re-times and rewrites a composer that is now B's."""
+    out = _run_node(_script(html, r"""
+    (async()=>{
+      STORE.session[TOKEN_KEY]="t1";
+      setQueueScope("universe-a"); setQueueOwner("principal-a");
+      // Exactly what sendTurn holds across its await.
+      const myTurn={}; activeTurn=myTurn;
+      DOM.send.disabled=true; turnStartedAt=1000;
+      setStatusLine("Your universe is thinking...");
+
+      enterSignedOut();                            // the boundary
+      STORE.session[TOKEN_KEY]="t2";
+      setQueueScope("universe-b"); setQueueOwner("principal-b");
+      // B is simply sitting there, typing. No turn of its own yet.
+      DOM.composer.value="B is part way through a sentence";
+      DOM.send.disabled=true;                      // B's own Send state
+      turnStartedAt=2000; setStatusLine("B's own line");
+
+      // ...and NOW A's finally runs, with the page's own ownership test.
+      const mine=(activeTurn===myTurn);
+      if(mine){ activeTurn=null; DOM.send.disabled=false; turnStartedAt=0;
+                setStatusLine(""); }
+
+      console.log(JSON.stringify({mine, sendDisabled:DOM.send.disabled,
+        turnStartedAt, draft:DOM.composer.value,
+        lastStatus:(LOG.filter(l=>l[0]==="status").pop()||[null,null])[1]}));
+    })();
+    """))
+    assert out["mine"] is False, (
+        "the retired turn still holds the composer and its cleanup runs on B")
+    assert out["sendDisabled"] is True, "A's cleanup re-enabled B's Send"
+    assert out["turnStartedAt"] == 2000, "A's cleanup cleared B's turn clock"
+    assert out["draft"] == "B is part way through a sentence"
+    assert out["lastStatus"] == "B's own line", "A's cleanup wiped B's status line"
+
+
+def test_the_same_account_moving_home_is_offered_the_new_homes_attachments(html):
+    """The recovery row is keyed by owner AND home. One account with two homes
+    must not have the first home's restore mark suppress the second's."""
+    out = _run_node(_script(html, r"""
+    (async()=>{
+      setQueueOwner("principal-a"); setQueueScope("universe-a");
+      uploadsRestored=true;                       // home A already offered
+      setQueueScope("universe-b");                // same account, other home
+      console.log(JSON.stringify({uploadsRestored, aborted:Uploads.aborted}));
+    })();
+    """))
+    assert out["uploadsRestored"] is False, (
+        "the second home's saved attachments would never be offered")
+    assert out["aborted"] == 1, "a home change no longer stops a transfer in flight"
+
+
+# ---------------------------------------------------------------------------
+# First session: the connect gate is on the way IN, not a dead end.
+# ---------------------------------------------------------------------------
+
+_GATE_HARNESS = r"""
+'use strict';
+let queueScope="", queueOwner="", uploadsRestored=false, queueRestored=false;
+let historyLoaded=false, inflightRestored=false, engineConnected=null;
+const LOG=[];
+const NATIVE=false;
+const DOM={};
+function $(id){ if(!DOM[id]) DOM[id]={id, textContent:"", value:"",
+  style:{}, focus(){ LOG.push(["focus",id]); }}; return DOM[id]; }
+const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; } };
+const Uploads={ aborted:0, abort(){ this.aborted++; } };
+const Voice={ refreshCapability(){} };
+const ModelPicker={ reset(){} };
+const AppLayout={ reset(){}, enable(u,p){ LOG.push(["layout",u,p]); } };
+const HostedModelConnect={ setup:"empty", async begin(){ LOG.push(["begin"]); } };
+function token(){ return "t1"; }
+function showView(v){ LOG.push(["view",v]); }
+function showConnect(gate){ LOG.push(["connect",!!gate]); }
+function startHeartbeat(){ LOG.push(["heartbeat"]); }
+function warmSession(){}
+function loadPlan(){ LOG.push(["loadPlan"]); }
+function loadHistory(){ LOG.push(["loadHistory",queueOwner,queueScope]); }
+function restoreUploadRecords(){
+  LOG.push(["restoreUploads",queueOwner,queueScope,uploadsRestored]); }
+function sessionExpired(){ LOG.push(["expired"]); }
+function setTimeoutRun(fn){ fn(); }
+"""
+
+
+def _gate_script(html: str, body: str) -> str:
+    lifted = [_function_source(html, "setQueueScope"),
+              _function_source(html, "setQueueOwner"),
+              _function_source(html, "enterSignedIn"),
+              _function_source(html, "onEngineConnected")]
+    # The gate's hand-off to chat is on a timer in the page; run it inline so
+    # the test asserts the WIRING and not node's scheduler.
+    src = "\n".join(lifted).replace("setTimeout(", "setTimeoutRun(")
+    return _GATE_HARNESS + "\n" + src + "\n" + body
+
+
+def test_the_connect_gate_still_learns_the_verified_owner_and_home(html):
+    """Landing on Connect is the FIRST session's normal path. The account and
+    home come from the verified /mcp/app/me BEFORE that gate returns, or
+    everything the next screen could restore stays unreadable."""
+    out = _run_node(_gate_script(html, r"""
+    (async()=>{
+      async function fetchMe(){ return {setup:"empty",
+        universe_id:"universe-a", principal_id:"principal-a"}; }
+      globalThis.fetchMe=fetchMe;
+      await enterSignedIn(false);
+      console.log(JSON.stringify({queueOwner, queueScope,
+        sawConnectGate:LOG.some(l=>l[0]==="connect"&&l[1]===true),
+        wentToChat:LOG.some(l=>l[0]==="view"&&l[1]==="chat")}));
+    })();
+    """))
+    assert out["sawConnectGate"] is True, "the gate no longer gates"
+    assert out["queueOwner"] == "principal-a", \
+        "the connect gate returned before the page learned its account"
+    assert out["queueScope"] == "universe-a", \
+        "the connect gate returned before the page learned its home"
+    assert out["wentToChat"] is False, "the gate let an unpowered universe through"
+
+
+def test_connecting_at_the_gate_reaches_chat_with_its_own_state_restorable(html):
+    """Connect -> chat is the same arrival as a direct sign-in: the pair is
+    already known, so history and saved attachments are actually asked for."""
+    out = _run_node(_gate_script(html, r"""
+    (async()=>{
+      async function fetchMe(){ return {setup:"empty",
+        universe_id:"universe-a", principal_id:"principal-a"}; }
+      globalThis.fetchMe=fetchMe;
+      await enterSignedIn(false);
+      onEngineConnected();                       // the founder connects a model
+      const history=LOG.filter(l=>l[0]==="loadHistory").pop();
+      const uploads=LOG.filter(l=>l[0]==="restoreUploads").pop();
+      console.log(JSON.stringify({wentToChat:LOG.some(l=>l[0]==="view"&&l[1]==="chat"),
+        heartbeat:LOG.some(l=>l[0]==="heartbeat"), history, uploads}));
+    })();
+    """))
+    assert out["wentToChat"] is True and out["heartbeat"] is True
+    assert out["history"] == ["loadHistory", "principal-a", "universe-a"], \
+        "the first session reached chat without asking for its own history"
+    assert out["uploads"] == ["restoreUploads", "principal-a", "universe-a", False], \
+        "the first session reached chat with its saved attachments unreadable"
+
+
+def test_a_me_that_lands_after_the_login_changed_stamps_no_identity(html):
+    """A /mcp/app/me still in flight when the account changes describes
+    somebody else. It must not write that identity onto the page."""
+    out = _run_node(_gate_script(html, r"""
+    (async()=>{
+      let release;
+      globalThis.fetchMe=async()=>{
+        await new Promise(r=>{release=r;});
+        return {setup:"connected", universe_id:"universe-a", principal_id:"principal-a"};
+      };
+      const pending=enterSignedIn(false);
+      MCP.endLogin();                            // signed out mid-flight
+      setQueueScope("universe-b"); setQueueOwner("principal-b");
+      release();
+      await pending;
+      console.log(JSON.stringify({queueOwner, queueScope,
+        painted:LOG.filter(l=>l[0]==="view"||l[0]==="connect")}));
+    })();
+    """))
+    assert out["queueOwner"] == "principal-b", \
+        "a stale /mcp/app/me renamed the account now on screen"
+    assert out["queueScope"] == "universe-b", \
+        "a stale /mcp/app/me renamed the home now on screen"
+    assert out["painted"] == [], "a stale /mcp/app/me painted a view"
