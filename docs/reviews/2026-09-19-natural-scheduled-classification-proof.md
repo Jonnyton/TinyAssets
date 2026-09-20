@@ -5,7 +5,7 @@ inspection; no manual workflow dispatch, provider invocation, account mutation
 or private-workflow edit by this verification.
 
 [Uptime run35435458230](https://github.com/Jonnyton/TinyAssets/actions/runs/35435458230)
-was created09:42:56UTC with event `schedule`, conclusion `success`, and actual
+was created09:42:56 UTC with event `schedule`, conclusion `success`, and actual
 checkout `4cbb3f5bbd29f34b16edc1c3b2d33ab0f1ff28bf`. Both probe and alarm job logs
 confirm that checkout. GitHub contents API and local git agree on the workflow
 blob `9747cafa503cf23a7c40cce53ed1cc8950968495` at that revision.
@@ -21,7 +21,7 @@ and paging, were skipped. Workflow success means successful classification only.
 The automatic downstream community watch
 [35435477209](https://github.com/Jonnyton/TinyAssets/actions/runs/35435477209),
 event `workflow_run`, used the same source. Its observation stage preserved
-unknown. Existing incident2824 kept the separate incident stage/overall red;
+unknown. Existing incident 2824 kept the separate incident stage/overall red;
 this is not evidence of a newly measured endpoint outage or recovery.
 
 Commands: `gh run list --workflow uptime-canary.yml --event schedule --limit 3
@@ -31,7 +31,7 @@ Commands: `gh run list --workflow uptime-canary.yml --event schedule --limit 3
 `git rev-parse 4cbb3f5b:.github/workflows/uptime-canary.yml`.
 
 This satisfies the missing natural-schedule observation for the classification
-slice (archived task3.2). At this09:48 observation PR3885 was still in CI; its
+slice (archived task3.2). At this09:48 observation PR 3885 was still in CI; its
 later independent hosted receipt is in
 [the output-boundary proof](2026-09-19-community-monitor-output-boundary.md).
 Neither receipt closes the full uptime capability.
