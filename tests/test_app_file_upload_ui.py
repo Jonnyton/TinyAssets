@@ -21,7 +21,7 @@ import pytest
 _NODE = shutil.which("node")
 
 _LIFT = ("fmtBytes", "looksBinary", "isTextMedia", "uploadHeaderValue",
-         "createUploadController")
+         "createUploadController", "postUploadedFile")
 
 
 def _run_node(script: str):
@@ -446,6 +446,135 @@ test("text_inline_after_switch", async ()=>{
           send:turn.send, display:turn.display, blocked:!!turn.blocked};
 });
 
+// ---- the REAL transport ---------------------------------------------------
+// Everything above drives deps.upload. These drive the shipped
+// postUploadedFile itself: what the page hands fetch is the only thing that
+// can cancel bytes or ask the route to answer from its record.
+function wireFetch(responder){
+  const calls=[];
+  globalThis.authHeaders=()=>({Authorization:"Bearer tk"});
+  globalThis.fetch=async (url, init)=>{
+    const call={url, init, method:init.method, credentials:init.credentials,
+      header:init.headers["X-TinyAssets-Upload"], contentType:init.headers["Content-Type"],
+      body:init.body, signal:init.signal};
+    calls.push(call);
+    return responder(call, calls.length);
+  };
+  return calls;
+}
+function jsonResponse(status, doc){
+  return {ok:status>=200&&status<300, status, json:async ()=>doc};
+}
+function committedDoc(over){
+  return Object.assign({universe_id:"uni-A",
+    files:[{version:1, file_id:"file-keep", size_bytes:5, sha256:"a".repeat(64),
+            filename:"photo.bin", media_type:"application/octet-stream"}],
+    unbound_retention_seconds:3600,
+    unbound_expires_at: 1_000_000_000 + 3600}, over||{});
+}
+
+// 20. the aborter reaches fetch, and a metadata-only check sends NO body.
+test("real_transport", async ()=>{
+  const calls = wireFetch(()=>jsonResponse(200, committedDoc()));
+  const file = fakeFile("photo.bin","application/octet-stream",Buffer.from([0,1,2,3,4]));
+  const ctl = new AbortController();
+  await postUploadedFile({header:"HDR-1", file:file, signal:ctl.signal});
+  await postUploadedFile({header:"HDR-1", file:null, metadataOnly:true});
+  return {upload:{url:calls[0].url, method:calls[0].method,
+                  credentials:calls[0].credentials, header:calls[0].header,
+                  contentType:calls[0].contentType,
+                  signalForwarded: calls[0].signal===ctl.signal,
+                  bodyIsFile: calls[0].body===file},
+          check:{header:calls[1].header, bodyIsFile: calls[1].body===file,
+                 bodyEmptyString: calls[1].body==="",
+                 bodyLength: typeof calls[1].body==="string"?calls[1].body.length:-1}};
+});
+
+// 21. an abort really cancels: the same signal the controller holds is the one
+// fetch was given, so aborting it rejects the request in flight.
+test("real_transport_abort", async ()=>{
+  let rejected=null;
+  wireFetch((call)=>new Promise((_res,rej)=>{
+    call.signal.addEventListener("abort",()=>rej(Object.assign(new Error("aborted"),
+      {name:"AbortError"})));
+  }));
+  const ctl=new AbortController();
+  const file=fakeFile("photo.bin","application/octet-stream",Buffer.from([7]));
+  const pending=postUploadedFile({header:"HDR-2", file:file, signal:ctl.signal})
+    .catch(err=>{ rejected=err.name; });
+  ctl.abort();
+  await pending;
+  return {rejected:rejected};
+});
+
+// 22. RELOAD. A first page uploads; only metadata is kept; a second page with
+// no bytes restores it, makes NO request, and the founder's Check observes the
+// same label with an empty body and gets the ORIGINAL references and hold.
+test("reload_metadata_only", async ()=>{
+  const calls = wireFetch(()=>jsonResponse(200, committedDoc()));
+  const kept = {rows:null};
+  const first = build(null, {upload:postUploadedFile,
+                             remember:(rows)=>{ kept.rows = rows; }});
+  await first.ctrl.add([fakeFile("photo.bin","application/octet-stream",
+                                 Buffer.from([0,1,2,3,4]))]);
+  const uploadHeader = calls[0].header;
+  const savedJson = JSON.stringify(kept.rows);
+
+  const second = build(null, {upload:postUploadedFile, remember:()=>{}});
+  const added = second.ctrl.restore(JSON.parse(savedJson));
+  const onLoad = {calls:calls.length, chips:second.ctrl.chips().map(c=>
+    ({state:c.state, blocking:c.blocking, retryable:c.retryable, text:c.text}))};
+  const blocked = second.ctrl.buildTurn("here it is");
+  await second.ctrl.retry(second.ctrl.chips()[0].id);
+  const turn = second.ctrl.buildTurn("here it is");
+  return {added:added, savedRows:JSON.parse(savedJson), savedJson:savedJson,
+          onLoad:onLoad, blockedOnLoad:!!blocked.blocked, blockedSend:blocked.send,
+          checkCall:{header:calls[1].header, sameHeader:calls[1].header===uploadHeader,
+                     bodyEmptyString:calls[1].body==="", calls:calls.length},
+          chips:second.ctrl.chips().map(c=>({state:c.state, blocking:c.blocking,
+                                             text:c.text, fileId:c.fileId})),
+          send:turn.send, display:turn.display, blocked:!!turn.blocked};
+});
+
+// 23. the check is answered AFTER the founder switched account or home: the
+// restored chip lands nowhere and the new composer is untouched.
+test("reload_check_account_switch", async ()=>{
+  const kept={rows:null};
+  const calls = wireFetch(()=>jsonResponse(200, committedDoc()));
+  const first = build(null, {upload:postUploadedFile,
+                             remember:(rows)=>{ kept.rows=rows; }});
+  await first.ctrl.add([fakeFile("photo.bin","application/octet-stream",
+                                 Buffer.from([0,1,2,3,4]))]);
+  const second = build(null, {upload:postUploadedFile, remember:()=>{}});
+  wireFetch(async ()=>{ second.state.scope={epoch:2, universeId:"owner-B-home"};
+                        return jsonResponse(200, committedDoc()); });
+  second.ctrl.restore(kept.rows);
+  await second.ctrl.retry(second.ctrl.chips()[0].id);
+  await new Promise(r=>setTimeout(r,5));
+  const turn = second.ctrl.buildTurn("owner B types");
+  return {chips:second.ctrl.chips().length, send:turn.send, display:turn.display,
+          blocked:!!turn.blocked};
+});
+
+// 24. the check comes back without a usable record: an honest failure that asks
+// for the file, never a silent re-send and never a claim it was deleted.
+test("reload_check_unrecovered", async ()=>{
+  const kept={rows:null};
+  wireFetch(()=>jsonResponse(200, committedDoc()));
+  const first = build(null, {upload:postUploadedFile,
+                             remember:(rows)=>{ kept.rows=rows; }});
+  await first.ctrl.add([fakeFile("photo.bin","application/octet-stream",
+                                 Buffer.from([0,1,2,3,4]))]);
+  const second = build(null, {upload:postUploadedFile, remember:()=>{}});
+  const calls = wireFetch(()=>jsonResponse(400, {error:"upload_length_mismatch"}));
+  second.ctrl.restore(kept.rows);
+  await second.ctrl.retry(second.ctrl.chips()[0].id);
+  const chip = second.ctrl.chips()[0];
+  const turn = second.ctrl.buildTurn("here it is");
+  return {calls:calls.length, state:chip.state, text:chip.text,
+          blocking:chip.blocking, blocked:!!turn.blocked, reason:turn.reason};
+});
+
 (async ()=>{
   for(const [name, fn] of T){ R[name] = await fn(); }
   process.stdout.write(JSON.stringify(R));
@@ -818,3 +947,93 @@ def test_a_stale_turn_never_resets_a_live_turn(turn_results):
     assert _kinds(out["log"], "voice") == []
     assert _kinds(out["log"], "flushed") == []
     assert out["log"][-1].get("status") != "", "the live turn's status line survives"
+
+
+# ---- the real transport ----------------------------------------------------
+
+
+def test_the_shipped_transport_forwards_the_controllers_abort_signal(results):
+    """c194 passed a signal the transport dropped: cancelling a sign-out's
+    upload then only stopped the page from LOOKING, while the bytes kept going."""
+    out = results["real_transport"]["upload"]
+    assert out["signalForwarded"] is True, "fetch never received the aborter"
+    assert out["url"] == "/mcp/app/files" and out["method"] == "POST"
+    assert out["credentials"] == "same-origin"
+    assert out["contentType"] == "application/octet-stream"
+    assert out["bodyIsFile"] is True, "an ordinary upload still sends the bytes"
+
+
+def test_an_aborted_transfer_really_rejects(results):
+    assert results["real_transport_abort"]["rejected"] == "AbortError"
+
+
+def test_a_metadata_only_check_sends_the_same_header_and_no_body(results):
+    """The route answers a committed label from its record before it reads a
+    byte or compares Content-Length; an empty body is what makes that reachable."""
+    out = results["real_transport"]["check"]
+    assert out["header"] == "HDR-1", "the check repeats the ORIGINAL request"
+    assert out["bodyIsFile"] is False and out["bodyEmptyString"] is True
+    assert out["bodyLength"] == 0
+
+
+# ---- recovery after a reload ----------------------------------------------
+
+
+def test_only_metadata_survives_a_reload_never_bytes(results):
+    out = results["reload_metadata_only"]
+    (row,) = out["savedRows"]
+    assert set(row) == {"label", "header", "name", "size", "mediaType", "sha256",
+                        "fileId"}, row
+    # The bytes of the file were 00 01 02 03 04; nothing base64 or raw of them
+    # may appear anywhere in what was written to this browser.
+    assert "photo.bin" in out["savedJson"]
+    for banned in ("AAECAwQ", "\u0000", "text", "bytes", "body"):
+        assert banned not in out["savedJson"], banned
+
+
+def test_a_restored_attachment_makes_no_request_and_cannot_be_sent(results):
+    out = results["reload_metadata_only"]
+    assert out["added"] == 1
+    assert out["onLoad"]["calls"] == 1, "restoring must not touch the network"
+    (chip,) = out["onLoad"]["chips"]
+    assert chip["state"] == "saved" and chip["blocking"] is True
+    assert chip["retryable"] is True, "the founder needs an explicit Check"
+    assert "before this page reloaded" in chip["text"]
+    assert out["blockedOnLoad"] is True and out["blockedSend"] is None
+
+
+def test_the_check_recovers_the_original_reference_and_hold(results):
+    out = results["reload_metadata_only"]
+    assert out["checkCall"]["sameHeader"] is True
+    assert out["checkCall"]["bodyEmptyString"] is True
+    assert out["checkCall"]["calls"] == 2, "exactly one request, and only on Check"
+    (chip,) = out["chips"]
+    assert chip["state"] == "ready" and chip["blocking"] is False
+    assert chip["fileId"] == "file-keep"
+    assert not out["blocked"]
+    body = json.loads(out["send"].split("-----\n")[1].split("\n-----")[0])
+    assert body["files"] == [{"version": 1, "file_id": "file-keep", "size_bytes": 5,
+                              "sha256": "a" * 64, "filename": "photo.bin",
+                              "media_type": "application/octet-stream"}]
+    # The wrapper's hold stays BESIDE the immutable reference, at its original
+    # value - the check observed custody, it did not extend it.
+    assert body["unbound_expires_at"] == {"file-keep": 1_000_003_600}
+    assert body["unbound_retention_seconds"] == 3600
+    assert out["send"].count("attached files (platform metadata") == 1
+
+
+def test_a_check_answered_after_a_switch_lands_in_no_ones_composer(results):
+    out = results["reload_check_account_switch"]
+    assert out["chips"] == 0
+    assert out["send"] == "owner B types" and out["display"] == "owner B types"
+    assert "photo.bin" not in (out["send"] or "")
+    assert not out["blocked"]
+
+
+def test_an_unconfirmed_record_asks_for_the_file_rather_than_declaring_it_gone(results):
+    out = results["reload_check_unrecovered"]
+    assert out["calls"] == 1, "one check, and no second attempt of its own"
+    assert out["state"] == "failed" and out["blocking"] is True
+    assert "attach the file again" in out["text"]
+    assert "deleted" not in out["text"] and "expired" not in out["text"]
+    assert out["blocked"] is True and "photo.bin" in out["reason"]

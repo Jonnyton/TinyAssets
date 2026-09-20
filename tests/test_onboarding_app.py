@@ -1569,6 +1569,10 @@ async function fetch(){ fetched++; return {headers:{get:()=>SCENARIO.liveBuild||
 __APP_FUNCTIONS__
 (async()=>{
   const out={};
+  // The account half of a saved row's ownership. The page learns it from
+  // /mcp/app/me at sign-in; here a scenario states it, and `principal: null`
+  // is a page that never resolved one.
+  setQueueOwner(SCENARIO.principal===null?"":(SCENARIO.principal||"p-1"));
   modelChoiceForNextTurn=SCENARIO.modelChoice||null;
   if(SCENARIO.kind==="send"){
     const turnOpts=SCENARIO.inputMethod?{inputMethod:SCENARIO.inputMethod}:undefined;
@@ -1743,7 +1747,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"let railOpen = [^\n]*;", r"const sendQueue=[^\n]*;",
                     r"const SEND_QUEUE_MAX=[^\n]*;", r"const QUEUE_KEY=[^\n]*;",
                     r"let queueRestored=[^\n]*;", r"const QUEUE_MAX_AGE_MS=[^\n]*;",
-                    r"let queueScope=[^\n]*;", r"let queuePersisted=[^\n]*;",
+                    r"let queueScope=[^\n]*;", r"let queueOwner=[^\n]*;",
+                    r"let queuePersisted=[^\n]*;",
                     r"let retainedItems=[^\n]*;", r"let modelChoiceForNextTurn=[^\n]*;",
                     r"const renderedConsumerTurns=[^\n]*;",
                     r"const renderedConsumerFounders=[^\n]*;",
@@ -1755,7 +1760,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "sendConversationRequest",
         "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
         "offerResend", "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
-        "restoreInflight", "setQueueScope",
+        "restoreInflight", "setQueueScope", "setQueueOwner", "ownsSavedRow",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
         "flushSendQueue", "queueTurn",
         "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
@@ -2404,7 +2409,8 @@ def test_a_queued_line_survives_a_refresh_as_an_offer_and_goes_out_on_one_click(
     or erase a draft) - and one click sends it, once."""
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "history": [],
-                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "owner": "p-1", "scope": "u-1"}],
                               "payload": {"reply": "on it"}, "clickAfterRestore": "Send it now"})
     assert out["callsAfterRestore"] == []                       # offered, not sent
     assert out["savedAfterRestore"][0]["message"] == line       # kept until acted on
@@ -2420,7 +2426,8 @@ def test_a_queued_line_survives_a_refresh_as_an_offer_and_goes_out_on_one_click(
 def test_a_restored_offer_can_be_discarded_and_never_touches_the_composer(tmp_path):
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "history": [],
-                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "owner": "p-1", "scope": "u-1"}],
                               "draftBeforeRestore": "founder draft in progress",
                               "payload": {"reply": "on it"}, "clickAfterRestore": "Discard"})
     assert out["converseCalls"] == []
@@ -2436,7 +2443,8 @@ def test_an_offer_below_an_unconfirmed_turn_leaves_that_turn_alone(tmp_path):
     unconfirmed record and its resend offer exactly as they were."""
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "pending": "first", "history": [],
-                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "owner": "p-1", "scope": "u-1"}],
                               "payload": {"reply": "on it"}, "clickAfterRestore": "Send it now"})
     assert out["callsAfterRestore"] == []
     unconfirmed = [n for n in out["notes"] if "never confirmed" in n["text"]]
@@ -2451,7 +2459,8 @@ def test_an_offer_after_a_turn_delivered_while_away(tmp_path):
     out = _run_app(tmp_path, {"kind": "restore", "pending": "first",
                               "history": [{"speaker": "founder", "text": "first", "ts": 2e9},
                                           {"speaker": "universe", "text": "ok", "ts": 2e9 + 1}],
-                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "owner": "p-1", "scope": "u-1"}],
                               "payload": {"reply": "on it"}})
     assert out["converseCalls"] == []
     assert out["inflight"] is None                              # delivered: record cleared
@@ -2473,7 +2482,8 @@ def test_a_saved_line_older_than_the_hold_says_so_and_still_needs_a_click(tmp_pa
     line = 'Approved: "Extend my github access"'
     old = _NOW_MS - 4 * 60 * 60 * 1000
     out = _run_app(tmp_path, {"kind": "restore", "history": [],
-                              "queued": [{"message": line, "display": line, "ts": old}],
+                              "queued": [{"message": line, "display": line, "ts": old,
+                                          "owner": "p-1", "scope": "u-1"}],
                               "payload": {"reply": "on it"}})
     assert out["converseCalls"] == []
     offer = [n for n in out["notes"] if "Still waiting" in n["text"]][0]
@@ -2486,7 +2496,7 @@ def test_a_saved_line_from_another_universe_can_only_be_discarded(tmp_path):
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "history": [], "universe": "u-2",
                               "queued": [{"message": line, "display": line, "ts": _NOW_MS,
-                                          "scope": "u-1"}],
+                                          "owner": "p-1", "scope": "u-1"}],
                               "payload": {"reply": "on it"}})
     assert out["converseCalls"] == []
     # neither the line nor the other universe's id is shown, nothing can be
@@ -2500,7 +2510,7 @@ def test_a_saved_line_from_another_universe_can_only_be_discarded(tmp_path):
 def test_a_saved_line_for_this_universe_is_offered_normally(tmp_path):
     out = _run_app(tmp_path, {"kind": "restore", "history": [], "universe": "u-7",
                               "queued": [{"message": "x", "display": "x", "ts": _NOW_MS,
-                                          "scope": "u-7"}],
+                                          "owner": "p-1", "scope": "u-7"}],
                               "payload": {"reply": "ok"}, "clickAfterRestore": "Send it now"})
     assert out["converseCalls"] == ["x"]
 
@@ -2529,7 +2539,8 @@ def test_an_offer_nobody_clicked_survives_another_refresh(tmp_path):
     a second refresh, crash or build reload silently lost it."""
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "history": [],
-                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "owner": "p-1", "scope": "u-1"}],
                               "payload": {"reply": "on it"}})
     assert out["converseCalls"] == []
     assert out["savedAfter"][0]["message"] == line              # still there for the next load
@@ -2539,7 +2550,8 @@ def test_an_offer_nobody_clicked_survives_another_refresh(tmp_path):
 def test_send_it_now_keeps_a_typed_draft(tmp_path):
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "history": [],
-                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "owner": "p-1", "scope": "u-1"}],
                               "draftBeforeRestore": "do not lose this draft",
                               "payload": {"reply": "on it"}, "clickAfterRestore": "Send it now"})
     assert out["converseCalls"] == [line]
@@ -2560,7 +2572,8 @@ def test_a_failed_side_send_retries_as_a_side_send(tmp_path):
     attempt took over the unconfirmed turn's record."""
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "pending": "first", "history": [],
-                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "owner": "p-1", "scope": "u-1"}],
                               "transportError": True,
                               "clickAfterRestore": "Send it now",
                               "clickAfterRestore2": "Send it again"})
@@ -2571,22 +2584,58 @@ def test_a_failed_side_send_retries_as_a_side_send(tmp_path):
 def test_an_offer_already_handled_in_another_window_is_not_sent_again(tmp_path):
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "history": [],
-                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "owner": "p-1", "scope": "u-1"}],
                               "payload": {"reply": "on it"},
                               "claimBeforeClick": True, "clickAfterRestore": "Send it now"})
     assert out["converseCalls"] == []
     assert any("another window" in t for t in out["notesAfterClick"])
 
 
-def test_a_line_with_no_recorded_universe_is_offered_with_a_warning(tmp_path):
+def test_a_line_with_no_recorded_universe_is_kept_but_never_disclosed(tmp_path):
+    """INVERTED 2026-09-20. A legacy row records neither the account nor the
+    home that saved it, and this browser may have signed a second account in
+    since. Clicking a button proves someone is here, never that this login
+    saved it - so the line is not shown, not offered and not droppable. It is
+    KEPT, exactly as the in-flight record already treats its own unscoped row."""
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "history": [],
                               "queued": [{"message": line, "display": line, "ts": _NOW_MS,
                                           "scope": ""}],
                               "payload": {"reply": "on it"}})
-    offer = [n for n in out["notes"] if "Still waiting" in n["text"]][0]
-    assert "had recorded its universe" in offer["text"]
-    assert offer["buttons"] == ["Send it now", "Discard"]
+    assert out["converseCalls"] == []
+    assert not any("Still waiting" in n["text"] for n in out["notes"])
+    note = [n for n in out["notes"] if "cannot be shown" in n["text"]][0]
+    assert line not in note["text"] and note["buttons"] == []
+    assert out["savedAfter"][0]["message"] == line, "the row is preserved on disk"
+
+
+def test_a_line_saved_by_another_account_on_this_browser_is_never_offered(tmp_path):
+    """The home matches and the account does not: one browser, two founders."""
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [], "universe": "u-1",
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "owner": "p-2", "scope": "u-1"}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == []
+    assert not any("Still waiting" in n["text"] for n in out["notes"])
+    note = [n for n in out["notes"] if "another universe" in n["text"]][0]
+    assert line not in note["text"] and "p-2" not in note["text"]
+    assert note["buttons"] == []
+    assert out["savedAfter"][0]["message"] == line
+
+
+def test_nothing_is_offered_until_the_page_knows_its_account(tmp_path):
+    """The home resolved but the account did not: half an answer decides
+    nothing, so no row is read, shown or dropped."""
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [], "principal": None,
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "owner": "p-1", "scope": "u-1"}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == []
+    assert out["notes"] == [] or not any(line in n["text"] for n in out["notes"])
+    assert out["savedAfter"][0]["message"] == line
 
 
 def test_nothing_is_offered_until_the_page_knows_its_universe(tmp_path):
@@ -2595,7 +2644,7 @@ def test_nothing_is_offered_until_the_page_knows_its_universe(tmp_path):
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "history": [], "historyError": True,
                               "queued": [{"message": line, "display": line, "ts": _NOW_MS,
-                                          "scope": "u-1"}],
+                                          "owner": "p-1", "scope": "u-1"}],
                               "payload": {"reply": "on it"}})
     assert out["converseCalls"] == []
     assert not any("Still waiting" in n["text"] for n in out["notes"])

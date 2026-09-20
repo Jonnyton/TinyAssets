@@ -2642,6 +2642,25 @@
     if(queueScope && value && value!==queueScope && Uploads) Uploads.abort();
     queueScope=value;
   }
+  // The ACCOUNT half of "may this page read what this browser saved". A home id
+  // alone does not answer it: two accounts can sign in on one browser and the
+  // second must not read the first's held lines. Learned from /mcp/app/me.
+  let queueOwner="";
+  // Declared beside the owner it depends on: a change of account has to make
+  // this page offer the new account's saved attachments, not keep the old
+  // account's restore marked done.
+  let uploadsRestored=false;
+  function setQueueOwner(next){
+    const value=String(next||"");
+    if(queueOwner && value && value!==queueOwner && Uploads) Uploads.abort();
+    if(queueOwner && value && value!==queueOwner) uploadsRestored=false;
+    queueOwner=value;
+  }
+  // Both halves resolved, and the saved row names the same pair.
+  function ownsSavedRow(row){
+    return !!queueOwner && !!queueScope && !!row &&
+      !!row.owner && !!row.scope && row.owner===queueOwner && row.scope===queueScope;
+  }
   let queuePersisted=true;
   // Saved lines this page holds for later: offers not yet acted on, and
   // lines queued for another universe (kept for that universe's own page).
@@ -2653,6 +2672,7 @@
       inputMethod:turnInputMethod(q.inputMethod||(q.opts&&q.opts.inputMethod)),
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(q,"modelChoice")
         ? q.modelChoice : q.opts&&q.opts.modelChoice),
+      owner:(q.owner!==undefined)?q.owner:queueOwner,
       scope:(q.scope!==undefined)?q.scope:queueScope};
   }
   function saveQueue(){
@@ -2679,6 +2699,7 @@
   function sameSavedLine(a,b){
     const left=savedItem(a), right=savedItem(b);
     return a.message===b.message && (a.ts||0)===(b.ts||0) && left.scope===right.scope &&
+      left.owner===right.owner &&
       JSON.stringify(left.modelChoice)===JSON.stringify(right.modelChoice);
   }
   // Is this line still on disk? Another window may have sent or discarded
@@ -2709,25 +2730,36 @@
   // only where it belongs (Codex round 3).
   let queueRestored=false;
   function restoreQueue(){
-    if(queueRestored || !queueScope) return; queueRestored=true;
+    // BOTH halves, or nothing happens at all: until this page knows the account
+    // AND the home, it cannot tell an own row from a stranger's, so it says
+    // nothing and leaves every row on disk.
+    if(queueRestored || !queueScope || !queueOwner) return; queueRestored=true;
     const now=Date.now();
     retainedItems=readSavedQueue();
     retainedItems.forEach(i=>offerSavedLine(i, now));
   }
   function offerSavedLine(item, now){
-    if(item.scope && item.scope!==queueScope){
-      // Another universe's line: not this founder's to read, send or drop.
-      // It stays on disk for that universe's own page.
-      appendMessage("system","A line queued in another universe's session on this browser is "+
-        "waiting there; open that universe to send or discard it.",null,
-        now/1000);
+    // OWNERSHIP FIRST, and it is the SAME rule the in-flight record uses. A
+    // saved line is disclosed, offered or droppable only where BOTH halves are
+    // proved: this account and this home. Anything else - another universe,
+    // another account, or a legacy row that recorded neither - is KEPT on disk
+    // unchanged and never shown, because clicking a button proves that someone
+    // is here, never that this login is the one that saved it.
+    if(!ownsSavedRow(item)){
+      const foreign = !!item.scope && !!item.owner && !!queueScope && !!queueOwner;
+      appendMessage("system", foreign
+        ? "A line queued in another universe's session on this browser is "+
+          "waiting there; open that universe to send or discard it."
+        : "A line saved on this browser is being kept, but it cannot be shown "+
+          "here: this page cannot tell which account and universe saved it. "+
+          "Send your message again if you still need it.",
+        null, now/1000);
       return;
     }
     const stale = now-(item.ts||0) > QUEUE_MAX_AGE_MS;
     let text = "Still waiting to be sent when the page reloaded: \u201c" +
       String(item.display||item.message).slice(0, 200) + "\u201d";
     if(stale) text += " \u2014 queued more than three hours ago";
-    if(!item.scope) text += " \u2014 queued before this page had recorded its universe, so check it is meant for this one";
     const send=document.createElement("button");
     send.className="btn btn--link"; send.textContent="Send it now";
     send.addEventListener("click", ()=>{
@@ -2926,6 +2958,7 @@
       if(ModelPicker.snapshot&&s.universe_id&&ModelPicker.snapshot.universe_id!==s.universe_id) ModelPicker.reset();
       setQueueScope(s.universe_id || s.universe);
       restoreQueue();   // no-op once done, or until the scope is known
+      restoreUploadRecords();   // same rule, and it makes no request of its own
       // A held message waits for the same thing the queue does. If the history
       // peek failed, THIS is where the page finally learns its universe, so
       // the unconfirmed turn is offered here rather than lost.
@@ -3015,6 +3048,9 @@
     }
     engineConnected = true;
     if(typeof AppLayout!=="undefined") AppLayout.enable(me.universe_id,me.principal_id);
+    // The account half of every "is this mine?" question below: held lines and
+    // saved attachments are read only where this id matches what saved them.
+    setQueueOwner(me.principal_id);
     showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
     // Build 3's App Review Notes and submitted product surface are voice-dark.
     // The hosted web app may expose Voice, but a Capacitor shell must not make it
@@ -3790,6 +3826,43 @@
   // The live controller, built by wire(). Sign-out and a home change reach it
   // from outside the composer, so it is addressable here.
   let Uploads=null;
+  // What a reload may bring back: the upload REQUEST already sent (its header
+  // and label) and the references it produced. No bytes and no inline text are
+  // ever written here, so this store can restore an attachment's IDENTITY and
+  // never its contents. One account and home own the whole record.
+  const UPLOAD_RECORDS_KEY="ta_app_uploads_v1";
+  function readUploadRecords(){
+    try{
+      const raw=localStorage.getItem(UPLOAD_RECORDS_KEY);
+      const doc=raw?JSON.parse(raw):null;
+      return doc&&typeof doc==="object"&&Array.isArray(doc.saved)?doc:null;
+    }catch(_e){ return null; }
+  }
+  function rememberUploadRecords(records){
+    // Never written under an unverified pair, and another pair's row is never
+    // overwritten or cleared from here - it is theirs to restore or discard.
+    if(!queueOwner||!queueScope) return;
+    const held=readUploadRecords();
+    if(held&&(held.owner!==queueOwner||held.home!==queueScope)) return;
+    try{
+      if(!records||!records.length){ localStorage.removeItem(UPLOAD_RECORDS_KEY); return; }
+      localStorage.setItem(UPLOAD_RECORDS_KEY,
+        JSON.stringify({version:1, owner:queueOwner, home:queueScope, saved:records}));
+    }catch(_e){ /* a browser that cannot save simply has nothing to restore */ }
+  }
+  // Called once the account AND home are known. It NEVER touches the network:
+  // a restored chip is a not-ready attachment with a Check the founder clicks.
+  function restoreUploadRecords(){
+    if(uploadsRestored||!Uploads||!queueOwner||!queueScope) return;
+    uploadsRestored=true;
+    const doc=readUploadRecords();
+    if(!doc) return;
+    if(doc.owner!==queueOwner||doc.home!==queueScope) return;   // kept, never read
+    const added=Uploads.restore(doc.saved);
+    if(added) setStatusLine(added===1
+      ? "An attachment from before this reload is waiting — check it or attach it again."
+      : added+" attachments from before this reload are waiting — check them or attach them again.");
+  }
   function createUploadController(deps){
     const now=typeof deps.now==="function"?deps.now:()=>Date.now();
     const maxBytes=deps.maxBytes||UPLOAD_MAX_BYTES;
@@ -3799,7 +3872,24 @@
     // clear and sign-out bump it, so a promise scheduled under the OLD login
     // finds itself stale instead of picking up the new one's scope.
     let seq=0, generation=0, chain=Promise.resolve();
-    function changed(){ if(typeof deps.onChange==="function") deps.onChange(); }
+    // What this browser may keep about an attachment: the request that was
+    // already sent and the references that came back. NEVER bytes, never an
+    // inline file's text, never a token. An item with no header was never a
+    // request, so there is nothing to observe later and nothing to keep.
+    function recordFor(item){
+      if(!item.header||!item.label) return null;
+      if(item.state!=="ready"&&item.state!=="uncertain"&&item.state!=="saved") return null;
+      return {label:item.label, header:item.header, name:item.name, size:item.size,
+        mediaType:item.mediaType, sha256:item.sha256,
+        fileId:item.ref?item.ref.file_id:null};
+    }
+    function records(){
+      return items.map(recordFor).filter(Boolean);
+    }
+    function changed(){
+      if(typeof deps.remember==="function"){ try{ deps.remember(records()); }catch(_e){} }
+      if(typeof deps.onChange==="function") deps.onChange();
+    }
     function say(text){ if(typeof deps.notify==="function") deps.notify(text); }
     // One account AND one home. Everything this controller does is stamped
     // with the scope it started in; a late answer whose scope no longer
@@ -3891,6 +3981,9 @@
       else if(item.state==="hashing") text=item.name+" — preparing";
       else if(item.state==="uploading") text=item.name+" — uploading";
       else if(item.state==="pending") text=item.name+" — waiting";
+      else if(item.state==="checking") text=item.name+" — checking";
+      else if(item.state==="saved") text=item.name+" ("+fmtBytes(item.size)+")"+
+        " — attached before this page reloaded; check it or attach it again";
       else if(item.state==="ready") text=item.name+" ("+fmtBytes(item.size)+")"+expiryNote(item);
       else text=item.name+" — "+(item.error||item.state);
       return {id:item.id, name:item.name, size:item.size, label:item.label,
@@ -3976,12 +4069,17 @@
       // A retry keeps the ORIGINAL label and request. The server resolves a
       // committed same-label POST back to the original references, which is how
       // an uncertain outcome is OBSERVED instead of copied.
-      if(!item.label) item.label=newLabel();
       if(!item.file){
+        // A record this browser kept across a reload holds METADATA ONLY. It
+        // can be OBSERVED with its original header and an empty body; it can
+        // never be re-sent, because the bytes are gone. Without that header
+        // there is nothing to observe and the founder picks the file again.
+        if(item.header&&item.label) return observe(item);
         item.state="failed"; item.retryable=false;
         item.error="attach this file again — this page no longer holds its bytes";
         changed(); return;
       }
+      if(!item.label) item.label=newLabel();
       item.state="hashing"; item.error=null; item.retryable=false; changed();
       const aborter=makeAborter(); item.aborter=aborter;
       let unreadable=false;
@@ -4007,6 +4105,9 @@
         item.error="its name or type is too long to attach";
         changed(); return;
       }
+      // Kept so a later CHECK - including one after a reload - repeats THIS
+      // request rather than composing a new one.
+      item.header=header;
       // LAST CHECK before any byte leaves the browser.
       if(!ownsNow(item)) return abortItem(item);
       item.state="uploading"; changed();
@@ -4020,6 +4121,45 @@
       // to another account or home. Nothing is painted into that composer.
       if(!ownsNow(item)) return abortItem(item);
       return failure?failed(item,failure):adopt(item,payload);
+    }
+    // METADATA-ONLY OBSERVATION. Never automatic: only a Check the founder
+    // clicked reaches here. It re-sends the ORIGINAL header with an EMPTY body,
+    // which the route answers from its committed record - the same references
+    // and the ORIGINAL hold - without reading or storing a byte. Nothing is
+    // re-uploaded, re-labelled or copied, and no message is submitted.
+    async function observe(item){
+      if(!ownsNow(item)) return abortItem(item);
+      item.state="checking"; item.error=null; item.retryable=false; changed();
+      const aborter=makeAborter(); item.aborter=aborter;
+      let payload=null, failure=null;
+      try{ payload=await deps.upload({header:item.header, file:null, label:item.label,
+        mediaType:item.mediaType, size:item.size, sha256:item.sha256,
+        metadataOnly:true, signal:aborter?aborter.signal:undefined}); }
+      catch(err){ failure=err||new Error("check failed"); }
+      item.aborter=null;
+      // The answer may land after a sign-out or a switch: it belongs to the
+      // account that saved the record, never to whoever is here now.
+      if(!ownsNow(item)) return abortItem(item);
+      return failure?unrecovered(item,failure):adopt(item,payload);
+    }
+    // The check came back without a usable reference. The honest end of this is
+    // an explicit re-selection by the founder: this page holds no bytes to send.
+    function unrecovered(item,err){
+      const status=err&&typeof err.status==="number"?err.status:0;
+      item.state="failed"; item.retryable=false;
+      if(status===401||status===403){
+        item.error="sign in again to check this attachment"; item.retryable=true;
+      }else if(status===503){
+        item.error="the uploader is busy — check again in a moment"; item.retryable=true;
+      }else if(status>=400&&status<500){
+        // An elapsed hold is NOT proof a bound reference was deleted, so the
+        // wording asks for the file rather than declaring it gone.
+        item.error="this upload could not be confirmed — attach the file again";
+      }else{
+        item.error="could not check this upload — check again, or attach the file again";
+        item.retryable=true;
+      }
+      changed();
     }
     function failed(item,err){
       const status=err&&typeof err.status==="number"?err.status:0;
@@ -4136,7 +4276,30 @@
         send: typed?blocks+"\n\n"+typed:blocks,
         display: typed?typed+"\n\n"+names:names};
     }
-    return {add, retry, remove, buildTurn,
+    // Records kept by THIS browser for THIS account and home, put back as
+    // chips that are NOT ready: they block Send, they carry no bytes, and
+    // nothing touches the network until the founder clicks Check.
+    function restore(list){
+      const here=scopeNow();
+      if(!here.universeId) return 0;
+      const rows=Array.isArray(list)?list:[];
+      let added=0;
+      for(const row of rows){
+        if(!row||typeof row.header!=="string"||typeof row.label!=="string") continue;
+        if(items.some(i=>i.label===row.label)) continue;
+        if(items.length>=maxFiles) break;
+        items.push({id:"att-"+(++seq), file:null, name:String(row.name||"file"),
+          size:Number(row.size)||0, mediaType:String(row.mediaType||"application/octet-stream"),
+          state:"saved", label:row.label, header:row.header,
+          sha256:typeof row.sha256==="string"?row.sha256:null,
+          ref:null, text:null, expiresAt:undefined, retentionSeconds:null,
+          error:null, retryable:true, scope:here, gen:generation, aborter:null});
+        added++;
+      }
+      if(added) changed();
+      return added;
+    }
+    return {add, retry, remove, buildTurn, restore, records,
       chips:()=>items.map(chipFor),
       canSend:()=>!items.some(blocking),
       count:()=>items.length,
@@ -4154,12 +4317,19 @@
     return Array.prototype.map.call(new Uint8Array(digest),
       b=>b.toString(16).padStart(2,"0")).join("");
   }
-  async function postUploadedFile({header, file}){
+  // `signal` is the controller's own aborter: a sign-out, a home change or a
+  // removed chip has to stop the BYTES, and only fetch can do that - dropping
+  // the promise leaves the body streaming. `metadataOnly` sends the SAME header
+  // with an EMPTY body: the route answers a committed label from its record,
+  // before it reads a byte or compares Content-Length, so this observes an
+  // earlier upload instead of making a second copy.
+  async function postUploadedFile({header, file, signal, metadataOnly}){
     const response=await fetch("/mcp/app/files",{method:"POST", credentials:"same-origin",
       cache:"no-store",
+      signal:signal||undefined,
       headers:Object.assign({"Content-Type":"application/octet-stream",
         "X-TinyAssets-Upload":header}, authHeaders()),
-      body:file});
+      body:metadataOnly?"":file});
     let payload=null;
     try{ payload=await response.json(); }catch(_e){ payload=null; }
     if(!response.ok){
@@ -4211,6 +4381,7 @@
       scope: ()=>({epoch: MCP._loginEpoch, universeId: queueScope}),
       sha256: hashFile,
       upload: postUploadedFile,
+      remember: rememberUploadRecords,
       release: releaseUploadedFile,
       onChange: renderChips,
       notify: (text)=>appendMessage("system", text),
