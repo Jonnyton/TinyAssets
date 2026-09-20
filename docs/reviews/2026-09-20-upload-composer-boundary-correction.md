@@ -109,3 +109,42 @@ regenerating changed that one line and did not revert the delta (verified).
 No push, no deploy, no peer dispatch, no browser, no full suite — all out of
 scope for this bounded lane. Root reviews this delta and obtains the bounded
 Fable verification of the concrete finding and the combined head.
+
+## Independent corroboration (read 2026-09-20, after the delta landed)
+
+A review dispatched from the `0a7f` worktree against `579d5009`
+(`output/claude-upload-root-delta-review-result.md`, finished 01:57) reaches the
+same conclusions independently, from a static read plus its own node probe:
+
+- Same defect, same smallest fix, arrived at separately: *"in `abortItem`,
+  persist only when the item was still attached (`idx>=0`), otherwise
+  `changed(false)`; add a test that awaits the late response after `abort()`."*
+  Its probe read `{'afterAbortSync': 1, 'afterLateResponse': 0}` — the same
+  erasure this delta's tests now pin.
+- It names the same reason root's test could not see it: `afterExit` is measured
+  before the pending promise resolves.
+- It independently flags the connect-gate owner seeding ("recovery is dead until
+  reload") and `uploadsRestored` resetting only on owner change. Both are fixed
+  here.
+
+That is two families on the same three findings, so the concrete finding is not
+in doubt; what still needs Fable is the *fix*, not the diagnosis.
+
+### Carried forward, deliberately not done here
+
+Two nonblocking items from that review, re-verified against THIS head (its line
+numbers had rotted — `recordFor` is now `app.html:3966`, not `3888`):
+
+1. **`recordFor` keeps definitively-refused attempts.** Any item with a header
+   and label is persisted, including one whose attempt ended in a
+   non-retryable 4xx. After a reload those return as "check it" chips that can
+   only fail again. Noise, not a leak, and outside this bounded correction.
+2. **The legacy unscoped key is orphaned.** Every read and write is
+   `UPLOAD_RECORDS_KEY + ":" + JSON([owner,scope])` (`app.html:3921`, `3931`);
+   nothing reads or removes the bare `ta_app_uploads_v1`, so a pre-upgrade row
+   (filename, size, sha, header) stays in localStorage forever. Migrating
+   unknown-owner legacy rows was explicitly excluded from this lane — it is a
+   deletion question with an ownership answer nobody has given yet, and
+   guessing one is how a row gets attributed to the wrong account.
+
+Neither blocks this delta. Both want their own lane and a host decision on (2).
