@@ -89,8 +89,14 @@ Python3.11. Windows used Python3.14. Regenerated plugin/import probe, all change
 canonical/test Python ruff, diff whitespace and strict workspace change validation
 passed. Exact-head cross-family review and hosted CI are still required.
 
+The two demonstrated foundation requirements are synced into canonical
+`graph-execution-substrate` and `scratch-storage` specs. The existing startup-sweep
+scenario is qualified to ordinary unassociated, non-admitted rows; admitted or
+managed rows remain held for their own guarded recovery, not authorized for replay.
+Both canonical specs passed strict validation on September 20, 2026 UTC.
+
 Required release work: root independently reviews this narrow assembled diff,
 dispatches exact-head cross-family review, runs hosted gates, verifies deployment
-and ordinary existing workflow behavior, and syncs ONLY these demonstrated
-requirements. Do not archive or check off the wider workspace/provisioning change.
+and ordinary existing workflow behavior. Do not archive or check off the wider
+workspace/provisioning change.
 Next file/consumer layers consume this shared ownership foundation separately.

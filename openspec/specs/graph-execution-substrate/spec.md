@@ -6,6 +6,31 @@
 
 The domain-agnostic engine that turns a user-authored branch into a runnable, checkpointed, resumable LangGraph execution: BranchDefinition/NodeDefinition model, graph compiler (reducers, conditional edges), runs engine with failure taxonomy and resume.
 ## Requirements
+
+### Requirement: Guarded run execution preserves ownership through actual scoped use
+
+An internal prepared execution SHALL require its exact held run-keyed OS guard
+for start and terminal expected-status transitions, whether or not the run has a
+managed resource-family association. A derivative same-process execution-use
+receipt MAY pin that owner's lifetime through code-node and RPC operations, but
+SHALL NOT satisfy owner-only mutation or release checks. Owner retirement SHALL
+refuse new pins and drain entered scopes before releasing the original OS lock.
+Family closure and fresh effect authority SHALL remain separate from lifetime.
+
+#### Scenario: a delayed prepared worker loses its queued state
+- **WHEN** cancellation, interruption, completion or another valid transition changed its queued run before start
+- **THEN** the expected-status start refuses before invocation, including for a run without a resource-family association
+- **AND** the losing worker does not overwrite the winner's status or output
+
+#### Scenario: a real RPC callback outlives the node's drain join
+- **WHEN** an entered callback continues after the node returns
+- **THEN** the original owner lock remains held until that actual scoped callback exits
+- **AND** new effects still require fresh authority and cannot reopen a closed family
+
+#### Scenario: a queued durable admission has no local Future
+- **WHEN** its OS guard is temporarily free while an unstarted worker handoff may still be queued elsewhere
+- **THEN** legacy recovery does not infer abandonment or execution permission from age, missing process-local Future or guard availability alone
+
 ### Requirement: Branch and node definitions are validated dataclasses with lossless JSON round-trip
 Community-designed graph topologies SHALL be represented by two `@dataclass` types in `tinyassets.branches` — `NodeDefinition` (one node) and `BranchDefinition` (a full topology of nodes, edges, conditional edges, entry point, and state schema) — each serializable to and from a plain JSON-compatible dict via `to_dict` / `from_dict` (BranchDefinition also exposes `to_json`). A BranchDefinition SHALL store its graph as a single embedded JSON blob so fork, clone, and export stay atomic (one row equals one complete topology). NodeDefinition construction SHALL fail loudly per Hard Rule #8 when a persisted row supplies a non-list value for `input_keys`, `output_keys`, `tools_allowed`, or `effects`, or a non-string element inside one, rather than silently accepting a bare string that would later be iterated character-by-character.
 
@@ -352,7 +377,7 @@ are unchanged.
 - **THEN** the run fails as `workspace_command_timeout`, distinct from a node timeout, classified from a flag on the sandbox result rather than by matching a message
 
 ### Requirement: Interrupted runs resume from checkpoint under owner, status, checkpoint, and version guards
-`resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only when four guards pass: the caller `actor` owns the run (else `auth_failed`), the run is `interrupted` (a run already `resumed` is idempotently returned; any other status raises `not_interrupted`), a checkpoint exists for the run's `thread_id` (else `no_checkpoint`), and the exact branch version the run used still resolves (else `branch_version_mismatch`). On resume the run SHALL be marked `resumed` before background re-invocation with `None` inputs (LangGraph's resume signal). At server startup `recover_in_flight_runs` SHALL sweep any `queued` or `running` rows to `interrupted` so no run is falsely reported in flight after a restart. As-built limitation: the `recover_in_flight_runs` docstring still states that `interrupted` is terminal and that mid-run resume via checkpoint is "not available today" — that docstring is stale, because `resume_run` implements exactly that checkpoint-based resume.
+`resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only when four guards pass: the caller `actor` owns the run (else `auth_failed`), the run is `interrupted` (a run already `resumed` is idempotently returned; any other status raises `not_interrupted`), a checkpoint exists for the run's `thread_id` (else `no_checkpoint`), and the exact branch version the run used still resolves (else `branch_version_mismatch`). On resume the run SHALL be marked `resumed` before background re-invocation with `None` inputs (LangGraph's resume signal). At server startup `recover_in_flight_runs` SHALL sweep ordinary `queued` or `running` rows without a managed-family association or durable prepared admission to `interrupted` so no run is falsely reported in flight after a restart. As-built limitation: the `recover_in_flight_runs` docstring still states that `interrupted` is terminal and that mid-run resume via checkpoint is "not available today" — that docstring is stale, because `resume_run` implements exactly that checkpoint-based resume.
 
 #### Scenario: a non-owner cannot resume
 - **WHEN** an actor who does not own the run calls `resume_run`
@@ -367,8 +392,9 @@ are unchanged.
 - **THEN** it returns the same run outcome without launching a second resume
 
 #### Scenario: startup sweeps in-flight runs to interrupted
-- **WHEN** `recover_in_flight_runs` runs at startup with rows left `queued` or `running` by a crash
+- **WHEN** `recover_in_flight_runs` runs at startup with ordinary unassociated, non-admitted rows left `queued` or `running` by a crash
 - **THEN** those rows are updated to `interrupted` with a restart message and the count is returned
+- **AND** a durable prepared admission or managed-family association remains held for its own guarded recovery; this sweep does not authorize replay or claim managed resume support
 
 ### Requirement: Child-Branch node shapes are validated before execution
 
