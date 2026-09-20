@@ -250,6 +250,7 @@ def _reconnect_sources(base, owner, uid, chains):
 
 def prepare_owned_model_plan(
     *, base, universe, owner, agent, current=None, config=None, allow_empty=False,
+    preference_snapshot=None,
 ):
     """Private composition for authenticated ingress and serving readiness.
 
@@ -260,7 +261,16 @@ def prepare_owned_model_plan(
     """
     base, universe = Path(base), Path(universe)
     store = SQLiteProviderWorkAuthorityStore(base)
-    preferences = ModelPreferenceStore(base).get(owner, universe.name, require_current_home=True)
+    if preference_snapshot is None:
+        preferences = ModelPreferenceStore(base).get(
+            owner, universe.name, require_current_home=True,
+        )
+    else:
+        from tinyassets.storage.model_preferences import PreferenceSnapshot
+
+        if type(preference_snapshot) is not PreferenceSnapshot or allow_empty:
+            raise ValueError("invalid captured model preferences")
+        preferences = preference_snapshot
     captured = capture_preference_policy(
         saved=preferences.policy, observed_generation=preferences.generation, current=current,
     )

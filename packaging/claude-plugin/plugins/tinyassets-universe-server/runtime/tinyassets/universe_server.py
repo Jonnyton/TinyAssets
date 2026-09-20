@@ -497,6 +497,7 @@ def read_graph(
     field_name: str = "",
     output_offset: int = 0,
     output_max_chars: int = 8192,
+    request_key: str = "",
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
@@ -508,7 +509,8 @@ def read_graph(
         target: What to read: status, graphs, graph, branches (your own workflows
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings, or
-            agent_binding, or model_options (all owned model choices, including unavailable ones).
+            agent_binding, model_options (all owned model choices, including unavailable ones),
+            or conversation_turn (your keyed custom conversation's current run/projection).
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
@@ -532,8 +534,18 @@ def read_graph(
         output_offset: Unicode code-point offset within a selected output field,
             or field index when reading the catalog. Continue using next_offset.
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
+        request_key: Original UUIDv4 for target=conversation_turn; observation never starts work.
     """
     normalized = (target or "status").strip().lower()
+    if normalized == "conversation_turn":
+        from tinyassets.api.helpers import _base_path, _request_universe
+        from tinyassets.api.permissions import current_actor_id, is_authenticated_request
+        from tinyassets.consumer_runtime import read_turn
+
+        if not is_authenticated_request():
+            return json.dumps({"error": "not_found"})
+        return json.dumps(read_turn(_base_path(), owner=current_actor_id(),
+                                    universe=_request_universe(graph_id), request_key=request_key))
     if normalized in {"receiver", "output_links", "delivery"}:
         action = {"receiver": "inspect_receiver", "output_links": "list_output_links",
                   "delivery": "get_delivery"}[normalized]
@@ -2314,6 +2326,7 @@ def converse(
     graph_id: str = "",
     input_method: Literal["typed", "spoken", "app_action", "unknown"] = "unknown",
     model_choice: dict | None = None,
+    consumer_request: dict | None = None,
 ) -> str:
     """Relay a message to your universe's intelligence and return its reply.
 
@@ -2340,6 +2353,10 @@ def converse(
             an empty list. This replaces this turn's order only; it never saves
             defaults, grants access or enables paid models. Omit to use saved
             settings or the existing provider binding.
+        consumer_request: Selected custom conversation request: version1,
+            request_key UUIDv4, binding_id and binding_revision. Reuse the exact
+            original object/message/model choice on reconnect; never create a
+            new key to observe work. Omit for the unchanged default conversation.
     """
     import json
 
@@ -2436,6 +2453,15 @@ def converse(
             "error": "Only this universe's founder can talk with it.",
             "auth_scope_required": True,
         })
+
+    from tinyassets.consumer_runtime import converse_turn
+
+    custom = converse_turn(
+        _base_path(), owner=current_actor_id(), universe=uid, message=message,
+        input_method=input_method, model_choice=model_choice, request=consumer_request,
+    )
+    if custom is not None:
+        return json.dumps(custom)
 
     # Cross-turn memory (founder goal 2026-08-22: a conversation that persists).
     # One continuous session per founder per universe, keyed on the VERIFIED
@@ -3829,6 +3855,9 @@ def create_streamable_http_app() -> Starlette:
         start_scheduler_for_serving()
 
         try:
+            from tinyassets.consumer_runtime import initialize as initialize_consumer
+
+            initialize_consumer(data_dir())
             run_visibility_startup_gate()
             async with AsyncExitStack() as stack:
                 await stack.enter_async_context(
@@ -3992,12 +4021,21 @@ def main(
         # proven unstarted attempts from possibly executed work.
         from tinyassets.api.runs import _ensure_runs_recovery
         from tinyassets.delivery_runtime import reconcile_deliveries
+        from tinyassets.run_input_origins import reconcile_admitted_runs
 
+        _admitted_run_cursor = ""
         try:
             _ensure_runs_recovery()
             reconcile_deliveries(_sb_data_dir())
         except Exception:  # noqa: BLE001 - delivery must not disable budget recovery
             logger.exception("delivery: boot reconciliation failed")
+        try:
+            from tinyassets.consumer_runtime import initialize as initialize_consumer
+
+            initialize_consumer(_sb_data_dir())
+            _admitted_run_cursor = reconcile_admitted_runs(_sb_data_dir())
+        except Exception:  # noqa: BLE001 - held admissions must not disable maintenance
+            logger.exception("admitted runs: boot reconciliation failed")
         if _reclaimed:
             logger.info(
                 "served budget: released %d orphaned reservation(s) at boot",
@@ -4007,8 +4045,15 @@ def main(
         def _served_budget_lease_loop() -> None:
             import time as _time
 
+            nonlocal _admitted_run_cursor
             while True:
                 _time.sleep(300.0)
+                try:
+                    _admitted_run_cursor = reconcile_admitted_runs(
+                        _sb_data_dir(), after_run_id=_admitted_run_cursor,
+                    )
+                except Exception:  # noqa: BLE001 - independent bounded origin nomination
+                    logger.exception("admitted runs: reconciliation tick failed")
                 try:
                     reconcile_deliveries(_sb_data_dir())
                 except Exception:  # noqa: BLE001 - do not starve budget settlement
@@ -4079,6 +4124,9 @@ def main(
         assigned_consumer = AssignedQueueConsumer(data_dir())
         assigned_consumer.start()
     try:
+        from tinyassets.consumer_runtime import initialize as initialize_consumer
+
+        initialize_consumer(data_dir())
         run_visibility_startup_gate()
         if transport in ("sse", "stdio"):
             # Neither transport carries a bearer, and neither runs behind the

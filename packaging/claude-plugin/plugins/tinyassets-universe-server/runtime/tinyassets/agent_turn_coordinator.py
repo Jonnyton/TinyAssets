@@ -59,6 +59,16 @@ class AgentTurnCoordinator:
             raise ProviderAuthorityHeldError("interactive agent owner changed")
         return owner
 
+    def _has_candidate_order(self):
+        return self.plan is not None or bool(getattr(self.adapter, "has_candidate_order", False))
+
+    def _next_candidate(self):
+        if getattr(self.adapter, "has_candidate_order", False):
+            return self.adapter.next_candidate(
+                self.owner, self.context.universe_dir.name, self.exhaustion,
+            )
+        return self.plan.next_candidate(self.owner, self.context.universe_dir.name, self.exhaustion)
+
     def _accept(self, transition):
         if transition.status != "applied":
             raise JournalUnavailable("agent progress changed; action was not replayed")
@@ -167,8 +177,8 @@ class AgentTurnCoordinator:
     async def _run(self):
         self.owner = self._check_scope()
         uid = self.context.universe_dir.name
-        if self.plan is not None:
-            first = self.plan.next_candidate(self.owner, uid, self.exhaustion)
+        if self._has_candidate_order():
+            first = self._next_candidate()
             if first is None:
                 raise ProviderAuthorityHeldError("no eligible interactive model remains")
             if self.context.model_selection != first:
@@ -326,7 +336,7 @@ class AgentTurnCoordinator:
 
     def _next_after_capacity(self, exc):
         if (
-            self.plan is None or not isinstance(exc, AllProvidersExhaustedError)
+            not self._has_candidate_order() or not isinstance(exc, AllProvidersExhaustedError)
             or self.turn.state not in {"ready", "held_transport", "held_native_capacity"}
         ):
             return False
@@ -339,9 +349,7 @@ class AgentTurnCoordinator:
             return False
         self.visited.add(self.context.model_selection)
         self.exhaustion += (boundary.exhaustion,)
-        candidate = self.plan.next_candidate(
-            self.owner, self.context.universe_dir.name, self.exhaustion,
-        )
+        candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
             return False
         self.context = replace(self.context, model_selection=candidate)

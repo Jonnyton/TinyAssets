@@ -284,11 +284,29 @@ def test_call_meta_shape():
     meta = ProviderRouter._call_meta(resp, attempts=2)
     assert meta == {
         "model": "gpt-5.1-codex",
+        # The configured label is not evidence of the model that answered.
+        "execution": {"provider": "codex", "model": "", "model_status": "unknown"},
         "family": "openai",
         "latency_ms": 812,
         "degraded": False,
         "attempts": 2,
     }
+
+
+def test_call_meta_preserves_reported_answer_identity_separately():
+    from tinyassets.providers.base import ProviderResponse
+    from tinyassets.providers.router import ProviderRouter
+
+    resp = ProviderResponse(
+        text="hi", provider="claude", model="configured-alias",
+        reported_model="provider-reported-model", family="anthropic", latency_ms=812,
+    )
+    meta = ProviderRouter._call_meta(resp, attempts=2)
+    assert meta["model"] == "configured-alias"
+    assert meta["execution"] == {
+        "provider": "claude", "model": "provider-reported-model", "model_status": "reported",
+    }
+    assert meta["attempts"] == 2
 
 
 @pytest.mark.asyncio

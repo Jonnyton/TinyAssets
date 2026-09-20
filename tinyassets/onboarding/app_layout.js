@@ -25,7 +25,7 @@
     epoch:0,home:"",principal:"",loaded:false,enabled:false,busy:false,uncertain:false,
     mode:"default",source:null,arrangement:null,
     installation:null,candidates:[],saturated:false,
-    results:[],inspected:null,draft:null,
+    results:[],inspected:null,draft:null,previousTurn:null,
     anchors:new Map(),hiddenIds:[],root:null,
 
     // ---- component reader (pure; no DOM, no network) ----
@@ -120,7 +120,7 @@
       this.epoch++; this.restore();
       this.enabled=false; this.home=""; this.principal=""; this.loaded=false; this.busy=false; this.uncertain=false;
       this.installation=null; this.candidates=[]; this.saturated=false;
-      this.results=[]; this.inspected=null; this.draft=null;
+      this.results=[]; this.inspected=null; this.draft=null; this.previousTurn=null;
       $("btn-layouts").hidden=true;
       if($("layout-dialog").open) $("layout-dialog").close();
       this.status(""); this.paint();
@@ -191,11 +191,11 @@
     },
     async consume(binding,epoch,home){
       if(!this.eligible(binding)||!this.fence(epoch,home)) throw new Error("Installation ownership or role is not valid");
-      const agent=await this.getDefinition(binding.agent_definition_id);
-      if(!this.fence(epoch,home)) return;
       this.installation={binding_id:String(binding.agent_binding_id),revision:binding.revision,
         definition_id:String(binding.agent_definition_id),created_by:String(binding.created_by||""),
         configuration:JSON.parse(JSON.stringify(binding.configuration))};
+      const agent=await this.getDefinition(binding.agent_definition_id);
+      if(!this.fence(epoch,home)) return;
       const read=this.readDefinition(agent);
       if(!read.ok){ this.restore(); this.status("Installed layout unsupported: "+read.reason+". The default arrangement is in use."); return; }
       this.arrange(read.layout,{definition_id:String(agent.agent_definition_id),name:String(agent.name||"unnamed")},"applied");
@@ -216,7 +216,7 @@
       const epoch=this.epoch,home=this.home,query=String($("layout-search").value||"").trim();
       this.status("Searching public layouts…");
       try{
-        const doc=await MCP.callTool("read_graph",{target:"agents",tags:this.TAG,query,limit:30},{idempotent:true});
+        const doc=await MCP.callTool("read_graph",{target:"agents",query,limit:30},{idempotent:true});
         if(!this.fence(epoch,home)) return;
         if(!doc||doc.error||!Array.isArray(doc.agents)) throw new Error(doc&&doc.error?String(doc.error):"public layouts unavailable");
         this.results=doc.agents;
@@ -238,13 +238,93 @@
         const read=this.readDefinition(agent);
         this.inspected={agent,read};
         this.draft=read.ok?this.draftFrom(read.layout):this.draftFrom({surfaces:[...this.SURFACES],density:"comfortable"});
-        this.status(read.ok?"Design read. Preview changes nothing saved; Apply installs it for this universe.":"Unsupported design: "+read.reason);
+        this.status(read.ok?"Design read. Preview changes nothing saved; Apply installs its layout. Conversation behavior requires its separate selection.":"Layout unavailable: "+read.reason+". Conversation components are shown separately below.");
       }catch(err){
         if(!this.fence(epoch,home)) return;
         if(err&&err.authRequired){ sessionExpired(); return; }
         this.status("Could not read that design ("+(err&&err.message||"unknown error")+").");
       }
       this.paint();
+    },
+
+    // Consumer recovery is in the trusted dialog, outside the movable layout.
+    // These writes change selection DATA only; ordinary server admission still
+    // checks executable provenance, closure, model access and every effect.
+    turnComponent(c){
+      const fields=["kind","version","branch_version_id","content_hash","input_map","reply_key"].sort();
+      const ident=v=>typeof v==="string"&&v.length>0&&v.length<=200&&v.trim()===v&&!/[\x00-\x1f\x7f]/.test(v);
+      if(!c||typeof c!=="object"||Array.isArray(c)||JSON.stringify(Object.keys(c).sort())!==JSON.stringify(fields)||
+         c.kind!=="tinyassets.turn-graph.v1"||c.version!==1||!ident(c.branch_version_id)||
+         !/^[a-f0-9]{64}$/.test(c.content_hash)||!ident(c.reply_key))return this.unsupported("Unsupported conversation adapter or source pin");
+      const m=c.input_map;
+      if(!m||typeof m!=="object"||Array.isArray(m)||!Object.hasOwn(m,"message")||
+         Object.keys(m).some(k=>!["message","history"].includes(k))||
+         Object.values(m).some(v=>!ident(v))||new Set(Object.values(m)).size!==Object.values(m).length)
+        return this.unsupported("Unsupported conversation input mapping");
+      return {ok:true};
+    },
+    async selectTurn(key){
+      const a=this.inspected&&this.inspected.agent,c=a&&a.components&&a.components[key];
+      if(!a||!this.turnComponent(c).ok||!/^[a-f0-9]{64}$/.test(a.content_fingerprint))return;
+      await this.saveTurn(a.agent_definition_id,{version:1,state:"active",component_key:key,
+        definition_fingerprint:a.content_fingerprint});
+    },
+    async disableTurn(){
+      if(this.installation)await this.saveTurn(this.installation.definition_id,{version:1,state:"disabled"});
+    },
+    async rollbackTurn(){
+      const previous=this.previousTurn;
+      if(previous)await this.saveTurn(previous.definition_id,previous.selection);
+    },
+    async saveTurn(definitionId,selection){
+      if(!this.enabled||this.busy||this.uncertain||!this.loaded||this.saturated||this.candidates.length>1)return;
+      const epoch=this.epoch,home=this.home,observed=this.installation;
+      this.busy=true;this.paint();
+      try{
+        const rows=await this.currentBindings();
+        if(!this.fence(epoch,home))return;
+        const b=rows[0];
+        if((!observed&&b)||(observed&&(!b||b.agent_binding_id!==observed.binding_id||b.revision!==observed.revision)))
+          throw Error("Installation changed; refresh before selecting again");
+        if(b&&(!this.eligible(b)||b.updated_by!==this.principal))throw Error("Installation is not owner-controlled");
+        if(selection.state==="active"){
+          const agent=await this.getDefinition(definitionId);
+          if(!this.fence(epoch,home))return;
+          if(agent.content_fingerprint!==selection.definition_fingerprint||
+             !this.turnComponent(agent.components&&agent.components[selection.component_key]).ok)
+            throw Error("Selected definition is no longer compatible");
+        }
+        const config=b?JSON.parse(JSON.stringify(b.configuration)):{schema_version:1,name:"App experience",role:this.ROLE};
+        const previous=b?{definition_id:b.agent_definition_id,
+          selection:JSON.parse(JSON.stringify(config.turn_consumer||{version:1,state:"disabled"}))}:null;
+        config.turn_consumer=JSON.parse(JSON.stringify(selection));
+        const result=await MCP.callTool("write_graph",{target:"agent_binding",operation:b?"update":"bind",
+          graph_id:home,agent_definition_id:definitionId,...(b?{agent_binding_id:b.agent_binding_id,expected_revision:b.revision}:{}),
+          payload_json:JSON.stringify(config)});
+        if(!this.fence(epoch,home))return;
+        const written=result&&result.binding;
+        if(!result||result.error||result.status!=="configured"||!written||!this.eligible(written)||
+           written.updated_by!==this.principal||written.agent_definition_id!==definitionId||
+           (b&&written.agent_binding_id!==b.agent_binding_id))throw Error("Selection save was not confirmed");
+        const doc=await MCP.callTool("read_graph",{target:"agent_binding",graph_id:home,
+          agent_binding_id:written.agent_binding_id},{idempotent:true});
+        if(!this.fence(epoch,home))return;
+        const check=doc&&doc.binding;
+        if(!this.eligible(check)||check.updated_by!==this.principal||check.agent_binding_id!==written.agent_binding_id||
+           check.agent_definition_id!==definitionId||check.revision!==written.revision||
+           JSON.stringify(check.configuration)!==JSON.stringify(config))throw Error("Selection read-back did not match");
+        this.previousTurn=previous;
+        this.installation={binding_id:check.agent_binding_id,revision:check.revision,
+          definition_id:check.agent_definition_id,configuration:JSON.parse(JSON.stringify(check.configuration))};
+        this.candidates=[check];
+        this.status(selection.state==="disabled"?"Default conversation restored for future messages. Existing work is not cancelled or replayed.":
+          "Conversation design selected for future messages. Execution checks still apply. Your model choice and private data are unchanged.");
+      }catch(err){
+        if(!this.fence(epoch,home))return;
+        if(err&&err.authRequired){sessionExpired();return;}
+        this.uncertain=true;
+        this.status((err&&err.message||"Selection unavailable")+". Nothing was retried. Refresh the installation before another change.");
+      }finally{if(this.fence(epoch,home)){this.busy=false;this.paint();}}
     },
 
     // ---- editor draft (order + inclusion + density) ----
@@ -426,6 +506,22 @@
         this.line(panel,r.ok?"Layout: "+r.layout.surfaces.join(" → ")+" · "+r.layout.density+(r.others.length?" · preserved, not rendered: "+r.others.join(", "):"")
                             :"Unsupported: "+r.reason,r.ok?"":"layout-unsupported");
       }else this.line(panel,"No design inspected. Search public designs or start from the default.","muted");
+      const turnPanel=$("consumer-controls");turnPanel.replaceChildren();
+      const selected=this.installation&&this.installation.configuration.turn_consumer;
+      this.line(turnPanel,selected&&selected.state==="active"
+        ?"Conversation design: "+this.installation.definition_id+" / "+String(selected.component_key)+" (revision "+this.installation.revision+")"
+        :selected&&selected.state!=="disabled"?"Conversation selection is incompatible. Restore default or inspect and select a supported design.":"Conversation design: default");
+      this.line(turnPanel,"Your chosen model and existing access still govern every call. Selection changes future messages, not work already started.","muted");
+      turnPanel.appendChild(this.button("Restore default conversation",()=>this.disableTurn(),this.busy||this.uncertain||!selected||selected.state==="disabled"));
+      if(this.previousTurn)turnPanel.appendChild(this.button("Restore previous conversation selection",()=>this.rollbackTurn(),this.busy||this.uncertain));
+      if(this.inspected){
+        for(const [key,c] of Object.entries(this.inspected.agent.components||{})){
+          if(!c||c.kind!=="tinyassets.turn-graph.v1")continue;
+          const compatible=this.turnComponent(c);
+          this.line(turnPanel,key+": "+(compatible.ok?"Uses workflow version "+c.branch_version_id+". Receives your message"+(c.input_map.history?" and recent conversation history":"")+". Source, model and effect access are checked when used. Foreign workflows require your own explicit remix first.":compatible.reason));
+          turnPanel.appendChild(this.button("Use "+key+" for conversations",()=>this.selectTurn(key),this.busy||this.uncertain||!compatible.ok||!this.loaded||this.saturated||this.candidates.length>1));
+        }
+      }
       const editor=$("layout-editor"); editor.replaceChildren();
       if(this.draft){
         this.draft.order.forEach((name,i)=>{

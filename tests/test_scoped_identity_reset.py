@@ -844,6 +844,8 @@ def test_operator_cli_loads_private_roster_and_emits_redacted_plan(
             "_windows_roster_acl_is_private",
             lambda _path: True,
         )
+    else:
+        roster_path.chmod(0o600)
 
     assert scoped_reset.main([
         "plan",
@@ -883,8 +885,23 @@ def test_roster_rejects_credentials_and_unexpected_fields(
             "_windows_roster_acl_is_private",
             lambda _path: True,
         )
+    else:
+        roster_path.chmod(0o600)
 
     with pytest.raises(ValueError, match="unexpected roster fields"):
+        scoped_reset.load_test_identity_roster(roster_path)
+
+
+def test_roster_refuses_nonprivate_permissions(tmp_path: Path, monkeypatch) -> None:
+    import tinyassets.scoped_reset as scoped_reset
+
+    roster_path = tmp_path / "unprotected-roster.json"
+    roster_path.write_text("{}", encoding="utf-8")
+    if sys.platform == "win32":
+        monkeypatch.setattr(scoped_reset, "_windows_roster_acl_is_private", lambda _path: False)
+    else:
+        roster_path.chmod(0o644)
+    with pytest.raises(PermissionError, match="another principal|group/world"):
         scoped_reset.load_test_identity_roster(roster_path)
 
 
@@ -1034,6 +1051,12 @@ def _seed_preserved_state(base: Path) -> None:
             """,
             (_SUBJECT_B,),
         )
+    # Freeze the fixture's committed WAL before the byte-preservation snapshot;
+    # sqlite context-manager exit commits but does not close the connection.
+    conn.close()
+    with sqlite3.connect(str(runs_path)) as checkpoint:
+        assert checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+    checkpoint.close()
     (base / "wiki").mkdir()
     (base / "wiki" / "commons.md").write_bytes(b"commons sentinel")
     with _connect(base) as conn:

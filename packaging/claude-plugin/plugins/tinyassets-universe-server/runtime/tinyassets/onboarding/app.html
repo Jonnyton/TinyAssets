@@ -214,7 +214,7 @@
         </div>
         <nav class="chat-actions">
           <span id="layout-mode" hidden></span>
-          <button id="btn-layouts" class="btn btn--link" hidden>Layouts</button>
+          <button id="btn-layouts" class="btn btn--link" hidden>App design</button>
           <button id="btn-layout-restore" class="btn btn--link" hidden>Restore default</button>
           <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
           <button id="btn-account" class="btn btn--link">Account</button>
@@ -261,12 +261,13 @@
     </section>
 
     <dialog id="layout-dialog" class="layout-dialog" aria-labelledby="layout-title">
-      <h2 id="layout-title">Your app layout</h2>
+      <h2 id="layout-title">Your app design</h2>
       <p>Arrange existing controls. Your conversations, model access and private settings stay yours.</p>
       <p id="layout-status" role="status" aria-live="polite"></p>
-      <label for="layout-search">Find public layouts</label><input id="layout-search" type="search">
+      <label for="layout-search">Find public designs</label><input id="layout-search" type="search">
       <div class="layout-actions"><button id="btn-layout-search" class="btn">Search</button><button id="btn-layout-default" class="btn">Start from default</button><button id="btn-layout-refresh" class="btn">Refresh installation</button></div>
       <ul id="layout-results"></ul><ul id="layout-candidates"></ul><div id="layout-inspect"></div>
+      <h3>Conversation behavior</h3><div id="consumer-controls"></div>
       <ol id="layout-editor"></ol>
       <label for="layout-density">Spacing</label><select id="layout-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select>
       <div class="layout-actions"><button id="btn-layout-preview" class="btn">Preview in this app</button><button id="btn-layout-apply" class="btn">Apply saved design</button></div>
@@ -1209,9 +1210,10 @@
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
       return {};
     },
-    converse(message,inputMethod="unknown",modelChoice=null){
+    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null){
       const args={message,input_method:turnInputMethod(inputMethod)};
       if(modelChoice!==null) args.model_choice=copyModelChoice(modelChoice);
+      if(consumerRequest!==null) args.consumer_request=JSON.parse(JSON.stringify(consumerRequest));
       return this.callTool("converse",args);
     },
     getStatus(){ return this.callTool("get_status",{},{idempotent:true}); },
@@ -2129,11 +2131,17 @@
     }
     return note;
   }
+  const renderedConsumerTurns=new Set();
+  const renderedConsumerFounders=new Set();
   function renderConverse(payload){
+    const turn=payload&&payload.consumer_turn;
+    if(turn&&renderedConsumerTurns.has(turn.turn_id))return;
     if(payload&&payload.turn_failure&&(payload.error||payload.status==="held")){
+      if(turn)renderedConsumerTurns.add(turn.turn_id);
       throw servedFailureError(payload);
     }
     if(payload&&typeof payload.reply==="string"){
+      if(turn)renderedConsumerTurns.add(turn.turn_id);
       appendMessage("universe",payload.reply,answerExecutionDetail(payload)); return;
     }
     if(payload&&payload.status==="held"&&payload.reason==="setup_required"){
@@ -2539,17 +2547,58 @@
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(opts,"modelChoice")
         ? opts.modelChoice : modelChoiceForNextTurn)});
   }
-  function rememberInflight(message, display, sentAt, inputMethod, modelChoice){
+  function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null){
     try{ localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
       {message, display: display||message,
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
+       consumerRequest,
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()})); }catch(_e){}
   }
   function forgetInflight(){ try{ localStorage.removeItem(INFLIGHT_KEY); }catch(_e){} }
   function readInflight(){
     try{ const raw=localStorage.getItem(INFLIGHT_KEY); return raw?JSON.parse(raw):null; }
     catch(_e){ return null; }
+  }
+
+  async function sendConversationRequest(message,display,sentAt,opts){
+    const epoch=MCP._loginEpoch;
+    const checkLogin=()=>{if(epoch!==MCP._loginEpoch)throw new Error("Conversation account changed.");};
+    let payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest||null);
+    checkLogin();
+    if(payload&&payload.error==="consumer_request_required"&&!opts.consumerRequest){
+      const s=payload.consumer_selection;
+      if(!s||s.version!==1||typeof s.binding_id!=="string"||!Number.isInteger(s.binding_revision))
+        throw new Error("The selected conversation is unavailable.");
+      if(opts.keepInflight)throw new Error("Resolve the earlier unconfirmed conversation first.");
+      opts.consumerRequest={version:1,request_key:crypto.randomUUID(),
+        binding_id:s.binding_id,binding_revision:s.binding_revision};
+      rememberInflight(message,display,sentAt,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+      const saved=readInflight();
+      if(!saved||JSON.stringify(saved.consumerRequest)!==JSON.stringify(opts.consumerRequest))
+        throw new Error("Could not save safe conversation recovery. No workflow was started.");
+      payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+      checkLogin();
+    }
+    const started=Date.now();
+    if(payload&&payload.consumer_turn)renderedConsumerFounders.add(payload.consumer_turn.turn_id);
+    while(payload&&payload.consumer_turn&&payload.consumer_turn.state==="pending"){
+      if(Date.now()-started>30*60*1000)throw new Error("Still working. Check this same conversation again.");
+      await new Promise(resolve=>setTimeout(resolve,1500));
+      checkLogin();
+      payload=await MCP.callTool("read_graph",{target:"conversation_turn",
+        request_key:opts.consumerRequest.request_key},{idempotent:true});
+      checkLogin();
+      if(payload&&payload.consumer_turn&&payload.consumer_turn.state==="held"&&
+         ["completed","failed","cancelled","interrupted"].includes(payload.consumer_turn.run_status)){
+        // Exact replay repairs only the already-terminal pair after a crash gap.
+        payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+        checkLogin();
+      }
+    }
+    if(payload&&payload.consumer_turn&&["pending","held","expired"].includes(payload.consumer_turn.state))
+      throw new Error(payload.notice||"This conversation is held; it will not be run again.");
+    return payload;
   }
 
   // Messages that arrive while a turn is in flight (a relayed rail answer, an
@@ -2732,7 +2781,7 @@
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
     if(!opts.keepInflight) rememberInflight(
-      message, display, sentAt, opts.inputMethod, opts.modelChoice);
+      message, display, sentAt, opts.inputMethod, opts.modelChoice,opts.consumerRequest||null);
     // A relayed answer or a side send did not come from the composer: what
     // the founder is typing there stays (Codex round 3).
     const input=$("composer-input");
@@ -2741,7 +2790,7 @@
     setStatusLine("Your universe is thinking...");
     let delivered=false;
     try{
-      renderConverse(await MCP.converse(message,opts.inputMethod,opts.modelChoice));
+      renderConverse(await sendConversationRequest(message,display,sentAt,opts));
       delivered=true;setStatusLine("");
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
@@ -2776,12 +2825,12 @@
     setStatusLine("Your universe is thinking...");
     let delivered=false;
     try{
-      const payload=await MCP.converse(message,"spoken",opts.modelChoice);
+      const payload=await sendConversationRequest(message,message,Date.now(),opts);
       if(!payload||typeof payload.reply!=="string"){
         if(payload&&(payload.error||payload.turn_failure))throw servedFailureError(payload);
         throw new Error("voice_converse_invalid");
       }
-      appendMessage("universe",payload.reply,answerExecutionDetail(payload));
+      renderConverse(payload);
       delivered=true;forgetInflight();
       return payload.reply;
     }catch(error){
@@ -2809,7 +2858,7 @@
         ? err.message+(err.failureRecorded?" This failure was not saved to conversation history. Keep this message to retry.":"")
         : "Couldn\u2019t reach your universe: "+((err&&err.message)||"unknown error");
     const again=document.createElement("button");
-    again.className="btn btn--link"; again.textContent="Send it again";
+    again.className="btn btn--link"; again.textContent=opts&&opts.consumerRequest?"Check this conversation":"Send it again";
     again.addEventListener("click", ()=>{
       // The retry is the same send: same options (a side send stays a side
       // send and keeps the earlier unconfirmed record - Codex round 3).
@@ -4425,6 +4474,11 @@
       const ordered = stamped ? turns.slice().sort((a,b)=>a.ts-b.ts) : turns.slice();
       ordered.forEach((t,index)=>{
         if(!t||typeof t.text!=="string"||!t.text)return;
+        if(t.consumer_turn_id){
+          const seen=t.speaker==="founder"?renderedConsumerFounders:renderedConsumerTurns;
+          if(seen.has(t.consumer_turn_id))return;
+          seen.add(t.consumer_turn_id);
+        }
         if(t.speaker==="platform"){
           const previous=ordered[index-1];
           const paired=previous&&typeof t.ts==="number"&&Number.isFinite(t.ts)&&previous.ts===t.ts;
@@ -4450,11 +4504,47 @@
   // had anything to draw - an empty thread IS the first-message case - and at
   // most once per page.
   let inflightRestored = false;
-  function restoreInflight(turns){
+  async function restoreInflight(turns){
     const pending = readInflight();
     // Whatever was queued behind the in-flight turn goes out after it has been
     // accounted for below (its bubble and resend offer come first).
     if(!pending || inflightRestored){ restoreQueue(); return; }
+    if(pending.consumerRequest){
+      inflightRestored=true;
+      try{
+        const epoch=MCP._loginEpoch;
+        const observed=await MCP.callTool("read_graph",{target:"conversation_turn",
+          request_key:pending.consumerRequest.request_key},{idempotent:true});
+        if(epoch!==MCP._loginEpoch)return;
+        const turn=observed&&observed.consumer_turn;
+        if(turn){
+          if(!renderedConsumerFounders.has(turn.turn_id)){
+            appendMessage("founder",pending.display,null,pending.ts/1000);
+            renderedConsumerFounders.add(turn.turn_id);
+          }
+          if(turn.projection==="committed"){
+            if(!renderedConsumerTurns.has(turn.turn_id)){
+              if(observed.reply)renderConverse(observed);
+              else if(observed.turn_failure){
+                appendFailureNotice(observed.failure_notice,null,undefined,observed.turn_failure.code);
+                renderedConsumerTurns.add(turn.turn_id);
+              }
+            }
+            forgetInflight();restoreQueue();return;
+          }
+          // Keep this exact request available for a user-requested observation
+          // or terminal projection repair, never a new workflow invocation.
+          offerResend(pending.message,pending.display,new Error("Conversation is still pending."),
+            {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
+             consumerRequest:pending.consumerRequest});
+          restoreQueue();return;
+        }
+      }catch(_e){ /* Unknown status retains the exact durable local request. */ }
+      offerResend(pending.message,pending.display,new Error("Conversation status is unavailable."),
+        {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
+         consumerRequest:pending.consumerRequest});
+      restoreQueue();return;
+    }
     // Delivered while the user was away? Only the NEWEST founder turn can be
     // this message, and it must be stamped no earlier than the send. A
     // text-only match against the whole history let an older identical prompt
@@ -4463,19 +4553,20 @@
     // a minute of slack covers clock skew without reaching an earlier send.
     const founderTurns = (turns||[]).filter(t => t && t.speaker === "founder");
     const last = founderTurns[founderTurns.length-1];
-    const already = !!last && last.truncated!==true && last.text === pending.message &&
+    const already = !pending.consumerRequest && !!last && last.truncated!==true && last.text === pending.message &&
       (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
     if(already){ forgetInflight(); restoreQueue(); return; }
     inflightRestored = true;
     appendMessage("founder", pending.display, null,
       typeof pending.ts==="number"?pending.ts/1000:null);
     const again = document.createElement("button");
-    again.className = "btn btn--link"; again.textContent = "Send it again";
+    again.className = "btn btn--link"; again.textContent = pending.consumerRequest?"Check this conversation":"Send it again";
     again.addEventListener("click", ()=>{
       // The bubble is already drawn above, so do not echo it a second time.
       note.remove(); forgetInflight();
       sendTurn(pending.message, pending.display,
         {echoed:true,inputMethod:turnInputMethod(pending.inputMethod),
+         consumerRequest:pending.consumerRequest||null,
          modelChoice:copyModelChoice(pending.modelChoice)});
     });
     const note=appendMessage("system",

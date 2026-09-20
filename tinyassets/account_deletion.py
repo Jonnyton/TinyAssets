@@ -127,6 +127,12 @@ PERSON_KEYED_DESPITE_UNIVERSE = MappingProxyType({
     "agent_turns": "owner_user_id",
     "agent_turn_rounds": "owner_user_id",
     "agent_turn_tools": "owner_user_id",
+    # Canonical private request/reply correlation also follows its owner after
+    # a home rebind; delete it before its run FK parent in the satellite sweep.
+    "conversation_run_admissions": "owner_user_id",
+    # Accepted execution inputs belong to their run owner independently of
+    # old home bindings or personal delivery controls. Delete before parent run.
+    "run_input_admissions": "owner_id",
 })
 
 #: Reached through a parent rather than by their own key, and/or entangled in

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from dataclasses import replace
 
 from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
@@ -30,6 +31,10 @@ class WorkAgentAdapter:
         self.carrier = initial_launch[0]
         self.receipt = self.carrier._receipt
         self.policy = dict(policy or {})
+        self.source_policy = dict(policy or {})
+        self.candidates = getattr(session, "_work_candidates", None)
+        self.has_candidate_order = self.candidates is not None
+        self._staged_next = None
         selected = self.carrier.selected_model
         native = self.carrier.native_selection
         model = selected.model_id if selected is not None else (
@@ -41,20 +46,36 @@ class WorkAgentAdapter:
         self.policy["preferred"] = {"provider": self.carrier.provider, "model_id": model}
 
     def check(self, context, config):
+        self._identity(context, config, self.selection)
+        return self.session._check_agent_authority(self.carrier)
+
+    def _identity(self, context, config, selection):
+        """Pure prelude only; never substitute it for active invocation/tool authority."""
         if (context.universe_dir != self.session._universe_dir
                 or context.provider_request is not None or context.provider_invocation is not None
                 or context.served_provider is not None or context.agent_model_plan is not None
-                or context.model_selection != self.selection
+                or context.model_selection != selection
                 or self.carrier._receipt != self.receipt
                 or self.carrier._claim != self.initial_launch[0]._claim
                 or not config.engine_mcp_enabled
                 or config.engine_mcp_actor_id != self.receipt.principal_id
                 or config.engine_mcp_graph_id != self.receipt.universe_id):
             raise ProviderAuthorityHeldError("workflow agent identity changed")
-        return self.session._check_agent_authority(self.carrier)
+
+    def next_candidate(self, owner, universe, exhaustion):
+        if (self.candidates is None or owner != self.receipt.principal_id
+                or universe != self.receipt.universe_id):
+            raise ProviderAuthorityHeldError("workflow candidate scope changed")
+        self._staged_next = self.candidates.next_candidate(self.source_policy, exhaustion)
+        return self._staged_next
 
     def engine_identity(self, context, config):
-        self.check(context, config)
+        if context.model_selection != self.selection and self._staged_next is not None:
+            # Discovery is not a tool effect; actual engine admission still runs.
+            # Fresh _authorize_attempt below is the only candidate launch gate.
+            self._identity(context, config, self._staged_next)
+        else:
+            self.check(context, config)
         return self.receipt.principal_id, self.receipt.universe_id
 
     def create_turn(self, journal, *, owner, context, prompt, system, plan):
@@ -66,15 +87,30 @@ class WorkAgentAdapter:
         )
 
     async def infer(self, *, router, prompt, system, config, context, observer, kind):
-        self.check(context, config)
+        changing = context.model_selection != self.selection
+        if changing:
+            if self._staged_next is None or self.initial_pending:
+                raise ProviderAuthorityHeldError("workflow candidate was not staged")
+            self._identity(context, config, self._staged_next)
+            if self.candidates.next_candidate(self.source_policy) != self._staged_next:
+                raise ProviderAuthorityHeldError("workflow candidate was exhausted")
+        else:
+            self.check(context, config)
         if self.initial_pending:
             self.initial_pending = False
             return await self._infer_launch(
                 self.initial_launch, router, prompt, system, config, context, observer, kind,
             )
+        policy = dict(self.policy)
+        if changing:
+            policy["preferred"] = {"provider": self._staged_next.connection_id,
+                                   "model_id": self._staged_next.model_id}
         with self.session._authorize_attempt(
-            role="writer", prompt=prompt, system=system, policy=self.policy,
+            role="writer", prompt=prompt, system=system, policy=policy,
         ) as launch:
+            if changing:
+                self.selection = self._staged_next
+                self.policy = policy
             return await self._infer_launch(
                 launch, router, prompt, system, config, context, observer, kind,
             )
@@ -137,6 +173,9 @@ class WorkflowAgentTurn(AgentTurnCoordinator):
                 native_evidence=(getattr(exc, "native_evidence", ())
                                  if self.execution_kind == "native_agent" else ()),
             )
+            # Before a durable inference round exists, the observer prevented
+            # transport launch. Keep the existing known-unsent retry contract;
+            # authentication/unknown transport failures have a recorded round.
             if effects or (rounds and boundary is None):
                 raise WorkAgentEffectHeld(
                     "Workflow agent progress is held; "
@@ -145,11 +184,14 @@ class WorkflowAgentTurn(AgentTurnCoordinator):
             raise
 
 
-def call_foreground_work_agent(session, *, prompt, system, config, policy):
+def call_foreground_work_agent(session, *, prompt, system, config, policy, response_observer=None,
+                               metadata_observer=None):
     """Enter once from immutable work opt-in, never through a fake served request."""
     return _call_work_agent(
         session, prompt=prompt, system=system, config=config, policy=policy,
         principal_id=session._principal_id, universe_id=session._universe_id,
+        response_observer=response_observer,
+        metadata_observer=metadata_observer,
     )
 
 
@@ -161,7 +203,8 @@ def call_background_work_agent(session, *, prompt, system, config, policy):
     )
 
 
-def _call_work_agent(session, *, prompt, system, config, policy, principal_id, universe_id):
+def _call_work_agent(session, *, prompt, system, config, policy, principal_id, universe_id,
+                     response_observer=None, metadata_observer=None):
     from tinyassets.config import load_universe_config
     from tinyassets.engine_mcp_http import engine_tools_authorized
     from tinyassets.provider_work_authority import ProviderInvocationReservationState
@@ -177,8 +220,17 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
         raise ProviderAuthorityHeldError("engine_tools_unavailable")
     config = replace(config, engine_mcp_enabled=True, engine_mcp_actor_id=principal_id,
                      engine_mcp_graph_id=universe_id, credential_snapshot_dir=None)
+    initial_policy = policy
+    candidates = getattr(session, "_work_candidates", None)
+    if candidates is not None:
+        selected = candidates.next_candidate(policy)
+        if selected is None:
+            raise ProviderAuthorityHeldError("no eligible work model remains")
+        initial_policy = {**(policy or {}), "preferred": {
+            "provider": selected.connection_id, "model_id": selected.model_id,
+        }}
     with session._authorize_attempt(
-        role="writer", prompt=prompt, system=system, policy=policy,
+        role="writer", prompt=prompt, system=system, policy=initial_policy,
     ) as initial:
         adapter = None
         try:
@@ -195,6 +247,17 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
             turn = WorkflowAgentTurn(adapter=adapter, router=router, prompt=prompt, system=system,
                                      universe_context=context, config=config)
             response = asyncio.run(turn.run())
+            if metadata_observer is not None:
+                metadata = router._call_meta(response, len(turn.turn.rounds))
+                # Keep the selected request separate from answer telemetry.
+                # Some HTTP adapters put the reported alias in response.model.
+                metadata["model"] = adapter.selection.model_id
+                metadata_observer(metadata)
+            if response_observer is not None:
+                try:
+                    response_observer(response)
+                except Exception:
+                    logging.getLogger(__name__).warning("Work answer receipt unavailable")
             return response.text, response.provider
         finally:
             if adapter is None or adapter.initial_pending:

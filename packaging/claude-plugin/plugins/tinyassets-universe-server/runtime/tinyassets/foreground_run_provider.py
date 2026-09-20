@@ -138,6 +138,7 @@ class _ForegroundRunProviderSession:
         universe_id: str,
         principal_id: str,
         provider_call: Callable[..., str],
+        model_preference_data: dict | None = None,
     ) -> None:
         self._base_path = Path(base_path)
         self._universe_id = universe_id.strip()
@@ -155,6 +156,14 @@ class _ForegroundRunProviderSession:
         self._call_index = 0
         self._lock = threading.Lock()
         self._closed = False
+        self._work_candidates = None
+        if model_preference_data is not None:
+            from tinyassets.providers.work_candidate_data import prepare_captured_choices
+
+            self._work_candidates = prepare_captured_choices(
+                self._base_path, owner=self._principal_id, universe=self._universe_id,
+                document=model_preference_data,
+            )
 
     def _validate_founder_home(self) -> None:
         from tinyassets.daemon_server import get_founder_home
@@ -473,6 +482,12 @@ class _ForegroundRunProviderSession:
             * (1 + len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS)) if policy else 1
             for policy in policies
         )
+        if getattr(self, "_work_candidates", None) is not None:
+            max_invocations = self._work_candidates.fit(
+                self._branch_snapshot,
+                ceiling=min(binding.max_invocations for binding in bindings),
+                retry_multiplier=1 + len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS),
+            )
         max_invocations = _work_invocation_allowance(
             self._branch_snapshot, minimum=max_invocations,
             ceiling=min(binding.max_invocations for binding in bindings),
@@ -895,11 +910,73 @@ class _ForegroundRunProviderSession:
             if config.engine_mcp_enabled:
                 from tinyassets.workflow_agent import call_foreground_work_agent
 
+                response_observer = kwargs.pop("response_observer", None)
+                metadata_observer = kwargs.pop("_metadata_observer", None)
                 if role != "writer" or kwargs:
                     raise PermissionError("workflow agent call cannot substitute execution context")
                 return call_foreground_work_agent(
                     self, prompt=prompt, system=system, config=config, policy=policy,
+                    **({"response_observer": response_observer}
+                       if response_observer is not None else {}),
+                    **({"metadata_observer": metadata_observer}
+                       if metadata_observer is not None else {}),
                 )
+        metadata_observer = kwargs.pop("_metadata_observer", None)
+        if self._work_candidates is not None:
+            return self._call_captured_prompt(
+                role, prompt, system, config, policy, kwargs, metadata_observer,
+            )
+        return self._call_once(role, prompt, system, config, policy, kwargs)
+
+    def _call_captured_prompt(self, role, prompt, system, config, policy, kwargs,
+                              metadata_observer):
+        from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+        from tinyassets.providers.agent_capacity_boundary import capacity_boundary
+        from tinyassets.providers.call import get_provider_router
+
+        attempts = 0
+        while True:
+            selected = self._work_candidates.next_candidate(policy)
+            if selected is None:
+                raise ProviderAuthorityHeldError("no eligible work model remains")
+            effective = {**(policy or {}), "preferred": {
+                "provider": selected.connection_id, "model_id": selected.model_id,
+            }}
+            observed = []
+            outer = kwargs.get("response_observer")
+
+            def observe(response):
+                observed.append(response)
+                if outer is not None:
+                    outer(response)
+
+            try:
+                attempts += 1
+                result = self._call_once(role, prompt, system, config, effective,
+                                         {**kwargs, "response_observer": observe})
+            except AllProvidersExhaustedError as exc:
+                router = get_provider_router()
+                kind = router.selected_agent_execution_kind(selected) if router else None
+                boundary = capacity_boundary(
+                    selected, exc.attempts, execution_kind=kind,
+                    native_evidence=(getattr(exc, "native_evidence", ())
+                                     if kind == "native_agent" else ()),
+                )
+                if boundary is None:
+                    raise ProviderAuthorityHeldError("work model attempt is held") from exc
+                self._work_candidates.next_candidate(policy, (boundary.exhaustion,))
+                continue
+            if metadata_observer is not None:
+                metadata = {"attempts": attempts, "model": selected.model_id}
+                if len(observed) == 1:
+                    from tinyassets.providers.router import ProviderRouter
+
+                    metadata.update(ProviderRouter._call_meta(observed[0], attempts))
+                    metadata["model"] = selected.model_id
+                metadata_observer(metadata)
+            return result
+
+    def _call_once(self, role, prompt, system, config, policy, kwargs):
         with self._authorize_attempt(
             role=role,
             prompt=prompt,
@@ -958,8 +1035,11 @@ class _ForegroundRunProviderSession:
         **kwargs: Any,
     ) -> tuple[str, str, dict[str, Any]]:
         del difficulty
+        metadata = {"authority": RUN_GRAPH_OPERATION, "attempts": 1}
+        if self._work_candidates is not None:
+            kwargs["_metadata_observer"] = metadata.update
         response, provider = self._call(role, prompt, system, config, policy, kwargs)
-        return response, provider, {"authority": RUN_GRAPH_OPERATION, "attempts": 1}
+        return response, provider, metadata
 
     def close(self) -> None:
         if self._closed:
