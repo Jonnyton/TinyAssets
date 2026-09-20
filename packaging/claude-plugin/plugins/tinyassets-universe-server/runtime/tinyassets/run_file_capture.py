@@ -25,7 +25,7 @@ from tinyassets.run_file_sources import open_authoring_source
 from tinyassets.scoped_reset import _assert_recovery_state_is_clean, acquire_maintenance_barrier
 from tinyassets.storage import _connect as author_connection
 from tinyassets.storage import run_files as store
-from tinyassets.storage.current_home import check_principal_not_deleted
+from tinyassets.storage.current_home import check_current_home, check_principal_not_deleted
 from tinyassets.storage.run_file_lock import try_file_operation_lock
 
 logger = logging.getLogger(__name__)
@@ -55,10 +55,12 @@ def _headroom_bytes():
 
 
 @contextmanager
-def _authority(base, owner, universe, *, write=False):
+def _authority(base, owner, universe, *, write=False, require_current_home=False):
     with author_connection(base) as conn:
         conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         check_principal_not_deleted(conn, owner)
+        if require_current_home:
+            check_current_home(conn, owner, universe)
         # Exact existing universe admin grant, not home ownership or attribution.
         row = conn.execute(
             "SELECT permission FROM universe_acl WHERE universe_id=? AND actor_id=?",
@@ -141,13 +143,58 @@ def capture_authoring_files(base, *, owner_id, universe_id, label, sources, shou
             raise store.FileCustodyRefused("file_capture_source_invalid")
     operation = "file:capture:" + _digest([owner_id, universe_id, label])
     request = _digest(["authoring-handle-v1", owner_id, universe_id, sources])
+    source_store = AuthoringStore(base)
+
+    def metadata():
+        result = []
+        for source in sources:
+            source_store.get_session(source["session_id"], actor_id=owner_id)
+            result.append(source_store.get_file_handle(
+                source["handle_id"], actor_id=owner_id, session_id=source["session_id"]
+            ))
+        return result
+
+    @contextmanager
+    def opened(index, expected, cancelled):
+        with open_authoring_source(source_store, owner_id=owner_id, **sources[index],
+                                   should_cancel=cancelled) as stream:
+            if any(stream.metadata[key] != expected[key] for key in _SOURCE_KEYS):
+                raise store.FileCustodyRefused("file_source_changed")
+            yield stream.iter_chunks()
+
+    @contextmanager
+    def fence(expected):
+        with source_store.file_handles_commit_fence(sources=sources, actor_id=owner_id) as current:
+            if any(any(a[key] != b[key] for key in _SOURCE_KEYS)
+                   for a, b in zip(current, expected)):
+                raise store.FileCustodyRefused("file_source_changed")
+            yield
+
+    return _capture_files(base, owner_id=owner_id, universe_id=universe_id,
+                          operation=operation, request=request, metadata_provider=metadata,
+                          open_source=opened, source_fence=fence, should_cancel=should_cancel)
+
+
+def _capture_files(base, *, owner_id, universe_id, operation, request, metadata_provider,
+                   open_source, source_fence, should_cancel=None, require_current_home=False,
+                   ready_to_copy=None, replay_result=None):
+    """Two trusted source adapters share ONE journal/allocation/publication path.
+
+    Callbacks are platform code only, never a workflow/plugin registry. The same
+    worker thread owns the maintenance barrier and operation guard throughout.
+    """
     base = Path(base).absolute()
+
+    def authority(*, write=False):
+        return _authority(base, owner_id, universe_id, write=write,
+                          require_current_home=require_current_home)
+
     with acquire_maintenance_barrier(base, exclusive=False, timeout=5):
         _assert_recovery_state_is_clean(base)
         with try_file_operation_lock(base, operation_id=operation) as guard:
             if guard is None:
                 raise store.FileCustodyRefused("file_operation_busy")
-            with _authority(base, owner_id, universe_id, write=True):
+            with authority(write=True):
                 # Service-owned additive initialization, outside callback writers.
                 # No source bytes or root coordinator work occurs under this fence.
                 with runs._connect(base) as conn:
@@ -155,18 +202,10 @@ def capture_authoring_files(base, *, owner_id, universe_id, label, sources, shou
                     store.ensure_schema(conn)
                     prior = _replay(conn, guard, owner_id, universe_id, request)
                     if prior is not None:
-                        return prior
+                        return replay_result(conn, operation, prior) if replay_result else prior
             ceiling = store.capacity_limit()
             headroom = _headroom_bytes()
-            source_store = AuthoringStore(base)
-            metadata = []
-            for source in sources:
-                source_store.get_session(source["session_id"], actor_id=owner_id)
-                metadata.append(
-                    source_store.get_file_handle(
-                        source["handle_id"], actor_id=owner_id, session_id=source["session_id"]
-                    )
-                )
+            metadata = metadata_provider()
             objects = [
                 store.CapturedFile.new(
                     **{key: row[key] for key in ("filename", "media_type", "size_bytes", "sha256")}
@@ -178,7 +217,7 @@ def capture_authoring_files(base, *, owner_id, universe_id, label, sources, shou
             maximum = sum(item.size_bytes for item in objects)
             root, blobs = _physical_store(base)
             physical_id = ":".join(str(part) for part in blobs.root_identity)
-            with _authority(base, owner_id, universe_id, write=True):
+            with authority(write=True):
                 with runs._connect(base) as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     guard.require_held(conn)
@@ -211,7 +250,7 @@ def capture_authoring_files(base, *, owner_id, universe_id, label, sources, shou
             reserved = accepted = False
 
             def cancelled():
-                with _authority(base, owner_id, universe_id):
+                with authority():
                     return should_cancel is not None and should_cancel()
 
             try:
@@ -223,16 +262,14 @@ def capture_authoring_files(base, *, owner_id, universe_id, label, sources, shou
                     max_bytes=maximum,
                 )
                 reserved = True
-                for source, expected, item in zip(sources, metadata, objects):
+                if ready_to_copy is not None:
+                    ready_to_copy()
+                for index, (expected, item) in enumerate(zip(metadata, objects)):
                     try:
-                        with open_authoring_source(
-                            source_store, owner_id=owner_id, **source, should_cancel=cancelled
-                        ) as stream:
-                            if any(stream.metadata[key] != expected[key] for key in _SOURCE_KEYS):
-                                raise store.FileCustodyRefused("file_source_changed")
+                        with open_source(index, expected, cancelled) as chunks:
                             staged = blobs.stage_stream(
                                 item.file_id + ".part",
-                                stream.iter_chunks(),
+                                chunks,
                                 max_bytes=item.size_bytes,
                                 should_cancel=cancelled,
                             )
@@ -247,15 +284,8 @@ def capture_authoring_files(base, *, owner_id, universe_id, label, sources, shou
                     except BlobStreamError as exc:
                         transferred += exc.bytes_read
                         raise
-                with _authority(base, owner_id, universe_id, write=True):
-                    with source_store.file_handles_commit_fence(
-                        sources=sources, actor_id=owner_id
-                    ) as current:
-                        if any(
-                            any(a[key] != b[key] for key in _SOURCE_KEYS)
-                            for a, b in zip(current, metadata)
-                        ):
-                            raise store.FileCustodyRefused("file_source_changed")
+                with authority(write=True):
+                    with source_fence(metadata):
                         if should_cancel is not None and should_cancel():
                             raise store.FileCustodyRefused("file_capture_cancelled")
                         with runs._connect(base) as conn:
@@ -268,8 +298,11 @@ def capture_authoring_files(base, *, owner_id, universe_id, label, sources, shou
                                 universe_id=universe_id,
                                 objects=objects,
                             )
+                            result = [public_reference(asdict(item)) for item in objects]
+                            if replay_result is not None:
+                                result = replay_result(conn, operation, result)
                 accepted = True
-                return [public_reference(asdict(item)) for item in objects]
+                return result
             finally:
                 if not accepted:
                     # Visibility revocation/debt only; no guessed file deletion or
