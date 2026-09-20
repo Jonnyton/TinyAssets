@@ -116,7 +116,10 @@ bindings, manifests and physical cleanup debt. Compatible code must remain for
 exact owned read/export/release and collection; do not deploy an old binary that
 silently discards declarations or delete retained files. Reducing the configured
 ceiling below retained allocations refuses additional intake rather than evicts
-files. Root owns actual environment changes, exact deployed proof and live
+files. Unsetting stops NEW BYTE CAPTURE ONLY: existing references remain bindable,
+executable and exportable without the ceiling, and bound files do not expire.
+Stopping existing-file binding/execution requires a targeted hotfix redeploy,
+never an old binary. Root owns actual environment changes, exact deployed proof and live
 acceptance; this builder has made no production configuration changes.
 
 Release/hold checks follow the shipping-and-launch checklist: required hosted
@@ -130,6 +133,9 @@ for foreign/unbound inputs and unknown capacity with disposable fixtures.
 For the first hour, the release lead checks daemon health, new capture/read/run
 error types, disk headroom, retained/pending allocations and cleanup debt against
 the predeploy snapshot. Hold rollout for unexplained failures or growing debt;
-stop new intake immediately for integrity or authorization failure. Preserve
-accepted runs/files for inspection and compatible export/cleanup. Report actual
+stop new byte intake immediately for integrity or authorization failure, but do
+not mistake that for disabling access to existing files. If existing binding,
+execution or reads are affected, deploy the targeted safety hotfix as well;
+there is no existing-execution kill switch in the custody capacity setting.
+Preserve accepted runs/files for inspection and compatible export/cleanup. Report actual
 monitoring observations and rollback timing, not assumed successful recovery.
