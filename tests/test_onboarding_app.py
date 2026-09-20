@@ -226,8 +226,9 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app/serving/bind", "/mcp/app/models/preferences",
         "/mcp/app/billing/status", "/mcp/app/billing/checkout",
         "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
-        "/mcp/app/account/delete", "/mcp/app/connections",
+        "/mcp/app/account/delete", "/mcp/app/connections", "/mcp/app/files",
     }
+    assert by_path["/mcp/app/files"].methods == {"POST"}
     assert "GET" in by_path["/mcp/app"].methods
     assert "GET" in by_path["/mcp/app/billing/status"].methods
     assert "GET" in by_path["/mcp/app/me"].methods

@@ -43,12 +43,20 @@ def file_limits(*, universe_id):
                 ceiling = store.capacity_limit()
             except store.FileCustodyRefused as exc:
                 return {"capture_available": False, "reason": str(exc)}
+        from tinyassets.onboarding import onboarding_enabled
+        from tinyassets.run_file_upload import MAX_UPLOAD_BYTES
+
+        # The app upload route is mounted only with the onboarding app; it is
+        # advertised only when reachable, never as installed-but-dark support.
+        app_upload = onboarding_enabled()
         return {"capture_available": True, "custody_capacity_bytes": ceiling,
                 "authoring_source_max_bytes": MAX_FILE_BYTES,
                 "capture_max_files": MAX_CAPTURE_FILES, "read_max_bytes": CHUNK_BYTES,
                 "unbound_retention_seconds": store.UNBOUND_LIFETIME_SECONDS,
                 "bound_retention": "until explicit release or owner erasure",
-                "supported_intake": ["authoring_handle"],
+                "app_upload_available": app_upload,
+                "app_upload_max_bytes": MAX_UPLOAD_BYTES,
+                "supported_intake": ["authoring_handle"] + (["app_upload"] if app_upload else []),
                 "unsupported_intake": ["active_workspace", "url", "arbitrary_path"],
                 "file_delivery_available": False}
     return _result(execute)

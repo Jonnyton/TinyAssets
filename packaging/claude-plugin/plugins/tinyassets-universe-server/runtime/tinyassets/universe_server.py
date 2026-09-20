@@ -509,6 +509,11 @@ def read_graph(
     target=delivery with query=delivery_id reads your side's safe receipt.
     target=run_file reads exact owned run-bound binary chunks; run_file_limits
     reports technical intake/read/retention limits. No sender paths are exposed.
+    Files the user attached in the app arrive inside their message as a delimited
+    JSON attachment block: copy each file reference VERBATIM (all six fields,
+    unchanged) into a declared file input of run_graph; a transcribed digest is
+    refused. unbound_expires_at beside the files is when an unbound upload
+    lapses; a sent message is not a run binding.
 
     Args:
         target: What to read: status, graphs, graph, branches (your own workflows

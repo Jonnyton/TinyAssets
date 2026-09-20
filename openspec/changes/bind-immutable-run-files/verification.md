@@ -739,3 +739,142 @@ oracle invocation above. Ruff passes for all four files. The imported commit
 changes no runtime bytes; previous 56-file and final 36-test proof therefore
 remain evidence for the exact current runtime. Freeze for root's independent
 review; no push, merge or deployment performed by this builder.
+
+## App byte-intake backend slice (2026-09-20, isolated builder)
+
+Builder: Claude Fable, worktree `wf-file-upload-backend`, branch
+`codex/claude-file-upload-backend` on top of `7d7b779c`. No subagents, peer
+subprocesses, pushes, PRs, merges, production, provider or browser calls.
+This is the BACKEND half only; `onboarding/app.html` and UI tests belong to
+the sibling `wf-file-upload-ui` lane and are not integrated here.
+
+### What is implemented locally (not deployed)
+
+- `tinyassets/run_file_upload.py`: exact `X-TinyAssets-Upload` metadata
+  parser (base64url UTF-8 JSON, exact seven keys, `version:1`, label 16-128,
+  header <= 8192 ASCII, non-bool nonnegative `size_bytes` <= 8 MiB, 64
+  lowercase hex SHA-256; refuse, never truncate), a two-slot `StreamBridge`
+  (ASGI frames resliced to `CHUNK_BYTES`, 10 s idle / 120 s total deadlines
+  enforced on BOTH sides, `fail` wakes both), and `upload_app_file`, which
+  reuses `_capture_files` unchanged: same barrier, operation guard,
+  reservation, inventory, stage/publish, commit fence, cleanup debt and byte
+  settlement. Operation ids are namespaced `file:upload:`; request digests
+  use source kind `app-upload-v1`. Content-Length equality is checked inside
+  `metadata_provider`, i.e. only for a NEW copy and before reservation, so a
+  lying length refuses 400 without consuming the label; a committed
+  same-label replay never reads the body. `replay_result` wraps references
+  with `unbound_retention_seconds` and the operation row's
+  `unbound_expires_at` (null when bound; expired unbound refuses).
+- `tinyassets/onboarding/file_upload.py`: `POST /mcp/app/files` behind the
+  existing identity middleware. Order: 404 dark flag, 401 identity, 403
+  origin (existing Host-or-resource set, exact scheme/authority, no
+  path/query/fragment, `application/octet-stream`, `null`/missing refused;
+  `_same_origin_json` untouched), 403 missing custom header, 400/413
+  metadata, 400 malformed Content-Length, 409 no home / expected-home
+  mismatch, 503 four-slot per-process semaphore, THEN the worker. The worker
+  runs on the Starlette threadpool with `require_current_home=True`, so
+  admin/tombstone/current-home are rechecked at every chunk checkpoint and
+  inside the final commit fence. The producer reads raw `request.receive()`
+  frames only after `ready_to_copy` (post-reservation). Refusal, disconnect,
+  timeout and worker failure all fail the bridge; the task group cancels the
+  producer and `run_in_threadpool` joins the worker before the response.
+- `tinyassets/api/run_files.py` `file_limits`: `app_upload_available`
+  (true only when the onboarding app flag mounts the route),
+  `app_upload_max_bytes`, and `app_upload` in `supported_intake` when live.
+- `tinyassets/universe_server.py` `read_graph` guide: copy app attachment
+  references verbatim; `unbound_expires_at` is wrapper metadata; a sent
+  message is not a binding.
+- `onboarding_routes()` registers the route; `tests/test_onboarding_app.py`
+  route table updated. Plugin mirror regenerated
+  (`python packaging/claude-plugin/build_plugin.py`, 496 files);
+  `python scripts/check_mirror_parity.py` -> all 496 mirror-matched.
+
+### Evidence (native Windows 11, Python 3.14.3, pytest 9.0.2; Linux oracle
+container Python 3.11.16 / git 2.47.3 / bwrap 0.12.0 via WSL Docker 29.1.3)
+
+- Red first: with the route line removed,
+  `python -m pytest tests/test_app_file_upload.py -q -x` failed at the first
+  origin case (404 instead of 403); restored, the file passes 12/12 (5.9 s).
+- `tests/test_app_file_upload.py` drives the REAL
+  `AuthContextMiddleware(Starlette(onboarding_routes()))` with scripted ASGI
+  `receive`/`send` (not TestClient, which collapses bodies to one frame):
+  22 identity/origin/header/metadata/home refusals with zero body reads and
+  zero rows; 6 MiB non-UTF-8 body in three uneven frames (one 3 MiB+17
+  frame proves reslicing); exact six-field ref, wrapper expiry equals the
+  operation row; committed replay with zero reads; metadata-only POST
+  (`Content-Length: 0`) observes the committed result; changed metadata
+  409; empty file; independent sibling labels and a second owner; length
+  lie 400 with no row; digest mismatch 400 -> label held 409 with cleanup
+  inventory; overflow 413; disconnect mid-stream (cleanup, allocation debt
+  kept, no active guard); idle and total deadlines 408; slow-worker
+  buffering high-water <= 2 chunks; founder-home rebind mid-copy 409 inside
+  the fence; capacity unset 503 and full semaphore 503 before bytes;
+  expired-unbound 409, bound replay `unbound_expires_at: null`, release
+  then 409, and `account_deletion.delete_account` erasing the uploaded
+  custody through the existing path; discovery truthfulness.
+  `AuthoringStore.put_file_handle` is patched to raise for the whole module.
+- Linux oracle (`scripts/linux_oracle.py` invoked through a tiny WSL wrapper
+  because WSL git cannot resolve this worktree's Windows `gitdir`):
+  `tests/test_app_file_upload.py tests/test_run_file_capture.py
+  tests/test_run_file_public_authoring.py tests/test_run_file_erasure.py`
+  -> first run 44 passed / 2 failed. Both failures were ORDER-DEPENDENT and
+  caused by my discovery test: it imported `tinyassets.api.run_files` for
+  the first time under a monkeypatched `helpers._base_path`, so the module
+  permanently bound the test lambda and later served captures read the wrong
+  data dir (`run_file_access_denied`). The same leak, in the other direction,
+  failed only that discovery test on Windows when the public suites ran
+  first. Confirmed by bisect (onboarding suites: 161 passed; public/direct
+  suites: reproduced; remaining custody suites: 107 passed) and by an
+  isolated oracle run of the two tests on the base tree `7d7b779c` (2
+  passed) and on the working tree (2 passed). Fix: the test imports the
+  module at collection time and patches ITS `_base_path`, `_principal` and
+  `_request_universe`; no runtime code changed for this.
+- Windows regression before the fix (19 files incl. all `test_run_file_*`,
+  `test_delivery_account_deletion`, `test_onboarding_app`,
+  `test_onboarding_model_preferences`): 325 passed, the 1 failure above.
+- Ruff clean on every touched file; `scripts/check_context_budget.py` OK.
+- After the fix, Linux oracle on `tests/test_app_file_upload.py
+  tests/test_run_file_capture.py tests/test_run_file_public_authoring.py
+  tests/test_run_file_erasure.py tests/test_run_file_public.py
+  tests/test_onboarding_app.py`: **192 passed, 0 failed** (51.33 s, exit 0).
+
+### Root independent completion of the stopped backend checkpoint
+
+September20,2026 ~07:55UTC. Fable process55493 ended exit0 after1393s,
+but its final message still described a pending Windows rerun and no commit.
+Root verified no corresponding pytest/oracle process remained and preserved all
+changes. No runtime code was changed by root. Author: Claude Fable; independent
+source/test reviewer: root Codex, no extra ChatGPT agent.
+
+- Windows command: `$uploadTestFiles = @(rg --files tests -g 'test_run_file_*.py');
+  python -m pytest -q tests/test_app_file_upload.py
+  tests/test_delivery_account_deletion.py tests/test_onboarding_app.py
+  tests/test_onboarding_model_preferences.py $uploadTestFiles`:
+  **355 passed,1 skipped**,143.65s,exit0. Sole skip is the POSIX symlink/fifo
+  fixture in test_run_file_streams.py:232; this is not an all-platform claim.
+- Independent Linux command: `wsl -d Ubuntu --exec python3
+  /mnt/c/Users/Jonathan/.codex/worktrees/0a7f/TinyAssets/output/root-upload-linux-oracle.py
+  -- -q -rs tests/test_app_file_upload.py tests/test_run_file_capture.py
+  tests/test_run_file_public_authoring.py tests/test_run_file_erasure.py
+  tests/test_run_file_public.py tests/test_onboarding_app.py`:
+  **192 passed,zero skips**,48.44s,exit0. Helper imports this worktree's canonical
+  scripts/linux_oracle.py, overriding only `_repo_root` with its exact WSL path
+  because its .git file points to a Windows path. Canonical image/readonly-copy/
+  test execution unchanged. Python3.11.16,git2.47.3,bwrap0.12.0. Tar reported
+  `.: file changed as we read it` while the Windows suite was running; no source
+  edits occurred after the builder exited. Root inspected unchanged source diff.
+- Scoped Ruff passed on both new modules, modified API/onboarding/guide and
+  tests; mirror parity496 passed; diff-check passed. No gate or ledger change.
+- Root read the whole new route/bridge/adapter and executable ASGI suite,
+  authority and shared capture extraction. Authentication precedes body reads;
+  expected home is equality, not authority; current-home/admin/tombstone fencing
+  surrounds publication; replay keeps label/reference/expiry and skips body;
+  cancellation/timeouts retain same custody cleanup debt. No new store or queue.
+  The factored AuthoringStore constructor is side-effect-free; the original
+  source reads and write fence remain inside shared capture ownership.
+
+This freezes the backend checkpoint, not a usable release. UI candidate's
+queued-account-switch bug is independently reproduced and held in its own lane.
+Combined exact-head review, CI, rollout configuration, public gates and ordinary
+app file intake + downstream use still required. Do not count seeded custody or
+the fake transport as live user acceptance.
