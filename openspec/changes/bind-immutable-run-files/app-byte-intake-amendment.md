@@ -1,6 +1,7 @@
 # Proposed app byte intake into existing custody
 
-Status: proposed only, 2026-09-20. No runtime/UI/API code or production changes.
+Status: shape accepted with Fable 21633 ADAPT and root disposition, 2026-09-20.
+Implementation is authorized; no production changes or live acceptance claimed.
 This closes the missing HUMAN app upload step of `bind-immutable-run-files`.
 It does not finish tool-only binary producers, workspace/cross-owner intake,
 materialization, durable chat-only attachment retention or the umbrella change.
@@ -55,7 +56,8 @@ Authenticate before any body read; require existing complete home and fresh
 admin/tombstone checks. Owner/home come only from resolved bearer identity and
 server current-home lookup. `expected_universe_id` is an equality precondition,
 not a target selector. A stale account/home refuses. Require exact configured
-app origin (scheme, authority including port, no path/query/fragment), raw-body
+app origin from the existing request-Host OR configured-public-resource set
+(exact scheme, authority including port, no path/query/fragment), raw-body
 content type and custom header. Reject missing/foreign/null origin and simple
 cross-site forms; no permissive CORS. Apply the existing app identity middleware
 to this route and prove the full ASGI boundary, not a preseeded context alone.
@@ -75,17 +77,25 @@ do not use `request.body()`, whole-body `_read_bounded_body`, `form()`, a tempor
 authoring store or inline base64. Enforce cumulative exact size, SHA-256 and
 hard maximum regardless of Content-Length (if present it must match metadata).
 Use an explicitly bounded stream bridge to existing workers, no new job pool;
-at most two 1 MiB buffered chunks, no unbounded producer queue. The worker owns
+reslice actual ASGI messages into chunks no larger than CHUNK_BYTES before queueing.
+At most two 1 MiB chunks are buffered, with no unbounded producer queue. A
+four-slot per-process upload semaphore refuses 503 before bytes/worker allocation
+when full, preserving threadpool capacity for other app operations. The worker owns
 the operation guard for its entire lifetime on one thread; SQL writer locks are
 short and never span upload streaming. Actual ASGI chunk/framing behavior must
 be measured in the ingress memory test, not assumed from the blob chunk limit.
 
-Proposed total upload deadline is 120 seconds. Request disconnect, explicit UI
+Retain the existing whole-copy shared maintenance barrier. This MVP bounds but
+does not eliminate possible exclusive-maintenance starvation; shortening the
+barrier requires separate safety proof. Total upload deadline is 120 seconds
+and idle chunk deadline is 10 seconds. Request disconnect, explicit UI
 abort, timeout, current-home change or tombstone stops copying and marks exact
 inventoried cleanup debt. Cancellation must wake both producer and consumer,
 join/unwind the worker, and release the operation guard without an orphan thread.
 Recheck current home/admin/tombstone at bounded chunk checkpoints and inside the
-final short author-store then runs-store commit fence. A digest is integrity,
+final short author-store then runs-store commit fence. The transaction-local
+current-home check at this fence is new, not inherited from admin/tombstone checks.
+A digest is integrity,
 never ownership. Only complete verified bytes become ready. Settlement debits
 actual transferred bytes; uncertain disk cleanup retains allocation debt.
 
@@ -118,7 +128,8 @@ bundle. Removal offers release of that newly uploaded file using existing owner
 release semantics; active binding refusal is visible, never override authority.
 
 At Send, serialize only ready returned references ONCE in a clearly delimited
-JSON attachment-metadata block alongside the unchanged existing message/text
+JSON attachment-metadata block containing expiry beside the exact files array,
+never inside the immutable six-field reference, alongside unchanged message/text
 blocks. Preserve exact reference fields/order; JSON-escape filename/media data.
 This is ordinary untrusted context, not hidden instructions, permission, an
 execution-use grant or a new provider-specific input. Existing `MCP.converse`
@@ -129,7 +140,9 @@ revalidates owner, universe, exact metadata and ready state. Platform operators
 do not build the user's consuming workflow.
 
 Queue/inflight/history retain that exact composed message and original account/
-home scope. Reconnect does not upload again, rebuild metadata or create a new
+home scope. In-flight records gain explicit scope using the existing queue rule;
+legacy/unscoped/other-home records are preserved but never displayed or offered
+to another user. Reconnect does not upload again, rebuild metadata or create a new
 consumer request key. The compact displayed bubble shows filenames/status while
 the exact reference block remains available to the agent. A restored stale-home
 attachment refuses. A passed unbound deadline means availability needs checking,
