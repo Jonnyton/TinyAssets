@@ -90,6 +90,63 @@ def _extract() -> str:
         _function_source(html, n) for n in _LIFT)
 
 
+@pytest.mark.skipif(not _NODE, reason="Node required for real app JavaScript")
+def test_upload_recovery_record_survives_pending_check_and_account_exit():
+    result = _run_node(_extract() + r'''
+    (async()=>{
+      let saved=[], finish;
+      const ctrl=createUploadController({scope:()=>({epoch:1,universeId:"u-1"}),
+        newLabel:()=>"stable-upload-label-0001",sha256:async()=>"a".repeat(64),
+        remember:rows=>{saved=rows;},
+        upload:()=>new Promise(resolve=>{finish=resolve;})});
+      const send=ctrl.add([{name:"private.bin",type:"application/octet-stream",size:2}]);
+      await new Promise(resolve=>setImmediate(resolve));
+      const duringUpload=saved.length;
+      finish({universe_id:"u-1",files:[{file_id:"f-1",name:"private.bin",
+        media_type:"application/octet-stream",size_bytes:2,sha256:"a".repeat(64),
+        version:1}],unbound_retention_seconds:3600,unbound_expires_at:100});
+      await send;
+      const original=ctrl.records();
+      const next=createUploadController({scope:()=>({epoch:1,universeId:"u-1"}),
+        remember:rows=>{saved=rows;},
+        upload:()=>new Promise(resolve=>{finish=resolve;})});
+      next.restore(original);
+      const check=next.retry(next.chips()[0].id);
+      await new Promise(resolve=>setImmediate(resolve));
+      const duringCheck=saved.length;
+      next.abort();
+      const afterExit=saved.length;
+      finish({}); await check;
+      process.stdout.write(JSON.stringify({duringUpload,duringCheck,afterExit}));
+    })().catch(e=>{console.error(e);process.exit(1);});
+    ''')
+    assert result == {"duringUpload": 1, "duringCheck": 1, "afterExit": 1}
+
+
+@pytest.mark.skipif(not _NODE, reason="Node required for real app JavaScript")
+def test_each_account_home_can_keep_its_own_upload_recovery():
+    html = _app_html()
+    source = "\n".join(_function_source(html, n) for n in
+                       ("readUploadRecords", "rememberUploadRecords"))
+    result = _run_node(r'''
+    let queueOwner="owner-A",queueScope="home-A";
+    const UPLOAD_RECORDS_KEY="ta_app_uploads_v1";
+    const data=new Map();
+    const localStorage={getItem:k=>data.get(k)||null,
+      setItem:(k,v)=>data.set(k,v),removeItem:k=>data.delete(k)};
+    ''' + source + r'''
+    rememberUploadRecords([{label:"A"}]);
+    queueOwner="owner-B";queueScope="home-B";
+    rememberUploadRecords([{label:"B"}]);
+    const second=readUploadRecords();
+    rememberUploadRecords([]);
+    queueOwner="owner-A";queueScope="home-A";
+    const first=readUploadRecords();
+    process.stdout.write(JSON.stringify({first:first.saved,second:second.saved}));
+    ''')
+    assert result == {"first": [{"label": "A"}], "second": [{"label": "B"}]}
+
+
 _HARNESS = r"""
 %(app)s
 

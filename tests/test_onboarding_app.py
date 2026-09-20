@@ -1673,6 +1673,7 @@ __APP_FUNCTIONS__
       inputMethod:SCENARIO.pendingInputMethod,
       modelChoice:SCENARIO.pendingModelChoice,
       consumerRequest:SCENARIO.pendingConsumerRequest,
+      owner: SCENARIO.pendingOwner===null?undefined:(SCENARIO.pendingOwner||"p-1"),
       // The record is universe-scoped like a saved queue line. A scenario that
       // wants the LEGACY unscoped shape asks for it explicitly.
       scope: SCENARIO.pendingScope===null?undefined
@@ -2135,6 +2136,18 @@ def test_a_held_message_with_no_recorded_universe_is_never_disclosed(tmp_path):
     assert offer["buttons"] == [], "no click can establish ownership of it"
     # held, not erased: the founder who can prove it still has it
     assert out["inflight"]["message"] == "the secret plan"
+
+
+@pytest.mark.parametrize("extra", [
+    {"pendingOwner": "p-other"}, {"pendingOwner": None}, {"principal": None},
+])
+def test_held_message_requires_account_as_well_as_home(tmp_path, extra):
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "private payroll.pdf",
+                              "universe": "u-1", "history": [], **extra})
+    assert not out["messages"]
+    assert "private payroll.pdf" not in json.dumps(out["notes"])
+    assert all(not note["buttons"] for note in out["notes"])
+    assert out["inflight"]["message"] == "private payroll.pdf"
 
 
 def test_an_older_identical_prompt_does_not_count_as_delivery(tmp_path):

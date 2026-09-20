@@ -2562,6 +2562,7 @@
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
+       owner:queueOwner,
        scope:queueScope,
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()})); }catch(_e){}
   }
@@ -2763,6 +2764,7 @@
     const send=document.createElement("button");
     send.className="btn btn--link"; send.textContent="Send it now";
     send.addEventListener("click", ()=>{
+      if(!ownsSavedRow(item)) return;
       note.remove();
       if(!stillSaved(item)){
         appendMessage("system","That line was already sent or discarded in another window.");
@@ -2779,7 +2781,10 @@
     note.appendChild(document.createTextNode(" "));
     const drop=document.createElement("button");
     drop.className="btn btn--link"; drop.textContent="Discard";
-    drop.addEventListener("click", ()=>{ note.remove(); forgetSavedItem(item); });
+    drop.addEventListener("click", ()=>{
+      if(!ownsSavedRow(item)) return;
+      note.remove(); forgetSavedItem(item);
+    });
     note.appendChild(drop);
   }
   function flushSendQueue(){
@@ -3050,6 +3055,7 @@
     if(typeof AppLayout!=="undefined") AppLayout.enable(me.universe_id,me.principal_id);
     // The account half of every "is this mine?" question below: held lines and
     // saved attachments are read only where this id matches what saved them.
+    setQueueScope(me.universe_id);
     setQueueOwner(me.principal_id);
     showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
     // Build 3's App Review Notes and submitted product surface are voice-dark.
@@ -3833,7 +3839,9 @@
   const UPLOAD_RECORDS_KEY="ta_app_uploads_v1";
   function readUploadRecords(){
     try{
-      const raw=localStorage.getItem(UPLOAD_RECORDS_KEY);
+      if(!queueOwner||!queueScope) return null;
+      const key=UPLOAD_RECORDS_KEY+":"+JSON.stringify([queueOwner,queueScope]);
+      const raw=localStorage.getItem(key);
       const doc=raw?JSON.parse(raw):null;
       return doc&&typeof doc==="object"&&Array.isArray(doc.saved)?doc:null;
     }catch(_e){ return null; }
@@ -3842,11 +3850,12 @@
     // Never written under an unverified pair, and another pair's row is never
     // overwritten or cleared from here - it is theirs to restore or discard.
     if(!queueOwner||!queueScope) return;
+    const key=UPLOAD_RECORDS_KEY+":"+JSON.stringify([queueOwner,queueScope]);
     const held=readUploadRecords();
     if(held&&(held.owner!==queueOwner||held.home!==queueScope)) return;
     try{
-      if(!records||!records.length){ localStorage.removeItem(UPLOAD_RECORDS_KEY); return; }
-      localStorage.setItem(UPLOAD_RECORDS_KEY,
+      if(!records||!records.length){ localStorage.removeItem(key); return; }
+      localStorage.setItem(key,
         JSON.stringify({version:1, owner:queueOwner, home:queueScope, saved:records}));
     }catch(_e){ /* a browser that cannot save simply has nothing to restore */ }
   }
@@ -3878,7 +3887,6 @@
     // request, so there is nothing to observe later and nothing to keep.
     function recordFor(item){
       if(!item.header||!item.label) return null;
-      if(item.state!=="ready"&&item.state!=="uncertain"&&item.state!=="saved") return null;
       return {label:item.label, header:item.header, name:item.name, size:item.size,
         mediaType:item.mediaType, sha256:item.sha256,
         fileId:item.ref?item.ref.file_id:null};
@@ -3886,8 +3894,8 @@
     function records(){
       return items.map(recordFor).filter(Boolean);
     }
-    function changed(){
-      if(typeof deps.remember==="function"){ try{ deps.remember(records()); }catch(_e){} }
+    function changed(persist=true){
+      if(persist&&typeof deps.remember==="function"){ try{ deps.remember(records()); }catch(_e){} }
       if(typeof deps.onChange==="function") deps.onChange();
     }
     function say(text){ if(typeof deps.notify==="function") deps.notify(text); }
@@ -4336,7 +4344,7 @@
       // transfer already on the wire, and retire every callback still queued on
       // `chain` so none of them wakes up holding the NEXT login's scope.
       abort(){ generation++; items.forEach(cancel); items.length=0;
-        chain=Promise.resolve(); changed(); }};
+        chain=Promise.resolve(); changed(false); }};
   }
   async function hashFile(file){
     const digest=await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
@@ -5187,14 +5195,15 @@
     // held message - not its text, not a filename it names - is shown or even
     // OBSERVED until this page knows which universe it is, and never for
     // another account or home.
-    if(!queueScope){ restoreQueue(); return; }
-    if(pending.scope && pending.scope!==queueScope){
+    if(!queueScope||!queueOwner){ restoreQueue(); return; }
+    if((pending.scope && pending.scope!==queueScope)||
+       (pending.owner && pending.owner!==queueOwner)){
       inflightRestored = true;
       appendMessage("system","An unconfirmed message from another universe's session "+
         "on this browser is waiting there; open that universe to see it.");
       restoreQueue(); return;   // preserved on disk for that universe's own page
     }
-    if(!pending.scope){
+    if(!pending.scope||!pending.owner){
       // Written before this page recorded its universe, so it may belong to
       // another account signed in on this browser. CLICKING A BUTTON DOES NOT
       // PROVE OWNERSHIP: a confirmation only says someone is here, never that
@@ -5211,12 +5220,13 @@
     }
     if(pending.consumerRequest){
       inflightRestored=true;
+      const epoch=MCP._loginEpoch, scope=queueScope, owner=queueOwner;
+      const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner;
       try{
-        const epoch=MCP._loginEpoch, scope=queueScope;
         const observed=await MCP.callTool("read_graph",{target:"conversation_turn",
           request_key:pending.consumerRequest.request_key},{idempotent:true});
         // A reply that lands after a sign-in or home change paints nothing.
-        if(epoch!==MCP._loginEpoch||scope!==queueScope)return;
+        if(!stillOwner())return;
         const turn=observed&&observed.consumer_turn;
         if(turn){
           if(!renderedConsumerFounders.has(turn.turn_id)){
@@ -5241,6 +5251,7 @@
           restoreQueue();return;
         }
       }catch(_e){ /* Unknown status retains the exact durable local request. */ }
+      if(!stillOwner())return;
       offerResend(pending.message,pending.display,new Error("Conversation status is unavailable."),
         {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
          consumerRequest:pending.consumerRequest});
@@ -5263,6 +5274,7 @@
     const again = document.createElement("button");
     again.className = "btn btn--link"; again.textContent = pending.consumerRequest?"Check this conversation":"Send it again";
     again.addEventListener("click", ()=>{
+      if(!ownsSavedRow(pending)) return;
       // The bubble is already drawn above, so do not echo it a second time.
       note.remove(); forgetInflight();
       sendTurn(pending.message, pending.display,
