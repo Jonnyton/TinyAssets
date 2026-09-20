@@ -50,6 +50,30 @@ All other clauses of this requirement are unchanged.
 
 ## ADDED Requirements
 
+### Requirement: Guarded run execution preserves ownership through actual scoped use
+
+An internal prepared execution SHALL require its exact held run-keyed OS guard
+for start and terminal expected-status transitions, whether or not the run has a
+managed resource-family association. A derivative same-process execution-use
+receipt MAY pin that owner's lifetime through code-node and RPC operations, but
+SHALL NOT satisfy owner-only mutation or release checks. Owner retirement SHALL
+refuse new pins and drain entered scopes before releasing the original OS lock.
+Family closure and fresh effect authority SHALL remain separate from lifetime.
+
+#### Scenario: a delayed prepared worker loses its queued state
+- **WHEN** cancellation, interruption, completion or another valid transition changed its queued run before start
+- **THEN** the expected-status start refuses before invocation, including for a run without a resource-family association
+- **AND** the losing worker does not overwrite the winner's status or output
+
+#### Scenario: a real RPC callback outlives the node's drain join
+- **WHEN** an entered callback continues after the node returns
+- **THEN** the original owner lock remains held until that actual scoped callback exits
+- **AND** new effects still require fresh authority and cannot reopen a closed family
+
+#### Scenario: a queued durable admission has no local Future
+- **WHEN** its OS guard is temporarily free while an unstarted worker handoff may still be queued elsewhere
+- **THEN** legacy recovery does not infer abandonment or execution permission from age, missing process-local Future or guard availability alone
+
 ### Requirement: Workspace jobs hold one durable lock per universe and one host-wide slot
 
 The runtime SHALL acquire, in the checkout's admission transaction, a durable job lock keyed by universe and a host-wide slot (one slot in this change), SHALL treat it as reentrant for that run's later workspace nodes and its push, and SHALL release it only through the run's terminal outbox entry.

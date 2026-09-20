@@ -171,6 +171,26 @@ def _latest_run_progress_at(conn: sqlite3.Connection, run_id: str) -> float | No
         return None
 
 
+def _prepared_run_recovery_exclusion(conn: sqlite3.Connection) -> str:
+    """Same-store SQL predicate; legacy absence is not a schema-init request.
+
+    A prepared row is owned by the common guarded start/recovery protocol even
+    before family initialization. No local Future or age proves its worker dead.
+    Malformed/present schemas fail loudly rather than permitting retirement.
+    """
+    schema = conn.execute(
+        "SELECT type FROM sqlite_master WHERE name='run_input_admissions'",
+    ).fetchone()
+    if schema is None:
+        return ""
+    if schema[0] != "table":
+        raise RuntimeError("invalid run-input admission schema")
+    return (
+        " AND NOT EXISTS (SELECT 1 FROM run_input_admissions admission "
+        "WHERE admission.run_id=runs.run_id)"
+    )
+
+
 def _mark_orphaned_run_if_needed(
     conn: sqlite3.Connection,
     *,
@@ -180,6 +200,14 @@ def _mark_orphaned_run_if_needed(
     now: float | None = None,
 ) -> bool:
     if status not in (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING):
+        return False
+    family = conn.execute(
+        "SELECT workspace_budget_root_run_id,workspace_budget_epoch,"
+        "workspace_budget_closing_reason FROM runs WHERE run_id=?", (run_id,),
+    ).fetchone()
+    if family is not None and any(value is not None for value in family):
+        # A local Future inventory cannot establish death of another real
+        # worker. Managed recovery needs exact family/kernel ownership evidence.
         return False
     if _has_live_future(run_id):
         return False
@@ -198,6 +226,12 @@ def _mark_orphaned_run_if_needed(
     if stale_for < grace:
         return False
 
+    # Recheck ownership in the existing status-write transaction. This also
+    # fences a concurrently created admission table/row; no probe-then-retire.
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    prepared_exclusion = _prepared_run_recovery_exclusion(conn)
+
     message = (
         "Run marked interrupted because no active background worker owns it "
         f"and no progress has been recorded for {int(stale_for)}s "
@@ -208,7 +242,9 @@ def _mark_orphaned_run_if_needed(
         UPDATE runs
         SET status = ?, error = ?, finished_at = ?
         WHERE run_id = ? AND status IN (?, ?)
-        """,
+          AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL
+          AND workspace_budget_closing_reason IS NULL
+        """ + prepared_exclusion,
         (
             RUN_STATUS_INTERRUPTED,
             message,
@@ -897,10 +933,17 @@ def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
             ("worker_id",     "TEXT"),
             ("branch_task_id", "TEXT"),
             ("queue_universe_id", "TEXT"),
+            ("workspace_budget_root_run_id", "TEXT"),
+            ("workspace_budget_epoch", "INTEGER"),
+            ("workspace_budget_closing_reason", "TEXT"),
         ):
             if col not in existing_runs:
                 _alter(col, ddl)
         migrate_contribution_events_schema(conn)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_workspace_family "
+            "ON runs(workspace_budget_root_run_id,workspace_budget_epoch,status)"
+        )
         # Phase A item 6 (Task #65a) — branch_version_id on runs. NULL for
         # def-based runs (the existing path); populated only by
         # execute_branch_version_async for version-based runs. Required by
@@ -1440,6 +1483,7 @@ def create_run(
     worker_id: str | None = None,
     branch_task_id: str | None = None,
     queue_universe_id: str | None = None,
+    _workspace_parent=None,
 ) -> str:
     actor = named_principal(actor)
     if not actor:
@@ -1452,16 +1496,35 @@ def create_run(
         if owner_user_id is not None
         else _resolve_owner_user_id(base_path, daemon_id)
     )
-    with _connect(base_path) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        _insert_run_in_transaction(
-            conn, run_id=run_id, branch_def_id=branch_def_id, thread_id=thread_id,
-            inputs=inputs, run_name=run_name, actor=actor,
-            owner_user_id=resolved_owner_user_id, branch_version_id=branch_version_id,
-            daemon_id=daemon_id, runtime_instance_id=runtime_instance_id,
-            worker_id=worker_id, branch_task_id=branch_task_id,
-            queue_universe_id=queue_universe_id,
-        )
+    from tinyassets.workspace_family import (
+        FamilyMember,
+        FamilyRefused,
+        UnmanagedParent,
+        family_fence,
+    )
+
+    if _workspace_parent is not None and (
+            type(_workspace_parent) not in (FamilyMember, UnmanagedParent)
+            or (type(_workspace_parent) is FamilyMember and not owner_user_id)):
+        raise FamilyRefused("child family requires authenticated typed parent identity")
+    scope = (family_fence(base_path, _workspace_parent.root_run_id)
+             if type(_workspace_parent) is FamilyMember else contextlib.nullcontext())
+    with scope as fence:
+        with _connect(base_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            _insert_run_in_transaction(
+                conn, run_id=run_id, branch_def_id=branch_def_id, thread_id=thread_id,
+                inputs=inputs, run_name=run_name, actor=actor,
+                owner_user_id=resolved_owner_user_id, branch_version_id=branch_version_id,
+                daemon_id=daemon_id, runtime_instance_id=runtime_instance_id,
+                worker_id=worker_id, branch_task_id=branch_task_id,
+                queue_universe_id=queue_universe_id,
+                _workspace_authenticated=(owner_user_id is not None
+                                          and type(_workspace_parent) is not UnmanagedParent),
+                _workspace_parent=(_workspace_parent
+                                   if type(_workspace_parent) is FamilyMember else None),
+                _workspace_fence=fence,
+            )
     return run_id
 
 
@@ -1481,6 +1544,9 @@ def _insert_run_in_transaction(
     worker_id: str | None = None,
     branch_task_id: str | None = None,
     queue_universe_id: str | None = None,
+    _workspace_authenticated: bool = True,
+    _workspace_parent=None,
+    _workspace_fence=None,
 ) -> None:
     """Insert a run alongside a durable intent in its caller-owned transaction.
 
@@ -1495,6 +1561,10 @@ def _insert_run_in_transaction(
     actor = named_principal(actor)
     if not actor:
         raise ValueError("create_run actor must be a real principal; an unowned value is not one")
+    from tinyassets.workspace_family import root_enrollment_enabled
+
+    managed_root = (_workspace_authenticated and owner_user_id and queue_universe_id
+                    and _workspace_parent is None and root_enrollment_enabled(conn))
     try:
         conn.execute(
             """
@@ -1502,8 +1572,9 @@ def _insert_run_in_transaction(
                 run_id, branch_def_id, run_name, thread_id,
                 status, actor, owner_user_id, inputs_json, started_at,
                 branch_version_id, daemon_id, runtime_instance_id,
-                worker_id, branch_task_id, queue_universe_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                worker_id, branch_task_id, queue_universe_id,
+                workspace_budget_root_run_id,workspace_budget_epoch,workspace_budget_closing_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, branch_def_id, run_name, thread_id,
@@ -1515,6 +1586,9 @@ def _insert_run_in_transaction(
                 worker_id,
                 branch_task_id,
                 queue_universe_id,
+                (run_id if managed_root else None),
+                (1 if managed_root else None),
+                ("" if managed_root else None),
             ),
         )
     except sqlite3.IntegrityError as exc:
@@ -1524,7 +1598,26 @@ def _insert_run_in_transaction(
             ) from exc
         raise
 
+    if _workspace_parent is not None:
+        from tinyassets.workspace_family import FamilyFence, FamilyRefused, assign_in_transaction
 
+        if not _workspace_authenticated or type(_workspace_fence) is not FamilyFence:
+            raise FamilyRefused("child insertion requires held family fence and identity")
+        assign_in_transaction(conn, _workspace_fence, run_id, parent=_workspace_parent)
+
+
+def _guard_status_write(function):
+    from functools import wraps
+
+    @wraps(function)
+    def guarded(base_path, run_id, **kwargs):
+        with _managed_execution_scope(base_path, run_id):
+            return function(base_path, run_id, **kwargs)
+
+    return guarded
+
+
+@_guard_status_write
 def update_run_status(
     base_path: str | Path,
     run_id: str,
@@ -1537,7 +1630,16 @@ def update_run_status(
     provider_used: str | None = None,
     model: str | None = None,
     token_count: int | None = None,
+    _workspace_member=None,
+    _expected_statuses=None,
 ) -> None:
+    if _workspace_member is not None:
+        from tinyassets.workspace_family import run_transaction
+
+        # Reject a retired worker before touching the run-keyed effect registry.
+        # The actual status transaction rechecks again after settlement.
+        with run_transaction(base_path, run_id, expected=_workspace_member):
+            pass
     sets: list[str] = []
     params: list[Any] = []
     if status is not None:
@@ -1628,11 +1730,17 @@ def update_run_status(
     params.append(run_id)
     workspace_terminal_base: Path | None = None
     owed = 0
-    with _connect(base_path) as conn:
-        conn.execute(
-            f"UPDATE runs SET {', '.join(sets)} WHERE run_id = ?",
-            params,
+    from tinyassets.workspace_family import status_transaction
+
+    with status_transaction(base_path, run_id, status, expected=_workspace_member,
+                            expected_statuses=_expected_statuses) as conn:
+        prior = conn.execute("SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        cursor = conn.execute(
+            f"UPDATE runs SET {', '.join(sets)} WHERE run_id = ? AND status IS ?",
+            (*params, prior[0] if prior is not None else None),
         )
+        if prior is not None and cursor.rowcount != 1:
+            raise RunExecutionAuthorityLost("Run status changed before its conditional write.")
         if status in _TERMINAL_STATUSES:
             # A lease in this database is owed THROUGH the outbox in the same
             # transaction (workspace-node D0): never a direct delete.  A
@@ -1705,6 +1813,59 @@ def update_run_status(
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_terminal_base, local_owed=owed
         )
+
+
+def terminalize_unstarted_run(
+    base_path: str | Path, *, run_id: str, execution_guard,
+    status: str, error: str,
+) -> str:
+    """Settle a proven never-dispatched attempt under its current owner guard.
+
+    Internal prepared-worker seam, NOT orphan recovery. The caller must know
+    invocation was never dispatched in this attempt. A recovered durable-start
+    marker plus queued status does not prove that: it needs exact owned process
+    recovery first. Only queued rows settle; resumed/running/terminal rows are
+    not rewritten by a stale original attempt. Return actual status.
+    """
+    from tinyassets.storage.run_execution_lock import RunExecutionGuard
+    from tinyassets.workspace_family import _active, close_in_transaction, run_transaction
+
+    if type(execution_guard) is not RunExecutionGuard or execution_guard.run_id != run_id:
+        raise RunExecutionAuthorityLost("Unstarted settlement requires this run's execution guard.")
+    if status not in (RUN_STATUS_FAILED, RUN_STATUS_INTERRUPTED, RUN_STATUS_CANCELLED):
+        raise ValueError("unstarted settlement must be failed, interrupted or requested cancelled")
+    with _connect(base_path) as conn:
+        execution_guard.require_held(conn)
+    with run_transaction(base_path, run_id) as (conn, member, fence):
+        execution_guard.require_held(conn)
+        row = conn.execute("SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            raise RunExecutionAuthorityLost("Unstarted settlement has no run.")
+        if row[0] != RUN_STATUS_QUEUED:
+            return row[0]
+        cancelled = conn.execute("SELECT 1 FROM run_cancels WHERE run_id=?", (run_id,)).fetchone()
+        if member is not None:
+            reason = conn.execute("SELECT workspace_budget_closing_reason FROM runs WHERE run_id=?",
+                                  (member.root_run_id,)).fetchone()[0]
+            cancelled = cancelled or reason == "cancelled"
+        if status == RUN_STATUS_CANCELLED and not cancelled:
+            raise RunExecutionAuthorityLost("Unstarted cancellation has no current cancel intent.")
+        settled = RUN_STATUS_CANCELLED if cancelled else status
+        changed = conn.execute(
+            "UPDATE runs SET status=?,error=?,finished_at=? WHERE run_id=? AND status=?",
+            (settled, error, _now(), run_id, row[0]),
+        )
+        if changed.rowcount != 1:
+            raise RunExecutionAuthorityLost("Unstarted settlement lost its expected status.")
+        if member is not None:
+            if member.run_id == member.root_run_id:
+                close_in_transaction(conn, fence, member.epoch, settled)
+            elif not _active(conn, member.root_run_id, member.epoch):
+                close_in_transaction(conn, fence, member.epoch, "drained")
+        owed = _enqueue_workspace_terminal(conn, base_path, run_id)
+        workspace_base = _workspace_terminal_base(conn, base_path, run_id)
+    _finish_terminal_workspace_release(base_path, run_id, workspace_base, local_owed=owed)
+    return settled
 
 
 def record_run_receipt(
@@ -2889,7 +3050,22 @@ def node_output_from_run(
 
 def request_cancel(base_path: str | Path, run_id: str) -> bool:
     initialize_runs_db(base_path)
-    with _connect(base_path) as conn:
+    from tinyassets.workspace_family import _active, close_in_transaction, run_transaction
+
+    with run_transaction(base_path, run_id) as (conn, member, fence):
+        if member is not None and member.run_id == member.root_run_id:
+            if _active(conn, member.root_run_id, member.epoch):
+                # A completed root can still have live children. Preserve its
+                # public result; root closing is the durable family stop intent.
+                close_in_transaction(conn, fence, member.epoch, "cancelled")
+                conn.execute(
+                    "INSERT OR IGNORE INTO run_cancels (run_id, requested_at) "
+                    "SELECT run_id, ? FROM runs WHERE workspace_budget_root_run_id=? "
+                    "AND workspace_budget_epoch=? "
+                    "AND status NOT IN ('completed','failed','cancelled','interrupted')",
+                    (_now(), member.root_run_id, member.epoch),
+                )
+                return True
         cursor = conn.execute(
             "INSERT OR IGNORE INTO run_cancels (run_id, requested_at) "
             "SELECT run_id, ? FROM runs WHERE run_id = ? "
@@ -2906,7 +3082,23 @@ def is_cancel_requested(base_path: str | Path, run_id: str) -> bool:
         row = conn.execute(
             "SELECT 1 FROM run_cancels WHERE run_id = ?", (run_id,)
         ).fetchone()
-    return row is not None
+        if row is not None:
+            return True
+        member = conn.execute(
+            "SELECT workspace_budget_root_run_id,workspace_budget_epoch,status "
+            "FROM runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if member is None or member[0] is None:
+            return False
+        if member[2] in _TERMINAL_STATUSES:
+            return False  # closure is not a claim that historical output was cancelled
+        root = conn.execute(
+            "SELECT workspace_budget_epoch,workspace_budget_closing_reason FROM runs WHERE run_id=?",
+            (member[0],),
+        ).fetchone()
+        # A retired/unknown family must stop, never silently continue unguarded.
+        return root is None or root[0] != member[1] or root[1] != ""
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3306,6 +3498,7 @@ def _prepare_run(
     worker_id: str | None = None,
     branch_task_id: str | None = None,
     queue_universe_id: str | None = None,
+    _workspace_parent=None,
 ) -> str:
     """Write the run row + pending-node events + lineage synchronously.
 
@@ -3330,6 +3523,7 @@ def _prepare_run(
         worker_id=worker_id,
         branch_task_id=branch_task_id,
         queue_universe_id=queue_universe_id,
+        _workspace_parent=_workspace_parent,
     )
     _initialize_prepared_run(base_path, run_id=run_id, branch=branch, actor=actor)
     return run_id
@@ -3407,6 +3601,116 @@ def _initialize_prepared_run(
 DEFAULT_RECURSION_LIMIT = 100
 
 
+def _family_status_writer(member):
+    """Capture execution incarnation; a late worker cannot adopt resume's epoch."""
+    from functools import partial
+
+    return partial(update_run_status, _workspace_member=member)
+
+
+_RUN_EXECUTION_GUARD = contextvars.ContextVar("tinyassets_run_execution_guard", default=None)
+_RUN_EXECUTION_USE = contextvars.ContextVar("tinyassets_run_execution_use", default=None)
+
+
+@contextlib.contextmanager
+def _execution_use_scope():
+    """Pin this actual node/RPC operation, not a serialized run permission."""
+    use = _RUN_EXECUTION_USE.get()
+    if use is None:
+        yield None
+        return
+    with _connect(use.database_path.parent) as conn:
+        with use.hold(conn):
+            yield use
+
+
+@contextlib.contextmanager
+def _managed_execution_scope(base_path: str | Path, run_id: str, *, provided=None):
+    from tinyassets.storage.run_execution_lock import RunExecutionGuard, try_run_execution_lock
+
+    current = _RUN_EXECUTION_GUARD.get()
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT workspace_budget_root_run_id,workspace_budget_epoch,"
+            "workspace_budget_closing_reason FROM runs WHERE run_id=?", (run_id,),
+        ).fetchone()
+        managed = row is not None and any(value is not None for value in row)
+        candidate = provided
+        if candidate is None and current is not None and (
+                current.run_id == run_id and current.database_path == runs_db_path(base_path).resolve()):
+            candidate = current
+        if candidate is not None:
+            if type(candidate) is not RunExecutionGuard or candidate.run_id != run_id:
+                raise RunExecutionAuthorityLost("Execution guard belongs to another run.")
+            candidate.require_held(conn)
+    scope = (contextlib.nullcontext(candidate) if candidate is not None or not managed
+             else try_run_execution_lock(base_path, run_id=run_id))
+    with scope as guard:
+        if managed and guard is None:
+            # Outside invocation's failure handler: never rewrite the actual
+            # owner's live run just because a second dispatcher lost exclusion.
+            raise RunExecutionAuthorityLost("Another worker owns this run's execution.")
+        use = None
+        if guard is not None:
+            current_use = _RUN_EXECUTION_USE.get()
+            if current_use is not None and current_use._guard is guard:
+                use = current_use
+            else:
+                with _connect(base_path) as conn:
+                    use = guard.issue_use(conn)
+        token = _RUN_EXECUTION_GUARD.set(guard)
+        use_token = _RUN_EXECUTION_USE.set(use)
+        try:
+            yield guard
+        finally:
+            _RUN_EXECUTION_USE.reset(use_token)
+            _RUN_EXECUTION_GUARD.reset(token)
+
+
+def _owns_managed_execution(function):
+    from functools import wraps
+
+    @wraps(function)
+    def invoke(base_path, *, run_id, **kwargs):
+        provided = kwargs.pop("_execution_guard", None)
+        with _managed_execution_scope(base_path, run_id, provided=provided) as guard:
+            from tinyassets.workspace_family import FamilyRefused
+
+            try:
+                return function(base_path, run_id=run_id, **kwargs)
+            except FamilyRefused as exc:
+                if guard is None:
+                    raise
+                actual = terminalize_unstarted_run(
+                    base_path, run_id=run_id, execution_guard=guard,
+                    status=RUN_STATUS_FAILED, error=f"Execution authority refused: {exc}",
+                )
+                # Running/terminal state is preserved; no late failure writer
+                # may overwrite another incarnation or claim rollback of effects.
+                return RunOutcome(run_id=run_id, status=actual, output={}, error=str(exc))
+
+    return invoke
+
+
+def _existing_run_outcome(base_path, run_id, error):
+    with _connect(base_path) as conn:
+        row = conn.execute("SELECT status,output_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    return RunOutcome(run_id=run_id, status=row[0] if row else RUN_STATUS_FAILED,
+                      output=json.loads(row[1] or "{}") if row else {}, error=error)
+
+
+def _require_managed_start_status(base_path, run_id, expected_status):
+    guard = _RUN_EXECUTION_GUARD.get()
+    if guard is None:
+        return
+    with _connect(base_path) as conn:
+        guard.require_held(conn)
+        row = conn.execute("SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if row is None or row[0] != expected_status:
+            raise RunExecutionAuthorityLost("Execution lost its expected start status; no replay.")
+
+
+@_owns_managed_execution
 def _invoke_graph(
     base_path: str | Path,
     *,
@@ -3419,12 +3723,14 @@ def _invoke_graph(
     on_node_status: Callable[[str, str], None] | None = None,
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
+    _execution_guard=None,
 ) -> RunOutcome:
     """Compile + invoke the graph for an already-prepared run_id.
 
     Blocks until the graph finishes or is cancelled. Updates run status
     to RUNNING on entry, COMPLETED / FAILED / CANCELLED on exit.
     """
+    _require_managed_start_status(base_path, run_id, RUN_STATUS_QUEUED)
     thread_id = run_id
     execution_cursor = {"step": 0}
     # Telemetry accumulator: "last" feeds runs.provider_used (legacy
@@ -3468,6 +3774,8 @@ def _invoke_graph(
     # authorization keys off. Depth carries the recursion counter.
     _branch_author = (getattr(branch, "author", "") or "").strip()
     _provenance = _caller_provenance(base_path, run_actor, run_universe, _branch_author)
+    from tinyassets.workspace_family import execution_member
+
     execution_context = BranchExecutionContext(
         actor=run_actor,
         universe_id=run_universe,
@@ -3475,7 +3783,9 @@ def _invoke_graph(
         depth=invocation_depth,
         owner_user_id=run_identity["owner_user_id"],
         definition_author=_branch_author,
+        workspace_family=execution_member(base_path, run_id, for_compile=True),
     )
+    update_run_status = _family_status_writer(execution_context.workspace_family)
 
     def _emit_node_status(node_id: str, status: str) -> None:
         if on_node_status is None:
@@ -4359,6 +4669,9 @@ def _execution_context_for_run(
     run_actor = run_actor or (fallback_actor or "").strip()
     author = (getattr(branch, "author", "") or "").strip()
     provenance = _caller_provenance(base_path, run_actor, run_universe, author)
+    # This read is deliberately outside the legacy actor-fallback handler.
+    from tinyassets.workspace_family import execution_member
+
     return BranchExecutionContext(
         actor=run_actor,
         universe_id=run_universe,
@@ -4366,6 +4679,7 @@ def _execution_context_for_run(
         depth=invocation_depth,
         owner_user_id=owner_user_id,
         definition_author=author,
+        workspace_family=execution_member(base_path, run_id, for_compile=True),
     )
 
 
@@ -4435,6 +4749,7 @@ def execute_branch(
     _enqueue_universe_id: str = "",
     _parent_branch_task_id: str = "",
     _origin_branch_task_id: str = "",
+    _workspace_parent=None,
 ) -> RunOutcome:
     """Synchronous end-to-end execution.
 
@@ -4458,6 +4773,7 @@ def execute_branch(
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
         owner_user_id=owner_user_id, queue_universe_id=_enqueue_universe_id or None,
+        _workspace_parent=_workspace_parent,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
         worker_id=worker_id,
@@ -4615,6 +4931,7 @@ def wait_for(run_id: str, timeout: float | None = None) -> None:
         fut.result(timeout=timeout)
 
 
+@_owns_managed_execution
 def _invoke_prepared_branch(
     base_path: str | Path,
     *,
@@ -4628,6 +4945,7 @@ def _invoke_prepared_branch(
     on_node_status: Callable[[str, str], None] | None = None,
     invocation_depth: int = 0,
     enqueue_universe_id: str = "",
+    _execution_guard=None,
 ) -> RunOutcome:
     """Execute an already reserved/admitted run and settle its provider claim.
 
@@ -4636,6 +4954,7 @@ def _invoke_prepared_branch(
     run, reloads a mutable definition or submits another executor task. Normal
     foreground and durable-delivery workers share the same invocation path.
     """
+    authority_lost = False
     try:
         outcome = _invoke_graph(
             base_path,
@@ -4656,6 +4975,9 @@ def _invoke_prepared_branch(
                 else None
             ),
         )
+    except RunExecutionAuthorityLost as exc:
+        authority_lost = True
+        outcome = _existing_run_outcome(base_path, run_id, str(exc))
     except Exception:
         # _invoke_graph normally records failures itself; preserve the outer
         # worker guard for errors that escape it.
@@ -4677,12 +4999,15 @@ def _invoke_prepared_branch(
     except Exception as exc:
         logger.exception("Foreground provider claim release failed for %s", run_id)
         message = f"Provider authority settlement failed: {exc}"
+        if authority_lost:
+            return _existing_run_outcome(base_path, run_id, message)
         update_run_status(
             base_path,
             run_id,
             status=RUN_STATUS_FAILED,
             error=message,
             finished_at=_now(),
+            _expected_statuses={outcome.status},
         )
         outcome = RunOutcome(
             run_id=run_id,
@@ -4711,6 +5036,7 @@ def _execute_branch_core(
     worker_id: str | None = None,
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
+    _workspace_parent=None,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -4739,6 +5065,7 @@ def _execute_branch_core(
         branch=branch, inputs=inputs,
         run_name=run_name, actor=actor,
         owner_user_id=owner_user_id,
+        _workspace_parent=_workspace_parent,
         branch_version_id=branch_version_id,
         daemon_id=daemon_id,
         runtime_instance_id=runtime_instance_id,
@@ -4758,16 +5085,19 @@ def _execute_branch_core(
         )
     except Exception as exc:
         message = f"Provider authority admission failed: {exc}"
-        update_run_status(
-            base_path,
-            run_id,
-            status=RUN_STATUS_FAILED,
-            error=message,
-            finished_at=_now(),
-        )
+        with _managed_execution_scope(base_path, run_id) as guard:
+            if guard is not None:
+                settled = terminalize_unstarted_run(
+                    base_path, run_id=run_id, execution_guard=guard,
+                    status=RUN_STATUS_FAILED, error=message,
+                )
+            else:
+                update_run_status(base_path, run_id, status=RUN_STATUS_FAILED,
+                                  error=message, finished_at=_now())
+                settled = RUN_STATUS_FAILED
         return RunOutcome(
             run_id=run_id,
-            status=RUN_STATUS_FAILED,
+            status=settled,
             output={},
             error=message,
         )
@@ -4814,6 +5144,7 @@ def execute_branch_async(
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
+    _workspace_parent=None,
 ) -> RunOutcome:
     """Prepare a def-based run synchronously and kick off graph execution
     in the background. Returns within a few ms with ``status=queued``.
@@ -4849,6 +5180,7 @@ def execute_branch_async(
         on_node_status=on_node_status,
         branch_version_id=None,
         owner_user_id=owner_user_id,
+        _workspace_parent=_workspace_parent,
         _invocation_depth=_invocation_depth,
         _enqueue_universe_id=_enqueue_universe_id,
     )
@@ -4915,6 +5247,7 @@ def execute_branch_version(
     _parent_branch_task_id: str = "",
     _origin_branch_task_id: str = "",
     _queue_branch_task_id: str = "",
+    _workspace_parent=None,
 ) -> RunOutcome:
     """Execute an immutable published Branch version and block to completion."""
     branch = _load_branch_version(base_path, branch_version_id)
@@ -4931,6 +5264,7 @@ def execute_branch_version(
         worker_id=worker_id,
         branch_task_id=_queue_branch_task_id or None,
         owner_user_id=owner_user_id,
+        _workspace_parent=_workspace_parent,
         queue_universe_id=_enqueue_universe_id or None,
     )
     enqueue_origin = (
@@ -4972,6 +5306,7 @@ def execute_branch_version_async(
     on_node_status: Callable[[str, str], None] | None = None,
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
+    _workspace_parent=None,
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
 
@@ -5016,6 +5351,7 @@ def execute_branch_version_async(
         on_node_status=on_node_status,
         branch_version_id=branch_version_id,
         owner_user_id=owner_user_id,
+        _workspace_parent=_workspace_parent,
         _enqueue_universe_id=_enqueue_universe_id,
         _invocation_depth=_invocation_depth,
     )
@@ -5201,6 +5537,7 @@ def resume_run(
                 status=RUN_STATUS_FAILED,
                 error=message,
                 finished_at=_now(),
+                _expected_statuses={outcome.status},
             )
             return RunOutcome(
                 run_id=run_id,
@@ -5210,7 +5547,11 @@ def resume_run(
             )
         return outcome
 
-    future = executor.submit(contextvars.copy_context().run, _resume_worker)
+    def _owned_resume_worker() -> RunOutcome:
+        with _managed_execution_scope(base_path, run_id):
+            return _resume_worker()
+
+    future = executor.submit(contextvars.copy_context().run, _owned_resume_worker)
     _track_future(run_id, future)
 
     return RunOutcome(
@@ -5219,6 +5560,7 @@ def resume_run(
     )
 
 
+@_owns_managed_execution
 def _invoke_graph_resume(
     base_path: str | Path,
     *,
@@ -5228,6 +5570,7 @@ def _invoke_graph_resume(
     provider_call: Callable[..., str] | None,
 ) -> RunOutcome:
     """Compile branch + invoke with None inputs to resume from checkpoint."""
+    _require_managed_start_status(base_path, run_id, RUN_STATUS_RESUMED)
     execution_cursor = {"step": 1000}  # offset so resume events don't collide
     provider_tracker: dict[str, Any] = {"last": None, "model": None, "calls": []}
 
@@ -5339,6 +5682,7 @@ def _invoke_graph_resume(
     resume_context = _execution_context_for_run(
         base_path, run_id, branch, invocation_depth=effect_chain.invocation_depth,
     )
+    update_run_status = _family_status_writer(resume_context.workspace_family)
     try:
         compiled = compile_branch(
             branch,
@@ -5444,7 +5788,7 @@ def _invoke_graph_resume(
 
 
 def recover_in_flight_runs(base_path: str | Path) -> int:
-    """Mark any ``queued`` or ``running`` rows as ``interrupted``.
+    """Interrupt legacy unowned in-flight rows, not family/prepared executions.
 
     Called at TinyAssets Server startup to clean up runs that were in
     flight when the server died. Returns the number of rows updated.
@@ -5461,9 +5805,13 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
     now = _now()
     releases: list[tuple[str, Path | None, int]] = []
     with _connect(base_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        prepared_exclusion = _prepared_run_recovery_exclusion(conn)
         in_flight = [
             row[0] for row in conn.execute(
-                "SELECT run_id FROM runs WHERE status IN (?, ?)",
+                "SELECT run_id FROM runs WHERE status IN (?, ?) "
+                "AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL "
+                "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion,
                 (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
             ).fetchall()
         ]
@@ -5472,7 +5820,9 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
             UPDATE runs
             SET status = ?, error = ?, finished_at = ?
             WHERE status IN (?, ?)
-            """,
+              AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL
+              AND workspace_budget_closing_reason IS NULL
+            """ + prepared_exclusion,
             (
                 RUN_STATUS_INTERRUPTED,
                 "Server restarted while this run was in flight.",

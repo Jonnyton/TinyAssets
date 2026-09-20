@@ -168,6 +168,8 @@ class Lease:
     quarantine_path: Path
     created_at: float
     updated_at: float
+    budget_root_run_id: str | None = None
+    budget_epoch: int | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +188,8 @@ class OutboxEntry:
     claim_token: str | None
     claimed_at: float | None
     created_at: float
+    budget_root_run_id: str | None = None
+    budget_epoch: int | None = None
 
 
 @dataclass(frozen=True)
@@ -276,6 +280,14 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS workspace_outbox_pending "
         "ON workspace_outbox(done_at, entry_id)"
     )
+    for table in ("workspace_leases", "workspace_locks", "workspace_outbox"):
+        fields = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        additions = [("budget_epoch", "INTEGER")]
+        if table != "workspace_locks":
+            additions.append(("budget_root_run_id", "TEXT"))
+        for field, kind in additions:
+            if field not in fields:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {field} {kind}")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS workspace_outbox_run "
         "ON workspace_outbox(run_id, done_at)"
@@ -377,12 +389,15 @@ def _lease_from_row(row: sqlite3.Row | tuple) -> Lease:
         quarantine_path=Path(row[11]),
         created_at=float(row[12]),
         updated_at=float(row[13]),
+        budget_root_run_id=row[14],
+        budget_epoch=row[15],
     )
 
 
 _LEASE_COLUMNS = (
     "lease_id, universe_id, connection_id, repo_key, storage_class, generation, state, "
-    "reserved_bytes, measured_bytes, run_id, path, quarantine_path, created_at, updated_at"
+    "reserved_bytes, measured_bytes, run_id, path, quarantine_path, created_at, updated_at, "
+    "budget_root_run_id, budget_epoch"
 )
 
 
@@ -488,6 +503,7 @@ def _acquire_lock(
     run_id: str,
     lease_id: str,
     ts: float,
+    budget_epoch: int | None = None,
 ) -> None:
     """Reentrant for the run that holds it, ``workspace_busy`` for anyone else.
 
@@ -497,18 +513,19 @@ def _acquire_lock(
     holder wrote them.
     """
     row = conn.execute(
-        'SELECT run_id FROM workspace_locks WHERE scope = ? AND "key" = ?', (scope, key)
+        'SELECT run_id,budget_epoch FROM workspace_locks WHERE scope = ? AND "key" = ?',
+        (scope, key),
     ).fetchone()
     if row is not None:
-        if row[0] == run_id:
+        if row[0] == run_id and row[1] == budget_epoch:
             return
         raise WorkspacePoolRefused(
             REFUSED_BUSY, f"{scope} lock {key!r} is held by run {row[0]!r}"
         )
     conn.execute(
-        'INSERT INTO workspace_locks (scope, "key", run_id, lease_id, acquired_at) '
-        "VALUES (?, ?, ?, ?, ?)",
-        (scope, key, run_id, lease_id, ts),
+        'INSERT INTO workspace_locks (scope, "key", run_id, lease_id, acquired_at,budget_epoch) '
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (scope, key, run_id, lease_id, ts, budget_epoch),
     )
 
 
@@ -542,6 +559,7 @@ def admit(
     sleep: Callable[[float], None] = time.sleep,
     observation: AdmissionObservation | None = None,
     monotonic: Callable[[], float] = time.monotonic,
+    family_admission=None,
 ) -> Lease:
     """Admit one workspace job in ONE ``BEGIN IMMEDIATE`` transaction.
 
@@ -585,6 +603,15 @@ def admit(
     deadline = float(now()) + max(0.0, float(wait_s))
 
     def _attempt() -> Lease:
+        from tinyassets.workspace_family import FamilyAdmission, FamilyRefused
+
+        budget_root = budget_epoch = None
+        if family_admission is not None:
+            if type(family_admission) is not FamilyAdmission:
+                raise FamilyRefused("managed admission needs a held typed family guard")
+            family_admission.require(run_id, universe_id)
+            budget_root = family_admission.member.root_run_id
+            budget_epoch = family_admission.member.epoch
         ts = float(now())
         cutoff = ts - WINDOW_S
         started_at = PROCESS_STARTED_AT if process_started_at is None else float(process_started_at)
@@ -654,12 +681,14 @@ def admit(
                     conn,
                     scope=SCOPE_UNIVERSE,
                     key=universe_id,
-                    run_id=run_id,
+                    run_id=budget_root or run_id,
                     lease_id=lease_id,
                     ts=ts,
+                    budget_epoch=budget_epoch,
                 )
                 _acquire_lock(
-                    conn, scope=SCOPE_HOST, key=host_slot, run_id=run_id, lease_id=lease_id, ts=ts
+                    conn, scope=SCOPE_HOST, key=host_slot, run_id=budget_root or run_id,
+                    lease_id=lease_id, ts=ts, budget_epoch=budget_epoch,
                 )
 
                 # (d) reserve the maximum charge BEFORE any bytes move.
@@ -688,8 +717,8 @@ def admit(
                     "INSERT INTO workspace_leases "
                     "(lease_id, universe_id, connection_id, repo_key, storage_class, generation, "
                     "state, reserved_bytes, measured_bytes, run_id, path, quarantine_path, "
-                    "created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
+                    "created_at, updated_at,budget_root_run_id,budget_epoch) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         lease_id,
                         universe_id,
@@ -704,6 +733,8 @@ def admit(
                         str(quarantine_path),
                         ts,
                         ts,
+                        budget_root,
+                        budget_epoch,
                     ),
                 )
                 conn.commit()
@@ -731,6 +762,8 @@ def admit(
             quarantine_path=quarantine_path,
             created_at=ts,
             updated_at=ts,
+            budget_root_run_id=budget_root,
+            budget_epoch=budget_epoch,
         )
 
     while True:
@@ -1002,12 +1035,24 @@ def _insert_entry(
     release_universe_lock: bool,
     release_host_lock: bool,
     created_at: float,
+    budget_root_run_id: str | None = None,
+    budget_epoch: int | None = None,
 ) -> int:
+    if lease_id is not None:
+        lease = conn.execute(
+            "SELECT budget_root_run_id,budget_epoch FROM workspace_leases WHERE lease_id=?",
+            (lease_id,),
+        ).fetchone()
+        if lease is not None and lease[0] is not None:
+            budget_root_run_id, budget_epoch = lease
+            # Member cleanup is not permission to release family-owned locks.
+            release_universe_lock = release_host_lock = False
     cur = conn.execute(
         "INSERT INTO workspace_outbox "
         "(run_id, action, lease_id, repo_key, generation, universe_id, "
         "release_universe_lock, release_host_lock, claim_token, claimed_at, done_at, "
-        "outcome, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)",
+        "outcome, created_at,budget_root_run_id,budget_epoch) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)",
         (
             run_id,
             action,
@@ -1018,9 +1063,44 @@ def _insert_entry(
             1 if release_universe_lock else 0,
             1 if release_host_lock else 0,
             created_at,
+            budget_root_run_id,
+            budget_epoch,
         ),
     )
     return int(cur.lastrowid or 0)
+
+
+def enqueue_family_release(conn: sqlite3.Connection, release, *, now=time.time) -> int:
+    """Repairable universe-WAL intent; canonical family proof stays separate."""
+    from tinyassets.workspace_family import FamilyRefused, FamilyRelease
+
+    if type(release) is not FamilyRelease or not conn.in_transaction:
+        raise FamilyRefused("family release requires typed proof and caller transaction")
+    root = release.fence.root_run_id
+    release.require(root, release.universe_id, release.epoch)
+    ensure_schema(conn)
+    outstanding = conn.execute(
+        "SELECT 1 FROM workspace_leases AS l WHERE l.budget_root_run_id=? "
+        "AND l.budget_epoch=? AND NOT EXISTS (SELECT 1 FROM workspace_outbox AS o "
+        "WHERE o.lease_id=l.lease_id AND o.budget_root_run_id=l.budget_root_run_id "
+        "AND o.budget_epoch=l.budget_epoch AND o.done_at IS NOT NULL) LIMIT 1",
+        (root, release.epoch),
+    ).fetchone()
+    if outstanding is not None:
+        raise FamilyRefused("family member cleanup is not acknowledged")
+    row = conn.execute(
+        "SELECT entry_id FROM workspace_outbox WHERE budget_root_run_id=? AND budget_epoch=? "
+        "AND action=? AND release_host_lock=1 AND done_at IS NULL ORDER BY entry_id LIMIT 1",
+        (root, release.epoch, ACTION_RELEASE_LOCK_ONLY),
+    ).fetchone()
+    if row is not None:
+        return int(row[0])
+    return _insert_entry(
+        conn, run_id=root, universe_id=release.universe_id, action=ACTION_RELEASE_LOCK_ONLY,
+        lease_id=None, repo_key=None, generation=None, release_universe_lock=True,
+        release_host_lock=True, created_at=float(now()), budget_root_run_id=root,
+        budget_epoch=release.epoch,
+    )
 
 
 def enqueue_terminal(
@@ -1064,7 +1144,7 @@ def enqueue_terminal(
         run_id=run_id,
         universe_id=universe_id,
         action=ACTION_RELEASE_LOCK_ONLY,
-        lease_id=None,
+        lease_id=(lease.lease_id if lease is not None and lease.budget_root_run_id else None),
         repo_key=None if lease is None else lease.repo_key,
         generation=None if lease is None else lease.generation,
         release_universe_lock=release_locks,
@@ -1147,7 +1227,8 @@ def enqueue_discard(
 
 _ENTRY_COLUMNS = (
     "entry_id, run_id, action, lease_id, repo_key, generation, universe_id, "
-    "release_universe_lock, release_host_lock, claim_token, claimed_at, created_at"
+    "release_universe_lock, release_host_lock, claim_token, claimed_at, created_at, "
+    "budget_root_run_id,budget_epoch"
 )
 
 
@@ -1165,6 +1246,8 @@ def _entry_from_row(row: sqlite3.Row | tuple) -> OutboxEntry:
         claim_token=row[9],
         claimed_at=None if row[10] is None else float(row[10]),
         created_at=float(row[11]),
+        budget_root_run_id=row[12],
+        budget_epoch=row[13],
     )
 
 
@@ -1256,6 +1339,8 @@ def claim_next(
         claim_token=token,
         claimed_at=ts,
         created_at=entry.created_at,
+        budget_root_run_id=entry.budget_root_run_id,
+        budget_epoch=entry.budget_epoch,
     )
 
 
@@ -1272,15 +1357,18 @@ def _target_paths(db: Path, entry: OutboxEntry) -> tuple[Path, Path] | None:
         ensure_schema(conn)
         if entry.lease_id:
             row = conn.execute(
-                "SELECT path, quarantine_path FROM workspace_leases WHERE lease_id = ?",
-                (entry.lease_id,),
+                "SELECT path, quarantine_path FROM workspace_leases WHERE lease_id = ? "
+                "AND generation IS ? AND budget_root_run_id IS ? AND budget_epoch IS ?",
+                (entry.lease_id, entry.generation, entry.budget_root_run_id, entry.budget_epoch),
             ).fetchone()
         else:
             row = conn.execute(
                 "SELECT path, quarantine_path FROM workspace_leases "
                 "WHERE universe_id = ? AND repo_key = ? AND generation = ? "
+                "AND budget_root_run_id IS ? AND budget_epoch IS ? "
                 "ORDER BY created_at LIMIT 1",
-                (entry.universe_id, entry.repo_key, entry.generation),
+                (entry.universe_id, entry.repo_key, entry.generation,
+                 entry.budget_root_run_id, entry.budget_epoch),
             ).fetchone()
         conn.commit()
     finally:
@@ -1312,6 +1400,7 @@ def process_entry(
     *,
     fs: PoolFilesystem,
     now: Callable[[], float] = time.time,
+    family_release=None,
 ) -> str:
     """Do the filesystem work, then acknowledge it in ONE transaction.
 
@@ -1321,6 +1410,13 @@ def process_entry(
     locks the entry names when the run still holds them, and sets
     ``done_at``/``outcome``. Returns the outcome.
     """
+    if entry.budget_root_run_id is not None and (
+            entry.release_universe_lock or entry.release_host_lock):
+        from tinyassets.workspace_family import FamilyRefused, FamilyRelease
+
+        if type(family_release) is not FamilyRelease:
+            raise FamilyRefused("family release needs current held fence and empty proof")
+        family_release.require(entry.budget_root_run_id, entry.universe_id, entry.budget_epoch)
     outcome = OUTCOME_RELEASED
     failure: str | None = None
     if entry.action in (ACTION_WIPE_SCRATCH, ACTION_DISCARD_PERMANENT):
@@ -1367,13 +1463,15 @@ def process_entry(
                 )
             if entry.release_universe_lock:
                 conn.execute(
-                    'DELETE FROM workspace_locks WHERE scope = ? AND "key" = ? AND run_id = ?',
-                    (SCOPE_UNIVERSE, entry.universe_id, entry.run_id),
+                    'DELETE FROM workspace_locks WHERE scope = ? AND "key" = ? AND run_id = ? '
+                    "AND budget_epoch IS ?",
+                    (SCOPE_UNIVERSE, entry.universe_id, entry.run_id, entry.budget_epoch),
                 )
             if entry.release_host_lock:
                 conn.execute(
-                    "DELETE FROM workspace_locks WHERE scope = ? AND run_id = ?",
-                    (SCOPE_HOST, entry.run_id),
+                    "DELETE FROM workspace_locks WHERE scope = ? AND run_id = ? "
+                    "AND budget_epoch IS ?",
+                    (SCOPE_HOST, entry.run_id, entry.budget_epoch),
                 )
             recorded = outcome if failure is None else f"{outcome}: {failure}"
             conn.execute(

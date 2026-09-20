@@ -1576,14 +1576,17 @@ def _action_cancel_run(kwargs: dict[str, Any]) -> str:
         if not owner or owner != current_request_actor_id():
             return json.dumps({"error": f"Run '{rid}' not found."})
 
-    # The storage operation checks terminal state in the same statement as the
-    # insert, so a finish racing this read cannot create a late cancellation.
-    if record.get("status") not in _TERMINAL_STATUSES:
-        request_cancel(_base_path(), rid)
+    # Storage checks current terminal state and family membership under its
+    # admission fence. A completed root may still own executing children;
+    # its historical output stays completed while those children are stopped.
+    accepted = request_cancel(_base_path(), rid)
     record = _get_run(_base_path(), rid) or record
     terminal = record.get("status") in _TERMINAL_STATUSES
-    requested = is_cancel_requested(_base_path(), rid)
+    requested = accepted or is_cancel_requested(_base_path(), rid)
     note = (
+        "This run's result remains finished. Cancellation was recorded for its "
+        "active execution family; already delivered effects cannot be undone."
+        if terminal and accepted else
         "This run is already terminal; no further cancellation is needed."
         if terminal else
         "Cancellation is cooperative. Queued work checks before starting; "

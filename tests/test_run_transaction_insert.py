@@ -105,6 +105,8 @@ def test_normal_run_record_matches_pre_extraction_behavior(tmp_path, monkeypatch
             records.append(
                 dict(conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone())
             )
+    # Authentication does not activate resource lifecycle. With no managed
+    # startup publisher every field matches the original executable contract.
     assert records[0] == records[1]
 
 
