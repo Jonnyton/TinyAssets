@@ -1,4 +1,12 @@
-## ADDED Requirements
+# Governed Agent Consumers
+
+## Purpose
+
+Explicit receiver-private selection of a supported immutable Branch-backed conversation
+component, retaining private universe data and current receiver authority. This v1
+capability is separate from arbitrary UI, foreign harness and whole-setup portability.
+
+## Requirements
 
 ### Requirement: Consumer selection is receiver-private and explicit
 The platform SHALL select an executable agent consumer only from an explicit,

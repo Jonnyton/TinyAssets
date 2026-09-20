@@ -31,10 +31,10 @@ default writer or its cognitive/learning pipeline behind the user's back.
 - **AND** automatic transport recovery does not admit a duplicate graph or append a second canonical reply
 - **AND** an explicit new user send remains a distinct request, not falsely advertised as exactly-once replay
 
-#### Scenario: A handler tries to recursively become the same conversation writer
-- **WHEN** descendant work re-enters the current canonical handler for the same admitted turn
-- **THEN** the trusted boundary rejects the recursive writer admission using run/turn ancestry
-- **AND** ordinary separately authorized graph work remains governed by existing rules
+#### Scenario: V1 excludes recursive canonical-writer entry
+- **WHEN** a selected component depends on nested executable references or requires the canonical converse handle as an engine/code-node tool
+- **THEN** v1 refuses unsupported nested references and the governed tool surface does not expose converse
+- **AND** the platform does not claim general recursive-harness ancestry support
 
 ### Requirement: Canonical custom requests reserve one existing run
 Custom-consumer turns SHALL require the versioned keyed request object and SHALL
@@ -42,6 +42,10 @@ atomically bind owner/universe/session-scoped stable caller intent and captured
 installation/context to one existing runs-database run. They SHALL reuse the
 common run-owned start/dispatch mechanism, not add a conversation execution queue,
 launch claim or provider authority. Status SHALL remain owner-scoped and truthful.
+New v1 requests SHALL stamp canonical_consumer/version 1/empty options under the
+same transaction; initial, same-key and unstarted restart nomination SHALL use
+the same static origin dispatcher. Unknown/uninstalled origin or durable started
+evidence SHALL remain held rather than authorize uncertain replay.
 
 #### Scenario: Transport reconnect follows changed history and saved defaults
 - **WHEN** the same scoped key and original caller request return after history or saved model defaults changed

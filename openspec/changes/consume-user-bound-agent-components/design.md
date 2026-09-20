@@ -1,6 +1,10 @@
 ## Context
 
-Proposal-only, September 19, 2026. Full PLAN read, including Scoping Rules,
+Original design recorded September 19, 2026; implementation is now reviewed at
+`f9b91ed7`, with final docs/tests and live acceptance still gated. The provisional
+choices below are superseded where specified by `turn-contract.md`, the current
+delta specs and `release-integration.md`; they are not open implementation asks.
+Full PLAN read, including Scoping Rules,
 Daemon Platform, Providers, canonical conversation and no platform actor rules.
 No PLAN amendment is needed for a caller of existing user-owned graph execution;
 retired fleet-era paragraphs are not authority to revive that fleet.

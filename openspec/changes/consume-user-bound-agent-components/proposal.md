@@ -29,8 +29,10 @@ without replacing their universe's private data or borrowing a creator's access.
 - Keep reusable source and lineage public; receiver installation/configuration,
   conversations, memory, connections and credentials remain receiver-private.
 
-This is **proposal-only**, not implementation approval or a claim of deployed
-whole-harness portability. It does not edit, execute or finish the user's
+This bounded implementation passed independent review at `f9b91ed7`; final
+test/spec integration still requires lead verification, CI, deployment and
+two-owner live acceptance. It is not a claim of deployed whole-harness portability.
+It does not edit, execute or finish the user's
 PR #3840, PR #3842, background-self work or any example design.
 
 ## Capabilities
@@ -51,18 +53,20 @@ PR #3840, PR #3842, background-self work or any example design.
 ## Impact
 
 Owner: Codex, under the founder's explicit coordinated parallel MVP push.
-Branch: `codex/governed-experience-consumer-shape`. One proposal/shape intent;
-no runtime implementation, commit, push or peer dispatch authorized by this file.
-The release lead owns the independent review queue and subsequent implementation
-decision. PR #3882 is frozen in its separate release worktree.
+Release branch: `codex/consumer-release`, assembled separately from the preserved
+original `codex/governed-experience-consumer-shape` tree. Implementation was approved
+by the lead on September 19; exact-head review and follow-up remain lead-owned.
+This change does not authorize editing another release or private user design.
 
-Potential implementation seams after review: `tinyassets/universe_intelligence.py`,
-existing custom-agent API/binding validation, existing Branch snapshot/execution
-and provider-authority helpers, and trusted app installation/recovery controls.
+Implemented seams are canonical `universe_server.converse`, private consumer
+selection/admission/projection, existing Branch execution/provider authority and
+trusted app installation/recovery controls. The built-in writer stays unchanged
+when no custom handler is selected.
 No new top-level MCP handle, catalog, credential store, conversation store,
 runtime fleet, provider or parallel grant system is proposed. Exact selection
 field names and the adapter wire envelope are specified for lead decision in
 [turn-contract.md](turn-contract.md), incorporating the independent ADAPT review
 and its evidence-qualified disposition. The common admitted-run dispatch guard
-belongs to the file lane, not a second consumer execution queue. No runtime
-authorization follows from the proposal or its strict validation.
+belongs to the shared file/consumer substrate, not a second consumer execution
+queue. Recorded lead authorization and independent review, not proposal validation
+alone, govern implementation. Deployment and live acceptance remain outstanding.
