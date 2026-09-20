@@ -115,6 +115,17 @@ papered over:
    the repo was migrated in this change. Whether the interactive login should
    instead become a ninth fixed mode is a shape question left to the
    coordinator; inventing a mode outside the reviewed table was not in scope.
+   Filed as `docs/concerns/2026-09-20-ta-op-interactive-tty-carveout.md` — the
+   structural argument holds for today's rootless posture and does NOT survive
+   a root-start flip, so the decision is owed before that flip, not after.
+
+## One citation to avoid in the D2 regression
+
+`output/claude-handoff-reaping-result.md` (Fable's lane, `714e9683`) records
+`app-pulse` manual exit 1. That is a `network none`, token-less fixture
+container and the failure is a missing `git_sha`, not missing authorization.
+It is **not** evidence about the production `--pulse-only` healthcheck that
+`ta-op pulse` now wraps, in either direction.
 
 ---
 
