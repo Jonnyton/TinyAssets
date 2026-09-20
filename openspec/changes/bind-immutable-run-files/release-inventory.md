@@ -17,10 +17,13 @@ five reset table classifications and independent file maintenance cursor were
 merged into shared paths. Conversation expiry/model bridge/receipt observers
 remain intact. Existing read_graph request_key positional ordering is preserved.
 
-Consumer's upcoming review-disposition/specification/test-only successor remains
-an explicit dependency to import normally before this layer freezes. Its known
-maintenance AST fixture needs the added file cursor in this layer; no production
-runtime change is needed to work around that fixture.
+Consumer's review-disposition/specification/test-only successor is imported as
+`456d9368`, `82145d50` and `7e17f751` (originals `47025163`, `50774c81`,
+`d3fa5f91`). The maintenance AST fixture binds both cursors and tests independent
+file/admission/delivery failure. Lower-level file fixtures explicitly acquire the
+real admitted-worker guard instead of relying on superseded implicit family
+enrollment, with no-guard refusal retained. No production runtime changed for
+either fixture correction.
 
 ## Not file dependencies
 

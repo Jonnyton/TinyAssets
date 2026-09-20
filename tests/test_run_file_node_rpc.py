@@ -10,6 +10,7 @@ from tinyassets.auth.middleware import identity_context
 from tinyassets.branches import BranchDefinition
 from tinyassets.run_file_binding import bind_declared_files
 from tinyassets.run_file_capture import capture_authoring_files
+from tinyassets.storage.run_execution_lock import try_run_execution_lock
 
 SOURCE = """import base64
 import hashlib
@@ -113,7 +114,9 @@ def invoke(base, branch, refs):
             branch=branch,
             inputs={"files": refs},
         )
-    with identity_context(None):
+    # This lower-level compiler harness supplies the same real guard as the
+    # admitted worker; it must not depend on implicit managed-family enrollment.
+    with try_run_execution_lock(base, run_id=run_id) as guard, identity_context(None):
         return runs._invoke_graph(
             base,
             run_id=run_id,
@@ -121,6 +124,7 @@ def invoke(base, branch, refs):
             inputs={"files": refs},
             provider_call=None,
             recursion_limit=50,
+            _execution_guard=guard,
         )
 
 

@@ -1,0 +1,129 @@
+# Run File Inputs
+
+## Purpose
+
+Preserve exact owner-controlled binary inputs across workflow execution without
+putting whole files, mutable paths or caller-asserted authority in workflow state.
+This first slice covers same-owner authoring capture, direct definition or
+published-version runs, declared node reads, owned export and custody lifecycle.
+The broader origin/materialization proposal remains in
+`openspec/changes/bind-immutable-run-files/`; it is not implemented by this spec.
+
+## Requirements
+
+### Requirement: Exact same-owner capture uses existing graph handles
+
+`write_graph target=run_file operation=capture` SHALL accept exactly a label and
+bounded `sources:[{session_id,handle_id}]` from the authenticated owner's existing
+authoring sessions. Capture SHALL revalidate source ownership and freshness,
+stream bounded exact bytes under source/root identity checks, and atomically
+publish the complete requested bundle or refuse. Returned versioned references
+SHALL contain display metadata, byte size and digest, never physical paths.
+
+#### Scenario: Binary and empty members
+- **WHEN** the owner captures a valid ordered bundle containing a binary member larger than one tool response and a zero-byte member
+- **THEN** each member retains exact bytes and metadata through bounded reads
+- **AND** a failed member prevents partial accepted bundle visibility
+
+#### Scenario: Caller supplies authority or a path
+- **WHEN** capture payload supplies an owner, universe, run, arbitrary path or URL selector
+- **THEN** the request refuses without capturing bytes or granting file access
+
+### Requirement: Capacity and supported scope are truthful
+
+`read_graph target=run_file_limits` SHALL disclose whether capture is configured,
+the custody allocation ceiling, source/count/chunk bounds and staging retention.
+Missing or invalid global capacity SHALL refuse intake. Retained and pending
+allocations SHALL be atomically bounded separately from transport accounting;
+capture/read SHALL account actual bytes without fabricating a workspace job,
+effect or new price. Same-owner run rebinding SHALL not duplicate retained bytes.
+
+#### Scenario: Capability is not globally configured
+- **WHEN** custody capacity has no valid operational value
+- **THEN** limits report capture unavailable rather than unlimited capacity
+- **AND** the platform requires one normal global rollout configuration, not a patch per user
+
+#### Scenario: Unsupported transfer shape
+- **WHEN** a caller asks this slice for active-workspace capture, arbitrary URL/path intake, workspace materialization or cross-owner file delivery
+- **THEN** the public contract does not claim that capability exists
+- **AND** file references alone do not grant those authorities
+
+### Requirement: Admission binds immutable inputs before execution
+
+`run_graph` SHALL accept declared same-owner file inputs for a readable branch
+definition or alternative `branch_version_id`. A version selector SHALL refuse
+combination with definition, goal, trigger, cancellation or delivery selectors.
+The current owner/home/source authority fence SHALL precede atomic run,
+immutable origin/options/snapshot and complete file binding. Private source
+visibility SHALL remain enforced. No provider, initial run effects or dispatch
+SHALL occur before this reservation and the common worker's guarded start CAS.
+
+The served agent SHALL expose these operations through its existing pinned
+owner/universe graph handles. This first slice SHALL refuse nested direct
+provenance; other file-bearing origins remain outside its accepted contract.
+
+#### Scenario: Accepted submission cannot be confirmed
+- **WHEN** run and file bindings commit but executor submission fails
+- **THEN** the response retains the accepted run identifier and warns against submitting a replacement
+- **AND** recovery nominates that same run through the single static origin registry and start authority
+
+#### Scenario: Source or reference is foreign
+- **WHEN** admission names an unreadable version, another owner's file, or changed immutable reference metadata
+- **THEN** admission refuses without a partially reserved executable run
+
+### Requirement: Actual node reads require trusted execution and declared dataflow
+
+The sandbox `read_run_file` action SHALL accept only file ID, byte offset and
+bounded count. Its authority SHALL derive from a live held execution-use token,
+persisted run owner/universe/actor, actual compiled placement and the references
+explicitly present in that node's declared incoming fields. The worker SHALL
+revalidate persisted file bindings; it SHALL not invent missing bindings.
+Read bounds SHALL respect each node's applicable manifest contract.
+
+#### Scenario: Chosen entry and downstream node
+- **WHEN** a selected entry receives bound files and explicitly forwards them into a downstream declared input
+- **THEN** both nodes can read exact bytes within their respective declared limits
+- **AND** whole-state/default visibility does not grant an undeclared node access
+
+#### Scenario: Running row without an execution-use guard
+- **WHEN** a row says running but no real guarded execution-use scope owns the read
+- **THEN** file access refuses even if all caller-supplied IDs match
+
+### Requirement: Owned export and release retain lifecycle safety
+
+`read_graph target=run_file` SHALL read an owned bound run/file reference using
+`file_offset` and `file_max_bytes`, returning exact base64 bytes, reference,
+`next_offset` and EOF. `write_graph target=run_file operation=release` SHALL accept
+exactly `file_id`, refuse active bindings, and revoke only the selected retained
+file. Bound custody SHALL persist until explicit release or owner erasure;
+unbound staging SHALL expire after the disclosed finite lifetime.
+
+Owner deletion SHALL tombstone authority before cleanup, settle exact owned
+physical custody before generic row erasure, and retain durable cleanup/allocation
+debt when deletion cannot be proven. Reset and account lifecycle inventories
+SHALL classify every custody table and preserve other owners' data.
+
+#### Scenario: Selective release
+- **WHEN** an owner releases one inactive retained member
+- **THEN** that member becomes unreadable and its safely settled allocation is released
+- **AND** sibling files remain readable
+
+#### Scenario: Cleanup is interrupted
+- **WHEN** erasure or retention cleanup cannot prove physical deletion
+- **THEN** authority remains denied where revoked and durable debt survives for reconciliation
+- **AND** recovery never replays user workflow effects or exposes partial bodies
+
+### Requirement: Uncertain admission status is observational only
+
+Owner-authorized status SHALL classify admission metadata without reading private
+input/snapshot bodies or binding a provider. Unknown, legacy or invalid origin
+metadata SHALL report `phase=origin_unavailable`; a queued row with either
+durable start-marker component SHALL report `phase=recovery_required`.
+These additive observations SHALL preserve persisted status and disclose
+`admission_state`, `automatic_replay=false` and `actions_may_have_occurred`.
+Observation SHALL not establish worker death or grant retry/retirement authority.
+
+#### Scenario: Marker exists while row remains queued
+- **WHEN** an owner reads a queued admission carrying a start timestamp or claim token
+- **THEN** the response warns that actions may already have occurred
+- **AND** it does not present the run as proven healthy unstarted work or automatically resubmit it

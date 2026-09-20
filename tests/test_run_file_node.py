@@ -10,6 +10,7 @@ from tinyassets import runs
 from tinyassets.authoring.io import IODeclaration
 from tinyassets.run_file_node import NodeFileSource, read_node_file
 from tinyassets.storage import run_files
+from tinyassets.storage.run_execution_lock import try_run_execution_lock
 
 
 def source(run_id):
@@ -34,7 +35,9 @@ def read(base, run_id, refs, **changes):
 
 def test_pinned_running_node_reads_exact_incoming_file(bound):  # noqa: F811
     base, run_id, refs, bodies = bound
-    with runs._managed_execution_scope(base, run_id):
+    with try_run_execution_lock(base, run_id=run_id) as guard, runs._managed_execution_scope(
+        base, run_id, provided=guard,
+    ):
         runs.update_run_status(base, run_id, status="running")
         with runs._execution_use_scope():
             value = read(base, run_id, refs)
@@ -57,7 +60,9 @@ def test_guessed_or_revoked_node_context_cannot_read(bound, bad):  # noqa: F811
         changes["incoming"] = {"files": [{**refs[0], "filename": "forged"}]}
     elif bad == "cancel":
         changes["should_cancel"] = lambda: True
-    with runs._managed_execution_scope(base, run_id):
+    with try_run_execution_lock(base, run_id=run_id) as guard, runs._managed_execution_scope(
+        base, run_id, provided=guard,
+    ):
         runs.update_run_status(base, run_id, status="running")
         if bad == "no_pin":
             with pytest.raises((run_files.FileCustodyRefused, RuntimeError)):
@@ -66,3 +71,13 @@ def test_guessed_or_revoked_node_context_cannot_read(bound, bad):  # noqa: F811
             with runs._execution_use_scope():
                 with pytest.raises(run_files.FileCustodyRefused):
                     read(base, run_id, refs, **changes)
+
+
+def test_unmanaged_running_row_does_not_itself_grant_execution_use(bound):  # noqa: F811
+    base, run_id, refs, _ = bound
+    # Corrected foundation does not automatically enroll ordinary runs. This
+    # fixture deliberately omits the admitted worker's explicit guard.
+    with runs._managed_execution_scope(base, run_id), runs._execution_use_scope():
+        runs.update_run_status(base, run_id, status="running")
+        with pytest.raises(run_files.FileCustodyRefused, match="file_node_authority_unavailable"):
+            read(base, run_id, refs)

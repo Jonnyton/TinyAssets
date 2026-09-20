@@ -621,3 +621,28 @@ comments in `daemon_server.py`; `git show f9b91ed7:tinyassets/daemon_server.py |
 python -m ruff check --stdin-filename tinyassets/daemon_server.py --output-format
 concise -` produces the same eight, with only downstream line shifts. File hunks
 do not touch those comments; no unrelated cleanup is included.
+
+### Guarded fixture and maintenance correction
+
+The Linux expanded cohort completed **838 passed, 3 failed, zero skips**; its
+failure set exactly matches Windows. Source inspection confirmed that
+`runs._managed_execution_scope(provided=None)` no longer issues execution use
+for ordinary non-managed rows, while the common admission worker passes its
+real held guard. Only the lower-level tests changed: acquire
+`try_run_execution_lock`, pass `provided` / `_execution_guard`, and retain
+no-use denial. A new negative proves a running unmanaged row by itself grants
+no file read. No production authority, enrollment or validation was weakened.
+
+Consumer successors were imported as `456d9368`, `82145d50` and `7e17f751`,
+preserving their runtime unchanged. The maintenance factory now binds both real
+closure cursor names and tests three ticks with either delivery, admission or
+file cleanup failure; all other lanes advance and the failed lane's cursor is
+retained. Actual hosted `main` startup coverage remains intact.
+
+`python -m pytest -q -rs tests/test_run_file_node.py
+tests/test_run_file_node_rpc.py tests/test_delivery_account_deletion.py
+tests/test_consumer_startup.py tests/test_run_file_public.py`: **42 passed** on
+Windows and **42 passed** on Linux, zero skips. Ruff for all changed fixture
+files passes. The bounded canonical `openspec/specs/run-file-inputs/spec.md`
+now describes only implemented same-owner behavior; wider proposal tasks remain
+open and deployment/app acceptance have not been claimed.
