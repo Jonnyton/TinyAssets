@@ -4004,7 +4004,7 @@
         }
         const item={id:"att-"+(++seq), file:file, name:String((file&&file.name)||"file"),
           size:Number(file&&file.size)||0, mediaType:mediaTypeOf(file),
-          state:"pending", label:null, sha256:null, ref:null, text:null,
+          state:"pending", label:null, sha256:null, ref:null, text:null, attempted:false,
           expiresAt:undefined, retentionSeconds:null, error:null, retryable:false,
           scope:selectedIn, gen:selectedGen, aborter:null};
         items.push(item); queued.push(item);
@@ -4074,10 +4074,20 @@
         // can be OBSERVED with its original header and an empty body; it can
         // never be re-sent, because the bytes are gone. Without that header
         // there is nothing to observe and the founder picks the file again.
-        if(item.header&&item.label) return observe(item);
+        if(item.header&&item.label){ await observe(item,false); return; }
         item.state="failed"; item.retryable=false;
         item.error="attach this file again — this page no longer holds its bytes";
         changed(); return;
+      }
+      // A CHECK of an attempt already made asks the route to answer from its
+      // record FIRST, with no body. An early refusal - a 409 or 413 decided
+      // before the bytes were read - closes the connection, so re-streaming to
+      // find out what happened would hit the same wall and the founder would
+      // see a network error instead of the reason. This also means a passed
+      // hold is OBSERVED rather than uploaded a second time.
+      if(item.attempted&&item.header&&item.label){
+        if(await observe(item,true)) return;
+        if(!ownsNow(item)) return abortItem(item);
       }
       if(!item.label) item.label=newLabel();
       item.state="hashing"; item.error=null; item.retryable=false; changed();
@@ -4111,6 +4121,9 @@
       // LAST CHECK before any byte leaves the browser.
       if(!ownsNow(item)) return abortItem(item);
       item.state="uploading"; changed();
+      // From here the route may have a record of this label whatever happens to
+      // the connection, so every later Check observes before it sends bytes.
+      item.attempted=true;
       let payload=null, failure=null;
       try{ payload=await deps.upload({header:header, file:item.file, label:item.label,
         mediaType:item.mediaType, size:item.size, sha256:item.sha256,
@@ -4127,8 +4140,13 @@
     // which the route answers from its committed record - the same references
     // and the ORIGINAL hold - without reading or storing a byte. Nothing is
     // re-uploaded, re-labelled or copied, and no message is submitted.
-    async function observe(item){
-      if(!ownsNow(item)) return abortItem(item);
+    // Answers true when it SETTLED the item. `canFallBack` is the in-session
+    // case where this page still holds the bytes: a label the route has no
+    // record of answers 400 before reading anything and without burning the
+    // label, so the founder's Check becomes the real upload instead of a dead
+    // end. Every other answer is final here.
+    async function observe(item, canFallBack){
+      if(!ownsNow(item)){ abortItem(item); return true; }
       item.state="checking"; item.error=null; item.retryable=false; changed();
       const aborter=makeAborter(); item.aborter=aborter;
       let payload=null, failure=null;
@@ -4139,8 +4157,16 @@
       item.aborter=null;
       // The answer may land after a sign-out or a switch: it belongs to the
       // account that saved the record, never to whoever is here now.
-      if(!ownsNow(item)) return abortItem(item);
-      return failure?unrecovered(item,failure):adopt(item,payload);
+      if(!ownsNow(item)){ abortItem(item); return true; }
+      if(failure){
+        const status=typeof failure.status==="number"?failure.status:0;
+        // 400 is the route answering "no such committed label" before it read
+        // or stored a byte. With the file still in hand that is a retry, not a
+        // failure - and it is the ONLY answer that sends bytes again.
+        if(canFallBack&&item.file&&status===400) return false;
+        unrecovered(item,failure); return true;
+      }
+      adopt(item,payload); return true;
     }
     // The check came back without a usable reference. The honest end of this is
     // an explicit re-selection by the founder: this page holds no bytes to send.
@@ -4290,7 +4316,7 @@
         if(items.length>=maxFiles) break;
         items.push({id:"att-"+(++seq), file:null, name:String(row.name||"file"),
           size:Number(row.size)||0, mediaType:String(row.mediaType||"application/octet-stream"),
-          state:"saved", label:row.label, header:row.header,
+          state:"saved", label:row.label, header:row.header, attempted:true,
           sha256:typeof row.sha256==="string"?row.sha256:null,
           ref:null, text:null, expiresAt:undefined, retentionSeconds:null,
           error:null, retryable:true, scope:here, gen:generation, aborter:null});

@@ -125,7 +125,8 @@ function build(plan, overrides){
     upload: async (req)=>{
       state.inflight++; state.maxInflight=Math.max(state.maxInflight,state.inflight);
       state.posts.push({header:req.header, meta:decodeHeader(req.header),
-                        label:req.label, name:req.file.name});
+                        label:req.label, name:req.file?req.file.name:null,
+                        metadataOnly:!!req.metadataOnly, hasFile:!!req.file});
       try{
         await new Promise(r=>setTimeout(r,1));
         if(state.onPost) state.onPost(state);
@@ -137,12 +138,15 @@ function build(plan, overrides){
   }, overrides||{});
   return {state, deps, ctrl: createUploadController(deps)};
 }
+// The scripted route answers from its RECORD, which is the header - a
+// metadata-only observation carries no file to read a name off.
 function ok(req, over){
+  const meta = decodeHeader(req.header);
   return Object.assign({
     universe_id:"uni-A",
-    files:[{version:1, file_id:"file-"+req.label, size_bytes:req.size,
-            sha256:req.sha256, filename:req.file.name,
-            media_type:req.mediaType}],
+    files:[{version:1, file_id:"file-"+req.label, size_bytes:meta.size_bytes,
+            sha256:meta.sha256, filename:meta.filename,
+            media_type:meta.media_type}],
     unbound_retention_seconds:3600,
     unbound_expires_at: 1_000_000_000 + 3600}, over||{});
 }
@@ -573,6 +577,49 @@ test("reload_check_unrecovered", async ()=>{
   const turn = second.ctrl.buildTurn("here it is");
   return {calls:calls.length, state:chip.state, text:chip.text,
           blocking:chip.blocking, blocked:!!turn.blocked, reason:turn.reason};
+});
+
+// 25. an early refusal on a LARGE upload closes the connection, so the browser
+// sees a network error and not the reason. The Check that follows must ask the
+// route to ANSWER FROM ITS RECORD - re-streaming would hit the same wall.
+test("check_observes_before_it_streams", async ()=>{
+  const h = build((n,req)=> n===1 ? new Error("connection reset") : ok(req));
+  await h.ctrl.add([fakeFile("big.bin","application/octet-stream",Buffer.from([0,9,9]))]);
+  const uncertain = h.ctrl.chips()[0];
+  await h.ctrl.retry(uncertain.id);
+  return {uncertainState:uncertain.state,
+          posts:h.state.posts.map(p=>({label:p.label, metadataOnly:p.metadataOnly,
+                                       hasFile:p.hasFile})),
+          sameHeader:h.state.posts[0].header===h.state.posts[1].header,
+          state:h.ctrl.chips()[0].state};
+});
+
+// 26. the route has NO record of that label (400, decided before any byte and
+// without burning it). This page still holds the file, so the founder's Check
+// becomes the real upload - the only answer that sends bytes a second time.
+test("unknown_label_falls_back_to_the_bytes", async ()=>{
+  const h = build((n,req)=>{
+    if(n===1) return new Error("connection reset");
+    if(n===2) return refuse(400,"upload_length_mismatch");
+    return ok(req);
+  });
+  await h.ctrl.add([fakeFile("big.bin","application/octet-stream",Buffer.from([0,9,9]))]);
+  await h.ctrl.retry(h.ctrl.chips()[0].id);
+  return {posts:h.state.posts.map(p=>({label:p.label, metadataOnly:p.metadataOnly,
+                                       hasFile:p.hasFile})),
+          labels:new Set(h.state.posts.map(p=>p.label)).size,
+          state:h.ctrl.chips()[0].state, blocked:!!h.ctrl.buildTurn("x").blocked};
+});
+
+// 27. a 409 answered to the CHECK is final: the held label is disclosed and the
+// bytes are never sent again under it.
+test("held_label_check_never_restreams", async ()=>{
+  const h = build((n,req)=> n===1 ? new Error("connection reset") : refuse(409,"held"));
+  await h.ctrl.add([fakeFile("big.bin","application/octet-stream",Buffer.from([0,9,9]))]);
+  await h.ctrl.retry(h.ctrl.chips()[0].id);
+  const chip=h.ctrl.chips()[0];
+  return {posts:h.state.posts.map(p=>({metadataOnly:p.metadataOnly, hasFile:p.hasFile})),
+          state:chip.state, text:chip.text, retryable:chip.retryable};
 });
 
 (async ()=>{
@@ -1037,3 +1084,32 @@ def test_an_unconfirmed_record_asks_for_the_file_rather_than_declaring_it_gone(r
     assert "attach the file again" in out["text"]
     assert "deleted" not in out["text"] and "expired" not in out["text"]
     assert out["blocked"] is True and "photo.bin" in out["reason"]
+
+
+def test_a_check_asks_the_route_before_it_streams_the_bytes_again(results):
+    """An early refusal on a large upload closes the connection, so the browser
+    sees a network error rather than the 409/413. Re-streaming to find out hits
+    the same wall; the empty-bodied question cannot be cut off."""
+    out = results["check_observes_before_it_streams"]
+    assert out["uncertainState"] == "uncertain"
+    first, second = out["posts"]
+    assert first["metadataOnly"] is False and first["hasFile"] is True
+    assert second["metadataOnly"] is True and second["hasFile"] is False
+    assert second["label"] == first["label"] and out["sameHeader"] is True
+    assert out["state"] == "ready"
+
+
+def test_a_label_the_route_never_recorded_falls_back_to_the_bytes(results):
+    out = results["unknown_label_falls_back_to_the_bytes"]
+    kinds = [(p["metadataOnly"], p["hasFile"]) for p in out["posts"]]
+    assert kinds == [(False, True), (True, False), (False, True)], kinds
+    assert out["labels"] == 1, "one label throughout: never a second copy"
+    assert out["state"] == "ready" and out["blocked"] is False
+
+
+def test_a_held_label_is_disclosed_by_the_check_and_never_restreamed(results):
+    out = results["held_label_check_never_restreams"]
+    kinds = [(p["metadataOnly"], p["hasFile"]) for p in out["posts"]]
+    assert kinds == [(False, True), (True, False)], out["posts"]
+    assert out["state"] == "failed" and out["retryable"] is False
+    assert "attach the file again" in out["text"]
