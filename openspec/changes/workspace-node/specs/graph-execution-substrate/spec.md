@@ -52,10 +52,9 @@ All other clauses of this requirement are unchanged.
 
 ### Requirement: Guarded run execution preserves ownership through actual scoped use
 
-When a run-keyed OS guard is held, whether supplied by the caller or minted for
-a family-associated row, start and terminal transitions SHALL be expected-status
-guarded regardless of family association. Ordinary runs without a held guard
-retain legacy unguarded transitions and startup recovery. A derivative same-process execution-use
+Start and terminal transitions SHALL be expected-status guarded when a run-keyed OS guard is held, whether supplied by the caller or minted for a family-associated row, regardless of family association.
+Ordinary runs without a held guard retain legacy unguarded transitions and startup recovery.
+A derivative same-process execution-use
 receipt MAY pin that owner's lifetime through code-node and RPC operations, but
 SHALL NOT satisfy owner-only mutation or release checks. Owner retirement SHALL
 refuse new pins and drain entered scopes before releasing the original OS lock.
