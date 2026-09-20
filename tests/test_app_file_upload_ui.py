@@ -956,7 +956,10 @@ function $(id){ return el[id] || (el[id]={value:"", style:{}, disabled:false}); 
 const log = [];
 let turnStartedAt = 0;
 let activeTurn = null;
+// Both halves of "is this still my conversation?", as the page declares them:
+// sendTurn fences a late settle on the account AND the home.
 let queueScope = "uni-A";
+let queueOwner = "owner-A";
 const MCP = {_loginEpoch: 1};
 const Voice = {conversationSettled:(d)=>log.push({voice:!!d})};
 function captureTurnOptions(o){ return Object.assign({modelChoice:null}, o||{}); }
@@ -979,7 +982,7 @@ const R = {};
 async function scenario(name, fn){
   log.length = 0;
   el["btn-send"].disabled = false; turnStartedAt = 0; activeTurn = null;
-  MCP._loginEpoch = 1; queueScope = "uni-A";
+  MCP._loginEpoch = 1; queueScope = "uni-A"; queueOwner = "owner-A";
   await fn();
   R[name] = {log: log.slice(), disabled: el["btn-send"].disabled,
              turnStartedAt: turnStartedAt, composer: el["composer-input"].value};

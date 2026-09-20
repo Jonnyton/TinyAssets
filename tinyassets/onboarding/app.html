@@ -2790,6 +2790,15 @@
   function flushSendQueue(){
     if($("btn-send").disabled || !sendQueue.length) return;
     const next=sendQueue.shift();
+    // A queued line goes out only under the account and home that queued it.
+    // SAME rule as the in-flight record's (restoreInflight): a stamped pair
+    // that disagrees with this page's is refused; a line queued before this
+    // page knew its pair is unstamped and keeps its existing behaviour. It is
+    // dropped from this page's queue rather than sent, and its saved row is
+    // left on disk for a page that can prove it.
+    if((next.owner&&next.owner!==queueOwner)||(next.scope&&next.scope!==queueScope)){
+      return flushSendQueue();
+    }
     if(claimedElsewhere(next)){ saveQueue(); return flushSendQueue(); }
     saveQueue();
     // A rejection before sendTurn's own try/finally (a missing node) must not
@@ -2817,7 +2826,10 @@
     const queuedAt=Date.now();
     if(!opts.echoed) appendMessage("founder", display || message, null, queuedAt/1000);
     input.value=""; input.style.height="auto";
-    sendQueue.push({message, display,
+    // Stamped with the account and home that queued it, the same pair a saved
+    // row carries, so a line can never go out under a different identity than
+    // the one that wrote it.
+    sendQueue.push({message, display, owner:queueOwner, scope:queueScope,
       opts: Object.assign({}, opts, {echoed:true,sentAt:queuedAt}), ts: queuedAt});
     setStatusLine("Your universe is thinking... " + sendQueue.length + " waiting");
     saveQueue();   // last: a failed save replaces the status line with why
@@ -2850,8 +2862,9 @@
     // lands after either changed belongs to a conversation that is no longer
     // on screen: it paints nothing, and nothing of it reaches the new
     // account's composer.
-    const sentEpoch=MCP._loginEpoch, sentScope=queueScope;
-    const stillHere=()=>sentEpoch===MCP._loginEpoch&&sentScope===queueScope;
+    const sentEpoch=MCP._loginEpoch, sentScope=queueScope, sentOwner=queueOwner;
+    const stillHere=()=>sentEpoch===MCP._loginEpoch&&sentScope===queueScope&&
+      sentOwner===queueOwner;
     try{
       const answer=await sendConversationRequest(message,display,sentAt,opts);
       if(!stillHere()) return;
@@ -3205,11 +3218,35 @@
     $("btn-connect-back").textContent = "Go to your universe";
     setTimeout(()=>{ if(!stillCurrent()) return; showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
   }
+  // Everything on this page that belongs to ONE verified account and home: what
+  // is on screen, what is held in memory, and the "already done" marks that
+  // would otherwise make the NEXT account's own restore a silent no-op.
+  // Leaving or changing that pair takes all of it.
+  // Nothing on DISK is touched. The account that is leaving keeps its saved
+  // lines, its in-flight record and its upload recovery; they become readable
+  // again only to a login that proves both halves (ownsSavedRow). In
+  // particular the queue is dropped WITHOUT saveQueue(), which removes the key
+  // when the queue is empty and would destroy rows the owner is still owed.
+  function clearThread(){
+    const thread=$("thread"); if(!thread) return;
+    Array.from(thread.children||[]).forEach(node=>{
+      if(node&&node.id!=="thread-empty"&&node.remove) node.remove(); });
+    hasMessages=false;
+  }
+  function clearAccountScopedState(){
+    queueScope=""; queueOwner="";
+    historyLoaded=false; queueRestored=false; inflightRestored=false;
+    uploadsRestored=false;
+    sendQueue.length=0; retainedItems=[];
+    renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
+    clearThread();
+  }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.endLogin(); resetClaudeConnection(); Voice.stop(false);
     // Pending attachments belong to the account that picked them. They are
     // dropped, never released (release needs that same login and home) and
     // never carried into whoever signs in next.
     if(Uploads) Uploads.abort();
+    clearAccountScopedState();
     if(typeof AppLayout!=="undefined") AppLayout.reset();
     HostedModelConnect.reset();
     modelChoiceForNextTurn=null;
@@ -5137,9 +5174,15 @@
   let historyLoaded = false;
   async function loadHistory(){
     if(historyLoaded || !token()) return;
+    // The account and home this peek is FOR. A response that lands after a
+    // sign-out or an account change is the PREVIOUS account's conversation: it
+    // paints nothing, renames no home, and does not mark this page loaded.
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
     let turns = [];
     try{
       const r = await MCP.getConversation();
+      if(!stillOwner()) return;
       setQueueScope(r && (r.universe_id || r.universe));
       const conv = r && r.recent_conversation;
       turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
@@ -5172,6 +5215,9 @@
       });
       restoreInflight(turns);
     }catch(_e){
+      // A failure belonging to the previous login is not this account's error
+      // and must not reach its thread either.
+      if(!stillOwner()) return;
       // history is a convenience; never block the chat on it - but a message
       // held only locally must not vanish because the peek failed: it is
       // shown as unconfirmed, which is exactly what it is (Codex round 3, P1).

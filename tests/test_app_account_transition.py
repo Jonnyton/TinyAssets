@@ -1,0 +1,311 @@
+"""Leaving or changing the verified account, EXECUTED under node.
+
+`enterSignedOut` / `loadHistory` / `flushSendQueue` are lifted out of the
+rendered page and run for real. What is asserted is the account boundary: the
+previous account's visible thread and in-memory holdings are gone, a peek that
+resolves after the switch paints nothing under the new identity, and the new
+account can still load and restore its own state. What is on DISK is asserted
+UNCHANGED - the signed-out account keeps its saved lines, its in-flight record
+and its upload recovery.
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+
+import pytest
+
+_NODE = shutil.which("node")
+
+# Real page source, no reimplementation. The helper introduced by the account
+# boundary fix is lifted when present so the test is RED (assertions, not an
+# import error) against a tree that does not have it yet.
+_LIFT = ("setQueueScope", "setQueueOwner", "ownsSavedRow", "savedItem",
+         "flushSendQueue", "enterSignedOut", "loadHistory")
+_OPTIONAL = ("clearAccountScopedState", "clearThread")
+
+
+def _run_node(script: str):
+    """The script is a FILE, not argv: Windows caps a command line at 32 KiB and
+    the lifted app source passed it. Written outside the repo - a temp root
+    inside it is refused by conftest, for good reason."""
+    with tempfile.TemporaryDirectory(prefix="ta-acct-") as box:
+        path = os.path.join(box, "harness.cjs")
+        with io.open(path, "w", encoding="utf-8") as fh:
+            fh.write(script)
+        run = subprocess.run([_NODE, path], capture_output=True, text=True,
+                             encoding="utf-8", timeout=120, check=False)
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout)
+
+
+def _function_source(html: str, name: str, required: bool = True):
+    try:
+        start = html.index("function " + name + "(")
+    except ValueError:
+        if required:
+            raise AssertionError(name + " not found in the rendered app")
+        return None
+    if html[max(0, start - 6):start] == "async ":
+        start -= 6
+    paren = html.index("(", start)
+    level = 0
+    for k in range(paren, len(html)):
+        if html[k] == "(":
+            level += 1
+        elif html[k] == ")":
+            level -= 1
+            if level == 0:
+                break
+    i = html.index("{", k)
+    depth = 0
+    for j in range(i, len(html)):
+        if html[j] == "{":
+            depth += 1
+        elif html[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return html[start:j + 1]
+    raise AssertionError("unbalanced braces in " + name)
+
+
+def _app_html() -> str:
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    return html
+
+
+def _lifted(html: str) -> str:
+    out = [_function_source(html, name) for name in _LIFT]
+    for name in _OPTIONAL:
+        src = _function_source(html, name, required=False)
+        if src:
+            out.append(src)
+    return "\n".join(out)
+
+
+_HARNESS = r"""
+'use strict';
+// ---- the page's own module-scope state, declared exactly as the page does ----
+let queueScope="", queueOwner="", uploadsRestored=false, queueRestored=false;
+let historyLoaded=false, inflightRestored=false, hasMessages=false;
+let retainedItems=[], modelChoiceForNextTurn=null, statusTimer=null;
+let queuePersisted=true;
+const sendQueue=[];
+const renderedConsumerTurns=new Set();
+const renderedConsumerFounders=new Set();
+const QUEUE_KEY="ta_send_queue", TOKEN_KEY="ta_token", EXP_KEY="ta_exp";
+const SEND_QUEUE_MAX=8, QUEUE_MAX_AGE_MS=3*60*60*1000;
+
+// ---- collaborators the boundary talks to ----
+const LOG=[];
+function el(id){ return {id, className:"", text:"",
+  remove(){ const t=DOM.thread, k=t.children.indexOf(this); if(k>=0)t.children.splice(k,1); },
+  appendChild(){}}; }
+const DOM={thread:{id:"thread",children:[]}, send:{id:"btn-send",disabled:false},
+  input:{value:"",style:{}}};
+DOM.empty=el("thread-empty");
+DOM.thread.children.push(DOM.empty);
+function $(id){
+  if(id==="thread")return DOM.thread;
+  if(id==="thread-empty")return DOM.thread.children.indexOf(DOM.empty)>=0?DOM.empty:null;
+  if(id==="btn-send")return DOM.send;
+  return DOM.input;
+}
+function appendMessage(role,text){
+  if(!hasMessages){ const e=$("thread-empty"); if(e)e.remove(); hasMessages=true; }
+  const m=el("msg"); m.className="msg msg--"+role; m.text=String(text||"");
+  DOM.thread.children.push(m); return m;
+}
+function appendFailureNotice(text){ return appendMessage("platform",text); }
+function answerExecutionDetail(){ return null; }
+function setStatusLine(s){ LOG.push(["status",s]); }
+function autoGrow(){}
+function copyModelChoice(v){ return v===undefined?null:v; }
+function turnInputMethod(v){ return v||"typed"; }
+function resetClaudeConnection(){ LOG.push(["resetClaude"]); }
+function cancelOpenAIFlow(){}
+function resetOpenAIUI(){}
+function showView(v){ LOG.push(["view",v]); }
+function readInflight(){ return STORE.inflight; }
+function forgetInflight(){ STORE.inflight=null; }
+function sameSavedLine(a,b){ return !!a&&!!b&&a.message===b.message&&a.ts===b.ts; }
+function claimedElsewhere(item){
+  if(!queuePersisted) return false;
+  const raw=STORE.local[QUEUE_KEY]; let items=[];
+  try{ items=raw?JSON.parse(raw):[]; }catch(_e){ return false; }
+  return !(Array.isArray(items)&&items.some(i=>i&&sameSavedLine(i,item)));
+}
+function saveQueue(){
+  const items=retainedItems.map(savedItem).concat(sendQueue.map(savedItem));
+  if(!items.length){ delete STORE.local[QUEUE_KEY]; queuePersisted=true; return; }
+  STORE.local[QUEUE_KEY]=JSON.stringify(items); queuePersisted=true;
+}
+function readSavedQueue(){
+  const raw=STORE.local[QUEUE_KEY];
+  try{ const i=raw?JSON.parse(raw):[];
+    return Array.isArray(i)?i.filter(x=>x&&typeof x.message==="string"&&x.message):[];
+  }catch(_e){ return []; }
+}
+function restoreQueue(){
+  if(queueRestored||!queueScope||!queueOwner) return; queueRestored=true;
+  retainedItems=readSavedQueue();
+  retainedItems.forEach(i=>LOG.push(["offer",i.message,ownsSavedRow(i)]));
+}
+async function restoreInflight(turns){ restoreQueue(); }
+const SENT=[];
+async function sendTurn(message,display,opts){
+  SENT.push({message,owner:queueOwner,scope:queueScope});
+}
+const STORE={local:{}, session:{}, inflight:null};
+const sessionStorage={ removeItem(k){ delete STORE.session[k]; },
+  setItem(k,v){ STORE.session[k]=String(v); }, getItem(k){ return STORE.session[k]||null; } };
+function token(){ return STORE.session[TOKEN_KEY]||null; }
+const Uploads={ aborted:0, abort(){ this.aborted++; } };
+const Voice={ stop(){}, conversationSettled(){} };
+const ModelPicker={ reset(){} };
+const HostedModelConnect={ reset(){}, setup:"connected" };
+const AppLayout={ reset(){ LOG.push(["layoutReset"]); } };
+const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; }, invalidateSession(){},
+  _conv:null, getConversation(){ return this._conv; } };
+function threadText(){
+  return DOM.thread.children.filter(c=>String(c.className).indexOf("msg")===0).map(c=>c.text);
+}
+const UPLOAD_KEY_A="ta_upload_records:"+JSON.stringify(["principal-a","universe-a"]);
+"""
+
+
+def _script(html: str, body: str) -> str:
+    return _HARNESS + "\n" + _lifted(html) + "\n" + body
+
+
+pytestmark = pytest.mark.skipif(
+    _NODE is None, reason="node is required to execute the page's own source")
+
+
+@pytest.fixture(scope="module")
+def html() -> str:
+    return _app_html()
+
+
+def test_sign_out_drops_the_previous_account_view_and_memory(html):
+    """The first account's thread, queued lines and 'already restored' marks do
+    not survive into the signed-out page - and nothing of theirs leaves disk."""
+    out = _run_node(_script(html, r"""
+    (async()=>{
+      STORE.session[TOKEN_KEY]="t1";
+      setQueueScope("universe-a"); setQueueOwner("principal-a");
+      appendMessage("founder","my private salary spreadsheet");
+      appendMessage("universe","here is what it says");
+      historyLoaded=true; queueRestored=true; inflightRestored=true; uploadsRestored=true;
+      sendQueue.push({message:"private queued line",display:"private queued line",
+        opts:{echoed:true},ts:1000});
+      saveQueue();
+      STORE.inflight={message:"held",owner:"principal-a",scope:"universe-a"};
+      STORE.local[UPLOAD_KEY_A]=JSON.stringify(
+        {version:1,owner:"principal-a",home:"universe-a",saved:[{file_id:"f1"}]});
+
+      enterSignedOut();
+
+      console.log(JSON.stringify({
+        thread:threadText(), queueScope, queueOwner, historyLoaded,
+        queueRestored, inflightRestored, uploadsRestored,
+        queued:sendQueue.length, retained:retainedItems.length,
+        savedRowsOnDisk:JSON.parse(STORE.local[QUEUE_KEY]||"[]").length,
+        inflightOnDisk:!!STORE.inflight,
+        recoveryOnDisk:!!STORE.local[UPLOAD_KEY_A]}));
+    })();
+    """))
+    # Visible + in-memory private state is gone.
+    assert out["thread"] == [], "the previous account's conversation is still rendered"
+    assert out["queueScope"] == "" and out["queueOwner"] == ""
+    assert out["historyLoaded"] is False, "next account's loadHistory would return immediately"
+    assert out["queueRestored"] is False and out["inflightRestored"] is False
+    assert out["uploadsRestored"] is False
+    assert out["queued"] == 0 and out["retained"] == 0
+    # ...and the signed-out account keeps everything durable.
+    assert out["savedRowsOnDisk"] == 1, "sign-out erased the owner's saved line"
+    assert out["inflightOnDisk"] is True, "sign-out erased the owner's in-flight record"
+    assert out["recoveryOnDisk"] is True, "sign-out erased the owner's upload recovery"
+
+
+def test_late_history_from_the_old_account_paints_nothing_after_a_switch(html):
+    """A getConversation still in flight when the account changes must not draw
+    the old account's turns, and must not rename the new account's home."""
+    out = _run_node(_script(html, r"""
+    (async()=>{
+      STORE.session[TOKEN_KEY]="t1";
+      setQueueScope("universe-a"); setQueueOwner("principal-a");
+      let release; MCP._conv=new Promise(r=>{release=r;});
+      const pending=loadHistory();                 // awaits the peek
+      enterSignedOut();                            // same page, sign out
+      STORE.session[TOKEN_KEY]="t2";
+      setQueueScope("universe-b"); setQueueOwner("principal-b");
+      release({universe_id:"universe-a", recent_conversation:{turns:[
+        {speaker:"founder",text:"account A private question",ts:10},
+        {speaker:"universe",text:"account A private answer",ts:11}]}});
+      await pending;
+      console.log(JSON.stringify({thread:threadText(), queueScope, queueOwner, historyLoaded}));
+    })();
+    """))
+    assert out["thread"] == [], "old account's history painted under the new identity"
+    assert out["queueScope"] == "universe-b", "a stale peek renamed the new account's home"
+    assert out["queueOwner"] == "principal-b"
+    assert out["historyLoaded"] is False, "stale peek marked the new account's history loaded"
+
+
+def test_new_account_loads_and_restores_its_own_state(html):
+    """The boundary must not be a lock-out: the second account loads its own
+    history and is offered its own saved line."""
+    out = _run_node(_script(html, r"""
+    (async()=>{
+      STORE.session[TOKEN_KEY]="t1";
+      setQueueScope("universe-a"); setQueueOwner("principal-a");
+      appendMessage("founder","account A line"); historyLoaded=true; queueRestored=true;
+      enterSignedOut();
+      STORE.session[TOKEN_KEY]="t2";
+      setQueueScope("universe-b"); setQueueOwner("principal-b");
+      STORE.local[QUEUE_KEY]=JSON.stringify([
+        {message:"B own waiting line",display:"B own waiting line",ts:Date.now(),
+         owner:"principal-b",scope:"universe-b"}]);
+      MCP._conv=Promise.resolve({universe_id:"universe-b",recent_conversation:{turns:[
+        {speaker:"founder",text:"account B question",ts:20},
+        {speaker:"universe",text:"account B answer",ts:21}]}});
+      await loadHistory();
+      console.log(JSON.stringify({thread:threadText(), historyLoaded,
+        offers:LOG.filter(l=>l[0]==="offer")}));
+    })();
+    """))
+    assert out["thread"] == ["account B question", "account B answer"], \
+        "the new account could not load its own history"
+    assert out["historyLoaded"] is True
+    assert out["offers"] == [["offer", "B own waiting line", True]], \
+        "the new account was not offered its own saved line"
+
+
+def test_queued_send_does_not_ride_out_under_the_next_account(html):
+    """A line queued by account A is never flushed onto account B's wire."""
+    out = _run_node(_script(html, r"""
+    (async()=>{
+      STORE.session[TOKEN_KEY]="t1";
+      setQueueScope("universe-a"); setQueueOwner("principal-a");
+      sendQueue.push({message:"A private queued line",display:"A private queued line",
+        opts:{echoed:true},ts:1000, owner:"principal-a", scope:"universe-a"});
+      saveQueue();
+      enterSignedOut();
+      STORE.session[TOKEN_KEY]="t2";
+      setQueueScope("universe-b"); setQueueOwner("principal-b");
+      DOM.send.disabled=false;
+      flushSendQueue();
+      console.log(JSON.stringify({sent:SENT, queued:sendQueue.length,
+        savedRowsOnDisk:JSON.parse(STORE.local[QUEUE_KEY]||"[]").length}));
+    })();
+    """))
+    assert out["sent"] == [], "account A queued line was sent under account B"
+    assert out["queued"] == 0
+    assert out["savedRowsOnDisk"] == 1, "account A saved line was destroyed"
