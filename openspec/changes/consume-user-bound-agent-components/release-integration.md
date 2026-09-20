@@ -120,8 +120,13 @@ all changed Python ruff checks, diff whitespace and strict change validation pas
 
 ## Remaining release gates and scope
 
-Root owns final assembled-diff/exact-head cross-family review, hosted CI, verified
-deployment, canonical spec sync and ordinary two-owner rendered app acceptance.
+Fable review 96731 approved exact head `f9b91ed7` with Q1–Q6 AGREE; its full result
+is preserved in `release-code-review.md`. Canonical bounded spec sync is now
+prepared in this release. The final docs/test integration and optional-note
+disposition are recorded in `release-review-disposition.md`.
+
+Root owns the bounded final-delta review, hosted CI, verified deployment and
+ordinary two-owner rendered app acceptance.
 No external review, push or merge is performed by this builder. Full arbitrary
 UI, foreign harness and complete setup portability remain open. No user's private
 workflow or background-self project was built or repaired as an operator shortcut.

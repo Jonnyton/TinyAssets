@@ -95,7 +95,10 @@ def test_satellite_failure_rolls_back_delivery_children_and_receipt(delivery_env
     assert list((base / ".account-deletions").glob("*.json"))
 
 
-def test_delivery_tick_exception_does_not_starve_budget_reconciliation(monkeypatch):
+@pytest.mark.parametrize("failed_maintenance", ["delivery", "admission"])
+def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
+    monkeypatch, failed_maintenance,
+):
     import ast
     import time
     from pathlib import Path
@@ -104,24 +107,43 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(monkeypat
     tree = ast.parse(Path("tinyassets/universe_server.py").read_text(encoding="utf-8"))
     function = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                     and n.name == "_served_budget_lease_loop")
-    seen = []
+    seen, cursors, sleeps = [], [], []
 
     class StopLoop(BaseException):
         pass
 
-    def sleep(_):
-        if seen:
+    def sleep(seconds):
+        if len(sleeps) == 3:
             raise StopLoop
+        sleeps.append(seconds)
 
     def delivery(_):
-        raise RuntimeError("delivery store unavailable")
+        if failed_maintenance == "delivery":
+            raise RuntimeError("delivery store unavailable")
+
+    def admitted(_, *, after_run_id=""):
+        cursors.append(after_run_id)
+        if failed_maintenance == "admission" and len(cursors) == 2:
+            raise RuntimeError("admission store unavailable")
+        return f"cursor-{len(cursors)}"
 
     monkeypatch.setattr(time, "sleep", sleep)
     scope = {"reconcile_deliveries": delivery,
+             "reconcile_admitted_runs": admitted,
              "reconcile_served_budget_leases": lambda _: seen.append("budget") or 0,
              "_sb_data_dir": lambda: "/unused",
              "logger": SimpleNamespace(exception=lambda *_: None, info=lambda *_: None)}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), "loop", "exec"), scope)
+    # Preserve the actual production closure's cursor scope, not a rewritten loop.
+    factory = ast.parse(
+        "def make_loop():\n"
+        "    _admitted_run_cursor = ''\n"
+        "    return _served_budget_lease_loop\n"
+    )
+    factory.body[0].body.insert(1, function)
+    exec(compile(ast.fix_missing_locations(factory), "loop", "exec"), scope)
     with pytest.raises(StopLoop):
-        scope["_served_budget_lease_loop"]()
-    assert seen == ["budget"]
+        scope["make_loop"]()()
+    assert sleeps == [300.0] * 3
+    assert seen == ["budget"] * 3
+    assert cursors == ["", "cursor-1",
+                       "cursor-1" if failed_maintenance == "admission" else "cursor-2"]
