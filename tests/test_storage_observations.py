@@ -52,7 +52,11 @@ def put(root, relative, data):
 def lease(root, name="own-lease", uid=UID, state=wp.STATE_ACTIVE, generation=1):
     with sqlite3.connect(root / UID / ".runs.db") as conn:
         conn.execute(
-            "INSERT INTO workspace_leases VALUES (?,?, 'connection', 'repo', 'scratch', "
+            "INSERT INTO workspace_leases "
+            "(lease_id, universe_id, connection_id, repo_key, storage_class, "
+            "generation, state, reserved_bytes, measured_bytes, run_id, "
+            "path, quarantine_path, created_at, updated_at) "
+            "VALUES (?,?, 'connection', 'repo', 'scratch', "
             "?, ?, 999999, 888888, 'run', 'ignored-foreign-path', 'ignored-quarantine', 1, 1)",
             (name, uid, generation, state),
         )
