@@ -4,12 +4,52 @@
 
 Preserve exact owner-controlled binary inputs across workflow execution without
 putting whole files, mutable paths or caller-asserted authority in workflow state.
-This first slice covers same-owner authoring capture, direct definition or
+This first slice covers same-owner app upload and authoring capture, direct definition or
 published-version runs, declared node reads, owned export and custody lifecycle.
 The broader origin/materialization proposal remains in
 `openspec/changes/bind-immutable-run-files/`; it is not implemented by this spec.
 
 ## Requirements
+
+### Requirement: Ordinary app users can supply exact owned bytes without internal handles
+
+The app paperclip SHALL offer bounded raw-byte upload into the same immutable
+run-file custody without an authoring session or operator-created handle.
+`POST /mcp/app/files` SHALL derive owner and current home from authenticated
+request context, require the allowed origin and exact custom upload metadata,
+reserve capacity before reading bytes, verify size and digest, and recheck
+authority before commit. Missing capacity or incomplete home SHALL refuse
+without ingesting the body. Upload SHALL neither execute workflows nor create
+a separate artifact store, public bearer URL or upload charge.
+
+The app SHALL relay opaque reference metadata through its existing conversation
+request, preserve accepted text attachment content verbatim, and prevent sending
+an unresolved subset. Same-label exact-header replay SHALL return the original
+committed references and retention metadata without requiring a second body;
+unfinished attempts SHALL remain explicitly unresolved, not silently relabelled.
+Unbound staging SHALL expire after the disclosed lifetime; bound custody SHALL
+remain subject to explicit release or erasure, not that staging deadline.
+
+#### Scenario: Fresh signed-in user attaches binary and empty files
+- **WHEN** the user selects binary or empty files with no prior internal handle
+- **THEN** successful uploads return immutable references with exact metadata
+- **AND** the existing same-owner declared workflow admission can bind those references
+
+#### Scenario: Partial or uncertain upload
+- **WHEN** one upload fails or its response is unconfirmed
+- **THEN** the app keeps the text draft, does not silently send only successful siblings, and offers explicit retry or removal
+- **AND** checking a committed attempt recovers the original reference without duplicating custody or executing a workflow
+
+#### Scenario: Account or home changes while callbacks are pending
+- **WHEN** the signed-in account exits or the verified home changes
+- **THEN** pending transfers stop and only the matching verified owner/home may restore saved upload metadata
+- **AND** detached callbacks do not overwrite either account's durable recovery rows
+- **AND** sign-out clears private composer text, thread and active-turn state without deleting saved recovery
+
+#### Scenario: First session reaches chat through the connection gate
+- **WHEN** the verified account connects its model and reaches chat for the first time
+- **THEN** the app has already learned that account's owner/home pair and can restore only its matching history and saved attachments
+- **AND** a response from an earlier login cannot replace the current identity or paint its conversation
 
 ### Requirement: Ordinary branch authoring preserves editable file contracts
 
