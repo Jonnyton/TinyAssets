@@ -1,5 +1,30 @@
 ## ADDED Requirements
 
+### Requirement: Ordinary app users can supply exact owned bytes without internal handles
+The app paperclip SHALL offer authenticated bounded raw-byte upload directly into the same immutable run-file custody, returning existing opaque references rather than requiring an authoring draft, hidden tool or operator-created file handle.
+The proposed app-only upload SHALL derive owner and current home from authenticated
+request context, require exact allowed origin and an anti-form custom metadata
+header, reserve capacity before body ingestion, verify actual bytes/size/digest,
+and recheck current home/admin/tombstone authority before commit. There SHALL be
+no new artifact store, public bearer URL, workflow execution or upload charge.
+Unknown capacity or incomplete home SHALL refuse before reading the body.
+
+#### Scenario: Fresh signed-in app user attaches binary files
+- **WHEN** an ordinary user selects binary and empty files in the paperclip with no prior authoring session or handle
+- **THEN** successful uploads return exact file metadata and the app relays only opaque reference metadata through its existing conversation request
+- **AND** their agent can author and run a declared file workflow without operator setup, byte reconstruction or private workflow edits
+
+#### Scenario: Partial, cancelled or uncertain upload
+- **WHEN** one selected upload fails, disconnects or has an unconfirmed response
+- **THEN** the app does not silently send only a subset; it preserves the text draft and offers explicit retry/removal
+- **AND** the same label and exact request recover committed references without copying again, while unfinished operations report recovery debt without restarting implicitly
+- **AND** successful siblings remain independently owned; workflow admission still atomically validates and binds the complete submitted bundle
+
+#### Scenario: Existing text and expired metadata
+- **WHEN** a user sends a mixed text/binary attachment message or restores a queued message
+- **THEN** existing accepted text attachment content is preserved exactly and opaque metadata is serialized once, retained unchanged across reconnects and scoped to the original account/home
+- **AND** an expired unbound reference is explicitly unavailable, not silently reuploaded or represented as a permanent chat attachment; already bound custody remains nonexpiring until release/erasure
+
 ### Requirement: Ordinary workflow authoring preserves editable file contracts
 The existing branch create/remix and patch operations SHALL preserve exact `io_manifest` declarations and validate the final staged contract through the
 strict shared runtime validator. Declared file input fields SHALL match their

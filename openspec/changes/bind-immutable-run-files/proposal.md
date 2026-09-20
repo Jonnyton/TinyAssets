@@ -4,6 +4,14 @@ Users can exchange structured node outputs, but cannot yet give an admitted run 
 
 ## What Changes
 
+- Proposed-only fresh-user completion: add authenticated raw-byte intake behind
+  the existing app paperclip, directly into the SAME immutable run-file custody.
+  Return existing opaque file references to the conversation, not fabricated
+  authoring sessions or a new artifact store. The exact app-only boundary and
+  acceptance are in `app-byte-intake-amendment.md`; independent shape review is
+  required before implementation. Current reviewed custody code alone does not
+  close the missing fresh-user binary-upload route.
+
 - Add one generic immutable run-file custody boundary, shared by direct, queued, nested, resumed and delivery-origin execution. A delivery adapter copies approved files into the receiver's independently owned custody; it does not introduce another artifact framework.
 - Preserve existing `io_manifest` file/file-bundle declarations through executable branch serialization and snapshots. Bind opaque, authorized references into existing input state, with bounded file materialization available to declared consumers.
 - Preserve and validate declarations in ordinary branch creation/remix, and expose `set_io_manifest` through the existing transactional branch patch language. Missing declarations inherit on remix; explicit null clears. Existing immutable versions/admissions never change.

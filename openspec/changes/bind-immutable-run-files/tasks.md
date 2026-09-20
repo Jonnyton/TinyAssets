@@ -11,7 +11,7 @@
 
 ## 3. Connect every admitted origin and actual consumers
 
-- [ ] 3.1 Add authenticated authoring capture and post-exit declared workspace handoff with real cross-process source exclusion and namespace quiescence; prove forged IDs/context/paths, revoked sources and cancellation refuse before visibility. No active-node capture RPC.
+- [ ] 3.1 Add authenticated authoring capture and reviewed ordinary app byte intake into the same custody, then post-exit declared workspace handoff with real cross-process source exclusion and namespace quiescence; prove forged IDs/context/paths, revoked sources and cancellation refuse before visibility. App source creation must start at the real file picker, not an internal handle fixture. No active-node capture RPC.
 - [ ] 3.2 Bind direct, queued/triggered, nested, versioned and resumed inputs using persisted admitted authority; prove owned/shared-remix positives and sibling/private/legacy-owner negatives without weakening existing run authority.
 - [ ] 3.3 Add bounded exact reader and own-workspace streaming materialization; prove selected-entry and explicit downstream multi-file consumption, no partial destination and no whole-file JSON requirement.
 - [ ] 3.4 Adapt accepted cross-owner delivery to receiver-owned copies and atomic bindings; prove replay consistency, receipt/source erasure independence and the future immutable-reuse seam while leaving retry scheduling unimplemented.

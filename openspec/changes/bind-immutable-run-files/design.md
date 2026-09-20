@@ -33,6 +33,17 @@ Out of scope: receiver retry scheduling, arbitrary URL downloads, archives unpac
 
 ## Decisions
 
+### Proposed app byte-intake completion (not implemented)
+
+Read `app-byte-intake-amendment.md` for the minimal authenticated paperclip
+upload, same-custody streaming and existing-message reference relay. This is a
+proposed amendment, not approval to expose legacy authoring actions, modify user
+workflows or claim a tool-only binary producer. It preserves existing rollback:
+unset capacity stops only new bytes; existing-file use requires a targeted
+hotfix if it must be stopped. The previous runtime review did not cover this
+missing fresh-user intake entrypoint. No PLAN principle or canonical as-built
+spec changes are proposed.
+
 ### 1. One declaration and reference contract, not a second file schema
 
 Persist optional `io_manifest` unchanged in `BranchDefinition` round-trips, compiled/versioned snapshots and authoring conversion. Reuse `IODeclaration`/manifest validation rather than introduce incompatible `state_schema` file types. File fields remain JSON dictionaries (bundle fields ordered lists of dictionaries) in thin state; the manifest adds file authority and size/count/media constraints. Validate matching field names and dict/list shape; refuse contradictory declarations. Legacy branches without a manifest keep existing scalar behavior. Do not reinterpret arbitrary dictionaries as capabilities.
