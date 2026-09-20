@@ -272,6 +272,15 @@ test("limits", async ()=>{
           count:many.ctrl.count(), notices:many.state.notices};
 });
 
+// 11. the exact string the composer hands to sendTurn, for the send-path tests.
+test("composed", async ()=>{
+  const h = build((n,req)=>ok(req));
+  await h.ctrl.add([fakeFile("notes.txt","text/plain","keep me verbatim\n"),
+                    fakeFile("scan.pdf","application/pdf",Buffer.from([0,37,80,68,70]))]);
+  const turn = h.ctrl.buildTurn("summarise the scan against my notes");
+  return {send:turn.send, display:turn.display};
+});
+
 (async ()=>{
   for(const [name, fn] of T){ R[name] = await fn(); }
   process.stdout.write(JSON.stringify(R));
@@ -432,3 +441,40 @@ def test_the_upload_route_is_the_one_new_boundary():
     assert "authHeaders()" in source
     assert "FormData" not in source and "btoa(" not in source
     assert html.count('"/mcp/app/files"') == 1
+
+
+def test_the_composed_turn_reaches_the_default_and_the_selected_consumer(results, tmp_path):
+    """Acceptance row 2, app side: ONE composed string, carrying the references
+    once, goes out unchanged on the capability probe AND on the keyed send to
+    the selected custom consumer. No new conversation field, no second key."""
+    from tests.test_onboarding_app import _run_app
+
+    composed = results["composed"]["send"]
+    out = _run_app(tmp_path, {
+        "kind": "send", "message": composed,
+        "payloads": [{"error": "consumer_request_required", "consumer_selection": {
+            "version": 1, "binding_id": "chosen", "binding_revision": 1}},
+            {"reply": "read them both"}]})
+    assert out["converseCalls"] == [composed, composed], "the string must not be rewritten"
+    assert out["converseCalls"][0].count('"file_id"') == 1
+    assert out["consumerRequests"][0] is None          # default path: the probe
+    assert out["consumerRequests"][1]["binding_id"] == "chosen"
+    assert out["inflight"] is None
+    assert out["messages"] == [{"role": "founder", "text": composed},
+                               {"role": "universe", "text": "read them both"}]
+
+
+def test_a_composed_turn_queued_behind_another_keeps_its_exact_string(results, tmp_path):
+    """A turn carrying references that waits behind a long one is not rebuilt:
+    nothing is re-uploaded and no new reference block is composed. The saved
+    copy and the wire copy are the same bytes."""
+    from tests.test_onboarding_app import _run_app
+
+    composed = results["composed"]["send"]
+    out = _run_app(tmp_path, {
+        "kind": "send", "message": "first", "secondMessage": composed,
+        "slowFirst": True, "payload": {"reply": "ok"}})
+    assert out["queuedWhileInFlight"] == 1
+    assert [q["message"] for q in out["savedWhileQueued"]] == [composed]
+    assert out["converseCalls"] == ["first", composed]
+    assert out["queueLeft"] == 0 and out["savedAfter"] is None
