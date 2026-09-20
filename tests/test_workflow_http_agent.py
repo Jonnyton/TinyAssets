@@ -95,8 +95,14 @@ def work_agent(tmp_path, monkeypatch, http_wire):
             state.wires.append(document)
             if state.mode == "unknown_inference":
                 return {"error": "synthetic inference disconnect"}
+            if state.mode == "authentication":
+                return {"status": 401, "body": '{"error":{"message":"synthetic sign-in"}}'}
+            if state.mode == "all_models_full":
+                return {"status": 503, "body": '{"error":{"message":"synthetic overload"}}'}
             if len(state.wires) == 2 and state.mode == "later_capacity":
                 return {"status": 429, "body": '{"error":{"message":"synthetic capacity"}}'}
+            if len(state.wires) == 2 and state.mode == "later_model_capacity":
+                return {"status": 503, "body": '{"error":{"message":"synthetic overload"}}'}
             tools = len(state.wires) == 1 or state.mode == "ongoing_tools"
             message = {"role": "assistant", "content": None if tools else "work completed"}
             if tools:

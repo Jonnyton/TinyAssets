@@ -174,13 +174,19 @@ def _has_execution_column(conn: sqlite3.Connection) -> bool:
 def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int) -> list[Msg]:
     receipt_column = "execution_json" if _has_execution_column(conn) else "''"
     failure_column = failure_column_sql(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_turns)")}
+    identity_column = "ext_id" if "ext_id" in columns else "''"
+    has_projections = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                   "AND name='conversation_terminal_projections'").fetchone()
     rows = conn.execute(
-        f"SELECT speaker, content, ts, {receipt_column}, {failure_column} FROM conversation_turns "
+        f"SELECT speaker, content, ts, {receipt_column}, {failure_column}, "
+        f"{identity_column}, turn_no "
+        "FROM conversation_turns "
         "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
         (session_id, max(1, int(limit))),
     ).fetchall()
     result = []
-    for speaker, content, ts, raw, failure_raw in reversed(rows):
+    for speaker, content, ts, raw, failure_raw, ext_id, turn_no in reversed(rows):
         receipt = None
         if speaker == "universe" and isinstance(raw, str) and 0 < len(raw) <= 4096:
             try:
@@ -189,8 +195,20 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int) -> lis
                     receipt = ExecutionReceipt(**normalized)
             except (ValueError, RecursionError):
                 pass  # Corrupt optional metadata never discards the message text.
+        parts = ext_id.split(":") if isinstance(ext_id, str) else []
+        consumer_id = None
+        if (has_projections and len(parts) == 3 and parts[0] == "consumer"
+                and parts[2] in {"reply", "founder"} and len(parts[1]) == 32
+                and all(c in "0123456789abcdef" for c in parts[1])):
+            position = "founder_turn_no" if parts[2] == "founder" else "reply_turn_no"
+            expected_speakers = {"founder"} if parts[2] == "founder" else {"universe", "platform"}
+            if speaker in expected_speakers and conn.execute(
+                "SELECT 1 FROM conversation_terminal_projections WHERE admission_id=? "
+                f"AND session_id=? AND {position}=?", (parts[1], session_id, turn_no),
+            ).fetchone():
+                consumer_id = parts[1]
         result.append(Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts), receipt,
-                          read_turn_failure(speaker, failure_raw)))
+                          read_turn_failure(speaker, failure_raw), consumer_id))
     return result
 
 

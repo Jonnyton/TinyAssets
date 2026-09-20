@@ -1717,6 +1717,8 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
                             "text": (getattr(t, "text", "") or "")[:_cap],
                             "truncated": len(getattr(t, "text", "") or "") > _cap,
                             "ts": getattr(t, "ts", None),
+                            **({"consumer_turn_id": t.consumer_turn_id}
+                               if getattr(t, "consumer_turn_id", None) else {}),
                             **({"failure": failure} if (
                                 getattr(t, "speaker", "") == "platform" and
                                 (failure := normalize_turn_failure(getattr(t, "failure", None)))

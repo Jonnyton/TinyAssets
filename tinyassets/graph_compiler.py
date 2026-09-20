@@ -375,6 +375,7 @@ def _call_policy_router_with_retry(
     policy: dict[str, Any],
     config: Any = None,
     universe_context: "UniverseContext | None" = None,
+    response_observer: Callable | None = None,
 ) -> tuple[str, str, dict]:
     """Retry policy-aware provider dispatch on transient chain exhaustion."""
     # Only forward config when set AND the router's call_with_policy_sync
@@ -382,7 +383,8 @@ def _call_policy_router_with_retry(
     # mirroring the injected provider_call bridge guard.
     pass_config = config is not None
     pass_context = universe_context is not None
-    if pass_config or pass_context:
+    pass_observer = response_observer is not None
+    if pass_config or pass_context or pass_observer:
         try:
             import inspect as _inspect
             _params = _inspect.signature(router.call_with_policy_sync).parameters
@@ -393,15 +395,19 @@ def _call_policy_router_with_retry(
                 p.kind == p.VAR_KEYWORD for p in _params.values()
             )
             pass_context = "universe_context" in _params or accepts_kwargs
+            pass_observer = pass_observer and ("response_observer" in _params or accepts_kwargs)
         except (ValueError, TypeError):
             pass_config = False
             pass_context = False
+            pass_observer = False
     attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
     for attempt_index in range(attempts):
         try:
             kwargs: dict[str, Any] = {}
             if pass_context:
                 kwargs["universe_context"] = universe_context
+            if pass_observer:
+                kwargs["response_observer"] = response_observer
             if pass_config:
                 return router.call_with_policy_sync(
                     role, prompt, system, policy, config, **kwargs,
@@ -1201,20 +1207,27 @@ def _build_prompt_template_node(
                 for parameter in _bridge_params.values()
             )
         )
+        _bridge_takes_observer = bool(provider_call) and (
+            "response_observer" in _bridge_params
+            or any(p.kind == p.VAR_KEYWORD for p in _bridge_params.values())
+        )
     except (ValueError, TypeError):
         _bridge_takes_config = False
+        _bridge_takes_observer = False
     _injected_policy_caller = (
         provider_call
         if callable(getattr(provider_call, "call_with_policy_sync", None))
         else None
     )
 
-    def _bridge(_p: str, _s: str) -> str:
+    def _bridge(_p: str, _s: str, observer) -> str:
         kwargs: dict[str, Any] = {"role": role}
         if _bridge_takes_config and _node_cfg is not None:
             kwargs["config"] = _node_cfg
         if universe_context is not None:
             kwargs["universe_context"] = universe_context
+        if _bridge_takes_observer:
+            kwargs["response_observer"] = observer
         return provider_call(_p, _s, **kwargs)
 
     # Lazy import so graph_compiler doesn't hard-depend on providers at import
@@ -1362,6 +1375,13 @@ def _build_prompt_template_node(
         if concurrency_tracker is not None:
             concurrency_tracker.acquire()
         try:
+            from tinyassets.providers.execution_receipt import (
+                WriterExecutionReceipt,
+                normalize_execution_receipt,
+            )
+
+            # Per invocation, never a graph/session-wide first/last-response slot.
+            execution_receipt = WriterExecutionReceipt()
             provider_served: str = "unknown"
             provider_meta: dict[str, Any] = {}
             if provider_call is None:
@@ -1391,6 +1411,7 @@ def _build_prompt_template_node(
                                 policy=effective_policy,
                                 config=_node_cfg,
                                 universe_context=universe_context,
+                                response_observer=execution_receipt.observe,
                             )
                         text_and_name = _run_with_timeout(
                             _policy_call,
@@ -1402,7 +1423,7 @@ def _build_prompt_template_node(
                         # Router unavailable or empty — fall through to the
                         # run_branch-injected provider bridge.
                         response = _run_with_timeout(
-                            lambda: _bridge(prompt, ""),
+                            lambda: _bridge(prompt, "", execution_receipt.observe),
                             timeout_s=timeout_s,
                             node_id=node.node_id,
                         )
@@ -1417,7 +1438,7 @@ def _build_prompt_template_node(
             else:
                 try:
                     response = _run_with_timeout(
-                        lambda: _bridge(prompt, ""),
+                        lambda: _bridge(prompt, "", execution_receipt.observe),
                         timeout_s=timeout_s,
                         node_id=node.node_id,
                     )
@@ -1466,6 +1487,8 @@ def _build_prompt_template_node(
                     phase="ran",
                     prompt=prompt, response=response, role=role,
                     provider_served=provider_served,
+                    execution=(execution_receipt.projection() or
+                               normalize_execution_receipt(provider_meta.get("execution"))),
                     **_meta_detail,
                 )
             except Exception as exc:

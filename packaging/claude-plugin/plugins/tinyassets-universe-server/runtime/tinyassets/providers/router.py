@@ -1516,8 +1516,13 @@ class ProviderRouter:
         produced this, how long did it take, after how many tries" — spec
         §11.3 model-stamp requirement.
         """
+        from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+
+        receipt = WriterExecutionReceipt()
+        receipt.observe(resp)
         return {
             "model": getattr(resp, "model", "") or "",
+            "execution": receipt.projection(),
             "family": getattr(resp, "family", "") or "",
             "latency_ms": getattr(resp, "latency_ms", None),
             "degraded": bool(getattr(resp, "degraded", False)),

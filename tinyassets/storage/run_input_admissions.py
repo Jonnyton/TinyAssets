@@ -24,6 +24,9 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS run_input_admissions (
     snapshot_sha256 TEXT NOT NULL,
     execution_started_at REAL,
     claim_token TEXT,
+    origin_kind TEXT NOT NULL DEFAULT '',
+    origin_version INTEGER NOT NULL DEFAULT 0,
+    origin_options_json TEXT NOT NULL DEFAULT '{}',
     CHECK ((branch_version_id IS NULL) != (snapshot_json IS NULL))
 )"""
 
@@ -35,6 +38,14 @@ class RunInputRefused(ValueError):
 def ensure_schema(conn):
     """Additive only; never commits the caller's transaction."""
     conn.execute(_SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(run_input_admissions)")}
+    for name, definition in (
+        ("origin_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("origin_version", "INTEGER NOT NULL DEFAULT 0"),
+        ("origin_options_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE run_input_admissions ADD COLUMN {name} {definition}")
 
 
 def _owned_run(conn, run_id, owner_id, universe_id):
@@ -91,9 +102,18 @@ def accept_in_transaction(
     universe_id,
     snapshot=None,
     branch_version_id=None,
+    origin_kind="",
+    origin_version=0,
+    origin_options=None,
 ):
     """Freeze one admitted execution target; never copy run inputs or sender grants."""
     run = _owned_run(conn, run_id, owner_id, universe_id)
+    from tinyassets.run_input_origin import encode_origin
+
+    origin_json = encode_origin(
+        origin_kind, origin_version, {} if origin_options is None else origin_options,
+        allow_legacy=True,
+    )
     if (snapshot is None) == (branch_version_id is None):
         raise RunInputRefused("run_input_target_ambiguous")
     if branch_version_id is not None:
@@ -110,7 +130,8 @@ def accept_in_transaction(
     stored_snapshot = None if branch_version_id is not None else encoded
     prior = conn.execute("SELECT * FROM run_input_admissions WHERE run_id=?", (run_id,)).fetchone()
     if prior is not None:
-        expected = (owner_id, universe_id, branch_id, branch_version_id, stored_snapshot, digest)
+        expected = (owner_id, universe_id, branch_id, branch_version_id, stored_snapshot, digest,
+                    origin_kind, origin_version, origin_json)
         observed = tuple(
             prior[key]
             for key in (
@@ -120,6 +141,9 @@ def accept_in_transaction(
                 "branch_version_id",
                 "snapshot_json",
                 "snapshot_sha256",
+                "origin_kind",
+                "origin_version",
+                "origin_options_json",
             )
         )
         if observed != expected:
@@ -129,8 +153,10 @@ def accept_in_transaction(
         raise RunInputRefused("run_input_already_started")
     conn.execute(
         "INSERT INTO run_input_admissions(run_id,owner_id,universe_id,branch_def_id,"
-        "branch_version_id,snapshot_json,snapshot_sha256) VALUES(?,?,?,?,?,?,?)",
-        (run_id, owner_id, universe_id, branch_id, branch_version_id, stored_snapshot, digest),
+        "branch_version_id,snapshot_json,snapshot_sha256,origin_kind,origin_version,"
+        "origin_options_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (run_id, owner_id, universe_id, branch_id, branch_version_id, stored_snapshot, digest,
+         origin_kind, origin_version, origin_json),
     )
     return dict(
         conn.execute("SELECT * FROM run_input_admissions WHERE run_id=?", (run_id,)).fetchone()

@@ -65,6 +65,7 @@ class Msg:
     ts: float | None = None
     execution: ExecutionReceipt | None = None
     failure: TurnFailure | None = None
+    consumer_turn_id: str | None = None  # Display dedupe only; never execution authority.
 
 
 #: Longest interlocutor name allowed into the fence — bounds the header/footer so

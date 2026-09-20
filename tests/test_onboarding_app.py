@@ -185,7 +185,7 @@ def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
 def test_voice_client_keeps_converse_as_the_only_writer():
     html, _csp = onboarding.render_app_html()
     assert 'event.name!=="converse"' in html
-    assert 'const payload=await MCP.converse(message,"spoken",opts.modelChoice);' in html
+    assert 'const payload=await sendConversationRequest(message,message,Date.now(),opts);' in html
     assert '{message,input_method:turnInputMethod(inputMethod)}' in html
     assert 'sendTurn(send, display, {inputMethod:"typed"})' in html
     assert "voice_active" not in html
@@ -1534,12 +1534,13 @@ function autoGrow(el){ el.style.height="auto"; }
 function sessionExpired(){ messages.push({role:"session-expired"}); }
 function showConnect(){ messages.push({role:"connect"}); }
 const SCENARIO=__SCENARIO__;
-const converseCalls=[], converseMethods=[], converseChoices=[];
+const converseCalls=[], converseMethods=[], converseChoices=[], consumerRequests=[], statusCalls=[];
 let active=0, maxActive=0;
-const MCP={ converse: async (m,inputMethod,modelChoice) => {
+const MCP={ converse: async (m,inputMethod,modelChoice,consumerRequest) => {
   converseCalls.push(m);
   converseMethods.push(inputMethod);
   converseChoices.push(copyModelChoice(modelChoice));
+  consumerRequests.push(consumerRequest?JSON.parse(JSON.stringify(consumerRequest)):null);
   active++; maxActive=Math.max(maxActive, active);
   try{
     if(SCENARIO.transportError){ const e=new Error("offline"); e.transport=true; throw e; }
@@ -1548,6 +1549,7 @@ const MCP={ converse: async (m,inputMethod,modelChoice) => {
     return payloads[Math.min(converseCalls.length-1, payloads.length-1)];
   } finally { active--; }
 }};
+MCP.callTool=async(name,args)=>{statusCalls.push({name,args});return SCENARIO.consumerStatus;};
 const CFG={build: SCENARIO.build||"b1"};
 const token=()=>"t";
 MCP.getConversation=async()=>{
@@ -1665,9 +1667,11 @@ __APP_FUNCTIONS__
       message:SCENARIO.pending, display:SCENARIO.pending,
       inputMethod:SCENARIO.pendingInputMethod,
       modelChoice:SCENARIO.pendingModelChoice,
+      consumerRequest:SCENARIO.pendingConsumerRequest,
       ts: Date.now()-(SCENARIO.pendingAgeS||0)*1000}));
     if(SCENARIO.queued) localStorage.setItem(QUEUE_KEY, JSON.stringify(SCENARIO.queued));
     if(SCENARIO.draftBeforeRestore) els["composer-input"].value=SCENARIO.draftBeforeRestore;
+    if(SCENARIO.consumerStatusFirst){await restoreInflight([]);}
     await loadHistory();
     await loadHistory();                                 // a second pass must not double-restore
     await new Promise(r=>setTimeout(r, 30));             // let restored sends settle
@@ -1707,6 +1711,7 @@ __APP_FUNCTIONS__
   out.executionDetails=executionDetails;
   out.observedModels=observedModels;
   out.converseChoices=converseChoices;
+  out.consumerRequests=consumerRequests;out.statusCalls=statusCalls;
   console.log(JSON.stringify(out));
 })().catch(e=>{ console.error(e&&e.stack||e); process.exit(1); });
 """
@@ -1734,11 +1739,14 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"const SEND_QUEUE_MAX=[^\n]*;", r"const QUEUE_KEY=[^\n]*;",
                     r"let queueRestored=[^\n]*;", r"const QUEUE_MAX_AGE_MS=[^\n]*;",
                     r"let queueScope=[^\n]*;", r"let queuePersisted=[^\n]*;",
-                    r"let retainedItems=[^\n]*;", r"let modelChoiceForNextTurn=[^\n]*;")
+                    r"let retainedItems=[^\n]*;", r"let modelChoiceForNextTurn=[^\n]*;",
+                    r"const renderedConsumerTurns=[^\n]*;",
+                    r"const renderedConsumerFounders=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
         "copyModelChoice", "captureTurnOptions",
+        "sendConversationRequest",
         "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
         "offerResend", "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
         "restoreInflight",
@@ -2131,7 +2139,8 @@ def test_an_unconfirmed_message_survives_a_reload_and_says_so():
 
     html, _csp = render_app_html()
     assert "ta_inflight_turn" in html
-    assert "rememberInflight(message, display, sentAt, inputMethod, modelChoice)" in html
+    assert ("rememberInflight(message, display, sentAt, inputMethod, modelChoice, "
+            "consumerRequest=null)") in html
     assert "inputMethod:turnInputMethod(inputMethod)" in html
     # Cleared on success, KEPT on failure — a failed send is still the user's.
     assert "forgetInflight();" in html

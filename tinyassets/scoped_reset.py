@@ -223,6 +223,7 @@ _KNOWN_ROOT_RUN_TABLES = frozenset({
     "branch_versions",
     "conformance_pack",
     "contribution_events",
+    "conversation_run_admissions",
     "gate_event",
     "gate_event_cite",
     "node_edit_audit",
@@ -230,6 +231,7 @@ _KNOWN_ROOT_RUN_TABLES = frozenset({
     "run_cancels",
     "run_child_attachments",
     "run_events",
+    "run_input_admissions",
     "run_judgments",
     "run_lineage",
     "run_receipts",
@@ -976,11 +978,14 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
 def _reset_state_digest(
     database_actions: object,
     filesystem_actions: object,
+    root_history_actions: object = (),
 ) -> str:
     state_payload = {
         "database_actions": database_actions,
         "filesystem_actions": filesystem_actions,
     }
+    if root_history_actions:
+        state_payload["root_history_actions"] = root_history_actions
     return "sha256:" + hashlib.sha256(
         json.dumps(
             state_payload,
@@ -1622,7 +1627,12 @@ def plan_test_identity_reset(
             ),
         })
 
-    state_digest = _reset_state_digest(actions, filesystem_actions)
+    from tinyassets.storage.conversation_reset import plan_action
+
+    root_history_actions = plan_action(
+        root, fingerprint=_principal_digest(principal), home_id=scope.home_id,
+    )
+    state_digest = _reset_state_digest(actions, filesystem_actions, root_history_actions)
     plan_inputs = {
         "inventory_revision": INVENTORY_REVISION,
         "roster_revision": roster.revision,
@@ -1645,6 +1655,7 @@ def plan_test_identity_reset(
         "identity_alias": identity_alias,
         "database_actions": actions,
         "filesystem_actions": filesystem_actions,
+        "root_history_actions": root_history_actions,
         "preserved": [
             "all other founder homes and universe content",
             "commons, wiki, root run history, audit, market, and billing state",
@@ -2114,6 +2125,7 @@ def _prepare_operation(
         {
             "database_actions": plan["database_actions"],
             "filesystem_actions": plan["filesystem_actions"],
+            "root_history_actions": plan.get("root_history_actions", []),
             "state_digest": plan["state_digest"],
         },
         sort_keys=True,
@@ -2538,6 +2550,13 @@ def apply_test_identity_reset(
                 conn.rollback()
                 raise
             _fault(fault_injector, "after_commit")
+            operation = conn.execute(
+                "SELECT * FROM scoped_reset_operations WHERE plan_id=?", (plan_id,),
+            ).fetchone()
+            from tinyassets.storage.conversation_reset import expire_committed
+
+            expire_committed(root, operation, plan.get("root_history_actions", []))
+            _fault(fault_injector, "after_conversation_expiry")
             _fault(fault_injector, "before_cleanup")
             _safe_cleanup_staging(
                 root,
@@ -2568,6 +2587,7 @@ def _operation_plan_evidence(
         plan = json.loads(str(operation["plan_json"]))
         database_actions = plan["database_actions"]
         filesystem_actions = plan["filesystem_actions"]
+        root_history_actions = plan.get("root_history_actions", [])
         state_digest = plan["state_digest"]
     except (KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ScopedResetRecoveryError(
@@ -2577,8 +2597,9 @@ def _operation_plan_evidence(
         not isinstance(plan, dict)
         or not isinstance(database_actions, list)
         or not isinstance(filesystem_actions, list)
+        or not isinstance(root_history_actions, list)
         or state_digest
-        != _reset_state_digest(database_actions, filesystem_actions)
+        != _reset_state_digest(database_actions, filesystem_actions, root_history_actions)
     ):
         raise ScopedResetRecoveryError(
             "incomplete reset has invalid content-free plan evidence"
@@ -2787,6 +2808,11 @@ def _recover_locked(root: Path, conn: sqlite3.Connection) -> None:
         )
         witness = bool(row["commit_witness"])
         if witness:
+            from tinyassets.storage.conversation_reset import expire_committed
+
+            expire_committed(
+                root, row, _operation_plan_evidence(row).get("root_history_actions", []),
+            )
             _safe_cleanup_staging(
                 root,
                 staging,
