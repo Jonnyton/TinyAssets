@@ -48,6 +48,7 @@ from tinyassets.exceptions import AllProvidersExhaustedError
 
 if TYPE_CHECKING:
     from tinyassets.providers.base import UniverseContext
+    from tinyassets.workspace_family import FamilyMember
 
 logger = logging.getLogger(__name__)
 
@@ -2092,7 +2093,7 @@ def _build_source_code_node(
     # node's render view.
     strict_inputs = bool(getattr(node, "strict_input_isolation", True))
 
-    def _fn(state: dict[str, Any]) -> dict[str, Any]:
+    def _fn_body(state: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.node_sandbox import NodeSandbox
 
         if event_sink is not None:
@@ -2151,10 +2152,18 @@ def _build_source_code_node(
                 # descriptor open); this only reads it, for the length of the run.
                 mount = _sandbox_workspace_mount(raw_mount, node.node_id)
 
+            def _invoke_current(action: str, kwargs: dict[str, Any]) -> Any:
+                from tinyassets.runs import _execution_use_scope
+
+                # This is the actual drain callback, including a trailing line.
+                # Its lifetime may exceed the node's bounded drain-thread joins.
+                with _execution_use_scope():
+                    if effect_chain is not None:
+                        effect_chain.rpc_permit()
+                    return invoke_mcp_action(action, **dict(kwargs or {}))
+
             def _invoke(action: str, kwargs: dict[str, Any]) -> Any:
-                if effect_chain is not None:
-                    effect_chain.rpc_permit()
-                return request_ctx.run(invoke_mcp_action, action, **dict(kwargs or {}))
+                return request_ctx.run(_invoke_current, action, kwargs)
 
             # The chain's mount and the sandbox's are DIFFERENT objects with
             # the same name: the chain's carries the lease identity a push
@@ -2261,6 +2270,12 @@ def _build_source_code_node(
                     raise
                 logger.exception("event_sink raised in %s", node.node_id)
         return output
+
+    def _fn(state: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.runs import _execution_use_scope
+
+        with _execution_use_scope():
+            return _fn_body(state)
 
     return _fn
 
@@ -2620,6 +2635,14 @@ class BranchExecutionContext:
     depth: int = 0
     owner_user_id: str = ""  # persisted authenticated owner, not the universe actor
     definition_author: str = ""  # actual compiled definition, not fork attribution
+    workspace_family: FamilyMember | None = None  # persisted snapshot, not a grant
+
+
+def _workspace_invocation_parent(ctx: BranchExecutionContext):
+    from tinyassets.workspace_family import UNMANAGED_PARENT
+
+    # Missing legacy authority must not turn each child into a new budget root.
+    return ctx.workspace_family if ctx.workspace_family is not None else UNMANAGED_PARENT
 
 
 #: Uniform refusal for any child ref that is absent OR not authorized — never reveal
@@ -2827,6 +2850,7 @@ def _build_invoke_branch_node(
                     _base, branch=child_branch, inputs=child_inputs,
                     actor=actor_arg,
                     owner_user_id=_ctx.owner_user_id or None,
+                    _workspace_parent=_workspace_invocation_parent(_ctx),
                     _enqueue_universe_id=_ctx.universe_id,
                     provider_call=provider_call,
                     on_node_status=on_node_status,
@@ -2878,6 +2902,7 @@ def _build_invoke_branch_node(
                 _base, branch=child_branch, inputs=child_inputs,
                 actor=actor_arg,
                 owner_user_id=_ctx.owner_user_id or None,
+                _workspace_parent=_workspace_invocation_parent(_ctx),
                 _enqueue_universe_id=_ctx.universe_id,
                 provider_call=provider_call,
                 on_node_status=on_node_status,
@@ -3031,6 +3056,7 @@ def _build_invoke_branch_version_node(
                     inputs=child_inputs,
                     actor=actor_arg,
                     owner_user_id=_ctx.owner_user_id or None,
+                    _workspace_parent=_workspace_invocation_parent(_ctx),
                     _enqueue_universe_id=_ctx.universe_id,
                     provider_call=provider_call,
                     on_node_status=on_node_status,
@@ -3091,6 +3117,7 @@ def _build_invoke_branch_version_node(
                 inputs=child_inputs,
                 actor=actor_arg,
                 owner_user_id=_ctx.owner_user_id or None,
+                _workspace_parent=_workspace_invocation_parent(_ctx),
                 _enqueue_universe_id=_ctx.universe_id,
                 provider_call=provider_call,
                 on_node_status=on_node_status,

@@ -29,6 +29,18 @@ round 4: the fold and the residual go to the founder with the build.
 
 ## Decisions
 
+### Shared execution foundation (2026-09-20)
+
+The reviewed run ownership and execution-use seams are being released separately
+from managed-memory enablement. [shared-run-foundation.md](shared-run-foundation.md)
+records the exact seven-module extraction and activation correction. A held guard
+protects expected-status transitions even without family membership; managed root
+enrollment additionally requires current exact-database process readiness. No
+production readiness publisher ships in this foundation, so ordinary runs retain
+their established restart recovery. Kernel/bootstrap/provisioning experiments are
+not dependencies of this bounded release. Existing design sections below describe
+the broader workspace scope, not claims that this foundation enables all of it.
+
 ### D0. Two storage classes: the universe's permanent space, and scratch leased per job
 
 Founder 2026-08-30: permanent storage (your universe's cloud space) is a

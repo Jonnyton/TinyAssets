@@ -21,6 +21,24 @@ bytes, and a crash in any window is repaired rather than leaked.
 
 ## Requirements
 
+### Requirement: Resource-family enrollment requires verified runtime readiness
+
+Authenticated owner/universe fields alone SHALL NOT activate managed-family
+lifecycle. New root enrollment SHALL additionally require current process-local,
+exact-database readiness. Retirement SHALL invalidate retained copies of that
+readiness. The shared execution foundation SHALL NOT publish production readiness
+before managed startup, kernel retirement and resume are fully integrated.
+This readiness SHALL NOT substitute for current invocation, effect or byte authority.
+
+#### Scenario: ordinary authenticated runs retain recovery before managed activation
+- **WHEN** no fully verified managed runtime has published readiness and an ordinary authenticated run is queued or running at restart
+- **THEN** it has no resource-family association and established ordinary recovery marks it interrupted
+- **AND** a prepared admission remains subject to its distinct guarded recovery protocol
+
+#### Scenario: a copied readiness context outlives teardown
+- **WHEN** teardown retires the original readiness carrier or a context belongs to another process or runs database
+- **THEN** that context refuses new managed enrollment rather than guessing or reviving an old association
+
 ### Requirement: Scratch storage is leased per job in a shared pool and never charged to a universe's permanent space
 
 The platform SHALL keep two storage classes — the universe's permanent space under its own directory, bounded by its tier quota, and a shared scratch pool of per-job leases under `<data>/scratch/` — and SHALL never charge a scratch lease to a universe's permanent quota.
