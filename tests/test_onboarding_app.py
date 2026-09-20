@@ -187,7 +187,7 @@ def test_voice_client_keeps_converse_as_the_only_writer():
     assert 'event.name!=="converse"' in html
     assert 'const payload=await sendConversationRequest(message,message,Date.now(),opts);' in html
     assert '{message,input_method:turnInputMethod(inputMethod)}' in html
-    assert 'sendTurn(send, display, {inputMethod:"typed"})' in html
+    assert 'sendTurn(turn.send, turn.display, {inputMethod:"typed"})' in html
     assert "voice_active" not in html
     assert 'this._send({type:"tool_result",call_id:callId,output:reply});' in html
     assert 'this._send({type:"speak",call_id:callId,source:"tool_result",verbatim:true});' in html
@@ -1668,6 +1668,10 @@ __APP_FUNCTIONS__
       inputMethod:SCENARIO.pendingInputMethod,
       modelChoice:SCENARIO.pendingModelChoice,
       consumerRequest:SCENARIO.pendingConsumerRequest,
+      // The record is universe-scoped like a saved queue line. A scenario that
+      // wants the LEGACY unscoped shape asks for it explicitly.
+      scope: SCENARIO.pendingScope===null?undefined
+        :(SCENARIO.pendingScope||SCENARIO.universe||"u-1"),
       ts: Date.now()-(SCENARIO.pendingAgeS||0)*1000}));
     if(SCENARIO.queued) localStorage.setItem(QUEUE_KEY, JSON.stringify(SCENARIO.queued));
     if(SCENARIO.draftBeforeRestore) els["composer-input"].value=SCENARIO.draftBeforeRestore;
@@ -1700,7 +1704,8 @@ __APP_FUNCTIONS__
     const min=60*1000;
     if(SCENARIO.pendingAgeMin!=null){
       localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
-        {message:"m", display:"m", ts: Date.now()-SCENARIO.pendingAgeMin*min}));
+        {message:"m", display:"m", scope: SCENARIO.universe||"u-1",
+         ts: Date.now()-SCENARIO.pendingAgeMin*min}));
     }
     if(SCENARIO.inflightAgeMin!=null){
       els["btn-send"].disabled=true; turnStartedAt=Date.now()-SCENARIO.inflightAgeMin*min;
@@ -1741,7 +1746,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"let queueScope=[^\n]*;", r"let queuePersisted=[^\n]*;",
                     r"let retainedItems=[^\n]*;", r"let modelChoiceForNextTurn=[^\n]*;",
                     r"const renderedConsumerTurns=[^\n]*;",
-                    r"const renderedConsumerFounders=[^\n]*;")
+                    r"const renderedConsumerFounders=[^\n]*;",
+                    r"let Uploads=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
@@ -1749,7 +1755,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "sendConversationRequest",
         "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
         "offerResend", "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
-        "restoreInflight",
+        "restoreInflight", "setQueueScope",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
         "flushSendQueue", "queueTurn",
         "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
@@ -2083,9 +2089,43 @@ def test_a_held_message_is_restored_on_an_empty_thread(tmp_path):
 
 
 def test_a_held_message_is_restored_when_the_peek_fails(tmp_path):
+    """A failed peek leaves the page without its universe, and the record is
+    universe-scoped (2026-09-20). It is neither drawn nor dropped here: it is
+    KEPT, and `pollStatus` offers it the moment the universe is known - the
+    same rule the saved queue has always followed."""
     out = _run_app(tmp_path, {"kind": "restore", "pending": "hello", "historyError": True})
     assert out["inflight"]["message"] == "hello"
-    assert [m["role"] for m in out["messages"]] == ["founder"]
+    assert [m["role"] for m in out["messages"]] == []
+
+
+def test_a_held_message_from_another_universe_is_never_shown_here(tmp_path):
+    """The in-flight record carries its universe, like a saved queue line
+    (Fable 21633, 2026-09-20). A second founder on the same browser must not
+    see the first one's unconfirmed message - nor the filenames it names."""
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "the secret plan — 📎 payroll.xlsx",
+                              "pendingScope": "u-other", "universe": "u-1", "history": []})
+    assert [m["role"] for m in out["messages"]] == []
+    shown = json.dumps([out["messages"], out["notes"]])
+    assert "the secret plan" not in shown and "payroll.xlsx" not in shown
+    assert [n["text"] for n in out["notes"]] == [
+        "An unconfirmed message from another universe's session on this browser "
+        "is waiting there; open that universe to see it."]
+    # preserved on disk for the universe it belongs to
+    assert out["inflight"]["scope"] == "u-other"
+
+
+def test_a_held_message_with_no_recorded_universe_is_not_reoffered_silently(tmp_path):
+    """A record written before the page recorded its universe may belong to
+    another account signed in on this browser: it is held, named only as
+    existing, and opened on an explicit click."""
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "the secret plan",
+                              "pendingScope": None, "universe": "u-1", "history": []})
+    assert [m["role"] for m in out["messages"]] == []
+    assert "the secret plan" not in json.dumps(out["notes"])
+    offer = out["notes"][0]
+    assert "recorded its universe" in offer["text"]
+    assert offer["buttons"] == ["Show it"]
+    assert out["inflight"]["message"] == "the secret plan"
 
 
 def test_an_older_identical_prompt_does_not_count_as_delivery(tmp_path):

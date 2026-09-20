@@ -2547,12 +2547,17 @@
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(opts,"modelChoice")
         ? opts.modelChoice : modelChoiceForNextTurn)});
   }
+  // The record carries its universe for the same reason a saved queue line
+  // does: another founder signing in on this browser must never be shown, or
+  // offered to resend, a message this one held - nor the filenames it names
+  // (Fable 21633 on the app byte-intake shape, 2026-09-20).
   function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null){
     try{ localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
       {message, display: display||message,
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
+       scope:queueScope,
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()})); }catch(_e){}
   }
   function forgetInflight(){ try{ localStorage.removeItem(INFLIGHT_KEY); }catch(_e){} }
@@ -2623,6 +2628,15 @@
   // Saved lines carry it, so another founder's session on this browser does
   // not send them (Codex round 1).
   let queueScope="";
+  // The home is the other half of the scope: an attachment picked for one home
+  // must not ride out in a message addressed to another. A change drops the
+  // pending attachments (without releasing - that needs the original login and
+  // home) rather than silently reattaching them here.
+  function setQueueScope(next){
+    const value=String(next||queueScope||"");
+    if(queueScope && value && value!==queueScope && Uploads) Uploads.abort();
+    queueScope=value;
+  }
   let queuePersisted=true;
   // Saved lines this page holds for later: offers not yet acted on, and
   // lines queued for another universe (kept for that universe's own page).
@@ -2789,11 +2803,20 @@
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
     let delivered=false;
+    // Account AND home at the moment of sending. A reply or a failure that
+    // lands after either changed belongs to a conversation that is no longer
+    // on screen: it paints nothing, and nothing of it reaches the new
+    // account's composer.
+    const sentEpoch=MCP._loginEpoch, sentScope=queueScope;
+    const stillHere=()=>sentEpoch===MCP._loginEpoch&&sentScope===queueScope;
     try{
-      renderConverse(await sendConversationRequest(message,display,sentAt,opts));
+      const answer=await sendConversationRequest(message,display,sentAt,opts);
+      if(!stillHere()) return;
+      renderConverse(answer);
       delivered=true;setStatusLine("");
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
+      if(!stillHere()) return;
       if(err.authRequired){ setStatusLine(""); $("composer-input").value=message; return sessionExpired(); }
       setStatusLine("");
       // A transport failure is not a dead end: the session has already been
@@ -2809,7 +2832,10 @@
       }
     }finally{
       $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
-      flushSendQueue();Voice.conversationSettled(delivered);
+      // Lines queued behind this turn belong to the account and home that
+      // queued them; they are not flushed into a different one.
+      if(stillHere()) flushSendQueue();
+      Voice.conversationSettled(delivered);
     }
   }
 
@@ -2876,8 +2902,12 @@
       const name=s.universe_name||s.universe||s.universe_id||"";
       if(name) $("universe-name").textContent=name;
       if(ModelPicker.snapshot&&s.universe_id&&ModelPicker.snapshot.universe_id!==s.universe_id) ModelPicker.reset();
-      queueScope = String(s.universe_id || s.universe || queueScope || "");
+      setQueueScope(s.universe_id || s.universe);
       restoreQueue();   // no-op once done, or until the scope is known
+      // A held message waits for the same thing the queue does. If the history
+      // peek failed, THIS is where the page finally learns its universe, so
+      // the unconfirmed turn is offered here rather than lost.
+      if(!inflightRestored) restoreInflight([]);
       healServing(s);
     }catch(err){
       if(err.authRequired) return sessionExpired();
@@ -3112,6 +3142,10 @@
     setTimeout(()=>{ if(!stillCurrent()) return; showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.endLogin(); resetClaudeConnection(); Voice.stop(false);
+    // Pending attachments belong to the account that picked them. They are
+    // dropped, never released (release needs that same login and home) and
+    // never carried into whoever signs in next.
+    if(Uploads) Uploads.abort();
     if(typeof AppLayout!=="undefined") AppLayout.reset();
     HostedModelConnect.reset();
     modelChoiceForNextTurn=null;
@@ -3697,6 +3731,347 @@
     },()=>{res.textContent="Token saved, but enabling Claude is unconfirmed. "+uncertain;});
   }
 
+  // ---- File attachments: inline small text, everything else uploaded -------
+  // The paperclip keeps its existing INLINE small-text behaviour byte for byte
+  // (Hard Rule #9: user uploads are preserved verbatim). Anything it will not
+  // inline goes through ONE authenticated raw-body route, POST /mcp/app/files,
+  // and comes back as the existing immutable six-field reference. File BYTES
+  // never enter the prompt - only the server's own reference metadata does.
+  //
+  // Built through a factory so the SHIPPED code is the tested code: wire()
+  // hands it the real transport, clock and scope; a test hands it fakes. No
+  // new framework, no new store, no new schema.
+  const ATTACH_MAX_BYTES = 200*1024;    // per-file INLINE cap (unchanged)
+  const ATTACH_TOTAL_MAX = 400*1024;    // total INLINE cap across files (unchanged)
+  const UPLOAD_MAX_BYTES = 8*1024*1024; // the existing MAX_FILE_BYTES ceiling
+  const UPLOAD_MAX_FILES = 32;          // the existing intake bound, per selection
+  const UPLOAD_HEADER_MAX = 8192;       // X-TinyAssets-Upload ASCII bound
+  function fmtBytes(n){ return n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(1)+" MB"; }
+  function looksBinary(t){ for(var i=0;i<t.length;i++){ if(t.charCodeAt(i)===0) return true; } return false; }
+  // Only a file the browser itself calls text is a candidate for the unchanged
+  // inline path. Everything else - an image, a PDF, an empty file the picker
+  // typed as binary - is a FILE, and goes up as bytes rather than being read
+  // into the message as an empty or mangled text block.
+  function isTextMedia(type){
+    const t=String(type||"").split(";")[0].trim().toLowerCase();
+    if(!t) return true;                 // the picker said nothing: try text, as before
+    return t.startsWith("text/")||t==="application/json"||t==="application/xml"||
+      t==="application/javascript"||t.endsWith("+json")||t.endsWith("+xml");
+  }
+  // base64url of UTF-8 JSON. Metadata ONLY: never file bytes, never a token,
+  // never a path or URL. Exactly the seven keys the route declares.
+  function uploadHeaderValue(meta){
+    const bytes=new TextEncoder().encode(JSON.stringify(meta));
+    let binary=""; for(let i=0;i<bytes.length;i++) binary+=String.fromCharCode(bytes[i]);
+    return btoa(binary).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+  }
+  // The live controller, built by wire(). Sign-out and a home change reach it
+  // from outside the composer, so it is addressable here.
+  let Uploads=null;
+  function createUploadController(deps){
+    const now=typeof deps.now==="function"?deps.now:()=>Date.now();
+    const maxBytes=deps.maxBytes||UPLOAD_MAX_BYTES;
+    const maxFiles=deps.maxFiles||UPLOAD_MAX_FILES;
+    const items=[];
+    let seq=0, chain=Promise.resolve();
+    function changed(){ if(typeof deps.onChange==="function") deps.onChange(); }
+    function say(text){ if(typeof deps.notify==="function") deps.notify(text); }
+    // One account AND one home. Everything this controller does is stamped
+    // with the scope it started in; a late answer whose scope no longer
+    // matches is dropped and never lands in the next account's composer.
+    function scopeNow(){
+      const s=deps.scope()||{};
+      return {epoch:s.epoch, universeId:String(s.universeId||"")};
+    }
+    function sameScope(a,b){
+      return !!a&&!!b&&a.epoch===b.epoch&&!!a.universeId&&a.universeId===b.universeId;
+    }
+    function newLabel(){
+      const raw=typeof deps.newLabel==="function"?String(deps.newLabel())
+        :("app-"+crypto.randomUUID()+"-"+crypto.randomUUID());
+      return raw.length>128?raw.slice(0,128):raw;
+    }
+    function mediaTypeOf(file){
+      const t=file&&typeof file.type==="string"?file.type.trim():"";
+      return t||"application/octet-stream";
+    }
+    function inlineTotal(){
+      return items.reduce((s,a)=>s+(typeof a.text==="string"?a.text.length:0),0);
+    }
+    function expiresAtMs(item){
+      return (item.expiresAt===null||item.expiresAt===undefined)?null:item.expiresAt*1000;
+    }
+    // A passed deadline means the one-hour UNBOUND hold NEEDS CHECKING - not
+    // that a file since bound to a run has expired. The chip says exactly that,
+    // and checking it is an observation of the same label, not a new upload.
+    function pastHold(item){
+      const at=expiresAtMs(item);
+      return at!==null&&at<=now();
+    }
+    function expiryNote(item){
+      const at=expiresAtMs(item);
+      if(at===null) return " — already used by a run; it does not expire";
+      if(pastHold(item)) return " — its one-hour hold may have passed; check it before sending";
+      return " — held about "+Math.max(1,Math.round((at-now())/60000))+" more min unless a run uses it";
+    }
+    // What stops Send. A partial send is never silent: the founder either
+    // checks the chip or removes it, and the typed draft is untouched either way.
+    function blocking(item){
+      if(item.state==="inline") return false;
+      if(item.state==="ready") return pastHold(item);
+      return true;
+    }
+    function chipFor(item){
+      const stuck=blocking(item);
+      let text;
+      if(item.state==="inline") text=item.name+" ("+fmtBytes(item.size)+")";
+      else if(item.state==="hashing") text=item.name+" — preparing";
+      else if(item.state==="uploading") text=item.name+" — uploading";
+      else if(item.state==="pending") text=item.name+" — waiting";
+      else if(item.state==="ready") text=item.name+" ("+fmtBytes(item.size)+")"+expiryNote(item);
+      else text=item.name+" — "+(item.error||item.state);
+      return {id:item.id, name:item.name, size:item.size, label:item.label,
+        state:(item.state==="ready"&&stuck)?"expired":item.state,
+        blocking:stuck, retryable:!!item.retryable||(item.state==="ready"&&stuck),
+        fileId:item.ref?item.ref.file_id:null, text:text};
+    }
+    function add(files){
+      const list=Array.prototype.slice.call(files||[]);
+      const queued=[];
+      for(const file of list){
+        if(items.length>=maxFiles){
+          say("Only "+maxFiles+" files can be attached at once; "+
+            (list.length-queued.length)+" were not added.");
+          break;
+        }
+        const item={id:"att-"+(++seq), file:file, name:String((file&&file.name)||"file"),
+          size:Number(file&&file.size)||0, mediaType:mediaTypeOf(file),
+          state:"pending", label:null, sha256:null, ref:null, text:null,
+          expiresAt:undefined, retentionSeconds:null, error:null, retryable:false, scope:null};
+        items.push(item); queued.push(item);
+      }
+      changed();
+      // Sequential on purpose: one file is hashed and streamed at a time, so
+      // the browser never holds several multi-megabyte bodies at once.
+      for(const item of queued) chain=chain.then(()=>step(item)).catch(()=>{});
+      return chain;
+    }
+    async function step(item){
+      if(item.state!=="pending") return;
+      if(isTextMedia(item.mediaType)&&item.size<=ATTACH_MAX_BYTES&&
+         inlineTotal()+item.size<=ATTACH_TOTAL_MAX){
+        let text=null;
+        try{ text=await item.file.text(); }catch(_e){ text=null; }
+        // UNCHANGED: a readable, non-binary, small-enough file is embedded
+        // VERBATIM in the message exactly as it always has been.
+        if(typeof text==="string"&&!looksBinary(text)&&
+           inlineTotal()+text.length<=ATTACH_TOTAL_MAX){
+          item.text=text; item.state="inline"; changed(); return;
+        }
+      }
+      return upload(item);
+    }
+    // Sign-out, another account or another home while work was in flight. The
+    // reference is dropped from THIS composer and nothing is released: release
+    // is an owner action needing the same login and home that uploaded it.
+    function abortItem(item){
+      const idx=items.indexOf(item);
+      if(idx>=0) items.splice(idx,1);
+      changed();
+    }
+    async function upload(item){
+      if(item.size>maxBytes){
+        item.state="failed"; item.retryable=false;
+        item.error="larger than "+fmtBytes(maxBytes)+", which this app cannot upload yet";
+        changed(); return;
+      }
+      const scope=scopeNow();
+      if(!scope.universeId){
+        item.state="failed"; item.retryable=true;
+        item.error="your universe is not connected yet — check it in a moment";
+        changed(); return;
+      }
+      if(item.scope&&!sameScope(item.scope,scope)) return abortItem(item);
+      item.scope=scope;
+      // A retry keeps the ORIGINAL label and request. The server resolves a
+      // committed same-label POST back to the original references, which is how
+      // an uncertain outcome is OBSERVED instead of copied.
+      if(!item.label) item.label=newLabel();
+      if(!item.file){
+        item.state="failed"; item.retryable=false;
+        item.error="attach this file again — this page no longer holds its bytes";
+        changed(); return;
+      }
+      item.state="hashing"; item.error=null; item.retryable=false; changed();
+      try{ if(!item.sha256) item.sha256=await deps.sha256(item.file); }
+      catch(_e){
+        item.state="failed"; item.retryable=true; item.error="could not read this file";
+        changed(); return;
+      }
+      if(!sameScope(item.scope,scopeNow())) return abortItem(item);
+      let header=null;
+      try{
+        header=uploadHeaderValue({version:1, label:item.label,
+          expected_universe_id:item.scope.universeId, filename:item.name,
+          media_type:item.mediaType, size_bytes:item.size, sha256:item.sha256});
+      }catch(_e){ header=null; }
+      if(typeof header!=="string"||header.length>UPLOAD_HEADER_MAX){
+        item.state="failed"; item.retryable=false;
+        item.error="its name or type is too long to attach";
+        changed(); return;
+      }
+      item.state="uploading"; changed();
+      let payload=null, failure=null;
+      try{ payload=await deps.upload({header:header, file:item.file, label:item.label,
+        mediaType:item.mediaType, size:item.size, sha256:item.sha256}); }
+      catch(err){ failure=err||new Error("upload failed"); }
+      // LATE-RESPONSE GUARD: the answer may land after a sign-out or a switch
+      // to another account or home. Nothing is painted into that composer.
+      if(!sameScope(item.scope,scopeNow())) return abortItem(item);
+      return failure?failed(item,failure):adopt(item,payload);
+    }
+    function failed(item,err){
+      const status=err&&typeof err.status==="number"?err.status:0;
+      item.state="failed"; item.retryable=false;
+      if(status===409){
+        // A held or conflicting label is DISCLOSED, never silently replaced by
+        // a fresh request: removing the chip and attaching again is the
+        // founder's own explicit new upload.
+        item.error="this upload did not finish and its upload name is held — "+
+          "remove it and attach the file again to start a new upload";
+      }else if(status===413){ item.error="too large for this app to upload"; }
+      else if(status===401||status===403){
+        item.error="sign in again to attach files"; item.retryable=true;
+      }else if(status===503){
+        item.error="the uploader is busy — check again in a moment"; item.retryable=true;
+      }else if(status>=400&&status<500){ item.error="this file was refused"; }
+      else{
+        // The outcome is UNKNOWN: the bytes may already have committed. A check
+        // sends the SAME label, so the server answers with the original
+        // references instead of making a second copy.
+        item.state="uncertain"; item.retryable=true;
+        item.error="it is not known whether this upload finished — check it before sending";
+      }
+      changed();
+    }
+    function adopt(item,payload){
+      const files=payload&&Array.isArray(payload.files)?payload.files:null;
+      const ref=files&&files.length?files[0]:null;
+      if(!ref||typeof ref.file_id!=="string"||typeof ref.sha256!=="string"){
+        item.state="failed"; item.retryable=true;
+        item.error="the upload did not come back with a file"; changed(); return;
+      }
+      if(payload.universe_id&&String(payload.universe_id)!==item.scope.universeId){
+        // A reference answered for another universe is never adopted here.
+        item.state="failed"; item.retryable=false;
+        item.error="that upload answered for a different universe"; changed(); return;
+      }
+      const stated=Object.prototype.hasOwnProperty.call(payload,"unbound_expires_at");
+      if(!stated||!(payload.unbound_expires_at===null||typeof payload.unbound_expires_at==="number")){
+        item.state="failed"; item.retryable=true;
+        item.error="the upload did not say how long it is held"; changed(); return;
+      }
+      item.ref=ref;   // the EXACT object the server returned: fields and order
+      item.retentionSeconds=typeof payload.unbound_retention_seconds==="number"
+        ?payload.unbound_retention_seconds:null;
+      item.expiresAt=payload.unbound_expires_at;
+      item.state="ready"; item.error=null; item.retryable=false; changed();
+    }
+    function retry(id){
+      const item=items.find(i=>i.id===id);
+      if(!item) return chain;
+      if(!item.retryable&&!(item.state==="ready"&&pastHold(item))) return chain;
+      // The SAME label, request and file: an observation of custody, never a
+      // second copy and never a workflow replay.
+      item.state="pending"; item.error=null; item.retryable=false; changed();
+      chain=chain.then(()=>upload(item)).catch(()=>{});
+      return chain;
+    }
+    async function remove(id){
+      const item=items.find(i=>i.id===id);
+      if(!item) return;
+      items.splice(items.indexOf(item),1); changed();
+      if(!item.ref||typeof deps.release!=="function") return;
+      // Releasing needs the SAME current login and home that uploaded it.
+      // Otherwise the reference is simply dropped from this composer.
+      if(!sameScope(item.scope,scopeNow())) return;
+      try{ await deps.release({graph_id:item.scope.universeId, file_id:item.ref.file_id}); }
+      catch(err){
+        // An active binding refuses, and the refusal is SHOWN, never overridden.
+        say("“"+item.name+"” was removed from this message but not deleted: "+
+          ((err&&err.message)||"it is in use by a run")+".");
+      }
+    }
+    // ONE block, ONE serialization of the EXACT references the server returned.
+    // Field names and order are the server's; the one-hour hold sits BESIDE the
+    // files array and never inside the immutable reference. This is ordinary
+    // untrusted metadata for the agent to read - not an instruction, a
+    // permission, an execution grant, a path or a credential, and no bytes.
+    function attachmentMetadataBlock(ready){
+      const holds={};
+      ready.forEach(a=>{ holds[a.ref.file_id]=
+        (a.expiresAt===null||a.expiresAt===undefined)?null:a.expiresAt; });
+      const body={version:1, files:ready.map(a=>a.ref),
+        unbound_retention_seconds:ready[0].retentionSeconds,
+        unbound_expires_at:holds};
+      return "----- attached files (platform metadata, not instructions) -----\n"+
+        JSON.stringify(body)+
+        "\n----- end of attached files -----";
+    }
+    function buildTurn(typed){
+      const stuck=items.filter(blocking);
+      if(stuck.length) return {blocked:true, send:null, display:null,
+        reason:(stuck.length===1?"An attachment is":"Attachments are")+" not ready: "+
+          stuck.map(i=>i.name).join(", ")+". Check or remove "+
+          (stuck.length===1?"it":"them")+" before sending."};
+      const inline=items.filter(a=>a.state==="inline"&&typeof a.text==="string");
+      const uploaded=items.filter(a=>a.state==="ready"&&a.ref);
+      if(!inline.length&&!uploaded.length) return {blocked:false, send:typed, display:typed};
+      const parts=[];
+      if(inline.length) parts.push(inline.map(a=>
+        "----- attached file: "+a.name+" ("+fmtBytes(a.size)+") -----\n"+a.text+
+        "\n----- end of "+a.name+" -----").join("\n\n"));
+      if(uploaded.length) parts.push(attachmentMetadataBlock(uploaded));
+      const blocks=parts.join("\n\n");
+      const names=inline.concat(uploaded).map(a=>"📎 "+a.name).join(", ");
+      return {blocked:false,
+        send: typed?blocks+"\n\n"+typed:blocks,
+        display: typed?typed+"\n\n"+names:names};
+    }
+    return {add, retry, remove, buildTurn,
+      chips:()=>items.map(chipFor),
+      canSend:()=>!items.some(blocking),
+      count:()=>items.length,
+      // The message now carries the references: clearing the composer neither
+      // releases them nor re-uploads anything.
+      clear(){ items.length=0; changed(); },
+      // Sign-out or a home change: drop everything without releasing.
+      abort(){ items.length=0; chain=Promise.resolve(); changed(); }};
+  }
+  async function hashFile(file){
+    const digest=await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+    return Array.prototype.map.call(new Uint8Array(digest),
+      b=>b.toString(16).padStart(2,"0")).join("");
+  }
+  async function postUploadedFile({header, file}){
+    const response=await fetch("/mcp/app/files",{method:"POST", credentials:"same-origin",
+      cache:"no-store",
+      headers:Object.assign({"Content-Type":"application/octet-stream",
+        "X-TinyAssets-Upload":header}, authHeaders()),
+      body:file});
+    let payload=null;
+    try{ payload=await response.json(); }catch(_e){ payload=null; }
+    if(!response.ok){
+      const err=new Error((payload&&(payload.detail||payload.error))||("upload_refused_"+response.status));
+      err.status=response.status; throw err;
+    }
+    return payload;
+  }
+  function releaseUploadedFile({graph_id, file_id}){
+    return MCP.callTool("write_graph",{target:"run_file", operation:"release",
+      graph_id:graph_id, payload_json:JSON.stringify({file_id:file_id})});
+  }
+
   function wire(){
     // Default-hidden in HTML prevents a pre-script flash inside the native shell.
     // Reveal and initialise Voice only on the web surface; NATIVE covers both iOS
@@ -3726,55 +4101,56 @@
     $("btn-openai-setup-done").addEventListener("click",connectOpenAIDevice);
     $("btn-claude-connect").addEventListener("click",connectClaude);
     $("btn-signin").addEventListener("click",beginSignIn);
-    // ---- File attachments (paperclip): read text files client-side and embed
-    // them VERBATIM into the turn (Hard Rule #9: uploads preserved verbatim).
-    // Text-only + size-capped for now; a real binary/large-file upload endpoint
-    // is a follow-up. ----
-    const ATTACH_MAX_BYTES = 200*1024;   // per-file inline cap
-    const ATTACH_TOTAL_MAX = 400*1024;   // total inline cap across pending files
-    let pendingAttachments = [];         // {name, size, text?, warn?}
-    function fmtBytes(n){ return n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(1)+" MB"; }
-    function looksBinary(t){ for(var i=0;i<t.length;i++){ if(t.charCodeAt(i)===0) return true; } return false; }
+    // ---- File attachments (paperclip). Small text still rides inline and
+    // VERBATIM; anything else is uploaded through POST /mcp/app/files and only
+    // its server-issued reference travels in the turn. See
+    // createUploadController above - this is only the wiring. ----
+    Uploads = createUploadController({
+      // The account AND the home this page is currently talking to.
+      scope: ()=>({epoch: MCP._loginEpoch, universeId: queueScope}),
+      sha256: hashFile,
+      upload: postUploadedFile,
+      release: releaseUploadedFile,
+      onChange: renderChips,
+      notify: (text)=>appendMessage("system", text),
+    });
     function renderChips(){
-      const box=$("attachments"); box.innerHTML=""; box.hidden = pendingAttachments.length===0;
-      pendingAttachments.forEach((a,i)=>{
+      const box=$("attachments"); box.innerHTML="";
+      const chips=Uploads.chips();
+      box.hidden = chips.length===0;
+      chips.forEach(view=>{
         const chip=document.createElement("span");
-        chip.className="chip"+(a.warn?" chip--warn":"");
+        chip.className="chip"+(view.blocking?" chip--warn":"");
+        chip.setAttribute("data-attach-state", view.state);
         const label=document.createElement("span");
-        label.textContent="📎 "+a.name+(a.warn?" — "+a.warn:" ("+fmtBytes(a.size)+")");
+        label.textContent="📎 "+view.text;
+        chip.appendChild(label);
+        if(view.retryable){
+          const again=document.createElement("button");
+          again.type="button"; again.className="btn btn--link"; again.textContent="Check";
+          again.setAttribute("aria-label","Check "+view.name);
+          // The same upload, never a new one: this asks the server what
+          // happened to THIS request.
+          again.addEventListener("click",()=>Uploads.retry(view.id));
+          chip.appendChild(again);
+        }
         const x=document.createElement("button");
-        x.type="button"; x.textContent="✕"; x.setAttribute("aria-label","Remove "+a.name);
-        x.addEventListener("click",()=>{ pendingAttachments.splice(i,1); renderChips(); });
-        chip.appendChild(label); chip.appendChild(x); box.appendChild(chip);
+        x.type="button"; x.textContent="✕"; x.setAttribute("aria-label","Remove "+view.name);
+        x.addEventListener("click",()=>Uploads.remove(view.id));
+        chip.appendChild(x); box.appendChild(chip);
       });
     }
-    async function handleFiles(files){
-      let total = pendingAttachments.reduce((s,a)=>s+(a.text?a.text.length:0),0);
-      for(const f of files){
-        if(f.size>ATTACH_MAX_BYTES){ pendingAttachments.push({name:f.name,size:f.size,warn:"too large to attach inline yet"}); continue; }
-        let text; try{ text=await f.text(); }catch(_e){ pendingAttachments.push({name:f.name,size:f.size,warn:"could not read"}); continue; }
-        if(looksBinary(text)){ pendingAttachments.push({name:f.name,size:f.size,warn:"binary files aren't supported inline yet"}); continue; }
-        if(total+text.length>ATTACH_TOTAL_MAX){ pendingAttachments.push({name:f.name,size:f.size,warn:"skipped — attachment total too large"}); continue; }
-        total+=text.length; pendingAttachments.push({name:f.name,size:f.size,text:text});
-      }
-      renderChips();
-    }
-    function buildTurn(typed){
-      const usable=pendingAttachments.filter(a=>a.text);
-      if(usable.length===0) return {send:typed, display:typed};
-      const blocks=usable.map(a=>"----- attached file: "+a.name+" ("+fmtBytes(a.size)+") -----\n"+a.text+"\n----- end of "+a.name+" -----").join("\n\n");
-      const names=usable.map(a=>"📎 "+a.name).join(", ");
-      return { send: typed ? blocks+"\n\n"+typed : blocks,
-               display: typed ? typed+"\n\n"+names : names };
-    }
     $("btn-attach").addEventListener("click",()=>$("file-input").click());
-    $("file-input").addEventListener("change",async(e)=>{ await handleFiles(e.target.files); e.target.value=""; });
+    $("file-input").addEventListener("change",(e)=>{ Uploads.add(e.target.files); e.target.value=""; });
     $("composer").addEventListener("submit",(e)=>{ e.preventDefault();
       const typed=$("composer-input").value.trim();
-      const {send,display}=buildTurn(typed);
-      if(!send) return;                 // nothing typed and no readable attachment
-      pendingAttachments=[]; renderChips();
-      sendTurn(send, display, {inputMethod:"typed"}); });
+      const turn=Uploads.buildTurn(typed);
+      // Not ready is not a reason to send a subset, and never a reason to throw
+      // away what the founder typed: the draft and the chips both stay put.
+      if(turn.blocked){ setStatusLine(turn.reason); return; }
+      if(!turn.send) return;            // nothing typed and no usable attachment
+      Uploads.clear();
+      sendTurn(turn.send, turn.display, {inputMethod:"typed"}); });
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
@@ -4458,7 +4834,7 @@
     let turns = [];
     try{
       const r = await MCP.getConversation();
-      queueScope = String((r && (r.universe_id || r.universe)) || queueScope || "");
+      setQueueScope(r && (r.universe_id || r.universe));
       const conv = r && r.recent_conversation;
       turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
       if(!turns.length){ restoreInflight(turns); return; }
@@ -4509,13 +4885,47 @@
     // Whatever was queued behind the in-flight turn goes out after it has been
     // accounted for below (its bubble and resend offer come first).
     if(!pending || inflightRestored){ restoreQueue(); return; }
+    // The saved queue's rule, applied to the in-flight record: nothing about a
+    // held message - not its text, not a filename it names - is shown or even
+    // OBSERVED until this page knows which universe it is, and never for
+    // another account or home.
+    if(!queueScope){ restoreQueue(); return; }
+    if(pending.scope && pending.scope!==queueScope){
+      inflightRestored = true;
+      appendMessage("system","An unconfirmed message from another universe's session "+
+        "on this browser is waiting there; open that universe to see it.");
+      restoreQueue(); return;   // preserved on disk for that universe's own page
+    }
+    if(!pending.scope){
+      // Written before this page recorded its universe, so it may belong to
+      // another account signed in on this browser. It is never reoffered
+      // silently: the founder asks for it, and only then is it adopted here.
+      inflightRestored = true;
+      const epochAtOffer=MCP._loginEpoch, scopeAtOffer=queueScope;
+      const show=document.createElement("button");
+      show.className="btn btn--link"; show.textContent="Show it";
+      show.addEventListener("click",()=>{
+        note.remove();
+        if(epochAtOffer!==MCP._loginEpoch || scopeAtOffer!==queueScope) return;
+        if(!readInflight()) return;
+        rememberInflight(pending.message, pending.display, pending.ts,
+          pending.inputMethod, pending.modelChoice, pending.consumerRequest||null);
+        inflightRestored = false;
+        restoreInflight(turns);
+      });
+      const note=appendMessage("system","An unconfirmed message saved before this page "+
+        "recorded its universe is held. Check it belongs to this account before "+
+        "opening it. ",show);
+      restoreQueue(); return;
+    }
     if(pending.consumerRequest){
       inflightRestored=true;
       try{
-        const epoch=MCP._loginEpoch;
+        const epoch=MCP._loginEpoch, scope=queueScope;
         const observed=await MCP.callTool("read_graph",{target:"conversation_turn",
           request_key:pending.consumerRequest.request_key},{idempotent:true});
-        if(epoch!==MCP._loginEpoch)return;
+        // A reply that lands after a sign-in or home change paints nothing.
+        if(epoch!==MCP._loginEpoch||scope!==queueScope)return;
         const turn=observed&&observed.consumer_turn;
         if(turn){
           if(!renderedConsumerFounders.has(turn.turn_id)){
