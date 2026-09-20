@@ -2168,6 +2168,11 @@
   // storage, so the build check's hold on a running turn never depends on
   // localStorage being writable.
   let turnStartedAt=0;
+  // Identity of the turn that currently owns the composer. A turn's cleanup may
+  // only hand the button, the status line and the voice session back if IT is
+  // still the one holding them; otherwise an old promise would reset a newer
+  // account's live turn.
+  let activeTurn=null;
   // A current choice is separate from saved defaults and actual reply receipts.
   // Null means no override; the server reads the current saved preference.
   let modelChoiceForNextTurn=null;
@@ -2800,6 +2805,7 @@
     // the founder is typing there stays (Codex round 3).
     const input=$("composer-input");
     if(!opts.keepComposer){ input.value=""; input.style.height="auto"; }
+    const myTurn={}; activeTurn=myTurn;
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
     let delivered=false;
@@ -2831,11 +2837,24 @@
         // Unsaved or unconfirmed: the local recovery record is still needed.
       }
     }finally{
-      $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
+      // Cleanup is a CHANGE TO THE SCREEN and obeys the same rule as the
+      // answer. Two separate questions: is this still MY composer (nothing
+      // newer took it), and is this still the same account and home?
+      const mine=activeTurn===myTurn;
+      if(mine){
+        activeTurn=null;
+        // Nothing newer holds the composer, so THIS turn is what wedged it -
+        // leaving it disabled would strand whoever is signed in now.
+        $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
+      }
       // Lines queued behind this turn belong to the account and home that
-      // queued them; they are not flushed into a different one.
-      if(stillHere()) flushSendQueue();
-      Voice.conversationSettled(delivered);
+      // queued them; they are not flushed into a different one. Neither the
+      // voice session nor a status line of the account now on screen is
+      // touched by a turn that outlived its own login or home.
+      if(stillHere()&&mine){
+        flushSendQueue();
+        Voice.conversationSettled(delivered);
+      }
     }
   }
 
@@ -2847,6 +2866,9 @@
     const opts=captureTurnOptions({inputMethod:"spoken"});
     appendMessage("founder",message);
     rememberInflight(message,message,undefined,"spoken",opts.modelChoice);
+    // A spoken turn takes the composer too, so a typed turn's late cleanup can
+    // see that it is no longer the one holding it.
+    activeTurn={};
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
     let delivered=false;
@@ -3773,7 +3795,10 @@
     const maxBytes=deps.maxBytes||UPLOAD_MAX_BYTES;
     const maxFiles=deps.maxFiles||UPLOAD_MAX_FILES;
     const items=[];
-    let seq=0, chain=Promise.resolve();
+    // `generation` retires every callback already queued on `chain`: abort,
+    // clear and sign-out bump it, so a promise scheduled under the OLD login
+    // finds itself stale instead of picking up the new one's scope.
+    let seq=0, generation=0, chain=Promise.resolve();
     function changed(){ if(typeof deps.onChange==="function") deps.onChange(); }
     function say(text){ if(typeof deps.notify==="function") deps.notify(text); }
     // One account AND one home. Everything this controller does is stamped
@@ -3785,6 +3810,44 @@
     }
     function sameScope(a,b){
       return !!a&&!!b&&a.epoch===b.epoch&&!!a.universeId&&a.universeId===b.universeId;
+    }
+    // The scope STAMPED AT SELECTION, compared with what is on screen NOW. A
+    // file chosen before this page had resolved its universe matches only the
+    // SAME login still waiting for that universe - never a different login.
+    function scopeHolds(item){
+      const here=scopeNow(), was=item.scope;
+      if(!was||was.epoch!==here.epoch) return false;
+      if(!was.universeId) return true;
+      return !!here.universeId&&was.universeId===here.universeId;
+    }
+    // Still attached to the selection it came from: not removed, and not
+    // retired by an abort/clear since.
+    function attached(item){
+      return item.gen===generation&&items.indexOf(item)>=0;
+    }
+    // The single question asked before every read, hash and request, and again
+    // after EVERY await: may this item still act for the account that chose it?
+    function ownsNow(item){ return attached(item)&&scopeHolds(item); }
+    function makeAborter(){
+      const Ctor=deps.AbortController||
+        (typeof AbortController==="function"?AbortController:null);
+      try{ return Ctor?new Ctor():null; }catch(_e){ return null; }
+    }
+    // A real transfer in flight is CANCELLED, not merely ignored: sign-out, a
+    // home change and removing the chip all stop the bytes leaving.
+    function cancel(item){
+      const aborter=item.aborter; item.aborter=null;
+      if(aborter&&typeof aborter.abort==="function"){ try{ aborter.abort(); }catch(_e){} }
+    }
+    // Resolve the universe ONLY for the narrow case where this page had not
+    // learned it when the file was chosen and the login has not changed since:
+    // the same session finishing its own load, never the next account arriving.
+    function resolveScope(item){
+      if(item.scope&&!item.scope.universeId&&scopeHolds(item)){
+        const here=scopeNow();
+        if(here.universeId) item.scope=here;
+      }
+      return item.scope;
     }
     function newLabel(){
       const raw=typeof deps.newLabel==="function"?String(deps.newLabel())
@@ -3838,6 +3901,8 @@
     function add(files){
       const list=Array.prototype.slice.call(files||[]);
       const queued=[];
+      // Stamped HERE, at selection - not when the queued work finally runs.
+      const selectedIn=scopeNow(), selectedGen=generation;
       for(const file of list){
         if(items.length>=maxFiles){
           say("Only "+maxFiles+" files can be attached at once; "+
@@ -3847,7 +3912,8 @@
         const item={id:"att-"+(++seq), file:file, name:String((file&&file.name)||"file"),
           size:Number(file&&file.size)||0, mediaType:mediaTypeOf(file),
           state:"pending", label:null, sha256:null, ref:null, text:null,
-          expiresAt:undefined, retentionSeconds:null, error:null, retryable:false, scope:null};
+          expiresAt:undefined, retentionSeconds:null, error:null, retryable:false,
+          scope:selectedIn, gen:selectedGen, aborter:null};
         items.push(item); queued.push(item);
       }
       changed();
@@ -3858,13 +3924,24 @@
     }
     async function step(item){
       if(item.state!=="pending") return;
+      // BEFORE the read: a callback queued behind a long file may be starting
+      // long after the founder signed out, switched home or removed this chip.
+      if(!attached(item)){ cancel(item); return; }
+      if(!scopeHolds(item)) return abortItem(item);
+      if(!item.file) return upload(item);
       if(isTextMedia(item.mediaType)&&item.size<=ATTACH_MAX_BYTES&&
          inlineTotal()+item.size<=ATTACH_TOTAL_MAX){
-        let text=null;
-        try{ text=await item.file.text(); }catch(_e){ text=null; }
+        let text=null, unreadable=false;
+        try{ text=await item.file.text(); }catch(_e){ text=null; unreadable=true; }
+        // AFTER the await: the login or home may have changed while this file
+        // was being read. Neither its bytes nor a notice about it lands in the
+        // next account's composer, and it does not fall through to upload()
+        // under that account's credentials either.
+        if(!attached(item)){ cancel(item); return; }
+        if(!scopeHolds(item)) return abortItem(item);
         // UNCHANGED: a readable, non-binary, small-enough file is embedded
         // VERBATIM in the message exactly as it always has been.
-        if(typeof text==="string"&&!looksBinary(text)&&
+        if(!unreadable&&typeof text==="string"&&!looksBinary(text)&&
            inlineTotal()+text.length<=ATTACH_TOTAL_MAX){
           item.text=text; item.state="inline"; changed(); return;
         }
@@ -3875,24 +3952,27 @@
     // reference is dropped from THIS composer and nothing is released: release
     // is an owner action needing the same login and home that uploaded it.
     function abortItem(item){
+      cancel(item);
       const idx=items.indexOf(item);
       if(idx>=0) items.splice(idx,1);
       changed();
     }
     async function upload(item){
+      // The FIRST thing, before any read, hash or header: this work belongs to
+      // the account that selected the file, or it does not happen at all.
+      if(!attached(item)){ cancel(item); return; }
+      if(!scopeHolds(item)) return abortItem(item);
       if(item.size>maxBytes){
         item.state="failed"; item.retryable=false;
         item.error="larger than "+fmtBytes(maxBytes)+", which this app cannot upload yet";
         changed(); return;
       }
-      const scope=scopeNow();
-      if(!scope.universeId){
+      const scope=resolveScope(item);
+      if(!scope||!scope.universeId){
         item.state="failed"; item.retryable=true;
         item.error="your universe is not connected yet — check it in a moment";
         changed(); return;
       }
-      if(item.scope&&!sameScope(item.scope,scope)) return abortItem(item);
-      item.scope=scope;
       // A retry keeps the ORIGINAL label and request. The server resolves a
       // committed same-label POST back to the original references, which is how
       // an uncertain outcome is OBSERVED instead of copied.
@@ -3903,12 +3983,19 @@
         changed(); return;
       }
       item.state="hashing"; item.error=null; item.retryable=false; changed();
-      try{ if(!item.sha256) item.sha256=await deps.sha256(item.file); }
-      catch(_e){
+      const aborter=makeAborter(); item.aborter=aborter;
+      let unreadable=false;
+      try{ if(!item.sha256) item.sha256=await deps.sha256(item.file,
+        aborter?{signal:aborter.signal}:undefined); }
+      catch(_e){ unreadable=true; }
+      // After the hash await, in BOTH directions: a read failure is a notice
+      // about a file the next account never attached, so it is dropped too.
+      if(!ownsNow(item)) return abortItem(item);
+      if(unreadable){
+        item.aborter=null;
         item.state="failed"; item.retryable=true; item.error="could not read this file";
         changed(); return;
       }
-      if(!sameScope(item.scope,scopeNow())) return abortItem(item);
       let header=null;
       try{
         header=uploadHeaderValue({version:1, label:item.label,
@@ -3920,14 +4007,18 @@
         item.error="its name or type is too long to attach";
         changed(); return;
       }
+      // LAST CHECK before any byte leaves the browser.
+      if(!ownsNow(item)) return abortItem(item);
       item.state="uploading"; changed();
       let payload=null, failure=null;
       try{ payload=await deps.upload({header:header, file:item.file, label:item.label,
-        mediaType:item.mediaType, size:item.size, sha256:item.sha256}); }
+        mediaType:item.mediaType, size:item.size, sha256:item.sha256,
+        signal:aborter?aborter.signal:undefined}); }
       catch(err){ failure=err||new Error("upload failed"); }
+      item.aborter=null;
       // LATE-RESPONSE GUARD: the answer may land after a sign-out or a switch
       // to another account or home. Nothing is painted into that composer.
-      if(!sameScope(item.scope,scopeNow())) return abortItem(item);
+      if(!ownsNow(item)) return abortItem(item);
       return failure?failed(item,failure):adopt(item,payload);
     }
     function failed(item,err){
@@ -3990,13 +4081,20 @@
     async function remove(id){
       const item=items.find(i=>i.id===id);
       if(!item) return;
-      items.splice(items.indexOf(item),1); changed();
+      items.splice(items.indexOf(item),1);
+      // A removed chip's transfer is CANCELLED, not left to finish invisibly.
+      cancel(item); changed();
       if(!item.ref||typeof deps.release!=="function") return;
       // Releasing needs the SAME current login and home that uploaded it.
       // Otherwise the reference is simply dropped from this composer.
-      if(!sameScope(item.scope,scopeNow())) return;
-      try{ await deps.release({graph_id:item.scope.universeId, file_id:item.ref.file_id}); }
+      const releasedIn=item.scope;
+      if(!sameScope(releasedIn,scopeNow())) return;
+      try{ await deps.release({graph_id:releasedIn.universeId, file_id:item.ref.file_id}); }
       catch(err){
+        // A refusal landing after the login or home changed belongs to a
+        // composer no longer on screen: it never names the old file to whoever
+        // is signed in now.
+        if(!sameScope(releasedIn,scopeNow())) return;
         // An active binding refuses, and the refusal is SHOWN, never overridden.
         say("“"+item.name+"” was removed from this message but not deleted: "+
           ((err&&err.message)||"it is in use by a run")+".");
@@ -4044,9 +4142,12 @@
       count:()=>items.length,
       // The message now carries the references: clearing the composer neither
       // releases them nor re-uploads anything.
-      clear(){ items.length=0; changed(); },
-      // Sign-out or a home change: drop everything without releasing.
-      abort(){ items.length=0; chain=Promise.resolve(); changed(); }};
+      clear(){ generation++; items.forEach(cancel); items.length=0; changed(); },
+      // Sign-out or a home change: drop everything without releasing, stop any
+      // transfer already on the wire, and retire every callback still queued on
+      // `chain` so none of them wakes up holding the NEXT login's scope.
+      abort(){ generation++; items.forEach(cancel); items.length=0;
+        chain=Promise.resolve(); changed(); }};
   }
   async function hashFile(file){
     const digest=await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
@@ -4898,24 +4999,17 @@
     }
     if(!pending.scope){
       // Written before this page recorded its universe, so it may belong to
-      // another account signed in on this browser. It is never reoffered
-      // silently: the founder asks for it, and only then is it adopted here.
+      // another account signed in on this browser. CLICKING A BUTTON DOES NOT
+      // PROVE OWNERSHIP: a confirmation only says someone is here, never that
+      // this login is the one that saved it. So nothing about it is disclosed
+      // - not its text, not a filename it names, not its request key - and it
+      // is neither observed nor replayed. It is KEPT on disk, unchanged, for a
+      // page that can prove it; this one says only that something is held.
       inflightRestored = true;
-      const epochAtOffer=MCP._loginEpoch, scopeAtOffer=queueScope;
-      const show=document.createElement("button");
-      show.className="btn btn--link"; show.textContent="Show it";
-      show.addEventListener("click",()=>{
-        note.remove();
-        if(epochAtOffer!==MCP._loginEpoch || scopeAtOffer!==queueScope) return;
-        if(!readInflight()) return;
-        rememberInflight(pending.message, pending.display, pending.ts,
-          pending.inputMethod, pending.modelChoice, pending.consumerRequest||null);
-        inflightRestored = false;
-        restoreInflight(turns);
-      });
-      const note=appendMessage("system","An unconfirmed message saved before this page "+
-        "recorded its universe is held. Check it belongs to this account before "+
-        "opening it. ",show);
+      appendMessage("system","An unconfirmed message saved on this browser before "+
+        "the page had recorded its universe is being kept, but it cannot be shown "+
+        "here: this page cannot tell which account saved it. Send your message "+
+        "again if you still need it.");
       restoreQueue(); return;
     }
     if(pending.consumerRequest){

@@ -2114,17 +2114,20 @@ def test_a_held_message_from_another_universe_is_never_shown_here(tmp_path):
     assert out["inflight"]["scope"] == "u-other"
 
 
-def test_a_held_message_with_no_recorded_universe_is_not_reoffered_silently(tmp_path):
+def test_a_held_message_with_no_recorded_universe_is_never_disclosed(tmp_path):
     """A record written before the page recorded its universe may belong to
-    another account signed in on this browser: it is held, named only as
-    existing, and opened on an explicit click."""
+    another account signed in on this browser. CLICKING A BUTTON DOES NOT PROVE
+    OWNERSHIP - it only says someone is here - so there is no button: the
+    record is named as existing, never shown, observed or replayed, and it is
+    KEPT on disk for a page that can prove it (root review, 2026-09-20)."""
     out = _run_app(tmp_path, {"kind": "restore", "pending": "the secret plan",
                               "pendingScope": None, "universe": "u-1", "history": []})
     assert [m["role"] for m in out["messages"]] == []
     assert "the secret plan" not in json.dumps(out["notes"])
     offer = out["notes"][0]
     assert "recorded its universe" in offer["text"]
-    assert offer["buttons"] == ["Show it"]
+    assert offer["buttons"] == [], "no click can establish ownership of it"
+    # held, not erased: the founder who can prove it still has it
     assert out["inflight"]["message"] == "the secret plan"
 
 

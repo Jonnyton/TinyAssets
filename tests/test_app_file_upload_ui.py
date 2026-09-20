@@ -8,10 +8,13 @@ the shipped code, not by reading it.
 """
 from __future__ import annotations
 
+import io
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 
 import pytest
 
@@ -19,6 +22,21 @@ _NODE = shutil.which("node")
 
 _LIFT = ("fmtBytes", "looksBinary", "isTextMedia", "uploadHeaderValue",
          "createUploadController")
+
+
+def _run_node(script: str):
+    """The script is a FILE, not argv: Windows caps a command line at 32 KiB and
+    the lifted app source passed it. Written outside the repo - a temp root
+    inside it is refused by conftest, for good reason."""
+    with tempfile.TemporaryDirectory(prefix="ta-ui-upload-") as box:
+        path = os.path.join(box, "harness.cjs")
+        with io.open(path, "w", encoding="utf-8") as fh:
+            fh.write(script)
+        run = subprocess.run([_NODE, path], capture_output=True, text=True,
+                             encoding="utf-8", timeout=120, check=False)
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout)
+
 
 
 def _function_source(html: str, name: str) -> str:
@@ -281,6 +299,135 @@ test("composed", async ()=>{
   return {send:turn.send, display:turn.display};
 });
 
+
+// ---- account isolation ---------------------------------------------------
+// A file is stamped with the account AND home that SELECTED it. Everything
+// below asks the same question: can a promise queued under one login wake up
+// and act for the next one?
+
+// 12. THE REPRODUCED BLOCKER. A queued file, abort, then another account: the
+// callback already on the chain must not acquire the new scope and upload
+// owner A's bytes with owner B's expected universe and credentials.
+test("queued_before_start", async ()=>{
+  const h = build((n,req)=>ok(req));
+  h.state.scope={epoch:1, universeId:"owner-A-home"};
+  const queued = h.ctrl.add([
+    fakeFile("owner-A-private.bin","application/octet-stream",Buffer.from([1,2,3])),
+    fakeFile("owner-A-second.bin","application/octet-stream",Buffer.from([4,5,6]))]);
+  h.ctrl.abort();                       // sign-out: the chain is retired
+  h.state.scope={epoch:2, universeId:"owner-B-home"};
+  await queued;
+  await new Promise(r=>setTimeout(r,5));
+  return {posts:h.state.posts.map(p=>p.meta), chips:h.ctrl.chips().length,
+          releases:h.state.releases.length};
+});
+
+// 13. the same hazard on the OTHER path: a small text file is read first, and
+// only falls back to upload when the read is unusable. The home changes during
+// that read.
+test("pending_text_fallback", async ()=>{
+  const h = build((n,req)=>ok(req));
+  const slowText = {name:"owner-A-notes.txt", type:"text/plain", size:5,
+    _bytes: Buffer.from("hello"),
+    async text(){ await new Promise(r=>setTimeout(r,2));
+                  h.state.scope={epoch:1, universeId:"owner-B-home"};
+                  return "\u0000\u0000binary-ish\u0000"; },
+    async arrayBuffer(){ return Buffer.from("hello"); }};
+  await h.ctrl.add([slowText]);
+  await new Promise(r=>setTimeout(r,5));
+  const turn = h.ctrl.buildTurn("new home, new message");
+  return {posts:h.state.posts.length, chips:h.ctrl.chips().length,
+          send:turn.send, blocked:!!turn.blocked};
+});
+
+// 14. removed before its turn on the chain ever starts.
+test("removed_before_start", async ()=>{
+  const h = build((n,req)=>ok(req));
+  const queued = h.ctrl.add([
+    fakeFile("first.bin","application/octet-stream",Buffer.from([1])),
+    fakeFile("dropped.bin","application/octet-stream",Buffer.from([2]))]);
+  const second = h.ctrl.chips()[1];
+  await h.ctrl.remove(second.id);       // still "pending", nothing started
+  await queued;
+  await new Promise(r=>setTimeout(r,5));
+  return {posts:h.state.posts.map(p=>p.meta.filename),
+          chips:h.ctrl.chips().map(c=>c.name), releases:h.state.releases.length};
+});
+
+// 15. removed WHILE it is being hashed: the hash finishes, and lands nowhere.
+test("removed_during_hash", async ()=>{
+  const h = build((n,req)=>ok(req), {
+    sha256: async (file, opts)=>{
+      h.state.hashSignal = opts && opts.signal ? true : false;
+      const id = h.ctrl.chips()[0].id;
+      await new Promise(r=>setTimeout(r,2));
+      await h.ctrl.remove(id);
+      return digestOf(file);
+    }});
+  await h.ctrl.add([fakeFile("mid-hash.bin","application/octet-stream",Buffer.from([7]))]);
+  await new Promise(r=>setTimeout(r,5));
+  return {posts:h.state.posts.length, chips:h.ctrl.chips().length,
+          hashGotSignal:h.state.hashSignal===true, releases:h.state.releases.length};
+});
+
+// 16. a REAL transfer in flight is cancelled on sign-out, not merely ignored.
+test("active_fetch_abort", async ()=>{
+  const h = build((n,req)=>ok(req), {
+    upload: async (req)=>{
+      h.state.posts.push({header:req.header, meta:decodeHeader(req.header),
+                          label:req.label, name:req.file.name});
+      h.state.sawSignal = !!req.signal;
+      const aborted = new Promise((_res,rej)=>{
+        if(!req.signal) return;
+        req.signal.addEventListener("abort",()=>{
+          h.state.aborted = true; rej(new Error("aborted")); });
+      });
+      h.ctrl.abort();                   // sign-out mid-transfer
+      h.state.scope={epoch:2, universeId:"owner-B-home"};
+      return Promise.race([aborted, new Promise(r=>setTimeout(()=>r(ok(req)),20))]);
+    }});
+  await h.ctrl.add([fakeFile("streaming.bin","application/octet-stream",Buffer.from([8,8]))]);
+  await new Promise(r=>setTimeout(r,30));
+  const turn = h.ctrl.buildTurn("owner B types");
+  return {sawSignal:h.state.sawSignal===true, aborted:h.state.aborted===true,
+          chips:h.ctrl.chips().length, send:turn.send,
+          expected:h.state.posts.map(p=>p.meta.expected_universe_id)};
+});
+
+// 17. a release refusal that lands after the home changed names nothing.
+test("late_release_error", async ()=>{
+  const h = build((n,req)=>ok(req), {
+    release: async (args)=>{ h.state.releases.push(args);
+      await new Promise(r=>setTimeout(r,2));
+      h.state.scope={epoch:1, universeId:"owner-B-home"};
+      throw new Error("run_file_in_use"); }});
+  await h.ctrl.add([fakeFile("owner-A-report.pdf","application/pdf",Buffer.from([1,2]))]);
+  await h.ctrl.remove(h.ctrl.chips()[0].id);
+  await new Promise(r=>setTimeout(r,5));
+  return {releases:h.state.releases.length, notices:h.state.notices};
+});
+
+// 18. a file selected before this page knew its universe is NOT upgraded to
+// whatever universe arrives next; the same login finishing its own load is.
+test("unresolved_universe", async ()=>{
+  const h = build((n,req)=>ok(req));
+  h.state.scope={epoch:1, universeId:""};
+  await h.ctrl.add([fakeFile("early.bin","application/octet-stream",Buffer.from([3]))]);
+  const waiting = h.ctrl.chips()[0];
+  h.state.scope={epoch:2, universeId:"owner-B-home"};     // a DIFFERENT login
+  await h.ctrl.retry(waiting.id);
+  const afterOther = {posts:h.state.posts.length, chips:h.ctrl.chips().length};
+  const same = build((n,req)=>ok(req));
+  same.state.scope={epoch:1, universeId:""};
+  await same.ctrl.add([fakeFile("early.bin","application/octet-stream",Buffer.from([3]))]);
+  same.state.scope={epoch:1, universeId:"uni-A"};          // the SAME login
+  await same.ctrl.retry(same.ctrl.chips()[0].id);
+  return {waitingState:waiting.state, waitingText:waiting.text,
+          afterOther:afterOther,
+          sameLogin:{posts:same.state.posts.map(p=>p.meta.expected_universe_id),
+                     state:same.ctrl.chips()[0].state}};
+});
+
 (async ()=>{
   for(const [name, fn] of T){ R[name] = await fn(); }
   process.stdout.write(JSON.stringify(R));
@@ -293,11 +440,7 @@ def results():
     if _NODE is None:
         pytest.skip("node is not installed")
     script = _HARNESS % {"app": _extract()}
-    run = subprocess.run([_NODE, "--input-type=commonjs", "-e", script],
-                         capture_output=True, text=True, encoding="utf-8",
-                         timeout=120, check=False)
-    assert run.returncode == 0, run.stderr
-    return json.loads(run.stdout)
+    return _run_node(script)
 
 
 def test_small_text_is_still_inline_and_verbatim(results):
@@ -478,3 +621,171 @@ def test_a_composed_turn_queued_behind_another_keeps_its_exact_string(results, t
     assert [q["message"] for q in out["savedWhileQueued"]] == [composed]
     assert out["converseCalls"] == ["first", composed]
     assert out["queueLeft"] == 0 and out["savedAfter"] is None
+
+
+def test_a_queued_file_never_acquires_the_next_accounts_authority(results):
+    """The reproduced P1, as an executable regression: owner A's queued bytes
+    after abort + sign-in as owner B. Zero outgoing requests, and above all no
+    request carrying owner A's filename under owner B's universe."""
+    out = results["queued_before_start"]
+    assert out["posts"] == [], "a queued owner-A file was sent after abort"
+    names = [p.get("filename") for p in out["posts"]]
+    assert "owner-A-private.bin" not in names
+    assert [p.get("expected_universe_id") for p in out["posts"]] == []
+    assert out["chips"] == 0 and out["releases"] == 0
+
+
+def test_a_pending_text_read_does_not_fall_through_to_the_new_home(results):
+    out = results["pending_text_fallback"]
+    assert out["posts"] == 0, "the unusable text read must not upload under the new home"
+    assert out["chips"] == 0
+    assert out["send"] == "new home, new message" and out["blocked"] is False
+
+
+def test_a_removed_file_is_not_uploaded_when_its_turn_arrives(results):
+    out = results["removed_before_start"]
+    assert out["posts"] == ["first.bin"], out["posts"]
+    assert out["chips"] == ["first.bin"]
+    assert out["releases"] == 0, "nothing was uploaded, so nothing to release"
+
+
+def test_a_file_removed_during_its_hash_lands_nowhere(results):
+    out = results["removed_during_hash"]
+    assert out["hashGotSignal"] is True, "the hash is given something to cancel on"
+    assert out["posts"] == 0, "a removed file is never uploaded after its hash"
+    assert out["chips"] == 0 and out["releases"] == 0
+
+
+def test_a_transfer_in_flight_is_cancelled_on_sign_out(results):
+    out = results["active_fetch_abort"]
+    assert out["sawSignal"] is True, "the request carries an abort signal"
+    assert out["aborted"] is True, "sign-out actually aborts the transfer"
+    assert out["chips"] == 0
+    assert out["send"] == "owner B types" and "file_id" not in (out["send"] or "")
+    assert out["expected"] == ["uni-A"], "the request that did go out was the old scope's"
+
+
+def test_a_late_release_refusal_never_names_the_old_file(results):
+    out = results["late_release_error"]
+    assert out["releases"] == 1, "release still goes out under the owning scope"
+    assert out["notices"] == [], "its refusal must not name owner A's file to the next home"
+
+
+def test_an_unresolved_universe_is_never_upgraded_to_a_different_login(results):
+    out = results["unresolved_universe"]
+    assert out["waitingState"] == "failed"
+    assert "not connected yet" in out["waitingText"]
+    assert out["afterOther"]["posts"] == 0, "a new login never adopts the old selection"
+    assert out["afterOther"]["chips"] == 0
+    # the SAME login finishing its own load is the one case that may proceed
+    assert out["sameLogin"]["posts"] == ["uni-A"]
+    assert out["sameLogin"]["state"] == "ready"
+
+
+# --- the shell's own stale-turn guards, also EXECUTED -----------------------
+
+_TURN_LIFT = ("sendTurn",)
+
+_TURN_HARNESS = r"""
+// A minimal stand-in for the page around sendTurn: enough DOM and enough of
+// the app's own state that the SHIPPED function runs unmodified.
+const el = {"btn-send":{disabled:false}, "composer-input":{value:"", style:{}}};
+function $(id){ return el[id] || (el[id]={value:"", style:{}, disabled:false}); }
+const log = [];
+let turnStartedAt = 0;
+let activeTurn = null;
+let queueScope = "uni-A";
+const MCP = {_loginEpoch: 1};
+const Voice = {conversationSettled:(d)=>log.push({voice:!!d})};
+function captureTurnOptions(o){ return Object.assign({modelChoice:null}, o||{}); }
+function queueTurn(){ log.push({queued:true}); }
+function appendMessage(role,text){ log.push({append:role, text:text}); return {remove(){}}; }
+function appendFailureNotice(msg){ log.push({failure:msg}); }
+function offerResend(){ log.push({resend:true}); }
+function rememberInflight(){ log.push({remember:true}); }
+function forgetInflight(){ log.push({forget:true}); }
+function setStatusLine(text){ log.push({status:text}); }
+function renderConverse(a){ log.push({rendered:a&&a.reply}); }
+function sessionExpired(){ log.push({expired:true}); }
+function flushSendQueue(){ log.push({flushed:true}); }
+let sendImpl = async ()=>({reply:"ok"});
+async function sendConversationRequest(){ return sendImpl(); }
+
+%(app)s
+
+const R = {};
+async function scenario(name, fn){
+  log.length = 0;
+  el["btn-send"].disabled = false; turnStartedAt = 0; activeTurn = null;
+  MCP._loginEpoch = 1; queueScope = "uni-A";
+  await fn();
+  R[name] = {log: log.slice(), disabled: el["btn-send"].disabled,
+             turnStartedAt: turnStartedAt, composer: el["composer-input"].value};
+}
+(async ()=>{
+  // A. the ordinary turn still cleans up after itself, exactly as before.
+  await scenario("same_account", async ()=>{
+    sendImpl = async ()=>({reply:"hello"});
+    await sendTurn("hi","hi",{});
+  });
+  // B. the account changes while the turn is in flight, and NOTHING newer took
+  // the composer: the answer paints nothing, the voice session of the account
+  // now on screen is not settled, the queue of the old account is not flushed,
+  // and the button is handed back rather than left wedged.
+  await scenario("login_changed", async ()=>{
+    sendImpl = async ()=>{ MCP._loginEpoch = 2; return {reply:"owner A answer"}; };
+    await sendTurn("owner A message","owner A message",{});
+  });
+  // C. the home changes AND a newer turn has taken the composer: the old turn
+  // touches nothing at all - it must not re-enable a button the live turn
+  // disabled, clear its status line, or settle its voice session.
+  await scenario("newer_turn_owns_composer", async ()=>{
+    sendImpl = async ()=>{ queueScope = "uni-B"; activeTurn = {};
+      el["btn-send"].disabled = true; turnStartedAt = 999; return {reply:"late"}; };
+    await sendTurn("owner A message","owner A message",{});
+  });
+  process.stdout.write(JSON.stringify(R));
+})().catch(err=>{ process.stderr.write(String(err && err.stack || err)); process.exit(3); });
+"""
+
+
+@pytest.fixture(scope="module")
+def turn_results():
+    if _NODE is None:
+        pytest.skip("node is not installed")
+    html = _app_html()
+    script = _TURN_HARNESS % {
+        "app": "\n".join(_function_source(html, n) for n in _TURN_LIFT)}
+    return _run_node(script)
+
+
+def _kinds(entries, key):
+    return [e[key] for e in entries if key in e]
+
+
+def test_a_settled_turn_still_hands_the_composer_back(turn_results):
+    """The guards must not break the ordinary path."""
+    out = turn_results["same_account"]
+    assert out["disabled"] is False and out["turnStartedAt"] == 0
+    assert _kinds(out["log"], "rendered") == ["hello"]
+    assert _kinds(out["log"], "flushed") == [True]
+    assert _kinds(out["log"], "voice") == [True]
+
+
+def test_a_turn_that_outlived_its_login_settles_nothing_of_the_new_one(turn_results):
+    out = turn_results["login_changed"]
+    assert _kinds(out["log"], "rendered") == [], "a late answer paints nothing"
+    assert _kinds(out["log"], "voice") == [], "the new account's voice session is not settled"
+    assert _kinds(out["log"], "flushed") == [], "the old account's queue is not flushed here"
+    # nothing newer holds the composer, so this turn releases what IT wedged
+    assert out["disabled"] is False and out["turnStartedAt"] == 0
+
+
+def test_a_stale_turn_never_resets_a_live_turn(turn_results):
+    out = turn_results["newer_turn_owns_composer"]
+    assert out["disabled"] is True, "the live turn's button stays disabled"
+    assert out["turnStartedAt"] == 999, "the live turn's clock is untouched"
+    assert _kinds(out["log"], "rendered") == []
+    assert _kinds(out["log"], "voice") == []
+    assert _kinds(out["log"], "flushed") == []
+    assert out["log"][-1].get("status") != "", "the live turn's status line survives"
