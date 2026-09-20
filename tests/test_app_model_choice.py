@@ -57,7 +57,11 @@ def test_restored_inflight_keeps_its_choice_or_legacy_no_override(tmp_path, save
 
 @pytest.mark.parametrize("saved", [None, choice("original")])
 def test_restored_queue_keeps_its_choice_or_legacy_no_override(tmp_path, saved):
-    item = {"message": "hello", "display": "hello", "ts": 123, "scope": "u-1"}
+    # Both halves of the saved-row fence, as the harness signs them in:
+    # principal "p-1" in home "u-1". A row missing either is KEPT and never
+    # offered - test_onboarding_app.py owns that negative boundary.
+    item = {"message": "hello", "display": "hello", "ts": 123,
+            "owner": "p-1", "scope": "u-1"}
     if saved is not None:
         item["modelChoice"] = saved
     result = _run_app(tmp_path, {
@@ -68,7 +72,8 @@ def test_restored_queue_keeps_its_choice_or_legacy_no_override(tmp_path, saved):
 
 
 def test_same_text_and_timestamp_with_different_choices_remain_distinct(tmp_path):
-    first = {"message": "hello", "ts": 123, "scope": "u-1", "modelChoice": choice("first")}
+    first = {"message": "hello", "ts": 123, "owner": "p-1", "scope": "u-1",
+             "modelChoice": choice("first")}
     second = {**first, "modelChoice": choice("second")}
     result = _run_app(tmp_path, {
         "kind": "restore", "queued": [first, second], "history": [],
