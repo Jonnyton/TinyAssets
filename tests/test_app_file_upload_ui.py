@@ -428,6 +428,24 @@ test("unresolved_universe", async ()=>{
                      state:same.ctrl.chips()[0].state}};
 });
 
+// 19. the read SUCCEEDS while the home changes. Nothing reaches upload() on
+// this path, so step()'s own post-await guard is the only thing standing
+// between owner A's file content and owner B's composer.
+test("text_inline_after_switch", async ()=>{
+  const h = build((n,req)=>ok(req));
+  const slowText = {name:"owner-A-salaries.txt", type:"text/plain", size:22,
+    _bytes: Buffer.from("BOARD ONLY: pay bands"),
+    async text(){ await new Promise(r=>setTimeout(r,2));
+                  h.state.scope={epoch:1, universeId:"owner-B-home"};
+                  return "BOARD ONLY: pay bands"; },
+    async arrayBuffer(){ return Buffer.from("BOARD ONLY: pay bands"); }};
+  await h.ctrl.add([slowText]);
+  await new Promise(r=>setTimeout(r,5));
+  const turn = h.ctrl.buildTurn("owner B types");
+  return {posts:h.state.posts.length, chips:h.ctrl.chips().length,
+          send:turn.send, display:turn.display, blocked:!!turn.blocked};
+});
+
 (async ()=>{
   for(const [name, fn] of T){ R[name] = await fn(); }
   process.stdout.write(JSON.stringify(R));
@@ -640,6 +658,17 @@ def test_a_pending_text_read_does_not_fall_through_to_the_new_home(results):
     assert out["posts"] == 0, "the unusable text read must not upload under the new home"
     assert out["chips"] == 0
     assert out["send"] == "new home, new message" and out["blocked"] is False
+
+
+def test_a_text_read_that_lands_after_a_home_change_is_never_inlined(results):
+    """The inline branch never reaches upload(), so its own post-await check is
+    the only guard: owner A's file CONTENT must not appear in owner B's turn."""
+    out = results["text_inline_after_switch"]
+    assert out["chips"] == 0, "the attachment belongs to the home that chose it"
+    assert "BOARD ONLY" not in (out["send"] or ""), out["send"]
+    assert "owner-A-salaries.txt" not in (out["display"] or "")
+    assert out["send"] == "owner B types" and out["blocked"] is False
+    assert out["posts"] == 0, "and it is not uploaded under the new home either"
 
 
 def test_a_removed_file_is_not_uploaded_when_its_turn_arrives(results):
