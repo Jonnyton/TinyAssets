@@ -1625,6 +1625,7 @@ _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
     "dispatch.enqueue": ("dispatch", "enqueue"),
     # Native delivery reuses explicit link authority; no arbitrary graph writes.
     "deliver_output": ("delivery", "deliver_output"),
+    "read_run_file": ("run_files", "read_run_file"),
 }
 
 
@@ -1909,6 +1910,8 @@ def _build_node_mcp_invoker(
     enqueue_context: "NodeEnqueueContext | None" = None,
     enqueue_budget: "NodeEnqueueBudget | None" = None,
     delivery_source: Any = None,
+    file_source: Any = None,
+    file_inputs: dict[str, Any] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> Callable[..., dict[str, Any]]:
     allowed = set(node.tools_allowed or [])
@@ -1951,6 +1954,17 @@ def _build_node_mcp_invoker(
                 )
 
         tool_name, action = resolved
+        if tool_name == "run_files":
+            from tinyassets.run_file_node import read_node_file
+
+            if set(kwargs) != {"file_id", "offset", "count"}:
+                raise CompilerError("file_read_parameters")
+            if base_path is None:
+                raise CompilerError("file_node_authority_unavailable")
+            return read_node_file(
+                base_path, source=file_source, incoming=file_inputs,
+                should_cancel=should_cancel or (lambda: False), **kwargs,
+            )
         if tool_name == "delivery":
             from tinyassets.api.deliveries import deliver_node_output
 
@@ -2038,6 +2052,7 @@ def _build_source_code_node(
     should_cancel: Callable[[], bool] | None = None,
     execution_context: "BranchExecutionContext | None" = None,
     delivery_source: Any = None,
+    file_source: Any = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that runs the node's ``source_code`` in the OS
     sandbox (``tinyassets.node_sandbox``, design D2): a child process that
@@ -2053,12 +2068,6 @@ def _build_source_code_node(
     # parent: the child asks over its pipes, the parent answers with the run's
     # authority through this invoker (node-enqueue, wiki_read, ...). The
     # child never holds the invoker or any credential.
-    invoke_mcp_action = _build_node_mcp_invoker(
-        node, event_sink=event_sink, invocation_depth=invocation_depth,
-        base_path=base_path, enqueue_context=enqueue_context,
-        enqueue_budget=enqueue_budget,
-        delivery_source=delivery_source, should_cancel=should_cancel,
-    )
     provenance = "own"
     if execution_context is not None:
         provenance = getattr(execution_context, "caller_provenance", "own") or "own"
@@ -2131,6 +2140,22 @@ def _build_source_code_node(
             concurrency_tracker.acquire()
         try:
             visible = input_keys + defaulted if strict_inputs else list(dict(state).keys())
+            # Freeze only declared incoming file fields per invocation. Neither
+            # mutable output state nor the sandbox's RPC kwargs can grant input
+            # authority. In particular whole-state/default escape paths do not.
+            import copy
+
+            file_inputs = copy.deepcopy({
+                field.name: state[field.name] for field in getattr(file_source, "fields", ())
+                if field.name in state
+            })
+            invoke_mcp_action = _build_node_mcp_invoker(
+                node, event_sink=event_sink, invocation_depth=invocation_depth,
+                base_path=base_path, enqueue_context=enqueue_context,
+                enqueue_budget=enqueue_budget, delivery_source=delivery_source,
+                file_source=file_source, file_inputs=file_inputs,
+                should_cancel=should_cancel,
+            )
             # The sandbox answers RPCs from a drain THREAD, which carries no
             # ContextVars: without this, an RPC resolved the daemon's env
             # identity instead of the run's authenticated actor (Codex round 2,
@@ -3423,6 +3448,7 @@ def _build_node(
     should_cancel: Callable[[], bool] | None = None,
     graph_node_id: str = "",
     delivery_source: Any = None,
+    file_source: Any = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build the node function for ``node``: the inner adapter, then the
     single-merge-writer guard (when ``merge_fields`` is given), then the
@@ -3457,6 +3483,7 @@ def _build_node(
         universe_context=universe_context,
         execution_context=execution_context,
         delivery_source=delivery_source,
+        file_source=file_source,
         on_node_status=on_node_status,
         effect_chain=effect_chain,
         ancestors=ancestors,
@@ -3508,6 +3535,7 @@ def _build_node_inner(
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
     delivery_source: Any = None,
+    file_source: Any = None,
     on_node_status: Callable[[str, str], None] | None = None,
     effect_chain: Any = None,
     should_cancel: Callable[[], bool] | None = None,
@@ -3544,6 +3572,7 @@ def _build_node_inner(
             effect_chain=effect_chain, state_schema=state_schema,
             ancestors=ancestors, execution_context=execution_context,
             delivery_source=delivery_source,
+            file_source=file_source,
             should_cancel=should_cancel,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
@@ -3821,6 +3850,12 @@ def compile_branch(
 
     node_ids_in_order = [gn.id for gn in branch.graph_nodes]
     ancestors_by_gid = _graph_ancestors(branch) if effect_chain is not None else {}
+    from tinyassets.run_file_binding import file_declarations
+
+    declared_files = {
+        declaration.name: declaration
+        for declaration in file_declarations(branch).inputs if declaration.is_file
+    }
 
     # Add graph nodes to the StateGraph. Each graph_node points at a
     # node_def via ``node_def_id`` (usually the same as ``id``).
@@ -3837,14 +3872,24 @@ def compile_branch(
             branch, "default_llm_policy", None,
         )
         delivery_source = None
+        file_source = None
         if execution_context is not None:
             from tinyassets.api.deliveries import NodeDeliverySource
+            from tinyassets.run_file_node import NodeFileSource
 
             delivery_source = NodeDeliverySource(
                 owner_user_id=execution_context.owner_user_id,
                 universe_id=execution_context.universe_id, actor=execution_context.actor,
                 run_id=parent_run_id, branch_def_id=branch.branch_def_id,
                 node_id=gn.id, output_keys=tuple(node_def.output_keys),
+            )
+            file_source = NodeFileSource(
+                owner_user_id=execution_context.owner_user_id,
+                universe_id=execution_context.universe_id, actor=execution_context.actor,
+                run_id=parent_run_id, branch_def_id=branch.branch_def_id,
+                node_id=gn.id,
+                fields=tuple(declared_files[name] for name in node_def.input_keys
+                             if name in declared_files),
             )
         fn = _build_node(
             node_def,
@@ -3867,6 +3912,7 @@ def compile_branch(
             merge_fields=merge_fields,
             graph_node_id=gn.id,
             delivery_source=delivery_source,
+            file_source=file_source,
             should_cancel=should_cancel,
         )
         graph.add_node(gn.id, fn)

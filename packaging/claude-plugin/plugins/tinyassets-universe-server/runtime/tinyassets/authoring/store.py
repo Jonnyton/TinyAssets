@@ -176,12 +176,14 @@ class AuthoringStore:
             conn.executescript(_SCHEMA)
         return self.path
 
-    def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+    def _connect(self, *, timeout: float = 30.0, existing: bool = False) -> sqlite3.Connection:
+        if not existing:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        target = self.path.resolve().as_uri() + "?mode=rw" if existing else self.path
+        conn = sqlite3.connect(target, timeout=timeout, isolation_level=None, uri=existing)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute(f"PRAGMA busy_timeout = {max(1, int(timeout * 1000))}")
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
@@ -687,6 +689,10 @@ class AuthoringStore:
                 "SELECT * FROM authoring_file_handles WHERE handle_id = ? AND owner_id = ?",
                 (handle_id, actor_id),
             ).fetchone()
+        return self._file_handle_metadata(row, session_id=session_id, moment=moment)
+
+    @staticmethod
+    def _file_handle_metadata(row, *, session_id, moment):
         if row is None:
             raise access_denied()
         if session_id and row["session_id"] != session_id:
@@ -706,6 +712,73 @@ class AuthoringStore:
             "sha256": row["sha256"],
             "expires_at": float(row["expires_at"]),
         }
+
+    @contextlib.contextmanager
+    def file_handle_commit_fence(
+        self, *, handle_id: str, actor_id: str, session_id: str, timeout_seconds: float = 2.0,
+    ):
+        """Short metadata-only source authority fence; no filesystem IO inside.
+
+        Caller holds operation exclusion and canonical author/tombstone fence
+        first, then this source-store fence, then the destination runs writer.
+        Existing authoring writers touch only this store; never acquire the
+        canonical author/runs writer from inside another authoring operation.
+        """
+        if (type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 5
+                or not actor_id or not session_id or not handle_id):
+            raise ValueError("invalid authoring source fence")
+        conn = self._connect(timeout=timeout_seconds, existing=True)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT h.* FROM authoring_file_handles h JOIN authoring_sessions s "
+                "ON s.session_id=h.session_id AND s.owner_id=h.owner_id "
+                "WHERE h.handle_id=? AND h.owner_id=? AND h.session_id=?",
+                (handle_id, actor_id, session_id),
+            ).fetchone()
+            yield self._file_handle_metadata(row, session_id=session_id, moment=self.now())
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    @contextlib.contextmanager
+    def file_handles_commit_fence(self, *, sources, actor_id, timeout_seconds=2.0):
+        """One source-store fence for a bundle, never nested writers per handle.
+
+        Input is trusted service metadata, not an authority token. No byte IO
+        inside; canonical author fence precedes this, runs binding follows it.
+        """
+        if (type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 5
+                or type(actor_id) is not str or not actor_id
+                or not isinstance(sources, list) or not sources):
+            raise ValueError("invalid authoring source bundle fence")
+        conn = self._connect(timeout=timeout_seconds, existing=True)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            result = []
+            for source in sources:
+                session_id, handle_id = source["session_id"], source["handle_id"]
+                row = conn.execute(
+                    "SELECT h.* FROM authoring_file_handles h JOIN authoring_sessions s "
+                    "ON s.session_id=h.session_id AND s.owner_id=h.owner_id "
+                    "WHERE h.handle_id=? AND h.owner_id=? AND h.session_id=?",
+                    (handle_id, actor_id, session_id),
+                ).fetchone()
+                result.append(self._file_handle_metadata(
+                    row, session_id=session_id, moment=self.now()
+                ))
+            yield result
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
 
     def revoke_file_handle(self, handle_id: str, *, actor_id: str) -> None:
         with self._open(write=True) as conn:

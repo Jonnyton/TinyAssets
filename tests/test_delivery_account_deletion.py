@@ -95,7 +95,7 @@ def test_satellite_failure_rolls_back_delivery_children_and_receipt(delivery_env
     assert list((base / ".account-deletions").glob("*.json"))
 
 
-@pytest.mark.parametrize("failed_maintenance", ["delivery", "admission"])
+@pytest.mark.parametrize("failed_maintenance", ["delivery", "admission", "files"])
 def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
     monkeypatch, failed_maintenance,
 ):
@@ -107,7 +107,7 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
     tree = ast.parse(Path("tinyassets/universe_server.py").read_text(encoding="utf-8"))
     function = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                     and n.name == "_served_budget_lease_loop")
-    seen, cursors, sleeps = [], [], []
+    seen, cursors, file_cursors, deliveries, sleeps = [], [], [], [], []
 
     class StopLoop(BaseException):
         pass
@@ -118,6 +118,7 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
         sleeps.append(seconds)
 
     def delivery(_):
+        deliveries.append("delivery")
         if failed_maintenance == "delivery":
             raise RuntimeError("delivery store unavailable")
 
@@ -127,9 +128,16 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
             raise RuntimeError("admission store unavailable")
         return f"cursor-{len(cursors)}"
 
+    def files(_, *, after_operation_id=""):
+        file_cursors.append(after_operation_id)
+        if failed_maintenance == "files" and len(file_cursors) == 2:
+            raise RuntimeError("file store unavailable")
+        return f"file-cursor-{len(file_cursors)}"
+
     monkeypatch.setattr(time, "sleep", sleep)
     scope = {"reconcile_deliveries": delivery,
              "reconcile_admitted_runs": admitted,
+             "reconcile_run_files": files,
              "reconcile_served_budget_leases": lambda _: seen.append("budget") or 0,
              "_sb_data_dir": lambda: "/unused",
              "logger": SimpleNamespace(exception=lambda *_: None, info=lambda *_: None)}
@@ -137,13 +145,17 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
     factory = ast.parse(
         "def make_loop():\n"
         "    _admitted_run_cursor = ''\n"
+        "    _file_retention_cursor = ''\n"
         "    return _served_budget_lease_loop\n"
     )
-    factory.body[0].body.insert(1, function)
+    factory.body[0].body.insert(2, function)
     exec(compile(ast.fix_missing_locations(factory), "loop", "exec"), scope)
     with pytest.raises(StopLoop):
         scope["make_loop"]()()
     assert sleeps == [300.0] * 3
     assert seen == ["budget"] * 3
+    assert deliveries == ["delivery"] * 3
     assert cursors == ["", "cursor-1",
                        "cursor-1" if failed_maintenance == "admission" else "cursor-2"]
+    assert file_cursors == ["", "file-cursor-1",
+                            "file-cursor-1" if failed_maintenance == "files" else "file-cursor-2"]

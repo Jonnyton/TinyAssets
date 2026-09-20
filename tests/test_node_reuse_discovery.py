@@ -296,3 +296,8 @@ class TestReusePromptNudges:
             "authoring is exposed now; this disclaimer would contradict the "
             "New-workflow authoring section"
         )
+        assert "New-branch creation is not exposed" not in flat
+        assert "set_io_manifest" in text
+        assert '"io_type":"file_bundle"' in text
+        assert "Explicit null clears" in text
+        assert "runs keep their old contract" in text

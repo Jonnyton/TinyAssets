@@ -2508,12 +2508,37 @@ def _apply_node_updates(
     return ""
 
 
+def _branch_file_contract_errors(branch: Any) -> list[str]:
+    """Validate the final authored model, never grant custody or execution."""
+    from tinyassets.authoring.io import parse_manifest
+    from tinyassets.authoring.models import AuthoringValidationError
+
+    if branch.io_manifest is None:
+        return []
+    try:
+        manifest = parse_manifest(branch.to_dict(), strict=True,
+                                  max_file_bytes=2**63 - 1, max_files=32)
+    except (AuthoringValidationError, ValueError) as exc:
+        return [str(exc)]
+    fields = {item.get("name"): item.get("type") for item in branch.state_schema}
+    return [
+        f"io_manifest.inputs.{item.name} requires {kind} state"
+        for item in manifest.inputs if item.is_file
+        for kind in ["list" if item.io_type == "file_bundle" else "dict"]
+        if fields.get(item.name) != kind
+    ]
+
+
 def _staged_branch_from_spec(
     spec: dict[str, Any],
     *,
     fork_version: dict[str, Any] | None = None,
 ) -> tuple[Any, list[str]]:
-    from tinyassets.branches import BranchDefinition, normalize_branch_skill_snapshots
+    from tinyassets.branches import (
+        BranchDefinition,
+        normalize_branch_io_manifest,
+        normalize_branch_skill_snapshots,
+    )
 
     errors: list[str] = []
     raw_visibility = spec.get("visibility", "public")
@@ -2551,6 +2576,16 @@ def _staged_branch_from_spec(
     # spec literally contains. This mirrors what
     # `BranchDefinition.from_dict` already does for the DB-row path.
     graph_blob = spec.get("graph") if isinstance(spec.get("graph"), dict) else None
+    manifest_present = "io_manifest" in spec or (
+        graph_blob is not None and "io_manifest" in graph_blob
+    )
+    manifest_raw = spec["io_manifest"] if "io_manifest" in spec else (
+        graph_blob.get("io_manifest") if graph_blob is not None else None
+    )
+    try:
+        branch.io_manifest = normalize_branch_io_manifest(manifest_raw)
+    except ValueError as exc:
+        errors.append(str(exc))
 
     def _spec_get(key: str, default=None):
         """Top-level key wins; otherwise fall back to graph_blob[key]."""
@@ -2625,6 +2660,8 @@ def _staged_branch_from_spec(
                 branch.entry_point = parent_copy.entry_point
             if "state_schema" not in spec:
                 branch.state_schema = list(parent_copy.state_schema)
+            if not manifest_present:
+                branch.io_manifest = parent_copy.io_manifest
 
     for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
         err = _apply_node_spec(branch, raw)
@@ -2754,7 +2791,7 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
         branch.branch_def_id = hashlib.sha256(
             f"branch-create-v1\0{actor}\0{request_id}".encode("utf-8")
         ).hexdigest()[:12]
-    validation_errors = branch.validate()
+    validation_errors = branch.validate() + _branch_file_contract_errors(branch)
     errors = staging_errors + validation_errors
 
     # Validate fork_from points to a real branch_version_id. This error
@@ -2822,6 +2859,7 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             "conditional_edges",
             "node_defs",
             "state_schema",
+            "io_manifest",
             "default_llm_policy",
             "concurrency_budget",
         )
@@ -3030,6 +3068,16 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
         except ValueError as exc:
             return str(exc)
         return ""
+    if name == "set_io_manifest":
+        from tinyassets.branches import normalize_branch_io_manifest
+
+        if "io_manifest" not in op:
+            return "set_io_manifest requires an io_manifest field (null clears)"
+        try:
+            branch.io_manifest = normalize_branch_io_manifest(op["io_manifest"])
+        except ValueError as exc:
+            return str(exc)
+        return ""
     # Branch-level metadata ops (#67). These let patch_branch rename /
     # retag / redescribe / publish a branch atomically, without the
     # previous delete-and-rebuild workaround that lost run history and
@@ -3180,7 +3228,7 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
 
     validation_errors: list[str] = []
     if not per_op_errors:
-        validation_errors = staging.validate()
+        validation_errors = staging.validate() + _branch_file_contract_errors(staging)
 
     if per_op_errors or validation_errors:
         suggestions = _errors_to_suggestions(staging, validation_errors)
@@ -4010,6 +4058,30 @@ payload_json='{
 Do not fabricate validation suggestions or a batch receipt. Receipts exist
 only after a real supported write completes.
 
+## File input contracts
+
+For exact owned binary inputs, include `io_manifest` in the create spec. A
+`file` input needs a `dict` state field; `file_bundle` needs a `list` field.
+For example, a list state field named `files` can declare:
+`{"inputs":[{"name":"files","io_type":"file_bundle","max_count":4,"max_bytes":4194304}]}`.
+Declarations are preserved exactly; invalid counts, bounds or state types refuse.
+Read `read_graph target="run_file_limits"` for available capture capacity. Capture
+owned authoring handles using `write_graph target="run_file" operation="capture"`
+with `payload_json={"label":"<stable label>","sources":[{"session_id":"...","handle_id":"..."}]}`.
+Pass the returned opaque references in `run_graph inputs_json`, never paths or
+whole file bytes. Only nodes declaring that incoming field in `input_keys` can
+use `read_run_file(file_id=..., offset=..., count=...)` for bounded exact reads;
+downstream nodes need explicit forwarded input data, not merely the same state.
+
+To edit the contract, use existing `write_graph target="branch" operation="patch"`
+with `changes_json=[{"op":"set_io_manifest","io_manifest":{...}}]`; served agents
+put that same ordered op list in `payload_json`. This replaces the complete
+manifest. Explicit null clears it; a missing member rejects. Matching state-field
+changes can be in the same atomic patch. Existing published versions/admitted
+runs keep their old contract; publish again to create a new immutable version.
+Canonical remix inherits the parent's contract when omitted; explicit null clears.
+This does not change publication permissions or enable cross-owner file transfer.
+
 ## Branch skills
 
 When the user wants to create a skill, remix one, or copy one they found
@@ -4051,8 +4123,8 @@ non-grant/non-bypass flags before narrating approval scope.
 ## Single-item surgery
 
 Even for one small change, use one changes_json op through
-`write_graph target="branch" branch_id=... changes_json=...`. New-branch
-creation is not exposed. For
+`write_graph target="branch" branch_id=... changes_json=...`. Use the create
+operation above only when you want a distinct new workflow. For
 inspection or validation evidence, use
 `read_graph target="branch" branch_id=...` and report
 only what it returns.

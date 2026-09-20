@@ -667,6 +667,13 @@ def _delete_satellite_rows(
     universe-keyed and person-keyed rows go, counted before any delete."""
     if not path.is_file():
         return
+    # Physical file custody cannot be erased by generic row ordering. The
+    # account tombstone already prevents new capture/binding/read; settle exact
+    # owned inventory before opening this store's deletion transaction.
+    from tinyassets.runs import runs_db_path
+    if path == runs_db_path(path.parent):
+        from tinyassets.run_file_erasure import erase_owner_files
+        erase_owner_files(path.parent, owner_id=principal)
     conn = sqlite3.connect(str(path), timeout=30.0)
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
@@ -676,6 +683,10 @@ def _delete_satellite_rows(
             plan = deletion_plan(conn, principal=principal, home=home)
             targets = _delivery_deletion_targets(conn, principal=principal, home=home)
             delivery_tables = {target[0] for target in targets}
+            from tinyassets.run_file_erasure import settled_deletion_targets
+            file_targets = settled_deletion_targets(conn, principal=principal)
+            targets = file_targets + targets
+            explicitly_handled = delivery_tables | {target[0] for target in file_targets}
             # Child rows whose own columns name neither the person nor the
             # universe, but whose parent is going.
             if "outbound_connector_artifacts" in plan:
@@ -687,7 +698,7 @@ def _delete_satellite_rows(
                         (principal,),
                     ))
             for table, keys in plan.items():
-                if table in delivery_tables:
+                if table in explicitly_handled:
                     continue  # one union predicate per table: count every row once
                 for column, kind in keys:
                     value = home if kind == "universe" else principal

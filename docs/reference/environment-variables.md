@@ -20,6 +20,13 @@ containerized deploys don't drift based on where the process was launched from.
 | `TINYASSETS_WIKI_PATH` | Canonical root for the cross-project knowledge wiki the `wiki` tool reads/writes. Resolved via `workflow.storage.wiki_path()`; inherits `data_dir()` platform handling when unset. | `$TINYASSETS_DATA_DIR/wiki` (platform default). |
 | `TINYASSETS_UPLOAD_WHITELIST` | Colon/semicolon-separated absolute-path prefixes allowed for `add_canon_from_path`. Unset = accept any absolute path. | Unset (permissive). |
 
+## Run-file custody capacity
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `TINYASSETS_RUN_FILE_CUSTODY_MAX_BYTES` | Positive integer operational ceiling for exact retained plus pending run-file custody allocations across this store. Independent of account tier, entitlement and pricing. Invalid values refuse rather than silently fall back. Normal global rollout must configure this before exposing file intake; no per-user setup patch. The internal storage foundation alone does not enable a public file action. | Unset: custody intake refuses `file_custody_not_configured`. |
+| `TINYASSETS_RUN_FILE_HEADROOM_BYTES` | Nonnegative integer technical free-space floor on the verified destination filesystem, checked inside allocation admission in addition to outstanding pending bytes. Not an entitlement or price. Invalid/out-of-range values refuse. | `67108864` (64 MiB). |
+
 ## Auth + identity
 
 | Var | Purpose | Default |

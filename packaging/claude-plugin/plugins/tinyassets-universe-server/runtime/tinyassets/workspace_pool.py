@@ -869,6 +869,43 @@ def reserve_operation_bytes(
     racing cannot both insert. Returns the bytes reserved (the existing
     reservation when the operation was already charged).
     """
+    return _reserve_transfer_bytes(
+        db, universe_id=universe_id, run_id=run_id, operation_id=operation_id,
+        max_bytes=max_bytes, bytes_per_hour=bytes_per_hour, now=now, count_job=True,
+    )
+
+
+def reserve_transfer_bytes(
+    db: Path, *, universe_id: str, run_id: str, operation_id: str,
+    max_bytes: int, bytes_per_hour: int = DEFAULT_BYTES_PER_HOUR,
+    now: Callable[[], float] = time.time,
+) -> int:
+    """Reserve actual transfer capacity without inventing a workspace job.
+
+    Internal caller supplies a stable, scope-bound operation ID and fixes its
+    immutable request in the operation journal before calling. Existing workspace
+    operations keep their separate job observation through the wrapper above.
+    Explicit run_id="" means authenticated standalone intake before a run exists;
+    it is not a fabricated run or workspace job. None/bool are never that scope.
+    """
+    if type(max_bytes) is not int or max_bytes < 0:
+        raise ValueError("max_bytes must be a nonnegative integer")
+    if type(bytes_per_hour) is not int or bytes_per_hour <= 0:
+        raise ValueError("bytes_per_hour must be a positive integer")
+    if type(universe_id) is not str or not universe_id or type(run_id) is not str:
+        raise ValueError("transfer reservation requires universe and explicit string run scope")
+    if type(operation_id) is not str or not operation_id:
+        raise ValueError("transfer reservation requires operation identity")
+    return _reserve_transfer_bytes(
+        db, universe_id=universe_id, run_id=run_id, operation_id=operation_id,
+        max_bytes=max_bytes, bytes_per_hour=bytes_per_hour, now=now, count_job=False,
+    )
+
+
+def _reserve_transfer_bytes(
+    db: Path, *, universe_id: str, run_id: str, operation_id: str,
+    max_bytes: int, bytes_per_hour: int, now: Callable[[], float], count_job: bool,
+) -> int:
     if not operation_id:
         raise ValueError("operation_id is required")
     if int(max_bytes) < 0:
@@ -882,11 +919,13 @@ def reserve_operation_bytes(
             conn.execute("BEGIN IMMEDIATE")
             ensure_schema(conn)
             existing = conn.execute(
-                "SELECT amount FROM workspace_ledger "
+                "SELECT amount, universe_id, run_id FROM workspace_ledger "
                 "WHERE operation_id = ? AND kind = ?",
                 (operation_id, KIND_BYTES),
             ).fetchone()
             if existing is not None:
+                if not count_job and (existing[1] != universe_id or existing[2] != run_id):
+                    raise ValueError("transfer operation scope mismatch")
                 conn.commit()
                 return int(existing[0])
 
@@ -899,12 +938,13 @@ def reserve_operation_bytes(
                     f"{universe_id}: {charged} charged + {max_bytes} requested, "
                     f"clears_at={clears}",
                 )
-            conn.execute(
-                "INSERT INTO workspace_ledger "
-                "(universe_id, kind, amount, reserved, run_id, lease_id, "
-                "operation_id, created_at) VALUES (?, ?, 1, 0, ?, NULL, ?, ?)",
-                (universe_id, KIND_JOBS, run_id, operation_id, ts),
-            )
+            if count_job:
+                conn.execute(
+                    "INSERT INTO workspace_ledger "
+                    "(universe_id, kind, amount, reserved, run_id, lease_id, "
+                    "operation_id, created_at) VALUES (?, ?, 1, 0, ?, NULL, ?, ?)",
+                    (universe_id, KIND_JOBS, run_id, operation_id, ts),
+                )
             conn.execute(
                 "INSERT INTO workspace_ledger "
                 "(universe_id, kind, amount, reserved, run_id, lease_id, "

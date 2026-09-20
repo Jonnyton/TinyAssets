@@ -23,6 +23,10 @@ const $=id=>{if(!elements.has(id)) elements.set(id,{textContent:'',hidden:false,
 const sessionStorage={getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),
  removeItem:k=>storage.delete(k)};
 let NATIVE=false,me={setup:'empty'},auth='owner-token',viewGeneration=0;
+// The owner/home pair the real setters keep, declared here because the page
+// declares them outside either function. Uploads is absent on this slice, and
+// the setters already guard on it.
+let queueScope='',queueOwner='',uploadsRestored=false;const Uploads=null;
 let exchangeResult=null,answerResult={status:'answered'};
 let signedInNow=false,workosCalls=0,chatCount=0,refreshes=0;
 const window={location:{pathname:'/mcp/app',search:'',assign:url=>navigations.push(url)}};
@@ -55,7 +59,13 @@ __SOURCE__
    confirmationHidden:$('hosted-model-confirmation').hidden,callback:globalThis.callback}));
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """
-    source = controller + _js_function(html, "enterSignedIn") + _js_function(html, "boot")
+    # enterSignedIn seeds the owner/home pair BEFORE the connect gate can
+    # return, so its two real setters come along: stubbing them here would
+    # test a page whose fence does not exist. Same extraction list shape as
+    # tests/test_onboarding_app.py.
+    source = (controller + _js_function(html, "setQueueScope")
+              + _js_function(html, "setQueueOwner")
+              + _js_function(html, "enterSignedIn") + _js_function(html, "boot"))
     node = shutil.which("node")
     assert node, "Node is required to execute browser tests"
     result = subprocess.run([node, "-e", program.replace("__SOURCE__", source)

@@ -107,8 +107,18 @@ class BoundInputs:
         return {"values": self.values, "handle_count": len(self.handles)}
 
 
-def parse_manifest(definition: dict[str, Any]) -> Manifest:
+def parse_manifest(
+    definition: dict[str, Any],
+    *,
+    strict: bool = False,
+    max_file_bytes: int = MAX_FILE_BYTES,
+    max_files: int = 1,
+) -> Manifest:
     """Parse ``definition['io_manifest']`` or raise with field-level issues."""
+    if strict:
+        return _parse_strict_manifest(
+            definition, max_file_bytes=max_file_bytes, max_files=max_files
+        )
     raw = definition.get("io_manifest") or {}
     if not isinstance(raw, dict):
         raise AuthoringValidationError([
@@ -170,6 +180,115 @@ def parse_manifest(definition: dict[str, Any]) -> Manifest:
                 dispositions=tuple(str(item) for item in dispositions),
             ))
 
+    if issues:
+        raise AuthoringValidationError(issues)
+    return Manifest(tuple(parsed["inputs"]), tuple(parsed["outputs"]))
+
+
+def _parse_strict_manifest(definition, *, max_file_bytes, max_files):
+    """Opt-in runtime contract; old authoring coercions/ceilings stay unchanged."""
+    if (
+        type(max_file_bytes) is not int
+        or not 0 <= max_file_bytes < 2**63
+        or type(max_files) is not int
+        or not 1 <= max_files < 2**31
+    ):
+        raise ValueError("invalid runtime file technical ceiling")
+    raw = definition.get("io_manifest")
+    if raw is None:
+        return Manifest((), ())
+    if not isinstance(raw, dict):
+        raise AuthoringValidationError(
+            [ValidationIssue("manifest.malformed", "io_manifest", "must be an object")]
+        )
+    issues = []
+    parsed = {"inputs": [], "outputs": []}
+    for direction in parsed:
+        items = raw.get(direction, [])
+        if not isinstance(items, list):
+            issues.append(
+                ValidationIssue("manifest.malformed", f"io_manifest.{direction}", "must be a list")
+            )
+            continue
+        names = set()
+        count_bound = 0
+        for index, item in enumerate(items):
+            where = f"io_manifest.{direction}[{index}]"
+            if not isinstance(item, dict):
+                issues.append(ValidationIssue("manifest.malformed", where, "must be an object"))
+                continue
+            name, kind = item.get("name"), item.get("io_type")
+            if (
+                type(name) is not str
+                or not name
+                or name != name.strip()
+                or name in names
+                or type(kind) is not str
+                or kind not in IO_TYPES
+            ):
+                issues.append(
+                    ValidationIssue(
+                        "manifest.invalid_declaration", where, "invalid name/type or duplicate name"
+                    )
+                )
+                continue
+            names.add(name)
+            required = item.get("required", True)
+            minimum = item.get("min_count", 1 if required else 0)
+            maximum = item.get("max_count", 1)
+            byte_limit = item.get("max_bytes", min(MAX_FILE_BYTES, max_file_bytes))
+            media = item.get("media_types", [])
+            dispositions = item.get("dispositions", ["download"])
+            if (
+                type(required) is not bool
+                or type(minimum) is not int
+                or type(maximum) is not int
+                or not 0 <= minimum <= maximum
+                or not 1 <= maximum <= max_files
+                or (kind != "file_bundle" and maximum != 1)
+                or type(byte_limit) is not int
+                or not 0 <= byte_limit <= max_file_bytes
+                or not isinstance(media, list)
+                or any(
+                    type(value) is not str or not value or value != value.strip() for value in media
+                )
+                or not isinstance(dispositions, list)
+                or not dispositions
+                or any(
+                    type(value) is not str or value not in DISPOSITIONS for value in dispositions
+                )
+            ):
+                issues.append(
+                    ValidationIssue(
+                        "manifest.invalid_bounds",
+                        where,
+                        "invalid count/byte/media/disposition bounds",
+                    )
+                )
+                continue
+            if kind in FILE_IO_TYPES:
+                count_bound += maximum
+            parsed[direction].append(
+                IODeclaration(
+                    name=name,
+                    io_type=kind,
+                    direction=direction,
+                    media_types=tuple(value.lower() for value in media),
+                    min_count=minimum,
+                    max_count=maximum,
+                    max_bytes=byte_limit,
+                    required=required,
+                    dispositions=tuple(dispositions),
+                )
+            )
+        if count_bound > max_files:
+            issues.append(
+                ValidationIssue(
+                    "manifest.cardinality",
+                    f"io_manifest.{direction}",
+                    "declared file count exceeds technical ceiling",
+                )
+            )
     if issues:
         raise AuthoringValidationError(issues)
     return Manifest(tuple(parsed["inputs"]), tuple(parsed["outputs"]))

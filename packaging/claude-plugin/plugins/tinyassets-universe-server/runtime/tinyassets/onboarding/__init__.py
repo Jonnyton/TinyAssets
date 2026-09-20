@@ -1610,6 +1610,7 @@ def onboarding_routes() -> list[Any]:
     from starlette.routing import Route
 
     from tinyassets.onboarding.connections import handle_connections
+    from tinyassets.onboarding.file_upload import handle_file_upload
     from tinyassets.onboarding.model_connect import handle_model_callback, handle_model_connect
     from tinyassets.onboarding.model_preferences import handle_model_preferences
 
@@ -1634,6 +1635,7 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/mcp/app/account/delete", _handle_account_delete, methods=["POST"]),
         Route("/mcp/app/connections", handle_connections, methods=["GET", "POST"]),
+        Route("/mcp/app/files", handle_file_upload, methods=["POST"]),
     ]
 
 

@@ -213,6 +213,14 @@ def test_action_run_branch_guidance_uses_advertised_handles(monkeypatch):
         def validate():
             return []
 
+        @staticmethod
+        def to_dict():
+            # run_branch asks every branch for its declared inputs before it
+            # picks a lane. A double that cannot answer is not a branch this
+            # server would ever hold; this one declares no file input, so the
+            # scalar lane under test is the one taken.
+            return {"branch_def_id": "b-guidance"}
+
     monkeypatch.setattr(runs_mod, "_ensure_runs_recovery", lambda: None)
     monkeypatch.setattr(
         "tinyassets.api.branches._resolve_branch_id",

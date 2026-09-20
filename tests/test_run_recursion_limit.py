@@ -229,6 +229,7 @@ class TestMcpRecursionLimitOverride:
         dummy_src = {"branch_def_id": "b1", "name": "test", "node_defs": [], "edges": []}
         stub_branch = MagicMock()
         stub_branch.validate.return_value = []  # no errors
+        stub_branch.to_dict.return_value = dummy_src  # real scalar contract, no file manifest
         monkeypatch.setattr(
             "tinyassets.daemon_server.get_branch_definition",
             lambda *a, **k: dummy_src,

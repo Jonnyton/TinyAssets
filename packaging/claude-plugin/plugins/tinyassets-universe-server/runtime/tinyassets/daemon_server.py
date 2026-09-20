@@ -2497,6 +2497,10 @@ def _branch_definition_insert(
         "conditional_edges": branch_def.get("conditional_edges", []),
         "entry_point": branch_def.get("entry_point", ""),
     }
+    if branch_def.get("io_manifest") is not None:
+        from tinyassets.branches import normalize_branch_io_manifest
+
+        graph["io_manifest"] = normalize_branch_io_manifest(branch_def["io_manifest"])
 
     # Legacy compat: if "nodes" key exists and graph_nodes doesn't,
     # store nodes in graph_json (migration path from old format)
@@ -2758,7 +2762,7 @@ def update_branch_definition(
         params.append(_json_dumps(updates["node_defs"]))
 
     # If graph topology fields are updated, rebuild graph_json
-    graph_keys = {"graph_nodes", "edges", "conditional_edges", "nodes"}
+    graph_keys = {"graph_nodes", "edges", "conditional_edges", "nodes", "io_manifest"}
     if graph_keys & updates.keys():
         existing = get_branch_definition(base_path, branch_def_id=branch_def_id)
         graph = existing.get("graph", {})
@@ -2773,6 +2777,14 @@ def update_branch_definition(
             graph["conditional_edges"] = updates["conditional_edges"]
         if "entry_point" in updates:
             graph["entry_point"] = updates["entry_point"]
+        if "io_manifest" in updates:
+            from tinyassets.branches import normalize_branch_io_manifest
+
+            manifest = normalize_branch_io_manifest(updates["io_manifest"])
+            if manifest is None:
+                graph.pop("io_manifest", None)
+            else:
+                graph["io_manifest"] = manifest
         sets.append("graph_json = ?")
         params.append(_json_dumps(graph))
 

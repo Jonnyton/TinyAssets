@@ -372,7 +372,10 @@ def test_run_branch_hands_execution_a_server_owned_provider_session(
     (universe / "config.yaml").write_text(
         "preferred_writer: codex\n", encoding="utf-8",
     )
-    branch = SimpleNamespace(version=1, validate=lambda: [])
+    # A branch answers what it declares before run_branch picks a lane; this
+    # one declares no file input, so the scalar lane under test is taken.
+    branch = SimpleNamespace(version=1, validate=lambda: [],
+                             to_dict=lambda: {"branch_def_id": "b1"})
     captured: dict[str, Any] = {}
 
     def fake_execute(*_args: Any, provider_call=None, **_kwargs: Any):
@@ -427,6 +430,15 @@ def test_branch_version_and_resume_use_the_same_server_owned_run_session(
     monkeypatch.setattr(api_runs, "_universe_dir", lambda _uid: universe)
     monkeypatch.setattr(api_runs, "_request_universe", lambda uid="": uid or "user-u")
     if action == "version":
+        # The version lane resolves the snapshot itself now, to read what it
+        # declares. The snapshot stands in for the published BranchDefinition.
+        monkeypatch.setattr(
+            "tinyassets.runs._load_branch_version",
+            lambda _base, _bvid: SimpleNamespace(
+                version=1, validate=lambda: [],
+                to_dict=lambda: {"branch_def_id": "b1"},
+            ),
+        )
         monkeypatch.setattr(
             "tinyassets.runs.execute_branch_version_async", fake_execute,
         )
