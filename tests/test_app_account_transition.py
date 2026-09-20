@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -80,8 +81,18 @@ def _app_html() -> str:
     return html
 
 
+def _upload_records_key(html: str) -> str:
+    """The real recovery key, taken from the page. A literal copied into the
+    harness would keep the durability assertion green against a key the page
+    had stopped using."""
+    match = re.search(r'const\s+UPLOAD_RECORDS_KEY\s*=\s*"([^"]+)"', html)
+    assert match, "UPLOAD_RECORDS_KEY not found in the rendered app"
+    return 'const UPLOAD_RECORDS_KEY="%s";' % match.group(1)
+
+
 def _lifted(html: str) -> str:
-    out = [_function_source(html, name) for name in _LIFT]
+    out = [_upload_records_key(html)]
+    out += [_function_source(html, name) for name in _LIFT]
     for name in _OPTIONAL:
         src = _function_source(html, name, required=False)
         if src:
@@ -165,6 +176,11 @@ async function sendTurn(message,display,opts){
 const STORE={local:{}, session:{}, inflight:null};
 const sessionStorage={ removeItem(k){ delete STORE.session[k]; },
   setItem(k,v){ STORE.session[k]=String(v); }, getItem(k){ return STORE.session[k]||null; } };
+// Real binding, not a blank: without it the page could not erase a durable row
+// even if it tried, and "recovery survived sign-out" would prove nothing.
+const localStorage={ removeItem(k){ delete STORE.local[k]; },
+  setItem(k,v){ STORE.local[k]=String(v); }, getItem(k){ return STORE.local[k]||null; },
+  clear(){ for(const k of Object.keys(STORE.local)) delete STORE.local[k]; } };
 function token(){ return STORE.session[TOKEN_KEY]||null; }
 const Uploads={ aborted:0, abort(){ this.aborted++; } };
 const Voice={ stop(){}, conversationSettled(){} };
@@ -176,12 +192,16 @@ const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; }, invalidateSession(
 function threadText(){
   return DOM.thread.children.filter(c=>String(c.className).indexOf("msg")===0).map(c=>c.text);
 }
-const UPLOAD_KEY_A="ta_upload_records:"+JSON.stringify(["principal-a","universe-a"]);
+// The page's own recovery key, LIFTED - a hand-written literal here would let
+// the durability assertion pass against a key the page never writes.
+const UPLOAD_KEY_A=UPLOAD_RECORDS_KEY+":"+JSON.stringify(["principal-a","universe-a"]);
 """
 
 
 def _script(html: str, body: str) -> str:
-    return _HARNESS + "\n" + _lifted(html) + "\n" + body
+    # Lifted page source FIRST: the harness below builds its recovery key from
+    # the page's own UPLOAD_RECORDS_KEY, so that constant has to exist by then.
+    return _lifted(html) + "\n" + _HARNESS + "\n" + body
 
 
 pytestmark = pytest.mark.skipif(
