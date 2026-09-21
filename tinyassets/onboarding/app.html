@@ -4040,9 +4040,12 @@
     }
     // The inline budget is reserved by the decoded CANDIDATE at decode time,
     // as it always was, so a file still in flight holds its share; a candidate
-    // dropped for not round-tripping gives its share back.
+    // dropped for not round-tripping gives its share back. The share is the
+    // file's BYTE size, never the string's length: ATTACH_TOTAL_MAX is a byte
+    // ceiling, one UTF-16 unit can stand for up to three bytes, and a kept
+    // candidate re-encodes to exactly the bytes custody holds.
     function inlineTotal(){
-      return items.reduce((s,a)=>s+(typeof a.inlineText==="string"?a.inlineText.length:0),0);
+      return items.reduce((s,a)=>s+(typeof a.inlineText==="string"?a.size:0),0);
     }
     function expiresAtMs(item){
       return (item.expiresAt===null||item.expiresAt===undefined)?null:item.expiresAt*1000;
@@ -4132,7 +4135,7 @@
         if(!attached(item)){ cancel(item); return; }
         if(!scopeHolds(item)) return abortItem(item);
         if(typeof text==="string"&&!looksBinary(text)&&
-           inlineTotal()+text.length<=ATTACH_TOTAL_MAX) item.inlineText=text;
+           inlineTotal()+item.size<=ATTACH_TOTAL_MAX) item.inlineText=text;
       }
       return upload(item);
     }
@@ -4232,6 +4235,12 @@
       // Same rule after this await: a switch during the round-trip hash drops
       // the item, and never its decoded content into the next composer.
       if(!(await verifyInline(item, aborter))) return abortItem(item);
+      // UNCONDITIONALLY, whatever verifyInline did. It answers true without
+      // reading the scope when there is no candidate (a binary file) or the
+      // round-trip digest is already cached (a Check), and the `await` above
+      // is a boundary even then: a switch or removal landing in it must be
+      // seen HERE, before the header is built or a failure is painted.
+      if(!ownsNow(item)) return abortItem(item);
       let header=null;
       try{
         header=uploadHeaderValue({version:1, label:item.label,

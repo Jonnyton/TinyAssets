@@ -1012,6 +1012,96 @@ test("text_reload", async ()=>{
           blocked:!!turn.blocked, display:turn.display};
 });
 
+// 36. the boundary INTRODUCED by verifyInline. Its `await` yields a microtask
+// even when it reads no scope at all - a binary file has no candidate, and a
+// Check finds the round-trip digest cached - so a login, home or removal that
+// lands in exactly that gap (queued during the LAST ownership read before the
+// await, run before the continuation) is a real interleaving the guard inside
+// verifyInline never sees. It must land nowhere: no request, no chip, no
+// failure painted into the next composer, and the next composer's Send is not
+// blocked by it. `longName` drives the header-too-long branch, which paints a
+// failed chip without a scope check of its own.
+test("switch_across_verify_boundary", async ()=>{
+  async function run(path, kind, longName){
+    const retry = path==="cachedDigestRetry";
+    const h = build((n,req)=> retry && n===1 ? refuse(503,"busy")
+                            : retry && n===2 ? refuse(400,"no such label")
+                            : ok(req), {
+      scope: ()=>{
+        if(h.state.armed){
+          h.state.armed=false;
+          queueMicrotask(()=>{
+            h.state.fired++;
+            if(kind==="login") h.state.scope={epoch:2, universeId:"uni-A"};
+            else if(kind==="home") h.state.scope={epoch:1, universeId:"uni-B"};
+            else h.ctrl.remove(h.ctrl.chips()[0].id);
+          });
+        }
+        return h.state.scope; },
+      sha256: async (file)=>{
+        const d = await digestOf(file);                  // the REAL digest
+        h.state.hashed.push(file._bytes?"file":"blob");
+        if(path==="binary") h.state.armed=true;          // next read is the post-hash guard
+        return d; },
+      onChange: ()=>{
+        h.state.renders++;
+        if(retry && h.state.retrying && !h.state.armedOnce &&
+           h.ctrl.chips().some(c=>c.state==="hashing")){
+          h.state.armedOnce=true; h.state.armed=true;    // next read is the post-(cached)hash guard
+        } },
+    });
+    h.state.hashed=[]; h.state.fired=0; h.state.armed=false; h.state.retrying=false;
+    h.state.armedOnce=false;
+    const name = (longName ? "A".repeat(7000) : "owner-A-private") + (retry ? ".txt" : ".bin");
+    const file = retry ? fakeFile(name,"text/plain","BOARD ONLY memo\n")
+                       : fakeFile(name,"application/octet-stream",Buffer.from([0,1,2,3]));
+    await h.ctrl.add([file]);
+    const beforeRetry = {posts:h.state.posts.length, chips:h.ctrl.chips().map(c=>c.state)};
+    if(retry){
+      h.state.retrying=true;
+      await h.ctrl.retry(h.ctrl.chips()[0].id);
+    }
+    await new Promise(r=>setTimeout(r,8));
+    const turn = h.ctrl.buildTurn("owner B types");
+    return {hashed:h.state.hashed, fired:h.state.fired, beforeRetry:beforeRetry,
+            posts:h.state.posts.map(p=>[p.metadataOnly,p.hasFile]),
+            chips:h.ctrl.chips().map(c=>({state:c.state, text:c.text.slice(0,40)})),
+            send:turn.send, display:turn.display, blocked:!!turn.blocked,
+            nameLeaked:(turn.display||"").includes(name.slice(0,12))||
+                       h.ctrl.chips().some(c=>c.text.includes(name.slice(0,12)))};
+  }
+  const out = {};
+  for(const kind of ["login","home","removal"]){
+    out["binary:"+kind] = await run("binary", kind, false);
+    out["binaryLongName:"+kind] = await run("binary", kind, true);
+    out["cachedDigestRetry:"+kind] = await run("cachedDigestRetry", kind, false);
+  }
+  return out;
+});
+
+// 37. ATTACH_TOTAL_MAX is a BYTE ceiling. Three files of 100 KiB two-byte
+// characters are 200 KiB each: the first two fill the 400 KiB budget exactly
+// and the third is reference-only. Counting UTF-16 units instead would inline
+// all three at 600 KiB. Every file is in custody with its real size and real
+// digest, and an inlined file is inlined whole.
+test("text_multibyte_budget", async ()=>{
+  const h = build((n,req)=>ok(req));
+  const body = "é".repeat(100*1024);                   // 102400 chars, 204800 bytes
+  const files = ["e1.txt","e2.txt","e3.txt"].map(n=>fakeFile(n,"text/plain",body));
+  await h.ctrl.add(files);
+  const turn = h.ctrl.buildTurn("three");
+  return {blocked:!!turn.blocked, display:turn.display,
+          bytesEach:files[0].size, charsEach:body.length,
+          inline:["e1.txt","e2.txt","e3.txt"].map(n=>{
+            const t=inlineBlockOf(turn.send,n);
+            return t===null?null:{chars:t.length, whole:t===body}; }),
+          refs:refsIn(turn.send).map(r=>({filename:r.filename, size:r.size_bytes,
+                                          sha256:r.sha256})),
+          digests:files.map(f=>sha256Hex(f._bytes)),
+          posts:h.state.posts.map(p=>[p.meta.filename,p.meta.size_bytes,p.meta.sha256]),
+          chips:h.ctrl.chips().map(c=>[c.state,c.blocking])};
+});
+
 (async ()=>{
   for(const [name, fn] of T){ R[name] = await fn(); }
   process.stdout.write(JSON.stringify(R));
@@ -1432,6 +1522,47 @@ def test_an_unresolved_universe_is_never_upgraded_to_a_different_login(results):
 
 
 # --- the shell's own stale-turn guards, also EXECUTED -----------------------
+
+
+@pytest.mark.parametrize("path", ["binary", "binaryLongName", "cachedDigestRetry"])
+@pytest.mark.parametrize("kind", ["login", "home", "removal"])
+def test_a_switch_in_the_verify_inline_boundary_lands_nowhere(results, path, kind):
+    """The `await verifyInline` in upload() is a boundary even when verifyInline
+    reads no scope (no candidate; cached round-trip digest). A login, home or
+    removal that lands in that microtask gap - REAL JS ordering, queued during
+    the last ownership read before the await - must be seen before the header
+    is built or a failure painted: nothing reaches the next composer."""
+    out = results["switch_across_verify_boundary"][f"{path}:{kind}"]
+    assert out["fired"] == 1, "the switch really ran inside the boundary"
+    if path.startswith("binary"):
+        assert out["hashed"] == ["file"], "no candidate: only the file was hashed"
+        assert out["posts"] == [], "no request under the next account"
+    else:
+        assert out["hashed"] == ["file", "blob"], "round-trip digest was cached on attempt one"
+        assert out["beforeRetry"] == {"posts": 1, "chips": ["failed"]}
+        # attempt one (503) + the metadata-only Check (400); never the fallback stream
+        assert out["posts"] == [[False, True], [True, False]]
+    assert out["chips"] == [], "no chip - not even a failed one - in the next composer"
+    assert out["nameLeaked"] is False
+    assert out["send"] == "owner B types" and out["blocked"] is False
+
+
+def test_the_inline_total_is_a_byte_budget(results):
+    """ATTACH_TOTAL_MAX is bytes. Three 200 KiB multibyte files: two fill the
+    budget exactly, the third is reference-only; every one is in custody whole
+    with its real size and digest, and nothing inlined is truncated."""
+    out = results["text_multibyte_budget"]
+    assert out["bytesEach"] == 200 * 1024 and out["charsEach"] == 100 * 1024
+    assert not out["blocked"]
+    assert out["inline"] == [{"chars": 100 * 1024, "whole": True},
+                             {"chars": 100 * 1024, "whole": True}, None], out["inline"]
+    assert out["posts"] == [[n, 200 * 1024, d] for n, d in
+                            zip(["e1.txt", "e2.txt", "e3.txt"], out["digests"])]
+    assert out["refs"] == [{"filename": n, "size": 200 * 1024, "sha256": d} for n, d in
+                           zip(["e1.txt", "e2.txt", "e3.txt"], out["digests"])]
+    assert out["display"] == "three\n\n📎 e1.txt, 📎 e2.txt, 📎 e3.txt"
+    assert out["chips"] == [["ready", False]] * 3
+
 
 _TURN_LIFT = ("sendTurn",)
 
