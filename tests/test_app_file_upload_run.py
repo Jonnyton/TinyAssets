@@ -19,9 +19,12 @@ import asyncio
 import base64
 import hashlib
 import json
+import sqlite3
 
 import pytest
 
+from tests.engine_authority_helpers import seed_bound_engine
+from tests.test_account_deletion import _seed_user
 from tests.test_app_file_upload import (  # noqa: F401 -- app is a fixture
     HOME_A,
     HOME_B,
@@ -38,6 +41,7 @@ from tinyassets import runs
 from tinyassets import universe_server as server
 from tinyassets.auth import middleware as mw
 
+HOME_C = "u-cccccccccccccccc"  # a later home for the SAME owner
 SIX_FIELDS = "{version,file_id,size_bytes,sha256,filename,media_type}"
 RPC_CALL = 'invoke_mcp_action("read_run_file", file_id=ref["file_id"], offset=0, count=524288)'
 
@@ -113,15 +117,21 @@ def test_registered_tool_descriptions_carry_the_attachment_recipe(mcp):
 
 
 def serve(monkeypatch, base, *, actor, home):
-    """Pin the served engine to one owner/home, as the hosted engine is."""
+    """Pin the served engine to one owner/home, as the hosted engine is.
+
+    Real serving authority, not a bypass: the actor is seeded as the home's
+    single serving creator with admin ACL (tests/engine_authority_helpers.py)
+    and the engine flag is on, so ``_binding_error``, the admission ledger and
+    every file ownership/custody guard run exactly as in production. Only the
+    local ASGI identity resolution is mocked.
+    """
     provider = mw._get_provider()
     monkeypatch.setattr(provider, "is_auth_required", lambda: False)
     monkeypatch.setattr(provider, "resolve_always_writes", lambda: True)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setattr(engine, "_GRAPH_ID", home)
     monkeypatch.setattr(engine, "_ACTOR_ID", actor)
-    monkeypatch.setattr(engine, "_binding_error", lambda: None)
-    monkeypatch.setattr(engine, "_engine_run_admit", lambda **kwargs: True)
+    seed_bound_engine(monkeypatch)
 
 
 def unwrap(raw):
@@ -166,6 +176,10 @@ def test_real_upload_to_served_create_run_and_exact_export(app, monkeypatch):
     assert run["output"]["heads"] == [binary[:16].hex(), ""]
     assert rows(base, "SELECT COUNT(*) FROM run_file_bindings WHERE run_id=?",
                 reply["run_id"]) == [(2,)]
+    # The REAL admission ledger charged this run: one row bound to its run id.
+    with sqlite3.connect(base / ".engine_run_admissions.db") as ledger:
+        assert ledger.execute("SELECT COUNT(*) FROM admissions WHERE run_id=?",
+                              (reply["run_id"],)).fetchone() == (1,)
 
     chunk = unwrap(engine.read_graph(target="run_file", run_id=reply["run_id"],
                                      file_id=refs[0]["file_id"], file_max_bytes=16))
@@ -177,7 +191,8 @@ def test_real_upload_to_served_create_run_and_exact_export(app, monkeypatch):
     assert base64.b64decode(tail["bytes_base64"]) == binary[-5:] and tail["eof"]
 
 
-@pytest.mark.parametrize("who", ["foreign_owner_and_home", "forged_reference"])
+@pytest.mark.parametrize("who", ["foreign_owner_and_home", "forged_reference",
+                                 "same_owner_changed_home"])
 def test_foreign_or_forged_reference_never_admits_a_run(app, monkeypatch, who):
     application, base = app
     binary = b"owned by A" * 1000
@@ -185,6 +200,11 @@ def test_foreign_or_forged_reference_never_admits_a_run(app, monkeypatch, who):
     if who == "forged_reference":
         serve(monkeypatch, base, actor=A, home=HOME_A)
         ref = {**ref, "sha256": hashlib.sha256(b"something else").hexdigest()}
+    elif who == "same_owner_changed_home":
+        # The upload was custody of (A, HOME_A). A's home moves on; the same
+        # owner served on the new home may not bind the old home's file.
+        _seed_user(base, A, HOME_C)
+        serve(monkeypatch, base, actor=A, home=HOME_C)
     else:
         serve(monkeypatch, base, actor=B, home=HOME_B)
     created = json.loads(engine.write_graph(target="branch", operation="create",
@@ -193,5 +213,9 @@ def test_foreign_or_forged_reference_never_admits_a_run(app, monkeypatch, who):
     reply = unwrap(engine.run_graph(branch_def_id=created["branch_def_id"],
                                     inputs_json=json.dumps({"files": [ref]})))
     assert reply.get("error") and not reply.get("run_id"), reply
+    # Refused by the file ownership/custody guard, not by a failed engine pin:
+    # the serving authority above is real, so the pin guard admits the caller.
+    assert "engine tools require" not in reply["error"], reply
+    assert "not bound to a founder" not in reply["error"], reply
     assert rows(base, "SELECT COUNT(*) FROM run_file_bindings") == [(0,)]
     assert rows(base, "SELECT COUNT(*) FROM runs") == [(0,)]

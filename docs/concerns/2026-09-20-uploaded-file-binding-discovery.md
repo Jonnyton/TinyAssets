@@ -1,5 +1,7 @@
 # Uploaded attachment cannot be processed through ordinary agent use
 
+**Filed:** 2026-09-20 | **Severity:** P1 | **Status:** description fix implemented locally, not deployed
+
 September20,2026, deployedf020bf26. Primary app paperclip accepted public PNG
 (47047bytes,512x512,SHA25648d3b31242c6eb570cb4f5209ec3016bc282f67a42e0143c56ef4fb42f5a6fa1).
 Natural request for pixel dimensions/checksum returned metadata only and
@@ -30,8 +32,8 @@ be reported as proof of the expired upload. Free-only account remains held.
 ## Status 2026-09-20 (branch codex/app-file-binding-guidance)
 
 Independent shape review (APPROVE) and root source check agreed: the runtime
-path exists end-to-end; the gap was the advertised tool descriptions. Landed on
-this branch, no runtime change:
+path exists end-to-end; the gap was the advertised tool descriptions.
+Implemented locally on this branch, not deployed; no runtime change:
 
 - served engine and connector `read_graph`/`write_graph`/`run_graph`
   descriptions now state that an app attachment is already a six-field
@@ -43,8 +45,11 @@ this branch, no runtime change:
 - `tests/test_app_file_upload_run.py`: registered descriptions carry the
   recipe (red on the old docstrings, both servers), and a real authenticated
   ASGI upload -> served create -> `run_graph` -> exact digest + first 16 bytes
-  -> bounded `read_graph` export, with foreign owner/home and forged
-  references still refused with zero runs reserved.
+  -> bounded `read_graph` export under REAL seeded serving authority
+  (`tests/engine_authority_helpers.py`, engine flag on, admission ledger and
+  binding recheck live; only local ASGI identity is mocked), with foreign
+  owner/home, forged references and the same owner on a changed home all
+  refused with zero runs reserved.
 - `openspec/specs/run-file-inputs/spec.md` discoverability requirement and
   scenario.
 
