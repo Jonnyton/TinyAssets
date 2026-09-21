@@ -173,3 +173,137 @@ def classify_unavailable(error: BaseException) -> SkipClass:
     if any(t in msg for t in auth_tells):
         return "auth_invalid"
     return "endpoint_unreachable"
+
+
+# ---------------------------------------------------------------------------
+# Stored-run classification of a held / single-source attempt
+# ---------------------------------------------------------------------------
+#
+# Two surfaces classify the SAME stored run row: ``api.runs`` (get_run /
+# run_branch) and ``runs._classify_failure`` (routing evidence, coding-process
+# health). They must not report two different causes for one row, and neither
+# may take its answer from free text -- the owner's own model id, their
+# connection id, or a provider's `detail` all end up inside the stored string,
+# so a substring net reads "timeout" off a model called ``fast-timeout-v2``.
+# The typed attempt evidence is the only honest source, so it lives here, at the
+# layer that produced it, below both readers (``runs`` importing ``api`` would
+# be a cycle).
+
+#: The compact JSON evidence suffix ``graph_compiler._wrap_provider_failure``
+#: appends to a provider failure. Everything after it is data, never a class.
+CHAIN_STATE_MARKER = "[chain_state]:"
+
+#: The attempt's own classified cause -> the run failure class both surfaces
+#: report. Streamed ``failure_class`` first, the coarser ``skip_class`` when an
+#: attempt carried none. Values are EXISTING run classes (``ACTIONABLE_BY``
+#: knows them); this table adds no taxonomy.
+HELD_ATTEMPT_RUN_CLASSES: dict[str, str] = {
+    "provider_idle_timeout": "timeout",
+    "interactive_deadline": "timeout",
+    "provider_protocol_error": "provider_error",
+    "auth_invalid": "auth_invalid",
+    "provider_rate_limited": "quota_exhausted",
+    "provider_credit_exhausted": "quota_exhausted",
+    "provider_overloaded": "provider_overloaded",
+    "timed_out": "timeout",
+    "provider_error": "provider_error",
+    "endpoint_unreachable": "provider_error",
+    "quota_or_cooldown": "quota_exhausted",
+}
+
+#: A HELD attempt whose cause this table does not name -- the diagnostics enum's
+#: own literal "unknown", or a class a later slice adds. Not an established
+#: provider error: asserting one would put a diagnosis in the run record that no
+#: evidence supports. "unknown" is still strictly better than the
+#: "connect your provider" a substring net produces for a source that was bound.
+HELD_ATTEMPT_UNRECOGNISED_CLASS = "unknown"
+
+
+@dataclass(frozen=True)
+class HeldAttemptDiagnosis:
+    """What the typed evidence on a stored held/single-source row supports."""
+
+    #: The run failure class BOTH stored-run surfaces must report.
+    run_class: str
+    #: The attempt's own classified cause, or ``None`` when none was recorded.
+    cause: str | None
+    #: The attempt's provider/connection id, or ``""``.
+    provider: str
+    #: True for a held ATTEMPT, False for a single-source no-widening raise.
+    held: bool
+    #: True when ``cause`` is named by :data:`HELD_ATTEMPT_RUN_CLASSES`.
+    recognised: bool
+    #: True only when a FAILED attempt record exists. A skipped (never tried)
+    #: attempt proves nothing was invoked, so advice must not say it was.
+    invoked: bool
+
+
+def chain_state_from_error(error: str) -> dict[str, Any] | None:
+    """Parse the compact ``[chain_state]:`` suffix off a stored error string."""
+    import json
+
+    if CHAIN_STATE_MARKER not in (error or ""):
+        return None
+    suffix = error.rsplit(CHAIN_STATE_MARKER, 1)[1].strip()
+    if not suffix:
+        return None
+    try:
+        parsed = json.loads(suffix)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def held_attempt_diagnosis(
+    error_text: str, chain_state: dict[str, Any] | None = None,
+) -> HeldAttemptDiagnosis | None:
+    """Classify a held / single-source stored run error from its typed evidence.
+
+    ``None`` means "not one of these raises, or nothing typed to say" and the
+    caller keeps its own classification:
+
+    * a held attempt always gets an answer -- the evidenced class, else
+      :data:`HELD_ATTEMPT_UNRECOGNISED_CLASS`;
+    * a single-source (``NO_WIDENING_MESSAGE``) raise gets one only when its
+      cause is recognised. Without evidence, the existing classifiers already
+      say something true about an exhausted chain, and flattening that to
+      "unknown" would lose it.
+
+    The marker is looked for BEFORE the evidence suffix, and the class comes
+    from the attempt record: a provider ``detail`` that happens to say "timed
+    out", a model id containing "timeout", or a connection named "exhausted"
+    cannot move the answer.
+    """
+    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+
+    head = (error_text or "").split(CHAIN_STATE_MARKER, 1)[0].lower()
+    held = ProviderAuthorityHeldError.ATTEMPT_MESSAGE in head
+    if not held and AllProvidersExhaustedError.NO_WIDENING_MESSAGE not in head:
+        return None
+    if chain_state is None:
+        chain_state = chain_state_from_error(error_text)
+    attempts = chain_state.get("attempts") if isinstance(chain_state, dict) else None
+    failed = [
+        item for item in (attempts if isinstance(attempts, list) else [])
+        if isinstance(item, dict) and item.get("status") == "failed"
+    ]
+    cause: str | None = None
+    provider = ""
+    if failed:
+        raw = failed[-1].get("failure_class") or failed[-1].get("skip_class")
+        cause = raw if isinstance(raw, str) and raw else None
+        provider = str(failed[-1].get("provider") or "")
+    recognised = cause is not None and cause in HELD_ATTEMPT_RUN_CLASSES
+    if recognised:
+        return HeldAttemptDiagnosis(
+            run_class=HELD_ATTEMPT_RUN_CLASSES[cause],
+            cause=cause, provider=provider, held=held,
+            recognised=True, invoked=True,
+        )
+    if held:
+        return HeldAttemptDiagnosis(
+            run_class=HELD_ATTEMPT_UNRECOGNISED_CLASS,
+            cause=cause, provider=provider, held=True,
+            recognised=False, invoked=bool(failed),
+        )
+    return None

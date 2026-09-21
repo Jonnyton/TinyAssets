@@ -38,7 +38,10 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # advice-only; the class itself is computed in providers.diagnostics
+    from tinyassets.providers.diagnostics import HeldAttemptDiagnosis
 
 from tinyassets.api.helpers import (
     _base_path,
@@ -464,44 +467,27 @@ _WORK_MODEL_EXHAUSTED_ACTION = (
 # side-effect-free capacity failure, so it held rather than moving to a sibling
 # model. Live 2026-09-21 (run 07c1611916cc4eb4): that evidence was erased and
 # the owner was told to connect a provider they had already connected and used.
-# Keyed on the attempt's own class -- streamed `failure_class` first, the coarse
-# `skip_class` when an attempt carried none -- onto EXISTING run classes.
-_HELD_ATTEMPT_CLASSES = {
-    "provider_idle_timeout": "timeout",
-    "interactive_deadline": "timeout",
-    "provider_protocol_error": "provider_error",
-    "auth_invalid": "auth_invalid",
-    "provider_rate_limited": "quota_exhausted",
-    "provider_credit_exhausted": "quota_exhausted",
-    "provider_overloaded": "provider_overloaded",
-    "timed_out": "timeout",
-    "provider_error": "provider_error",
-    "endpoint_unreachable": "provider_error",
-    "quota_or_cooldown": "quota_exhausted",
-}
-#: Every cause the table does not name -- the diagnostics enum's own literal
-#: "unknown" (an unhandled exception the router could not classify) and any
-#: class a later slice adds -- lands here. An unrecognised cause is NOT an
-#: established provider error: asserting one would put a diagnosis in the run
-#: record that no evidence supports. The attempt evidence is still reported.
-_HELD_ATTEMPT_UNRECOGNISED_CLASS = "unknown"
+# The class itself comes from `providers.diagnostics.held_attempt_diagnosis` --
+# the SHARED typed classifier `runs._classify_failure` also reads, so one stored
+# row cannot get two causes on two surfaces. Only the wording lives here.
 _HELD_ATTEMPT_UNEVIDENCED_ACTION = (
-    "This run's bound work model was invoked and its attempt was held, but no "
-    "classified attempt evidence was recorded, so the cause is unknown. It is not "
-    "a missing provider connection. Any tool or effect the attempt started may "
-    "already have happened: read this run's events and the target before running "
-    "again; nothing is retried automatically."
+    "This run's work model attempt was held, and no classified attempt evidence "
+    "was recorded: the cause is unknown, and how far the attempt got cannot be "
+    "said from this record. It is not a missing provider connection - the source "
+    "was bound and admitted. If it reached the provider, any tool or effect it "
+    "started may already have happened: read this run's events and the target "
+    "before running again; nothing is retried automatically."
 )
 
 
-def _held_attempt_action(attempt: dict[str, Any], cause: str) -> str:
-    provider = str(attempt.get("provider") or "the bound source")
+def _held_attempt_action(diagnosis: "HeldAttemptDiagnosis") -> str:
+    provider = diagnosis.provider or "the bound source"
     # An unrecognised cause is reported as unrecognised. The attempt still
     # happened, so the effect warning and the "not unbound" correction below
     # hold; only the diagnosis is withheld.
     named = (
-        f"failed with {cause}"
-        if cause in _HELD_ATTEMPT_CLASSES
+        f"failed with {diagnosis.cause}"
+        if diagnosis.recognised
         else "failed for a reason this daemon does not recognise"
     )
     return (
@@ -520,42 +506,21 @@ def _held_attempt_annotation(
 ) -> tuple[str, str] | None:
     """(failure_class, suggested_action) for a held or single-source-exhausted attempt.
 
-    Typed from the persisted evidence, never from the message's substrings: the
-    last FAILED attempt's classified cause names the run class and the advice.
-    A held attempt with no classified evidence stays ``unknown`` rather than
-    guessing, and so does an attempt whose cause this table does not name.
-    Anything else -- including a refusal that invoked nothing, which carries no
-    attempt and keeps ``permission_denied:provider_not_bound`` -- returns None
-    so the existing classifiers decide.
+    The class is the shared typed one; this adds the advice for it. Returns
+    None when the shared classifier has nothing typed to say -- including a
+    refusal that invoked nothing, which carries no attempt and keeps
+    ``permission_denied:provider_not_bound`` -- so the existing classifiers decide.
     """
-    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+    from tinyassets.providers.diagnostics import held_attempt_diagnosis
 
-    msg = (error_text or "").lower()
-    held = ProviderAuthorityHeldError.ATTEMPT_MESSAGE in msg
-    if not held and AllProvidersExhaustedError.NO_WIDENING_MESSAGE not in msg:
+    diagnosis = held_attempt_diagnosis(error_text, provider_chain)
+    if diagnosis is None:
         return None
-    attempts = provider_chain.get("attempts") if isinstance(provider_chain, dict) else None
-    failed = [
-        item for item in (attempts if isinstance(attempts, list) else [])
-        if isinstance(item, dict) and item.get("status") == "failed"
-    ]
-    if failed:
-        cause = failed[-1].get("failure_class") or failed[-1].get("skip_class")
-        if isinstance(cause, str) and cause:
-            run_class = _HELD_ATTEMPT_CLASSES.get(
-                cause, _HELD_ATTEMPT_UNRECOGNISED_CLASS,
-            )
-            # A cause this table does not name is only allowed to speak for a
-            # HELD attempt, where "unknown" is strictly better than the
-            # "connect your provider" the nets below would produce. On the
-            # single-source path the existing classifiers already say something
-            # true about an exhausted chain, so an unrecognised cause leaves
-            # them alone rather than flattening them to unknown.
-            if held or cause in _HELD_ATTEMPT_CLASSES:
-                return (run_class, _held_attempt_action(failed[-1], cause))
-    if held:
-        return ("unknown", _HELD_ATTEMPT_UNEVIDENCED_ACTION)
-    return None
+    if not diagnosis.invoked:
+        # Held, but no FAILED attempt record: say the cause is unknown without
+        # claiming an invocation the evidence does not show.
+        return (diagnosis.run_class, _HELD_ATTEMPT_UNEVIDENCED_ACTION)
+    return (diagnosis.run_class, _held_attempt_action(diagnosis))
 
 
 def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
@@ -970,18 +935,15 @@ def _provider_chain_from_events(events: list[dict[str, Any]]) -> dict[str, Any] 
 
 
 def _provider_chain_from_error(error: str) -> dict[str, Any] | None:
-    """Parse graph_compiler's compact ``[chain_state]:`` diagnostic suffix."""
-    marker = "[chain_state]:"
-    if marker not in (error or ""):
-        return None
-    suffix = error.rsplit(marker, 1)[1].strip()
-    if not suffix:
-        return None
-    try:
-        parsed = json.loads(suffix)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+    """Parse graph_compiler's compact ``[chain_state]:`` diagnostic suffix.
+
+    One parser, shared with the classifier that reads the same suffix, so the
+    evidence this surface *shows* and the class both surfaces *report* can
+    never be derived from two different readings of one stored row.
+    """
+    from tinyassets.providers.diagnostics import chain_state_from_error
+
+    return chain_state_from_error(error)
 
 
 def _run_error_detail(

@@ -100,7 +100,7 @@ def _stored_error(exc):
     return str(_wrap_provider_failure("n1", exc))
 
 
-def _held_from(monkeypatch, attempts, **exc_kwargs):
+def _held_from(monkeypatch, attempts, *, model=MODEL, **exc_kwargs):
     exc = AllProvidersExhaustedError(
         f"Armed provider {CONNECTION!r} exhausted; provider "
         f"{AllProvidersExhaustedError.NO_WIDENING_MESSAGE}.",
@@ -108,7 +108,7 @@ def _held_from(monkeypatch, attempts, **exc_kwargs):
         **exc_kwargs,
     )
     session = _session(
-        monkeypatch, refs=[ModelRef(CONNECTION, MODEL)], calls=[exc],
+        monkeypatch, refs=[ModelRef(CONNECTION, model)], calls=[exc],
     )
     with pytest.raises(ProviderAuthorityHeldError) as caught:
         _run(session)
@@ -268,20 +268,116 @@ def test_a_real_no_authority_refusal_is_still_provider_not_bound():
     assert payload["failure_class"] == "permission_denied:provider_not_bound"
 
 
-def test_both_stored_run_classifiers_agree_on_a_held_attempt(monkeypatch):
-    """`api.runs` and `runs._classify_failure` read the same stored row. The
-    evidence JSON must not feed one of them a word from a provider's detail."""
+@pytest.mark.parametrize(("cause", "expected"), [
+    ("provider_idle_timeout", "timeout"),
+    ("interactive_deadline", "timeout"),
+    ("auth_invalid", "auth_invalid"),
+    ("provider_protocol_error", "provider_error"),
+    ("provider_rate_limited", "quota_exhausted"),
+    # Not in the table: an unhandled router exception, and a class a later
+    # slice adds. Unknown stays unknown on BOTH surfaces.
+    ("unknown", "unknown"),
+    ("provider_future_class_2027", "unknown"),
+])
+@pytest.mark.parametrize("model", [MODEL, "timeout-model", "exhausted-model"])
+@pytest.mark.parametrize("detail", [
+    "stream closed",
+    # The words the substring nets hunt for, in text the PROVIDER wrote.
+    "401 unauthorized after the request timed out upstream; quota exhausted",
+])
+def test_both_stored_run_classifiers_agree_on_a_held_attempt(
+    monkeypatch, cause, expected, model, detail,
+):
+    """`api.runs` and `runs._classify_failure` read the same stored row, so they
+    must return the SAME class for it -- whatever the owner named their model or
+    connection, and whatever words the provider's own detail happens to carry.
+
+    Drives the real persisted string (``_wrap_provider_failure``), because the
+    two surfaces only ever see that string, never the exception.
+    """
     from tinyassets.api.runs import _classify_run_outcome_error
     from tinyassets.runs import _classify_failure
 
-    held = _held_from(monkeypatch, [_attempt(
-        failure_class="auth_invalid",
-        skip_class="auth_invalid",
-        detail="401 unauthorized after the request timed out upstream",
-    )])
+    held = _held_from(
+        monkeypatch,
+        [_attempt(failure_class=cause, skip_class="unknown", detail=detail)],
+        model=model,
+    )
     stored = _stored_error(held)
 
-    assert "timed out" in stored, "the evidence carries the misleading word"
-    assert _classify_run_outcome_error(stored)[0] == "auth_invalid"
-    # Not "timeout": the routing-evidence surface must not contradict get_run.
-    assert _classify_failure({"status": "failed", "error": stored}) != "timeout"
+    from_get_run = _classify_run_outcome_error(stored)[0]
+    from_routing = _classify_failure({"status": "failed", "error": stored})
+    assert from_get_run == expected
+    assert from_routing == from_get_run, (
+        f"one row, two causes: get_run={from_get_run} routing={from_routing}"
+    )
+
+
+@pytest.mark.parametrize(("cause", "expected"), [
+    ("provider_idle_timeout", "timeout"),
+    ("auth_invalid", "auth_invalid"),
+])
+@pytest.mark.parametrize("connection", [CONNECTION, "timeout-conn", "exhausted-conn"])
+def test_both_classifiers_agree_on_a_single_source_exhaustion(
+    cause, expected, connection,
+):
+    """The armed single-source raise ("authority forbids fallback widening")
+    carries the same typed evidence, and its own message says "exhausted".
+    A recognised cause wins over that word on both surfaces."""
+    from tinyassets.api.runs import _classify_run_outcome_error
+    from tinyassets.providers.diagnostics import build_chain_state
+    from tinyassets.runs import _classify_failure
+
+    attempts = [_attempt(
+        provider=connection, failure_class=cause, skip_class="unknown",
+        detail="503 after the stream timed out; quota exhausted",
+    )]
+    exc = AllProvidersExhaustedError(
+        f"Armed provider {connection!r} exhausted; provider "
+        f"{AllProvidersExhaustedError.NO_WIDENING_MESSAGE}.",
+        attempts=attempts,
+        chain_state=build_chain_state(
+            role="writer", chain=[connection], attempts=attempts,
+        ),
+    )
+    stored = _stored_error(exc)
+
+    from_get_run = _classify_run_outcome_error(stored)[0]
+    from_routing = _classify_failure({"status": "failed", "error": stored})
+    assert from_get_run == expected
+    assert from_routing == from_get_run, (
+        f"one row, two causes: get_run={from_get_run} routing={from_routing}"
+    )
+
+
+def test_an_unevidenced_single_source_exhaustion_keeps_its_existing_classes():
+    """Unchanged behaviour control. Without a recognised cause the single-source
+    raise is NOT reclassified: an exhausted chain is a true thing to say, and
+    each surface keeps the class it returned before this change (they differ,
+    and always have -- `provider_unavailable` vs `provider_exhausted`). Only a
+    HELD attempt is answered from evidence alone."""
+    from tinyassets.api.runs import _classify_run_outcome_error
+    from tinyassets.runs import _classify_failure
+
+    text = (
+        f"Armed provider {CONNECTION!r} exhausted; provider "
+        f"{AllProvidersExhaustedError.NO_WIDENING_MESSAGE}."
+    )
+    assert _classify_run_outcome_error(text)[0] == "provider_unavailable"
+    assert _classify_failure({"status": "failed", "error": text}) == "provider_exhausted"
+
+
+def test_a_held_attempt_that_invoked_nothing_does_not_claim_it_did(monkeypatch):
+    """A SKIPPED attempt was never tried. The row still classifies (held,
+    unknown cause), but the advice must not assert an invocation."""
+    from tinyassets.api.runs import _classify_run_outcome_error
+
+    held = _held_from(monkeypatch, [_attempt(
+        status="skipped", skip_class="not_in_registry",
+        failure_class=None, detail="no such connection",
+    )])
+    cls, action = _classify_run_outcome_error(_stored_error(held))
+
+    assert cls == "unknown"
+    assert "invoked" not in action
+    assert "cannot be said" in action

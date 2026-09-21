@@ -211,6 +211,10 @@ The provider runtime SHALL distinguish imported/registered providers, quota or c
 - **WHEN** an armed captured-prompt attempt fails and the capacity boundary cannot prove it was side-effect-free, so the run holds rather than trying a sibling model
 - **THEN** the held error carries the redacted attempts and `chain_state` on the OUTER exception (the compiler's failed event and error suffix read it there), the run read reports that attempt's own class — `provider_idle_timeout`/`interactive_deadline` as `timeout`, `provider_protocol_error` as `provider_error`, `auth_invalid` as `auth_invalid` — with advice that any effect the attempt started may already have happened and that nothing is retried automatically, an attempt whose cause is absent or not recognized stays `unknown` rather than asserting a provider error, and a refusal that invoked nothing still reports `permission_denied:provider_not_bound`
 
+#### Scenario: one stored run row gets one cause on every surface
+- **WHEN** any surface classifies a stored run whose error is a held attempt or a single-source no-widening raise
+- **THEN** the class comes from the last failed attempt's own classified cause in the persisted evidence, so the run-read and routing-evidence surfaces report the SAME class for that row, and neither derives it from free text — the owner's model id or connection id (one containing `timeout` or `exhausted`) and a provider's `detail` cannot change the answer
+
 #### Scenario: cooldowns expire locally
 - **WHEN** a provider's monotonic cooldown expiry has passed
 - **THEN** the next availability check clears that cooldown and treats the provider as available subject to its rolling rate windows
