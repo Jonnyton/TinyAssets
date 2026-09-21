@@ -454,6 +454,24 @@ def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
         "permission_denied:provider_not_bound",
         _PROVIDER_NOT_BOUND_ACTION,
     ))
+    # A stored io_manifest that the strict parser refuses (an unsupported
+    # top-level key such as ``file_inputs``) must not fall through to the scalar
+    # path and "complete" with zero bindings (live finding 2026-09-21). The run
+    # is refused before any run row or binding exists; the owner repairs it.
+    # Matched on the NARROW subclass only: a general AuthoringValidationError
+    # (inputs violating a valid manifest, a bad node definition) is not an
+    # invalid manifest and must not be told to rewrite one.
+    from tinyassets.authoring.io import UnsupportedManifestKeyError
+
+    rows.append((
+        UnsupportedManifestKeyError,
+        "compile_error",
+        "This branch's stored io_manifest declares an unsupported top-level key, so "
+        "the run was refused before any run or file binding existed. Repair it with write_graph "
+        'operation=patch, payload [{"op": "set_io_manifest", "io_manifest": '
+        '{"inputs": [{"name": <state field>, "io_type": "file_bundle", ...}]}}], '
+        "then run again.",
+    ))
     rows.append((
         RecursionError,
         "recursion_limit",

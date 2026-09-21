@@ -54,6 +54,12 @@ remain subject to explicit release or erasure, not that staging deadline.
 ### Requirement: Ordinary branch authoring preserves editable file contracts
 
 Branch create/remix and patch operations SHALL preserve exact `io_manifest` declarations and validate the final staged contract through the strict shared runtime parser.
+The strict parser SHALL refuse any top-level `io_manifest` key other than
+`inputs`/`outputs`, naming the accepted shape and the `file`/`file_bundle`
+declaration, at create/patch and again at run admission before any run row or
+binding exists. Absent, empty and supported manifests SHALL remain accepted; an
+already-stored invalid declaration SHALL remain readable and patchable, and a
+reference-shaped value under an undeclared field remains ordinary data.
 File input declarations SHALL match dict/list state fields. `set_io_manifest`
 SHALL require an explicit member: null clears, an object replaces, and omission
 rejects. Remix omission SHALL inherit its immutable parent's contract; explicit
@@ -122,6 +128,8 @@ The served agent SHALL expose these operations through its existing pinned
 owner/universe graph handles. This first slice SHALL refuse nested direct
 provenance; other file-bearing origins remain outside its accepted contract.
 
+The served `write_graph` description SHALL carry that compact recipe near its
+start, not only in a later section.
 The advertised `read_graph`, `write_graph` and `run_graph` descriptions, on the
 served engine and the connector, SHALL state that an app attachment is already
 an exact six-field reference which binds VERBATIM through a declared

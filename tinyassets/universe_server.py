@@ -858,7 +858,8 @@ def write_graph(
     the bytes, create the branch with io_manifest
     {"inputs":[{"name":"files","io_type":"file_bundle","max_count":4,
     "max_bytes":4194304}]} plus a matching state field (file_bundle needs a list
-    field, file a dict field), and a source_code node declaring that field in
+    field, file a dict field; inputs/outputs are the only top-level manifest
+    keys and any other key is refused), and a source_code node declaring that field in
     input_keys with tools_allowed ["read_run_file"], reading by keyword call
     invoke_mcp_action("read_run_file", file_id=ref["file_id"], offset=0,
     count=524288) which returns bytes_base64, next_offset and eof (loop until
