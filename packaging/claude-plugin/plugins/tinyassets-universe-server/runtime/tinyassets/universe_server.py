@@ -3934,18 +3934,19 @@ def create_streamable_http_app() -> Starlette:
         # Raises loudly (fail-fast boot) on an undeclared remainder.
         from tinyassets.api.visibility import run_visibility_startup_gate
 
-        # The scheduler starts whenever the daemon serves — schedules are a user's
-        # own automations and do not belong to the inbound channel surface
-        # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates
-        # the entire inbound HTTP path (Codex #2): it keeps the `/hooks/*` route
-        # unmounted below, and `_emit_source_event` refuses when the bus is down.
-        # DARK by default there; tests drive the Scheduler + handle_hook directly.
-        start_scheduler_for_serving()
-
         try:
             from tinyassets.consumer_runtime import initialize as initialize_consumer
 
+            # Initialize storage before the scheduler's immediate tick can open
+            # the same fresh database and race its first journal-mode switch.
             initialize_consumer(data_dir())
+            # The scheduler starts whenever the daemon serves — schedules are a user's
+            # own automations and do not belong to the inbound channel surface
+            # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates
+            # the entire inbound HTTP path (Codex #2): it keeps the `/hooks/*` route
+            # unmounted below, and `_emit_source_event` refuses when the bus is down.
+            # DARK by default there; tests drive the Scheduler + handle_hook directly.
+            start_scheduler_for_serving()
             run_visibility_startup_gate()
             async with AsyncExitStack() as stack:
                 await stack.enter_async_context(
@@ -4200,6 +4201,11 @@ def main(
         from tinyassets.storage import data_dir as assigned_data_dir
 
         if assigned_queue_consumer_enabled():
+            # The lifespan has not run yet. Its storage initialization must also
+            # precede this polling worker; best-effort boot maintenance may fail.
+            from tinyassets.consumer_runtime import initialize as initialize_consumer
+
+            initialize_consumer(assigned_data_dir())
             assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
             assigned_consumer.start()
         try:
@@ -4220,13 +4226,15 @@ def main(
         assigned_queue_consumer_enabled,
     )
 
-    if assigned_queue_consumer_enabled():
-        assigned_consumer = AssignedQueueConsumer(data_dir())
-        assigned_consumer.start()
     try:
         from tinyassets.consumer_runtime import initialize as initialize_consumer
 
+        # Do not rely on best-effort boot maintenance: storage must be ready
+        # before the assigned consumer can open the same database.
         initialize_consumer(data_dir())
+        if assigned_queue_consumer_enabled():
+            assigned_consumer = AssignedQueueConsumer(data_dir())
+            assigned_consumer.start()
         run_visibility_startup_gate()
         if transport in ("sse", "stdio"):
             # Neither transport carries a bearer, and neither runs behind the
