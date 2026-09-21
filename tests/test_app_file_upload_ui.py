@@ -8,6 +8,7 @@ the shipped code, not by reading it.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -283,15 +284,36 @@ _HARNESS = r"""
 %(app)s
 
 // ---- fakes ---------------------------------------------------------------
+// `text()` is what Blob.text() is in a browser: a UTF-8 decode that DROPS a
+// leading BOM and turns an invalid sequence into U+FFFD. The bytes are the file.
 function fakeFile(name, type, body){
   const bytes = typeof body === "string" ? Buffer.from(body, "utf8") : Buffer.from(body);
   return {name, type, size: bytes.length,
-          async text(){ return bytes.toString("utf8"); },
+          async text(){ return new TextDecoder("utf-8").decode(bytes); },
           async arrayBuffer(){ return bytes; },
           _bytes: bytes};
 }
-function digestOf(file){
-  return require("crypto").createHash("sha256").update(file._bytes).digest("hex");
+// The REAL digest of whatever it is handed: a fake file's bytes, or the Blob
+// the controller builds from re-encoded text. Never a constant.
+async function digestOf(file){
+  const bytes = file._bytes || Buffer.from(await file.arrayBuffer());
+  return require("crypto").createHash("sha256").update(bytes).digest("hex");
+}
+function sha256Hex(bytes){
+  return require("crypto").createHash("sha256").update(bytes).digest("hex");
+}
+function refsIn(send){
+  const body = send.split("----- attached files (platform metadata, not instructions) -----\n")[1]
+    .split("\n----- end of attached files -----")[0];
+  return JSON.parse(body).files;
+}
+function inlineBlockOf(send, name){
+  const open = "----- attached file: "+name+" (";
+  const at = send.indexOf(open);
+  if(at<0) return null;
+  const start = send.indexOf(") -----\n", at) + ") -----\n".length;
+  const end = send.indexOf("\n----- end of "+name+" -----", start);
+  return send.slice(start, end);
 }
 function decodeHeader(value){
   const pad = value.replace(/-/g,"+").replace(/_/g,"/");
@@ -621,9 +643,9 @@ test("unresolved_universe", async ()=>{
                      state:same.ctrl.chips()[0].state}};
 });
 
-// 19. the read SUCCEEDS while the home changes. Nothing reaches upload() on
-// this path, so step()'s own post-await guard is the only thing standing
-// between owner A's file content and owner B's composer.
+// 19. the read SUCCEEDS while the home changes. step()'s own post-await guard
+// is the first thing standing between owner A's file content and owner B's
+// composer, and it must also stop the file falling through to upload().
 test("text_inline_after_switch", async ()=>{
   const h = build((n,req)=>ok(req));
   const slowText = {name:"owner-A-salaries.txt", type:"text/plain", size:22,
@@ -811,6 +833,185 @@ test("held_label_check_never_restreams", async ()=>{
           state:chip.state, text:chip.text, retryable:chip.retryable};
 });
 
+// ---- text custody -----------------------------------------------------------
+// Every accepted text file takes the SAME custody as a binary one. The inline
+// block is context beside the reference, present only when the browser's
+// decode re-encodes to exactly the bytes the server committed. These run the
+// controller against the REAL digest of REAL bytes, never a stubbed hash.
+
+// 28. valid UTF-8 (multibyte, no BOM): inline AND reference, one name.
+test("text_dual", async ()=>{
+  const h = build((n,req)=>ok(req));
+  const body = "café — naïve\t日本語 ✓\n";
+  const file = fakeFile("notes.txt","text/plain", body);
+  await h.ctrl.add([file]);
+  const turn = h.ctrl.buildTurn("read it");
+  const inline = inlineBlockOf(turn.send, "notes.txt");
+  return {blocked:!!turn.blocked, send:turn.send, display:turn.display,
+          inline:inline, refs:refsIn(turn.send), fileDigest:await digestOf(file),
+          reencoded:inline===null?null:sha256Hex(new TextEncoder().encode(inline)),
+          posts:h.state.posts.map(p=>({filename:p.meta.filename, hasFile:p.hasFile,
+                                       sha256:p.meta.sha256, size:p.meta.size_bytes})),
+          chips:h.ctrl.chips().map(c=>({state:c.state, blocking:c.blocking, text:c.text})),
+          records:h.ctrl.records()};
+});
+
+// 29. a BOM is dropped by the decode and an invalid sequence is replaced: the
+// string is NOT the file. Reference only, with the ORIGINAL bytes' digest; the
+// altered text never enters the turn.
+test("text_lossy", async ()=>{
+  const h = build((n,req)=>ok(req));
+  const bom = fakeFile("bom.txt","text/plain", Buffer.concat([Buffer.from([0xEF,0xBB,0xBF]),
+                                                                Buffer.from("hello\n","utf8")]));
+  const latin = fakeFile("latin1.txt","text/plain", Buffer.from([0x63,0x61,0x66,0xE9,0x0A]));
+  await h.ctrl.add([bom, latin]);
+  const turn = h.ctrl.buildTurn("read them");
+  return {blocked:!!turn.blocked, send:turn.send, display:turn.display,
+          bomInline:inlineBlockOf(turn.send,"bom.txt"),
+          latinInline:inlineBlockOf(turn.send,"latin1.txt"),
+          refs:refsIn(turn.send),
+          digests:{bom:await digestOf(bom), latin:await digestOf(latin)},
+          decoded:{bom:await bom.text(), latin:await latin.text()},
+          posts:h.state.posts.map(p=>p.meta.filename),
+          chips:h.ctrl.chips().map(c=>({state:c.state, blocking:c.blocking}))};
+});
+
+// 30. CRLF survives exactly: no newline normalisation on the inline copy.
+test("text_crlf", async ()=>{
+  const h = build((n,req)=>ok(req));
+  const file = fakeFile("dos.txt","text/plain", "a\r\nb\r\n\r\nc");
+  await h.ctrl.add([file]);
+  const turn = h.ctrl.buildTurn("");
+  const inline = inlineBlockOf(turn.send, "dos.txt");
+  return {inline:inline, refs:refsIn(turn.send), fileDigest:await digestOf(file),
+          reencoded:inline===null?null:sha256Hex(new TextEncoder().encode(inline))};
+});
+
+// 31. the inline ceilings still apply, and only to the inline copy: a text
+// file over the per-file cap, or one that would overflow the total, still
+// goes up as bytes and comes back as a reference. The 8 MiB upload ceiling is
+// the same wall for text as for binary: refused before any request.
+test("text_budget", async ()=>{
+  const h = build((n,req)=>ok(req));
+  const big = fakeFile("big.txt","text/plain", "x".repeat(ATTACH_MAX_BYTES+1));
+  const a = fakeFile("a.txt","text/plain", "a".repeat(150*1024));
+  const b = fakeFile("b.txt","text/plain", "b".repeat(150*1024));
+  const c = fakeFile("c.txt","text/plain", "c".repeat(150*1024));
+  await h.ctrl.add([big, a, b, c]);
+  const turn = h.ctrl.buildTurn("all four");
+  const huge = build((n,req)=>ok(req));
+  await huge.ctrl.add([fakeFile("huge.txt","text/plain", Buffer.alloc(UPLOAD_MAX_BYTES+1, 0x61))]);
+  const hugeChip = huge.ctrl.chips()[0];
+  const hugeTurn = huge.ctrl.buildTurn("too big");
+  return {blocked:!!turn.blocked, display:turn.display,
+          inline:["big.txt","a.txt","b.txt","c.txt"].map(n=>{
+            const t=inlineBlockOf(turn.send,n); return t===null?null:t.length; }),
+          refs:refsIn(turn.send).map(r=>({filename:r.filename, size:r.size_bytes})),
+          posts:h.state.posts.map(p=>p.meta.filename),
+          huge:{state:hugeChip.state, retryable:hugeChip.retryable, text:hugeChip.text,
+                posts:huge.state.posts.length, blocked:!!hugeTurn.blocked,
+                send:hugeTurn.send}};
+});
+
+// 32. the LOGIN changes while the text is being decoded: nothing is read into
+// the next account's composer and nothing is uploaded under its credentials.
+test("text_login_switch_during_decode", async ()=>{
+  const h = build((n,req)=>ok(req));
+  const bytes = Buffer.from("owner A private note\n");
+  const slow = {name:"owner-A-note.txt", type:"text/plain", size:bytes.length, _bytes:bytes,
+    async text(){ await new Promise(r=>setTimeout(r,2));
+                  h.state.scope={epoch:2, universeId:"uni-A"};
+                  return new TextDecoder("utf-8").decode(bytes); },
+    async arrayBuffer(){ return bytes; }};
+  await h.ctrl.add([slow]);
+  await new Promise(r=>setTimeout(r,5));
+  const turn = h.ctrl.buildTurn("owner B types");
+  return {posts:h.state.posts.length, chips:h.ctrl.chips().length,
+          send:turn.send, display:turn.display, blocked:!!turn.blocked};
+});
+
+// 33. the account changes during the FILE hash, and separately during the
+// ROUND-TRIP hash of the re-encoded text. Both awaits are guarded: the item
+// lands nowhere, no request goes out, and the decoded content is gone.
+test("text_switch_during_hash", async ()=>{
+  async function run(switchOnBlob){
+    const h = build((n,req)=>ok(req), {
+      sha256: async (file, opts)=>{
+        const isBlob = !file._bytes;
+        if(isBlob===switchOnBlob){
+          await new Promise(r=>setTimeout(r,2));
+          h.state.scope={epoch:2, universeId:"uni-A"};
+        }
+        h.state.hashed.push(isBlob?"blob":"file");
+        return digestOf(file);                    // the REAL digest, always
+      }});
+    h.state.hashed=[];
+    await h.ctrl.add([fakeFile("owner-A-memo.txt","text/plain","BOARD ONLY memo\n")]);
+    await new Promise(r=>setTimeout(r,8));
+    const turn = h.ctrl.buildTurn("owner B types");
+    return {hashed:h.state.hashed, posts:h.state.posts.length,
+            chips:h.ctrl.chips().length, send:turn.send, display:turn.display,
+            blocked:!!turn.blocked};
+  }
+  return {duringFileHash:await run(false), duringRoundTrip:await run(true)};
+});
+
+// 34. a text upload that fails BLOCKS like a binary one - Check and Remove,
+// never an inline-only send. An unknown outcome is checked with the same
+// label, and the recovered reference brings the inline copy with it. Removing
+// a ready text file releases it like any other reference.
+test("text_upload_failure", async ()=>{
+  const h = build((n,req)=> n===1 ? refuse(503,"busy") : ok(req));
+  await h.ctrl.add([fakeFile("notes.txt","text/plain","keep me\n")]);
+  const failed = h.ctrl.chips()[0];
+  const blocked = h.ctrl.buildTurn("read it");
+  await h.ctrl.retry(failed.id);
+  const after = h.ctrl.buildTurn("read it");
+  const u = build((n,req)=> n===1 ? new Error("network down") : ok(req));
+  await u.ctrl.add([fakeFile("notes.txt","text/plain","keep me\n")]);
+  const uncertain = u.ctrl.chips()[0];
+  const uBlocked = u.ctrl.buildTurn("read it");
+  await u.ctrl.retry(uncertain.id);
+  const uAfter = u.ctrl.buildTurn("read it");
+  await u.ctrl.remove(u.ctrl.chips()[0].id);
+  return {failed:{state:failed.state, retryable:failed.retryable, blocking:failed.blocking,
+                  text:failed.text},
+          blocked:!!blocked.blocked, blockedSend:blocked.send, reason:blocked.reason,
+          afterBlocked:!!after.blocked, afterInline:inlineBlockOf(after.send,"notes.txt"),
+          afterRefs:refsIn(after.send).length, posts:h.state.posts.length,
+          uncertain:{state:uncertain.state, retryable:uncertain.retryable,
+                     blocked:!!uBlocked.blocked, send:uBlocked.send},
+          uncertainAfter:{blocked:!!uAfter.blocked,
+                          inline:inlineBlockOf(uAfter.send,"notes.txt"),
+                          refs:refsIn(uAfter.send).length,
+                          kinds:u.state.posts.map(p=>[p.metadataOnly,p.hasFile])},
+          releases:u.state.releases, remaining:u.ctrl.count()};
+});
+
+// 35. reload: a text file's record is metadata only - no text, no bytes. The
+// Check after a reload recovers the reference and the chip is reference-only,
+// because this page never held the bytes to round-trip.
+test("text_reload", async ()=>{
+  const calls = wireFetch(()=>jsonResponse(200, committedDoc({files:[{version:1,
+    file_id:"file-text", size_bytes:8, sha256:sha256Hex(Buffer.from("keep me\n")),
+    filename:"notes.txt", media_type:"text/plain"}]})));
+  const kept = {rows:null};
+  const first = build(null, {upload:postUploadedFile, remember:(rows)=>{ kept.rows=rows; }});
+  await first.ctrl.add([fakeFile("notes.txt","text/plain","keep me\n")]);
+  const firstTurn = first.ctrl.buildTurn("read it");
+  const savedJson = JSON.stringify(kept.rows);
+  const second = build(null, {upload:postUploadedFile, remember:()=>{}});
+  second.ctrl.restore(JSON.parse(savedJson));
+  const onLoad = second.ctrl.chips().map(c=>({state:c.state, blocking:c.blocking}));
+  await second.ctrl.retry(second.ctrl.chips()[0].id);
+  const turn = second.ctrl.buildTurn("read it");
+  return {savedJson:savedJson, firstInline:inlineBlockOf(firstTurn.send,"notes.txt"),
+          onLoad:onLoad, calls:calls.length,
+          chips:second.ctrl.chips().map(c=>({state:c.state, blocking:c.blocking})),
+          inline:inlineBlockOf(turn.send,"notes.txt"), refs:refsIn(turn.send),
+          blocked:!!turn.blocked, display:turn.display};
+});
+
 (async ()=>{
   for(const [name, fn] of T){ R[name] = await fn(); }
   process.stdout.write(JSON.stringify(R));
@@ -835,14 +1036,18 @@ def test_small_text_is_still_inline_and_verbatim(results):
     # the binary file and the empty image went up as FILES, not as text blocks
     assert "----- attached file: blob.bin" not in out["send"]
     assert "----- attached file: empty.png" not in out["send"]
+    # each name ONCE, in selection order: the text file is not listed twice for
+    # having both an inline copy and a reference
     assert out["display"].endswith("📎 notes.txt, 📎 blob.bin, 📎 empty.png")
+    assert out["display"].count("📎") == 3
     assert out["display"].startswith("look at these")
 
 
 def test_uploads_are_sequential_and_declare_exact_metadata(results):
     out = results["mixed"]
     assert out["maxInflight"] == 1, "files must be hashed and streamed one at a time"
-    assert [p["filename"] for p in out["posts"]] == ["blob.bin", "empty.png"]
+    # the text file takes the SAME custody path as the binary and the empty one
+    assert [p["filename"] for p in out["posts"]] == ["notes.txt", "blob.bin", "empty.png"]
     for meta in out["posts"]:
         assert set(meta) == {"version", "label", "expected_universe_id", "filename",
                              "media_type", "size_bytes", "sha256"}
@@ -851,7 +1056,8 @@ def test_uploads_are_sequential_and_declare_exact_metadata(results):
         assert 16 <= len(meta["label"]) <= 128
         assert re.fullmatch(r"[0-9a-f]{64}", meta["sha256"])
         assert isinstance(meta["size_bytes"], int) and meta["size_bytes"] >= 0
-    assert out["posts"][1]["size_bytes"] == 0, "an empty file is a valid upload"
+    assert out["posts"][0]["media_type"] == "text/plain"
+    assert out["posts"][2]["size_bytes"] == 0, "an empty file is a valid upload"
 
 
 def test_the_agent_gets_the_exact_references_once_with_expiry_beside_them(results):
@@ -862,7 +1068,8 @@ def test_the_agent_gets_the_exact_references_once_with_expiry_beside_them(result
     block = json.loads(body)
     assert list(block) == ["version", "files", "unbound_retention_seconds", "unbound_expires_at"]
     assert block["unbound_retention_seconds"] == 3600
-    assert len(block["files"]) == 2
+    assert len(block["files"]) == 3, "the text file has a reference too"
+    assert [ref["filename"] for ref in block["files"]] == ["notes.txt", "blob.bin", "empty.png"]
     for ref in block["files"]:
         # the immutable reference keeps exactly its six fields, in the server's order
         assert list(ref) == ["version", "file_id", "size_bytes", "sha256",
@@ -982,7 +1189,10 @@ def test_the_composed_turn_reaches_the_default_and_the_selected_consumer(results
             "version": 1, "binding_id": "chosen", "binding_revision": 1}},
             {"reply": "read them both"}]})
     assert out["converseCalls"] == [composed, composed], "the string must not be rewritten"
-    assert out["converseCalls"][0].count('"file_id"') == 1
+    # one reference each for the text note AND the scan, in one block
+    assert out["converseCalls"][0].count('"file_id"') == 2
+    assert out["converseCalls"][0].count("attached files (platform metadata") == 1
+    assert "keep me verbatim\n" in out["converseCalls"][0]
     assert out["consumerRequests"][0] is None          # default path: the probe
     assert out["consumerRequests"][1]["binding_id"] == "chosen"
     assert out["inflight"] is None
@@ -1026,14 +1236,159 @@ def test_a_pending_text_read_does_not_fall_through_to_the_new_home(results):
 
 
 def test_a_text_read_that_lands_after_a_home_change_is_never_inlined(results):
-    """The inline branch never reaches upload(), so its own post-await check is
-    the only guard: owner A's file CONTENT must not appear in owner B's turn."""
+    """step()'s post-await check is the first guard after the decode, and it
+    must stop BOTH outcomes: owner A's file CONTENT must not appear in owner
+    B's turn, and the file must not go on to upload() under owner B's home."""
     out = results["text_inline_after_switch"]
     assert out["chips"] == 0, "the attachment belongs to the home that chose it"
     assert "BOARD ONLY" not in (out["send"] or ""), out["send"]
     assert "owner-A-salaries.txt" not in (out["display"] or "")
     assert out["send"] == "owner B types" and out["blocked"] is False
     assert out["posts"] == 0, "and it is not uploaded under the new home either"
+
+
+# ---- text custody -----------------------------------------------------------
+
+
+def test_valid_utf8_text_is_uploaded_and_rides_inline_beside_its_reference(results):
+    """Every accepted file takes custody. Readable text is ALSO inlined, and the
+    inline copy re-encodes to exactly the digest the server committed."""
+    out = results["text_dual"]
+    assert not out["blocked"]
+    body = "café — naïve\t日本語 ✓\n"
+    assert out["inline"] == body, out["inline"]
+    (post,) = out["posts"]
+    assert post["hasFile"] is True and post["filename"] == "notes.txt"
+    assert post["sha256"] == out["fileDigest"] and post["size"] == len(body.encode("utf-8"))
+    (ref,) = out["refs"]
+    assert ref["filename"] == "notes.txt" and ref["sha256"] == out["fileDigest"]
+    assert list(ref) == ["version", "file_id", "size_bytes", "sha256", "filename", "media_type"]
+    # the ACTUAL bytes govern: re-encoding the inline copy hashes to the committed digest
+    assert out["reencoded"] == out["fileDigest"]
+    assert out["display"] == "read it\n\n📎 notes.txt"
+    (chip,) = out["chips"]
+    assert chip["state"] == "ready" and chip["blocking"] is False
+    assert "held about" in chip["text"]
+    # the durable record is metadata only: no decoded text, no preview
+    (row,) = out["records"]
+    assert set(row) == {"label", "header", "name", "size", "mediaType", "sha256", "fileId"}
+    saved = json.dumps(out["records"])
+    assert "café" not in saved and "inlineText" not in saved and '"text":' not in saved
+
+
+def test_a_bom_or_invalid_utf8_text_is_reference_only_with_its_original_digest(results):
+    """Blob.text() dropped the BOM and replaced the Latin-1 byte, so the decoded
+    string is not the file. Custody holds the ORIGINAL bytes; nothing altered
+    is presented as the file, and Send is not blocked."""
+    out = results["text_lossy"]
+    assert not out["blocked"]
+    # the decode really was lossy - that is the premise, pinned
+    assert out["decoded"]["bom"] == "hello\n"
+    assert out["decoded"]["latin"] == "caf�\n"
+    assert out["bomInline"] is None and out["latinInline"] is None
+    assert "----- attached file:" not in out["send"]
+    assert "�" not in out["send"] and "hello" not in out["send"]
+    assert out["posts"] == ["bom.txt", "latin1.txt"]
+    refs = {r["filename"]: r for r in out["refs"]}
+    assert refs["bom.txt"]["sha256"] == out["digests"]["bom"]
+    assert refs["bom.txt"]["size_bytes"] == 9, "the BOM is in the file, so it is in custody"
+    assert refs["latin1.txt"]["sha256"] == out["digests"]["latin"]
+    assert refs["latin1.txt"]["size_bytes"] == 5
+    assert out["display"] == "read them\n\n📎 bom.txt, 📎 latin1.txt"
+    assert [c["state"] for c in out["chips"]] == ["ready", "ready"]
+    assert all(c["blocking"] is False for c in out["chips"])
+
+
+def test_crlf_text_is_inlined_exactly_and_still_round_trips(results):
+    out = results["text_crlf"]
+    assert out["inline"] == "a\r\nb\r\n\r\nc", repr(out["inline"])
+    (ref,) = out["refs"]
+    assert ref["sha256"] == out["fileDigest"] == out["reencoded"]
+    assert ref["size_bytes"] == 9
+
+
+def test_the_inline_ceilings_bound_the_inline_copy_and_the_upload_ceiling_binds_text_too(results):
+    out = results["text_budget"]
+    assert not out["blocked"]
+    # per-file cap: over ATTACH_MAX_BYTES is never inlined; the total cap
+    # (400 KiB) admits a and b (300 KiB) and not c (450 KiB)
+    assert out["inline"] == [None, 150 * 1024, 150 * 1024, None], out["inline"]
+    # but all four are in custody, in selection order, with their real sizes
+    assert out["posts"] == ["big.txt", "a.txt", "b.txt", "c.txt"]
+    assert out["refs"] == [{"filename": "big.txt", "size": 200 * 1024 + 1},
+                           {"filename": "a.txt", "size": 150 * 1024},
+                           {"filename": "b.txt", "size": 150 * 1024},
+                           {"filename": "c.txt", "size": 150 * 1024}]
+    assert out["display"] == "all four\n\n📎 big.txt, 📎 a.txt, 📎 b.txt, 📎 c.txt"
+    # the 8 MiB ceiling is not widened for text: refused before any request
+    huge = out["huge"]
+    assert huge["state"] == "failed" and huge["retryable"] is False
+    assert "8.0 MB" in huge["text"] and huge["posts"] == 0
+    assert huge["blocked"] is True and huge["send"] is None
+
+
+def test_a_login_change_during_the_decode_lands_the_text_nowhere(results):
+    out = results["text_login_switch_during_decode"]
+    assert out["posts"] == 0, "not uploaded under the next login's credentials"
+    assert out["chips"] == 0
+    assert "owner A private" not in (out["send"] or "")
+    assert "owner-A-note.txt" not in (out["display"] or "")
+    assert out["send"] == "owner B types" and out["blocked"] is False
+
+
+@pytest.mark.parametrize("phase", ["duringFileHash", "duringRoundTrip"])
+def test_an_account_change_during_either_hash_lands_the_text_nowhere(results, phase):
+    """Both awaits in the custody path are guarded: the file's own hash and
+    the round-trip hash of the re-encoded text. The hash that ran was the REAL
+    one over the real bytes; what it must never do is land after a switch."""
+    out = results["text_switch_during_hash"][phase]
+    assert out["hashed"][0] == "file", "the file is hashed before its inline copy is checked"
+    if phase == "duringRoundTrip":
+        assert out["hashed"] == ["file", "blob"]
+    assert out["posts"] == 0, "no request under the next account"
+    assert out["chips"] == 0
+    assert "BOARD ONLY" not in (out["send"] or "")
+    assert "owner-A-memo.txt" not in (out["display"] or "")
+    assert out["send"] == "owner B types" and out["blocked"] is False
+
+
+def test_a_text_upload_failure_blocks_with_check_and_remove_like_binary(results):
+    """No inline-only success: a text file whose upload did not commit is not
+    ready, blocks Send, and is Checked with the same label or Removed."""
+    out = results["text_upload_failure"]
+    assert out["failed"]["state"] == "failed" and out["failed"]["blocking"] is True
+    assert out["failed"]["retryable"] is True and "busy" in out["failed"]["text"]
+    assert out["blocked"] is True and out["blockedSend"] is None
+    assert "notes.txt" in out["reason"] and "Check or remove" in out["reason"]
+    assert out["afterBlocked"] is False and out["posts"] == 2
+    assert out["afterInline"] == "keep me\n" and out["afterRefs"] == 1
+    # unknown outcome: observed with the same label, never re-sent as inline-only
+    assert out["uncertain"]["state"] == "uncertain" and out["uncertain"]["retryable"] is True
+    assert out["uncertain"]["blocked"] is True and out["uncertain"]["send"] is None
+    assert out["uncertainAfter"]["kinds"] == [[False, True], [True, False]]
+    assert out["uncertainAfter"]["blocked"] is False
+    assert out["uncertainAfter"]["inline"] == "keep me\n" and out["uncertainAfter"]["refs"] == 1
+    # removal releases the text file's reference like any other
+    assert out["releases"] == [{"graph_id": "uni-A", "file_id": "file-label-0000000000000001"}]
+    assert out["remaining"] == 0
+
+
+def test_a_reloaded_text_attachment_keeps_no_text_and_checks_back_as_reference_only(results):
+    out = results["text_reload"]
+    assert out["firstInline"] == "keep me\n", "in-session it rides inline"
+    for banned in ("keep me", "inlineText", "inlineDigest", '"text":', "a2VlcCBtZQ"):
+        assert banned not in out["savedJson"], banned
+    assert out["onLoad"] == [{"state": "saved", "blocking": True}]
+    assert out["calls"] == 2, "one upload, one Check; the restore itself made no request"
+    assert out["chips"] == [{"state": "ready", "blocking": False}]
+    assert not out["blocked"]
+    # the bytes were never in this page, so there is nothing to round-trip:
+    # the reference alone, and the agent reads custody
+    assert out["inline"] is None
+    assert out["refs"] == [{"version": 1, "file_id": "file-text", "size_bytes": 8,
+                            "sha256": hashlib.sha256(b"keep me\n").hexdigest(),
+                            "filename": "notes.txt", "media_type": "text/plain"}]
+    assert out["display"] == "read it\n\n📎 notes.txt"
 
 
 def test_a_removed_file_is_not_uploaded_when_its_turn_arrives(results):

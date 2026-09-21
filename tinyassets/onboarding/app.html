@@ -3873,12 +3873,16 @@
     },()=>{res.textContent="Token saved, but enabling Claude is unconfirmed. "+uncertain;});
   }
 
-  // ---- File attachments: inline small text, everything else uploaded -------
-  // The paperclip keeps its existing INLINE small-text behaviour byte for byte
-  // (Hard Rule #9: user uploads are preserved verbatim). Anything it will not
-  // inline goes through ONE authenticated raw-body route, POST /mcp/app/files,
-  // and comes back as the existing immutable six-field reference. File BYTES
-  // never enter the prompt - only the server's own reference metadata does.
+  // ---- File attachments: every accepted file is uploaded ------------------
+  // EVERY accepted file - a small text note included - goes through ONE
+  // authenticated raw-body route, POST /mcp/app/files, and comes back as the
+  // existing immutable six-field reference. That reference is the authoritative
+  // copy (Hard Rule #9: user uploads are preserved verbatim), and the agent
+  // reads the ORIGINAL bytes from custody. A small readable text file ALSO
+  // rides inline beside its reference, but only when re-encoding what the
+  // browser decoded gives back exactly the bytes in custody: Blob.text() is a
+  // UTF-8 decode that drops a BOM and replaces an invalid sequence, and a
+  // string that no longer equals the file is never presented as the file.
   //
   // Built through a factory so the SHIPPED code is the tested code: wire()
   // hands it the real transport, clock and scope; a test hands it fakes. No
@@ -3890,10 +3894,10 @@
   const UPLOAD_HEADER_MAX = 8192;       // X-TinyAssets-Upload ASCII bound
   function fmtBytes(n){ return n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(1)+" MB"; }
   function looksBinary(t){ for(var i=0;i<t.length;i++){ if(t.charCodeAt(i)===0) return true; } return false; }
-  // Only a file the browser itself calls text is a candidate for the unchanged
-  // inline path. Everything else - an image, a PDF, an empty file the picker
-  // typed as binary - is a FILE, and goes up as bytes rather than being read
-  // into the message as an empty or mangled text block.
+  // Only a file the browser itself calls text is a candidate for the inline
+  // context beside its reference. Everything else - an image, a PDF, an empty
+  // file the picker typed as binary - is never decoded at all, so it cannot be
+  // read into the message as an empty or mangled text block.
   function isTextMedia(type){
     const t=String(type||"").split(";")[0].trim().toLowerCase();
     if(!t) return true;                 // the picker said nothing: try text, as before
@@ -4034,8 +4038,11 @@
       const t=file&&typeof file.type==="string"?file.type.trim():"";
       return t||"application/octet-stream";
     }
+    // The inline budget is reserved by the decoded CANDIDATE at decode time,
+    // as it always was, so a file still in flight holds its share; a candidate
+    // dropped for not round-tripping gives its share back.
     function inlineTotal(){
-      return items.reduce((s,a)=>s+(typeof a.text==="string"?a.text.length:0),0);
+      return items.reduce((s,a)=>s+(typeof a.inlineText==="string"?a.inlineText.length:0),0);
     }
     function expiresAtMs(item){
       return (item.expiresAt===null||item.expiresAt===undefined)?null:item.expiresAt*1000;
@@ -4055,16 +4062,16 @@
     }
     // What stops Send. A partial send is never silent: the founder either
     // checks the chip or removes it, and the typed draft is untouched either way.
+    // A text file is no exception: until its reference is back it blocks like
+    // any other file, with the same Check and Remove.
     function blocking(item){
-      if(item.state==="inline") return false;
       if(item.state==="ready") return pastHold(item);
       return true;
     }
     function chipFor(item){
       const stuck=blocking(item);
       let text;
-      if(item.state==="inline") text=item.name+" ("+fmtBytes(item.size)+")";
-      else if(item.state==="hashing") text=item.name+" — preparing";
+      if(item.state==="hashing") text=item.name+" — preparing";
       else if(item.state==="uploading") text=item.name+" — uploading";
       else if(item.state==="pending") text=item.name+" — waiting";
       else if(item.state==="checking") text=item.name+" — checking";
@@ -4091,6 +4098,7 @@
         const item={id:"att-"+(++seq), file:file, name:String((file&&file.name)||"file"),
           size:Number(file&&file.size)||0, mediaType:mediaTypeOf(file),
           state:"pending", label:null, sha256:null, ref:null, text:null, attempted:false,
+          inlineText:null, inlineDigest:null,
           expiresAt:undefined, retentionSeconds:null, error:null, retryable:false,
           scope:selectedIn, gen:selectedGen, aborter:null};
         items.push(item); queued.push(item);
@@ -4108,24 +4116,46 @@
       if(!attached(item)){ cancel(item); return; }
       if(!scopeHolds(item)) return abortItem(item);
       if(!item.file) return upload(item);
+      // A small text file is ALSO read here so the message can carry its
+      // content beside the reference. What is read is a CANDIDATE, kept only
+      // if it round-trips to the bytes custody holds (see verifyInline). The
+      // file goes up as bytes either way: nothing about being readable text
+      // exempts it from custody, from blocking Send, or from Check/Remove.
       if(isTextMedia(item.mediaType)&&item.size<=ATTACH_MAX_BYTES&&
          inlineTotal()+item.size<=ATTACH_TOTAL_MAX){
-        let text=null, unreadable=false;
-        try{ text=await item.file.text(); }catch(_e){ text=null; unreadable=true; }
+        let text=null;
+        try{ text=await item.file.text(); }catch(_e){ text=null; }
         // AFTER the await: the login or home may have changed while this file
-        // was being read. Neither its bytes nor a notice about it lands in the
-        // next account's composer, and it does not fall through to upload()
-        // under that account's credentials either.
+        // was being read. Neither its content nor a notice about it lands in
+        // the next account's composer, and it does not fall through to
+        // upload() under that account's credentials either.
         if(!attached(item)){ cancel(item); return; }
         if(!scopeHolds(item)) return abortItem(item);
-        // UNCHANGED: a readable, non-binary, small-enough file is embedded
-        // VERBATIM in the message exactly as it always has been.
-        if(!unreadable&&typeof text==="string"&&!looksBinary(text)&&
-           inlineTotal()+text.length<=ATTACH_TOTAL_MAX){
-          item.text=text; item.state="inline"; changed(); return;
-        }
+        if(typeof text==="string"&&!looksBinary(text)&&
+           inlineTotal()+text.length<=ATTACH_TOTAL_MAX) item.inlineText=text;
       }
       return upload(item);
+    }
+    // The decoded candidate is kept ONLY if encoding it back as UTF-8 hashes to
+    // the digest of the file itself. Blob.text() drops a BOM and replaces an
+    // invalid sequence with U+FFFD, so for such a file the string is NOT the
+    // file: it is dropped here, the file stays reference-only, and the agent
+    // reads the original bytes from custody. The same injected digest hashes
+    // the file and the re-encoded bytes - one implementation, one answer.
+    // Returns false when the item no longer belongs to this composer; the
+    // caller then aborts it exactly as after any other await.
+    async function verifyInline(item, aborter){
+      if(typeof item.inlineText!=="string") return true;
+      if(item.inlineDigest===null){
+        let digest=null;
+        try{ digest=await deps.sha256(new Blob([new TextEncoder().encode(item.inlineText)]),
+          aborter?{signal:aborter.signal}:undefined); }
+        catch(_e){ digest=null; }
+        if(!ownsNow(item)) return false;
+        item.inlineDigest=typeof digest==="string"?digest:"";
+      }
+      if(item.inlineDigest!==item.sha256) item.inlineText=null;
+      return true;
     }
     // Sign-out, another account or another home while work was in flight. The
     // reference is dropped from THIS composer and nothing is released: release
@@ -4199,6 +4229,9 @@
         item.state="failed"; item.retryable=true; item.error="could not read this file";
         changed(); return;
       }
+      // Same rule after this await: a switch during the round-trip hash drops
+      // the item, and never its decoded content into the next composer.
+      if(!(await verifyInline(item, aborter))) return abortItem(item);
       let header=null;
       try{
         header=uploadHeaderValue({version:1, label:item.label,
@@ -4324,6 +4357,12 @@
         item.error="the upload did not say how long it is held"; changed(); return;
       }
       item.ref=ref;   // the EXACT object the server returned: fields and order
+      // Inline content rides ONLY beside a reference whose COMMITTED digest is
+      // the digest of the re-encoded text. The server's answer is the custody
+      // truth; the browser's own hash was the admission ticket. A record
+      // restored after a reload has no candidate, so it is reference-only.
+      item.text=(typeof item.inlineText==="string"&&item.inlineDigest===ref.sha256)
+        ?item.inlineText:null;
       item.retentionSeconds=typeof payload.unbound_retention_seconds==="number"
         ?payload.unbound_retention_seconds:null;
       item.expiresAt=payload.unbound_expires_at;
@@ -4383,16 +4422,20 @@
         reason:(stuck.length===1?"An attachment is":"Attachments are")+" not ready: "+
           stuck.map(i=>i.name).join(", ")+". Check or remove "+
           (stuck.length===1?"it":"them")+" before sending."};
-      const inline=items.filter(a=>a.state==="inline"&&typeof a.text==="string");
+      // Every file that is sent has a reference. The inline set is the subset
+      // whose decoded text round-tripped to the committed bytes; it is context
+      // BESIDE the reference, never a substitute for it.
       const uploaded=items.filter(a=>a.state==="ready"&&a.ref);
-      if(!inline.length&&!uploaded.length) return {blocked:false, send:typed, display:typed};
+      const inline=uploaded.filter(a=>typeof a.text==="string");
+      if(!uploaded.length) return {blocked:false, send:typed, display:typed};
       const parts=[];
       if(inline.length) parts.push(inline.map(a=>
         "----- attached file: "+a.name+" ("+fmtBytes(a.size)+") -----\n"+a.text+
         "\n----- end of "+a.name+" -----").join("\n\n"));
-      if(uploaded.length) parts.push(attachmentMetadataBlock(uploaded));
+      parts.push(attachmentMetadataBlock(uploaded));
       const blocks=parts.join("\n\n");
-      const names=inline.concat(uploaded).map(a=>"📎 "+a.name).join(", ");
+      // Each name once, in the order the founder picked the files.
+      const names=uploaded.map(a=>"📎 "+a.name).join(", ");
       return {blocked:false,
         send: typed?blocks+"\n\n"+typed:blocks,
         display: typed?typed+"\n\n"+names:names};
@@ -4413,7 +4456,8 @@
           size:Number(row.size)||0, mediaType:String(row.mediaType||"application/octet-stream"),
           state:"saved", label:row.label, header:row.header, attempted:true,
           sha256:typeof row.sha256==="string"?row.sha256:null,
-          ref:null, text:null, expiresAt:undefined, retentionSeconds:null,
+          ref:null, text:null, inlineText:null, inlineDigest:null,
+          expiresAt:undefined, retentionSeconds:null,
           error:null, retryable:true, scope:here, gen:generation, aborter:null});
         added++;
       }
@@ -4493,10 +4537,11 @@
     $("btn-openai-setup-done").addEventListener("click",connectOpenAIDevice);
     $("btn-claude-connect").addEventListener("click",connectClaude);
     $("btn-signin").addEventListener("click",beginSignIn);
-    // ---- File attachments (paperclip). Small text still rides inline and
-    // VERBATIM; anything else is uploaded through POST /mcp/app/files and only
-    // its server-issued reference travels in the turn. See
-    // createUploadController above - this is only the wiring. ----
+    // ---- File attachments (paperclip). Every accepted file is uploaded
+    // through POST /mcp/app/files and its server-issued reference travels in
+    // the turn; small text that round-trips byte-for-byte also rides inline
+    // beside that reference. See createUploadController above - this is only
+    // the wiring. ----
     Uploads = createUploadController({
       // The account AND the home this page is currently talking to.
       scope: ()=>({epoch: MCP._loginEpoch, universeId: queueScope}),

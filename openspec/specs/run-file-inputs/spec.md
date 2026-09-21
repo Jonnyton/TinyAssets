@@ -22,9 +22,13 @@ authority before commit. Missing capacity or incomplete home SHALL refuse
 without ingesting the body. Upload SHALL neither execute workflows nor create
 a separate artifact store, public bearer URL or upload charge.
 
-The app SHALL relay opaque reference metadata through its existing conversation
-request, preserve accepted text attachment content verbatim, and prevent sending
-an unresolved subset. Same-label exact-header replay SHALL return the original
+The app SHALL take every accepted attachment, readable text included, through
+this same custody and relay its opaque reference metadata through its existing
+conversation request; it SHALL carry a text attachment's decoded content inline
+beside that reference only when re-encoding it reproduces the committed bytes
+exactly, otherwise the reference alone, so accepted content is preserved
+verbatim; and it SHALL prevent sending an unresolved subset. Same-label
+exact-header replay SHALL return the original
 committed references and retention metadata without requiring a second body;
 unfinished attempts SHALL remain explicitly unresolved, not silently relabelled.
 Unbound staging SHALL expire after the disclosed lifetime; bound custody SHALL
