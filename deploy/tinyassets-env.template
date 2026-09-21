@@ -145,7 +145,11 @@ TINYASSETS_CODEX_AUTH_JSON_B64=
 
 # Claude Code subscription auth is stored under this durable config
 # directory on the tinyassets-data volume. Login once with:
-#   sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon claude auth login --claudeai
+#   sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon \
+#     /usr/local/libexec/ta-op claude-login
+# (a fixed mode: the wrapper verifies the identity retirement, then execs
+#  `claude auth login --claudeai` with no argv from this callsite. The
+#  scheduled keepalive uses /usr/local/libexec/ta-op claude-keepalive.)
 CLAUDE_CONFIG_DIR=/data/.claude
 
 # Claude auth seeding so a fresh /data volume is not left "Not logged in"
