@@ -577,6 +577,13 @@ universe and enforce the existing record ACL before content or mutation.
 - **THEN** a valid owned-node content edit succeeds and reads back without rebuilding the workflow
 - **AND** invalid or unauthorized edits refuse without changing the definition
 
+#### Scenario: Agent repairs an existing node model preference
+- **WHEN** an authorized served agent updates an owned node's llm_policy through update_node
+- **THEN** a valid replacement or explicit null clear SHALL persist without rebuilding the workflow, and omission SHALL preserve the existing policy
+- **AND** malformed policy SHALL refuse atomically using canonical validation
+- **AND** the edit SHALL NOT grant provider authority, alter ownership, publish a version or modify an admitted run
+- **AND** protected execution fields and foreign-owner edits SHALL remain refused
+
 #### Scenario: Code produces ordinary values
 - **WHEN** an owned run produces Unicode text, numbers or structured state output
 - **THEN** the agent can discover the output fields and retrieve their exact values through read_graph

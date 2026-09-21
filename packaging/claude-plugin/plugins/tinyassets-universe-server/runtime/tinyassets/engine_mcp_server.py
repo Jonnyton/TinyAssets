@@ -959,13 +959,20 @@ _SERVED_PATCH_SAFE_OPS = frozenset({
 #: Refused outright: these expose the branch publicly or graft a foreign lineage — the
 #: exact top-level fields the create sanitizer strips (published/public/visibility/fork_from).
 _SERVED_PATCH_DANGEROUS_OPS = frozenset({"set_published", "set_visibility", "set_fork_from"})
-#: A served update_node may ONLY retune content. The downstream _apply_node_updates
-#: allowlist permits tools_allowed / enabled / retry_policy / llm_policy / input_keys /
-#: output_keys, so an update could RE-ACTIVATE an already-approved node with new
-#: capabilities WITHOUT re-invalidating its approval hash (Codex #1, PR #2518). Restrict to
-#: content fields (a source_code edit still clears approval downstream).
+#: A served update_node may ONLY retune content plus the node's model ROUTING
+#: PREFERENCE. The downstream _apply_node_updates allowlist also permits
+#: tools_allowed / enabled / retry_policy / input_keys / output_keys, so an update could
+#: RE-ACTIVATE an already-approved node with new capabilities WITHOUT re-invalidating
+#: its approval hash (Codex #1, PR #2518). Those stay refused here. ``llm_policy`` is
+#: different in kind: it is a preference the runtime consults when choosing among
+#: providers the universe ALREADY serves, never an authority grant — a pin naming an
+#: unbound provider still fails run admission with provider_not_bound. Served create /
+#: add_node already accept it; exposing it on update_node lets the agent repair its own
+#: existing pin in place instead of rebuilding the workflow (live 2026-09-21). Its
+#: dict / JSON-string / null grammar is owned by the canonical
+#: _coerce_llm_policy_update + _validate_llm_policy_shape; nothing is re-typed here.
 _SERVED_PATCH_UPDATE_NODE_ALLOWED = frozenset({
-    "op", "node_id", "prompt_template", "source_code", "display_name",
+    "op", "node_id", "prompt_template", "source_code", "display_name", "llm_policy",
 })
 #: Metadata setter ops whose single field must be a string, else SQLite raises
 #: ProgrammingError or persists a malformed value (Codex #4, PR #2518).
@@ -1078,11 +1085,17 @@ def _sanitize_served_patch_changes(changes: object) -> str:
                 if field not in _SERVED_PATCH_UPDATE_NODE_ALLOWED:
                     raise ValueError(
                         f"patch update_node may not set '{field}' on the served edit "
-                        "surface (only node_id + prompt_template/source_code/display_name)"
+                        "surface (only node_id + prompt_template/source_code/"
+                        "display_name/llm_policy)"
                     )
             for field in ("node_id", "prompt_template", "source_code", "display_name"):
                 if field in op and not isinstance(op[field], str):
                     raise ValueError(f"patch update_node '{field}' must be a string")
+            # llm_policy is deliberately NOT type-checked here: a dict replaces the
+            # node's preference, explicit null clears it, a JSON string is decoded,
+            # anything else is refused - all by the canonical coercer downstream, in
+            # the same staging transaction, so a malformed policy leaves the branch
+            # untouched. A second grammar here would drift from create/add_node.
         elif kind in _SERVED_PATCH_SAFE_OPS:
             setter = _SERVED_PATCH_STR_SETTERS.get(kind)
             if setter is not None and setter in op and not isinstance(op[setter], str):
@@ -1554,6 +1567,10 @@ def write_graph(
     never run) unless the packet declares ``"accept_statuses": [404]`` for a
     probe. A failing code node reports ``code_node_failed`` with its stderr -
     fix ``run()`` with ``operation=patch`` and payload ``op=update_node``, then run again.
+    The same ``update_node`` op also edits a node's ``llm_policy`` in place:
+    a ``{"preferred": {"provider": "<name>"}}`` dict replaces the pin, explicit
+    ``null`` clears it, omitting the key leaves it unchanged. That is a routing
+    preference, not a provider grant (see ``connect_compute``).
     Code runs only in the
     universe that authored it: a public branch's code must be remixed
     (``fork_from``) before it runs as yours. Stdlib only (``json re base64
@@ -2667,6 +2684,18 @@ def connect_compute(
     ignored, so the run fails later with ``permission_denied:provider_not_bound``.
     A workflow node normally needs NO ``llm_policy`` at all: leave it off and the run
     uses whatever provider the universe serves.
+
+    CONNECTING a provider and EDITING a node's pin are two different things. This
+    tool (plus the owner's deposit) is how a provider becomes servable. A node's
+    ``llm_policy`` is only a routing PREFERENCE among providers the universe already
+    serves; editing it grants nothing. If an existing node is pinned to the wrong
+    provider (or to one that is not bound), repair the pin IN PLACE rather than
+    rebuilding the workflow: ``write_graph target="branch" operation="patch"``
+    with payload ``[{"op":"update_node","node_id":"<node definition id>",
+    "llm_policy":{"preferred":{"provider":"codex"}}}]`` replaces it, and
+    ``"llm_policy": null`` clears it so the node follows the universe's current
+    serving provider. Omit ``llm_policy`` from an update_node op to leave the
+    existing pin unchanged.
 
     NO SECRET crosses this surface. For an ``api_key_http`` provider the owner must
     FIRST deposit the credential, which grants an http connection to this universe;

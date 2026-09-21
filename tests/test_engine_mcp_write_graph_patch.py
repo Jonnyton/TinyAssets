@@ -151,16 +151,18 @@ def test_patch_add_node_strips_approval(monkeypatch):
 
 def test_patch_update_node_allowlist_blocks_authority_fields(monkeypatch):
     """update_node may only retune content — execution/data-authority fields
-    (tools_allowed/enabled/retry_policy/llm_policy/input_keys/output_keys) and the
+    (tools_allowed/enabled/retry_policy/input_keys/output_keys) and the
     sub-branch-invoke fields are refused, so an update can't re-activate an approved
-    node with new powers without re-invalidating approval (Codex #1)."""
+    node with new powers without re-invalidating approval (Codex #1). llm_policy is
+    a routing preference, not authority, and is NOT in this cohort: it passes the
+    served layer untyped and the canonical coercer decides (see the persistence
+    test below, which keeps the malformed preferred_provider refusal alive)."""
     s = _bind(monkeypatch)
     seen = _capture(monkeypatch)
     for danger in (
         {"tools_allowed": ["enqueue_branch_run"]},
         {"enabled": True},
         {"retry_policy": {"max_retries": 99}},
-        {"llm_policy": {"preferred_provider": "x"}},
         {"input_keys": ["secret"]},
         {"output_keys": ["x"]},
         {"invoke_branch_spec": {"x": 1}},
@@ -173,6 +175,133 @@ def test_patch_update_node_allowlist_blocks_authority_fields(monkeypatch):
     assert "must be a string" in bad["error"]
     _patch(s, [{"op": "update_node", "node_id": "n1", "prompt_template": "new"}])
     assert seen["action"] == "patch_branch"
+    # A malformed policy is NOT refused by the served allowlist any more; it is
+    # forwarded verbatim for the canonical coercer to refuse (no second grammar).
+    seen.clear()
+    _patch(s, [{"op": "update_node", "node_id": "n1",
+                "llm_policy": {"preferred_provider": "x"}}])
+    assert seen["action"] == "patch_branch"
+    assert json.loads(seen["changes_json"])[0]["llm_policy"] == {"preferred_provider": "x"}
+
+
+def _owned_pinned_branch(tmp_path, monkeypatch):
+    """A real owned branch whose only node is pinned to a provider by name."""
+    from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    s = _bind(monkeypatch)
+    initialize_author_server(tmp_path)
+    branch = BranchDefinition(name="Pinned", author="sub-9", entry_point="instance")
+    branch.node_defs = [NodeDefinition(
+        node_id="definition", display_name="Draft", output_keys=["out"],
+        prompt_template="write", llm_policy={"preferred": {"provider": "codex"}},
+        tools_allowed=["read_run_file"],
+    )]
+    branch.graph_nodes = [GraphNodeRef(id="instance", node_def_id="definition")]
+    branch.edges = [EdgeDefinition(from_node="START", to_node="instance"),
+                    EdgeDefinition(from_node="instance", to_node="END")]
+    branch.state_schema = [{"name": "out", "type": "str"}]
+    save_branch_definition(tmp_path, branch_def=branch.to_dict())
+    return s, branch.branch_def_id
+
+
+def _node(s, rid):
+    return json.loads(s.read_graph(target="branch", branch_id=rid))["node_defs"][0]
+
+
+def test_update_node_llm_policy_replace_clear_omit_persist(tmp_path, monkeypatch):
+    """The agent repairs its OWN existing pin in place through the real served
+    patch route and the real branch write: a dict replaces, a JSON string is the
+    same edit, omission preserves, explicit null clears (spec: agent repairs an
+    existing node model preference)."""
+    s, rid = _owned_pinned_branch(tmp_path, monkeypatch)
+    assert _node(s, rid)["llm_policy"] == {"preferred": {"provider": "codex"}}
+
+    # replace by dict
+    out = _patch(s, [{"op": "update_node", "node_id": "definition",
+                      "llm_policy": {"preferred": {"provider": "claude-code"}}}], branch_id=rid)
+    assert "error" not in out, out
+    assert _node(s, rid)["llm_policy"] == {"preferred": {"provider": "claude-code"}}
+
+    # replace by JSON string (canonical coercer grammar, no served re-typing)
+    out = _patch(s, [{"op": "update_node", "node_id": "definition",
+                      "llm_policy": json.dumps({"preferred": {"provider": "codex"}})}],
+                 branch_id=rid)
+    assert "error" not in out, out
+    assert _node(s, rid)["llm_policy"] == {"preferred": {"provider": "codex"}}
+
+    # omission: a content-only edit leaves the pin exactly as it was
+    out = _patch(s, [{"op": "update_node", "node_id": "definition",
+                      "prompt_template": "write better"}], branch_id=rid)
+    assert "error" not in out, out
+    after = _node(s, rid)
+    assert after["prompt_template"] == "write better"
+    assert after["llm_policy"] == {"preferred": {"provider": "codex"}}
+
+    # explicit null clears to "follow whatever the universe serves"
+    out = _patch(s, [{"op": "update_node", "node_id": "definition", "llm_policy": None}],
+                 branch_id=rid)
+    assert "error" not in out, out
+    assert not _node(s, rid).get("llm_policy")
+    # and the edit never touched execution authority
+    assert after["tools_allowed"] == ["read_run_file"]
+
+
+def test_update_node_llm_policy_malformed_refuses_atomically(tmp_path, monkeypatch):
+    """A malformed policy is refused by the CANONICAL validator (the
+    preferred_provider trap the live founder hit) and the whole batch rolls
+    back: a valid sibling op in the same patch does not land either."""
+    s, rid = _owned_pinned_branch(tmp_path, monkeypatch)
+    before = _node(s, rid)
+    for bad in (
+        {"preferred_provider": "x"},           # wrong key, ignored at run time
+        {"preferred": "codex"},                # preferred must be a dict
+        {"preferred": {"model": "gpt"}},       # missing provider key
+        ["codex"],                             # not an object
+        "{not json",                           # unparseable string
+    ):
+        out = _patch(s, [
+            {"op": "update_node", "node_id": "definition", "display_name": "Renamed"},
+            {"op": "update_node", "node_id": "definition", "llm_policy": bad},
+        ], branch_id=rid)
+        # the transactional patch reports per-op `errors`; the served layer's own
+        # refusals are a single `error` - either way nothing was written
+        assert out.get("error") or out.get("errors"), bad
+        assert _node(s, rid) == before, bad
+    out = _patch(s, [{"op": "update_node", "node_id": "definition",
+                      "llm_policy": {"preferred_provider": "x"}}], branch_id=rid)
+    assert "preferred_provider" in json.dumps(out) and "not a policy key" in json.dumps(out)
+
+
+def test_update_node_llm_policy_foreign_owner_and_protected_fields(tmp_path, monkeypatch):
+    """Editing the pin grants nothing: a foreign actor is refused by the author
+    gate, and bundling llm_policy with a protected execution field is refused
+    at the served layer - both leave the persisted node byte-identical."""
+    s, rid = _owned_pinned_branch(tmp_path, monkeypatch)
+    before = _node(s, rid)
+    monkeypatch.setattr(s, "_ACTOR_ID", "someone-else")
+    out = _patch(s, [{"op": "update_node", "node_id": "definition",
+                      "llm_policy": {"preferred": {"provider": "claude-code"}}}], branch_id=rid)
+    assert "error" in out
+    # refused by the OWNER gate downstream, not by a served field allowlist
+    assert "may not set" not in out["error"], out
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-9")
+    assert _node(s, rid) == before
+    for protected in (
+        {"tools_allowed": ["enqueue_branch_run"]},
+        {"enabled": False},
+        {"retry_policy": {"max_retries": 9}},
+        {"input_keys": ["secret"]},
+        {"output_keys": ["leak"]},
+    ):
+        out = _patch(s, [{"op": "update_node", "node_id": "definition",
+                          "llm_policy": {"preferred": {"provider": "claude-code"}},
+                          **protected}], branch_id=rid)
+        # the refusal names the PROTECTED field, never llm_policy
+        (field,) = protected
+        assert f"may not set '{field}'" in out["error"], out
+        assert _node(s, rid) == before, protected
 
 
 def test_patch_allows_safe_ops_and_routes(monkeypatch):
