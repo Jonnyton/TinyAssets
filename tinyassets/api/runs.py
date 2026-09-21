@@ -38,7 +38,10 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # advice-only; the class itself is computed in providers.diagnostics
+    from tinyassets.providers.diagnostics import HeldAttemptDiagnosis
 
 from tinyassets.api.helpers import (
     _base_path,
@@ -459,6 +462,67 @@ _WORK_MODEL_EXHAUSTED_ACTION = (
 )
 
 
+# A held ARMED attempt: the owner's bound source was admitted and invoked, and
+# the attempt failed for a classified reason the run could not prove was a
+# side-effect-free capacity failure, so it held rather than moving to a sibling
+# model. Live 2026-09-21 (run 07c1611916cc4eb4): that evidence was erased and
+# the owner was told to connect a provider they had already connected and used.
+# The class itself comes from `providers.diagnostics.held_attempt_diagnosis` --
+# the SHARED typed classifier `runs._classify_failure` also reads, so one stored
+# row cannot get two causes on two surfaces. Only the wording lives here.
+_HELD_ATTEMPT_UNEVIDENCED_ACTION = (
+    "This run's work model attempt was held, and no classified attempt evidence "
+    "was recorded: the cause is unknown, and how far the attempt got cannot be "
+    "said from this record. It is not a missing provider connection - the source "
+    "was bound and admitted. If it reached the provider, any tool or effect it "
+    "started may already have happened: read this run's events and the target "
+    "before running again; nothing is retried automatically."
+)
+
+
+def _held_attempt_action(diagnosis: "HeldAttemptDiagnosis") -> str:
+    provider = diagnosis.provider or "the bound source"
+    # An unrecognised cause is reported as unrecognised. The attempt still
+    # happened, so the effect warning and the "not unbound" correction below
+    # hold; only the diagnosis is withheld.
+    named = (
+        f"failed with {diagnosis.cause}"
+        if diagnosis.recognised
+        else "failed for a reason this daemon does not recognise"
+    )
+    return (
+        f"The work model attempt on {provider} {named}, so the run held: "
+        "that evidence does not prove a side-effect-free capacity failure, so no "
+        "sibling model was tried, and any tool or effect the attempt started may "
+        "already have happened. Read this run's events and the target before running "
+        "again; nothing is retried automatically. error_detail.provider_chain carries "
+        "the attempt. This is not a missing provider connection - the source was "
+        "bound, admitted, and invoked. " + _OWN_MODEL_ROUTES
+    )
+
+
+def _held_attempt_annotation(
+    error_text: str, provider_chain: dict[str, Any] | None,
+) -> tuple[str, str] | None:
+    """(failure_class, suggested_action) for a held or single-source-exhausted attempt.
+
+    The class is the shared typed one; this adds the advice for it. Returns
+    None when the shared classifier has nothing typed to say -- including a
+    refusal that invoked nothing, which carries no attempt and keeps
+    ``permission_denied:provider_not_bound`` -- so the existing classifiers decide.
+    """
+    from tinyassets.providers.diagnostics import held_attempt_diagnosis
+
+    diagnosis = held_attempt_diagnosis(error_text, provider_chain)
+    if diagnosis is None:
+        return None
+    if not diagnosis.invoked:
+        # Held, but no FAILED attempt record: say the cause is unknown without
+        # claiming an invocation the evidence does not show.
+        return (diagnosis.run_class, _HELD_ATTEMPT_UNEVIDENCED_ACTION)
+    return (diagnosis.run_class, _held_attempt_action(diagnosis))
+
+
 def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
     """Build the (exc_type, failure_class, suggested_action) table lazily."""
     rows: list[tuple[type, str, str]] = []
@@ -581,6 +645,11 @@ def _failure_payload(
 
 
 def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
+    # A held ATTEMPT carries its own evidence; it precedes the held-authority
+    # row, which describes a refusal that invoked nothing.
+    held = _held_attempt_annotation(str(exc), getattr(exc, "chain_state", None))
+    if held is not None:
+        return _failure_payload(exc, *held)
     for exc_type, failure_class, suggested_action in _build_failure_taxonomy():
         if isinstance(exc, exc_type):
             return _failure_payload(exc, failure_class, suggested_action)
@@ -698,6 +767,13 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
         # evidence suffix names classified capacity classes ("rate_limited",
         # "overloaded"), so this must precede the substring nets below.
         return ("work_model_exhausted", _WORK_MODEL_EXHAUSTED_ACTION)
+    # Same contract for a held or single-source attempt: its persisted
+    # `[chain_state]:` evidence names the cause, and the nets below would read
+    # that JSON's words ("timeout", "401") or fall through to "connect your
+    # provider" for a source that was bound and invoked.
+    held = _held_attempt_annotation(error_str, _provider_chain_from_error(error_str))
+    if held is not None:
+        return held
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",
@@ -859,18 +935,15 @@ def _provider_chain_from_events(events: list[dict[str, Any]]) -> dict[str, Any] 
 
 
 def _provider_chain_from_error(error: str) -> dict[str, Any] | None:
-    """Parse graph_compiler's compact ``[chain_state]:`` diagnostic suffix."""
-    marker = "[chain_state]:"
-    if marker not in (error or ""):
-        return None
-    suffix = error.rsplit(marker, 1)[1].strip()
-    if not suffix:
-        return None
-    try:
-        parsed = json.loads(suffix)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+    """Parse graph_compiler's compact ``[chain_state]:`` diagnostic suffix.
+
+    One parser, shared with the classifier that reads the same suffix, so the
+    evidence this surface *shows* and the class both surfaces *report* can
+    never be derived from two different readings of one stored row.
+    """
+    from tinyassets.providers.diagnostics import chain_state_from_error
+
+    return chain_state_from_error(error)
 
 
 def _run_error_detail(

@@ -6511,6 +6511,27 @@ def _classify_failure(run: dict) -> str:
         # this narrow known prefix must precede every substring net below: a
         # model id containing "timeout" is not a timed-out run.
         return "work_model_exhausted"
+    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+    from tinyassets.providers.diagnostics import CHAIN_STATE_MARKER, held_attempt_diagnosis
+
+    diagnosis = held_attempt_diagnosis(error)
+    if diagnosis is not None:
+        # A held or single-source attempt persists its redacted `[chain_state]:`
+        # evidence, and the SHARED typed classifier reads the attempt's own
+        # class off it. `api.runs` returns this same string for this same row:
+        # the nets below would instead read a word out of the provider's
+        # free-text detail, the owner's model id or their connection id -- a
+        # model called "timeout-model" that failed auth is not a timed-out run,
+        # and one surface saying `timeout` while the other says `auth_invalid`
+        # is the defect.
+        return diagnosis.run_class
+    if (ProviderAuthorityHeldError.ATTEMPT_MESSAGE in lower
+            or AllProvidersExhaustedError.NO_WIDENING_MESSAGE in lower):
+        # A single-source raise whose cause this daemon does not name keeps its
+        # existing generic class (an exhausted chain is a true thing to say),
+        # but it is still classified on the typed message, never on the
+        # evidence JSON's free text.
+        lower = lower.split(CHAIN_STATE_MARKER, 1)[0]
     if "empty" in lower and ("llm" in lower or "response" in lower or "provider" in lower):
         return "empty_llm_response"
     if lower.startswith("workspace command timeout"):

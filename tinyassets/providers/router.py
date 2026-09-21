@@ -1431,7 +1431,7 @@ class ProviderRouter:
         if served_authority is not None:
             raise AllProvidersExhaustedError(
                 f"Served provider {served_authority.provider!r} exhausted; "
-                "universe authority forbids fallback widening.",
+                f"universe {AllProvidersExhaustedError.NO_WIDENING_MESSAGE}.",
                 attempts=attempts,
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),
@@ -1445,10 +1445,21 @@ class ProviderRouter:
                 output_tokens=0,
                 cost_microunits=0,
             )
+            # The run's ONLY authorized source failed. Carry the same structured
+            # snapshot the unpinned chain carries: the compiler persists it on
+            # the failed event and the run error, and without it the run read
+            # named no cause at all (live 2026-09-21, run 07c1611916cc4eb4).
             raise AllProvidersExhaustedError(
                 f"Armed provider {invocation_carrier.provider!r} exhausted; "
-                "provider authority forbids fallback widening.",
+                f"provider {AllProvidersExhaustedError.NO_WIDENING_MESSAGE}.",
                 attempts=attempts,
+                chain_state=build_chain_state(
+                    role=role,
+                    chain=chain,
+                    attempts=attempts,
+                    api_key_providers_enabled=api_key_providers_enabled(),
+                    allowlist=allowlist,
+                ),
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),
                 capacity_scope=dominant_capacity_scope(attempts),
