@@ -965,21 +965,175 @@
       if(!err || typeof err.code!=="number") return false;
       return typeof err.message==="string" && /session/i.test(err.message);
     },
-    _parse(text){
-      const t=(text||"").trim();
-      // An SSE stream cut before its result frame: the body is empty, or holds
-      // only the event/comment lines that precede the data line. That is what a
-      // mid-flight disconnect looks like from here, and it used to reach the
-      // user as the raw string "no JSON or SSE frame".
-      if(!t) throw transportError("stream_empty",
-        "the connection closed before your universe replied", false);
-      if(t[0]==="{"||t[0]==="[") return JSON.parse(t);
-      for(const line of t.split(/\r?\n/)){
-        const s=line.trim();
-        if(s.startsWith("data:")){ const p=s.slice(5).trim(); if(p) return JSON.parse(p); }
+    // ---- liveness bounds -------------------------------------------------
+    //
+    // NEITHER of these is a cap on how long a turn may take. A granted turn
+    // runs until it is finished (founder, 2026-08-29), and a tool wait of 900s
+    // is ordinary. What they bound is SILENCE: the server's SSE response is a
+    // sse_starlette EventSourceResponse, which emits a `: ping` comment every
+    // 15s, and the edge Worker passes the stream through untouched. So bytes
+    // keep arriving for the whole of a healthy long turn, and a gap of two
+    // minutes means eight consecutive missed pings - the connection, not the
+    // work, has stopped.
+    //
+    // Before this, `_rpc` awaited the whole body. A stream that never closed
+    // left the tab "thinking" forever with no bound of any kind: the founder's
+    // original tab was still thinking while a fresh page already showed the
+    // turn had failed.
+    //
+    // Tests override these the way they override `_pause`.
+    HEADERS_MS:90000, SILENCE_MS:120000,
+    // Race a promise against a bound, clearing the timer on EVERY settle so no
+    // pending timer is left behind (one stray 5s guard per case is what made
+    // the recovery suite take 173s).
+    _bound(promise, ms, code, message){
+      let timer=null;
+      const done=()=>{ if(timer){ clearTimeout(timer); timer=null; } };
+      return Promise.race([
+        promise.then(v=>{done();return v;}, e=>{done();throw e;}),
+        new Promise((_r,reject)=>{
+          timer=setTimeout(()=>{ timer=null;
+            reject(transportError(code, message, false)); }, ms);
+        }),
+      ]);
+    },
+    // ---- SSE framing -----------------------------------------------------
+    //
+    // One SSE frame -> its JSON-RPC document, or null when the frame carries
+    // no payload we can read (a `: ping` comment, an `event:`-only preamble, a
+    // half-arrived frame). `data:` may repeat; per the spec the payload is the
+    // data lines joined with newlines, and ONE optional space after the colon
+    // is part of the syntax, not of the value.
+    _frameDoc(raw){
+      const data=[];
+      for(const line of String(raw||"").split("\n")){
+        if(!line || line[0]===":") continue;       // comment / keep-alive ping
+        if(!line.startsWith("data:")) continue;    // event:, id:, retry:, ...
+        let part=line.slice(5);
+        if(part[0]===" ") part=part.slice(1);
+        data.push(part);
       }
+      if(!data.length) return null;
+      const payload=data.join("\n").trim();
+      if(!payload) return null;
+      try{ return JSON.parse(payload); }catch(_e){ return null; }
+    },
+    // Is this document the terminal answer to OUR request? A JSON-RPC response
+    // is terminal when it carries a result or an error AND echoes the id it is
+    // answering. Notifications carry no id; another in-flight call's response
+    // carries someone else's. Accepting either is how a turn adopted an answer
+    // that was never its own.
+    _isTerminal(doc, wantId){
+      if(!doc || typeof doc!=="object" || Array.isArray(doc)) return false;
+      if(doc.jsonrpc!=="2.0") return false;
+      if(!("result" in doc) && !doc.error) return false;
+      if(!("id" in doc) || doc.id===null || doc.id===undefined) return false;
+      return doc.id===wantId;
+    },
+    // A whole-body scan, used for an ordinary JSON envelope and for any
+    // transport that hands us no readable stream. Same id rule: a JSON
+    // envelope answering a different request is not this request's answer.
+    _selectTerminal(text, wantId){
+      const t=(text||"").trim();
+      if(!t) return {found:false, frames:0, empty:true};
+      let frames=0, seen=false;
+      if(t[0]==="{"||t[0]==="["){
+        let doc=null;
+        try{ doc=JSON.parse(t); }catch(_e){ return {found:false, frames:0}; }
+        const list=Array.isArray(doc)?doc:[doc];
+        for(const entry of list){
+          frames++;
+          if(this._isTerminal(entry, wantId)) return {found:true, doc:entry, frames};
+        }
+        return {found:false, frames};
+      }
+      for(const raw of t.split(/\n\s*\n/)){
+        const doc=this._frameDoc(raw.replace(/\r\n|\r/g,"\n"));
+        if(!doc) continue;
+        frames++; seen=true;
+        if(this._isTerminal(doc, wantId)) return {found:true, doc, frames};
+      }
+      return {found:false, frames:seen?frames:0};
+    },
+    // Nothing for this request arrived. Say which of the two truths it was,
+    // and never mark either replayable: the tool may have run. A body with no
+    // bytes at all is a connection that closed before anything was said; a
+    // body with content but no answer to this request was cut off, or carried
+    // only somebody else's frames - equally unconfirmed either way.
+    _noTerminal(empty){
+      if(empty) throw transportError("stream_empty",
+        "the connection closed before your universe replied", false);
       throw transportError("stream_truncated",
         "the reply was cut off in transit", false);
+    },
+    // Read the response incrementally and stop at the frame that answers THIS
+    // request: cancel the reader and return, rather than waiting for the
+    // connection to close. FastMCP keeps the stream open across pings and can
+    // carry notifications and other calls' responses on it, so waiting for EOF
+    // is both slower than the answer and, when the connection never closes,
+    // unbounded.
+    //
+    // Frames are split on a blank line across arbitrary chunk boundaries: a
+    // trailing CR is held back until the next chunk, so a CRLF cut in half by
+    // the network never reads as an empty line, and a multi-byte UTF-8
+    // character split across chunks is reassembled by the decoder.
+    async _readTerminal(resp, wantId){
+      const body=resp.body;
+      const jsonBody=/application\/json/i.test(resp.headers.get("content-type")||"");
+      const silence=()=>[this.SILENCE_MS, "stream_silent",
+        "your universe stopped sending anything back; it may still be working on this"];
+      if(!body || typeof body.getReader!=="function"){
+        // No readable stream (an ordinary JSON body, or a transport shim).
+        const text=await this._bound(Promise.resolve(resp.text()), ...silence());
+        const hit=this._selectTerminal(text, wantId);
+        if(hit.found) return hit.doc;
+        return this._noTerminal(!!hit.empty);
+      }
+      const reader=body.getReader();
+      const decoder=new TextDecoder();
+      let buf="", carry="", bytes=0;
+      const absorb=(piece)=>{
+        let s=carry+piece; carry="";
+        if(s.endsWith("\r")){ carry="\r"; s=s.slice(0,-1); }
+        buf+=s.replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+      };
+      try{
+        for(;;){
+          const chunk=await this._bound(reader.read(), ...silence());
+          if(chunk && chunk.done){
+            absorb(decoder.decode());
+            if(carry){ buf+=carry.replace(/\r/g,"\n"); carry=""; }
+            if(jsonBody){
+              const hit=this._selectTerminal(buf,wantId);
+              if(hit.found)return hit.doc;
+              return this._noTerminal(bytes===0);
+            }
+            // A server that omitted the final blank line still owes us a whole
+            // frame; a truncated one will not parse, which is the answer.
+            const tail=this._frameDoc(buf);
+            if(tail && this._isTerminal(tail, wantId)) return tail;
+            return this._noTerminal(bytes===0);
+          }
+          const piece=(chunk && chunk.value!==undefined)
+            ? decoder.decode(chunk.value,{stream:true}) : "";
+          bytes+=piece.length;
+          absorb(piece);
+          if(jsonBody)continue;
+          let cut;
+          while((cut=buf.indexOf("\n\n"))>=0){
+            const raw=buf.slice(0,cut); buf=buf.slice(cut+2);
+            const doc=this._frameDoc(raw);
+            if(!doc) continue;                     // ping, notification, noise
+            if(this._isTerminal(doc, wantId)) return doc;
+          }
+        }
+      }finally{
+        // Release this request's stream - and only this one. Cancelling is
+        // best-effort: a stream already errored or closed rejects here, and
+        // that must not replace the outcome we are returning.
+        try{ const c=reader.cancel(); if(c&&typeof c.catch==="function") c.catch(()=>{}); }
+        catch(_e){}
+      }
     },
     // `attempt` carries a SEPARATE budget per recovery kind. It used to be one
     // boolean, so a gateway retry spent the session retry (and the reverse), and
@@ -1009,10 +1163,35 @@
       // response applies only while this is still the live generation.
       const gen=this._gen;
 
+      // Abort scope is exactly this request. A bound that fires here cancels
+      // this fetch and nothing else: another tab's turn, a concurrent status
+      // poll, and the session generation of whoever else is in flight are all
+      // untouched.
+      const ctl=(typeof AbortController!=="undefined") ? new AbortController() : null;
+      const init={method:"POST",headers,body:JSON.stringify(frame)};
+      if(ctl) init.signal=ctl.signal;
+
       let resp;
       try{
-        resp=await fetch("/mcp",{method:"POST",headers,body:JSON.stringify(frame)});
+        // Headers, not the body. The server sends them before the tool runs,
+        // so this bound catches a fetch that never yields a response at all
+        // (the shape that left a tab thinking with nothing to time it out)
+        // without saying anything about how long the work may take.
+        resp=await this._bound(Promise.resolve(fetch("/mcp",init)), this.HEADERS_MS,
+          "no_response", "your universe never answered this request");
       }catch(netErr){
+        if(netErr && netErr.transport==="no_response"){
+          if(ctl){ try{ ctl.abort(); }catch(_e){} }
+          // A bound is UNCONFIRMED, never proof that the tool did not run: the
+          // request may have reached it and be running now. So the session is
+          // retired. Only explicitly idempotent reads retain their retry budget.
+          this._retire(gen, isHandshake);
+          if(opts.idempotent && attempt.gateway<1){
+            attempt.gateway++;await this._pause(2500);
+            return this._rpc(method,params,opts,attempt);
+          }
+          throw netErr;
+        }
         // Offline, DNS, TLS, or the connection dropped before any response. The
         // session may or may not still be good, so assume not: the next call
         // rebuilds it rather than reusing a handle we can no longer trust.
@@ -1055,9 +1234,44 @@
         const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid;
       }
 
-      let bodyText="";
-      try{ bodyText=await resp.text(); }
+      // Two body paths, and the split is deliberate. A 2xx answering a request
+      // that carries an id is read INCREMENTALLY and correlated by that id. A
+      // non-2xx (or a notification, which has no id to correlate) is read to
+      // EOF exactly as before, so the 401 / session-gone / 5xx / http_error
+      // handling below sees the same bodyText it always did.
+      const wantId=(opts.expectResult===false) ? null
+        : (("id" in frame) ? frame.id : null);
+      const streaming=resp.ok && wantId!==null;
+      let bodyText="", streamedDoc=null;
+      try{
+        if(streaming) streamedDoc=await this._readTerminal(resp, wantId);
+        else bodyText=await this._bound(Promise.resolve(resp.text()), this.SILENCE_MS,
+          "stream_silent",
+          "your universe stopped sending anything back; it may still be working on this");
+      }
       catch(_readErr){
+        if(_readErr && _readErr.transport==="stream_silent"){
+          if(ctl){ try{ ctl.abort(); }catch(_e){} }
+          // Silence is UNCONFIRMED. Never replay a write; reads remain safe.
+          this._retire(gen, isHandshake);
+          if(opts.idempotent && attempt.gateway<1){
+            attempt.gateway++;await this._pause(1500);
+            return this._rpc(method,params,opts,attempt);
+          }
+          throw _readErr;
+        }
+        if(streaming && _readErr && _readErr.transport){
+          // A stream that ended (or arrived corrupt) without this request's
+          // answer. Same class as a cut body below: never auto-replay a
+          // state-changing call, keep the single gateway retry for reads.
+          this._retire(gen, isHandshake);
+          if(opts.idempotent && attempt.gateway<1){
+            attempt.gateway++;
+            await this._pause(1500);
+            return this._rpc(method, params, opts, attempt);
+          }
+          throw _readErr;
+        }
         // The stream died while we were reading it - an edge timeout on a long
         // turn, or the daemon restarting mid-reply. Same class as a truncated
         // body: the turn may already have been accepted, so never auto-replay.
@@ -1133,24 +1347,30 @@
       }
 
       if(opts.expectResult===false) return null;
-      let rpc;
-      try{ rpc=this._parse(bodyText); }
-      catch(parseErr){
-        // A 2xx whose body is not a JSON-RPC frame means the stream was cut
-        // before the result, or something in the path replaced the body. The
-        // session cannot be trusted afterwards - leaving it in place is exactly
-        // what used to break the page until a reload.
-        this._retire(gen, isHandshake);
-        if(parseErr && parseErr.transport){
+      // `_readTerminal` already proved this frame answers THIS request id; a
+      // stream that held no such frame threw above. The remaining branch is a
+      // 2xx read whole (no id to correlate), kept so a future caller cannot
+      // reach the rest of this function with an uncorrelated document.
+      let rpc=streamedDoc;
+      if(!rpc){
+        const hit=this._selectTerminal(bodyText, wantId);
+        if(!hit.found){
+          // A 2xx whose body holds no answer to this request: the stream was
+          // cut before the result, something in the path replaced the body, or
+          // what came back belongs to a different request. The session cannot
+          // be trusted afterwards - leaving it in place is exactly what used to
+          // break the page until a reload.
+          this._retire(gen, isHandshake);
+          let err;
+          try{ this._noTerminal(!!hit.empty); }catch(e){ err=e; }
           if(opts.idempotent && attempt.gateway<1){
             attempt.gateway++;
             await this._pause(1500);
             return this._rpc(method, params, opts, attempt);
           }
-          throw parseErr;
+          throw err;
         }
-        throw transportError("bad_frame",
-          "your universe sent a reply this app couldn\u2019t read", false);
+        rpc=hit.doc;
       }
       if(rpc.error){ const e=new Error(rpc.error.message||"MCP error"); e.rpc=rpc.error; throw e; }
       return rpc.result;
@@ -2641,6 +2861,7 @@
   // turn must not line up copies of one draft (Codex round 2, P1), and an
   // overflow goes back into the composer rather than vanishing.
   const sendQueue=[];
+  let sendQueueHeld=false;
   const SEND_QUEUE_MAX=8;
   // What is queued is also on disk: a rail answer queued behind a long turn
   // must survive the founder refreshing before that turn ends (Codex on #2698,
@@ -2813,7 +3034,7 @@
     note.appendChild(drop);
   }
   function flushSendQueue(){
-    if($("btn-send").disabled || !sendQueue.length) return;
+    if(sendQueueHeld || $("btn-send").disabled || !sendQueue.length) return;
     const next=sendQueue.shift();
     // A queued line goes out only under the account and home that queued it.
     // SAME rule as the in-flight record's (restoreInflight): a stamped pair
@@ -2883,6 +3104,9 @@
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
     let delivered=false;
+    // An outcome the transport could not confirm: the turn may be running right
+    // now. Nothing queued behind it is flushed automatically (see the finally).
+    let unconfirmed=false;
     // Account AND home at the moment of sending. A reply or a failure that
     // lands after either changed belongs to a conversation that is no longer
     // on screen: it paints nothing, and nothing of it reaches the new
@@ -2908,7 +3132,8 @@
         if(!opts.keepInflight)forgetInflight();
         appendFailureNotice(err.message,{speaker:"founder",text:message,display,truncated:false},undefined,err.failureCode);
       }else{
-        offerResend(message, display, err, opts);
+        unconfirmed=!!(err&&err.transport);
+        offerResend(message, display, err, Object.assign({}, opts||{}, {sentAt}));
         // Unsaved or unconfirmed: the local recovery record is still needed.
       }
     }finally{
@@ -2927,10 +3152,34 @@
       // voice session nor a status line of the account now on screen is
       // touched by a turn that outlived its own login or home.
       if(stillHere()&&mine){
-        flushSendQueue();
+        // An unconfirmed outcome is not a finished turn. Draining the queue
+        // behind one sends the NEXT message into a universe that may still be
+        // working on this one, on the strength of a guess the transport
+        // explicitly refused to make. The lines stay queued, on disk, until
+        // the user explicitly resumes them, even after another manual send.
+        if(unconfirmed) noteHeldQueue();
+        else flushSendQueue();
         Voice.conversationSettled(delivered);
       }
     }
+  }
+
+  // Say what is being held, once, and only when there is something to hold.
+  function noteHeldQueue(){
+    if(!sendQueue.length) return;
+    sendQueueHeld=true;
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    const resume=document.createElement("button");
+    resume.className="btn btn--link";resume.textContent="Send queued messages";
+    const note=appendMessage("system", sendQueue.length+" message"+(sendQueue.length===1?"":"s")+
+      " you queued behind this one "+(sendQueue.length===1?"is":"are")+
+      " being held, not sent: this turn's outcome is unknown. "+
+      "Check progress before choosing to send them.",resume);
+    resume.addEventListener("click",()=>{
+      if(epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope)return;
+      if($("btn-send").disabled)return;
+      note.remove();sendQueueHeld=false;flushSendQueue();
+    });
   }
 
   async function sendVoiceTurn(message){
@@ -2946,7 +3195,8 @@
     const myTurn={}; activeTurn=myTurn;
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
-    let delivered=false;
+    let delivered=false, unconfirmed=false;
+    const voiceSentAt=Date.now();
     // The same fence as the typed turn: account AND home at the moment of
     // speaking. A reply or a failure that lands after either changed belongs
     // to a conversation no longer on screen. It paints nothing, offers no
@@ -2956,7 +3206,7 @@
     const stillHere=()=>sentEpoch===MCP._loginEpoch&&sentScope===queueScope&&
       sentOwner===queueOwner;
     try{
-      const payload=await sendConversationRequest(message,message,Date.now(),opts);
+      const payload=await sendConversationRequest(message,message,voiceSentAt,opts);
       // Thrown, not returned: the awaited Voice caller must never receive a
       // reply it could speak into whatever session is live now. Its own
       // generation guard drops this on a sign-out (Voice.stop bumped it); on a
@@ -2979,7 +3229,9 @@
         forgetInflight();
         appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode);
       }else{
-        offerResend(message,message,error,Object.assign({},opts,{echoed:true,keepComposer:true}));
+        unconfirmed=!!(error&&error.transport);
+        offerResend(message,message,error,
+          Object.assign({},opts,{echoed:true,keepComposer:true,sentAt:voiceSentAt}));
       }
       throw error;
     }finally{
@@ -2994,7 +3246,8 @@
       // Queued lines and the voice session belong to the account and home
       // that are on screen now; a turn that outlived its own is not theirs.
       if(stillHere()&&mine){
-        flushSendQueue();
+        if(unconfirmed) noteHeldQueue();
+        else flushSendQueue();
         Voice.conversationSettled(delivered);
       }
     }
@@ -3003,6 +3256,54 @@
   // Explain a failed turn in the user's own terms and hand back a working
   // button. Transport failures carry `err.transport`; anything else is a real
   // reply from the universe and is reported as it came.
+  // A read-only look at what the universe has actually SAVED, offered before
+  // the user decides anything. It is the existing idempotent conversation peek
+  // - no new authority, no new storage, and no send: a draft in the composer
+  // and anything queued behind the turn are untouched.
+  //
+  // What it must never do is attribute. A turn whose transport went silent has
+  // no id in the saved thread (only the consumer path carries a request_key),
+  // so nothing here can prove the newest saved reply belongs to the message
+  // that timed out - matching on text would happily adopt somebody else's
+  // answer, or an older identical prompt. So it REPORTS what is saved, stamped,
+  // and says plainly that the link is unknown. That is the honest limit of a
+  // read with no correlation id; it is reported, not papered over.
+  async function offerSavedConversationCheck(note){
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    const line=document.createElement("div");
+    line.className="muted"; line.textContent="Checking your saved conversation...";
+    note.appendChild(line);
+    let r=null;
+    try{ r=await MCP.getConversation(); }
+    catch(e){
+      if(!stillOwner()) return;
+      line.textContent="Couldn\u2019t read your saved conversation just now ("+
+        ((e&&e.message)||"unknown error")+"). Nothing was sent.";
+      return;
+    }
+    if(!stillOwner()) return;
+    const conv=r&&r.recent_conversation;
+    const turns=(conv&&Array.isArray(conv.turns))?conv.turns:[];
+    if(!turns.length){
+      line.textContent="Your saved conversation has nothing recorded yet. That does "+
+        "not confirm this message failed - a turn is saved only when it finishes.";
+      return;
+    }
+    line.textContent="Saved conversation snapshot. This app cannot tell which saved reply, "+
+      "if any, answers the unconfirmed message. Nothing was sent or marked complete.";
+    for(const turn of turns){
+      if(!turn||typeof turn.text!=="string")continue;
+      const label=document.createElement("div");
+      label.textContent=String(turn.speaker||"Unknown speaker")+" · "+
+        (typeof turn.ts==="number"?new Date(turn.ts*1000).toLocaleString():"Time unavailable")+
+        (turn.truncated?" (saved preview is shortened)":"");
+      const content=document.createElement("pre");
+      content.style.whiteSpace="pre-wrap";content.textContent=turn.text;
+      line.appendChild(label);line.appendChild(content);
+    }
+  }
+
   function offerResend(message, display, err, opts){
     const notice=(err&&err.transport)
       ? "Delivery could not be confirmed: "+err.message+". Check progress before sending again; the request may already have acted."
@@ -3017,6 +3318,19 @@
       note.remove(); sendTurn(message, display, Object.assign({}, opts||{}, {echoed:true}));
     });
     const note=appendMessage("system",notice+" ",again);
+    // Only an UNCONFIRMED transport outcome gets the read-only check: a served
+    // failure already has its own saved record, and the consumer path has an
+    // exact request_key receipt that beats any observation this could make.
+    if(err&&err.transport&&!(opts&&opts.consumerRequest)){
+      const look=document.createElement("button");
+      look.className="btn btn--link"; look.textContent="Check saved conversation";
+      look.addEventListener("click", ()=>{
+        look.disabled=true;
+        offerSavedConversationCheck(note).finally(()=>{look.disabled=false;});
+      });
+      note.appendChild(document.createTextNode(" "));
+      note.appendChild(look);
+    }
   }
 
   async function pollStatus(){
@@ -3320,7 +3634,7 @@
     queueScope=""; queueOwner="";
     historyLoaded=false; queueRestored=false; inflightRestored=false;
     uploadsRestored=false;
-    sendQueue.length=0; retainedItems=[];
+    sendQueue.length=0; sendQueueHeld=false; retainedItems=[];
     renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
     clearComposerState();
     clearThread();

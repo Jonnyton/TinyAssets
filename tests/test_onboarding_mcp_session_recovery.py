@@ -62,8 +62,19 @@ async function ensureFreshToken(){ }
 // pins the real call site to the same call.
 async function refreshAccessToken(){ refreshes++; MCP.invalidateSession(); return true; }
 
-function makeResponse(spec){
+// Every scripted response echoes the id of the request it is answering. The
+// client correlates a terminal frame by that id, so a fixture pinned to a
+// literal id would answer only the first request of a case by accident. A
+// fixture that WANTS to be somebody else's answer sets `foreignId`.
+function echoId(body, requestId){
+  const target = requestId === null || requestId === undefined ? null : requestId;
+  return String(body === undefined ? "" : body)
+    .replace(/"__ECHO_ID__"/g, JSON.stringify(target));
+}
+
+function makeResponse(spec, requestId){
   const headers = spec.headers || {};
+  const answering = spec.foreignId !== undefined ? spec.foreignId : requestId;
   return {
     status: spec.status,
     ok: spec.status >= 200 && spec.status < 300,
@@ -74,7 +85,7 @@ function makeResponse(spec){
       // calls genuinely in flight against one shared session.
       if(spec.delayMs) await new Promise(r=>setTimeout(r, spec.delayMs));
       if(spec.readFails) throw new Error("stream closed");
-      return spec.body === undefined ? "" : spec.body;
+      return echoId(spec.body, answering);
     },
   };
 }
@@ -96,7 +107,7 @@ async function fetch(url, init){
   // session - which is the race being tested. The queue is consumed at call
   // time (above), so request ORDER stays deterministic regardless.
   if(spec.headersDelayMs) await new Promise(r=>setTimeout(r, spec.headersDelayMs));
-  return makeResponse(spec);
+  return makeResponse(spec, frame.id === undefined ? null : frame.id);
 }
 
 __TRANSPORT__
@@ -108,10 +119,11 @@ MCP._pause = function(){ return Promise.resolve(); };
 // and it must read as a clean assertion rather than a harness timeout.
 const DEADLOCK = Symbol("deadlock");
 function guard(promise){
+  let timer;
   return Promise.race([
     promise,
-    new Promise(r=>setTimeout(()=>r(DEADLOCK), 5000)),
-  ]);
+    new Promise(r=>{timer=setTimeout(()=>r(DEADLOCK), 5000);}),
+  ]).finally(()=>clearTimeout(timer));
 }
 
 (async () => {
@@ -256,7 +268,7 @@ def _ok(payload, headers=None):
     body = json.dumps(
         {
             "jsonrpc": "2.0",
-            "id": 1,
+            "id": "__ECHO_ID__",
             "result": {"structuredContent": payload},
         }
     )
@@ -268,7 +280,7 @@ def _handshake_with(headers):
     """initialize + notifications/initialized, the pair ensureInit sends."""
     return [
         {"status": 200, "headers": headers,
-         "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})},
+         "body": json.dumps({"jsonrpc": "2.0", "id": "__ECHO_ID__", "result": {}})},
         {"status": 202, "body": "", "headers": headers},
     ]
 
@@ -521,7 +533,7 @@ def test_an_application_error_leaves_a_healthy_session_alone(tmp_path):
                 + json.dumps(
                     {
                         "jsonrpc": "2.0",
-                        "id": 1,
+                        "id": "__ECHO_ID__",
                         "error": {"code": -32602, "message": "Invalid params"},
                     }
                 ),
@@ -590,7 +602,7 @@ def test_a_blip_on_the_second_handshake_step_keeps_the_session_it_just_got(tmp_p
         tmp_path,
         [
             {"status": 200, "headers": _SID,
-             "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})},
+             "body": json.dumps({"jsonrpc": "2.0", "id": "__ECHO_ID__", "result": {}})},
             {"status": 503, "body": "<html>blip</html>"},   # the notification
             {"status": 202, "body": "", "headers": _SID},   # its retry
         ]
@@ -618,7 +630,7 @@ def test_a_token_rotation_mid_handshake_does_not_wedge_the_client(tmp_path):
         tmp_path,
         [
             {"status": 200, "headers": _SID,
-             "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})},
+             "body": json.dumps({"jsonrpc": "2.0", "id": "__ECHO_ID__", "result": {}})},
             {"status": 401, "body": ""},                    # the notification
             {"status": 400, "body": json.dumps(             # its session-less retry
                 {"jsonrpc": "2.0", "id": "server-error",
@@ -789,10 +801,10 @@ def test_two_evictions_in_a_row_do_not_leave_a_session_armed(tmp_path):
         tmp_path,
         [
             {"status": 200, "headers": _SID,
-             "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})},
+             "body": json.dumps({"jsonrpc": "2.0", "id": "__ECHO_ID__", "result": {}})},
             _session_gone(),                      # notification evicted
             {"status": 200, "headers": _SID2,
-             "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})},
+             "body": json.dumps({"jsonrpc": "2.0", "id": "__ECHO_ID__", "result": {}})},
             _session_gone(),                      # repair notification too
         ],
         'MCP.converse("hello")',
