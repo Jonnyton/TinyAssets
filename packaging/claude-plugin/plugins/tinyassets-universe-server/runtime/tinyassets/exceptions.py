@@ -127,9 +127,30 @@ class ProviderProtocolError(ProviderError):
 
 
 class ProviderAuthorityHeldError(ProviderError):
-    """Provider execution has no requester- or platform-owned authority."""
+    """Provider execution has no requester- or platform-owned authority.
+
+    Optionally carries the redacted ``attempts`` / ``chain_state`` of an ARMED
+    attempt that was actually made and failed without proving a side-effect-free
+    capacity failure (the captured-prompt loop's held branch). Both default to
+    ``None``: a refusal that invoked nothing has no attempt evidence. The
+    compiler's event and error readers take them off the OUTER exception, so
+    leaving them on ``__cause__`` alone erased the provider's failure class from
+    the run record (live 2026-09-21, run 07c1611916cc4eb4).
+    """
 
     failure_class = "authority_held"
+    #: Prefix of every held-ATTEMPT message. Only the string survives the async
+    #: runner, so the stored-error classifiers key on it -- the same contract
+    #: as ``WorkModelExhaustedError.MESSAGE``. A held attempt is not "no
+    #: authority": the owner's source was bound, admitted, and invoked.
+    ATTEMPT_MESSAGE = "work model attempt is held"
+
+    def __init__(self, *args, attempts=None, chain_state=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        # list[ProviderAttemptDiagnostic] | None -- redacted at the router.
+        self.attempts = attempts
+        # dict | None -- typically built via diagnostics.build_chain_state
+        self.chain_state = chain_state
 
 
 class WorkModelExhaustedError(ProviderAuthorityHeldError):
@@ -152,6 +173,11 @@ class WorkModelExhaustedError(ProviderAuthorityHeldError):
 class AllProvidersExhaustedError(ProviderError):
     """Every provider in the fallback chain failed or is in cooldown.
 
+    ``NO_WIDENING_MESSAGE`` is the suffix of the single-source raises (served
+    turn, armed run carrier): one authorized provider was asked and failed, and
+    authority forbids trying another. Stored-error classifiers key on it to
+    read the attempt's own classified cause instead of "connect your provider".
+
     FEAT-006: optionally carries a structured ``attempts`` list of
     :class:`tinyassets.providers.diagnostics.ProviderAttemptDiagnostic`
     and a ``chain_state`` dict so callers can diagnose *why* each
@@ -160,6 +186,8 @@ class AllProvidersExhaustedError(ProviderError):
     message. Both fields default to ``None`` for backward compatibility
     with pre-FEAT-006 raise sites that pass only a message.
     """
+
+    NO_WIDENING_MESSAGE = "authority forbids fallback widening"
 
     def __init__(
         self,

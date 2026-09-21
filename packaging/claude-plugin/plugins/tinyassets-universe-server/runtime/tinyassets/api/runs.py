@@ -459,6 +459,105 @@ _WORK_MODEL_EXHAUSTED_ACTION = (
 )
 
 
+# A held ARMED attempt: the owner's bound source was admitted and invoked, and
+# the attempt failed for a classified reason the run could not prove was a
+# side-effect-free capacity failure, so it held rather than moving to a sibling
+# model. Live 2026-09-21 (run 07c1611916cc4eb4): that evidence was erased and
+# the owner was told to connect a provider they had already connected and used.
+# Keyed on the attempt's own class -- streamed `failure_class` first, the coarse
+# `skip_class` when an attempt carried none -- onto EXISTING run classes.
+_HELD_ATTEMPT_CLASSES = {
+    "provider_idle_timeout": "timeout",
+    "interactive_deadline": "timeout",
+    "provider_protocol_error": "provider_error",
+    "auth_invalid": "auth_invalid",
+    "provider_rate_limited": "quota_exhausted",
+    "provider_credit_exhausted": "quota_exhausted",
+    "provider_overloaded": "provider_overloaded",
+    "timed_out": "timeout",
+    "provider_error": "provider_error",
+    "endpoint_unreachable": "provider_error",
+    "quota_or_cooldown": "quota_exhausted",
+}
+#: Every cause the table does not name -- the diagnostics enum's own literal
+#: "unknown" (an unhandled exception the router could not classify) and any
+#: class a later slice adds -- lands here. An unrecognised cause is NOT an
+#: established provider error: asserting one would put a diagnosis in the run
+#: record that no evidence supports. The attempt evidence is still reported.
+_HELD_ATTEMPT_UNRECOGNISED_CLASS = "unknown"
+_HELD_ATTEMPT_UNEVIDENCED_ACTION = (
+    "This run's bound work model was invoked and its attempt was held, but no "
+    "classified attempt evidence was recorded, so the cause is unknown. It is not "
+    "a missing provider connection. Any tool or effect the attempt started may "
+    "already have happened: read this run's events and the target before running "
+    "again; nothing is retried automatically."
+)
+
+
+def _held_attempt_action(attempt: dict[str, Any], cause: str) -> str:
+    provider = str(attempt.get("provider") or "the bound source")
+    # An unrecognised cause is reported as unrecognised. The attempt still
+    # happened, so the effect warning and the "not unbound" correction below
+    # hold; only the diagnosis is withheld.
+    named = (
+        f"failed with {cause}"
+        if cause in _HELD_ATTEMPT_CLASSES
+        else "failed for a reason this daemon does not recognise"
+    )
+    return (
+        f"The work model attempt on {provider} {named}, so the run held: "
+        "that evidence does not prove a side-effect-free capacity failure, so no "
+        "sibling model was tried, and any tool or effect the attempt started may "
+        "already have happened. Read this run's events and the target before running "
+        "again; nothing is retried automatically. error_detail.provider_chain carries "
+        "the attempt. This is not a missing provider connection - the source was "
+        "bound, admitted, and invoked. " + _OWN_MODEL_ROUTES
+    )
+
+
+def _held_attempt_annotation(
+    error_text: str, provider_chain: dict[str, Any] | None,
+) -> tuple[str, str] | None:
+    """(failure_class, suggested_action) for a held or single-source-exhausted attempt.
+
+    Typed from the persisted evidence, never from the message's substrings: the
+    last FAILED attempt's classified cause names the run class and the advice.
+    A held attempt with no classified evidence stays ``unknown`` rather than
+    guessing, and so does an attempt whose cause this table does not name.
+    Anything else -- including a refusal that invoked nothing, which carries no
+    attempt and keeps ``permission_denied:provider_not_bound`` -- returns None
+    so the existing classifiers decide.
+    """
+    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+
+    msg = (error_text or "").lower()
+    held = ProviderAuthorityHeldError.ATTEMPT_MESSAGE in msg
+    if not held and AllProvidersExhaustedError.NO_WIDENING_MESSAGE not in msg:
+        return None
+    attempts = provider_chain.get("attempts") if isinstance(provider_chain, dict) else None
+    failed = [
+        item for item in (attempts if isinstance(attempts, list) else [])
+        if isinstance(item, dict) and item.get("status") == "failed"
+    ]
+    if failed:
+        cause = failed[-1].get("failure_class") or failed[-1].get("skip_class")
+        if isinstance(cause, str) and cause:
+            run_class = _HELD_ATTEMPT_CLASSES.get(
+                cause, _HELD_ATTEMPT_UNRECOGNISED_CLASS,
+            )
+            # A cause this table does not name is only allowed to speak for a
+            # HELD attempt, where "unknown" is strictly better than the
+            # "connect your provider" the nets below would produce. On the
+            # single-source path the existing classifiers already say something
+            # true about an exhausted chain, so an unrecognised cause leaves
+            # them alone rather than flattening them to unknown.
+            if held or cause in _HELD_ATTEMPT_CLASSES:
+                return (run_class, _held_attempt_action(failed[-1], cause))
+    if held:
+        return ("unknown", _HELD_ATTEMPT_UNEVIDENCED_ACTION)
+    return None
+
+
 def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
     """Build the (exc_type, failure_class, suggested_action) table lazily."""
     rows: list[tuple[type, str, str]] = []
@@ -581,6 +680,11 @@ def _failure_payload(
 
 
 def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
+    # A held ATTEMPT carries its own evidence; it precedes the held-authority
+    # row, which describes a refusal that invoked nothing.
+    held = _held_attempt_annotation(str(exc), getattr(exc, "chain_state", None))
+    if held is not None:
+        return _failure_payload(exc, *held)
     for exc_type, failure_class, suggested_action in _build_failure_taxonomy():
         if isinstance(exc, exc_type):
             return _failure_payload(exc, failure_class, suggested_action)
@@ -698,6 +802,13 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
         # evidence suffix names classified capacity classes ("rate_limited",
         # "overloaded"), so this must precede the substring nets below.
         return ("work_model_exhausted", _WORK_MODEL_EXHAUSTED_ACTION)
+    # Same contract for a held or single-source attempt: its persisted
+    # `[chain_state]:` evidence names the cause, and the nets below would read
+    # that JSON's words ("timeout", "401") or fall through to "connect your
+    # provider" for a source that was bound and invoked.
+    held = _held_attempt_annotation(error_str, _provider_chain_from_error(error_str))
+    if held is not None:
+        return held
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",

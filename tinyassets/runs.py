@@ -6511,6 +6511,18 @@ def _classify_failure(run: dict) -> str:
         # this narrow known prefix must precede every substring net below: a
         # model id containing "timeout" is not a timed-out run.
         return "work_model_exhausted"
+    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+
+    if (ProviderAuthorityHeldError.ATTEMPT_MESSAGE in lower
+            or AllProvidersExhaustedError.NO_WIDENING_MESSAGE in lower):
+        # A held or single-source attempt now persists its redacted
+        # `[chain_state]:` JSON, and that JSON carries a free-text `detail` per
+        # attempt. Classify on the typed message this run raised, never on a
+        # provider's own wording inside the evidence: otherwise an auth failure
+        # whose detail happens to say "timed out" reads back as a timed-out run
+        # here while `api.runs` reads it as auth_invalid, and the same stored
+        # run gets two different causes on two surfaces.
+        lower = lower.split("[chain_state]:", 1)[0]
     if "empty" in lower and ("llm" in lower or "response" in lower or "provider" in lower):
         return "empty_llm_response"
     if lower.startswith("workspace command timeout"):

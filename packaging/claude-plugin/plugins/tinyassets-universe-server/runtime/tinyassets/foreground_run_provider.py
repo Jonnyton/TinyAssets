@@ -108,6 +108,63 @@ def _binding_matches_seed(binding: Any, seed: ProviderWorkBindingSeed) -> bool:
     )
 
 
+def _held_attempt_error(role: str, selected: Any, exc: BaseException):
+    """The held class carrying the failed attempt's redacted evidence.
+
+    The armed attempt on ``selected`` failed and ``capacity_boundary`` could not
+    prove a side-effect-free capacity failure, so the loop refuses to advance to
+    a sibling model. Before this the cause lived only on ``__cause__``; the
+    compiler's event and error readers take ``chain_state`` off the OUTER
+    exception, so the run record said "held" and nothing else (live 2026-09-21,
+    run 07c1611916cc4eb4). The evidence is the router's own per-attempt
+    diagnostics -- classified failure, scrubbed and clipped detail, never the
+    provider's response body, a credential, or a path -- and the message names
+    the owner's model and connection plus the dominant class so the stored
+    string says the cause on its own. No diagnostics is recorded as none: an
+    empty chain would read as a provider that was never asked.
+    """
+    from dataclasses import replace
+
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.providers.diagnostics import (
+        ProviderAttemptDiagnostic,
+        build_chain_state,
+        dominant_failure_class,
+        redacted_failure_detail,
+    )
+    from tinyassets.workspace_git import scrub_text
+
+    # Re-run the router's OWN scrub/clip boundary here rather than trusting the
+    # raise site: this is the point where a per-attempt `detail` stops being an
+    # in-process diagnostic and becomes a persisted run record a chatbot reads
+    # back. `redacted_failure_detail` is idempotent, so a detail the router
+    # already scrubbed is unchanged.
+    attempts = [
+        replace(item, detail=redacted_failure_detail(item.detail))
+        for item in (getattr(exc, "attempts", None) or ())
+        if type(item) is ProviderAttemptDiagnostic
+    ]
+    message = ProviderAuthorityHeldError.ATTEMPT_MESSAGE
+    if not attempts:
+        return ProviderAuthorityHeldError(message)
+    cause = dominant_failure_class(attempts) or attempts[-1].skip_class
+    # The owner names their own connections and models; scrubbed anyway, because
+    # this string is persisted verbatim as the run error.
+    message += scrub_text(
+        f": {selected.model_id or 'default model'} on {selected.connection_id} ({cause})"
+    )
+    chain_state = getattr(exc, "chain_state", None)
+    if isinstance(chain_state, dict):
+        # Keep the cause's own chain context (allowlist, api-key policy) but
+        # publish the attempts through the same boundary as the message.
+        chain_state = {**chain_state, "attempts": [a.to_dict() for a in attempts]}
+    else:
+        chain_state = build_chain_state(
+            role=role, chain=[selected.connection_id], attempts=attempts,
+        )
+    return ProviderAuthorityHeldError(message, attempts=attempts, chain_state=chain_state)
+
+
 class _SeedResolver:
     def __init__(self, seed: ProviderWorkBindingSeed) -> None:
         self.seed = seed
@@ -958,7 +1015,7 @@ class _ForegroundRunProviderSession:
 
     def _call_captured_prompt(self, role, prompt, system, config, policy, kwargs,
                               metadata_observer):
-        from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+        from tinyassets.exceptions import AllProvidersExhaustedError
         from tinyassets.providers.agent_capacity_boundary import capacity_boundary
         from tinyassets.providers.call import get_provider_router
 
@@ -998,7 +1055,7 @@ class _ForegroundRunProviderSession:
                                      if kind == "native_agent" else ()),
                 )
                 if boundary is None:
-                    raise ProviderAuthorityHeldError("work model attempt is held") from exc
+                    raise _held_attempt_error(role, selected, exc) from exc
                 boundaries += (boundary,)
                 last_capacity = exc
                 self._work_candidates.next_candidate(policy, (boundary.exhaustion,))

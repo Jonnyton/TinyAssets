@@ -203,6 +203,14 @@ The provider runtime SHALL distinguish imported/registered providers, quota or c
 - **WHEN** an unpinned non-judge role exhausts all eligible providers
 - **THEN** the raised error carries the role, effective chain, serialized attempts, API-key-provider policy, and any active allowlist in `chain_state`
 
+#### Scenario: a single authorized source records the same snapshot
+- **WHEN** a run's only authorized (armed) source fails and provider authority forbids widening the chain
+- **THEN** the raised error carries `chain_state` as well as `attempts`, so the stored run names a cause instead of only saying the chain was exhausted
+
+#### Scenario: a held work-model attempt keeps the provider's own classified cause
+- **WHEN** an armed captured-prompt attempt fails and the capacity boundary cannot prove it was side-effect-free, so the run holds rather than trying a sibling model
+- **THEN** the held error carries the redacted attempts and `chain_state` on the OUTER exception (the compiler's failed event and error suffix read it there), the run read reports that attempt's own class — `provider_idle_timeout`/`interactive_deadline` as `timeout`, `provider_protocol_error` as `provider_error`, `auth_invalid` as `auth_invalid` — with advice that any effect the attempt started may already have happened and that nothing is retried automatically, an attempt whose cause is absent or not recognized stays `unknown` rather than asserting a provider error, and a refusal that invoked nothing still reports `permission_denied:provider_not_bound`
+
 #### Scenario: cooldowns expire locally
 - **WHEN** a provider's monotonic cooldown expiry has passed
 - **THEN** the next availability check clears that cooldown and treats the provider as available subject to its rolling rate windows
