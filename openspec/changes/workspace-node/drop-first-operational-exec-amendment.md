@@ -1,5 +1,5 @@
 > **Staged landing.** This amendment is the full approved design and is
-> preserved as the source of truth. It landed in two slices so each PR stayed
+> preserved as the source of truth. It is landing in two slices so each PR stays
 > within the scope guard's hard cap of 8 release-critical files; the runtime
 > source in both slices is byte-identical to the independently reviewed
 > `84c116ae45992a974f6ca9625131b42509b15ae5` (PR #3894, draft, preserved).

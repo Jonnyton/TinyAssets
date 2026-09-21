@@ -26,7 +26,7 @@ root native proof on local fixtures 2026-09-21 in
 further shape review needed. The reviewed source is preserved at
 `84c116ae45992a974f6ca9625131b42509b15ae5` (PR #3894, draft); its 27-file
 tree carried 13 release-critical paths against the scope guard's hard cap of 8,
-so it landed in two slices with the runtime source byte-identical to that commit.
+so it is landing in two slices with runtime source byte-identical to that commit.
 
 **Slice 1 — installed helper (LANDED: PR #3895, `f60e6656`, merged and
 deployed 2026-09-21; root verified in production `/usr/local/libexec/ta-op`
@@ -60,8 +60,8 @@ correction); `tests/test_drop_first_exec_gate.py`,
 `load_modes` from the gate; the three delta scenarios (TTY is not an
 exemption; env-apply refuses pre-mutation when the wrapper is absent; the
 healthcheck runs the pulse route with bundle-before-image rollback) synced
-into the main daemon spec 2026-09-21. Every path is the exact reviewed
-content of `84c116ae`; `Dockerfile` and `deploy/native/` are untouched by
+into the main daemon spec 2026-09-21. The caller runtime and gate paths retain
+the exact reviewed content of `84c116ae`; `Dockerfile` and `deploy/native/` are untouched by
 this slice. No root-start, capability-set or readiness change.
 
 Outstanding native, CI, deploy and live gates are carried by 3.1 below — they
@@ -69,4 +69,4 @@ are the release gate for this work, not separate delivery work.
 
 ## 3. Land
 
-- [ ] 3.1 Release gate and land: native proof per `deploy/native/NATIVE-TEST-PLAN.md` (root ran rows 1–16 and 18 on local fixtures 2026-09-21, row 17 on a local fixture install only — `docs/reviews/2026-09-21-drop-first-native-local-proof.md`; the installed production image is still unchecked), CI image build of slice 1 and live `/usr/local/libexec/ta-op version` on the deployed image (done 2026-09-21, PR #3895), then slice 2 (live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`); installed-helper delta synced 2026-09-20 (slice 1) and the three slice-2 deltas synced 2026-09-21; still to do: sync the remaining workspace deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`
+- [ ] 3.1 Release gate and land: native proof per `deploy/native/NATIVE-TEST-PLAN.md` (root ran rows 1–16 and 18 on local fixtures 2026-09-21, row 17 on a local fixture install only — `docs/reviews/2026-09-21-drop-first-native-local-proof.md`; installed production ownership/mode and legacy-identity version verified, managed-bootstrap proof remains local), CI image build of slice 1 and live `/usr/local/libexec/ta-op version` on the deployed image (done 2026-09-21, PR #3895), then slice 2 (live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`); installed-helper delta synced 2026-09-20 (slice 1) and the three slice-2 deltas synced 2026-09-21; still to do: sync the remaining workspace deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`
