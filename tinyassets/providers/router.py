@@ -14,7 +14,7 @@ import math
 import os
 from collections.abc import Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
@@ -47,11 +47,13 @@ from tinyassets.providers.base import (
 )
 from tinyassets.providers.diagnostics import (
     ProviderAttemptDiagnostic,
+    admitted_tool_phase,
     build_chain_state,
     classify_unavailable,
     dominant_capacity_scope,
     dominant_failure_class,
     dominant_retry_after_s,
+    finite_progress_age_ms,
     redacted_failure_detail,
 )
 from tinyassets.providers.quota import (
@@ -256,6 +258,29 @@ def _side_effect_from(exc: BaseException) -> str | None:
         if isinstance(state, str):
             return state
     return None
+
+
+def _tool_wait_evidence(exc: BaseException) -> dict[str, Any]:
+    """Read the VALIDATED tool-phase / progress-age evidence off a raise.
+
+    Exactly two scalars, each through the shared validator in ``diagnostics``.
+    The reader's ``attempt_telemetry`` snapshot is never copied wholesale, so a
+    tool name, a tool argument, a tool identity, a prompt, a provider error
+    string or a credential cannot reach the persisted run read along this path
+    — a key this function does not name simply does not travel. Unknown or
+    malformed evidence is omitted, leaving the failure class unchanged.
+    """
+    tele = getattr(exc, "attempt_telemetry", None)
+    if not isinstance(tele, dict):
+        return {}
+    out: dict[str, Any] = {}
+    phase = admitted_tool_phase(tele.get("tool_phase"))
+    if phase is not None:
+        out["tool_phase"] = phase
+    age = finite_progress_age_ms(tele.get("last_progress_age_ms"))
+    if age is not None:
+        out["last_progress_age_ms"] = age
+    return out
 
 
 _LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama-local"})
@@ -1275,6 +1300,7 @@ class ProviderRouter:
                     provider=provider_name, status="failed", skip_class="auth_invalid",
                     detail="Provider reported a sign-in failure",
                     failure_class=exc.failure_class, side_effect_state=_side_effect_from(exc),
+                    **_tool_wait_evidence(exc),
                 ))
                 continue
             except SelectedModelCapacityError as exc:
@@ -1291,6 +1317,7 @@ class ProviderRouter:
                         and getattr(provider, "agent_execution_kind", None) == "engine_inference"
                         else _side_effect_from(exc)
                     ),
+                    **_tool_wait_evidence(exc),
                 ))
                 continue
             except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
@@ -1316,6 +1343,7 @@ class ProviderRouter:
                     failure_class=exc.failure_class,
                     retry_after_s=getattr(exc, "retry_after", None),
                     side_effect_state=_side_effect_from(exc),
+                    **_tool_wait_evidence(exc),
                 ))
                 continue
             except (ProviderIdleTimeoutError, InteractiveDeadlineError) as exc:
@@ -1332,6 +1360,7 @@ class ProviderRouter:
                     detail=redacted_failure_detail(str(exc)),
                     failure_class=exc.failure_class,
                     side_effect_state=_side_effect_from(exc),
+                    **_tool_wait_evidence(exc),
                 ))
                 continue
             except ProviderProtocolError as exc:
@@ -1346,6 +1375,7 @@ class ProviderRouter:
                     detail=redacted_failure_detail(str(exc)),
                     failure_class=exc.failure_class,
                     side_effect_state=_side_effect_from(exc),
+                    **_tool_wait_evidence(exc),
                 ))
                 continue
             except ProviderUnavailableError as exc:
@@ -1383,6 +1413,7 @@ class ProviderRouter:
                     skip_class="provider_error",
                     detail=redacted_failure_detail(str(exc)),
                     side_effect_state=_side_effect_from(exc),
+                    **_tool_wait_evidence(exc),
                 ))
                 continue
             except _ProviderBusy:

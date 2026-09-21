@@ -27,6 +27,7 @@ from tinyassets.exceptions import (
     ProviderRateLimitedError,
     ProviderUnavailableError,
 )
+from tinyassets.providers import claude_provider as claude_provider_module
 from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
@@ -556,6 +557,242 @@ def test_completed_identified_tool_restores_model_idle_interval():
     ])
     with pytest.raises(ProviderIdleTimeoutError):
         _run_stream(proc, _FAST)
+
+
+def _started(name: str, tool_id, **extra) -> dict:
+    """A full assistant ``tool_use`` frame carrying the provider's own id."""
+    frame = _tool_use(name)
+    frame["message"]["content"][0]["id"] = tool_id
+    frame.update(extra)
+    return frame
+
+
+def _partial_start(name: str, tool_id) -> dict:
+    """The PARTIAL framing of the same start (``content_block_start``)."""
+    return {
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_start",
+            "content_block": {"type": "tool_use", "name": name, "id": tool_id},
+        },
+    }
+
+
+def _finished(tool_id) -> dict:
+    frame = _tool_result()
+    frame["message"]["content"][0]["tool_use_id"] = tool_id
+    return frame
+
+
+def test_nested_child_tool_completion_does_not_close_the_parent_tool():
+    # A parent tool's child completing is not the parent's result: the CLI
+    # frames a sub-agent's tools with ``parent_tool_use_id`` set, and the
+    # parent stays in flight until its OWN result arrives.
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("parent", "call-parent")),
+        _line(_started("child", "call-child", parent_tool_use_id="call-parent")),
+        _line(_finished("call-child")),
+        _line(_assistant_text("child done")),
+        (0.35, _line(_finished("call-parent"))),
+        _line(_result("done")),
+    ])
+    response = _run_stream(proc, _FAST)
+    assert response.text == "done"
+
+
+def test_duplicate_full_and_partial_starts_are_one_pending_tool():
+    # The same start arrives twice (full assistant frame + partial
+    # content_block_start). ONE matching result must therefore restore
+    # ordinary model-idle behaviour — a duplicate frame is not a second tool.
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("example", "call-a")),
+        _line(_partial_start("example", "call-a")),
+        _line(_finished("call-a")),
+        (0.35, _line(_result("late"))),
+    ])
+    with pytest.raises(ProviderIdleTimeoutError):
+        _run_stream(proc, _FAST)
+
+
+def test_a_partial_start_alone_earns_the_pending_tool_allowance():
+    # A start seen ONLY in its partial framing is still an identified tool.
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_partial_start("example", "call-a")),
+        (0.35, _line(_finished("call-a"))),
+        _line(_result("done")),
+    ])
+    assert _run_stream(proc, _FAST).text == "done"
+
+
+def test_duplicate_results_for_one_tool_leave_another_pending():
+    # Repeating a result is idempotent and must not discharge a DIFFERENT
+    # tool's pending work.
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("first", "call-a")),
+        _line(_started("second", "call-b")),
+        _line(_finished("call-a")),
+        _line(_finished("call-a")),
+        (0.35, _line(_finished("call-b"))),
+        _line(_result("done")),
+    ])
+    assert _run_stream(proc, _FAST).text == "done"
+
+
+def test_an_unknown_result_id_does_not_discharge_a_pending_tool():
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("example", "call-a")),
+        _line(_finished("call-unrelated")),
+        (0.35, _line(_finished("call-a"))),
+        _line(_result("done")),
+    ])
+    assert _run_stream(proc, _FAST).text == "done"
+
+
+@pytest.mark.parametrize("tool_id", [None, "", "   ", 123, True, {"id": "call-a"}])
+def test_missing_or_malformed_tool_ids_earn_no_allowance(tool_id):
+    # Fail closed: an unidentifiable start can never be paired with a result,
+    # so it keeps the ordinary idle boundary rather than a 900s wait.
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("example", tool_id)),
+        (0.35, _line(_result("never"))),
+    ])
+    with pytest.raises(ProviderIdleTimeoutError):
+        _run_stream(proc, _FAST)
+
+
+def test_a_malformed_result_id_cannot_discharge_an_identified_tool():
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("example", "call-a")),
+        _line(_finished(None)),
+        (0.35, _line(_finished("call-a"))),
+        _line(_result("done")),
+    ])
+    assert _run_stream(proc, _FAST).text == "done"
+
+
+def test_the_absolute_cap_still_ends_a_wedged_pending_tool():
+    # The tool allowance is min(absolute cap, 900s): the cap is never relaxed,
+    # and reaching it is an interactive-deadline outcome, not idle.
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("example", "call-a")),
+        (30.0, _line(_result("never"))),
+    ])
+    config = ModelConfig(
+        init_timeout_s=0.15, first_progress_s=0.15, idle_timeout_s=0.15,
+        absolute_cap_s=0.5,
+    )
+    with pytest.raises(InteractiveDeadlineError):
+        _run_stream(proc, config)
+    assert proc.killed is True
+
+
+def test_a_smaller_injected_tool_allowance_bounds_the_wait(monkeypatch):
+    # Drive the bound from the constant itself (absolute cap 5s, tool wait
+    # 0.3s): the wait that fires is the TOOL allowance, not the cap, and it is
+    # reported as idle.
+    monkeypatch.setattr(claude_provider_module, "_TOOL_WAIT_S", 0.3)
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("example", "call-a")),
+        (2.0, _line(_result("never"))),
+    ])
+    with pytest.raises(ProviderIdleTimeoutError) as ei:
+        _run_stream(proc, _FAST)
+    assert ei.value.attempt_telemetry["tool_phase"] == "in_tool"
+    assert proc.killed is True
+
+
+def test_a_pending_tool_timeout_reports_in_tool_not_the_last_tool_event():
+    # Two tools, the first finished: the LAST tool event is a result while the
+    # turn is still in a tool. Keying on it would read as post-tool silence.
+    monkeypatch_free = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("first", "call-a")),
+        _line(_started("second", "call-b")),
+        _line(_finished("call-a")),
+        (30.0, _line(_result("never"))),
+    ])
+    config = ModelConfig(
+        init_timeout_s=0.15, first_progress_s=0.15, idle_timeout_s=0.15,
+        absolute_cap_s=0.5,
+    )
+    with pytest.raises(InteractiveDeadlineError) as ei:
+        _run_stream(monkeypatch_free, config)
+    tele = ei.value.attempt_telemetry
+    assert tele["tool_phase"] == "in_tool"
+    assert tele["side_effect_state"] == "committed"
+
+
+def test_post_tool_silence_still_reports_the_last_tool_event():
+    # The control: all tools matched, so the phase is the last event kind and
+    # the failure is ordinary model idle.
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("example", "call-a")),
+        _line(_finished("call-a")),
+        (0.35, _line(_result("never"))),
+    ])
+    with pytest.raises(ProviderIdleTimeoutError) as ei:
+        _run_stream(proc, _FAST)
+    assert ei.value.attempt_telemetry["tool_phase"] == "tool_result"
+
+
+def test_a_terminal_result_clears_pending_tools():
+    # A tool left open at the terminal result must not be reported in flight.
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("example", "call-a")),
+        _line(_assistant_text("answer")),
+        _line(_result("answer")),
+    ])
+    response = _run_stream(proc, _FAST)
+    assert response.text == "answer"
+    assert response.tool_phase == "tool_use"
+
+
+def test_cancellation_during_a_pending_tool_terminates_and_reaps():
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("example", "call-a")),
+        (30.0, _line(_result("never"))),
+    ])
+
+    async def _drive() -> None:
+        provider = ClaudeProvider()
+        task = asyncio.create_task(provider._read_stream(proc, "prompt", _FAST))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_drive())
+    # Cancellation kills the child; nothing is replayed automatically.
+    assert proc.killed is True
+
+
+def test_a_documented_retry_grace_survives_a_pending_tool():
+    # A provider-stated retry wait longer than the tool allowance is preserved:
+    # the pending-tool branch takes the MAX, it does not cap the retry grace.
+    monkeypatch_free = ModelConfig(
+        init_timeout_s=0.15, first_progress_s=0.15, idle_timeout_s=0.15,
+        absolute_cap_s=5.0,
+    )
+    proc = FakeStreamProcess([
+        _line(INIT),
+        _line(_started("example", "call-a")),
+        _line(_api_retry("overloaded", 529, 400)),
+        (0.9, _line(_finished("call-a"))),
+        _line(_result("done")),
+    ])
+    assert _run_stream(proc, monkeypatch_free).text == "done"
 
 # ---------------------------------------------------------------------------
 

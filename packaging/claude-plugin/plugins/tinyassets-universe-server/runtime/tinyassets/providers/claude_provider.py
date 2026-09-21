@@ -84,6 +84,31 @@ _STDOUT_READER_LIMIT = 2 ** 22  # 4 MiB
 # beyond its own stated wait to re-issue the request and resume streaming.
 _RETRY_GRACE_MARGIN_S = 5.0
 
+#: How long the turn may wait on ONE identified native tool before that wait
+#: counts as idle. An identified tool start without its matching result is the
+#: provider WORKING, not the model gone silent — the ordinary idle interval
+#: killed healthy tool calls. Same bound as the codex reader's ``_TOOL_WAIT_S``
+#: for the same reason: generous enough for any tool a served turn launches
+#: today, short enough that a wedged tool still ends. The absolute cap is never
+#: relaxed, so this is always taken as ``min(absolute cap, _TOOL_WAIT_S)``.
+#: No provider tool-heartbeat cadence is assumed — none is documented.
+_TOOL_WAIT_S = 900.0
+
+
+def _tool_identity(value: object) -> str | None:
+    """The provider's own tool identity, or ``None`` when it is unusable.
+
+    Only a non-empty string counts. A missing or malformed ``id`` /
+    ``tool_use_id`` earns NO pending-tool allowance (fail closed): an
+    unidentified start can never be paired with its result, so waiting on it
+    would be unbounded guessing rather than evidence of work in flight.
+    """
+    if type(value) is str:
+        trimmed = value.strip()
+        if trimmed:
+            return trimmed
+    return None
+
 
 @dataclass
 class _AnswerModelEvidence:
@@ -261,7 +286,13 @@ def _normalize_stream_obj(obj: dict) -> list[tuple[str, dict]]:
                 else:
                     events.append(("heartbeat", {}))
             elif block_type == "tool_use":
-                events.append(("tool_use", {"name": block.get("name")}))
+                # ``id`` is the provider's own tool identity; the matching
+                # ``tool_result`` references it as ``tool_use_id``. Carried in
+                # memory so pending work can be PAIRED rather than guessed from
+                # the last tool event seen.
+                events.append(
+                    ("tool_use", {"name": block.get("name"), "id": block.get("id")})
+                )
             else:
                 # thinking / redacted_thinking / signature — liveness, never
                 # relayed.
@@ -269,7 +300,9 @@ def _normalize_stream_obj(obj: dict) -> list[tuple[str, dict]]:
     elif kind == "user":
         for block in _content_blocks(obj.get("message")):
             if block.get("type") == "tool_result":
-                events.append(("tool_result", {}))
+                events.append(
+                    ("tool_result", {"tool_use_id": block.get("tool_use_id")})
+                )
             else:
                 events.append(("heartbeat", {}))
     elif kind == "stream_event":
@@ -293,7 +326,12 @@ def _normalize_stream_obj(obj: dict) -> list[tuple[str, dict]]:
             elif event_type == "content_block_start":
                 cb = event.get("content_block")
                 if isinstance(cb, dict) and cb.get("type") == "tool_use":
-                    events.append(("tool_use", {"name": cb.get("name")}))
+                    # The partial framing of the SAME tool start, carrying the
+                    # same identity. Re-announcing one already in flight must be
+                    # idempotent, never a second pending tool.
+                    events.append(
+                        ("tool_use", {"name": cb.get("name"), "id": cb.get("id")})
+                    )
                 else:
                     events.append(("heartbeat", {}))
             else:
@@ -648,6 +686,11 @@ class ClaudeProvider(BaseProvider):
         seen_progress = False
         ttft_ms: float | None = None
         tool_phase: str | None = None
+        # Identities of native tool starts with no matching result yet. A SET,
+        # so a duplicate start frame (full assistant + partial
+        # content_block_start) is idempotent and parallel/nested calls stay
+        # independent: one tool finishing cannot close another.
+        tools_in_flight: set[str] = set()
         side_effect_state = "none"
         last_progress = start
         soft_slo_logged = False
@@ -666,7 +709,12 @@ class ClaudeProvider(BaseProvider):
                     else "init" if seen_init else "launch"
                 ),
                 "side_effect_state": side_effect_state,
-                "tool_phase": tool_phase,
+                # Pending work outranks the last tool event seen: with two tools
+                # started and one finished, the last event is a ``tool_result``
+                # while the turn is still IN a tool. Reporting the last kind
+                # there would make a pending-tool timeout read as post-tool
+                # silence — the distinction this evidence exists to carry.
+                "tool_phase": "in_tool" if tools_in_flight else tool_phase,
                 "ttft_ms": ttft_ms,
                 "last_progress_age_ms": (time.monotonic() - last_progress) * 1000,
                 "exit_code": _coerce_int(proc.returncode),
@@ -710,6 +758,12 @@ class ClaudeProvider(BaseProvider):
                 # The absolute cap still bounds the total turn.
                 if pending_retry_delay is not None:
                     allow = max(allow, pending_retry_delay + _RETRY_GRACE_MARGIN_S)
+                # An identified tool is still running: silence is its work, not
+                # a hang. Only this branch is extended — the ordinary model-idle
+                # interval is unchanged, and ``max`` keeps a longer documented
+                # retry grace. The absolute cap below still bounds the turn.
+                if tools_in_flight:
+                    allow = max(allow, min(profile.absolute_cap_s, _TOOL_WAIT_S))
                 idle_deadline = last_progress + allow
                 abs_deadline = start + profile.absolute_cap_s
                 budget = min(idle_deadline, abs_deadline) - now
@@ -774,6 +828,9 @@ class ClaudeProvider(BaseProvider):
                         pending_retry_delay = None
                         last_assistant_error = None
                         tool_phase = "tool_use"
+                        identity = _tool_identity(payload.get("id"))
+                        if identity is not None:
+                            tools_in_flight.add(identity)
                         if side_effect_state == "none":
                             side_effect_state = "possible"
                     elif kind == "tool_result":
@@ -782,6 +839,12 @@ class ClaudeProvider(BaseProvider):
                         pending_retry_delay = None
                         last_assistant_error = None
                         tool_phase = "tool_result"
+                        # Only the tool this result NAMES is closed. An unknown
+                        # or malformed ``tool_use_id`` closes nothing, so it can
+                        # never end another tool's allowance early.
+                        identity = _tool_identity(payload.get("tool_use_id"))
+                        if identity is not None:
+                            tools_in_flight.discard(identity)
                         side_effect_state = "committed"
                     elif kind == "api_retry":
                         seen_init = True
@@ -801,6 +864,9 @@ class ClaudeProvider(BaseProvider):
                         last_assistant_error = payload["category"]
                     elif kind == "result":
                         terminal = payload.get("obj")
+                        # The turn is over; nothing it started is still coming
+                        # back. Clearing keeps the tool_phase evidence honest.
+                        tools_in_flight.clear()
                 if progressed:
                     last_progress = time.monotonic()
                 if terminal is not None:
