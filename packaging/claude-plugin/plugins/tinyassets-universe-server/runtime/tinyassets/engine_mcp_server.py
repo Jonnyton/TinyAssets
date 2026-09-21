@@ -1251,7 +1251,8 @@ def write_graph(
       spec in ``payload_json`` (stored PRIVATE to your universe).
     - ``operation="patch"`` — edit one of YOUR OWN branches in place: pass its
       ``branch_id`` and a JSON array of edit ops in ``payload_json`` (add/remove
-      edges + nodes, retune a node's prompt/source, rename, retag, add skills). The
+      edges + nodes, retune a node's prompt/source or its ``llm_policy`` model pin,
+      rename, retag, add skills). The
       edit is transactional (all-or-nothing). Publishing to the commons, changing
       visibility to public, and forking a foreign shape are NOT available here (they
       stay in the browser flow); a patched source_code node re-enters UNAPPROVED.
