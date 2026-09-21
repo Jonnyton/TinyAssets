@@ -56,7 +56,7 @@
       typed `handoffs` path refused). The `_SERVED_MAX_EFFECT_NODES=5` per-build cap
       described here was REMOVED (founder 2026-08-30, `no-graph-size-caps`): there is no
       effect-node ceiling on any served surface, and create/add_node/update_node now
-      share one declaration validator (`edit-served-node-effects`). What bounds a graph
+      share one declaration validator (archived `archive/2026-09-21-edit-served-node-effects/`). What bounds a graph
       is usage, never its size. The
       6 run-time gates (packet, server-owned universe, grant-bound-to-universe, soul
       authority, per-destination consent, outbound flag + SSRF) fire per dispatch
