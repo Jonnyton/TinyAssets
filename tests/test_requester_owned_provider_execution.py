@@ -360,6 +360,31 @@ def _patch_run_branch_dependencies(monkeypatch, branch: Any) -> None:
     )
 
 
+def _bind_request_home(base_path, universe_id: str) -> None:
+    """Put the signed-in request principal at home in ``universe_id``.
+
+    Constructing a run session reads the owner's SAVED model preference, and
+    that read is fenced by the founder-home check, so it needs the daemon
+    schema. A bare ``tmp_path`` has none: the steps these tests stub out
+    (``_ensure_runs_recovery``, ``_request_universe``, the run-write check)
+    are exactly the ones that initialise it in production before any run is
+    requested. Bind the state production always has by then -- schema present,
+    principal at home in the universe being run, NO preference saved -- so the
+    session is constructed on the legacy serving binding exactly as before.
+    The read-back proves the bind took rather than silently no-op'ing.
+    """
+    from tinyassets.api.permissions import current_request_actor_id
+    from tinyassets.daemon_server import get_founder_home, set_founder_home
+
+    principal = current_request_actor_id()
+    assert principal, "these tests run as the signed-in test operator"
+    set_founder_home(
+        base_path, founder_sub=principal, universe_id=universe_id,
+        platform_generated=True,
+    )
+    assert get_founder_home(base_path, principal) == universe_id
+
+
 def test_run_branch_hands_execution_a_server_owned_provider_session(
     tmp_path,
     monkeypatch,
@@ -372,6 +397,7 @@ def test_run_branch_hands_execution_a_server_owned_provider_session(
     (universe / "config.yaml").write_text(
         "preferred_writer: codex\n", encoding="utf-8",
     )
+    _bind_request_home(tmp_path, "user-u")
     # A branch answers what it declares before run_branch picks a lane; this
     # one declares no file input, so the scalar lane under test is taken.
     branch = SimpleNamespace(version=1, validate=lambda: [],
@@ -419,6 +445,7 @@ def test_branch_version_and_resume_use_the_same_server_owned_run_session(
     (universe / "config.yaml").write_text(
         "preferred_writer: codex\n", encoding="utf-8",
     )
+    _bind_request_home(tmp_path, "user-u")
     captured: dict[str, Any] = {}
 
     def fake_execute(*_args: Any, provider_call=None, **_kwargs: Any):
