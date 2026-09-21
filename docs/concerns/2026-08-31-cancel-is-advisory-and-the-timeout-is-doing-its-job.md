@@ -7,9 +7,14 @@ current. Deployed 0082695793278fabf520c9bf2a8fa2694c4a2823 exposes owner cancell
 and the Sep 8 23:30-23:31 PDT rendered app retest confirms cancellation works.
 The local real-child test also observes the child exited before terminal readback;
 queued cancellation starts no child. Fresh app finding: its stopped code node
-still displays running. That state-reporting fix is in the active
-close-workflow-control-gaps change, not a reason to assume cancellation is still
-only advisory. Evidence: docs/reviews/2026-09-09-workflow-control-gaps-proof.md.
+still displayed running then. That state-reporting fix subsequently passed the
+saved September9 app acknowledgment; September21's consolidated five-control
+reply also confirms accurate cancelled-run/unstarted-node status. The delivery
+change is archived at openspec/changes/archive/2026-09-21-close-workflow-control-gaps.
+This is not a reason to assume cancellation is still only advisory. Evidence:
+docs/reviews/2026-09-09-workflow-control-gaps-proof.md and
+docs/reviews/2026-09-21-served-node-policy-deployment.md. The broader jail-descendant
+and cleanup proof below remains separate, not closed by between-node cancellation.
 
 Keep remaining proof precise: this directed app reply and local Windows child
 check are not standalone proof of every Linux jail descendant and lease-release

@@ -1,6 +1,20 @@
 # Review and reproduction state
 
-## Current state: four gaps accepted live, cancellation display follow-up
+## Closed September21: consolidated acceptance and model-edit follow-up
+
+The earlier cancellation display follow-up passed the saved September9 reply.
+PR3900 then exposed existing model-policy edits, deployed5394efd September21;
+root53Windows/53Linux zero skips, Fable shape review and root independent code
+review, required checks and protected/public canaries all passed. App20:46PDT
+patched its original workflow and completed its run without replacement. Its
+20:56PDT five-control response explicitly says All five are working / Nothing
+is blocked. Full receipt: docs/reviews/2026-09-21-served-node-policy-deployment.md.
+Canonical lifecycle requirement is byte-equivalent (normalized line endings)
+to this complete delta; archived with --skip-specs to avoid duplicate addition.
+No fresh organic owner-use evidence; broader cloud/cancellation containment,
+effect-edit parity, intermittent parallel failure and onboarding remain open.
+
+## Historical state: four gaps accepted live, cancellation display follow-up
 
 At Sep 8 23:30-23:31 PDT, the app confirmed editing, exact output, discard and
 failed-node status fixed. It confirmed cancellation works and all nine older
