@@ -17,6 +17,19 @@ rewriting a private workflow. Preferences alone SHALL NOT grant execution access
 - **THEN** a permitted foreground or background workflow can execute with no explicit pin
 - **AND** the runtime validates the chosen member/model rather than treating the assignment as legacy authority
 
+#### Scenario: A direct workflow run reads the owner's saved preference
+- **WHEN** an owner with a saved default and ordered fallbacks starts a run directly rather than through a conversation
+- **THEN** the run session captures that owner/home-scoped preference document once and uses the same candidate order the conversation path builds
+- **AND** a parallel sub-branch of that run inherits the captured policy version rather than re-reading a preference saved mid-run
+- **AND** each attempt still admits on current authority, so revocation or an ineligible explicit choice refuses instead of substituting the legacy single serving binding
+- **AND** an owner with no saved preference keeps the pre-existing single-serving-binding behaviour unchanged
+
+#### Scenario: Exhausting a saved order is reported as exhaustion
+- **WHEN** every model in a run's captured order is exhausted or ineligible
+- **THEN** the failure is typed apart from having no bound provider, retains the raw provider evidence, and is actionable by the owner
+- **AND** the suggested action names the owner's own model-options and model-preference routes and the validated node pin key
+- **AND** it never directs anyone to change the universe's main serving provider, which cannot rescue a pinned source
+
 #### Scenario: A task chooses a different authorized source
 - **WHEN** a task selects a supported provider/model within current accepted authority that differs from the main agent
 - **THEN** its invocation uses that exact choice without changing the main agent or the task definition

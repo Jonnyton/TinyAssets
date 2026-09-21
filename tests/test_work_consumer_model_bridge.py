@@ -27,6 +27,12 @@ def captured_selection(monkeypatch):
         provider = load_universe_config(base_path / kwargs["universe_id"]).preferred_writer
         choices = ModelPreferences("explicit", ModelRef(provider, "synthetic-model"),
                                    (ModelRef(provider, "future-company/new-choice"),))
+        # A TAB-LOCAL `current` choice, which is the conversation path's shape and
+        # must win. `new_foreground_run_provider_session` now supplies the owner's
+        # SAVED document itself, so this has to replace that keyword rather than
+        # add a second one. Until it did, this injection was the only thing that
+        # ever reached a run session -- which is the bug these tests hid.
+        kwargs.pop("model_preference_data", None)
         original(session, base_path, **kwargs, model_preference_data={
             "version": 1, "saved": None, "observed_generation": 0,
             "current": choices.document(),

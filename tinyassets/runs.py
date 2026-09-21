@@ -6313,6 +6313,9 @@ ACTIONABLE_BY: dict[str, str] = {
     # chatbot: the fix is another tool call (select/bind a registered provider),
     # never a host credential rotation.
     "permission_denied:provider_not_bound": "chatbot",
+    # Same owner, different action: their own saved order ran out of capacity.
+    # Never "host" -- no host-side change can refill a user's own source.
+    "work_model_exhausted": "chatbot",
     # chatbot — recoverable via another tool call
     "code_node_failed": "chatbot",
     "node_not_accepted": "chatbot",

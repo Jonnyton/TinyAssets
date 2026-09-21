@@ -132,6 +132,20 @@ class ProviderAuthorityHeldError(ProviderError):
     failure_class = "authority_held"
 
 
+class WorkModelExhaustedError(ProviderAuthorityHeldError):
+    """Every model in the run's captured order is exhausted, not unbound.
+
+    A SUBCLASS on purpose: every existing ``except ProviderAuthorityHeldError``
+    keeps catching this, so the generic held-authority contract is unchanged.
+    It exists only so the run taxonomy can tell "your capacity ran out" apart
+    from "connect a provider" by TYPE rather than by matching message text --
+    the live 2026-09-20 checklist reported exhausted work models to the owner as
+    an unconnected provider, which is a different action entirely.
+    """
+
+    failure_class = "work_model_exhausted"
+
+
 class AllProvidersExhaustedError(ProviderError):
     """Every provider in the fallback chain failed or is in cooldown.
 
