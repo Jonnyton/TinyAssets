@@ -548,7 +548,8 @@ result are relayed. When a documented provider retry event states a retry delay,
 the idle budget for that wait SHALL be extended to cover it (so a real provider
 retry is not misclassified as a hang). A completion that keeps making progress
 SHALL NOT be failed for total elapsed time; a completion that stops making progress
-SHALL be ended at the idle boundary. An absolute safety cap MAY end an over-long
+SHALL be ended at the applicable idle boundary, except that identified pending
+native tools receive the bounded tool-work allowance described below. An absolute safety cap MAY end an over-long
 interactive turn, but it SHALL be generous enough that a genuinely progressing turn
 survives well past the old total deadline, and reaching it SHALL be reported as an
 interactive-deadline outcome, not as provider unavailability.
@@ -575,7 +576,7 @@ interactive-deadline outcome, not as provider unavailability.
 #### Scenario: A hung turn is ended at the idle boundary
 
 - **WHEN** a served completion emits no recognized protocol event for the idle
-  interval
+  interval, with no identified tool work or documented retry wait pending
 - **THEN** the attempt is ended and classified `provider_idle_timeout`
 
 #### Scenario: Silence inside a codex turn is the model generating, not idle
@@ -605,8 +606,8 @@ interactive-deadline outcome, not as provider unavailability.
   stream whose `agent_message` item was dropped under backpressure fails loud
   in `complete()` ("omitted result or usage") —
   `docs/concerns/2026-08-29-codex-agent-message-can-be-dropped-under-backpressure.md`.
-  The claude reader does not honor a tool wait; its `tool_phase` is telemetry
-  only (`docs/concerns/2026-08-29-claude-reader-tool-wait-idle-gap.md`)
+  The Claude reader pairs native tool starts/results by identity and honors a
+  bounded pending-tool allowance without changing Codex turn semantics.
 
 #### Scenario: A completed codex turn is never failed by its own shutdown
 
@@ -635,6 +636,39 @@ interactive-deadline outcome, not as provider unavailability.
   context carries a numeric `absolute_cap_s` / `idle_timeout_s`; a non-numeric
   override falls back to the default rather than disabling the cap; non-granted
   paths (the learning extractor) keep the library default profile
+
+#### Scenario: Identified native tool work is not model-idle silence
+
+- **WHEN** a Claude stream has an identified tool start without its matching result
+- **THEN** silence receives a tool-work allowance bounded by the existing absolute cap and 900 seconds
+- **AND** one tool finishing, interleaved text, heartbeats, or duplicate start frames do not close a different pending tool
+- **AND** matching all results restores ordinary model-idle behavior; terminal result clears pending tools
+
+#### Scenario: Missing identities and runaway work remain bounded
+
+- **WHEN** tool identities are missing or malformed, or the existing absolute deadline is reached
+- **THEN** missing identity does not earn a tool-work allowance and the absolute deadline still ends execution
+- **AND** cancellation still terminates/reaps the process without automatic replay
+
+### Requirement: Persisted provider failures retain safe tool-wait evidence
+
+Attempt diagnostics SHALL retain known finite nonnegative last-progress age and
+an admitted tool-phase enum through existing router, held-error, run persistence
+and authorized read projections. Missing or malformed evidence SHALL remain
+unknown; diagnostic fields SHALL never contain tool arguments, credentials,
+reasoning, arbitrary provider strings or tool identifiers. This evidence SHALL
+NOT authorize replay, a fallback, a grant or a cooldown.
+
+#### Scenario: A pending-tool timeout can be distinguished from post-tool silence
+
+- **WHEN** the reader supplies valid tool-phase and progress-age evidence for a timeout
+- **THEN** the persisted served run failure exposes that evidence through its existing diagnostic chain
+- **AND** malformed, unknown, non-finite or sensitive values are omitted without changing the failure class
+
+#### Scenario: Existing historical evidence is not invented
+
+- **WHEN** a stored failure lacks tool-phase evidence
+- **THEN** later reads do not infer a pending tool from committed side-effect state or a successful retry
 
 ### Requirement: Provider failures are classified, and transient attempt timeouts do not cool the provider
 

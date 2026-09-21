@@ -53,6 +53,31 @@ At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook
 - **WHEN** the worker id is blank or equal to the shared host default
 - **THEN** `reclaim_predecessor_tasks` reclaims nothing and the lease TTL remains the only fallback
 
+### Requirement: Serving initializes run storage before starting its scheduling workers
+The HTTP application lifespan SHALL initialize consumer run storage before
+starting the serving scheduler. Each `universe_server.main` transport SHALL
+initialize that storage before starting an enabled assigned-queue consumer.
+Best-effort boot maintenance SHALL NOT substitute for this required
+initialization. Initialization failure SHALL abort the serving path before
+these workers start and SHALL release any writer barrier acquired by that path.
+This ordering does not serialize unrelated processes or independent callers
+initializing the same data directory.
+
+#### Scenario: HTTP lifespan enters on a fresh data directory
+- **WHEN** the HTTP lifespan begins with no initialized run database
+- **THEN** consumer initialization completes before the scheduler starts
+- **AND** ordinary scheduler and workspace-sweeper shutdown remains in effect
+
+#### Scenario: Best-effort maintenance failed before serving
+- **WHEN** early maintenance initialization fails and `main` continues toward HTTP, SSE, or stdio serving
+- **THEN** required initialization runs before an enabled assigned consumer starts
+- **AND** that consumer is stopped when serving exits normally
+
+#### Scenario: Required initialization fails
+- **WHEN** the serving path's required consumer initialization raises
+- **THEN** that path does not start its scheduler or assigned consumer or begin serving requests
+- **AND** any writer barrier acquired by that path is released
+
 ### Requirement: Host-singleton and same-data-dir idle-cycle coordination fail safe
 Two file-lock coordination primitives SHALL keep the runtime safe under concurrency. `tinyassets.singleton_lock` SHALL enforce a single host daemon instance via an OS-exclusive file lock that is the ground truth, with a PID sidecar as a human-readable breadcrumb; a PID sidecar without a held OS lock SHALL be treated as stale and overwritten on acquisition. `tinyassets.idle_cycle` SHALL dedupe the no-work heartbeat cycle across any daemon processes sharing one data directory with a run lock plus a freshness stamp, skipping when another process is mid-cycle or has a fresh stamp, and SHALL fail OPEN — degrading to a possibly-duplicate cycle, never a stalled heartbeat — when its lock or stamp I/O fails. As-built note (2026-08-29): the host-run worker fleet this originally coordinated is deleted; the daemon is the only executor and the primitive stays in `fantasy_daemon` for whatever processes share the directory.
 
