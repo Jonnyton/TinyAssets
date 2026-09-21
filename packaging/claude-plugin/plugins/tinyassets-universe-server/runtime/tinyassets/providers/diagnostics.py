@@ -13,6 +13,7 @@ detail isn't available.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
@@ -78,11 +79,62 @@ class ProviderAttemptDiagnostic:
     # side effect. Optional + dropped from to_dict when None.
     side_effect_state: str | None = None
     capacity_scope: str | None = None
+    # Pending-tool wait evidence (``respect-provider-tool-waits``): the reader's
+    # admitted tool phase and the finite age of its last progress, so a
+    # persisted timeout distinguishes an identified tool still in flight from
+    # silence AFTER the tools finished. Validated by
+    # :func:`admitted_tool_phase` / :func:`finite_progress_age_ms` at the
+    # router, which reads exactly these two scalars off ``attempt_telemetry``
+    # rather than copying the snapshot. Unknown stays absent; the evidence
+    # authorizes no replay, fallback, grant or cooldown.
+    tool_phase: str | None = None
+    last_progress_age_ms: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize, dropping ``None`` fields for compactness."""
         d = asdict(self)
+        d["tool_phase"] = admitted_tool_phase(self.tool_phase)
+        d["last_progress_age_ms"] = finite_progress_age_ms(self.last_progress_age_ms)
         return {k: v for k, v in d.items() if v is not None}
+
+
+#: The tool phases the stream readers actually produce: Claude's assistant /
+#: user tool frames, and the codex reader's in-turn / in-tool state (Claude's
+#: reader also reports ``in_tool`` while an identified tool is unmatched). An
+#: ADMITTED set rather than a shape check, because this field crosses into a
+#: persisted run read — an arbitrary provider string, a tool name or a tool
+#: identity must never land there. It adds no taxonomy of its own.
+ADMITTED_TOOL_PHASES: frozenset[str] = frozenset(
+    {"tool_use", "tool_result", "in_tool", "in_turn"}
+)
+
+
+def admitted_tool_phase(value: Any) -> str | None:
+    """The tool phase when it is an admitted enum member, else ``None``.
+
+    Anything unrecognized is OMITTED, not recorded: an unknown phase is not
+    evidence, and persisting it would invite a reader to interpret it.
+    """
+    return value if type(value) is str and value in ADMITTED_TOOL_PHASES else None
+
+
+def finite_progress_age_ms(value: Any) -> float | None:
+    """A last-progress age only when it is a finite, non-negative number.
+
+    ``bool`` is rejected explicitly (``True`` is an ``int``, and ``1.0`` ms of
+    silence is not what a reader would mean by it), as are NaN and the
+    infinities, which survive JSON round-trips as literals no consumer can
+    compare. Malformed evidence stays unknown rather than being persisted.
+    """
+    if type(value) not in (int, float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return number
 
 
 def dominant_capacity_scope(attempts):
