@@ -1389,6 +1389,7 @@
       voice_permission_denied:"Microphone permission was denied. Typed chat still works.",
       voice_output_untrusted:"Voice stopped before playing an unverified reply. Typed chat still works.",
       voice_output_mismatch:"Voice stopped because the spoken reply did not match the conversation text. Typed chat still works.",
+      voice_turn_retired:"Voice stopped because the conversation on screen changed before its reply arrived. Typed chat still works.",
       browser_speech_unsupported:"Speech input is not supported in this browser or device. Typed chat still works.",
       browser_speech_failed:"Your browser or device speech service stopped. Typed chat still works.",
       no_home_universe:"Send one typed message first so your universe is ready.",
@@ -2946,8 +2947,21 @@
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
     let delivered=false;
+    // The same fence as the typed turn: account AND home at the moment of
+    // speaking. A reply or a failure that lands after either changed belongs
+    // to a conversation no longer on screen. It paints nothing, offers no
+    // retry, signs nobody out, erases no record, and hands no text back to
+    // be spoken. The durable record stays for its owner's own reload.
+    const sentEpoch=MCP._loginEpoch, sentScope=queueScope, sentOwner=queueOwner;
+    const stillHere=()=>sentEpoch===MCP._loginEpoch&&sentScope===queueScope&&
+      sentOwner===queueOwner;
     try{
       const payload=await sendConversationRequest(message,message,Date.now(),opts);
+      // Thrown, not returned: the awaited Voice caller must never receive a
+      // reply it could speak into whatever session is live now. Its own
+      // generation guard drops this on a sign-out (Voice.stop bumped it); on a
+      // home change with Voice still running it stops with the reason.
+      if(!stillHere()) throw new Error("voice_turn_retired");
       if(!payload||typeof payload.reply!=="string"){
         if(payload&&(payload.error||payload.turn_failure))throw servedFailureError(payload);
         throw new Error("voice_converse_invalid");
@@ -2956,6 +2970,10 @@
       delivered=true;forgetInflight();
       return payload.reply;
     }catch(error){
+      // Past the fence nothing of this turn reaches the screen: no session
+      // notice for an account that did not expire, no failure notice, and no
+      // "Send it again" carrying the old spoken line into another account.
+      if(!stillHere()) throw error;
       if(error&&error.authRequired){ sessionExpired(); throw error; }
       if(error.historySaved){
         forgetInflight();
@@ -2968,12 +2986,17 @@
       // Same rule as the typed turn: only the turn that still HOLDS the
       // composer hands it back. A spoken turn that outlived its own login was
       // retired at the account boundary and must not touch what is there now.
-      if(activeTurn===myTurn){
+      const mine=activeTurn===myTurn;
+      if(mine){
         activeTurn=null;
         $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
-        flushSendQueue();
       }
-      Voice.conversationSettled(delivered);
+      // Queued lines and the voice session belong to the account and home
+      // that are on screen now; a turn that outlived its own is not theirs.
+      if(stillHere()&&mine){
+        flushSendQueue();
+        Voice.conversationSettled(delivered);
+      }
     }
   }
 
