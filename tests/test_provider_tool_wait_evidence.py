@@ -95,6 +95,7 @@ def test_a_finite_nonnegative_age_survives(value):
         math.nan,
         math.inf,
         -math.inf,
+        10 ** 1000,
         "31000",
         "NaN",
         [1],
@@ -242,3 +243,65 @@ def test_a_stored_failure_without_evidence_infers_no_pending_tool():
     failed = chain_state_from_error(_held_error(attempt))["attempts"][-1]
     assert failed["side_effect_state"] == "committed"
     assert "tool_phase" not in failed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("phase", "age", "expected"), [
+    ("in_tool", 31_000.5, {"tool_phase": "in_tool", "last_progress_age_ms": 31_000.5}),
+    ("tool_result", 30_000, {"tool_phase": "tool_result", "last_progress_age_ms": 30_000.0}),
+    ("Bearer secret", 10 ** 1000, {}),
+    (True, math.nan, {}),
+])
+async def test_real_router_held_compiler_and_run_read_keep_only_valid_evidence(
+    monkeypatch, phase, age, expected,
+):
+    from tinyassets.api.runs import _run_error_detail
+    from tinyassets.exceptions import AllProvidersExhaustedError
+    from tinyassets.foreground_run_provider import _held_attempt_error
+    from tinyassets.graph_compiler import _emit_failed_event, _wrap_provider_failure
+    from tinyassets.providers.base import BaseProvider
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.providers.router import ProviderRouter
+
+    class TimeoutProvider(BaseProvider):
+        name = "codex"
+        family = "openai"
+
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            raise _timeout(
+                tool_phase=phase, last_progress_age_ms=age,
+                side_effect_state="committed", tool_use_id="private-tool-id",
+                prompt="private-prompt", credential="private-credential",
+            )
+
+    monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
+    router = ProviderRouter(providers={"codex": TimeoutProvider()})
+    with pytest.raises(AllProvidersExhaustedError) as caught:
+        await router.call("writer", "prompt", "system")
+    held = _held_attempt_error("writer", ModelRef("codex", "default"), caught.value)
+    stored = str(_wrap_provider_failure("node", held))
+    events = []
+    _emit_failed_event(lambda **event: events.append(event), "node", held)
+    projections = [
+        _run_error_detail({"error": stored}, []),
+        _run_error_detail({"error": ""}, [{"detail": events[0]}]),
+    ]
+    for detail in projections:
+        attempts = detail["provider_chain"]["attempts"]
+        failed = next(a for a in attempts if a["status"] == "failed")
+        assert failed["failure_class"] == "provider_idle_timeout"
+        assert failed["side_effect_state"] == "committed"
+        observed = {
+            k: failed[k] for k in ("tool_phase", "last_progress_age_ms") if k in failed
+        }
+        assert observed == expected
+        assert "private-" not in str(detail)
+
+
+def test_shared_serialization_revalidates_directly_constructed_evidence():
+    attempt = ProviderAttemptDiagnostic(
+        provider="codex", status="failed", skip_class="timed_out",
+        tool_phase="private-tool-name", last_progress_age_ms=10 ** 1000,
+    )
+    assert "tool_phase" not in attempt.to_dict()
+    assert "last_progress_age_ms" not in attempt.to_dict()

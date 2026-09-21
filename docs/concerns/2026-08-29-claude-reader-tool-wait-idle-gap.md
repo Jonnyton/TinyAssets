@@ -50,15 +50,17 @@ the Linux regression set, exact-head cross-family review, CI, the protected depl
 ordinary app-agent long-tool acceptance. Delete this file with the test names and the landed
 commit once that live proof exists.
 
-## Evidence required before this file is deleted
+## Historical attribution remains a separate evidence question
 
-An independent cross-family diagnosis review (Codex-side, verdict ADAPT, artifact
-`output/provider-idle-diagnosis-review.md` in the root worktree) set the close-out bar. Its three
+An independent Claude Fable diagnosis review (verdict ADAPT, artifact
+`output/provider-idle-diagnosis-review.md` in the root worktree) set the attribution bar. Its three
 corrections and its tests A-G are covered by 8b8ff420 -- ids normalized from both `assistant` and
 `content_block_start` frames, an id-paired `tools_in_flight` set with a `min(cap, _TOOL_WAIT_S)`
 allowance that fails closed on a missing id, and `tool_phase` / `last_progress_age_ms` carried into
 the attempt diagnostic. Two pieces of evidence it required are still outstanding, and neither is
-obtainable from a controlled stream:
+obtainable from a controlled stream. These are conditions for attributing the
+historical incident, not a reason to manufacture a failed production run or to
+withhold a separately verified pending-tool fix:
 
 1. **One real capture.** A served turn whose MCP tool runs past the idle interval, recorded with
    `--output-format stream-json --verbose --include-partial-messages`, showing whether

@@ -778,10 +778,11 @@ def test_cancellation_during_a_pending_tool_terminates_and_reaps():
     assert proc.killed is True
 
 
-def test_a_documented_retry_grace_survives_a_pending_tool():
+def test_a_documented_retry_grace_survives_a_pending_tool(monkeypatch):
     # A provider-stated retry wait longer than the tool allowance is preserved:
     # the pending-tool branch takes the MAX, it does not cap the retry grace.
-    monkeypatch_free = ModelConfig(
+    monkeypatch.setattr(claude_provider_module, "_TOOL_WAIT_S", 0.2)
+    config = ModelConfig(
         init_timeout_s=0.15, first_progress_s=0.15, idle_timeout_s=0.15,
         absolute_cap_s=5.0,
     )
@@ -792,7 +793,7 @@ def test_a_documented_retry_grace_survives_a_pending_tool():
         (0.9, _line(_finished("call-a"))),
         _line(_result("done")),
     ])
-    assert _run_stream(proc, monkeypatch_free).text == "done"
+    assert _run_stream(proc, config).text == "done"
 
 # ---------------------------------------------------------------------------
 

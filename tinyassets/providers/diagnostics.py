@@ -93,6 +93,8 @@ class ProviderAttemptDiagnostic:
     def to_dict(self) -> dict[str, Any]:
         """Serialize, dropping ``None`` fields for compactness."""
         d = asdict(self)
+        d["tool_phase"] = admitted_tool_phase(self.tool_phase)
+        d["last_progress_age_ms"] = finite_progress_age_ms(self.last_progress_age_ms)
         return {k: v for k, v in d.items() if v is not None}
 
 
@@ -124,9 +126,12 @@ def finite_progress_age_ms(value: Any) -> float | None:
     infinities, which survive JSON round-trips as literals no consumer can
     compare. Malformed evidence stays unknown rather than being persisted.
     """
-    if type(value) is bool or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
     if not math.isfinite(number) or number < 0:
         return None
     return number
