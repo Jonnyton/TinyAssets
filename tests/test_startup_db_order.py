@@ -1,21 +1,10 @@
-"""Serving startup initializes `.runs.db` before any background thread opens it.
+"""Initialize serving storage before starting scheduler/assigned workers.
 
-CI 35650830517 failed entering `TestClient(create_streamable_http_app())` on a
-fresh `tmp_path`: `initialize_consumer` -> `initialize_runs_db` ->
-`PRAGMA journal_mode = WAL` raised `database is locked` in 0.024 s, on a
-connection carrying a 30 s timeout. SQLite skips the busy handler when a lock
-upgrade would deadlock, so the *first* WAL switch on a brand-new file fails
-instantly against a concurrent switcher or a held RESERVED lock -- which is
-exactly what the scheduler's first action takes (`scheduler._connect` sets WAL
-and then runs `migrate_scheduler_schema`, a write transaction). Once the file is
-WAL the pragma is a no-op and the race cannot happen, so only fresh data dirs
-bite.
-
-The stand-in below is not a mock of locking: it is a real `sqlite3` connection
-holding a real write transaction on the real `.runs.db` path, taken at the exact
-point the production code starts the scheduler. Ordering is what makes the
-difference -- with initialization first, the file is already WAL by the time the
-background reader attaches, and no lock state it can hold blocks the switch.
+CI 35650830517 failed during HTTP startup at the first WAL switch. These tests
+pin storage-before-workers ordering with controlled, real SQLite contention.
+The stand-in holds a rollback-journal write transaction; the actual scheduler
+switches to WAL before migrating, so this is not a reconstruction of its exact
+historical lock state. Unordered independent initializers remain a separate risk.
 """
 
 from __future__ import annotations
@@ -28,13 +17,7 @@ from starlette.testclient import TestClient
 
 
 class SchedulerLikeWriter:
-    """A background reader that grabs `.runs.db` the way the scheduler does.
-
-    `scheduler._connect` opens the file, switches it to WAL and runs the
-    scheduler migration, so between those statements it holds a RESERVED write
-    lock. This models that window with a real connection and real locking, and
-    signals when the lock is held so the test never sleeps to synchronize.
-    """
+    """A controlled competing writer installed at the scheduler start boundary."""
 
     def __init__(self, db_path):
         self.db_path = db_path
@@ -48,7 +31,7 @@ class SchedulerLikeWriter:
         self.journal_mode_when_attached = str(
             self._conn.execute("PRAGMA journal_mode").fetchone()[0]
         ).lower()
-        # RESERVED: held by the scheduler migration's CREATE/ALTER before commit.
+        # Deliberately retain the current journal mode while holding a write lock.
         self._conn.execute("BEGIN IMMEDIATE")
         self._conn.execute("CREATE TABLE IF NOT EXISTS _scheduler_probe(x)")
         self.attached.set()
@@ -69,7 +52,7 @@ def fresh_data_dir(tmp_path, monkeypatch):
     from tinyassets.runs import runs_db_path
 
     db = runs_db_path(tmp_path)
-    assert not db.exists(), "the race only exists on a database that is not yet WAL"
+    assert not db.exists(), "this regression requires a fresh database"
     return tmp_path
 
 
@@ -118,9 +101,7 @@ def test_http_lifespan_initializes_runs_db_before_the_scheduler_attaches(
     assert _journal_mode(db) == "wal"
 
 
-def test_http_lifespan_orders_initialization_before_background_work(
-    fresh_data_dir, monkeypatch
-):
+def test_http_lifespan_orders_initialization_before_background_work(fresh_data_dir, monkeypatch):
     """The ordering itself, independent of whether SQLite happens to lock."""
     from tinyassets import consumer_runtime
     from tinyassets import universe_server as us
@@ -144,8 +125,27 @@ def test_http_lifespan_orders_initialization_before_background_work(
     assert order == ["initialize", "scheduler"], order
 
 
-def test_sse_stdio_startup_initializes_before_the_assigned_consumer_starts(
-    fresh_data_dir, monkeypatch
+@pytest.fixture
+def isolate_boot_maintenance_thread(monkeypatch):
+    """Do not leak main's unrelated perpetual reconciler into later tests."""
+    real_start = threading.Thread.start
+    suppressed = []
+
+    def _start(thread):
+        if thread.name == "served-budget-lease-reconciler":
+            suppressed.append(thread)
+            return None
+        return real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", _start)
+    yield suppressed
+    assert suppressed, "main did not reach maintenance thread startup"
+    assert all(not thread.is_alive() for thread in suppressed)
+
+
+@pytest.mark.parametrize("transport", ["sse", "stdio", "streamable-http"])
+def test_startup_initializes_before_the_assigned_consumer_starts(
+    fresh_data_dir, monkeypatch, isolate_boot_maintenance_thread, transport
 ):
     """The second serving entrypoint has the same ordering obligation.
 
@@ -189,8 +189,12 @@ def test_sse_stdio_startup_initializes_before_the_assigned_consumer_starts(
     monkeypatch.setattr(aqc, "assigned_queue_consumer_enabled", lambda: True)
     monkeypatch.setattr(aqc, "AssignedQueueConsumer", _RecordingConsumer)
     monkeypatch.setattr(us.mcp, "run", lambda *a, **k: order.append("serve"))
+    monkeypatch.setattr(us.uvicorn, "run", lambda *a, **k: order.append("serve"))
+    from tinyassets import engine_mcp_http
 
-    us.main(transport="stdio")
+    monkeypatch.setattr(engine_mcp_http, "start_engine_mcp_http_servers", lambda: [])
+
+    us.main(transport=transport)
 
     assert order[:3] == [
         "initialize_swallowed",
@@ -199,24 +203,15 @@ def test_sse_stdio_startup_initializes_before_the_assigned_consumer_starts(
     ], order
     assert "serve" in order, order
     assert order[-1] == "assigned_consumer_stop", (
-        "teardown must still stop the consumer it started: " f"{order}"
+        f"teardown must still stop the consumer it started: {order}"
     )
 
 
-def test_initializing_a_fresh_runs_db_under_a_held_write_lock_fails_fast():
-    """Executable spec for WHY the ordering matters -- do not let this go vacuous.
-
-    A 30 s busy timeout does not save the loser: the WAL switch on a fresh file
-    needs a lock upgrade, and SQLite returns SQLITE_BUSY without invoking the
-    busy handler. If this test ever stops failing, the ordering tests above stop
-    proving anything and the reason for the ordering has changed.
-    """
-    import tempfile
-    from pathlib import Path
-
+def test_initializing_a_fresh_runs_db_under_a_held_write_lock_fails(tmp_path):
+    """Control: this competing writer actually blocks fresh initialization."""
     from tinyassets import runs
 
-    base = Path(tempfile.mkdtemp())
+    base = tmp_path
     writer = SchedulerLikeWriter(runs.runs_db_path(base))
     writer.attach()
     try:
@@ -224,3 +219,71 @@ def test_initializing_a_fresh_runs_db_under_a_held_write_lock_fails_fast():
             runs.initialize_runs_db(base)
     finally:
         writer.release()
+
+
+def test_http_initialization_failure_stops_before_scheduler_and_releases_barrier(
+    fresh_data_dir, monkeypatch
+):
+    from tinyassets import consumer_runtime, scoped_reset
+    from tinyassets import universe_server as us
+
+    events = []
+
+    class _Barrier:
+        def release(self):
+            events.append("release")
+
+    def _fail_initialize(base):
+        raise sqlite3.OperationalError("initialization refused")
+
+    monkeypatch.setattr(scoped_reset, "prepare_service_writer_barrier", lambda base: _Barrier())
+    monkeypatch.setattr(consumer_runtime, "initialize", _fail_initialize)
+    monkeypatch.setattr(us, "start_scheduler_for_serving", lambda: events.append("start"))
+    monkeypatch.setattr(us, "stop_scheduler_for_serving", lambda: events.append("stop"))
+    monkeypatch.setattr(
+        us, "stop_workspace_sweepers_for_serving", lambda: events.append("sweepers_stop")
+    )
+    with pytest.raises(sqlite3.OperationalError, match="initialization refused"):
+        with TestClient(us.create_streamable_http_app()):
+            pytest.fail("must not serve after initialization failure")
+    assert events == ["stop", "sweepers_stop", "release"]
+
+
+@pytest.mark.parametrize("transport", ["sse", "stdio", "streamable-http"])
+def test_main_initialization_failure_does_not_start_worker_or_serve(
+    fresh_data_dir, monkeypatch, isolate_boot_maintenance_thread, transport
+):
+    from tinyassets import consumer_runtime, engine_mcp_http, scoped_reset
+    from tinyassets import universe_server as us
+    from tinyassets.runtime import assigned_queue_consumer as aqc
+
+    events = []
+
+    class _Barrier:
+        def release(self):
+            events.append("release")
+
+    def _fail_initialize(base):
+        events.append("initialize")
+        raise sqlite3.OperationalError("initialization refused")
+
+    monkeypatch.setattr(scoped_reset, "prepare_service_writer_barrier", lambda base: _Barrier())
+    monkeypatch.setattr(consumer_runtime, "initialize", _fail_initialize)
+    monkeypatch.setattr(aqc, "assigned_queue_consumer_enabled", lambda: True)
+    monkeypatch.setattr(
+        aqc,
+        "AssignedQueueConsumer",
+        lambda base: pytest.fail("worker constructed before storage ready"),
+    )
+    monkeypatch.setattr(us.mcp, "run", lambda *a, **k: pytest.fail("must not serve"))
+    monkeypatch.setattr(us.uvicorn, "run", lambda *a, **k: pytest.fail("must not serve"))
+    monkeypatch.setattr(engine_mcp_http, "start_engine_mcp_http_servers", lambda: [])
+    monkeypatch.setattr(
+        us, "stop_workspace_sweepers_for_serving", lambda: events.append("sweepers_stop")
+    )
+    with pytest.raises(sqlite3.OperationalError, match="initialization refused"):
+        us.main(transport=transport)
+    expected = ["initialize", "initialize"]
+    if transport != "streamable-http":
+        expected += ["sweepers_stop", "release"]
+    assert events == expected

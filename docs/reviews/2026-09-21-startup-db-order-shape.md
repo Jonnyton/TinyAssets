@@ -41,13 +41,14 @@ SQLite 3.50.4:
 | other connection holds `BEGIN IMMEDIATE` (RESERVED) | `database is locked` in **0.000 s** |
 | 4 threads racing the first switch | `database is locked` in **0.0003 s** (3 of 4) |
 
-The last two rows match the CI signature: `database is locked` on a connection
-carrying a 30 s timeout, in a test whose junit `time` was 0.024 s. SQLite does
-not invoke the busy handler when a lock upgrade would deadlock, so a concurrent
-first-time WAL switch — or a writer already holding RESERVED, which is exactly
-what `migrate_scheduler_schema` holds — fails the other side immediately. Once
-the file is already WAL the pragma is a no-op and the race cannot occur, which
-is why only fresh data dirs (per-test `tmp_path`, first boot) are affected.
+The last two rows are consistent with the short CI failure at the WAL pragma.
+Correction by integrating reviewer Codex, September 21: the actual scheduler
+switches WAL BEFORE its migration transaction. The controlled RESERVED-lock
+test intentionally keeps rollback-journal mode and is not the scheduler's
+literal migration state. It proves the storage-before-workers invariant under
+real contention, not which competing connection or lock state caused CI.
+Already-WAL files avoid this first-switch conflict; this does not guarantee
+that all subsequent initialization or unordered multi-process calls are safe.
 
 This is the reported traceback: `universe_server.py:3948 initialize_consumer` →
 `consumer_runtime.py:248-251 canonical.initialize` → `initialize_runs_db` →
@@ -70,7 +71,10 @@ fresh `tmp_path` — the CI failure — takes the uninitialized path.
 
 ## Scope of the correction
 
-Initialize storage before starting background work in both affected entrypoints.
+Initialize storage before starting scheduler/assigned workers. The HTTP main
+entrypoint also needs initialization before its assigned worker: the app's
+lifespan has not run when that worker starts. Early best-effort maintenance
+catches initialization failures and cannot be the authoritative ordering gate.
 Nothing else: no SQLite retry wrapper (it would mask ordering, and the failure is
 instant, not contended), no busy-timeout reordering inside `runs._connect` (it
 would not help — the busy handler is skipped), no scheduler change, no schema or
@@ -82,8 +86,12 @@ consumer shutdown cleanup, and existing scheduler authority.
 
 ## Limits
 
-The 0.024 s CI failure is consistent with both instant-fail rows above; this
-assessment does not distinguish which of the two lock states the CI run hit,
-because the correction is identical either way. The measurement is Windows /
-SQLite 3.50.4; the Linux oracle run on the regression test is the cross-platform
-check.
+The CI traceback does not identify the competing connection or its lock state.
+The measurements above are Opus's Windows / SQLite 3.50.4 observations.
+Codex independently ran the frozen red commit405687df on Linux3.11.15:
+`python scripts/linux_oracle.py -- -q tests/test_startup_db_order.py --tb=short`
+returned3failed/1passed in2.26s (session48695, exit1, September21). Failures
+demonstrated actual HTTP WAL contention, reversed HTTP ordering, and reversed
+stdio assigned-worker ordering. This is controlled regression evidence, not
+an exact replay of historical CI. Integration tests additionally isolate the
+unrelated maintenance thread and check initialization refusal/cleanup.

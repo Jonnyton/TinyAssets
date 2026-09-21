@@ -33,11 +33,12 @@ scheduler PR.
 
 ## Not the same defect as the startup ordering race
 
-`codex/startup-db-order` (405687df, 8bf585d2, 2026-09-21) fixed a *different* bug with the same
-error string: the serving entrypoints started the scheduler / assigned-queue consumer before
-`initialize_consumer`, so a background thread raced the main thread's first WAL switch
-(CI 35650830517). That is ordering within one process and is now covered by
-`tests/test_startup_db_order.py`. This concern is the remaining case — N callers with no
+The unshipped `codex/startup-db-order` candidate (2026-09-21) addresses a related
+single-process ordering defect: serving entrypoints started scheduler/assigned
+workers before `initialize_consumer`. CI35650830517 failed at the first WAL
+switch, but its competing connection is not identified. Controlled real-lock
+and ordering regressions are in `tests/test_startup_db_order.py`. This concern
+remains for N callers with no
 ordering relationship at all: a multi-process daemon restart, or tests sharing a data root.
 It stays open.
 

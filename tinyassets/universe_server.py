@@ -3937,15 +3937,8 @@ def create_streamable_http_app() -> Starlette:
         try:
             from tinyassets.consumer_runtime import initialize as initialize_consumer
 
-            # Storage first, background threads second. `Scheduler.start` runs its
-            # tick loop immediately, and that loop's first act is to open `.runs.db`
-            # and switch it to WAL under the scheduler migration's write lock. On a
-            # brand-new database SQLite answers the *other* first-time WAL switch
-            # with SQLITE_BUSY without ever consulting the busy handler, so the
-            # 30 s timeout on `runs._connect` does not save it — the loser fails in
-            # under a millisecond (CI 35650830517; tests/test_startup_db_order.py).
-            # Initializing before anything else attaches removes the race outright
-            # rather than retrying around it.
+            # Initialize storage before the scheduler's immediate tick can open
+            # the same fresh database and race its first journal-mode switch.
             initialize_consumer(data_dir())
             # The scheduler starts whenever the daemon serves — schedules are a user's
             # own automations and do not belong to the inbound channel surface
@@ -4208,12 +4201,8 @@ def main(
         from tinyassets.storage import data_dir as assigned_data_dir
 
         if assigned_queue_consumer_enabled():
-            # The app's lifespan initializes storage too, but it does not run
-            # until `uvicorn.run` below — so on a fresh data dir this poll thread
-            # would otherwise be attached to `.runs.db` while the lifespan makes
-            # the first WAL switch, which is the race this file's other two
-            # startup paths order around. Idempotent; the boot maintenance block
-            # above usually did it already but swallows its own failure.
+            # The lifespan has not run yet. Its storage initialization must also
+            # precede this polling worker; best-effort boot maintenance may fail.
             from tinyassets.consumer_runtime import initialize as initialize_consumer
 
             initialize_consumer(assigned_data_dir())
@@ -4240,11 +4229,8 @@ def main(
     try:
         from tinyassets.consumer_runtime import initialize as initialize_consumer
 
-        # Same ordering obligation as the HTTP lifespan above: the consumer's poll
-        # thread opens `.runs.db`, and a first-time WAL switch racing another one
-        # fails instantly rather than waiting out the busy timeout. The boot
-        # maintenance block above usually initializes first, but it swallows its
-        # own failure, so this path cannot rely on that having happened.
+        # Do not rely on best-effort boot maintenance: storage must be ready
+        # before the assigned consumer can open the same database.
         initialize_consumer(data_dir())
         if assigned_queue_consumer_enabled():
             assigned_consumer = AssignedQueueConsumer(data_dir())
