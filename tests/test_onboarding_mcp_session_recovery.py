@@ -206,7 +206,8 @@ async function fetch(_url, init){
     start(controller){
       const frames=[
         ': keepalive\n\n',
-        'data: '+JSON.stringify({jsonrpc:'2.0',method:'notifications/progress',params:{progress:1}})+'\n\n',
+        'data: '+JSON.stringify({jsonrpc:'2.0',method:'notifications/progress',
+          params:{progress:1}})+'\n\n',
         'data: '+JSON.stringify(response(request.id+1))+'\n\n',
         'data: '+JSON.stringify(response(request.id))+'\n\n'
       ];
