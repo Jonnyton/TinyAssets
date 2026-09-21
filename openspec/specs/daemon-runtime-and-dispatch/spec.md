@@ -685,3 +685,94 @@ executor runtime identity, a fleet heartbeat, or a worker container to do so.
 #### Scenario: Due automation after a daemon restart
 - **WHEN** the daemon restarts with a new process identity and an automation comes due
 - **THEN** the run launches on the universe's current assignment without any runtime re-registration
+
+### Requirement: The production image carries a drop-first operational exec wrapper that reaches its target only after a verified identity retirement
+
+The production image SHALL carry a statically linked, root-owned `0555`
+wrapper at `/usr/local/libexec/ta-op`, outside every directory chowned to the
+runtime user, compiled in the existing builder stage with warnings fatal and
+its static link asserted at build time. The wrapper SHALL accept only a mode
+declared in `deploy/native/ta_op_modes.tsv`; it SHALL validate the mode name
+and argument count, then run the entry-identity branch, then close descriptors
+above standard error, and only then run a builtin, validate the single
+`printenv` operand, or exec the fixed target. Every refusal SHALL occur before
+any runtime target is executed.
+
+Staged 2026-09-20: this requirement covers the *installed helper* only. The
+migration of the repo-authored callers, the daemon healthcheck, the env-apply
+preflight and the repo gate that refuses bare execs are a separate slice of
+`openspec/changes/workspace-node` and are not claimed here; until that slice
+lands, nothing in the repo invokes the wrapper.
+
+#### Scenario: Managed-bootstrap entry retires every set before the target exists
+- **WHEN** the wrapper starts with `getuid()==0`
+- **THEN** it SHALL refuse unless exactly `CAP_CHOWN`, `CAP_SETGID`,
+  `CAP_SETUID`, `CAP_SETPCAP` and `CAP_SYS_ADMIN` are permitted, effective and
+  bounding with inheritable and ambient empty
+- **AND** it SHALL set no-new-privileges, clear keepcaps and ambient, drop the
+  whole bounding set, clear supplementary groups, set all three GIDs then all
+  three UIDs to 1001, zero every capability set, and read all of that back —
+  including a `setuid(0)` that fails `EPERM` — before it execs anything.
+
+#### Scenario: Legacy-rootless entry verifies and is not labelled a drop
+- **WHEN** the wrapper starts with `getuid()==1001`
+- **THEN** it SHALL require all four UID and all four GID positions to equal
+  1001, all five capability sets to be zero, `NoNewPrivs` to be 1, and the
+  supplementary group list to be empty or to contain only gid 1001
+- **AND** any other supplementary gid SHALL be refused
+- **AND** the result SHALL be recorded as legacy-rootless verification, never
+  as a managed-bootstrap drop receipt.
+
+#### Scenario: Any other entry identity is refused
+- **WHEN** the wrapper starts with a uid other than 0 or 1001
+- **THEN** it SHALL exit 78 without execing.
+
+#### Scenario: The mode table is closed
+- **WHEN** the wrapper is invoked with no mode, an undeclared mode, or the wrong
+  argument count for a declared mode
+- **THEN** it SHALL exit 78 before the entry-identity branch runs and without
+  execing
+- **AND** no mode SHALL accept an executable path, an interpreter switch or a
+  shell string.
+
+#### Scenario: A malformed printenv operand is refused after the identity branch and before the target
+- **WHEN** `printenv` is invoked with an operand that does not match
+  `^[A-Z_][A-Z0-9_]*$`
+- **THEN** the wrapper SHALL first run the entry-identity branch and close
+  descriptors, then exit 78 with `TA_OP_REFUSED:env-name` without execing
+- **AND** an identity refusal reached on that path SHALL be reported as an
+  identity result, never as a NAME result.
+
+#### Scenario: The filtered environment summary never leaves the wrapper
+- **WHEN** `env-summary` runs
+- **THEN** the wrapper SHALL print, after the identity retirement, only those
+  environment entries whose NAME matches the compiled-in flag families, sorted
+  in-process
+- **AND** it SHALL NOT exec a shell, a pipeline, or a full `printenv`.
+
+#### Scenario: Descriptors do not survive into the target
+- **WHEN** the wrapper execs a runtime target
+- **THEN** every descriptor above standard error SHALL have been closed first.
+
+#### Scenario: The operator login is a fixed-argv mode
+- **WHEN** the `claude-login` mode is invoked
+- **THEN** the wrapper SHALL exec the compiled-in argv
+  `/usr/local/bin/claude auth login --claudeai`, taking nothing from the
+  callsite
+- **AND** nothing in the repository SHALL run it.
+
+#### Scenario: The identity readback matches a whole line
+- **WHEN** the wrapper reads the UID and GID lines back out of the kernel
+  status file
+- **THEN** it SHALL require the match to begin and end at a line boundary, so
+  that a longer field value — an fsuid of 10010 against an expected 1001 —
+  SHALL NOT satisfy the readback.
+
+#### Scenario: The image installs the wrapper outside the writable trees
+- **WHEN** the production image is built
+- **THEN** the wrapper SHALL be compiled statically in the builder stage with
+  `-Wall -Wextra -Werror`, its static link asserted, and installed root-owned
+  `0555` at `/usr/local/libexec/ta-op`, not setuid or setgid, outside `/app`
+  and `/data`
+- **AND** the build SHALL fail if the installed binary does not exit 78 on an
+  undeclared mode.

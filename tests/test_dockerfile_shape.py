@@ -618,3 +618,35 @@ def test_dockerfile_entrypoint_uses_entrypoint_script():
     )
     # tini must still be PID 1
     assert "tini" in text, "tini must remain as PID 1 in ENTRYPOINT"
+
+
+def test_ta_op_is_built_in_the_builder_stage_and_installed_read_only_outside_app():
+    """Drop-first wrapper (slice 1: installed helper only).
+
+    The static compile happens in the builder stage that already carries
+    build-essential, with warnings fatal, and the final stage receives only
+    the artifact: root-owned 0555 under /usr/local/libexec, which is outside
+    both trees chowned to uid 1001. Both stages smoke the binary with an
+    undeclared mode and require the closed-table refusal (exit 78), so an
+    image whose wrapper does not refuse cannot build. Caller migration
+    (healthcheck, keepalives, env-apply) is NOT asserted here — that is the
+    second slice, and its own tests carry those assertions.
+    """
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    build = text.index("COPY deploy/native/ta_op.c /tmp/ta_op.c")
+    venv = text.index("RUN python -m venv /opt/venv")
+    assert build < venv, "the wrapper must compile in the builder stage, before the venv"
+    assert "gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c" in text
+    assert "ldd /tmp/ta-op 2>&1 | grep -q 'not a dynamic executable'" in text
+    assert text.count("nosuchmode; [ $? -eq 78 ]") == 2, (
+        "both the builder artifact and the installed binary must be smoked "
+        "with an undeclared mode and refuse with exit 78"
+    )
+    install = text.index("COPY --from=builder /tmp/ta-op /usr/local/libexec/ta-op")
+    assert install > venv, "the install belongs to the final stage"
+    assert "chown root:root /usr/local/libexec/ta-op" in text
+    assert "chmod 0555 /usr/local/libexec/ta-op" in text
+    # No compiler in the final stage: gcc appears only in the builder RUN.
+    assert text.count("gcc ") == 1
+    # Nothing in the image invokes the wrapper yet (slice 1 installs; slice 2 calls).
+    assert "ta-op pulse" not in text and "ta-op canary" not in text

@@ -134,7 +134,7 @@ function $(id){
   if(!DOM.other[id]) DOM.other[id]={id, value:"", textContent:"", style:{}};
   return DOM.other[id];
 }
-let activeTurn=null, turnStartedAt=0;
+let activeTurn=null, turnStartedAt=0, liveInflight=null;
 function appendMessage(role,text){
   if(!hasMessages){ const e=$("thread-empty"); if(e)e.remove(); hasMessages=true; }
   const m=el("msg"); m.className="msg msg--"+role; m.text=String(text||"");
