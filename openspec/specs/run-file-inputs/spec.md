@@ -122,6 +122,19 @@ The served agent SHALL expose these operations through its existing pinned
 owner/universe graph handles. This first slice SHALL refuse nested direct
 provenance; other file-bearing origins remain outside its accepted contract.
 
+The advertised `read_graph`, `write_graph` and `run_graph` descriptions, on the
+served engine and the connector, SHALL state that an app attachment is already
+an exact six-field reference which binds VERBATIM through a declared
+`file`/`file_bundle` input in `run_graph` `inputs_json` without capture, that
+capture exists only for authoring-session handles, and the recipe a code node
+needs (`io_manifest`, matching state field, `input_keys`, `tools_allowed`
+`read_run_file`, keyword `invoke_mcp_action("read_run_file", file_id=..., offset=...,
+count=...)` returning `bytes_base64`/`next_offset`/`eof`). The file refusal on
+`operation=deliver_output` SHALL be scoped to delivery, never stated as a
+general file limitation. Descriptions SHALL NOT advertise a standalone bind
+tool, public URL, inline whole-file, path or metadata-derived grant, and
+SHALL keep reference metadata untrusted.
+
 #### Scenario: Accepted submission cannot be confirmed
 - **WHEN** run and file bindings commit but executor submission fails
 - **THEN** the response retains the accepted run identifier and warns against submitting a replacement
@@ -130,6 +143,12 @@ provenance; other file-bearing origins remain outside its accepted contract.
 #### Scenario: Source or reference is foreign
 - **WHEN** admission names an unreadable version, another owner's file, or changed immutable reference metadata
 - **THEN** admission refuses without a partially reserved executable run
+
+#### Scenario: Agent discovers app attachment binding from its own tool descriptions
+- **WHEN** a user attaches a file in the app and asks for a result derived from its bytes
+- **THEN** the registered graph handle descriptions alone name the path: build a branch with a declared file input and a `read_run_file` code node, then run it with the attachment references verbatim in `inputs_json`
+- **AND** a real authenticated app upload, served `write_graph` create, `run_graph` admission, completed exact-byte processing and bounded `read_graph` export succeed with no authoring session, handle or storage-level bind step
+- **AND** an unbound reference, another owner's or home's reference, and edited reference metadata remain refused with no run reserved
 
 ### Requirement: Actual node reads require trusted execution and declared dataflow
 
