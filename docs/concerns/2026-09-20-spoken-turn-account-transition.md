@@ -1,6 +1,6 @@
 # Late spoken-turn failure can offer another account's text
 
-Found by independent Fable metadata review57196 on7733074d, September20,2026.
+**Filed: 2026-09-20.** Found by independent Fable metadata review57196 on7733074d.
 Source evidence: tinyassets/onboarding/app.html sendVoiceTurn has no equivalent
 of sendTurn's stillHere owner/home guard before render/failure handling.
 sendConversationRequest checks login epoch and throws on changed account, but

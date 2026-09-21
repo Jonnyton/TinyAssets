@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P1** | [Late spoken-turn failure can offer another account's text](2026-09-20-spoken-turn-account-transition.md) — source-derived missing owner/home guard; typed recovery patch does not claim voice parity | 2026-09-20 |
 | **P2** | [Account change that skips sign-out keeps the previous thread](2026-09-20-account-change-without-sign-out.md) — the app's account boundary is fenced at `enterSignedOut` and around the history/send awaits; a verified account or home change reaching `enterSignedIn` without a sign-out would still keep the old thread and `historyLoaded`. No live path found | 2026-09-20 |
 | **P1** | [Hostless monitor schedule cadence gap](2026-09-19-hostless-monitor-schedule-cadence-gap.md) — five-minute requested cron has multi-hour observed gaps; existing external checks share GitHub scheduling, and host-local watchdogs cannot prove independent coverage | 2026-09-19 |
 | **note** | [In-node delivery post-MVP hardening](2026-09-19-node-delivery-post-mvp-hardening.md) — exact-code review approves JSON RPC; refusal ordering, separate-ledger crash accounting, node-kind diagnostics and legacy owner fallback remain explicit follow-through | 2026-09-19 |
