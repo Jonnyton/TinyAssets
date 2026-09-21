@@ -289,3 +289,87 @@ def test_an_unreadable_preference_row_is_held_not_treated_as_absent(
 
     with pytest.raises(PreferenceStoreUnavailable):
         captured_work_preference(tmp_path, universe_id=HOME, principal_id=OWNER)
+
+
+def _observe_work_agent_failures(monkeypatch):
+    """Record what the REAL tool-agent entry raises, without changing it.
+
+    `inspect.getsource` on a raise site proves a line exists, not that a run
+    reaches it. This wraps the real function the run session calls and lets
+    every exception through untouched.
+    """
+    from tinyassets import workflow_agent
+
+    original = workflow_agent.call_foreground_work_agent
+    raised = []
+
+    def wrapped(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except BaseException as exc:
+            raised.append(exc)
+            raise
+
+    monkeypatch.setattr(workflow_agent, "call_foreground_work_agent", wrapped)
+    return raised
+
+
+def test_exhausting_the_tool_agent_order_is_typed_and_classified_as_exhaustion(
+    tmp_path, monkeypatch, authenticate_request, work_agent,
+):
+    """The universe_self path exhausts through `workflow_agent`, not the captured
+    prompt loop; it must reach the run taxonomy as `work_model_exhausted`, never
+    as "connect your provider" or a generic provider failure."""
+    from tinyassets.api.runs import (
+        _WORK_MODEL_EXHAUSTED_ACTION,
+        _classify_run_error,
+        _classify_run_outcome_error,
+    )
+    from tinyassets.exceptions import WorkModelExhaustedError
+
+    raised = _observe_work_agent_failures(monkeypatch)
+    branch, connection = _seed(tmp_path, monkeypatch, authenticate_request)
+    _save_preference(tmp_path, connection, models=(PRIMARY,))
+    work_agent.mode = "all_models_full"
+
+    result, _provider, captured = _run(tmp_path, monkeypatch, authenticate_request, branch)
+
+    assert result["terminal_status"] == "failed"
+    assert captured["effects"] == [] and work_agent.tools == []
+    # Typed on the actual path: the last thing the tool-agent entry raised.
+    assert raised, "the tool-agent entry never raised"
+    assert isinstance(raised[-1], WorkModelExhaustedError), raised
+    assert _classify_run_error(raised[-1], branch.branch_def_id)["failure_class"] == (
+        "work_model_exhausted"
+    )
+    # Through the stored run record, where only the string survives.
+    stored = result["terminal_error"]
+    assert _classify_run_outcome_error(stored) == (
+        "work_model_exhausted", _WORK_MODEL_EXHAUSTED_ACTION,
+    ), stored
+    # Evidence the owner can act on, without the provider's response body.
+    assert PRIMARY in stored and connection in stored
+    assert "provider_overloaded" in stored
+    assert "synthetic overload" not in stored
+
+
+def test_an_authentication_failure_on_the_tool_agent_path_is_never_exhaustion(
+    tmp_path, monkeypatch, authenticate_request, work_agent,
+):
+    """A sign-in failure is not capacity: no second model, no exhaustion class."""
+    from tinyassets.api.runs import _classify_run_outcome_error
+    from tinyassets.exceptions import WorkModelExhaustedError
+
+    raised = _observe_work_agent_failures(monkeypatch)
+    branch, connection = _seed(tmp_path, monkeypatch, authenticate_request)
+    _save_preference(tmp_path, connection)
+    work_agent.mode = "authentication"
+
+    result, _provider, captured = _run(tmp_path, monkeypatch, authenticate_request, branch)
+
+    assert result["terminal_status"] == "failed"
+    assert captured["effects"] == [] and work_agent.tools == []
+    assert set(_models(work_agent)) == {PRIMARY}
+    assert raised and not any(isinstance(exc, WorkModelExhaustedError) for exc in raised)
+    annotation = _classify_run_outcome_error(result["terminal_error"])
+    assert annotation is None or annotation[0] != "work_model_exhausted", annotation

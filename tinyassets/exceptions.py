@@ -144,6 +144,9 @@ class WorkModelExhaustedError(ProviderAuthorityHeldError):
     """
 
     failure_class = "work_model_exhausted"
+    # Every raise site starts its message with this. The async runner keeps
+    # only the string, so the stored-error classifiers key on it, not on TYPE.
+    MESSAGE = "no eligible work model remains"
 
 
 class AllProvidersExhaustedError(ProviderError):

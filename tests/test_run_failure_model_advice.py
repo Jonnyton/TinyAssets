@@ -78,17 +78,82 @@ def test_the_taxonomy_matches_the_subclass_before_the_base_class():
     assert rows.index(WorkModelExhaustedError) < rows.index(ProviderAuthorityHeldError)
 
 
-def test_a_run_that_exhausts_its_captured_order_reports_exhaustion_not_binding():
-    """The session raises the typed error where the order runs out."""
-    import inspect
+def _retained_order(*exhausted):
+    """A real candidate order after this run retained `exhausted`; no plan needed."""
+    import threading
 
-    from tinyassets import foreground_run_provider
+    from tinyassets.providers.work_candidate_data import WorkCandidateData
 
-    source = inspect.getsource(foreground_run_provider._ForegroundRunProviderSession)
-    exhausted = source[source.index("if selected is None:"):]
-    assert exhausted.startswith(
-        "if selected is None:\n                raise WorkModelExhaustedError("
+    data = WorkCandidateData.__new__(WorkCandidateData)
+    data._lock = threading.RLock()
+    data._exhaustion = tuple(exhausted)
+    return data
+
+
+def test_the_exhausted_error_carries_classified_evidence_and_never_the_response_body():
+    """Both raise sites build from the retained order: refs and scopes always,
+    the classified failure class and retry-after only for a boundary the caller
+    validated itself. The provider's body is not in the message."""
+    from tinyassets.api.runs import _classify_run_outcome_error
+    from tinyassets.providers.agent_capacity_boundary import CapacityBoundary
+    from tinyassets.providers.model_policy import Exhaustion, ModelRef
+
+    first = Exhaustion("model", ModelRef("conn_a", "model-one"))
+    second = Exhaustion("account", ModelRef("conn_a", "model-two"))
+    data = _retained_order(first, second)
+    boundary = CapacityBoundary(second, True, "provider_rate_limited", 30.0)
+
+    exc = data.exhausted_error((boundary,))
+
+    assert isinstance(exc, WorkModelExhaustedError)
+    assert str(exc) == (
+        "no eligible work model remains: model-one on conn_a (model scope); "
+        "model-two on conn_a (account scope, provider_rate_limited, retry after 30s)"
     )
+    assert str(data.exhausted_error()) == (
+        "no eligible work model remains: model-one on conn_a (model scope); "
+        "model-two on conn_a (account scope)"
+    )
+    assert _classify_run_error(exc, "branch_x")["failure_class"] == "work_model_exhausted"
+    # The stored string carries "rate_limited": the exhaustion rule must win over
+    # the quota/overload substring nets, in both string classifiers.
+    stored = f"Provider call failed in node 'n1': {exc}"
+    assert _classify_run_outcome_error(stored) == (
+        "work_model_exhausted", _WORK_MODEL_EXHAUSTED_ACTION,
+    )
+    from tinyassets.runs import _classify_failure
+
+    assert _classify_failure({"status": "failed", "error": stored}) == "work_model_exhausted"
+
+
+def test_a_generic_exhausted_or_overloaded_error_is_not_read_as_order_exhaustion():
+    """Only the typed message means "your order ran out"; the router's own
+    exhausted text and a bare overload keep their existing classes.
+
+    The classes asserted are the ones the classifier returned at a81fce5d
+    (before the typed rule existed): the router text has no "providers
+    exhausted" plural and falls through to the bare "provider" net."""
+    from tinyassets.api.runs import _classify_run_outcome_error
+
+    router_text = "Armed provider 'conn_a' exhausted; provider authority forbids fallback widening."
+    assert _classify_run_outcome_error(router_text)[0] == "provider_unavailable"
+    assert _classify_run_outcome_error("synthetic overload 503")[0] == "provider_overloaded"
+
+
+def test_a_model_id_containing_timeout_is_still_order_exhaustion():
+    """The evidence suffix carries the owner's own model ids. One that happens
+    to contain "timeout" must not turn exhaustion into a timed-out run in
+    either string classifier: the narrow typed prefix wins over the nets."""
+    from tinyassets.api.runs import _classify_run_outcome_error
+    from tinyassets.providers.model_policy import Exhaustion, ModelRef
+    from tinyassets.runs import _classify_failure
+
+    only = Exhaustion("model", ModelRef("conn_a", "fast-timeout-v2"))
+    stored = f"Provider call failed in node 'n1': {_retained_order(only).exhausted_error()}"
+
+    assert "timeout" in stored
+    assert _classify_failure({"status": "failed", "error": stored}) == "work_model_exhausted"
+    assert _classify_run_outcome_error(stored)[0] == "work_model_exhausted"
 
 
 def test_the_host_endpoint_hint_is_documented_as_host_evidence():

@@ -450,7 +450,8 @@ _PROVIDER_NOT_BOUND_ACTION = (
 # all rate-limited or full to "connect your provider", which they already had.
 _WORK_MODEL_EXHAUSTED_ACTION = (
     "Every model in this run's order was exhausted or ineligible, so no further "
-    "attempt was made; the raw error above is the evidence. Retry later, or "
+    "attempt was made; the error above names each exhausted model, its capacity "
+    "scope, and the classified failure and retry-after the run observed. Retry later, or "
     "widen the order - an explicit choice with no fallbacks stays exhausted "
     "rather than silently moving to another source. " + _OWN_MODEL_ROUTES
     + " Changing what the universe serves elsewhere cannot rescue a pinned "
@@ -672,6 +673,13 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
 
         cls = _classify_external_write(msg)
         return (cls, external_write_suggested_action(cls))
+    from tinyassets.exceptions import WorkModelExhaustedError
+
+    if WorkModelExhaustedError.MESSAGE in msg:
+        # Typed at the raise; only the string survives the async runner. Its
+        # evidence suffix names classified capacity classes ("rate_limited",
+        # "overloaded"), so this must precede the substring nets below.
+        return ("work_model_exhausted", _WORK_MODEL_EXHAUSTED_ACTION)
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",

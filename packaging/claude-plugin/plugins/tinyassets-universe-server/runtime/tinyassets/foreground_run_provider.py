@@ -958,21 +958,22 @@ class _ForegroundRunProviderSession:
 
     def _call_captured_prompt(self, role, prompt, system, config, policy, kwargs,
                               metadata_observer):
-        from tinyassets.exceptions import (
-            AllProvidersExhaustedError,
-            ProviderAuthorityHeldError,
-            WorkModelExhaustedError,
-        )
+        from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
         from tinyassets.providers.agent_capacity_boundary import capacity_boundary
         from tinyassets.providers.call import get_provider_router
 
         attempts = 0
+        boundaries = ()
+        last_capacity = None
         while True:
             selected = self._work_candidates.next_candidate(policy)
             # Exhaustion, NOT an unbound provider: the owner's own order ran out.
-            # Typed so `api/runs` can say so without matching this message.
+            # Typed so `api/runs` can say so without matching this message. The
+            # boundaries this loop validated are the evidence and the last
+            # capacity failure stays the cause. Auth/unknown failures never get
+            # here: they raise the held class below on the attempt that saw them.
             if selected is None:
-                raise WorkModelExhaustedError("no eligible work model remains")
+                raise self._work_candidates.exhausted_error(boundaries) from last_capacity
             effective = {**(policy or {}), "preferred": {
                 "provider": selected.connection_id, "model_id": selected.model_id,
             }}
@@ -998,6 +999,8 @@ class _ForegroundRunProviderSession:
                 )
                 if boundary is None:
                     raise ProviderAuthorityHeldError("work model attempt is held") from exc
+                boundaries += (boundary,)
+                last_capacity = exc
                 self._work_candidates.next_candidate(policy, (boundary.exhaustion,))
                 continue
             if metadata_observer is not None:

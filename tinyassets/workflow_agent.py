@@ -181,7 +181,20 @@ class WorkflowAgentTurn(AgentTurnCoordinator):
                     "Workflow agent progress is held; "
                     "completed or uncertain actions were not replayed.",
                 ) from exc
+            if boundary is not None and self._order_exhausted():
+                # Validated capacity evidence, nothing to replay, and the owner's
+                # own order has no candidate left. Typed HERE, with the boundary
+                # in frame: re-raising the retryable class sent the compiler
+                # through a backoff that could only end at the same wall, and
+                # the re-entry raise had lost this evidence.
+                raise self.adapter.candidates.exhausted_error((boundary,)) from exc
             raise
+
+    def _order_exhausted(self):
+        adapter = self.adapter
+        if not getattr(adapter, "has_candidate_order", False):
+            return False
+        return adapter.candidates.next_candidate(adapter.source_policy) is None
 
 
 def call_foreground_work_agent(session, *, prompt, system, config, policy, response_observer=None,
@@ -225,7 +238,10 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
     if candidates is not None:
         selected = candidates.next_candidate(policy)
         if selected is None:
-            raise ProviderAuthorityHeldError("no eligible work model remains")
+            # Re-entry after this run's order already ran out (a compiler retry
+            # or a later node): typed exhaustion with the retained refs, never
+            # "no provider bound".
+            raise candidates.exhausted_error()
         initial_policy = {**(policy or {}), "preferred": {
             "provider": selected.connection_id, "model_id": selected.model_id,
         }}

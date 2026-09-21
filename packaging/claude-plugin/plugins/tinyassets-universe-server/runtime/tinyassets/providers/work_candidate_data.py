@@ -3,6 +3,7 @@
 import json
 import threading
 
+from tinyassets.exceptions import WorkModelExhaustedError
 from tinyassets.providers.model_policy import ModelPolicy, ModelRef, order_models
 
 
@@ -141,6 +142,36 @@ class WorkCandidateData:
                 raise PermissionError("admitted work model order changed")
             self._fitted = fitted
         return minimum
+
+    @property
+    def exhaustion(self):
+        with self._lock:
+            return self._exhaustion
+
+    def exhausted_error(self, boundaries=()):
+        """Typed "the order ran out", carrying only owner-visible classified facts.
+
+        Evidence is every exhausted ref and scope this run retained, plus -- for
+        a boundary the caller validated itself -- its classified failure class
+        and retry-after. Never the provider's response body: that stays on the
+        chained cause, in process, and is not copied into the run record.
+        """
+        parts = []
+        for item in self.exhaustion:
+            detail = [f"{item.scope} scope"]
+            for boundary in boundaries:
+                if boundary.exhaustion == item:
+                    if boundary.failure_class:
+                        detail.append(boundary.failure_class)
+                    if boundary.retry_after_s is not None:
+                        detail.append(f"retry after {boundary.retry_after_s:g}s")
+                    break
+            parts.append(f"{item.ref.model_id or 'default model'} on "
+                         f"{item.ref.connection_id} ({', '.join(detail)})")
+        message = WorkModelExhaustedError.MESSAGE
+        if parts:
+            message += ": " + "; ".join(parts)
+        return WorkModelExhaustedError(message)
 
     def next_candidate(self, policy, exhaustion=()):
         with self._lock:

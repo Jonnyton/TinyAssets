@@ -6503,6 +6503,14 @@ def _classify_failure(run: dict) -> str:
     lower = error.lower()
     if lower.startswith("external write failed"):
         return _classify_external_write(lower)
+    from tinyassets.exceptions import WorkModelExhaustedError
+
+    if WorkModelExhaustedError.MESSAGE in lower:
+        # The owner's own order ran out. Its evidence suffix names the owner's
+        # model ids and classified capacity classes ("credit_exhausted"), so
+        # this narrow known prefix must precede every substring net below: a
+        # model id containing "timeout" is not a timed-out run.
+        return "work_model_exhausted"
     if "empty" in lower and ("llm" in lower or "response" in lower or "provider" in lower):
         return "empty_llm_response"
     if lower.startswith("workspace command timeout"):

@@ -26,7 +26,10 @@ rewriting a private workflow. Preferences alone SHALL NOT grant execution access
 
 #### Scenario: Exhausting a saved order is reported as exhaustion
 - **WHEN** every model in a run's captured order is exhausted or ineligible
-- **THEN** the failure is typed apart from having no bound provider, retains the raw provider evidence, and is actionable by the owner
+- **THEN** the failure is typed apart from having no bound provider and is actionable by the owner
+- **AND** it names each exhausted model and its capacity scope, plus the classified failure class and retry-after for a capacity boundary the run validated itself, chaining that last capacity failure as its cause
+- **AND** the provider's raw response is never copied into the run record, and an authentication, source, or revocation failure is never reported as exhaustion
+- **AND** a run record that kept only the error string still classifies as exhaustion by its typed message prefix, ahead of the generic timeout, quota, and overload nets, so a model id or capacity class inside the evidence never changes the class
 - **AND** the suggested action names the owner's own model-options and model-preference routes and the validated node pin key
 - **AND** it never directs anyone to change the universe's main serving provider, which cannot rescue a pinned source
 
