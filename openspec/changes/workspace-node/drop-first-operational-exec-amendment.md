@@ -4,15 +4,24 @@ Approved shape. `docs/reviews/2026-09-20-drop-first-ops-shape-disposition.md`
 carries the coordinator disposition, the `DISAGREE_EVIDENCE` correction to the
 legacy-entry predicate, and the opposite-family compatibility review's
 `APPROVE` with two binding conditions. Both conditions are implemented here.
-Shape review is closed; this file records what was built and why, so the delta
-scenarios below can be synced when the change lands.
+That file is a verbatim copy of the coordinator's artifact, taken from the
+root checkout on 2026-09-20 so the citation resolves inside this branch; it was
+authored by the coordinator, not by this lane. Shape review is closed; this
+file records what was built and why, so the delta scenarios below can be synced
+when the change lands.
 
-This is the fourth item in the prerequisite chain at `design.md:416-418`:
-*fixed static bootstrap* (done), *five-set privilege retirement* (done),
-*tini/entrypoint handoff* (Fable's lane), then **supported drop-first
-exec/healthcheck migration plus tested gate** — this amendment. It is an
-operational prerequisite, not an inventory-only ratchet: it supplies the
-runtime the callsites must call, and migrates every one of them.
+**Scope.** This is the *supported drop-first exec/healthcheck migration plus
+tested gate*, authorized as D1 and D3 by that disposition. It is an operational
+prerequisite, not an inventory-only ratchet: it supplies the runtime the
+callsites must call, and migrates every one of them. It does not start the
+container as root, change `Config.User`, `cap_add` or `no-new-privileges`, flip
+a readiness or control-margin value, or perform any provider operation.
+
+*(An earlier revision of this file numbered this "prerequisite four of the
+chain at `design.md:416-418`". `design.md` in this change is 399 lines and has
+no such chain — that citation pointed at nothing and has been removed rather
+than re-anchored to a section written after it. The scope above is taken from
+the disposition, which is the artifact that actually authorizes this work.)*
 
 ## What changed
 
@@ -60,9 +69,9 @@ Anything other than uid 0 or 1001 is refused (exit 78).
 
 ## Closed mode table
 
-Eight fixed modes, each preserving the argv a real caller runs today:
+Nine fixed modes, each preserving the argv a real caller runs today:
 `version`, `env-summary` (in-wrapper builtins), `pulse`, `canary`, `printenv`,
-`claude-keepalive`, `codex-keepalive`, `bwrap-oracle`. No mode accepts an
+`claude-keepalive`, `codex-keepalive`, `bwrap-oracle`, `claude-login`. No mode accepts an
 executable path, an interpreter switch or a shell string. `printenv` is the
 only mode with an operand: one `^[A-Z_][A-Z0-9_]*$` NAME, validated after the
 drop. Unknown mode, wrong arity and malformed NAME all fail closed before the
@@ -108,24 +117,59 @@ papered over:
    root SSH on the droplet. **Ad-hoc admin SSH is outside the repo gate by
    construction.** After a future root-start flip those ad-hoc execs would run
    as root; that residual belongs to the root-start decision, not here.
-2. A `-t`/`-it` exec (the interactive `claude auth login` on a fresh volume) is
-   reported as a **note**, not a violation. The carve-out is structural — a TTY
-   allocation no workflow, timer or CI runner can use — not an allowlist of
-   callsites. There is no grandfather list: every non-interactive callsite in
-   the repo was migrated in this change. Whether the interactive login should
-   instead become a ninth fixed mode is a shape question left to the
-   coordinator; inventing a mode outside the reviewed table was not in scope.
-   Filed as `docs/concerns/2026-09-20-ta-op-interactive-tty-carveout.md` — the
-   structural argument holds for today's rootless posture and does NOT survive
-   a root-start flip, so the decision is owed before that flip, not after.
+2. ~~A `-t`/`-it` exec is reported as a note.~~ **Removed.** The first revision
+   of the gate exempted TTY-allocating execs on the reasoning that no workflow,
+   timer or CI runner can allocate one. The coordinator's review rejected that:
+   a TTY is a property of the invocation, not proof that automation cannot
+   reach the command, and the exemption silently permitted arbitrary
+   repo-authored argv. The gate now fails every bare exec, TTY or not
+   (`tests/test_drop_first_exec_gate.py::test_a_tty_is_not_an_exemption`), and
+   `scan_text` no longer has a second, softer return channel at all.
+
+   The one real shape the exemption covered — the operator subscription login
+   on a fresh `/data` volume — is the ninth mode, `claude-login`: fixed argv
+   `/usr/local/bin/claude auth login --claudeai`, no operand, no path and no
+   flag from the callsite, reached through the same verified retirement as
+   every other mode. `/usr/local/bin/claude` is the image's own symlink to
+   `/opt/claude-code-install/node_modules/.bin/claude`, so the program is the
+   one the runbooks already documented. Both documented callsites
+   (`deploy/DEPLOY.md`, `deploy/tinyassets-env.template`) are migrated.
+
+   **This preserves an already-supported operator action after a verified
+   drop. It is not authority to log in or to call a provider, and nothing in
+   this change runs it.** No new broad exemption replaces the old one, and the
+   concern that recorded the carve-out
+   (`docs/concerns/2026-09-20-ta-op-interactive-tty-carveout.md`) is deleted,
+   which is how a concern is resolved.
+
+## Identity readback is a whole-line match
+
+`identity_retired()` reads all four UID and all four GID positions back out of
+`/proc/self/status`. The predicate was a plain `strstr()`, which is a **prefix**
+test: `Uid:\t1001\t1001\t1001\t1001` is a substring of
+`Uid:\t1001\t1001\t1001\t10010`, so an fsuid of 10010 — a different user —
+satisfied a check whose whole purpose is to prove the identity is retired.
+`status_line_is()` now requires a line boundary on both sides.
+
+The regression is the `test_identity_readback_is_an_anchored_whole_line_match`
+case in `tests/test_ta_op_modes.py` (red against the pre-correction source,
+which has three `status_has(` call sites and no anchored predicate) plus row 18
+of the native plan,
+which builds a second binary with the compile-time-only `TA_STATUS_PATH`
+override against a crafted status file. Production never defines that macro and
+a test asserts the Dockerfile does not. No authority, capability set, group
+rule or entry branch changed.
 
 ## One citation to avoid in the D2 regression
 
 `output/claude-handoff-reaping-result.md` (Fable's lane, `714e9683`) records
-`app-pulse` manual exit 1. That is a `network none`, token-less fixture
-container and the failure is a missing `git_sha`, not missing authorization.
-It is **not** evidence about the production `--pulse-only` healthcheck that
-`ta-op pulse` now wraps, in either direction.
+`app-pulse` manual exit 1. **The fixture was not token-less** — an earlier
+addendum said so and the disposition corrects it: the raw run-5 receipt
+contains a synthetic canary token. The failure is a missing `git_sha` in a
+`network none` fixture container, not missing authorization. It is **not**
+evidence about the production `--pulse-only` healthcheck that `ta-op pulse`
+now wraps, in either direction. The production healthcheck is unchanged by
+this correction.
 
 ---
 
@@ -179,6 +223,22 @@ SHALL invoke it with a mode declared in `deploy/native/ta_op_modes.tsv`.
 #### Scenario: Descriptors do not survive into the target
 - **WHEN** the wrapper execs a runtime target
 - **THEN** every descriptor above standard error SHALL have been closed first.
+
+#### Scenario: Allocating a terminal is not an exemption
+- **WHEN** a repo-authored `docker exec` into the daemon container allocates a
+  terminal (`-t`, `-it`, `-ti`, `--tty`) and does not invoke the wrapper
+- **THEN** the gate SHALL report it as a violation, not as a note
+- **AND** the gate SHALL expose no second, non-failing finding channel
+- **AND** the operator subscription login SHALL be reached as the fixed
+  `claude-login` mode, whose argv is compiled in and takes nothing from the
+  callsite.
+
+#### Scenario: The identity readback matches a whole line
+- **WHEN** the wrapper reads the UID and GID lines back out of the kernel
+  status file
+- **THEN** it SHALL require the match to begin and end at a line boundary, so
+  that a longer field value — an fsuid of 10010 against an expected 1001 —
+  SHALL NOT satisfy the readback.
 
 ### ADDED Requirement: Environment application refuses before mutating when the wrapper is absent
 

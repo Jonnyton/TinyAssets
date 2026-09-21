@@ -10,11 +10,18 @@ target only after a verified uid/gid 1001 + all-five-cap-sets-empty posture
 and the runtime cannot drift apart.
 
 Red on: a bare privileged-surface exec, an alias of the daemon container, a
-backslash-continued or YAML-block-scalar variant, a ``sudo`` prefix, and an
-exec that IS wrapped but names a mode the runtime does not implement.
+backslash-continued or YAML-block-scalar variant, a ``sudo`` prefix, an
+interactive ``-t``/``-it`` exec, and an exec that IS wrapped but names a mode
+the runtime does not implement.
 
-There is NO grandfather allowlist. Every callsite in the repo at the time this
-gate landed was migrated in the same change.
+There is NO grandfather allowlist and NO exemption. An earlier revision of this
+gate reported a TTY-allocating exec as a note rather than a violation, on the
+reasoning that no automation can allocate a TTY. That reasoning was wrong as a
+*gate* rule: a TTY is a property of the invocation, not proof that nothing
+automated can reach the command, and the exemption admitted arbitrary
+repo-authored argv. The one real shape it covered — the operator subscription
+login on a fresh volume — is now the fixed ``claude-login`` mode, so TTY execs
+go through the wrapper like everything else.
 
 STATED LIMIT, not papered over: this governs repo-authored invocations only.
 ``scripts/droplet.py ssh -- <cmd>`` forwards an arbitrary remote command, and
@@ -137,10 +144,13 @@ def _tokenize(rest: str) -> list[str]:
 
 def scan_text(
     text: str, modes: dict[str, dict[str, object]]
-) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
-    """Return (violations, notes) for daemon execs found in ``text``."""
+) -> list[tuple[int, str]]:
+    """Return the violations for daemon execs found in ``text``.
+
+    There is no second, softer channel. A finding is a violation or it is not
+    reported at all — a "note" tier is how an exemption survives a green gate.
+    """
     findings: list[tuple[int, str]] = []
-    notes: list[tuple[int, str]] = []
     for lineno, line in _normalise(text):
         for match in EXEC_RE.finditer(line):
             tokens = _tokenize(line[match.end():])
@@ -151,11 +161,8 @@ def scan_text(
                     break
             tokens = tokens[:cut]
             i = 0
-            interactive = False
             while i < len(tokens) and tokens[i].startswith("-"):
                 flag = tokens[i]
-                if flag.startswith("-") and not flag.startswith("--") and "t" in flag[1:]:
-                    interactive = True  # -t / -it / -ti allocates a TTY
                 if flag in FLAGS_WITH_VALUE:
                     i += 2
                 else:
@@ -168,15 +175,6 @@ def scan_text(
             argv = tokens[i + 1:]
             if not argv:
                 findings.append((lineno, "exec into the daemon with no command"))
-                continue
-            if interactive and argv[0] not in WRAPPER_ALIASES:
-                # Structural carve-out, NOT an allowlist of callsites: `-t`
-                # allocates a TTY, so this is a human admin at a terminal on
-                # their own SSH authority. No workflow, timer or script can use
-                # it (CI has no TTY). Ad-hoc admin SSH is outside the repo gate
-                # by construction — the deploy key already grants arbitrary
-                # root on the droplet. Reported, never hidden.
-                notes.append((lineno, f"interactive admin exec (TTY): {argv[0]!r}"))
                 continue
             if argv[0] not in WRAPPER_ALIASES:
                 findings.append(
@@ -195,7 +193,7 @@ def scan_text(
             if got != want:
                 findings.append(
                     (lineno, f"ta-op {mode} takes argc {want}, callsite passes {got}"))
-    return findings, notes
+    return findings
 
 
 def tracked_files() -> list[Path]:
@@ -230,13 +228,11 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as exc:
             print(f"drop-first-exec: {path}: {exc}", file=sys.stderr)
             return 2
-        found, notes = scan_text(text, modes)
+        found = scan_text(text, modes)
         rel = path.relative_to(REPO) if path.is_absolute() else path
         for lineno, reason in found:
             print(f"{rel}:{lineno}: {reason}")
             violations += 1
-        for lineno, reason in notes:
-            print(f"{rel}:{lineno}: note: {reason}")
     if violations:
         print(
             f"\ndrop-first-exec: {violations} violation(s). Route daemon execs "

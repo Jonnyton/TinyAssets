@@ -59,22 +59,20 @@ class DropFirstExecInvariant(Invariant):
                 message=f"the ta-op mode table is unreadable: {exc}",
             )
         findings: list[str] = []
-        notes: list[str] = []
         for path in mod.tracked_files():
             text = path.read_text(encoding="utf-8", errors="replace")
-            found, note = mod.scan_text(text, modes)
             rel = path.relative_to(REPO_ROOT)
-            findings += [f"{rel}:{ln}: {why}" for ln, why in found]
-            notes += [f"{rel}:{ln}: {why}" for ln, why in note]
+            findings += [
+                f"{rel}:{ln}: {why}" for ln, why in mod.scan_text(text, modes)
+            ]
 
         if findings:
             return CheckResult(
                 status=Status.VIOLATED,
                 message=f"{len(findings)} unwrapped daemon exec(s)",
-                evidence={"violations": findings, "interactive_admin_notes": notes},
+                evidence={"violations": findings},
             )
         return CheckResult(
             status=Status.OK,
             message=f"all daemon execs wrapped ({len(modes)} modes declared)",
-            evidence={"interactive_admin_notes": notes},
         )

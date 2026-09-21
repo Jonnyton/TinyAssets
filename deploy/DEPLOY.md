@@ -218,12 +218,13 @@ same `CLAUDE_CONFIG_DIR` so the subscription session is exercised after
 deploys and during idle weeks. Host login command for a fresh volume:
 
 ```bash
-# One-off interactive login on a fresh volume. This is an ad-hoc admin action
-# on the host's own SSH authority, NOT a repo-authored operational route, so it
-# does not go through `/usr/local/libexec/ta-op` and the drop-first gate does not
-# govern it (the wrapper has no interactive mode and never will — an
-# interactive TTY into the container is exactly what the closed table excludes).
-sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude     /opt/claude-code-install/node_modules/.bin/claude auth login --claudeai
+# One-off interactive login on a fresh volume. It is a repo-authored route like
+# every other exec here, so it goes through the wrapper: `claude-login` is a
+# fixed mode whose argv (`claude auth login --claudeai`) is compiled in, and the
+# TTY is inherited by the target only after the identity retirement is verified.
+# This command has NOT been run by the change that added the mode.
+sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon \
+  /usr/local/libexec/ta-op claude-login
 ```
 
 The scheduled keepalive that follows it *is* a repo-authored route and runs

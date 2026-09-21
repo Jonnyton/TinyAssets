@@ -100,6 +100,61 @@ def test_wrapper_lives_outside_the_writable_trees():
     assert "chmod 4" not in dockerfile and "chmod u+s" not in dockerfile
 
 
+def test_identity_readback_is_an_anchored_whole_line_match():
+    """Regression: a substring test on `/proc/self/status` is a prefix test.
+
+    `strstr(buf, "Uid:\\t1001\\t1001\\t1001\\t1001")` also matches the line
+    `Uid:\t1001\t1001\t1001\t10010` — an fsuid of 10010, a different user,
+    satisfying the readback that is supposed to prove the identity is retired.
+    The predicate must require a line boundary on both sides.
+    """
+    text = TA_OP_C.read_text(encoding="utf-8")
+    assert "status_has(" not in text, (
+        "the unanchored substring predicate is the defect; it must not return"
+    )
+    assert "static int status_line_is(const char *line)" in text
+    body = text.split("static int status_line_is(const char *line) {", 1)[1]
+    body = body.split("\n}", 1)[0]
+    assert "at[-1] != '\\n'" in body, "the match must start at a line boundary"
+    assert "at[len] == '\\n'" in body, "the match must end at a line boundary"
+    for field in ("Uid", "Gid"):
+        assert f'status_line_is("{field}:' in text, field
+
+
+def test_the_status_path_override_is_compile_time_only_and_never_built_in():
+    """The native regression needs a crafted status file; production must not.
+
+    A test switch reachable at runtime (env var, argv, config) would be a way
+    to feed the identity readbacks a file the process controls. This one is a
+    compile-time macro with a fixed default, and the production image never
+    defines it.
+    """
+    text = TA_OP_C.read_text(encoding="utf-8")
+    assert '#define TA_STATUS_PATH "/proc/self/status"' in text
+    assert "getenv" not in text, "no runtime switch may reach the status path"
+    dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
+    assert "TA_STATUS_PATH" not in dockerfile, (
+        "the production build must compile the fixed /proc/self/status default"
+    )
+
+
+def test_claude_login_is_a_fixed_argv_operator_route():
+    """The ninth mode replaces the gate's interactive-TTY carve-out.
+
+    It preserves the operator login the runbooks already documented; it takes
+    nothing from the callsite, and nothing in this repo runs it.
+    """
+    spec = load_modes()["claude-login"]
+    assert spec["kind"] == "exec"
+    assert spec["argc"] == 2, "no caller operand"
+    assert spec["argv"] == ["/usr/local/bin/claude", "auth", "login", "--claudeai"]
+    dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
+    assert (
+        "ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude"
+        in dockerfile
+    ), "argv[0] must be the path the image actually installs"
+
+
 def test_static_link_is_asserted_at_build_time():
     dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
     assert "gcc -static" in dockerfile

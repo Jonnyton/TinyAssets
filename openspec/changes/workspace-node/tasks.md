@@ -18,20 +18,39 @@
 ## 2b. Drop-first operational exec migration
 
 Design + approved amendment + delta scenarios:
-`drop-first-operational-exec-amendment.md`. Prerequisite four of the chain at
-`design.md:416-418`. Shape APPROVED (coordinator disposition + opposite-family
-compatibility review, both 2026-09-20); no further shape review needed.
+`drop-first-operational-exec-amendment.md`; coordinator disposition and
+opposite-family compatibility review (both 2026-09-20) in
+`docs/reviews/2026-09-20-drop-first-ops-shape-disposition.md`. Shape APPROVED;
+no further shape review needed.
 
-- [x] 2b.1 `deploy/native/ta_op.c` + `ta_op_modes.tsv`: static root-owned 0555 `/usr/local/libexec/ta-op` outside `/app` and `/data`; exact-five-cap root branch with full UID/GID/groups/cap retirement and readback; legacy-rootless branch asserting uid/gid 1001 in all four positions, all five cap sets 0, NNP 1 and supplementary groups empty-or-gid-1001; every other entry refused; unintended descriptors closed before exec
-- [x] 2b.2 Closed eight-mode table preserving existing argv (`version`, `env-summary`, `pulse`, `canary`, `printenv`, `claude-keepalive`, `codex-keepalive`, `bwrap-oracle`); no shell, executable path or interpreter switch; `printenv` takes one post-drop-validated NAME; `env-summary` is an in-wrapper post-drop print of the four flag families matched on NAME
-- [x] 2b.3 Build/install in the existing builder stage (`build-essential` already present), static-link assertion, unknown-mode smoke at build time
-- [x] 2b.4 Migrate real callers: `droplet.py env`/`canary`, `apply-daemon-env-remote.sh:88,118`, compose healthcheck, both keepalive workflows (argv only — schedules and enabled state untouched), bwrap-oracle docstring, `DEPLOY.md`, `README.md`, `tinyassets-env.template`, `apply-daemon-env.yml` comment
-- [x] 2b.5 Version preflight above the fail-open read and above every mutation; refuse with no restart and no bare fallback
-- [x] 2b.6 `scripts/check_drop_first_exec.py` + `scripts/invariants/drop_first_exec.py` registered in the invariant framework; no grandfather allowlist; gate and runtime share `ta_op_modes.tsv` with a parity test
-- [x] 2b.7 Tests: gate red on the pre-migration content of five real callsites and green on the migrated forms; mode-table parity; fail-before-mutation/no-restart; rollback-order regression on both paths
-- [ ] 2b.8 Native proof per `deploy/native/NATIVE-TEST-PLAN.md` (rootless exact groups, root+5cap drop, cap/group/uid refusals, post-drop target identity, loader/env and descriptor boundaries) — driver authored, NOT executed; needs Linux and the disposable container slot
-- [ ] 2b.9 CI image build, `deployed_sha.py --assert-contains <sha>`, live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`
+**Carried as prose, not checkboxes.** This slice is one bounded migration, and
+splitting it into nine rows pushed the change past its 12-checkbox ceiling
+without adding any decision the reviewer had to make. What shipped: the static
+root-owned `0555` `/usr/local/libexec/ta-op` outside `/app` and `/data`, with
+the exact-five-cap root branch (full UID/GID/groups/cap retirement plus
+whole-line readback) and the legacy-rootless verification branch (all four UID
+and GID positions 1001, all five cap sets 0, NNP 1, supplementary groups
+empty-or-gid-1001), every other entry refused, descriptors above stderr closed
+before any exec; the closed nine-mode table preserving existing argv
+(`version`, `env-summary`, `pulse`, `canary`, `printenv`, `claude-keepalive`,
+`codex-keepalive`, `bwrap-oracle`, `claude-login`) with no shell, path or
+interpreter switch from any callsite; the static build and install in the
+existing builder stage; every real caller migrated (`droplet.py env`/`canary`,
+`apply-daemon-env-remote.sh:88,118`, the compose healthcheck, both keepalive
+workflows by argv only with schedules and enabled state untouched, the
+bwrap-oracle docstring, `DEPLOY.md`, `README.md`, `tinyassets-env.template`,
+`apply-daemon-env.yml`); the version preflight above the fail-open read and
+above every mutation, refusing with no restart and no bare fallback; and
+`scripts/check_drop_first_exec.py` registered as an invariant with no
+grandfather allowlist and no exemption tier, sharing `ta_op_modes.tsv` with the
+runtime under a parity test. Tests: gate red on the pre-migration content of
+five real callsites and on every TTY form, green on the migrated ones; mode
+parity; fail-before-mutation/no-restart; rollback-order regression on both
+paths; the anchored identity-readback regression.
+
+Outstanding native, CI, deploy and live gates are carried by 3.1 below — they
+are the release gate for this slice, not separate delivery work.
 
 ## 3. Land
 
-- [ ] 3.1 Sync the five deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`
+- [ ] 3.1 Release gate and land: native proof per `deploy/native/NATIVE-TEST-PLAN.md` (driver authored, NOT executed — needs Linux and the disposable container slot; rows 3/13/14/15/16/18 are reported NOT_PROVEN until run), CI image build, live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`; then sync the deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`

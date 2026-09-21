@@ -65,10 +65,19 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define TA_OP_VERSION "ta-op 1 modes=8"
+#define TA_OP_VERSION "ta-op 1 modes=9"
 #define TA_UID 1001
 #define TA_GID 1001
 #define SELF "/usr/local/libexec/ta-op"
+/* The kernel status file the identity readbacks are taken from. Overridable
+ * ONLY at compile time, and only so the native regression in
+ * deploy/native/NATIVE-TEST-PLAN.md can feed the readback predicates a crafted
+ * status file. The production Dockerfile never defines it (asserted by
+ * tests/test_ta_op_modes.py), and nothing at runtime — no env var, no argv, no
+ * config — can reach it. */
+#ifndef TA_STATUS_PATH
+#define TA_STATUS_PATH "/proc/self/status"
+#endif
 /* CAP_CHOWN(0) CAP_SETGID(6) CAP_SETUID(7) CAP_SYS_ADMIN(21) CAP_SETPCAP(8) */
 #define MASK 0x2001c1ULL
 #define REFUSE 78
@@ -112,6 +121,15 @@ static const struct mode MODES[] = {
       "--skip-git-repo-check", "Reply with the single word OK.", NULL}},
     {"bwrap-oracle", 2, 0,
      {"/opt/venv/bin/python", "/app/scripts/workspace_bwrap_oracle.py", NULL}},
+    /* The one-off operator subscription login on a fresh /data volume, which
+     * the runbooks have always documented as a `-it` exec. Fixed argv, no
+     * caller operand, no path and no flag from the callsite: it reaches the
+     * same verified post-drop identity as every other mode. Adding it is what
+     * lets the gate refuse EVERY bare exec, TTY or not. It preserves an
+     * already-supported operator action; it is not authority to log in, and
+     * no test in this repo runs it. */
+    {"claude-login", 2, 0,
+     {"/usr/local/bin/claude", "auth", "login", "--claudeai", NULL}},
 };
 #define N_MODES ((int)(sizeof(MODES) / sizeof(MODES[0])))
 
@@ -132,17 +150,27 @@ static void read_text(const char *path, char *buf, size_t size) {
 
 static unsigned long long status_hex(const char *field) {
     char buf[8192], key[32];
-    read_text("/proc/self/status", buf, sizeof(buf));
+    read_text(TA_STATUS_PATH, buf, sizeof(buf));
     snprintf(key, sizeof(key), "\n%s:\t", field);
     const char *at = strstr(buf, key);
     MUST(at != NULL, "status-field");
     return strtoull(at + strlen(key), NULL, 16);
 }
 
-static int status_has(const char *line) {
+/* EXACT whole-line match. A bare strstr() is a PREFIX test and silently
+ * accepts a longer field: "Uid:\t1001\t1001\t1001\t1001" is a substring of
+ * "Uid:\t1001\t1001\t1001\t10010", so an fsuid of 10010 — a different user —
+ * satisfied the old predicate. The match must therefore start at a line
+ * boundary and end at one. */
+static int status_line_is(const char *line) {
     char buf[8192];
-    read_text("/proc/self/status", buf, sizeof(buf));
-    return strstr(buf, line) != NULL;
+    read_text(TA_STATUS_PATH, buf, sizeof(buf));
+    size_t len = strlen(line);
+    for (const char *at = buf; (at = strstr(at, line)) != NULL; at += len) {
+        if (at != buf && at[-1] != '\n') continue;
+        if (at[len] == '\n' || at[len] == '\0') return 1;
+    }
+    return 0;
 }
 
 static void all_caps_zero(const char *why) {
@@ -158,8 +186,8 @@ static void identity_retired(const char *why) {
          ruid == TA_UID && euid == TA_UID && suid == TA_UID, why);
     MUST(getresgid(&rgid, &egid, &sgid) == 0 &&
          rgid == TA_GID && egid == TA_GID && sgid == TA_GID, why);
-    MUST(status_has("Uid:\t1001\t1001\t1001\t1001"), "fs-uid-readback");
-    MUST(status_has("Gid:\t1001\t1001\t1001\t1001"), "fs-gid-readback");
+    MUST(status_line_is("Uid:\t1001\t1001\t1001\t1001"), "fs-uid-readback");
+    MUST(status_line_is("Gid:\t1001\t1001\t1001\t1001"), "fs-gid-readback");
     MUST(prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1, "nnp-readback");
 }
 

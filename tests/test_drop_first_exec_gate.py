@@ -19,13 +19,7 @@ MODES = load_modes()
 
 
 def violations(text: str) -> list[str]:
-    found, _notes = scan_text(text, MODES)
-    return [reason for _lineno, reason in found]
-
-
-def notes(text: str) -> list[str]:
-    _found, ns = scan_text(text, MODES)
-    return [reason for _lineno, reason in ns]
+    return [reason for _lineno, reason in scan_text(text, MODES)]
 
 
 # --- RED ---------------------------------------------------------------
@@ -107,11 +101,58 @@ def test_green_migrated_forms(snippet):
     assert violations(snippet) == []
 
 
-def test_interactive_admin_exec_is_reported_as_a_note_not_hidden():
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        # the pre-correction carve-out: the documented interactive login
+        "sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon "
+        "/opt/claude-code-install/node_modules/.bin/claude auth login --claudeai",
+        # a TTY does not launder any other argv either
+        "docker exec -it tinyassets-daemon bash",
+        "docker exec -t tinyassets-daemon sh -c 'cat /data/.claude/.credentials.json'",
+        "docker exec -ti tinyassets-daemon /usr/bin/printenv",
+        "sudo docker exec --interactive --tty tinyassets-daemon /bin/sh",
+    ],
+)
+def test_a_tty_is_not_an_exemption(snippet):
+    """A `-t`/`-it` exec is a violation like any other bare exec.
+
+    The earlier revision reported these as notes on the reasoning that no
+    automation can allocate a TTY. A TTY is a property of the invocation, not
+    proof that the command is unreachable, and the exemption admitted arbitrary
+    repo-authored argv. There is no second, softer tier any more.
+    """
+    assert violations(snippet), "a TTY exec must fail the gate, not be noted"
+
+
+def test_the_migrated_interactive_login_is_green():
     text = ("sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon "
-            "/opt/claude-code-install/node_modules/.bin/claude auth login --claudeai")
+            "/usr/local/libexec/ta-op claude-login")
     assert violations(text) == []
-    assert notes(text), "an out-of-gate admin exec must still be printed"
+
+
+def test_claude_login_is_a_declared_fixed_mode_with_no_operand():
+    spec = MODES["claude-login"]
+    assert spec["argc"] == 2, "the callsite supplies no operand"
+    assert spec["argv"] == ["/usr/local/bin/claude", "auth", "login", "--claudeai"]
+    # ... and passing one is still a violation.
+    assert violations(
+        "docker exec -it tinyassets-daemon /usr/local/libexec/ta-op claude-login --extra"
+    )
+
+
+def test_the_gate_exposes_no_note_channel():
+    """Regression: the softer tier is gone, not merely unused.
+
+    `scan_text` returning a second list is how an exemption comes back — a
+    caller can keep matching shapes out of the violation count while still
+    "reporting" them.
+    """
+    result = scan_text("docker exec -it tinyassets-daemon bash", MODES)
+    assert isinstance(result, list)
+    assert all(isinstance(item, tuple) and len(item) == 2 for item in result)
+    source = (REPO / "scripts" / "check_drop_first_exec.py").read_text(encoding="utf-8")
+    assert "notes" not in source, "no note channel may exist in the gate"
 
 
 # --- the gate against the real tree, and against the pre-migration tree ---
