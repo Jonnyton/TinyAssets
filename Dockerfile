@@ -118,6 +118,21 @@ COPY domains/ ./domains/
 # supervisor crash-loops with `No module named fantasy_daemon`.
 COPY fantasy_daemon/ ./fantasy_daemon/
 
+# Drop-first operational exec wrapper. Compiled HERE, in the builder stage
+# that already carries build-essential (see the apt block above); the final
+# stage stays free of a compiler. Fully static because the wrapper must not
+# depend on the dynamic loader or NSS: it uses only prctl/capset/setres*/
+# exec and never resolves a user or group by name.
+#
+# -Werror is deliberate: a warning in a binary that runs a privilege
+# retirement is a defect, not a note. The `ldd` line asserts the artifact
+# really is static — a dynamic build would load /lib from a path the future
+# root branch must not touch.
+COPY deploy/native/ta_op.c /tmp/ta_op.c
+RUN gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c \
+    && ldd /tmp/ta-op 2>&1 | grep -q 'not a dynamic executable' \
+    && { /tmp/ta-op nosuchmode; [ $? -eq 78 ]; }
+
 # Install into a venv that we'll copy to the final stage. Keeps the
 # final image free of pip metadata + build tools.
 RUN python -m venv /opt/venv && \
@@ -199,6 +214,15 @@ RUN chmod 0755 /usr/local/bin/codex && \
     ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude && \
     /usr/local/bin/codex --version && \
     /usr/local/bin/claude --version
+
+# Install the drop-first wrapper root-owned 0555 under /usr/local/libexec —
+# OUTSIDE /app and /data, both of which are chowned to uid 1001 further down.
+# A binary that root may one day exec must not live in a tree its target
+# user can write. Not setuid, not setgid: it grants nothing, it retires.
+COPY --from=builder /tmp/ta-op /usr/local/libexec/ta-op
+RUN chown root:root /usr/local/libexec/ta-op \
+    && chmod 0555 /usr/local/libexec/ta-op \
+    && { /usr/local/libexec/ta-op nosuchmode; [ $? -eq 78 ]; }
 
 WORKDIR /app
 
