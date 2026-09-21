@@ -8,6 +8,9 @@ closing these gaps to the active limits goal, with rendered agent confirmation.
 
 ## What Changes
 
+- September21 live follow-up: let the served agent replace or clear an existing
+  node's `llm_policy` via the existing `update_node` operation, matching create
+  and canonical edit behavior without granting provider authority. No new op.
 - Make documented in-place workflow edits reachable through existing write_graph
   vocabulary and shared definition validation; remove contradictory guidance.
 - Resolve workspace ancestry from the compiler's graph relation, not from the

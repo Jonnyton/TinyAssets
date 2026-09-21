@@ -92,6 +92,33 @@ policy changes or completion claims for unfinished resource consolidation.
 
 ## Risks / Trade-offs
 
+### September21 live follow-up: existing node model policy
+
+The app agent could create/run an unpinned replacement but could not repair its
+own existing pin. Independent Fable source diagnosis and root read confirm the
+served update sanitizer excludes llm_policy while served create/add_node and
+canonical _apply_node_updates already accept it. The primitive checker reports
+update_node collision, as expected: reuse it, do not add an action.
+
+Permit exactly llm_policy in existing served update_node, with downstream
+_coerce_llm_policy_update/branch validation authoritative and atomic. A policy
+dict replaces the node preference; explicit null clears to inherited/current
+authorized selection; omitted means unchanged. Do not coerce unknown types or
+invent another policy grammar. Teach this existing path in served guidance.
+An edit never binds credentials, grants a provider, publishes a branch, changes
+ownership or rewrites an admitted run/version. Execution remains under current
+bound provider authority. Preserve refusals for tools_allowed, enabled, retry,
+input/output keys, foreign invocation and all other protected fields.
+
+Tests must go through the served route and actual owned branch persistence, not
+only a mocked sanitizer: replacement, explicit clear, omission preservation,
+malformed policy atomic refusal, foreign-owner denial and unchanged protected
+field refusals. Existing provider-authority tests remain regression gates. No
+branch-default setter or broad model_hint/field parity added in this slice.
+Acceptance is agent-owned in-place repair of its original pinned workflow, not
+another replacement or operator patch. This reopens prior shape/edit/release
+tasks only for the follow-up; old five-gap evidence remains historical truth.
+
 - Scope leakage via legacy actor/public reads: pinned selection must prove run
   universe matches before returning content or requesting cancellation.
 - Output size/type: bounded field reads must be lossless across continuation and
