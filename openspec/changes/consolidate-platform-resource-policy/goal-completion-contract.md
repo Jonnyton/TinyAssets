@@ -13,7 +13,7 @@ cap is not completion. The five gaps reported at 21:39 PDT are now in scope:
 - [x] Explicit workspace discard works without the reported false ancestry refusal.
 - [x] Completed runs expose ordinary returned values and generated text to the agent.
 - [x] Failed runs report failed code-node state accurately, not still running.
-- [ ] The agent can cancel queued/running workflows through an exposed control.
+- [x] The agent can cancel queued/running workflows through an exposed control.
 
 September 8, 2026 23:30-23:31 PDT rendered retest on deployed 008269579327:
 the app explicitly confirmed the first four fixes and working cancellation, but
@@ -22,8 +22,11 @@ open until that follow-up is fixed and the app says the gaps are closed. Fresh
 webhook delivery/cleanup also passed (HTTP 200/204); all nine older checklist
 checks passed. Evidence: docs/reviews/2026-09-09-workflow-control-gaps-proof.md.
 
-Source and reproduction status:
-`docs/concerns/2026-09-08-app-read-write-sweep-gaps.md`.
+September21 2026 update: the later cancelled-node fix has deployed and rendered
+proof; after PR3900's model-edit follow-up deployed5394efd, the app20:56PDT
+explicitly says All five are working / Nothing is blocked. This satisfies the
+five-gap subgoal, not the full resource-policy goal. Receipt:
+`docs/reviews/2026-09-21-served-node-policy-deployment.md`.
 Each checkbox requires deployed platform behavior plus the agent's rendered
 retest confirmation, not source inspection or unit tests alone. Preserve
 authorization, tenant isolation, real resource guards and cancellation lifecycle.

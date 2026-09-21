@@ -79,7 +79,8 @@ workspace starts without the old ten-start limit**, with contention/recovery
 working. This is post-fix owner-initiated use, not a coding-agent load test.
 The message does not identify a SHA or run IDs. The agent also reports five
 distinct gaps, including explicit discard, so it is not a blanket cleanup or
-whole-goal acceptance. See the [reported gaps](../concerns/2026-09-08-app-read-write-sweep-gaps.md).
+whole-goal acceptance. Those five gaps were later explicitly accepted together;
+see the [September21 closure receipt](2026-09-21-served-node-policy-deployment.md).
 
 The owner's subsequent goal extension explicitly requires closing those five
 gaps and the webapp agent messaging that they are closed. Ordinary retest

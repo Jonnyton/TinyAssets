@@ -1,12 +1,12 @@
 # Served creation and editing differ for effect declarations
 
-Observed September21 2026UTC on5394efd, ordinary primary-app five-control test.
+**Filed/verified:** 2026-09-21 UTC on5394efd, ordinary primary-app five-control test.
 App20:56PDT says existing node effects cannot be edited, so it builds a new
 branch. This is separate from the accepted original five controls/model edit.
 
 Source verification on5394efd: engine_mcp_server._SERVED_PATCH_UPDATE_NODE_ALLOWED
-permits prompt_template/source_code/display_name/llm_policy only; create/add_node
-sanitize effect declarations. Canonical api.branches._apply_node_updates already
+permits prompt_template/source_code/display_name/llm_policy only; create accepts
+sanitized effects, while served patch add_node refuses effect nodes. Canonical api.branches._apply_node_updates already
 accepts effects and workspace. This is a served create/edit asymmetry, not proof
 the canonical primitive is absent. The served guard documents a real prior
 approval-hash reactivation safety issue; do NOT simply add effects to its
