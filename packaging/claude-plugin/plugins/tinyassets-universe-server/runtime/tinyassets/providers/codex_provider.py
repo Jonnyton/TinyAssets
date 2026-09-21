@@ -470,8 +470,8 @@ async def _stream_codex_exec(
     2026-08-29; a 30s idle budget would have killed a healthy turn mid-call,
     which is worse than the cap it replaces. So while an ``item.started`` tool
     item has no matching ``item.completed``, the allowance is ``_TOOL_WAIT_S``
-    and ``tool_phase`` telemetry says ``in_tool``. (Claude's reader does not do
-    this - its ``tool_phase`` is telemetry only. Tracked separately.)
+    and ``tool_phase`` telemetry says ``in_tool``. Claude's reader likewise
+    pairs native tool identities and honors a bounded pending-tool allowance.
 
     Returns ``(stdout_bytes, stderr_bytes)`` exactly as ``communicate()`` did,
     so every downstream parse is unchanged.

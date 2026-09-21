@@ -3,7 +3,7 @@
 September21,2026 UTC, base ded0fb12 (verified on origin/main), runtime identical
 to deployed f5c5e5ec. Independent Claude Fable subscription peer61378 completed
 exit0 in215s, read-only, no delegated work. Verdict ADAPT, incorporated in
-openspec/changes/respect-provider-tool-waits/design.md before implementation.
+openspec/changes/archive/2026-09-21-respect-provider-tool-waits/design.md before implementation.
 
 Reviewer agrees with native-ID pairing, bounded tool allowance, unchanged
 absolute/cancellation/authority rules, fail-closed missing IDs, and safe persisted

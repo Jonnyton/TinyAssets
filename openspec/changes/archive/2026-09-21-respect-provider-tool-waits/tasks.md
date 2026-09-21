@@ -6,6 +6,6 @@
 
 ## 2. Verify and ship
 
-- [ ] 2.1 Pass focused Windows/Linux regression sets, mirror/Ruff/spec validation and independent exact-head review.
-- [ ] 2.2 Pass CI, merge/deploy, and verify protected SHA/public handles.
-- [ ] 2.3 Obtain ordinary app-agent long-tool acceptance, retain historical-cause/organic-use caveats, sync canonical spec and archive.
+- [x] 2.1 Pass focused Windows/Linux regression sets, mirror/Ruff/spec validation and independent exact-head review.
+- [x] 2.2 Pass CI, merge/deploy, and verify protected SHA/public handles.
+- [x] 2.3 Obtain ordinary app-agent long-tool acceptance, retain historical-cause/organic-use caveats, sync canonical spec and archive.
