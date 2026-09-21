@@ -139,4 +139,3 @@ NOT authorize replay, a fallback, a grant or a cooldown.
 
 - **WHEN** a stored failure lacks tool-phase evidence
 - **THEN** later reads do not infer a pending tool from committed side-effect state or a successful retry
-
