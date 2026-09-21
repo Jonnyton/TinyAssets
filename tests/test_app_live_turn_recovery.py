@@ -38,7 +38,7 @@ pytestmark = pytest.mark.skipif(
 _DECLS = (
     r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;", r"let activeTurn=[^\n]*;",
     r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;",
-    r"let railOpen = [^\n]*;", r"const sendQueue=[^\n]*;",
+    r"let railOpen = [^\n]*;", r"const sendQueue=[^\n]*;", r"let sendQueueHeld=[^\n]*;",
     r"const SEND_QUEUE_MAX=[^\n]*;", r"const QUEUE_KEY=[^\n]*;",
     r"let queueRestored=[^\n]*;", r"const QUEUE_MAX_AGE_MS=[^\n]*;",
     r"let queueScope=[^\n]*;", r"let queueOwner=[^\n]*;",
@@ -61,7 +61,8 @@ _FUNCS = (
     "forgetSavedItem", "savedItem", "sameSavedLine", "restoreQueue", "claimedElsewhere",
     "offerSavedLine", "clearComposerState", "clearAccountScopedState", "clearThread",
 )
-_OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf")
+_OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
+                   "offerSavedConversationCheck")
 
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.
@@ -429,3 +430,108 @@ def test_a_late_consumer_observation_keeps_the_newer_live_turns_record(tmp_path,
     assert out["done"]["messages"][-1] == {"role": "universe", "text": "Newer answer."}
     assert out["done"]["inflight"] is None
     assert out["done"]["converseCalls"] == ["newer question"]
+
+
+# ---------------------------------------------------------------------------
+# An outcome the transport could not confirm is not a finished turn.
+# ---------------------------------------------------------------------------
+
+_UNCONFIRMED_QUEUE = r"""
+let savedTurns = [{speaker:"founder", text:"an older line", ts: 1000},
+                  {speaker:"universe", text:"an older reply", ts: 1001}];
+let peeks = 0;
+MCP.getConversation = async () => { peeks++;
+  return {universe_id:"u-1", recent_conversation:{turns: savedTurns}}; };
+setQueueOwner("p-1");
+await loadHistory();
+await pollStatus();
+const turn = sendTurn("run the deploy");
+await settle();
+sendTurn("and then tell me the result");        // queued behind the live turn
+await settle();
+// A draft typed while the turn is still running: nothing about the recovery
+// path may take it away (queueTurn's own consumption of the composer is a
+// separate, deliberate behaviour and happens above).
+$("composer-input").value = "a draft I was typing";
+const queuedBefore = sendQueue.length;
+const silent = new Error("your universe stopped sending anything back");
+silent.transport = "stream_silent"; silent.replayable = false;
+gates[0].reject(silent);
+await turn; await settle(); await settle();
+const afterFailure = snapshot();
+const live = els.thread.children.filter(n=>!n.removed);
+const note = live.filter(n=>n.children.some(c=>c.tagName==="BUTTON" &&
+  c.textContent==="Check saved conversation"))[0] || live[live.length-1];
+const check = note.children.filter(c=>c.tagName==="BUTTON" &&
+  c.textContent==="Check saved conversation")[0];
+const hadCheck = !!check;
+if(check) check.click();
+await settle(); await settle();
+console.log(JSON.stringify({
+  queuedBefore, queuedAfter: sendQueue.length, hadCheck, peeks,
+  converseCalls: converseCalls.slice(),
+  draft: $("composer-input").value,
+  sendDisabled: els["btn-send"].disabled,
+  inflight: afterFailure.inflight,
+  noteText: note.textContent,
+  checkText: note.children.filter(c=>c.className==="muted").map(c=>c.textContent).join(" "),
+  savedTexts: note.children.filter(c=>c.className==="muted").flatMap(c=>c.children)
+    .filter(c=>c.tagName==="PRE").map(c=>c.textContent),
+  heldNote: live.map(n=>n.textContent).filter(t=>/being held/.test(t)),
+}));
+"""
+
+
+def test_an_unconfirmed_turn_holds_the_queue_and_offers_a_read_only_check(tmp_path, html):
+    """The failure the founder hit: a turn whose outcome nobody can confirm.
+
+    Nothing queued behind it may be flushed -- the universe may be working on
+    the first message right now, and the transport explicitly refused to say.
+    The composer comes back, the local record survives, and the only thing on
+    offer besides sending again is a READ: the existing idempotent conversation
+    peek, labelled as an observation and attributed to nothing.
+    """
+    out = _run(tmp_path, html, _UNCONFIRMED_QUEUE)
+
+    assert out["queuedBefore"] == 1, "the second line was supposed to queue"
+    assert out["queuedAfter"] == 1, (
+        "a queued message was auto-sent behind a turn whose outcome is unknown"
+    )
+    assert out["converseCalls"] == ["run the deploy"], "the queue drained itself"
+    assert out["heldNote"], "the held queue was never mentioned to the user"
+
+    # The composer is released by the turn's own owner-checked finally, and the
+    # draft the founder was typing is still there.
+    assert out["sendDisabled"] is False, "the composer stayed wedged"
+    assert out["draft"] == "a draft I was typing"
+
+    # An unconfirmed outcome keeps its local recovery record.
+    assert out["inflight"] and out["inflight"]["message"] == "run the deploy"
+
+    # The read-only action: one idempotent peek, no send, and no claim that any
+    # saved turn is this message's answer.
+    assert out["hadCheck"] is True, "no read-only way to look at saved progress"
+    assert out["peeks"] == 2, "the check must reuse the existing history read once"
+    assert "Saved conversation snapshot" in out["checkText"]
+    assert "cannot tell which saved reply" in out["checkText"]
+    assert out["savedTexts"] == ["an older line", "an older reply"]
+    assert "Delivery could not be confirmed" in out["noteText"]
+    assert out["converseCalls"] == ["run the deploy"], "the check sent something"
+
+
+def test_a_new_manual_question_does_not_resume_held_commands(tmp_path, html):
+    setup = _UNCONFIRMED_QUEUE.split("const afterFailure = snapshot();", 1)[0]
+    out = _run(tmp_path, html, setup + r"""
+const question=sendTurn("What finished?");await settle();
+gates[1].resolve({reply:"Existing progress."});await question;await settle();
+const beforeResume={calls:converseCalls.slice(),queued:sendQueue.length};
+const resume=els.thread.children.filter(n=>!n.removed).flatMap(n=>n.children)
+  .find(c=>c.tagName==="BUTTON"&&c.textContent==="Send queued messages");
+if(!resume)throw new Error("No explicit resume control");
+resume.click();await settle();
+gates[2].resolve({reply:"Queued request completed."});await settle();
+console.log(JSON.stringify({beforeResume,calls:converseCalls.slice(),queued:sendQueue.length}));
+""")
+    assert out["beforeResume"] == {"calls": ["run the deploy", "What finished?"], "queued": 1}
+    assert out["calls"] == ["run the deploy", "What finished?", "and then tell me the result"]
+    assert out["queued"] == 0

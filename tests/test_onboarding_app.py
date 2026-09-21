@@ -185,7 +185,7 @@ def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
 def test_voice_client_keeps_converse_as_the_only_writer():
     html, _csp = onboarding.render_app_html()
     assert 'event.name!=="converse"' in html
-    assert 'const payload=await sendConversationRequest(message,message,Date.now(),opts);' in html
+    assert 'const payload=await sendConversationRequest(message,message,voiceSentAt,opts);' in html
     assert '{message,input_method:turnInputMethod(inputMethod)}' in html
     assert 'sendTurn(turn.send, turn.display, {inputMethod:"typed"})' in html
     assert "voice_active" not in html
@@ -1747,6 +1747,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;",
                     r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;",
                     r"let railOpen = [^\n]*;", r"const sendQueue=[^\n]*;",
+                    r"let sendQueueHeld=[^\n]*;",
                     r"const SEND_QUEUE_MAX=[^\n]*;", r"const QUEUE_KEY=[^\n]*;",
                     r"let queueRestored=[^\n]*;", r"const QUEUE_MAX_AGE_MS=[^\n]*;",
                     r"let queueScope=[^\n]*;", r"let queueOwner=[^\n]*;",
@@ -1763,7 +1764,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "copyModelChoice", "captureTurnOptions",
         "sendConversationRequest",
         "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
-        "offerResend", "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
+        "offerResend", "noteHeldQueue", "offerSavedConversationCheck",
+        "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
         "restoreInflight", "setQueueScope", "setQueueOwner", "ownsSavedRow",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
         "flushSendQueue", "queueTurn",
