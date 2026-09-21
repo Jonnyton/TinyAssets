@@ -49,3 +49,31 @@ through `ProviderAttemptDiagnostic` into the persisted authorized run read.
 the Linux regression set, exact-head cross-family review, CI, the protected deployed SHA, and the
 ordinary app-agent long-tool acceptance. Delete this file with the test names and the landed
 commit once that live proof exists.
+
+## Evidence required before this file is deleted
+
+An independent cross-family diagnosis review (Codex-side, verdict ADAPT, artifact
+`output/provider-idle-diagnosis-review.md` in the root worktree) set the close-out bar. Its three
+corrections and its tests A-G are covered by 8b8ff420 -- ids normalized from both `assistant` and
+`content_block_start` frames, an id-paired `tools_in_flight` set with a `min(cap, _TOOL_WAIT_S)`
+allowance that fails closed on a missing id, and `tool_phase` / `last_progress_age_ms` carried into
+the attempt diagnostic. Two pieces of evidence it required are still outstanding, and neither is
+obtainable from a controlled stream:
+
+1. **One real capture.** A served turn whose MCP tool runs past the idle interval, recorded with
+   `--output-format stream-json --verbose --include-partial-messages`, showing whether
+   `system/tool_heartbeat` or `tool_progress` is emitted during a long tool and at what cadence.
+   The current tree's heartbeat-liveness fixtures are shaped to the implementation; no captured
+   trace of a long tool exists in the repo, so the cadence is unproven **in either direction**.
+   `_TOOL_WAIT_S` therefore assumes no cadence at all.
+2. **One post-correction kill whose stored row reads `in_tool`.** Until a real failure is read back
+   from its persisted diagnostic, the mechanism is proved only against synthetic frames.
+
+Two review positions to preserve when this is written up:
+
+- This lands as the **Codex-parity gap it provably is**, not as the fix for run
+  `6ffec5e973734074`. A `committed` side-effect state is equally consistent with post-tool silence
+  -- the next API round-trip's time-to-first-token exceeding the idle interval before any
+  `message_start` frame -- and the pending-tool allowance does nothing for that case. The run's
+  60.018s total is not decomposable further.
+- A user-agent retry succeeding says nothing about cause.
