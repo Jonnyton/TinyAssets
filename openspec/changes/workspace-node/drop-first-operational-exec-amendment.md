@@ -1,22 +1,29 @@
-> **Staged landing (2026-09-20).** This amendment is the full approved design
-> and is preserved as the source of truth. It is landing in two slices so the
-> release-critical file count stays within the scope guard's hard cap of 8.
-> **Slice 1 (this tree):** the installed helper only — `Dockerfile`,
-> `deploy/native/ta_op.c`, `deploy/native/ta_op_modes.tsv`,
-> `deploy/native/ta_op_native_check.sh`, `deploy/native/NATIVE-TEST-PLAN.md`,
-> `tests/test_ta_op_modes.py`, and the installed-helper requirement synced into
-> `openspec/specs/daemon-runtime-and-dispatch/spec.md`. Nothing in the repo
-> invokes the wrapper yet. **Slice 2 (deferred, not in this tree):**
-> `scripts/check_drop_first_exec.py`, `scripts/invariants/drop_first_exec.py`,
-> `scripts/invariants_run.py` registration, `scripts/droplet.py`,
+> **Staged landing.** This amendment is the full approved design and is
+> preserved as the source of truth. It is landing in two slices so each PR stays
+> within the scope guard's hard cap of 8 release-critical files; the runtime
+> source in both slices is byte-identical to the independently reviewed
+> `84c116ae45992a974f6ca9625131b42509b15ae5` (PR #3894, draft, preserved).
+> **Slice 1 (landed: PR #3895, `f60e6656`, merged and deployed 2026-09-21):**
+> the installed helper only — `Dockerfile`, `deploy/native/ta_op.c`,
+> `deploy/native/ta_op_modes.tsv`, `deploy/native/ta_op_native_check.sh`,
+> `deploy/native/NATIVE-TEST-PLAN.md`, `tests/test_ta_op_modes.py`; root
+> verified the deployed binary root-owned `0555` and its `version` mode as
+> uid/gid 1001 before this slice opened. **Slice 2 (this tree, exactly 8
+> release-critical paths):** the caller migration —
+> `scripts/check_drop_first_exec.py` registered as the `drop-first-exec`
+> invariant (`scripts/invariants/drop_first_exec.py`,
+> `scripts/invariants_run.py`), `scripts/droplet.py`,
 > `deploy/apply-daemon-env-remote.sh`, `deploy/compose.yml`,
 > `deploy/tinyassets-env.template`, `deploy/DEPLOY.md`, `deploy/README.md`,
 > both keepalive workflows, `.github/workflows/apply-daemon-env.yml`,
 > `scripts/workspace_bwrap_oracle.py`, `tests/test_drop_first_exec_gate.py`,
-> `tests/test_drop_first_operational_migration.py`, the keepalive assertions in
-> `tests/test_dockerfile_shape.py`, and the three deferred delta scenarios
-> (TTY-is-not-an-exemption, env-apply preflight, healthcheck pulse route).
-> References below to those files describe the full design, not this tree.
+> `tests/test_drop_first_operational_migration.py`, the keepalive assertions
+> in `tests/test_dockerfile_shape.py`, `tests/test_ta_op_modes.py` importing
+> `load_modes` from the gate, and the three delta scenarios
+> (TTY-is-not-an-exemption, env-apply preflight, healthcheck pulse route)
+> synced into `openspec/specs/daemon-runtime-and-dispatch/spec.md`. No
+> root-start, capability-set or managed-runtime readiness change in either
+> slice.
 
 # Drop-first operational exec amendment
 

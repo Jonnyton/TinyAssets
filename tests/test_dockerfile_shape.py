@@ -586,7 +586,12 @@ def test_codex_auth_keepalive_exercises_shared_codex_home():
     assert "workflow_dispatch" in text
     assert "schedule:" in text
     assert "DO_SSH_KEY" in text
-    assert "docker exec -e CODEX_HOME=/data/.codex tinyassets-daemon codex exec" in text
+    # Migrated to the drop-first wrapper (argv only — the schedule and the
+    # shared CODEX_HOME are unchanged, which is what this test guards).
+    assert (
+        "docker exec -e CODEX_HOME=/data/.codex tinyassets-daemon "
+        "/usr/local/libexec/ta-op codex-keepalive"
+    ) in text
 
 
 def test_claude_auth_keepalive_exercises_shared_config_dir():
@@ -594,7 +599,12 @@ def test_claude_auth_keepalive_exercises_shared_config_dir():
     assert "workflow_dispatch" in text
     assert "schedule:" in text
     assert "DO_SSH_KEY" in text
-    assert "docker exec -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon claude -p" in text
+    # Migrated to the drop-first wrapper (argv only — the schedule and the
+    # shared CLAUDE_CONFIG_DIR are unchanged, which is what this test guards).
+    assert (
+        "docker exec -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon "
+        "/usr/local/libexec/ta-op claude-keepalive"
+    ) in text
 
 
 def test_entrypoint_execs_cmd():
@@ -648,5 +658,7 @@ def test_ta_op_is_built_in_the_builder_stage_and_installed_read_only_outside_app
     assert "chmod 0555 /usr/local/libexec/ta-op" in text
     # No compiler in the final stage: gcc appears only in the builder RUN.
     assert text.count("gcc ") == 1
-    # Nothing in the image invokes the wrapper yet (slice 1 installs; slice 2 calls).
+    # The Dockerfile only installs the wrapper; its callers live in
+    # deploy/compose.yml, the keepalive workflows and env-apply (slice 2),
+    # asserted by tests/test_drop_first_operational_migration.py.
     assert "ta-op pulse" not in text and "ta-op canary" not in text

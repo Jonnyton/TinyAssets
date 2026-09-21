@@ -686,23 +686,18 @@ executor runtime identity, a fleet heartbeat, or a worker container to do so.
 - **WHEN** the daemon restarts with a new process identity and an automation comes due
 - **THEN** the run launches on the universe's current assignment without any runtime re-registration
 
-### Requirement: The production image carries a drop-first operational exec wrapper that reaches its target only after a verified identity retirement
+### Requirement: Repo-authored operational execs into the daemon reach their target only after a verified identity retirement
 
 The production image SHALL carry a statically linked, root-owned `0555`
 wrapper at `/usr/local/libexec/ta-op`, outside every directory chowned to the
 runtime user, compiled in the existing builder stage with warnings fatal and
-its static link asserted at build time. The wrapper SHALL accept only a mode
-declared in `deploy/native/ta_op_modes.tsv`; it SHALL validate the mode name
-and argument count, then run the entry-identity branch, then close descriptors
+its static link asserted at build time, and every repo-authored `docker exec`
+into the daemon container SHALL invoke it with a mode declared in
+`deploy/native/ta_op_modes.tsv`. The wrapper SHALL validate the mode name and
+argument count, then run the entry-identity branch, then close descriptors
 above standard error, and only then run a builtin, validate the single
 `printenv` operand, or exec the fixed target. Every refusal SHALL occur before
 any runtime target is executed.
-
-Staged 2026-09-20: this requirement covers the *installed helper* only. The
-migration of the repo-authored callers, the daemon healthcheck, the env-apply
-preflight and the repo gate that refuses bare execs are a separate slice of
-`openspec/changes/workspace-node` and are not claimed here; until that slice
-lands, nothing in the repo invokes the wrapper.
 
 #### Scenario: Managed-bootstrap entry retires every set before the target exists
 - **WHEN** the wrapper starts with `getuid()==0`
@@ -754,6 +749,15 @@ lands, nothing in the repo invokes the wrapper.
 - **WHEN** the wrapper execs a runtime target
 - **THEN** every descriptor above standard error SHALL have been closed first.
 
+#### Scenario: Allocating a terminal is not an exemption
+- **WHEN** a repo-authored `docker exec` into the daemon container allocates a
+  terminal (`-t`, `-it`, `-ti`, `--tty`) and does not invoke the wrapper
+- **THEN** the gate SHALL report it as a violation, not as a note
+- **AND** the gate SHALL expose no second, non-failing finding channel
+- **AND** the operator subscription login SHALL be reached as the fixed
+  `claude-login` mode, whose argv is compiled in and takes nothing from the
+  callsite.
+
 #### Scenario: The operator login is a fixed-argv mode
 - **WHEN** the `claude-login` mode is invoked
 - **THEN** the wrapper SHALL exec the compiled-in argv
@@ -776,3 +780,28 @@ lands, nothing in the repo invokes the wrapper.
   and `/data`
 - **AND** the build SHALL fail if the installed binary does not exit 78 on an
   undeclared mode.
+
+### Requirement: Environment application refuses before mutating when the wrapper is absent
+
+The remote env-apply helper SHALL verify the wrapper's fixed version route in
+the running daemon before its first read of the running process and before any
+environment or service mutation.
+
+#### Scenario: Absent or unacceptable wrapper aborts pre-mutation
+- **WHEN** the version route is missing, errors, or returns an unexpected banner
+- **THEN** the helper SHALL abort with a non-zero status before writing the env
+  file and before restarting the daemon
+- **AND** it SHALL NOT fall back to an unwrapped `printenv` read.
+
+### Requirement: The daemon healthcheck runs the drop-first pulse route
+
+The daemon healthcheck SHALL invoke `/usr/local/libexec/ta-op pulse` in exec
+form, with no shell fallback.
+
+#### Scenario: Rollback restores the compose bundle before the image
+- **WHEN** a deploy rolls back, on either the internal-failure path or the
+  public-canary `--restore-bundle` path, and that run installed a bundle
+- **THEN** the runtime bundle SHALL be restored before the previous image is
+  recorded and converged
+- **AND** documentation SHALL state that a manual or image-only downgrade does
+  not preserve the pair and must downgrade the compose bundle in the same step.

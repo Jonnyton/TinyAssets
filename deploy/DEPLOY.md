@@ -218,8 +218,17 @@ same `CLAUDE_CONFIG_DIR` so the subscription session is exercised after
 deploys and during idle weeks. Host login command for a fresh volume:
 
 ```bash
-sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon claude auth login --claudeai
+# One-off interactive login on a fresh volume. It is a repo-authored route like
+# every other exec here, so it goes through the wrapper: `claude-login` is a
+# fixed mode whose argv (`claude auth login --claudeai`) is compiled in, and the
+# TTY is inherited by the target only after the identity retirement is verified.
+# This command has NOT been run by the change that added the mode.
+sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon \
+  /usr/local/libexec/ta-op claude-login
 ```
+
+The scheduled keepalive that follows it *is* a repo-authored route and runs
+`/usr/local/libexec/ta-op claude-keepalive`.
 
 ## Step 4 — Start the daemon (~30 sec)
 
@@ -247,12 +256,12 @@ Look for:
 From the Hetzner box (container-internal):
 
 ```bash
-docker exec tinyassets-daemon \
-    python scripts/mcp_public_canary.py \
-        --url http://127.0.0.1:8001/mcp --verbose
+docker exec tinyassets-daemon /usr/local/libexec/ta-op canary
 ```
 
-Expect `[canary] OK` + exit 0.
+Expect `[canary] OK` + exit 0. `ta-op` verifies uid/gid 1001 with all five
+capability sets empty and NNP on *before* it execs the canary; a refusal
+prints `TA_OP_REFUSED:<where>` and exits 78.
 
 From your laptop (public-canonical):
 
@@ -504,6 +513,27 @@ image succeed or fail together:
    the restore moved a vector input). Converging the previous IMAGE against the
    new CONFIG would roll back half a change.
 
+   **This ordering is what makes the `ta-op` healthcheck safe to land with
+   the image.** `deploy/compose.yml`'s daemon healthcheck runs
+   `/usr/local/libexec/ta-op pulse`, a binary that exists only in images
+   built from the commit that added it. Because the bundle (which carries
+   `compose.yml`) is restored *before* `set_image` converges the previous
+   image, a normal rollback puts the old probe back with the old image.
+   `deploy_fail_safe.sh:1244-1256` (internal failure) and `:1120-1130`
+   (`--restore-bundle`, the public-canary path) are the two paths.
+
+   **The carve-out is real and is not papered over:** the bundle is
+   restored only when `INSTALLED_THIS_RUN=1`, and a box that has never had
+   a bundle rolls the image back alone. So a **manual or image-only
+   downgrade** — `TINYASSETS_IMAGE=<older tag>` edited by hand, or any
+   converge that does not go through the bundle transaction — leaves the
+   NEW `compose.yml` against an OLD image, and the healthcheck then fails
+   because `/usr/local/libexec/ta-op` is not in that image. That is a
+   missing binary, not a sick daemon. If you downgrade to a pre-`ta-op`
+   image by hand, downgrade `/etc/tinyassets/compose.yml` to the matching
+   commit in the same step. Do not 'fix' it by loosening the rollback
+   ordering, and do not add a shell fallback to the probe.
+
 **Nothing reports success over a mixed tree.** A restore that does not complete
 leaves `/var/lib/tinyassets-deploy/bundle-dirty` — which *names the snapshot that
 must go back*, written atomically like the pointer — and reports
@@ -561,7 +591,7 @@ printf '\nTINYASSETS_SOME_FLAG=value\n' >> /etc/tinyassets/env
 
 # Recreate ONLY the daemon so it re-reads config (brief MCP-surface blip):
 systemctl restart tinyassets-daemon
-docker exec tinyassets-daemon printenv | grep TINYASSETS_SOME_FLAG   # confirm it took
+docker exec tinyassets-daemon /usr/local/libexec/ta-op printenv TINYASSETS_SOME_FLAG   # confirm it took
 ```
 
 Then confirm the public surface is green (Hard Rule #11):

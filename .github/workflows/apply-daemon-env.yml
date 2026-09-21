@@ -21,7 +21,8 @@ name: Apply daemon env flag
 # - Capture-then-rollback: the prior value is snapshotted; if the restart or the
 #   public canary fails, the previous value is restored (or the key deleted) and
 #   the daemon restarted again, so a bad flag can never wedge prod.
-# - Effectiveness proof: after restart, `docker exec … printenv KEY` must equal
+# - Effectiveness proof: after restart, `ta-op printenv KEY` in the running
+#   daemon must equal
 #   the requested value (a green handles-canary alone does not prove the flag
 #   took effect — compose `environment:` / a later env_file could override it).
 # - The mutation runs under the shared host flock

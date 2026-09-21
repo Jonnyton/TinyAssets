@@ -104,6 +104,13 @@ def _run(remote_cmd: str | None, *, interactive: bool) -> int:
     return subprocess.call(base)
 
 
+# Drop-first operational wrapper: root-owned 0555, closed mode table
+# (deploy/native/ta_op_modes.tsv). Every exec into the daemon goes through it
+# so the runtime target is reached only at uid/gid 1001 with all five
+# capability sets empty. Enforced by scripts/check_drop_first_exec.py.
+TA_OP = "/usr/local/libexec/ta-op"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -125,15 +132,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.cmd == "env":
         return _run(
-            'docker exec tinyassets-daemon printenv '
-            '| grep -iE "AUTO_SHIP|OLLAMA|PIN_WRITER|GOAL_POOL" | sort '
-            '|| echo "(no matching env — gates run on code defaults)"',
+            # Drop-first: `ta-op env-summary` prints the same four flag
+            # families, matched on the NAME and sorted in-process AFTER the
+            # identity drop. The old form piped the WHOLE environment into a
+            # host-side grep over ssh; this one never emits a non-matching var.
+            f'docker exec tinyassets-daemon {TA_OP} env-summary',
             interactive=False,
         )
     if args.cmd == "canary":
         return _run(
-            'docker exec tinyassets-daemon python /app/scripts/mcp_public_canary.py '
-            '--url http://127.0.0.1:8001/mcp --timeout 10 '
+            f'docker exec tinyassets-daemon {TA_OP} canary '
             '&& echo "loopback canary GREEN"',
             interactive=False,
         )

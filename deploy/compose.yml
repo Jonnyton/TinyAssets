@@ -146,9 +146,14 @@ services:
       # Liveness from release facts as the canary service principal. The token
       # is installed in /etc/tinyassets/env by deploy-prod before compose starts;
       # the tool surface is proved separately by the full authenticated probes.
-      test: ["CMD", "python", "/app/scripts/mcp_public_canary.py",
-             "--pulse-only", "--url", "http://127.0.0.1:8001/mcp",
-             "--timeout", "10"]
+      # Drop-first: ta-op runs the identical canary argv, but only after
+      # verifying uid/gid 1001 with all five capability sets empty and NNP on
+      # (deploy/native/ta_op.c). ROLLBACK PAIRING: this probe needs the ta-op
+      # binary, which arrives with the image. deploy_fail_safe.sh's bundle
+      # transaction restores this file BEFORE rolling the image back, so the
+      # normal rollback keeps the pair compatible. An image-only or manual
+      # downgrade does NOT — see deploy/DEPLOY.md § Rolling back.
+      test: ["CMD", "/usr/local/libexec/ta-op", "pulse"]
       interval: 30s
       timeout: 15s
       retries: 3

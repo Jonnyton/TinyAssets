@@ -1,10 +1,9 @@
-<!-- STAGING NOTE (slice 1, 2026-09-20): this branch carries ONLY the installed
-helper — Dockerfile, deploy/native/* and tests/test_ta_op_modes.py. The gate
-and migration tests named below (tests/test_drop_first_exec_gate.py,
-tests/test_drop_first_operational_migration.py) and the caller/healthcheck/
-env-apply migration are the deferred second slice and are not in this tree.
-The evidence below is unchanged; the citations that do not resolve here are
-citations into the source tree at 84c116ae45992a974f6ca9625131b42509b15ae5. -->
+<!-- STAGING NOTE (slice 2, 2026-09-21): slice 1 (PR #3895, f60e6656) landed
+the installed helper; this tree carries the caller/healthcheck/env-apply/gate
+migration, so tests/test_drop_first_exec_gate.py and
+tests/test_drop_first_operational_migration.py named below now resolve here.
+The evidence below is unchanged from the source tree at
+84c116ae45992a974f6ca9625131b42509b15ae5. -->
 
 <!-- Verbatim copy of the root coordinator's artifact, taken from the root
 checkout (worktree 0a7f) on 2026-09-21 so the citation resolves inside this
