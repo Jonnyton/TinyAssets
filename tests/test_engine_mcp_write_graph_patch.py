@@ -328,16 +328,62 @@ def test_patch_rejects_unknown_op(monkeypatch):
     assert seen == {}
 
 
-def test_patch_rejects_effect_add_node(monkeypatch):
-    """No effect/channel node via patch: the batch cap can't see the branch's EXISTING
-    effect nodes, so repeated patches would accumulate past the ceiling (Codex #3).
-    Channel nodes are added via create (capped per build)."""
+def test_patch_add_node_validates_effect_instead_of_refusing_it(monkeypatch):
+    """Effect-bearing add_node is ADMITTED on creation's terms (was refused when a
+    per-build effect-node ceiling existed; that cap was removed by `no-graph-size-caps`,
+    so the refusal was guarding a limit that no longer exists). What survives is the
+    shared declaration grammar: one admitted sink per node, nothing else."""
     s = _bind(monkeypatch)
     seen = _capture(monkeypatch)
-    out = _patch(s, [{"op": "add_node", "node_id": "n1",
-                      "effects": ["authenticated_external_call"]}])
-    assert "create a branch with the channel node" in out["error"]
-    assert seen == {}
+    _patch(s, [{"op": "add_node", "node_id": "n1",
+                "effects": ["authenticated_external_call"]}])
+    assert seen["action"] == "patch_branch"
+    assert json.loads(seen["changes_json"]) == [
+        {"op": "add_node", "node_id": "n1", "effects": ["authenticated_external_call"]},
+    ]
+    # ...and the same node count is not a ceiling: many effect nodes in one batch pass.
+    seen.clear()
+    _patch(s, [{"op": "add_node", "node_id": f"n{i}",
+                "effects": ["authenticated_external_call"]} for i in range(20)])
+    assert len(json.loads(seen["changes_json"])) == 20
+    # The create-surface grammar still binds: unadmitted sink, repeated sink, non-array.
+    for bad in (["wiki_write_back"],
+                ["authenticated_external_call", "authenticated_external_call"],
+                ["authenticated_external_call", "workspace"],
+                "authenticated_external_call",
+                [{"sink": "authenticated_external_call"}]):
+        seen.clear()
+        out = _patch(s, [{"op": "add_node", "node_id": "n1", "effects": bad}])
+        assert "error" in out, bad
+        assert seen == {}, bad
+
+
+def test_patch_update_node_effects_and_workspace_share_create_grammar(monkeypatch):
+    """The edit surface may retune a node's own declarations, through the SAME
+    validator creation uses — it can never admit a sink create refuses. Declaring
+    fires nothing and grants nothing; the runtime re-derives every authority."""
+    s = _bind(monkeypatch)
+    seen = _capture(monkeypatch)
+    _patch(s, [{"op": "update_node", "node_id": "n1",
+                "effects": ["workspace"], "workspace": "checkout"}])
+    assert seen["action"] == "patch_branch"
+    assert json.loads(seen["changes_json"]) == [
+        {"op": "update_node", "node_id": "n1",
+         "effects": ["workspace"], "workspace": "checkout"},
+    ]
+    for bad in (["wiki_write_back"], ["workspace", "workspace"], {"sink": "workspace"}):
+        seen.clear()
+        out = _patch(s, [{"op": "update_node", "node_id": "n1", "effects": bad}])
+        assert "error" in out, bad
+        assert seen == {}, bad
+    # workspace keeps its CANONICAL string/null grammar: no second grammar here, so a
+    # non-string is refused downstream inside the same staging transaction (see the
+    # real-store atomicity test in test_served_effect_edit_parity.py).
+    seen.clear()
+    _patch(s, [{"op": "update_node", "node_id": "n1", "workspace": None}])
+    assert json.loads(seen["changes_json"]) == [
+        {"op": "update_node", "node_id": "n1", "workspace": None},
+    ]
 
 
 def test_patch_rejects_malformed_metadata(monkeypatch):
