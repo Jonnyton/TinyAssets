@@ -15,7 +15,7 @@
 - [ ] 2.2 Resolver jail (no checkout, admitted manifests + empty cache, own network namespace, egress allowlist with per-address validation); `pip download --only-binary=:all: --require-hashes`; `npm ci --ignore-scripts` fetch; offline install in the workspace jail bound to the digests; `workspace_provision` consent; `workspace_provision_refused`
 - [ ] 2.3 Tests: URL/path/VCS/include/option lines refused before network; sdist-only package refused; git-URL npm dependency refused; resolver cannot reach loopback/private/neighbours; offline install runs with no network; live proof: provision the checked-in hash-locked fixture `tests/fixtures/workspace/requirements-locked.txt` and run `pytest -q tests/test_docview.py` in a workspace node
 
-## 2b. Drop-first operational exec migration — STAGED, slice 1 of 2 landed
+## 2b. Drop-first operational exec migration — STAGED, slice 1 of 2 prepared
 
 Design + approved amendment + delta scenarios:
 `drop-first-operational-exec-amendment.md` (staging preface at its head);
