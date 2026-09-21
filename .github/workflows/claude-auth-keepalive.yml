@@ -44,5 +44,5 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            'sudo docker exec -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon claude -p "Reply with the single word OK." >/dev/null'
+            'sudo docker exec -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon /usr/local/libexec/ta-op claude-keepalive >/dev/null'
           echo "Claude keepalive OK; subscription session exercised."

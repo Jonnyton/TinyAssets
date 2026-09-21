@@ -1,19 +1,11 @@
 """The closed ta-op mode table has exactly one source of truth.
 
-``deploy/native/ta_op_modes.tsv`` is the declarative table; ``deploy/native/
-ta_op.c`` is what actually runs in production. If those two drift, a consumer
-of the table green-lights a mode the runtime refuses — or worse, stops noticing
-one it accepts. This asserts they are the same table, and that every row is a
-fixed, absolute, shell-free argv.
-
-STAGED (slice 1 of the drop-first operational migration): only the installed
-helper is in this tree. The repo gate ``scripts/check_drop_first_exec.py`` —
-the second consumer of the TSV — lands with the caller migration in slice 2,
-and this file will then import ``load_modes`` from it. Until then the parser
-below is a byte-for-byte mirror of the gate's ``load_modes`` so the parity
-assertions here are the same assertions slice 2 inherits. Caller-migration
-assertions (keepalive workflows, healthcheck, env-apply preflight) are
-deliberately NOT here; they belong to slice 2 and its own tests.
+``deploy/native/ta_op_modes.tsv`` is read by the repo gate
+(``scripts/check_drop_first_exec.py``); ``deploy/native/ta_op.c`` is what
+actually runs in production. If those two drift, the gate green-lights a mode
+the runtime refuses — or worse, stops noticing one it accepts. This asserts
+they are the same table, and that every row is a fixed, absolute, shell-free
+argv.
 """
 
 from __future__ import annotations
@@ -21,31 +13,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from scripts.check_drop_first_exec import load_modes
+
 REPO = Path(__file__).resolve().parent.parent
 TA_OP_C = REPO / "deploy" / "native" / "ta_op.c"
-MODES_TSV = REPO / "deploy" / "native" / "ta_op_modes.tsv"
-
-
-def load_modes(tsv: Path = MODES_TSV) -> dict[str, dict[str, object]]:
-    """Parse the closed mode table. Mirror of the slice-2 gate's parser."""
-    modes: dict[str, dict[str, object]] = {}
-    for raw in tsv.read_text(encoding="utf-8").splitlines():
-        if not raw.strip() or raw.lstrip().startswith("#"):
-            continue
-        parts = raw.split("\t")
-        if len(parts) != 4:
-            raise ValueError(f"malformed mode row: {raw!r}")
-        name, argc, kind, argv = parts
-        if kind not in ("builtin", "exec"):
-            raise ValueError(f"unknown mode kind {kind!r} in {raw!r}")
-        modes[name] = {
-            "argc": int(argc),
-            "kind": kind,
-            "argv": [] if kind == "builtin" else argv.split("|"),
-        }
-    if not modes:
-        raise ValueError(f"{tsv} declares no modes")
-    return modes
 
 _ENTRY = re.compile(
     r'\{"(?P<name>[a-z-]+)",\s*(?P<argc>\d+),\s*(?P<builtin>BUILTIN_\w+|0),\s*'

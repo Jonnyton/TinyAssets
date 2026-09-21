@@ -15,7 +15,7 @@
 - [ ] 2.2 Resolver jail (no checkout, admitted manifests + empty cache, own network namespace, egress allowlist with per-address validation); `pip download --only-binary=:all: --require-hashes`; `npm ci --ignore-scripts` fetch; offline install in the workspace jail bound to the digests; `workspace_provision` consent; `workspace_provision_refused`
 - [ ] 2.3 Tests: URL/path/VCS/include/option lines refused before network; sdist-only package refused; git-URL npm dependency refused; resolver cannot reach loopback/private/neighbours; offline install runs with no network; live proof: provision the checked-in hash-locked fixture `tests/fixtures/workspace/requirements-locked.txt` and run `pytest -q tests/test_docview.py` in a workspace node
 
-## 2b. Drop-first operational exec migration — STAGED, slice 1 of 2 prepared
+## 2b. Drop-first operational exec migration — slice 1 landed, slice 2 in this tree
 
 Design + approved amendment + delta scenarios:
 `drop-first-operational-exec-amendment.md` (staging preface at its head);
@@ -26,9 +26,13 @@ root native proof on local fixtures 2026-09-21 in
 further shape review needed. The reviewed source is preserved at
 `84c116ae45992a974f6ca9625131b42509b15ae5` (PR #3894, draft); its 27-file
 tree carried 13 release-critical paths against the scope guard's hard cap of 8,
-so it lands in two slices with the runtime source byte-identical to that commit.
+so it landed in two slices with the runtime source byte-identical to that commit.
 
-**Slice 1 — installed helper (this branch, 5 release-critical paths):**
+**Slice 1 — installed helper (LANDED: PR #3895, `f60e6656`, merged and
+deployed 2026-09-21; root verified in production `/usr/local/libexec/ta-op`
+as `-r-xr-xr-x 1 0 0` and `ta-op version` as uid/gid 1001 through the
+protected deployed-sha and authenticated public-canary gates; 5
+release-critical paths):**
 `Dockerfile` (static build in the existing builder stage, root-owned `0555`
 install at `/usr/local/libexec/ta-op` outside `/app` and `/data`, exit-78
 smoke in both stages), `deploy/native/ta_op.c`, `deploy/native/ta_op_modes.tsv`,
@@ -37,14 +41,12 @@ smoke in both stages), `deploy/native/ta_op.c`, `deploy/native/ta_op_modes.tsv`,
 readback, compile-time-only status path, fixed-argv `claude-login`) with an
 in-test mirror of the gate's TSV parser; one Dockerfile-shape test; the
 installed-helper requirement synced into
-`openspec/specs/daemon-runtime-and-dispatch/spec.md`. **Nothing in the repo
-invokes the wrapper yet.** No workflow, compose, env-apply, gate registration,
-caller, permission or root-start change. The installed production binary is
-still unverified live — that verification gates slice 2, not this slice's
-correctness.
+`openspec/specs/daemon-runtime-and-dispatch/spec.md`. No workflow, compose,
+env-apply, gate registration, caller, permission or root-start change in that
+slice.
 
-**Slice 2 — caller/healthcheck/env-apply/gate migration (deferred, not in
-this tree, 8 release-critical paths):** `scripts/check_drop_first_exec.py` +
+**Slice 2 — caller/healthcheck/env-apply/gate migration (this tree, exactly
+8 release-critical paths, the scope guard's hard cap):** `scripts/check_drop_first_exec.py` +
 `scripts/invariants/drop_first_exec.py` + `scripts/invariants_run.py`
 registration; migrated callers `scripts/droplet.py`,
 `deploy/apply-daemon-env-remote.sh` (version preflight above the fail-open
@@ -55,15 +57,16 @@ runbooks `deploy/DEPLOY.md`, `deploy/README.md` (rollback-pairing
 correction); `tests/test_drop_first_exec_gate.py`,
 `tests/test_drop_first_operational_migration.py`, the keepalive assertions in
 `tests/test_dockerfile_shape.py`, and `test_ta_op_modes.py` switching to import
-`load_modes` from the gate; the three deferred delta scenarios (TTY is not an
+`load_modes` from the gate; the three delta scenarios (TTY is not an
 exemption; env-apply refuses pre-mutation when the wrapper is absent; the
-healthcheck runs the pulse route with bundle-before-image rollback). Slice 2
-must not open until the slice-1 image is built by CI and the installed binary
-is verified live.
+healthcheck runs the pulse route with bundle-before-image rollback) synced
+into the main daemon spec 2026-09-21. Every path is the exact reviewed
+content of `84c116ae`; `Dockerfile` and `deploy/native/` are untouched by
+this slice. No root-start, capability-set or readiness change.
 
 Outstanding native, CI, deploy and live gates are carried by 3.1 below — they
 are the release gate for this work, not separate delivery work.
 
 ## 3. Land
 
-- [ ] 3.1 Release gate and land: native proof per `deploy/native/NATIVE-TEST-PLAN.md` (root ran rows 1–16 and 18 on local fixtures 2026-09-21, row 17 on a local fixture install only — `docs/reviews/2026-09-21-drop-first-native-local-proof.md`; the installed production image is still unchecked), CI image build of slice 1, live `/usr/local/libexec/ta-op version` on the deployed image, then slice 2 (live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`); installed-helper delta synced 2026-09-20 (slice 1), the three slice-2 deltas still to sync; still to do: sync the remaining workspace deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`
+- [ ] 3.1 Release gate and land: native proof per `deploy/native/NATIVE-TEST-PLAN.md` (root ran rows 1–16 and 18 on local fixtures 2026-09-21, row 17 on a local fixture install only — `docs/reviews/2026-09-21-drop-first-native-local-proof.md`; the installed production image is still unchecked), CI image build of slice 1 and live `/usr/local/libexec/ta-op version` on the deployed image (done 2026-09-21, PR #3895), then slice 2 (live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`); installed-helper delta synced 2026-09-20 (slice 1) and the three slice-2 deltas synced 2026-09-21; still to do: sync the remaining workspace deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`

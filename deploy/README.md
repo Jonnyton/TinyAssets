@@ -125,8 +125,7 @@ See AGENTS.md §Configuration for the full env-var table.
 Inside the container, the same canary works:
 
 ```bash
-docker exec -it tinyassets-daemon \
-    python scripts/mcp_public_canary.py --url http://127.0.0.1:8001/mcp
+docker exec tinyassets-daemon /usr/local/libexec/ta-op canary
 ```
 
 Exit 0 = container-local MCP reachable. Use this as a liveness probe
