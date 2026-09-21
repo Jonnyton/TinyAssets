@@ -179,6 +179,71 @@ def _drive(tmp_path, plan, call):
     return json.loads(proc.stdout)
 
 
+@pytest.mark.parametrize("wire_case", ["open_sse", "wrong_id_json"])
+def test_response_reader_correlates_terminal_frame_without_waiting_for_eof(tmp_path, wire_case):
+    """Actual Fetch streams: a terminal frame is sufficient; a foreign id is not.
+
+    The open-stream case deliberately never closes the connection. Notifications
+    and an unrelated response must not become this turn's answer. The short
+    guard is a test liveness assertion, not a proposed production timeout.
+    """
+    script = tmp_path / "terminal_frame.js"
+    program = r"""
+const assert = require('node:assert/strict');
+function token(){return 'test-bearer';}
+async function ensureFreshToken(){}
+async function refreshAccessToken(){throw new Error('unexpected refresh');}
+let calls=0, cancelled=false;
+const wireCase=__CASE__;
+async function fetch(_url, init){
+  calls++;
+  const request=JSON.parse(init.body);
+  const response=id=>({jsonrpc:'2.0',id,result:{structuredContent:{reply:'finished'}}});
+  if(wireCase==='wrong_id_json')return new Response(JSON.stringify(response(request.id+1)),
+    {headers:{'content-type':'application/json'}});
+  const encoder=new TextEncoder();
+  const stream=new ReadableStream({
+    start(controller){
+      const frames=[
+        ': keepalive\n\n',
+        'data: '+JSON.stringify({jsonrpc:'2.0',method:'notifications/progress',params:{progress:1}})+'\n\n',
+        'data: '+JSON.stringify(response(request.id+1))+'\n\n',
+        'data: '+JSON.stringify(response(request.id))+'\n\n'
+      ];
+      // Split both the SSE prefix and JSON token across chunks.
+      for(const frame of frames){
+        controller.enqueue(encoder.encode(frame.slice(0,7)));
+        controller.enqueue(encoder.encode(frame.slice(7)));
+      }
+    },cancel(){cancelled=true;}
+  });
+  return new Response(stream,{headers:{'content-type':'text/event-stream'}});
+}
+__TRANSPORT__
+MCP.sessionId='existing-session';
+(async()=>{
+  let timer;
+  try{
+    const operation=MCP.converse('report existing progress');
+    const bounded=Promise.race([operation,new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(new Error('reader still waiting for EOF')),250);
+    })]);
+    if(wireCase==='wrong_id_json')await assert.rejects(bounded,
+      error=>!!error.transport && error.message!=='reader still waiting for EOF');
+    else{
+      assert.deepEqual(await bounded,{reply:'finished'});
+      assert.equal(cancelled,true,'release stream after the matching terminal frame');
+    }
+    assert.equal(calls,1,'never replay a state-changing call');
+  }finally{clearTimeout(timer);}
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+    script.write_text(program.replace("__CASE__", json.dumps(wire_case)).replace(
+        "__TRANSPORT__", _transport_source()), encoding="utf-8")
+    proc = subprocess.run([_node(), str(script)], capture_output=True, text=True, timeout=10)
+    assert proc.returncode == 0, proc.stderr
+
+
 # --- wire fixtures -----------------------------------------------------------
 
 _SID = {"mcp-session-id": "sess-1"}
