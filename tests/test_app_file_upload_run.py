@@ -36,10 +36,12 @@ from tests.test_app_file_upload import (  # noqa: F401 -- app is a fixture
     meta,
     rows,
 )
+from tinyassets import daemon_server, runs
 from tinyassets import engine_mcp_server as engine
-from tinyassets import runs
 from tinyassets import universe_server as server
 from tinyassets.auth import middleware as mw
+from tinyassets.branch_versions import list_branch_versions
+from tinyassets.storage import _connect as author_connection
 
 HOME_C = "u-cccccccccccccccc"  # a later home for the SAME owner
 SIX_FIELDS = "{version,file_id,size_bytes,sha256,filename,media_type}"
@@ -219,3 +221,183 @@ def test_foreign_or_forged_reference_never_admits_a_run(app, monkeypatch, who):
     assert "not bound to a founder" not in reply["error"], reply
     assert rows(base, "SELECT COUNT(*) FROM run_file_bindings") == [(0,)]
     assert rows(base, "SELECT COUNT(*) FROM runs") == [(0,)]
+
+
+# ---------------------------------------------------------------------------
+# Mis-keyed manifests (live finding 2026-09-21). Four app-reported runs matched
+# owner and home yet had zero bindings: the branch declared ``file_inputs`` /
+# ``file_bundle_inputs``, both parsers read only ``inputs``/``outputs`` and
+# ignored the rest, create accepted an apparently successful declaration with
+# zero file fields, and the run completed as a scalar branch. The fix is
+# explicit declaration validation, never read authorization or intent guessing.
+# ---------------------------------------------------------------------------
+
+MIS_KEYED = {"file_inputs": SPEC["io_manifest"]["inputs"]}
+ECHO_SOURCE = """def run(state, effects=None):
+    return {'echoed': [state['payload']]}
+"""
+
+
+def branch_names(base):
+    with author_connection(base) as conn:
+        return sorted(row[0] for row in conn.execute(
+            "SELECT name FROM branch_definitions").fetchall())
+
+
+def admitted_runs(base):
+    """Admission ledger rows charged to a run; 0 when nothing was ever admitted."""
+    ledger_path = base / ".engine_run_admissions.db"
+    if not ledger_path.exists():
+        return 0
+    with sqlite3.connect(ledger_path) as ledger:
+        try:
+            return ledger.execute(
+                "SELECT COUNT(*) FROM admissions WHERE run_id IS NOT NULL AND run_id != ''"
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            return 0
+
+
+def run_count(base):
+    """Run rows; 0 when the refusal happened before the runs DB was ever created."""
+    try:
+        return rows(base, "SELECT COUNT(*) FROM runs")[0][0]
+    except sqlite3.OperationalError as exc:
+        assert "no such table" in str(exc), exc
+        return 0
+
+
+def flat(reply):
+    """Every string the caller would read, unescaped (JSON-dumping escapes quotes)."""
+    return " ".join(str(value) for value in reply.values())
+
+
+def test_served_write_graph_description_leads_with_the_exact_recipe():
+    """The recipe used to begin ~23k characters into a 32k description."""
+    descriptions = _descriptions(engine.mcp)
+    head = descriptions["write_graph"][:2500]
+    for needle in ('"io_type": "file_bundle"', '"type": "list"', "input_keys",
+                   '"tools_allowed": ["read_run_file"]', RPC_CALL, "bytes_base64",
+                   "next_offset", "eof", "inputs_json", "set_io_manifest"):
+        assert needle in head, needle
+    assert "ONLY top-level manifest keys" in head and "file_inputs" in head
+    run_head = descriptions["run_graph"][:3500]
+    assert "file_inputs" in run_head and "set_io_manifest" in run_head
+
+
+def test_mis_keyed_manifest_refuses_create_and_patch_without_mutation(app, monkeypatch):
+    _, base = app
+    serve(monkeypatch, base, actor=A, home=HOME_A)
+    rejected = json.loads(engine.write_graph(
+        target="branch", operation="create",
+        payload_json=json.dumps({**SPEC, "io_manifest": MIS_KEYED})))
+    assert not rejected.get("branch_def_id"), rejected
+    text = flat(rejected)
+    # Actionable: names the offending key, the accepted top-level shape and the
+    # file declaration, never a silent success.
+    assert "'file_inputs'" in text and '"inputs" and "outputs"' in text, text
+    assert '"io_type": "file_bundle"' in text and '"list" state' in text, text
+    # No row for the rejected spec. (The first served write lazily seeds the
+    # unrelated "Standalone Nodes" holder; that is not this create.)
+    names = branch_names(base)
+    assert SPEC["name"] not in names, names
+    assert set(names) <= {"Standalone Nodes"}, names
+
+    created = json.loads(engine.write_graph(target="branch", operation="create",
+                                            payload_json=json.dumps(SPEC)))
+    branch_id = created["branch_def_id"]
+    stored = json.loads(engine.read_graph(target="branch", branch_id=branch_id))
+    versions = list_branch_versions(base, branch_def_id=branch_id)
+    patched = json.loads(engine.write_graph(
+        target="branch", operation="patch", branch_id=branch_id,
+        payload_json=json.dumps([
+            {"op": "set_name", "name": "must not save"},
+            {"op": "set_io_manifest",
+             "io_manifest": {"file_bundle_inputs": SPEC["io_manifest"]["inputs"]}},
+        ])))
+    assert patched.get("status") == "rejected", patched
+    assert "'file_bundle_inputs'" in flat(patched), patched
+    # Atomic: neither op landed, no version was cut.
+    assert json.loads(engine.read_graph(target="branch", branch_id=branch_id)) == stored
+    assert list_branch_versions(base, branch_def_id=branch_id) == versions
+
+
+def test_stored_mis_keyed_manifest_refuses_run_admission_and_stays_repairable(app,
+                                                                              monkeypatch):
+    application, base = app
+    binary = b"stored before the fix" * 100
+    ref = upload(application, binary, "attachment-label-000004")
+    serve(monkeypatch, base, actor=A, home=HOME_A)
+    created = json.loads(engine.write_graph(target="branch", operation="create",
+                                            payload_json=json.dumps(SPEC)))
+    branch_id = created["branch_def_id"]
+    # A row persisted while the parser still ignored unknown keys. No migration
+    # rewrites it; it stays inspectable and editable through the same handles.
+    daemon_server.update_branch_definition(base, branch_def_id=branch_id,
+                                           updates={"io_manifest": MIS_KEYED})
+    readback = json.loads(engine.read_graph(target="branch", branch_id=branch_id))
+    assert "file_inputs" in json.dumps(readback), readback
+
+    reply = unwrap(engine.run_graph(branch_def_id=branch_id,
+                                    inputs_json=json.dumps({"files": [ref]})))
+    assert reply.get("error") and not reply.get("run_id"), reply
+    assert "'file_inputs'" in reply["error"] and '"inputs" and "outputs"' in reply["error"]
+    assert "set_io_manifest" in reply.get("suggested_action", ""), reply
+    assert reply.get("actionable_by") == "chatbot", reply
+    # Strict admission: no false run, no binding, nothing charged to a run.
+    assert run_count(base) == 0
+    assert rows(base, "SELECT COUNT(*) FROM run_file_bindings") == [(0,)]
+    assert admitted_runs(base) == 0
+
+    # The owner repairs the declaration through the existing served patch op...
+    repaired = json.loads(engine.write_graph(
+        target="branch", operation="patch", branch_id=branch_id,
+        payload_json=json.dumps([{"op": "set_io_manifest",
+                                  "io_manifest": SPEC["io_manifest"]}])))
+    assert repaired.get("status") != "rejected", repaired
+    # ...and the very same reference now binds and reads its original bytes.
+    reply = unwrap(engine.run_graph(branch_def_id=branch_id,
+                                    inputs_json=json.dumps({"files": [ref]})))
+    assert reply.get("run_id"), reply
+    runs.wait_for(reply["run_id"], timeout=60)
+    run = runs.get_run(base, reply["run_id"])
+    assert run["status"] == "completed", run["error"]
+    assert run["output"]["digests"] == [hashlib.sha256(binary).hexdigest()]
+    assert run["output"]["heads"] == [binary[:16].hex()]
+    assert rows(base, "SELECT COUNT(*) FROM run_file_bindings WHERE run_id=?",
+                reply["run_id"]) == [(1,)]
+
+
+@pytest.mark.parametrize("manifest", ["absent", {}, {"inputs": [], "outputs": []}],
+                         ids=["absent", "empty_object", "empty_lists"])
+def test_absent_or_empty_manifest_keeps_reference_shaped_dicts_ordinary(app, monkeypatch,
+                                                                        manifest):
+    """run_file_contract: a dict outside declared file fields is ordinary data.
+
+    Validation is of the explicit declaration only; a six-field-shaped value
+    under an undeclared scalar field must neither bind nor be refused.
+    """
+    application, base = app
+    ref = upload(application, b"ordinary data" * 10, "attachment-label-000005")
+    serve(monkeypatch, base, actor=A, home=HOME_A)
+    spec = {
+        "name": "Echo payload", "visibility": "private", "entry_point": "echo",
+        "state_schema": [{"name": "payload", "type": "dict"},
+                         {"name": "echoed", "type": "list"}],
+        "node_defs": [{"node_id": "echo", "display_name": "Echo", "input_keys": ["payload"],
+                       "output_keys": ["echoed"], "source_code": ECHO_SOURCE}],
+        "edges": [{"from": "echo", "to": "END"}],
+    }
+    if manifest != "absent":
+        spec["io_manifest"] = manifest
+    created = json.loads(engine.write_graph(target="branch", operation="create",
+                                            payload_json=json.dumps(spec)))
+    assert created.get("branch_def_id"), created
+    reply = unwrap(engine.run_graph(branch_def_id=created["branch_def_id"],
+                                    inputs_json=json.dumps({"payload": ref})))
+    assert reply.get("run_id"), reply
+    runs.wait_for(reply["run_id"], timeout=60)
+    run = runs.get_run(base, reply["run_id"])
+    assert run["status"] == "completed", run["error"]
+    assert run["output"]["echoed"] == [ref]  # verbatim data, not a binding
+    assert rows(base, "SELECT COUNT(*) FROM run_file_bindings") == [(0,)]

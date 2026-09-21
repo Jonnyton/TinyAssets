@@ -36,6 +36,17 @@ from tinyassets.authoring.models import (
 
 IO_TYPES: frozenset[str] = frozenset({"scalar", "object", "file", "file_bundle"})
 FILE_IO_TYPES: frozenset[str] = frozenset({"file", "file_bundle"})
+#: The only top-level members an ``io_manifest`` object has. Every other key was
+#: silently ignored before 2026-09-21, so a mis-keyed declaration (``file_inputs``,
+#: ``file_bundle_inputs``) created cleanly, ran as a scalar branch and bound nothing.
+MANIFEST_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"inputs", "outputs"})
+MANIFEST_SHAPE_HINT = (
+    'io_manifest accepts only the top-level keys "inputs" and "outputs", each a list of '
+    'declarations {"name": <state field>, "io_type": "file" | "file_bundle" | "scalar" | '
+    '"object", ...}. Declare user attachments as {"inputs": [{"name": "files", "io_type": '
+    '"file_bundle", "max_count": 4, "max_bytes": 4194304}]} with a matching "list" state '
+    'field (a single "file" input needs a "dict" field).'
+)
 DISPOSITIONS: frozenset[str] = frozenset({"download", "connector_effect", "connector_push"})
 
 #: Handles outlive one invocation only long enough for the run to read them.
@@ -185,6 +196,27 @@ def parse_manifest(
     return Manifest(tuple(parsed["inputs"]), tuple(parsed["outputs"]))
 
 
+class UnsupportedManifestKeyError(AuthoringValidationError):
+    """A stored ``io_manifest`` carries a top-level key the contract does not define.
+
+    Narrower than its parent on purpose: the run failure taxonomy maps THIS
+    class to "repair with set_io_manifest". Every other authoring validation
+    failure (a manifest violation by supplied inputs, a malformed manifest, a
+    bad node definition) keeps its own classification.
+    """
+
+
+def unsupported_manifest_keys(raw: Any) -> list[str]:
+    """Top-level ``io_manifest`` members the contract does not define, sorted.
+
+    Pure inspection of an already-decoded object; grants nothing and reads no
+    stored row. Absent, empty and supported manifests yield ``[]``.
+    """
+    if not isinstance(raw, dict):
+        return []
+    return sorted(str(key) for key in raw if key not in MANIFEST_TOP_LEVEL_KEYS)
+
+
 def _parse_strict_manifest(definition, *, max_file_bytes, max_files):
     """Opt-in runtime contract; old authoring coercions/ceilings stay unchanged."""
     if (
@@ -200,6 +232,22 @@ def _parse_strict_manifest(definition, *, max_file_bytes, max_files):
     if not isinstance(raw, dict):
         raise AuthoringValidationError(
             [ValidationIssue("manifest.malformed", "io_manifest", "must be an object")]
+        )
+    unsupported = unsupported_manifest_keys(raw)
+    if unsupported:
+        # Fail loudly at authoring AND at run admission: an ignored key is the one
+        # declaration mistake that otherwise looks like a successful file workflow.
+        raise UnsupportedManifestKeyError(
+            [
+                ValidationIssue("manifest.unsupported_key", f"io_manifest.{key}",
+                                MANIFEST_SHAPE_HINT)
+                for key in unsupported
+            ],
+            message=(
+                "io_manifest has unsupported top-level key(s) "
+                + ", ".join(repr(key) for key in unsupported)
+                + ". " + MANIFEST_SHAPE_HINT
+            ),
         )
     issues = []
     parsed = {"inputs": [], "outputs": []}
