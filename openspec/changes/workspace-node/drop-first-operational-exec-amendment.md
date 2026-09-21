@@ -152,9 +152,10 @@ satisfied a check whose whole purpose is to prove the identity is retired.
 `status_line_is()` now requires a line boundary on both sides.
 
 The regression is the `test_identity_readback_is_an_anchored_whole_line_match`
-case in `tests/test_ta_op_modes.py` (red against the pre-correction source,
-which has three `status_has(` call sites and no anchored predicate) plus row 18
-of the native plan,
+case in `tests/test_ta_op_modes.py` (red against the pre-correction source, which
+has three `status_has(` occurrences — the definition at `ta_op.c:142` and the
+two readback call sites at `:161` and `:162` — and no anchored predicate) plus
+row 18 of the native plan,
 which builds a second binary with the compile-time-only `TA_STATUS_PATH`
 override against a crafted status file. Production never defines that macro and
 a test asserts the Dockerfile does not. No authority, capability set, group
