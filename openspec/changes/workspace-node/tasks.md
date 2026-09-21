@@ -53,4 +53,4 @@ are the release gate for this slice, not separate delivery work.
 
 ## 3. Land
 
-- [ ] 3.1 Release gate and land: native proof per `deploy/native/NATIVE-TEST-PLAN.md` (driver authored, NOT executed — needs Linux and the disposable container slot; rows 3/13/14/15/16/18 are reported NOT_PROVEN until run), CI image build, live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`; then sync the deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`
+- [ ] 3.1 Release gate and land: native proof per `deploy/native/NATIVE-TEST-PLAN.md` (root ran rows 1–16 and 18 on local fixtures 2026-09-21, row 17 on a local fixture install only — `docs/reviews/2026-09-21-drop-first-native-local-proof.md`; the installed production image is still unchecked), CI image build, live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`; deltas synced into `openspec/specs/daemon-runtime-and-dispatch/spec.md` 2026-09-21 (done — see the amendment); still to do: archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`

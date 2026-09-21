@@ -74,8 +74,18 @@ Nine fixed modes, each preserving the argv a real caller runs today:
 `claude-keepalive`, `codex-keepalive`, `bwrap-oracle`, `claude-login`. No mode accepts an
 executable path, an interpreter switch or a shell string. `printenv` is the
 only mode with an operand: one `^[A-Z_][A-Z0-9_]*$` NAME, validated after the
-drop. Unknown mode, wrong arity and malformed NAME all fail closed before the
-guard even runs.
+drop. Unknown mode, no mode and wrong arity fail closed **before** the identity
+guard runs; a malformed NAME is refused **after** the identity branch and
+descriptor closure, still before any target exec. The `main()` order in
+`deploy/native/ta_op.c` is: mode name, arity, identity branch,
+`close_extra_fds()`, builtin or NAME validation, `execv`. Every refusal
+therefore precedes the target, but only the first three are uid-independent.
+
+*(An earlier revision of this paragraph said all three refusals ran before the
+guard. The code and the native plan's "Which rows the entry identity can
+reach" section say otherwise, and the driver implements the plan's ordering —
+it reports an identity refusal on the NAME row as `NOT_PROVEN`, never as a
+NAME result. Corrected 2026-09-21; no code changed.)*
 
 `env-summary` satisfies the reviewer's binding condition (b): it is an
 **in-wrapper post-drop print**, never an exec of `printenv | grep | sort`. The
@@ -174,14 +184,71 @@ this correction.
 
 ---
 
-## Delta scenarios (to sync into `openspec/specs/` on land)
+## Native evidence (root, 2026-09-21) — local fixtures, not production
+
+`docs/reviews/2026-09-21-drop-first-native-local-proof.md` is the root
+coordinator's verbatim artifact, copied into this branch. Source candidate is
+this exact head. In one sentence each, what it establishes and what it does not:
+
+- **Rows 1, 2, 3, 4, 6, 16** — driver `ta_op_native_check.sh` in a disposable
+  rootless container (`--user 1001:1001 --cap-drop ALL`, NNP, `--network none`):
+  11 pass, 0 fail, 1 skip (row 17: no installed path in that container),
+  1 NOT_PROVEN (row 14, by design of the driver). Row 3 and row 16 therefore
+  ran past the identity guard, as the plan requires for those rows.
+- **Rows 5, 7, 8, 9, 11, 12** — entry-refusal matrix, one container per row:
+  every expected `TA_OP_REFUSED:*` tag and exit 78 observed, including the row 8
+  mutation control (`legacy-entry-caps-not-empty`).
+- **Rows 10 + 13** — root plus exactly the five caps, target substituted by a
+  LOCAL assertion probe in an ignored fixture image: the child (pid 1) observed
+  all four Uid/Gid 1001, empty `Groups`, all five cap sets 0, `NoNewPrivs 1`.
+  This is post-drop identity for a substituted target, not the production
+  `printenv` binary.
+- **Rows 14 + 15** — a fixed launcher opened fd 9 without `CLOEXEC` and exec'd
+  the exact helper: the target reported `fd9: closed` on both the root+5-cap and
+  rootless paths; `strace -f -e trace=openat,close,execve` under default seccomp
+  on the rootless path showed the helper opening only `/proc/self/status` and
+  `/proc/self/fd` before `close(9)=0` then `execve(/usr/bin/printenv)=0`, with
+  no loader, NSS, `/etc/passwd`, `/etc/group`, `/app` or `/data` open before it.
+- **Row 18** — crafted fourth-UID `10010` status: the fixed source exits 78
+  `fs-uid-readback`; the pre-correction `7302c91a` prefix implementation exits 0.
+  Both built static as uid 1001 with warnings fatal. The mutant control held.
+- **Row 17** — LOCAL fixture install reads mode 555, uid 0, gid 0. The
+  production installed image has **not** been checked.
+- **Pytest cohorts** (root-run, independent of this lane): Windows venv
+  87 passed / 0 skipped on the four `ta_op`/gate/migration/Dockerfile files;
+  canonical Linux oracle 74313: 102 passed / 1 skip (the gate's git-history
+  base-object control, absent from the oracle's source archive) on those four
+  plus `test_invariants_framework.py`; Windows rerun 15125: 103 passed / 0
+  skipped; operational rollback/flag Linux cohort 33064, now terminal:
+  canonical oracle `--no-bwrap -q tests/test_apply_daemon_env_voice_flags.py
+  tests/test_deploy_bundle_validator.py tests/test_deploy_bundle_transaction.py`
+  → **86 passed, 0 skipped, 56.24s**.
+
+**Still open, and not claimed here:** the production image building and
+installing the wrapper (CI), the installed-image row 17, `deployed_sha.py
+--assert-contains`, the live `ta-op pulse` healthcheck, the public canary and a
+rendered `ui-test`. Root-start is not authorized by any of this. The provider
+modes (`claude-keepalive`, `codex-keepalive`, `claude-login`) were never run.
+
+## Delta scenarios — synced 2026-09-21
+
+Synced into `openspec/specs/daemon-runtime-and-dispatch/spec.md` from source
+head `20573b0f` in the metadata commit that follows it. The main spec had no
+prior healthcheck requirement, so the third block below is ADDED, not
+MODIFIED, in the main spec; the heading here is corrected to match. The
+change is **not** archived: 3.1 in `tasks.md` still carries the production
+image, deploy and live gates.
 
 ### ADDED Requirement: Repo-authored operational execs into the daemon reach their target only after a verified identity retirement
 
 The production image SHALL carry a statically linked, root-owned `0555`
 wrapper at `/usr/local/libexec/ta-op`, outside every directory chowned to the
 runtime user, and every repo-authored `docker exec` into the daemon container
-SHALL invoke it with a mode declared in `deploy/native/ta_op_modes.tsv`.
+SHALL invoke it with a mode declared in `deploy/native/ta_op_modes.tsv`. The
+wrapper SHALL validate the mode name and argument count, then run the
+entry-identity branch, then close descriptors above standard error, and only
+then run a builtin, validate the single `printenv` operand, or exec the fixed
+target. Every refusal SHALL occur before any runtime target is executed.
 
 #### Scenario: Managed-bootstrap entry retires every set before the target exists
 - **WHEN** the wrapper starts with `getuid()==0`
@@ -207,12 +274,20 @@ SHALL invoke it with a mode declared in `deploy/native/ta_op_modes.tsv`.
 - **THEN** it SHALL exit 78 without execing.
 
 #### Scenario: The mode table is closed
-- **WHEN** the wrapper is invoked with an undeclared mode, the wrong argument
-  count for a declared mode, or a `printenv` operand that does not match
-  `^[A-Z_][A-Z0-9_]*$`
-- **THEN** it SHALL exit 78 without execing
+- **WHEN** the wrapper is invoked with no mode, an undeclared mode, or the wrong
+  argument count for a declared mode
+- **THEN** it SHALL exit 78 before the entry-identity branch runs and without
+  execing
 - **AND** no mode SHALL accept an executable path, an interpreter switch or a
   shell string.
+
+#### Scenario: A malformed printenv operand is refused after the identity branch and before the target
+- **WHEN** `printenv` is invoked with an operand that does not match
+  `^[A-Z_][A-Z0-9_]*$`
+- **THEN** the wrapper SHALL first run the entry-identity branch and close
+  descriptors, then exit 78 with `TA_OP_REFUSED:env-name` without execing
+- **AND** an identity refusal reached on that path SHALL be reported as an
+  identity result, never as a NAME result.
 
 #### Scenario: The filtered environment summary never leaves the wrapper
 - **WHEN** `env-summary` runs
@@ -253,7 +328,11 @@ environment or service mutation.
   file and before restarting the daemon
 - **AND** it SHALL NOT fall back to an unwrapped `printenv` read.
 
-### MODIFIED Requirement: The daemon healthcheck runs the drop-first pulse route
+### ADDED Requirement: The daemon healthcheck runs the drop-first pulse route
+
+*(Was headed MODIFIED. `openspec/specs/` had no healthcheck requirement to
+modify — the only prior mention is the Purpose line recording the 2026-08-29
+deletion of the worker healthcheck — so this is new requirement text.)*
 
 The daemon healthcheck SHALL invoke `/usr/local/libexec/ta-op pulse` in exec
 form, with no shell fallback.

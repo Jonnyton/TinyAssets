@@ -1,8 +1,13 @@
 # `ta-op` native test plan and driver
 
-**Nothing in this file has been run.** No row below has been executed, on any
-host, by the change that authored it or by the correction that revised it. It
-is written for the coordinator to inspect and execute. No static assertion
+**Status 2026-09-21.** The lane that authored this plan ran none of it. The
+root coordinator has since run rows 1–16 and 18 locally, in disposable WSL
+Docker containers on this exact source, and row 17 against a LOCAL fixture
+install only; the verbatim artifact is
+`docs/reviews/2026-09-21-drop-first-native-local-proof.md` and the row-by-row
+map is in the amendment's "Native evidence" section. Those are local fixture
+results: the production image, the installed-image row 17, the live
+healthcheck and every deployed gate remain open. No static assertion
 anywhere in this change is claimed as native runtime proof:
 `tests/test_ta_op_modes.py` proves the *table* and the *source predicates* are
 coherent, `tests/test_drop_first_exec_gate.py` proves the *gate* fires, and
@@ -113,8 +118,9 @@ the discriminator: this row is only worth running if it is run against both.
 
 Rows 1, 2 and 4 run unprivileged on any Linux box with no container at all.
 Rows 3, 6–13, 16 and 18 need the identity posture, so they need a disposable
-container; per the coordinator's note the exclusive local container slot may be
-held by another cohort, so they queue.
+container. (Run 2026-09-21 by root in that posture; see the status paragraph
+at the top. Rows 14 and 15 were supplied by a local fd-launcher fixture plus an
+`strace` fixture image, both offline at execution time.)
 
 **Do not run rows that execute a provider.** `claude-keepalive`,
 `codex-keepalive` and `claude-login` are migrated by argv only. Nothing in this
