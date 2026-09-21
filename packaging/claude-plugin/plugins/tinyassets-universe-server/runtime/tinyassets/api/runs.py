@@ -413,19 +413,49 @@ _FAILURE_TAXONOMY: list[tuple[type, str, str]] = []
 
 
 # Live browser finding 2026-08-25: a branch whose node pinned a REGISTERED but
-# not-serving compute provider (llm_policy.preferred_provider) failed with this
-# class, and the assistant reported it to the user as a platform bug ("the runner
-# is not reading serving state") because nothing said a pin was in play. Name the
-# pin explicitly so a user of any surface can resolve it themselves.
+# not-serving compute provider failed with this class, and the assistant reported
+# it to the user as a platform bug ("the runner is not reading serving state")
+# because nothing said a pin was in play. Name the pin explicitly so a user of
+# any surface can resolve it themselves.
+#
+# Rewritten 2026-09-20 after the live checklist. Three things in the old text
+# were wrong or unreachable:
+#   * it named `llm_policy.preferred_provider`, a key `branches.py` REJECTS; the
+#     validated pin is `llm_policy.preferred.provider`.
+#   * it said to "make the pinned provider serving". `providers/router.py` treats
+#     a writer pin as CONFLICTING with the armed provider rather than replacing
+#     it, so no global switch can make a pinned source pass -- and the agent read
+#     that sentence as "the operator must change the universe's binding", which
+#     `openspec/specs/agent-model-selection/spec.md` explicitly forbids as the
+#     remedy for a work choice.
+#   * it never mentioned the owner's OWN model routes, which need no operator.
+_OWN_MODEL_ROUTES = (
+    "The owner's own routes, needing nobody else: read_graph "
+    "target=model_options lists their authorized choices, and write_graph "
+    "target=model_preferences operation=save sets the default and orders the "
+    "fallbacks. A node pin is llm_policy.preferred.provider (plus optional "
+    "model_id) on the node, editable in the graph."
+)
 _PROVIDER_NOT_BOUND_ACTION = (
-    "No serving provider is bound for this run. If a node pins a specific "
-    "compute provider (llm_policy.preferred_provider), that exact provider must "
-    "be the universe's serving provider - compare read_graph target=branch "
-    "(the pin) with read_graph target=compute (registered) and the serving "
-    "selection; either make the pinned provider serving, or remove the pin so "
-    "the run uses whatever the universe serves. If nothing is registered yet, "
-    "register one first (connect_compute). Registration is not selection. Not a "
-    "credential problem and not host-actionable."
+    "No provider authority is bound for this run - nothing was invoked. If "
+    "nothing is registered yet, register one first (connect_compute). "
+    "Registration is not selection. If a node pins a provider, compare "
+    "read_graph target=branch (the pin) with read_graph target=compute "
+    "(registered) and read_graph target=model_options (authorized), then either "
+    "make that source authorized or edit the pin. " + _OWN_MODEL_ROUTES
+    + " This is not a credential problem, not an exhausted quota, and not "
+    "host-actionable."
+)
+# Capacity, not connection. The old single class told an owner whose models were
+# all rate-limited or full to "connect your provider", which they already had.
+_WORK_MODEL_EXHAUSTED_ACTION = (
+    "Every model in this run's order was exhausted or ineligible, so no further "
+    "attempt was made; the error above names each exhausted model, its capacity "
+    "scope, and the classified failure and retry-after the run observed. Retry later, or "
+    "widen the order - an explicit choice with no fallbacks stays exhausted "
+    "rather than silently moving to another source. " + _OWN_MODEL_ROUTES
+    + " Changing what the universe serves elsewhere cannot rescue a pinned "
+    "source, and nobody else needs to act."
 )
 
 
@@ -447,8 +477,17 @@ def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
     # permission_denied:auth_expired / actionable_by=host (live browser finding
     # 2026-08-25: a registered-but-unbound provider told the user the HOST must
     # rotate a key).
-    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.exceptions import ProviderAuthorityHeldError, WorkModelExhaustedError
 
+    # SUBCLASS FIRST: `_classify_run_error` takes the first isinstance match, and
+    # exhausting the owner's own model order is a different action from having no
+    # authority at all. Typed, not message-matched -- the substring net below is
+    # what misread "credentials" in the held text as an expired host key.
+    rows.append((
+        WorkModelExhaustedError,
+        "work_model_exhausted",
+        _WORK_MODEL_EXHAUSTED_ACTION,
+    ))
     rows.append((
         ProviderAuthorityHeldError,
         "permission_denied:provider_not_bound",
@@ -634,6 +673,13 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
 
         cls = _classify_external_write(msg)
         return (cls, external_write_suggested_action(cls))
+    from tinyassets.exceptions import WorkModelExhaustedError
+
+    if WorkModelExhaustedError.MESSAGE in msg:
+        # Typed at the raise; only the string survives the async runner. Its
+        # evidence suffix names classified capacity classes ("rate_limited",
+        # "overloaded"), so this must precede the substring nets below.
+        return ("work_model_exhausted", _WORK_MODEL_EXHAUSTED_ACTION)
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",

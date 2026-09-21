@@ -44,6 +44,29 @@ async def _open(timeout=0.1):
         pass
 
 
+@pytest.fixture
+def startup_clock(monkeypatch):
+    """Control only the route waiter's clock; real DB admission takes real time.
+
+    The 20ms contract must not require filesystem reads to finish in 20ms.
+    Replacing this module's asyncio binding leaves the actual event loop and
+    client transport untouched. The fake probe spends the logical budget.
+    """
+    state = SimpleNamespace(now=0.0)
+
+    def advance(seconds):
+        state.now += seconds
+
+    async def sleep(seconds):
+        advance(seconds)
+
+    monkeypatch.setattr(routes, "asyncio", SimpleNamespace(
+        get_running_loop=lambda: SimpleNamespace(time=lambda: state.now),
+        sleep=sleep,
+    ))
+    return advance
+
+
 @pytest.mark.asyncio
 async def test_route_appears_after_two_polls_and_connects_once(
     fake, route, supervisor, monkeypatch,
@@ -95,15 +118,18 @@ async def test_revocation_while_starting_stops_before_second_probe(
 
 
 @pytest.mark.asyncio
-async def test_never_listening_times_out_without_connect(fake, supervisor, monkeypatch):
-    async def unavailable(*args, **kwargs):
+async def test_never_listening_times_out_without_connect(
+    fake, supervisor, monkeypatch, startup_clock,
+):
+    async def unavailable(*args, timeout):
         supervisor.probes += 1
+        startup_clock(timeout)
         return False
 
     monkeypatch.setattr(routes, "_probe_loopback", unavailable)
     with pytest.raises(client.EngineToolError, match="unavailable"):
         await _open(0.02)
-    assert supervisor.probes >= 1 and fake.lists == fake.calls == []
+    assert supervisor.probes == 1 and fake.lists == fake.calls == []
 
 
 @pytest.mark.asyncio
@@ -193,18 +219,19 @@ async def test_probe_accepts_only_tcp_and_sends_no_bytes(route):
 
 
 @pytest.mark.asyncio
-async def test_wait_respects_platform_cap(fake, supervisor, monkeypatch):
+async def test_wait_respects_platform_cap(fake, supervisor, monkeypatch, startup_clock):
     observed = []
 
     async def closed(*args, timeout):
         observed.append(timeout)
+        startup_clock(timeout)
         return False
 
     monkeypatch.setattr(routes, "_STARTUP_WAIT_MAX_S", 0.02)
     monkeypatch.setattr(routes, "_probe_loopback", closed)
     with pytest.raises(client.EngineToolError, match="unavailable"):
         await _open(60)
-    assert observed and max(observed) <= 0.02
+    assert len(observed) == 1 and 0 < observed[0] <= 0.02
     assert fake.lists == []
 
 

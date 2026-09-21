@@ -6313,6 +6313,9 @@ ACTIONABLE_BY: dict[str, str] = {
     # chatbot: the fix is another tool call (select/bind a registered provider),
     # never a host credential rotation.
     "permission_denied:provider_not_bound": "chatbot",
+    # Same owner, different action: their own saved order ran out of capacity.
+    # Never "host" -- no host-side change can refill a user's own source.
+    "work_model_exhausted": "chatbot",
     # chatbot — recoverable via another tool call
     "code_node_failed": "chatbot",
     "node_not_accepted": "chatbot",
@@ -6500,6 +6503,14 @@ def _classify_failure(run: dict) -> str:
     lower = error.lower()
     if lower.startswith("external write failed"):
         return _classify_external_write(lower)
+    from tinyassets.exceptions import WorkModelExhaustedError
+
+    if WorkModelExhaustedError.MESSAGE in lower:
+        # The owner's own order ran out. Its evidence suffix names the owner's
+        # model ids and classified capacity classes ("credit_exhausted"), so
+        # this narrow known prefix must precede every substring net below: a
+        # model id containing "timeout" is not a timed-out run.
+        return "work_model_exhausted"
     if "empty" in lower and ("llm" in lower or "response" in lower or "provider" in lower):
         return "empty_llm_response"
     if lower.startswith("workspace command timeout"):

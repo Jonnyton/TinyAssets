@@ -157,13 +157,30 @@ class _ForegroundRunProviderSession:
         self._lock = threading.Lock()
         self._closed = False
         self._work_candidates = None
-        if model_preference_data is not None:
-            from tinyassets.providers.work_candidate_data import prepare_captured_choices
+        # Retained so a SIBLING run inherits the SAME captured policy version
+        # rather than re-reading the store mid-run. See `constructor_inputs`.
+        self._model_preference_data = model_preference_data
 
-            self._work_candidates = prepare_captured_choices(
-                self._base_path, owner=self._principal_id, universe=self._universe_id,
-                document=model_preference_data,
-            )
+    def _capture_choices(self) -> None:
+        """Build this run's advisory order at ADMISSION, not construction.
+
+        Building it in `__init__` moved a node-time refusal to request time:
+        with a saved preference and a revoked source, `run_graph` raised before
+        a run row existed, so the caller saw `failure_class: unknown` and no
+        `run_id` instead of a run that fails `permission_denied:provider_not_bound`.
+        Here, `_admit`'s own handler converts the refusal to the held class at
+        the point it already occurred, and an explicit saved choice that is not
+        fully eligible still REFUSES rather than being quietly replaced by the
+        legacy serving binding.
+        """
+        if self._model_preference_data is None or self._work_candidates is not None:
+            return
+        from tinyassets.providers.work_candidate_data import prepare_captured_choices
+
+        self._work_candidates = prepare_captured_choices(
+            self._base_path, owner=self._principal_id, universe=self._universe_id,
+            document=self._model_preference_data,
+        )
 
     def _validate_founder_home(self) -> None:
         from tinyassets.daemon_server import get_founder_home
@@ -209,12 +226,22 @@ class _ForegroundRunProviderSession:
         Deliberately excludes `_receipt`, `_claim`, `_branch_snapshot` and
         `_branch_digest`: a child run must admit on its OWN authority against
         its OWN run row, never inherit the parent's.
+
+        `model_preference_data` IS inherited, and the built
+        `WorkCandidateData` is NOT. The document is the owner's captured policy
+        version; re-reading the store here would let a save landing mid-run give
+        a parallel sub-branch a different order from its parent. The candidate
+        object is rebuilt because it carries this run's fitted allowance and
+        exhaustion state, and because rebuilding is what re-checks current
+        authority and revocation. A preference is advisory either way -- it
+        carries no invocation authority, and every attempt still admits afresh.
         """
         return {
             "base_path": self._base_path,
             "universe_id": self._universe_id,
             "principal_id": self._principal_id,
             "provider_call": self._provider_call,
+            "model_preference_data": self._model_preference_data,
         }
 
     def prepare(
@@ -263,6 +290,7 @@ class _ForegroundRunProviderSession:
             raise ProviderAuthorityHeldError(_HELD)
         try:
             self._validate_founder_home()
+            self._capture_choices()
             snapshot = self._branch_snapshot
             branch_author = str(snapshot.get("author") or "").strip()
             if branch_author != self._principal_id:
@@ -935,10 +963,17 @@ class _ForegroundRunProviderSession:
         from tinyassets.providers.call import get_provider_router
 
         attempts = 0
+        boundaries = ()
+        last_capacity = None
         while True:
             selected = self._work_candidates.next_candidate(policy)
+            # Exhaustion, NOT an unbound provider: the owner's own order ran out.
+            # Typed so `api/runs` can say so without matching this message. The
+            # boundaries this loop validated are the evidence and the last
+            # capacity failure stays the cause. Auth/unknown failures never get
+            # here: they raise the held class below on the attempt that saw them.
             if selected is None:
-                raise ProviderAuthorityHeldError("no eligible work model remains")
+                raise self._work_candidates.exhausted_error(boundaries) from last_capacity
             effective = {**(policy or {}), "preferred": {
                 "provider": selected.connection_id, "model_id": selected.model_id,
             }}
@@ -964,6 +999,8 @@ class _ForegroundRunProviderSession:
                 )
                 if boundary is None:
                     raise ProviderAuthorityHeldError("work model attempt is held") from exc
+                boundaries += (boundary,)
+                last_capacity = exc
                 self._work_candidates.next_candidate(policy, (boundary.exhaustion,))
                 continue
             if metadata_observer is not None:
@@ -1036,7 +1073,9 @@ class _ForegroundRunProviderSession:
     ) -> tuple[str, str, dict[str, Any]]:
         del difficulty
         metadata = {"authority": RUN_GRAPH_OPERATION, "attempts": 1}
-        if self._work_candidates is not None:
+        # The captured DOCUMENT, not the order: the order is built during
+        # admission, which `_call` below triggers.
+        if self._model_preference_data is not None:
             kwargs["_metadata_observer"] = metadata.update
         response, provider = self._call(role, prompt, system, config, policy, kwargs)
         return response, provider, metadata
@@ -1055,6 +1094,55 @@ class _ForegroundRunProviderSession:
             )
 
 
+def captured_work_preference(
+    base_path: str | Path, *, universe_id: str, principal_id: str,
+) -> dict[str, Any] | None:
+    """The owner's SAVED model preference, captured once, or None for legacy.
+
+    `openspec/specs/agent-model-selection/spec.md` already promises that a work
+    choice needs neither a change to the universe's main serving provider nor a
+    rewrite of a private workflow. Only the conversation path honoured it: it
+    captured this same document and built the candidate order, while every run
+    session was constructed without one and fell through to the single legacy
+    serving binding. The owner's selector therefore governed chat and not their
+    workflows -- two definitions of one fact. This is the missing read, not a
+    new authority: a preference grants nothing, and `_admit` /
+    `_authorize_attempt` still decide every invocation on current authority.
+
+    `current` is always None. A tab-local override belongs to an interactive
+    turn; a run has no tab, so only the durable saved default and its ordered
+    fallbacks apply.
+
+    Returns None -- exactly the pre-existing behaviour -- when there is no
+    saved preference, when the scope is not nameable, or when this universe is
+    no longer the principal's home. A moved home is NOT swallowed: the session's
+    own `_validate_founder_home` refuses the run a step later with the failure
+    class it already had, so reading a preference cannot invent a new one.
+    """
+    from tinyassets.storage.model_preferences import (
+        ModelPreferenceStore,
+        PreferenceHomeChanged,
+    )
+
+    owner, universe = (principal_id or "").strip(), (universe_id or "").strip()
+    if not owner or not universe:
+        return None
+    try:
+        snapshot = ModelPreferenceStore(base_path).get(
+            owner, universe, require_current_home=True,
+        )
+    except (PreferenceHomeChanged, ValueError):
+        return None
+    if snapshot.policy is None:
+        return None
+    return {
+        "version": 1,
+        "saved": snapshot.policy.document(),
+        "observed_generation": snapshot.generation,
+        "current": None,
+    }
+
+
 def new_foreground_run_provider_session(
     base_path: str | Path,
     *,
@@ -1067,6 +1155,9 @@ def new_foreground_run_provider_session(
         universe_id=universe_id,
         principal_id=principal_id,
         provider_call=provider_call,
+        model_preference_data=captured_work_preference(
+            base_path, universe_id=universe_id, principal_id=principal_id,
+        ),
     )
 
 
@@ -1208,6 +1299,7 @@ def close_foreground_run_provider(provider_call: Any) -> None:
 
 __all__ = [
     "RUN_GRAPH_OPERATION",
+    "captured_work_preference",
     "close_foreground_run_provider",
     "new_foreground_run_provider_session",
     "prepare_foreground_run_provider",

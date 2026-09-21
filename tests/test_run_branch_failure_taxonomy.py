@@ -779,8 +779,12 @@ def test_provider_not_bound_action_names_the_node_pin():
     user to compare the node's pin with the serving selection."""
     from tinyassets.api.runs import _PROVIDER_NOT_BOUND_ACTION, _classify_run_outcome_error
 
+    # `llm_policy.preferred_provider` was this assertion's own stale premise:
+    # `branches.py` REJECTS that key, so the advice named something a user could
+    # not set. The validated pin is `llm_policy.preferred.provider`.
     for text in (_PROVIDER_NOT_BOUND_ACTION,):
-        assert "llm_policy.preferred_provider" in text
+        assert "llm_policy.preferred.provider" in text
+        assert "llm_policy.preferred_provider" not in text
         assert "read_graph target=compute" in text
         assert "Registration is not selection." in text
     failure_class, action = _classify_run_outcome_error(
