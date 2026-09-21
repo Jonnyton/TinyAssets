@@ -1752,12 +1752,14 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"let queueScope=[^\n]*;", r"let queueOwner=[^\n]*;",
                     r"let queuePersisted=[^\n]*;",
                     r"let retainedItems=[^\n]*;", r"let modelChoiceForNextTurn=[^\n]*;",
+                    r"let liveInflight=[^\n]*;",
                     r"const renderedConsumerTurns=[^\n]*;",
                     r"const renderedConsumerFounders=[^\n]*;",
                     r"let Uploads=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
+        "sameInflight", "forgetInflightIf",
         "copyModelChoice", "captureTurnOptions",
         "sendConversationRequest",
         "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",

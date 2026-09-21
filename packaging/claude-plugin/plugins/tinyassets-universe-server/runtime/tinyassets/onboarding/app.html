@@ -2173,6 +2173,14 @@
   // still the one holding them; otherwise an old promise would reset a newer
   // account's live turn.
   let activeTurn=null;
+  // The in-flight record THIS page wrote for a turn it still owns: in flight,
+  // or ended here with its own recovery notice. A status or history pass that
+  // lands later must not read it back as an abandoned message from a previous
+  // page - that drew the founder's live message a second time under a false
+  // "never confirmed" with a resend that would have run the workflow twice
+  // (live, 2026-09-20). Released where the turn is retired: delivery, the
+  // record's own removal, or the account boundary (clearComposerState).
+  let liveInflight=null;
   // A current choice is separate from saved defaults and actual reply receipts.
   // Null means no override; the server reads the current saved preference.
   let modelChoiceForNextTurn=null;
@@ -2557,16 +2565,28 @@
   // offered to resend, a message this one held - nor the filenames it names
   // (Fable 21633 on the app byte-intake shape, 2026-09-20).
   function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null){
-    try{ localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
-      {message, display: display||message,
+    const record={message, display: display||message,
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
        owner:queueOwner,
        scope:queueScope,
-       ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()})); }catch(_e){}
+       ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()};
+    try{ localStorage.setItem(INFLIGHT_KEY, JSON.stringify(record)); liveInflight=record; }catch(_e){}
   }
-  function forgetInflight(){ try{ localStorage.removeItem(INFLIGHT_KEY); }catch(_e){} }
+  function forgetInflight(){ try{ localStorage.removeItem(INFLIGHT_KEY); }catch(_e){} liveInflight=null; }
+  // One record is the same record by what its writer could not have shared
+  // with another turn: text, send stamp and (for a chosen conversation) the
+  // exact request. The stored shape is untouched; nothing new is persisted.
+  function sameInflight(a,b){
+    return !!a&&!!b&&a.message===b.message&&(a.ts||0)===(b.ts||0)&&
+      JSON.stringify(a.consumerRequest||null)===JSON.stringify(b.consumerRequest||null);
+  }
+  // Forget ONE record: the one a restore pass observed. A newer turn on this
+  // page may have replaced it on disk while that pass awaited the connector
+  // (or a click); an older turn's outcome must not erase the newer turn's
+  // only way back after a reload.
+  function forgetInflightIf(record){ if(sameInflight(readInflight(),record)) forgetInflight(); }
   function readInflight(){
     try{ const raw=localStorage.getItem(INFLIGHT_KEY); return raw?JSON.parse(raw):null; }
     catch(_e){ return null; }
@@ -3270,7 +3290,7 @@
     const input=$("composer-input");
     if(input){ input.value=""; if(input.style) input.style.height="auto"; }
     const send=$("btn-send"); if(send) send.disabled=false;
-    activeTurn=null; turnStartedAt=0;
+    activeTurn=null; turnStartedAt=0; liveInflight=null;
     setStatusLine("");
   }
   function clearAccountScopedState(){
@@ -5286,12 +5306,18 @@
     const pending = readInflight();
     // Whatever was queued behind the in-flight turn goes out after it has been
     // accounted for below (its bubble and resend offer come first).
-    if(!pending || inflightRestored){ restoreQueue(); return; }
+    if(inflightRestored){ restoreQueue(); return; }
     // The saved queue's rule, applied to the in-flight record: nothing about a
     // held message - not its text, not a filename it names - is shown or even
     // OBSERVED until this page knows which universe it is, and never for
     // another account or home.
     if(!queueScope||!queueOwner){ restoreQueue(); return; }
+    // Nothing held, and the pair is known: this page's one restore pass is
+    // DONE. Left unmarked, the heartbeat repeated it every 30 seconds, and
+    // the first pass to find the page's own live turn on disk offered it back
+    // as a previous page's (live, 2026-09-20). A reload is a new page and a
+    // new pass, so nothing durable is ever locked out.
+    if(!pending){ inflightRestored = true; restoreQueue(); return; }
     if((pending.scope && pending.scope!==queueScope)||
        (pending.owner && pending.owner!==queueOwner)){
       inflightRestored = true;
@@ -5314,6 +5340,11 @@
         "again if you still need it.");
       restoreQueue(); return;
     }
+    // Written by THIS page for a turn it still owns (in flight, or failed here
+    // with its own notice and offer): not held state, nothing to restore. The
+    // pass is not marked done; the record stays the live turn's and the turn's
+    // own code retires it. Nothing about it is drawn, observed or offered.
+    if(sameInflight(pending, liveInflight)){ restoreQueue(); return; }
     if(pending.consumerRequest){
       inflightRestored=true;
       const epoch=MCP._loginEpoch, scope=queueScope, owner=queueOwner;
@@ -5337,7 +5368,7 @@
                 renderedConsumerTurns.add(turn.turn_id);
               }
             }
-            forgetInflight();restoreQueue();return;
+            forgetInflightIf(pending);restoreQueue();return;
           }
           // Keep this exact request available for a user-requested observation
           // or terminal projection repair, never a new workflow invocation.
@@ -5363,7 +5394,7 @@
     const last = founderTurns[founderTurns.length-1];
     const already = !pending.consumerRequest && !!last && last.truncated!==true && last.text === pending.message &&
       (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
-    if(already){ forgetInflight(); restoreQueue(); return; }
+    if(already){ forgetInflightIf(pending); restoreQueue(); return; }
     inflightRestored = true;
     appendMessage("founder", pending.display, null,
       typeof pending.ts==="number"?pending.ts/1000:null);
@@ -5372,7 +5403,9 @@
     again.addEventListener("click", ()=>{
       if(!ownsSavedRow(pending)) return;
       // The bubble is already drawn above, so do not echo it a second time.
-      note.remove(); forgetInflight();
+      // Only THIS record is forgotten: a turn sent meanwhile owns the disk
+      // slot now, and the resend queues behind it rather than erasing it.
+      note.remove(); forgetInflightIf(pending);
       sendTurn(pending.message, pending.display,
         {echoed:true,inputMethod:turnInputMethod(pending.inputMethod),
          consumerRequest:pending.consumerRequest||null,
