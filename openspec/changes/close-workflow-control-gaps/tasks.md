@@ -1,6 +1,6 @@
 ## 1. Shape and reproduction
 
-- [ ] 1.1 Complete independent shape/basic-safety review of September21 model-policy follow-up; prior lifecycle review retained.
+- [x] 1.1 Complete independent shape/basic-safety review of September21 model-policy follow-up; Fable3265 APPROVE, adaptations in docs/reviews/2026-09-21-served-node-policy-shape.md; prior lifecycle review retained.
 - [ ] 1.2 Add failing actual served-route/owned-persistence policy-edit regressions; prior five-gap reproductions retained.
 
 ## 2. Implement
