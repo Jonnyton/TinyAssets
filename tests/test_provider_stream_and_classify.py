@@ -514,6 +514,49 @@ class TestStreamAssembly:
 
 # ---------------------------------------------------------------------------
 # 5.2 Idle watchdog: progress keeps it alive; only real idle fails it
+# Pending native tool work is not model-idle silence. Keep this regression on
+# the real reader rather than simulating a successful ProviderResponse.
+
+
+def test_identified_pending_tool_survives_model_idle_interval():
+    start = _tool_use("example")
+    start["message"]["content"][0]["id"] = "call-a"
+    done = _tool_result()
+    done["message"]["content"][0]["tool_use_id"] = "call-a"
+    proc = FakeStreamProcess([
+        _line(INIT), _line(start), (0.35, _line(done)), _line(_result("done")),
+    ])
+    response = _run_stream(proc, _FAST)
+    assert response.text == "done"
+    assert response.side_effect_state == "committed"
+
+
+def test_one_completed_tool_does_not_hide_another_pending_tool():
+    first, second = _tool_use("first"), _tool_use("second")
+    first["message"]["content"][0]["id"] = "call-a"
+    second["message"]["content"][0]["id"] = "call-b"
+    done_a, done_b = _tool_result(), _tool_result()
+    done_a["message"]["content"][0]["tool_use_id"] = "call-a"
+    done_b["message"]["content"][0]["tool_use_id"] = "call-b"
+    proc = FakeStreamProcess([
+        _line(INIT), _line(first), _line(second), _line(done_a),
+        _line(_assistant_text("still waiting")), (0.35, _line(done_b)),
+        _line(_result("done")),
+    ])
+    assert _run_stream(proc, _FAST).text == "done"
+
+
+def test_completed_identified_tool_restores_model_idle_interval():
+    start = _tool_use("example")
+    start["message"]["content"][0]["id"] = "call-a"
+    done = _tool_result()
+    done["message"]["content"][0]["tool_use_id"] = "call-a"
+    proc = FakeStreamProcess([
+        _line(INIT), _line(start), _line(done), (0.35, _line(_result("late"))),
+    ])
+    with pytest.raises(ProviderIdleTimeoutError):
+        _run_stream(proc, _FAST)
+
 # ---------------------------------------------------------------------------
 
 
