@@ -754,6 +754,78 @@ _SERVED_STATE_FIELD_TEXT = ("name", "description", "reducer")
 _SERVED_MAX_SPEC_BYTES = 8 * 1024 * 1024
 
 
+def _validate_served_effect_declaration(effects: object) -> None:
+    """Validate ONE node's served effect declaration. Raises ValueError, else returns.
+
+    The single grammar behind every served surface that can write a declaration —
+    create, patch ``add_node`` and patch ``update_node``. A second copy would drift,
+    and a drifted copy is how an unadmitted sink reaches storage.
+
+    Channel/consent slice: the ONE channel-agnostic effect node
+    (``authenticated_external_call``) plus ``workspace`` are allowed; every other sink
+    is refused (an allowlist, not a denylist — the platform ships exactly two sinks and
+    channels stay USER-built via this one node, never hard-coded effectors). Declaring
+    the sink NAME fires nothing and grants nothing: the run-time effector re-checks the
+    connection grant bound to THIS universe + the per-destination effector consent +
+    ``TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED`` + SSRF, regardless of this
+    declaration, and the consent itself is granted via the served ``source_channel``
+    verb. Editing a declaration therefore cannot mint authority — only name a sink the
+    runtime will independently refuse or admit.
+
+    ``workspace`` joined the allowlist on 2026-08-31, on the same terms: it arrives WITH
+    the channel / consent + budget slice the earlier sinks lacked. Typed consents per
+    (op, connection, repo) answered on the request rail -- and ONLY there, since
+    ``source_channel`` now refuses to self-approve this sink; plus a ``workspace``
+    admission ledger charging jobs and bytes per universe-hour with the maximum reserved
+    BEFORE the wire. Everything else stays refused.
+
+    Stated narrowly on purpose. A Codex refute review falsified the two stronger claims
+    an earlier draft of this comment made, and both are real:
+      * the job locks are REENTRANT on ``run_id``, deliberately, so a run can check out
+        and then push. "One job per universe" therefore holds ACROSS runs, not within one.
+      * the byte ledger is accounting, not enforcement: nothing measures the tree while a
+        node writes to it, and inside the jail the only disk bound is a 512 MiB per-file
+        RLIMIT_FSIZE.
+    Neither is introduced here -- both predate this widening -- and neither is repaired by
+    current serving-owner admission. They are written up with reproduction notes in
+    docs/concerns/2026-08-31-workspace-admission-claims-are-narrower-than-stated.md
+    Fix them there, and tighten this comment when they land.
+    """
+    if effects is None:
+        # Creation and the canonical updater both treat explicit null as empty.
+        return
+    from tinyassets.effectors.authenticated_external_call import (
+        EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+    )
+    from tinyassets.effectors.workspace import EXTERNAL_WRITE_SINK_WORKSPACE
+
+    if not isinstance(effects, list) or not all(isinstance(e, str) for e in effects):
+        raise ValueError("node 'effects' must be a JSON array of strings")
+    served_sinks = {
+        EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+        EXTERNAL_WRITE_SINK_WORKSPACE,
+    }
+    for sink in effects:
+        if sink not in served_sinks:
+            raise ValueError(
+                f"effect sink '{sink}' is not available on the served build "
+                "surface; allowed: "
+                + ", ".join(f"'{name}'" for name in sorted(served_sinks))
+            )
+    # The run-time effector dispatches EVERY entry in the list, so a node declaring N
+    # sinks (or the SAME sink N times) fires N outbound calls from one node. The
+    # destination lives in the run-time packet, not here, so one sink per node is all
+    # the grammar ever needs: require exactly [] or a single admitted sink — one node,
+    # one dispatch — which keeps a node's outbound fan-out readable in the graph rather
+    # than hidden inside a list. This is a packet-dispatch contract, not a size cap:
+    # there is NO maximum on effect nodes in a branch (see _SERVED_MAX_SPEC_BYTES).
+    if len(effects) > 1:
+        raise ValueError(
+            "a node may declare at most one effect sink; use a "
+            "separate node per outbound call or workspace operation"
+        )
+
+
 def _sanitize_served_branch_spec(spec: dict) -> None:
     """Strip everything a served (autonomous) create must not carry, IN PLACE.
 
@@ -848,76 +920,12 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                         "yet; build a self-contained graph (sub-branch invocation "
                         "arrives with the channel/consent slice)"
                     )
-            # Channel/consent slice: the ONE channel-agnostic effect node
-            # (authenticated_external_call) is allowed; every other sink is refused
-            # (an allowlist, not a denylist — the platform ships exactly two sinks and
-            # channels stay USER-built via this one node, never hard-coded effectors).
-            # Building declares only the sink NAME and fires nothing; the run-time
-            # effector re-checks the connection grant bound to THIS universe + the
-            # per-destination effector consent + TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED
-            # + SSRF, regardless of this declaration. The consent itself is granted via
-            # the served source_channel verb.
+            # One grammar for every served surface that writes a declaration —
+            # see _validate_served_effect_declaration for the sink allowlist and
+            # why a declaration grants nothing.
             effects = n.get("effects")
             if effects is not None:
-                from tinyassets.effectors.authenticated_external_call import (
-                    EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
-                )
-                from tinyassets.effectors.workspace import (
-                    EXTERNAL_WRITE_SINK_WORKSPACE,
-                )
-
-                if not isinstance(effects, list) or not all(
-                    isinstance(e, str) for e in effects
-                ):
-                    raise ValueError("node 'effects' must be a JSON array of strings")
-                # `workspace` joined the allowlist on 2026-08-31, on the same
-                # terms the comment above sets: it arrives WITH the channel /
-                # consent + budget slice the earlier sinks lacked. Typed
-                # consents per (op, connection, repo) answered on the request
-                # rail -- and ONLY there, since `source_channel` now refuses to
-                # self-approve this sink; plus a `workspace` admission ledger
-                # charging jobs and bytes per universe-hour with the maximum
-                # reserved BEFORE the wire. Everything else stays refused -
-                # this is still an allowlist, and channels stay USER-built over
-                # the one channel-agnostic node.
-                #
-                # Stated narrowly on purpose. A Codex refute review falsified
-                # the two stronger claims an earlier draft of this comment made,
-                # and both are real:
-                #   * the job locks are REENTRANT on `run_id`, deliberately, so
-                #     a run can check out and then push. "One job per universe"
-                #     therefore holds ACROSS runs, not within one.
-                #   * the byte ledger is accounting, not enforcement: nothing
-                #     measures the tree while a node writes to it, and inside
-                #     the jail the only disk bound is a 512 MiB per-file
-                #     RLIMIT_FSIZE.
-                # Neither is introduced here -- both predate this widening --
-                # and neither is repaired by current serving-owner admission. They
-                # are written up with reproduction notes in
-                # docs/concerns/2026-08-31-workspace-admission-claims-are-narrower-than-stated.md
-                # Fix them there, and tighten this comment when they land.
-                served_sinks = {
-                    EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
-                    EXTERNAL_WRITE_SINK_WORKSPACE,
-                }
-                for sink in effects:
-                    if sink not in served_sinks:
-                        raise ValueError(
-                            f"effect sink '{sink}' is not available on the served build "
-                            "surface; allowed: "
-                            + ", ".join(f"'{name}'" for name in sorted(served_sinks))
-                        )
-                # The run-time effector dispatches EVERY entry in the list, so a single
-                # node with N duplicate sinks fires N outbound calls — bypassing a
-                # node-count cap (Codex #1, PR #2517). The one channel sink is only ever
-                # needed once per node (the destination lives in the run-time packet, not
-                # here), so require exactly [] or [authenticated_external_call]: one node,
-                # one dispatch, so the effect-node cap is the true outbound ceiling.
-                if len(effects) > 1:
-                    raise ValueError(
-                        "a node may declare at most one effect sink; use a "
-                        "separate node per outbound call or workspace operation"
-                    )
+                _validate_served_effect_declaration(effects)
                 if effects:
                     effect_nodes += 1
             # The typed 'handoffs' path (outbound_boundary) is a DIFFERENT effect
@@ -959,11 +967,11 @@ _SERVED_PATCH_SAFE_OPS = frozenset({
 #: Refused outright: these expose the branch publicly or graft a foreign lineage — the
 #: exact top-level fields the create sanitizer strips (published/public/visibility/fork_from).
 _SERVED_PATCH_DANGEROUS_OPS = frozenset({"set_published", "set_visibility", "set_fork_from"})
-#: A served update_node may ONLY retune content plus the node's model ROUTING
-#: PREFERENCE. The downstream _apply_node_updates allowlist also permits
-#: tools_allowed / enabled / retry_policy / input_keys / output_keys, so an update could
-#: RE-ACTIVATE an already-approved node with new capabilities WITHOUT re-invalidating
-#: its approval hash (Codex #1, PR #2518). Those stay refused here. ``llm_policy`` is
+#: A served update_node retunes content, routing preferences and validated effect /
+#: workspace declarations. The canonical updater also permits tools_allowed, enabled,
+#: retry_policy, input_keys and output_keys; those remain outside this edit contract.
+#: Source approval is provenance, not execution authority: authorship, the sandbox
+#: and per-dispatch consent enforce execution. ``llm_policy`` is
 #: different in kind: it is a preference the runtime consults when choosing among
 #: providers the universe ALREADY serves, never an authority grant — a pin naming an
 #: unbound provider still fails run admission with provider_not_bound. Served create /
@@ -971,8 +979,18 @@ _SERVED_PATCH_DANGEROUS_OPS = frozenset({"set_published", "set_visibility", "set
 #: existing pin in place instead of rebuilding the workflow (live 2026-09-21). Its
 #: dict / JSON-string / null grammar is owned by the canonical
 #: _coerce_llm_policy_update + _validate_llm_policy_shape; nothing is re-typed here.
+#: ``effects`` / ``workspace`` are the same kind of thing as llm_policy, not the
+#: tools_allowed cohort: they NAME a sink and an ancestor checkout node, and the
+#: runtime re-derives every authority per dispatch (connection grant bound to this
+#: universe, per-destination consent, workspace admission + ancestor/lease check,
+#: SSRF, sandbox). Declaring one fires nothing and grants nothing, so an owner can
+#: revise an existing workflow's declarations in place instead of rebuilding the
+#: branch. ``effects`` goes through the SHARED create/add/update declaration
+#: validator; ``workspace`` keeps its canonical string/null grammar downstream
+#: (a second grammar here would drift from create/add_node).
 _SERVED_PATCH_UPDATE_NODE_ALLOWED = frozenset({
     "op", "node_id", "prompt_template", "source_code", "display_name", "llm_policy",
+    "effects", "workspace",
 })
 #: Metadata setter ops whose single field must be a string, else SQLite raises
 #: ProgrammingError or persists a malformed value (Codex #4, PR #2518).
@@ -1022,10 +1040,11 @@ def _sanitize_served_patch_changes(changes: object) -> str:
 
     Allowlist by op kind: safe topology/metadata ops pass (with per-op field-type
     validation); publish/visibility/fork ops are refused; an ``add_node`` op is run
-    through the SAME per-node create sanitizer and may NOT declare an effect (channel
-    nodes are added via create, which caps them, so repeated patches cannot accumulate
-    effect nodes past the ceiling); an ``update_node`` may only retune content, never
-    execution/data authority. Raises ValueError on any violation.
+    through the SAME per-node create sanitizer, so it may declare an effect on exactly
+    the terms creation admits (no count cap — none exists anywhere, see
+    _SERVED_MAX_SPEC_BYTES); an ``update_node`` may retune content, the model routing
+    preference and the node's own effect/workspace DECLARATIONS, never execution/data
+    authority. Raises ValueError on any violation.
     """
     import json
 
@@ -1069,14 +1088,11 @@ def _sanitize_served_patch_changes(changes: object) -> str:
             wrapper = {"node_defs": [node]}
             _sanitize_served_branch_spec(wrapper)
             sanitized = wrapper["node_defs"][0]
-            if sanitized.get("effects"):
-                # No effect/channel nodes via patch: the batch cap can't see the branch's
-                # EXISTING effect nodes, so repeated patches would accumulate past the
-                # ceiling (Codex #3). Channel nodes are added via create (capped per build).
-                raise ValueError(
-                    "adding an effect/channel node via patch is not available on the "
-                    "served edit surface; create a branch with the channel node instead"
-                )
+            # An effect declaration survives on the same terms creation admits it:
+            # the shared validator already ran inside the create sanitizer, and there
+            # is no per-branch effect-node ceiling to accumulate past (that cap was
+            # removed with `no-graph-size-caps`). Usage bounds a big graph — admissions,
+            # consent, the sandbox — never its size.
             op.clear()
             op["op"] = "add_node"
             op.update(sanitized)
@@ -1086,16 +1102,25 @@ def _sanitize_served_patch_changes(changes: object) -> str:
                     raise ValueError(
                         f"patch update_node may not set '{field}' on the served edit "
                         "surface (only node_id + prompt_template/source_code/"
-                        "display_name/llm_policy)"
+                        "display_name/llm_policy/effects/workspace)"
                     )
             for field in ("node_id", "prompt_template", "source_code", "display_name"):
                 if field in op and not isinstance(op[field], str):
                     raise ValueError(f"patch update_node '{field}' must be a string")
-            # llm_policy is deliberately NOT type-checked here: a dict replaces the
-            # node's preference, explicit null clears it, a JSON string is decoded,
-            # anything else is refused - all by the canonical coercer downstream, in
-            # the same staging transaction, so a malformed policy leaves the branch
-            # untouched. A second grammar here would drift from create/add_node.
+            if "effects" in op:
+                # The SAME declaration grammar served creation applies — one shared
+                # validator, so the edit surface can never admit a sink create refuses.
+                # `[]` or null clears it; omitting the key leaves it unchanged.
+                _validate_served_effect_declaration(op["effects"])
+            # llm_policy and workspace are deliberately NOT type-checked here: a dict
+            # replaces the node's preference, explicit null clears it, a JSON string is
+            # decoded, anything else is refused; a workspace string binds an ancestor
+            # checkout node and null/"" clears it - all by the canonical coercers
+            # downstream, in the same staging transaction, so a malformed value leaves
+            # the branch untouched. A second grammar here would drift from
+            # create/add_node. The workspace NAME is not a grant and not a host path:
+            # the compiler still refuses one that is not an ancestor in the run, and
+            # the lease/admission checks still run per dispatch.
         elif kind in _SERVED_PATCH_SAFE_OPS:
             setter = _SERVED_PATCH_STR_SETTERS.get(kind)
             if setter is not None and setter in op and not isinstance(op[setter], str):
@@ -1572,6 +1597,18 @@ def write_graph(
     a ``{"preferred": {"provider": "<name>"}}`` dict replaces the pin, explicit
     ``null`` clears it, omitting the key leaves it unchanged. That is a routing
     preference, not a provider grant (see ``connect_compute``).
+    ``effects`` and ``workspace`` are editable the same way, so an existing
+    workflow never has to be rebuilt to change what a node does: ``"effects":
+    ["authenticated_external_call"]`` (or ``["workspace"]``) declares the sink,
+    ``"effects": []`` (or ``null``) clears it, and omitting the key leaves it
+    unchanged; ``"workspace": "<ancestor checkout node id>"`` binds the checkout
+    and ``null`` clears it. ``op=add_node`` may likewise add an effect-bearing
+    node to an existing branch, on exactly the terms create accepts (one sink per
+    node; there is no limit on how many such nodes a branch may have).
+    A declaration is NOT consent and NOT a credential: every dispatch is still
+    checked against the connection grant bound to this universe, the
+    per-destination consent granted via ``source_channel``, and the workspace
+    admission + ancestor/lease rules. Editing fires nothing.
     Code runs only in the
     universe that authored it: a public branch's code must be remixed
     (``fork_from``) before it runs as yours. Stdlib only (``json re base64
