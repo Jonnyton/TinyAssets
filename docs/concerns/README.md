@@ -25,7 +25,8 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
-| **note** | [Served effect-edit parity](2026-09-21-served-node-effect-edit-parity.md) — creation accepts effect nodes while served patch add/update refuse them; preserve approval invalidation and execution authority in any correction | 2026-09-21 |
+| **note** | [Served node editable-field parity](2026-09-21-served-node-editable-field-parity.md) — effects/workspace edits work; ordinary output-key and timeout edits remain refused | 2026-09-21 |
+| **note** | [Effect-edit organic-use watch](2026-09-21-effect-edit-organic-use-watch.md) — deployed and rendered acceptance passed; independent customer clean use not yet observed | 2026-09-21 |
 | **P1** | [Late spoken-turn failure can offer another account's text](2026-09-20-spoken-turn-account-transition.md) — source-derived missing owner/home guard; typed recovery patch does not claim voice parity | 2026-09-20 |
 | **P1** | [Uploaded attachment cannot be processed through ordinary agent use](2026-09-20-uploaded-file-binding-discovery.md) — guidance deployed213454c4; fresh ordinary upload still lacks live byte-read proof, so the concern remains open | 2026-09-20 |
 | **P2** | [Account change that skips sign-out keeps the previous thread](2026-09-20-account-change-without-sign-out.md) — the app's account boundary is fenced at `enterSignedOut` and around the history/send awaits; a verified account or home change reaching `enterSignedIn` without a sign-out would still keep the old thread and `historyLoaded`. No live path found | 2026-09-20 |
