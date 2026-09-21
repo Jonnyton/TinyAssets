@@ -36,4 +36,4 @@ work. Durable recovery SHALL remain owner/home-scoped and available on reload.
 #### Scenario: Previous-page observation finishes after a newer send
 - **WHEN** a previous-page request is observed while a newer turn starts
 - **THEN** clearing the observed request SHALL NOT erase the newer turn's recovery
-- **AND** account/home changes fence recovery for any turn, and a typed turn's late reply or failure from another account paints nothing
+- **AND** account/home changes fence recovery for any turn, and a typed or spoken turn's late reply or failure from another account or home paints nothing, offers no retry, signs nobody out, and hands no reply to the voice session now on screen
