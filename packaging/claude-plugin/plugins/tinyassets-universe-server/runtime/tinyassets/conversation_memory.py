@@ -66,6 +66,14 @@ class Msg:
     execution: ExecutionReceipt | None = None
     failure: TurnFailure | None = None
     consumer_turn_id: str | None = None  # Display dedupe only; never execution authority.
+    # The store row's own key, when this message was loaded from a store that has
+    # one. APPENDED LAST and defaulted so every existing positional construction
+    # and every equality/hash of an id-less Msg is unchanged. It is a RETRIEVAL
+    # handle for the lossless reader, never authority: holding it proves nothing,
+    # and the reader re-derives the principal that may use it. A row without one
+    # (a legacy store, an in-memory Msg) keeps ``None`` rather than a fabricated
+    # handle derived from order or timestamp.
+    id: int | None = None
 
 
 #: Longest interlocutor name allowed into the fence — bounds the header/footer so

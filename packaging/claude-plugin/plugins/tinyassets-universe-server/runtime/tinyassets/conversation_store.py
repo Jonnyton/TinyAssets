@@ -176,17 +176,20 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int) -> lis
     failure_column = failure_column_sql(conn)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_turns)")}
     identity_column = "ext_id" if "ext_id" in columns else "''"
+    # A store old enough to lack the key reports NO handle rather than a
+    # position-derived stand-in: an expansion that cannot be keyed says so.
+    id_column = "id" if "id" in columns else "NULL"
     has_projections = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                                    "AND name='conversation_terminal_projections'").fetchone()
     rows = conn.execute(
         f"SELECT speaker, content, ts, {receipt_column}, {failure_column}, "
-        f"{identity_column}, turn_no "
+        f"{identity_column}, turn_no, {id_column} "
         "FROM conversation_turns "
         "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
         (session_id, max(1, int(limit))),
     ).fetchall()
     result = []
-    for speaker, content, ts, raw, failure_raw, ext_id, turn_no in reversed(rows):
+    for speaker, content, ts, raw, failure_raw, ext_id, turn_no, row_id in reversed(rows):
         receipt = None
         if speaker == "universe" and isinstance(raw, str) and 0 < len(raw) <= 4096:
             try:
@@ -208,7 +211,8 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int) -> lis
             ).fetchone():
                 consumer_id = parts[1]
         result.append(Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts), receipt,
-                          read_turn_failure(speaker, failure_raw), consumer_id))
+                          read_turn_failure(speaker, failure_raw), consumer_id,
+                          id=row_id if isinstance(row_id, int) else None))
     return result
 
 

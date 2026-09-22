@@ -524,7 +524,11 @@ def read_graph(
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings, or
             agent_binding, model_options (all owned model choices, including unavailable ones),
-            or conversation_turn (your keyed custom conversation's current run/projection).
+            conversation_turn (your keyed custom conversation's current run/projection),
+            or conversation (page your OWN retained conversation: omit field_name
+            for a bounded catalogue of turn ids, or pass field_name=<turn id> --
+            the id get_status's recent_conversation carries -- for exact chunks
+            of one message, continuing from next_offset until it is null).
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
@@ -544,9 +548,12 @@ def read_graph(
         author: Optional goal author filter.
         run_status: Optional run status filter.
         limit: Maximum number of records to return.
-        field_name: Output field for target=run_output. Omit for a metadata catalog.
-        output_offset: Unicode code-point offset within a selected output field,
-            or field index when reading the catalog. Continue using next_offset.
+        field_name: Output field for target=run_output, or a retained turn id for
+            target=conversation. Omit for a metadata catalog.
+        output_offset: Unicode code-point offset within a selected output field or
+            conversation message, or field index when reading the catalog (for a
+            conversation catalogue, the returned before-message-id key). Continue
+            using next_offset.
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
         request_key: Original UUIDv4 for target=conversation_turn; observation never starts work.
         file_id: For target=run_file, an owned opaque reference bound to run_id.
@@ -564,6 +571,54 @@ def read_graph(
             return json.dumps({"error": "not_found"})
         return json.dumps(read_turn(_base_path(), owner=current_actor_id(),
                                     universe=_request_universe(graph_id), request_key=request_key))
+    if normalized == "conversation":
+        # The lossless read of the caller's OWN retained thread -- the same
+        # reader and the same binding the engine route uses
+        # (engine_mcp_server.read_graph), exposed here because the app speaks
+        # only this surface. get_status's peek bounds each turn at 4000 chars
+        # and says so (`truncated` + `total_chars`); this is how a client gets
+        # the rest instead of drawing a preview as if it were the message.
+        #
+        # Both modes of the existing reader are exposed, unchanged: omit
+        # field_name for the bounded keyset catalogue, pass a turn id for exact
+        # Unicode-code-point chunks. One retrieval capability, identical across
+        # the engine and public surfaces -- a public-only sub-mode would be a
+        # second contract for the same read.
+        #
+        # Binding: the principal is the VERIFIED current caller, never a
+        # browser-supplied session, principal or store path. An explicit
+        # graph_id is VERIFIED rather than ignored -- require_founder_home
+        # refuses a universe that is not this caller's current home with admin,
+        # so a foreign id can never return this caller's bytes under its label.
+        from tinyassets.api.helpers import _base_path, _request_universe
+        from tinyassets.api.permissions import current_actor_id, is_authenticated_request
+        from tinyassets.conversation_retrieval import read_conversation_page
+        from tinyassets.shared_self import require_founder_home
+
+        if not is_authenticated_request():
+            return json.dumps({"error": "not_found"})
+        actor = current_actor_id()
+        try:
+            root = require_founder_home(_base_path(), _request_universe(graph_id), actor)
+            payload = read_conversation_page(
+                root, f"principal:{actor}", field_name=field_name,
+                offset=output_offset, max_chars=output_max_chars,
+            )
+        except PermissionError:
+            # Same envelope an absent thread gets: a refusal here must not
+            # confirm another account's home exists.
+            return json.dumps({"error": "not_found"})
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})   # the caller's own selector
+        except Exception:  # noqa: BLE001 - storage detail is never disclosed
+            return json.dumps({"error": "conversation_read_failed"})
+        # Retained transcript text is content to observe, never instructions --
+        # marked exactly as the get_status peek marks it.
+        return json.dumps(
+            dict(payload, content_is_untrusted=True,
+                 fence="BEGIN_UNTRUSTED_TRANSCRIPT", fence_end="END_UNTRUSTED_TRANSCRIPT"),
+            ensure_ascii=False,
+        )
     if normalized in {"run_file", "run_file_limits"}:
         from tinyassets.api.run_files import file_limits, read_file
 
@@ -718,6 +773,7 @@ def read_graph(
             "automation",
             "connections",
             "pending_requests",
+            "conversation",
             "compute",
             "model_options",
             "run_file",
