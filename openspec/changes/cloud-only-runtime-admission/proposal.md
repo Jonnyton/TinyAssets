@@ -60,8 +60,11 @@ handles and the protected-SHA gate at 05:20 UTC. Ordinary primary-app retest 8
 completed 22:28 PDT: five controls pass, sequential 37.3s, parallel 158.4s;
 intermittents remain open. **This is not cloud-boundary or free-user proof.**
 The cloud-side tunnel remains and routing, credential and data custody are all
-still open. The bounded preflight is PR #3914 — still pending CI, with no live
-observation yet, so no cloud fact from it may be asserted anywhere here.
+still open. PR #3914 mergedfdb6ff15; hosted run35694437735 on2026-09-22 at06:21UTC
+observed reachable container metadata matching the expected droplet and correct
+public Worker path bindings. Tunnel/DNS unknown (missing account/tunnel IDs),
+credential custody unknown and SSH trust TOFU-unverified. Overall unknown,
+boundary_closed=false. This clears only the runtime builder's metadata gate.
 
 ## What Changes
 
@@ -114,7 +117,7 @@ enforcement from cloud network/credential custody.
 7. **Custody, stated and verified, not coded here** — the cloud network and
    credential controls (Cloudflare tunnel/Access, DO firewall, GitHub secrets)
    are named as invariants and verified read-only from hosted CI by a bounded
-   preflight (`scripts/cloud_only_preflight.py`, added here, **not run**).
+   preflight (`scripts/cloud_only_preflight.py`, hosted run35694437735).
    Production authority rests on this custody layer; the resolver is an
    accidental-start guard, not attestation.
 
@@ -134,7 +137,7 @@ enforcement from cloud network/credential custody.
   adds a metadata read and a ledger write on a live path, so it is staged and
   observed, never asserted as inert.
 - Non-goals: no new privileged agent fleet, no new provider account, no new MCP
-  tool, no runtime guard in this change, no infrastructure mutation.
+  tool, no refusal flip in the first record-only slice, no custody mutation.
 
 ## What this change does *not* claim
 

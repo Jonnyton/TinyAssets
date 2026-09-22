@@ -511,6 +511,7 @@ def resolve_expected_droplet(token: str | None, host_hint: str | None) -> dict[s
     return fact(
         "expected_droplet", PASS, "resolved",
         _instance_tag=correlation_tag(matched_id),
+        _instance_id=matched_id,  # internal; stripped before output
         _addresses=sorted(addresses),  # internal; stripped before output
     )
 

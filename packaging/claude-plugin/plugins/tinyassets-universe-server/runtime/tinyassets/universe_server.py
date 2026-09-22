@@ -4087,6 +4087,31 @@ def main(
         host, port, transport,
     )
 
+    # Record-only cloud provenance observation (openspec change
+    # cloud-only-runtime-admission, task 4). OBSERVATION ONLY: nothing branches
+    # on this verdict. Admission, claim CAS, runtime registration, per-universe
+    # authority and provider execution are all unchanged by it, and an unadmitted
+    # verdict does not refuse anything in this slice. Enforcement is tasks 6-8
+    # and needs its own live positive observation first.
+    #
+    # Placed here deliberately: before any boot maintenance, outside every
+    # database transaction, so the single bounded link-local read can never run
+    # under the SQLite write lock. Resolves at most once per process; the logged
+    # shape is sanitized (verdict + reason token + booleans, never an id).
+    try:
+        from tinyassets.platform_runtime_provenance import (
+            observe_platform_runtime_provenance,
+            sanitized_observation_fields,
+        )
+
+        _provenance = observe_platform_runtime_provenance()
+        logger.info(
+            "platform runtime provenance (observation only, enforcement=none): %s",
+            sanitized_observation_fields(_provenance),
+        )
+    except Exception:  # noqa: BLE001 - an observation must never block boot
+        logger.exception("platform runtime provenance: observation failed")
+
     # Served-budget maintenance for ALL transports (Codex re-review 2026-08-19:
     # boot reconcile + the lease reconciler were streamable-http-only, so sse/
     # stdio startup skipped the promised orphan cleanup). Boot reconciliation

@@ -184,9 +184,12 @@ derived value; never `set -x`.
 | Canonical MCP paths select the expected Worker | Cloudflare API, `CLOUDFLARE_ZONE_ID` | `GET /client/v4/zones/{zone_id}/workers/routes`; require continuous coverage and reject or mark unknown competing overrides. This checks configured routing, not deployed Worker source or credential custody. |
 | Which build is actually running | in-repo, existing | `python scripts/deployed_sha.py --assert-contains <sha>` (bearer `/mcp/pulse`) |
 
-Provider documentation above is official public documentation, cited as the
-contract shape. It is **not** observed deployment: nothing in this change ran any
-of these calls, and none of these values has been read.
+Provider documentation above establishes contract shape, not deployment.
+Hosted run35694437735 at06:21UTC2026-09-22 observed reachable container metadata,
+resolved expected droplet and identity_match=true, plus three canonical Worker
+paths bound correctly. Tunnel/DNS facts remain unknown for missing account/tunnel
+IDs; custody unknown and SSH trust TOFU-unverified. No raw identities or secrets
+were retrieved locally. Overall unknown, enforcement none, boundary not closed.
 
 ## Exact remaining external facts (not assumed, not blocking the other lanes)
 
@@ -196,13 +199,9 @@ of these calls, and none of these values has been read.
    carries account-list + `Cloudflare Tunnel: Read` scope; the token's scope was
    never read. Otherwise a non-secret repo **variable** (not a secret) is needed.
    Blocks only the connector-set verification, not the resolver.
-2. **Is `169.254.169.254` reachable from inside the daemon container as
-   deployed?** Normally yes on a DO droplet's default bridge, but this droplet's
-   egress policy was not tested. Must be probed once on the droplet before the
-   resolver's primary evidence is committed to. Fallback if unreachable: read the
-   metadata id on the host during deploy and inject it — which is copyable, so
-   the resolver would then need a second non-copyable factor, and the honest
-   claim would weaken. This is the single fact that could change the design.
+2. **Container metadata reachability:** observed reachable and matching the
+   expected droplet in hosted run35694437735. This resolves the builder gate,
+   not custody. No copied host metadata fallback is required or authorized.
 3. **The droplet's id** (we hold `DO_DROPLET_HOST`, a hostname/IP, not an id).
    Derivable read-only in CI from fact 1's DO call; recorded nowhere in-repo yet.
 4. **Whether any non-droplet connector is registered today.** Answerable only by
@@ -293,8 +292,8 @@ handles and the protected-SHA gate at 05:20 UTC. Ordinary primary-app retest 8
 completed 22:28 PDT: five controls pass, sequential 37.3s, parallel 158.4s,
 intermittents still open. None of that is cloud-boundary or free-user proof —
 the cloud-side tunnel remains and custody is open. The bounded preflight is
-PR #3914, **pending CI with no live observation yet**; no cloud fact may be
-asserted from it until it has actually run.
+PR #3914, mergedfdb6ff15; actual hosted observation35694437735 is recorded above.
+Do not upgrade its limited passing facts into an overall cloud-boundary claim.
 
 ## Off-cloud public routing: prevention, not detection (review finding 2)
 
@@ -361,12 +360,12 @@ Layer C invariant and verified read-only, because code cannot enforce it.
 
 ## Bounded hosted preflight (review finding 3)
 
-Three facts the design depends on have never been observed:
+The preflight was designed to observe three previously unknown facts:
 (a) whether `169.254.169.254` answers from inside the deployed daemon container,
 (b) the droplet id the resolver must match, and
 (c) whether any connector outside the droplet serves the public tunnel today.
 
-`scripts/cloud_only_preflight.py` (added in this change, **not run**) resolves
+`scripts/cloud_only_preflight.py` (hosted run35694437735) resolves
 them read-only from hosted CI. Its bounds are part of the design, not
 implementation detail:
 
@@ -392,7 +391,7 @@ implementation detail:
   secrets). No new secret, no new provider account, no new MCP tool. It must not
   be run on the founder's PC with production credentials.
 
-**Workflow placement (candidate added, not deployed or executed):** a
+**Workflow placement (merged and executed in run35694437735):** a
 new `.github/workflows/cloud-only-preflight.yml`, `runs-on: ubuntu-latest`,
 `permissions: contents: read` only, default-branch `workflow_dispatch` only,
 **never** on `pull_request` (a fork PR must not reach these secrets). It is a
@@ -486,12 +485,61 @@ describes API-token IP/TTL restrictions (Verify Token is exempt from IP filterin
 not an IP restriction on connector tokens. No token rotation or access change was
 performed. These constraints require cross-family review before implementation.
 
+## Expected-instance state placement (task 4 implementation decision, 2026-09-21)
+
+The ordering constraint above asked for the expected identity to be prepared
+before the candidate starts and preserved across receipt replacement and a
+compatible rollback. A field in the existing success receipt was considered first
+and rejected on three counts, all readable in `deploy-prod.yml`:
+
+1. **Wrong time.** `Publish release-state receipt` runs after the fail-safe
+   deploy and the public canary (steps at `:317`, `:347`, `:376`). A candidate
+   that resolves provenance at startup would read a field that does not exist
+   yet on its first boot, so first enforcement would depend on absence.
+2. **Rewritten whole.** The receipt is generated by `cat > release-state.json`
+   and installed over the previous file. Any rewrite that does not know about the
+   field erases it; that includes rollback and reconcile paths that publish their
+   own receipt.
+3. **Wrong role.** The mutable success receipt is already documented above as not
+   a trust anchor, and it carries *build* identity. Expected *machine* identity
+   has a different lifetime — it survives image rollback because the droplet does
+   not change — so co-locating them makes each rewrite a chance to lose it.
+
+**Decision:** one minimal dedicated typed file in the existing data root —
+`platform-expected-instance.json`, resolved through `tinyassets.storage.data_dir()`
+with no path logic of its own, so a container deploy with
+`TINYASSETS_DATA_DIR=/data` writes and reads inside the same bind-mount. Shape:
+`{"schema": "platform_expected_instance", "version": 1,
+"expected_instance_id": "<bare digits>", "recorded_at": …, "enforced": false}`.
+No storage schema, no table, no migration, no MCP surface, no new credential —
+`DO_API_TOKEN` already exists for the preflight and is read only on hosted CI.
+
+The identity comes from the DigitalOcean inventory read matched exactly against
+`DO_DROPLET_HOST` (`scripts/prepare_expected_instance_state.py` reusing
+`cloud_only_preflight.resolve_expected_droplet`), never from the droplet's own
+metadata answer — recording what the box claims and then comparing it to the same
+claim would be circular. The raw id stays in an underscore-prefixed internal fact
+field, which the preflight's output sanitizer already strips, and neither CI logs
+nor the runtime verdict object ever carries it.
+
+**Record-only consequences, stated plainly.** The preparation step is
+`continue-on-error: true` in this slice: an observation must not be able to take a
+deploy down. If it does not run, the resolver observes `expected_identity_missing`
+and records not-cloud, which is the fail-closed direction and changes no admission
+behaviour. The enforcement flip (tasks 6–8) must make that step required, because
+at that point a missing expectation stops being an observation and starts being a
+refusal. What is built here is the candidate only: one resolver, one immutable
+per-process observation, one sanitized startup log line, zero refusal sites.
+Task 5's live halves — that it resolves CLOUD on the real droplet, that the
+expected id survives a real redeploy, restart and rollback — are **not** proved by
+any of this and remain open.
+
 ## Rollout
 
-The runtime builder is gated on an **actual metadata diagnostic**, not on a
-predicted one: PR #3914's preflight must have run and reported a real
-observation first. No cloud fact is invented ahead of it, and nothing here
-depends on a result that does not yet exist.
+The runtime builder's actual-metadata gate is satisfied by hosted
+run35694437735, not by prediction. Runtime code may now be built for the
+record-only slice; enforcement still requires its own live positive observation
+and reviewed refusal sites. Unknown custody facts remain open independently.
 
 Resolver + ledger then land in **record-only** mode; confirm on the droplet that
 the observed instance matches the expected id; then flip (A)–(E) to refuse in one

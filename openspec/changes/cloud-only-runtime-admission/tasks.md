@@ -1,17 +1,23 @@
 # Tasks — cloud-only runtime admission
 
 No runtime guard lands until this change clears cross-family review. Task 1 is
-the bounded hosted preflight — **PR #3914, pending CI, not yet observed**; it
+the bounded hosted preflight — **PR #3914 merged, observed06:21UTC September22**; it
 resolves the facts that could change the design, and task 4 does not start until
 it has actually produced one. Task 6's refusal flip is gated on task 5 resolving
 CLOUD on the real droplet. Record-only stages (tasks 1, 5) are observation and
 are reported as **incomplete** and not risk-free, never as a closed boundary.
 No new gate, workflow or proposal is introduced beyond what is listed here.
 
-- [ ] 1. Land `.github/workflows/cloud-only-preflight.yml` as designed
+- [x] 1. Land `.github/workflows/cloud-only-preflight.yml` as designed
   (`ubuntu-latest`, `permissions: contents: read`, default-branch
-  `workflow_dispatch` only, never `pull_request`) — **PR #3914, pending CI with
-  no live observation yet**. Run `scripts/cloud_only_preflight.py` once after it
+  `workflow_dispatch` only, never `pull_request`) — **PR #3914 mergedfdb6ff15**.
+  Hosted run35694437735 on main completed06:21UTC2026-09-22: container metadata
+  reachable, expected droplet resolved, identity_match=true; public Worker paths
+  checked3/bound=true. Tunnel connectors and internal DNS unknown because account
+  and tunnel IDs are missing; credential custody unknown, SSH trust TOFU-unverified.
+  Overall status unknown, boundary_closed=false, enforcement=none. This clears
+  only the actual metadata observation prerequisite, not custody or enforcement.
+  Ran `scripts/cloud_only_preflight.py` once after it
   merges and record sanitized verdicts here: remote container metadata
   reachability and expected-id match, connector in-set/out-of-set counts,
   internal-origin DNS binding and canonical MCP Worker routing. Do not emit raw
