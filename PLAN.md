@@ -206,6 +206,28 @@ These names are substrate vocabulary, not a mandate that every runtime function 
 
 These principles apply to every module. They do not own a module each; they constrain how modules behave.
 
+**Cloud-only platform; personal computers are never platform dependencies**
+(founder directive, September21,2026 PDT). The public platform and its hosted
+universe service paths run exclusively on cloud infrastructure and cloud
+dependencies. `DESKTOP-KCPMGP3` is the founder's personal home desktop: it must
+never serve platform traffic, execute platform/universe work, provide a model
+relay, hold required runtime state, schedule recovery, or become a temporary,
+emergency, development-labelled or fallback production dependency. Availability
+of a local process, credential, tunnel, registration or heartbeat does not make
+it eligible. Admission and routing must enforce the boundary before any work or
+traffic can reach it; deployment and recovery must preserve it. Unknown
+provenance is not proof of a cloud executor. A hostname denylist alone is not
+the architectural boundary: hosted service admission requires independently
+established cloud eligibility and excludes the personal desktop regardless of
+aliases or local configuration. Development tools and client browsers on a PC
+are not platform services and must not be silently promoted into them. This
+supersedes earlier host/tray bridge, host-fleet and local-fallback language for
+the hosted production platform; those passages cannot authorize this machine
+or make the hosted service depend on any user's device. Required acceptance is
+negative admission/routing tests plus real cloud-only service behavior, including
+new-user free-provider onboarding. This is the required design, not a claim that
+all existing code and deployed bindings already enforce it.
+
 **Agentic hybrid search is memory.** Durable memory is a policy over multiple stores (KG traversal, vector similarity, hierarchical summaries, notes, world-state, direct tool calls). No single *index* owns truth — truth lives in the brain's canonical store and every index over it is derived and rebuildable. For the commons, and as the default organization for a universe brain, that store is the OKF bundle (Brain Module); a founder may design their own brain organization (host-approved 2026-07-25, Design Decisions), and this source-vs-index split holds for whatever organization they choose. Routing across those indexes matters more than any one of them.
 
 **Context is a managed working set.** Prompts are lossy projections over durable state. The goal is not "pack more context" but "give the model the smallest high-signal working set for the current step."
