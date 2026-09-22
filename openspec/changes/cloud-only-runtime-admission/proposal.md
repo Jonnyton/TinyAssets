@@ -131,7 +131,8 @@ enforcement from cloud network/credential custody.
 
 ## Impact
 
-- Affected specs: new capability `cloud-only-runtime-admission`.
+- Affected specs: new capability `cloud-only-runtime-admission` and the existing
+  `live-mcp-connector-surface` release-read requirement (delta and as-built sync).
 - Affected code (implementation follows review, not in this change):
   `tinyassets/branch_tasks_v2.py`, `tinyassets/daemon_registry.py`,
   `tinyassets/runtime/assigned_queue_consumer.py`,
@@ -139,10 +140,10 @@ enforcement from cloud network/credential custody.
   `tinyassets/foreground_run_provider.py`, serving startup, one new
   read-only verification workflow.
 - Risk: an over-strict resolver takes production down. Mitigated by landing the
-  resolver plus its ledger first in observe-and-record mode on the droplet,
+  resolver plus sanitized startup record/readback first in record-only mode on the droplet,
   confirming it resolves CLOUD there, and only then flipping the refusal sites.
   **Record-only is not enforcement and is not guaranteed risk-free**: it still
-  adds a metadata read and a ledger write on a live path, so it is staged and
+  adds a metadata read and a startup log record on a live path, so it is staged and
   observed, never asserted as inert.
 - Non-goals: no new privileged agent fleet, no new provider account, no new MCP
   tool, no refusal flip in the first record-only slice, no custody mutation.

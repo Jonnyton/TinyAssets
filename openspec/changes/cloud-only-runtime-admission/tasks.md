@@ -39,11 +39,12 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   invariant, application checks cannot establish exclusive custody, and the
   cloud access policy is still unverified.
 - [ ] 4. **Gated on task 1 having actually run.** Record the expected droplet id
-  into the release state `deploy-prod.yml` already writes, then implement
+  into dedicated typed expected-instance state in the canonical data volume
+  before candidate startup, separate from the release receipt, then implement
   `resolve_platform_runtime_provenance()` — fail-closed, dedicated internal
   metadata client (literal address, no redirects, sub-second timeout, no user
   input, not reachable as a user capability, SSRF link-local classification
-  unchanged), recorded-instance match, refusal ledger. Resolution happens
+  unchanged), recorded-instance match and sanitized startup record. Resolution happens
   outside any database write transaction. Resolver is **injected** in tests,
   never satisfied by an environment variable. Do not build against a predicted
   metadata result. Prepare the expected-id state before candidate startup;
@@ -69,7 +70,7 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   revision` step — no new workflow, secret or desktop credential. Do not flip a
   resolver that cannot resolve CLOUD in production. Report this stage as
   observation, not enforcement and not risk-free — it still adds a read and a
-  ledger write on a live path. Useful evidence is exactly "the responding process
+  startup log record on a live path. Useful evidence is exactly "the responding process
   holds a cached CLOUD verdict"; it is **not** binary freshness (`git_sha` is the
   mutable receipt), **not** the current container incarnation (`uptime_seconds`
   starts at app construction), **not** all workers (one responding sample), and

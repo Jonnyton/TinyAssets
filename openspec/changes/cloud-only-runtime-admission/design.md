@@ -79,17 +79,19 @@ determines it. Ranked by what a copied checkout does *not* carry:
    process inside the droplet, and forgeable by a local root operator who adds a
    route/listener. It is absent-by-default, not attestation: unsigned metadata plus a copied expected id is an accidental-start guard, nothing stronger.
 2. **Deploy-recorded expected instance — correlation, not a security factor.** The droplet id CI
-   reads from the DO API is recorded into the release state the deploy already
-   writes (`release-state.json`, `deploy-prod.yml:391-393`;
-   `_load_release_state` / `scripts/deployed_sha.py`). The resolver requires the
-   metadata id to **equal** the recorded expected id.
-3. **Build identity** — existing `/mcp/pulse` `git_sha` gate. Proves which
-   build, never which host. Supporting only.
+   reads from the DO API is prepared before startup in the dedicated typed
+   `platform-expected-instance.json` in the canonical data volume, separate from
+   the post-health `release-state.json` receipt. The resolver requires the
+   metadata id to **equal** that expected id. See state placement below.
+3. **Build receipt** — existing `/mcp/pulse` `git_sha` gate. Reports the mutable
+   deployment receipt, not proof of the running binary or host. Supporting only.
 
-**Decision:** cloud-origin evidence = (1) reachable **and** (2) matching. The desktop fails
-(1); a stolen env file or a rebuilt container on another machine fails (1) and
-(2); a droplet whose deploy state was never written fails closed rather than
-defaulting to cloud.
+**Decision:** origin correlation = (1) reachable **and** (2) matching. An ordinary
+off-cloud start without matching evidence resolves not-cloud; a different droplet
+can have reachable metadata but a mismatching id. No actual desktop metadata
+probe is claimed. Deliberate local forgery is outside this unsigned primitive's
+guarantee; cloud credential/routing custody remains necessary for exclusion.
+Missing expected state resolves not-cloud rather than defaulting to cloud.
 
 **Implementation constraint discovered while reading the tree:** the outbound
 SSRF driver deliberately classifies `169.254.169.254` as a blocked link-local
@@ -648,10 +650,10 @@ run35694437735, not by prediction. Runtime code may now be built for the
 record-only slice; enforcement still requires its own live positive observation
 and reviewed refusal sites. Unknown custody facts remain open independently.
 
-Resolver + ledger then land in **record-only** mode; confirm on the droplet that
+Resolver + sanitized startup record/readback land in **record-only** mode; confirm on the droplet that
 the observed instance matches the expected id; then flip (A)–(E) to refuse in one
 change. A resolver that cannot resolve on the real droplet must never be flipped —
 that is how a cloud-only guard takes the platform down. Record-only is
 **observation, not enforcement, and not guaranteed risk-free**: it still adds a
-metadata read and a ledger write on a live path, so it is staged and watched
+metadata read and a startup log record on a live path, so it is staged and watched
 rather than assumed inert.
