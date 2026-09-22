@@ -22,44 +22,75 @@ not carry, matched against the instance recorded by the deployment.
   compose labels
 - **THEN** provenance still resolves to not-cloud.
 
-### Requirement: Task claim admission enforces provenance inside the claim transaction
+### Requirement: Task claim admission enforces provenance on the non-optional refusal path
 Assigned-task claim admission SHALL evaluate resolved provenance within the
-same transaction that transfers ownership, so that a caller invoking the claim
-directly cannot acquire a task. Pre-claim consumer checks MAY remain as
+same transaction that transfers ownership, and SHALL bind that evaluation to the
+refusal predicate every claim traverses. It SHALL NOT depend on an optional
+authority callback, so a caller that supplies no callback SHALL NOT thereby opt
+out of the gate. Provenance evidence SHALL be resolved before the write
+transaction is opened, and only the resulting trusted, process-owned value SHALL
+be evaluated inside the compare-and-swap; no network request SHALL be issued
+while the database write lock is held. Pre-claim consumer checks MAY remain as
 diagnostics but SHALL NOT be the only enforcement.
 
 #### Scenario: Direct claim by an unadmitted process is refused
 - **WHEN** an unadmitted process calls the assigned-task claim directly with a
-  valid consumer lease and a ready, pending cloud task, bypassing the consumer
-  loop's pre-check
+  valid consumer lease, a ready pending cloud task, and no optional authority
+  callback, bypassing the consumer loop's pre-check
 - **THEN** no task is claimed and a refusal reason is recorded.
+
+#### Scenario: Metadata resolution does not run under the write lock
+- **WHEN** the cloud evidence source is unreachable and a claim is attempted
+- **THEN** the evidence has already been resolved to a refusal value before the
+  write transaction opened, and no outbound request is issued from within it.
 
 #### Scenario: Admitted process claims and records the resolved class
 - **WHEN** an admitted cloud process claims a ready cloud task
 - **THEN** the claim succeeds and the recorded executor class is the resolved
   value, not a literal stamped by the caller.
 
-### Requirement: Runtime registration is admitted, instance-bound and not replayable
+### Requirement: Runtime registration is admitted and grants no provenance on its own
 Runtime registration SHALL write the resolved provenance rather than a constant,
-SHALL bind the admitted cloud instance identity and the process boot epoch, and
-SHALL be re-validated when read. The existence of a registration row SHALL NOT
-by itself confer execution or serving authority.
+and authority SHALL be re-resolved when a registration is read. The existence of
+a registration row SHALL NOT by itself confer execution or serving authority.
+
+The process boot identifier SHALL be treated as an incarnation and liveness
+marker only. It SHALL NOT be relied on as an identity, an ordered epoch, or
+evidence of cloud origin, and no independent anti-replay guarantee SHALL be
+claimed from it. Staleness SHALL continue to be governed by the existing
+descriptor expiry, and no new storage schema or registry SHALL be introduced to
+record the boot identifier.
 
 #### Scenario: Unadmitted registration is refused
 - **WHEN** an unadmitted process requests a runtime slot
 - **THEN** registration refuses and no cloud-worker registration row is written.
 
-#### Scenario: A stale registration cannot be replayed
-- **WHEN** a registration row admitted for one cloud instance and boot epoch is
-  later read by a process that is unadmitted, or admitted to a different
-  instance or boot epoch
-- **THEN** authority is refused on read and the row grants nothing.
+#### Scenario: An existing row does not carry provenance
+- **WHEN** a registration row written by an admitted cloud instance is later read
+  by an unadmitted process
+- **THEN** authority is refused because provenance is re-resolved on read, and
+  the row itself grants nothing.
+
+#### Scenario: Restarts and concurrent cloud workers are preserved
+- **WHEN** an admitted cloud runtime restarts with a new boot identifier, or two
+  admitted cloud workers run at the same time with different boot identifiers
+- **THEN** both are admitted normally and neither is refused as a replay.
 
 ### Requirement: Serving startup, foreground and served execution refuse when unadmitted
+Queue and registration admission SHALL NOT be relied on to cover foreground or
+served provider execution, which do not traverse the assigned-task claim. Those
+paths SHALL be covered by two boundaries only — serving startup, and the last
+provider-authority boundary before a provider process is started.
+
 Serving startup SHALL assert provenance before accepting any platform traffic
 and SHALL exit rather than serve when unadmitted; there SHALL be no local or
 degraded serving mode. Foreground conversation turns and served background
-provider execution SHALL refuse before spawning any provider process.
+provider execution SHALL refuse before spawning any provider process, and the
+executor class they record SHALL be the resolved value rather than a literal.
+
+Per-universe, user-bound authority SHALL be preserved unchanged. Platform
+provenance is an additional condition on the existing authority check and SHALL
+NOT move, widen or narrow the authority a universe's owner holds.
 
 #### Scenario: Unadmitted serving startup does not serve
 - **WHEN** the serving process starts unadmitted
@@ -170,11 +201,32 @@ privileged agent.
 ### Requirement: Observation-only stages are reported as incomplete
 Record-only stages SHALL report the cloud-only boundary as not closed. While
 the resolver or the custody preflight runs in record-only mode, observations SHALL
-NOT be presented as enforcement, as proof of the founder boundary, or as an
-absolute security guarantee. Closure SHALL require the refusal sites to be
-active and a deployed commit to be confirmed in production.
+NOT be presented as enforcement, as proof of the founder boundary, as
+risk-free, or as an absolute security guarantee. Closure SHALL require the
+refusal sites to be active and a deployed commit to be confirmed in production.
+
+Custody and policy SHALL NOT be treated as established by a code label, an
+identifier name, or a diagnostic that completed successfully. A check passing
+against a local fixture or cloned data root SHALL NOT be reported as evidence
+about production data, routing or credentials.
+
+Implementation of the runtime resolver SHALL be gated on an actual executed
+metadata diagnostic. No cloud fact SHALL be asserted from a verification that
+has not yet run.
 
 #### Scenario: Record-only mode does not report a closed boundary
 - **WHEN** the resolver or the preflight is running in record-only mode
 - **THEN** any status it reports states that enforcement is not active and the
   boundary is not closed.
+
+#### Scenario: A local fixture pass is not a production claim
+- **WHEN** the admission checks succeed against a developer fixture database or
+  a cloned data root
+- **THEN** the result is reported as a local self-consistency observation only,
+  and no production authority, custody or data access is claimed from it.
+
+#### Scenario: Unrun verification yields no cloud fact
+- **WHEN** the bounded preflight has been written but has not yet produced an
+  observation
+- **THEN** no cloud fact is recorded from it and the runtime resolver
+  implementation does not proceed on a predicted result.

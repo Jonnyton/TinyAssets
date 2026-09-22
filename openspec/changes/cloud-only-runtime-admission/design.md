@@ -90,26 +90,50 @@ renamed or aliased machine too.
 ```
 resolve_platform_runtime_provenance()   <- one resolver, fail-closed
    |
-   +-- (A) claim CAS        _transaction_allows_assigned_consumer / authority_claim
-   |                        (branch_tasks_v2.py:462-511)  <-- INSIDE the txn
+   +-- (A) claim CAS        _transaction_allows_assigned_consumer /
+   |                        _assigned_consumer_refusal_reason
+   |                        (branch_tasks_v2.py:1170)  <-- non-optional path
    +-- (B) registration     ensure_daemon_runtime (daemon_registry.py:489-530)
-   +-- (C) startup/exec     serving boot assert; foreground + served provider
-   |                        execution (agent_runtime_provider_execution.py:1225,
-   |                        background_served_provider.py:1336,1547,
-   |                        foreground_run_provider.py)
+   +-- (C) startup/exec     serving boot assert; last provider-authority
+   |                        boundary (foreground_run_provider.py:484,595,
+   |                        background_served_provider.py:1336,1547)
    +-- (D) origin ingress   platform request admission at the origin
    +-- (E) recovery         watchdog / release-reconcile / stale-runtime retirement
 ```
 
 - **(A)** must be in-transaction because `_consumer_skip_reason` is
-  process-local and pre-CAS. The negative test drives `claim_assigned` directly,
-  bypassing the consumer loop entirely — a consumer-loop-only test passes against
-  the unfixed tree and proves nothing.
-- **(B)** additionally defeats **replay**: the runtime row binds the admitted
-  instance id and a boot epoch, and readers re-validate. An existing row is not
-  permission.
-- **(C)** has no degraded mode. Unadmitted serving startup exits non-zero; it
-  does not serve locally.
+  process-local and pre-CAS. It must bind to the **non-optional** predicate:
+  `transaction_check` returns the existing predicate result when
+  `authority_claim is None` (`branch_tasks_v2.py:489`), so a mandatory gate
+  living only in that callback is opt-out by construction. **Ordering
+  constraint:** bounded metadata resolution happens *before* the write
+  transaction opens; the CAS evaluates only the resulting trusted,
+  process-owned evidence value. No HTTP or socket I/O may run while the SQLite
+  write lock is held — that converts a metadata timeout into a database stall.
+  The negative test drives `claim_assigned` directly with **no**
+  `authority_claim` callback, bypassing the consumer loop entirely — a
+  consumer-loop-only test, or one that supplies the callback, passes against the
+  unfixed tree and proves nothing.
+- **(B)** does **not** rest on `boot_id`. That value is `uuid.uuid4().hex`
+  (`assigned_queue_consumer.py:209`): a process incarnation / liveness marker,
+  unordered, unauthenticated and carrying no cloud provenance. It is not an
+  epoch, not an identity and not a replay defence, and no independent
+  anti-replay property is claimed from it. Staleness continues to be handled by
+  the **existing** descriptor expiry; legitimate restarts and simultaneous cloud
+  workers must keep working, and neither may be refused as "replay". No new
+  storage schema or registry is introduced to encode the UUID. What (B) does
+  assert is narrower and sufficient: an existing registration row is not
+  permission, so authority is re-resolved on read rather than inherited from the
+  row.
+- **(C)** carries the whole foreground/served surface, because those paths never
+  call `claim_assigned` and stamp the class as a literal
+  (`foreground_run_provider.py:484,595`,
+  `background_served_provider.py:1336,1547`). Queue and registration checks
+  cannot cover them; only startup admission plus the last provider-authority
+  boundary can. There is no degraded mode: unadmitted serving startup exits
+  non-zero rather than serving locally. Per-universe, user-bound authority is
+  unchanged — platform provenance is an added condition on the same check, never
+  a relocation of authority away from the universe's owner.
 - **(D)** is at the origin as a *backstop*, not as the prevention. A refusing
   off-cloud connector has already absorbed public traffic (see § Off-cloud
   public routing). Prevention is removing the in-repo enrollment path plus
@@ -236,6 +260,18 @@ who holds `CLOUDFLARE_TUNNEL_TOKEN`, the Access service token, `DO_SSH_KEY`, and
 the GitHub Actions secret store. Layer B refusals reduce blast radius and make
 accidents loud; they do not substitute for custody. Any claim that the founder
 boundary is closed must cite both layers, and Layer C is verified, never coded.
+Unsigned metadata is the **backstop only**: the boundary is not closed until
+actual cloud routing, credential custody and data custody close it too.
+
+**Live milestone and what it does not settle (2026-09-22).** PR #3913, sha
+`dfa22598c35aabad7be27aacbff75d300e17b584`, removed daemon/tray/plugin tunnel
+startup; hosted build `35689968798` and deploy `35690255704` passed public
+handles and the protected-SHA gate at 05:20 UTC. Ordinary primary-app retest 8
+completed 22:28 PDT: five controls pass, sequential 37.3s, parallel 158.4s,
+intermittents still open. None of that is cloud-boundary or free-user proof —
+the cloud-side tunnel remains and custody is open. The bounded preflight is
+PR #3914, **pending CI with no live observation yet**; no cloud fact may be
+asserted from it until it has actually run.
 
 ## Off-cloud public routing: prevention, not detection (review finding 2)
 
@@ -365,8 +401,13 @@ These are different things and the change must keep saying so:
   monkeypatched resolver — acquire **no production authority**. They cannot
   claim a live task, register a live runtime, serve public traffic or reach the
   production DB. Running them off-cloud is correct and stays possible after this
-  change; the resolver is injected in tests, never satisfied by an env var
-  (a tests-only env var in production code is reachable from `env_file`).
+  change — local development, test and browser use are permitted without
+  production authority; the resolver is injected in tests, never satisfied by an
+  env var (a tests-only env var in production code is reachable from `env_file`).
+  A fixture DB passing these self-consistency checks is **not** demonstrated
+  access to production data, and a successful diagnostic run establishes no
+  custody or policy. Custody is never established by a code label, a variable
+  name or a green check.
 - **Production authority** is exactly: claiming a live assigned task, holding a
   live runtime registration, serving traffic that arrived through the public
   tunnel, or relaying a model turn for a real universe. Those are what the
@@ -404,7 +445,15 @@ URL alone.
 
 ## Rollout
 
-Resolver + ledger land in **record-only** mode; confirm on the droplet that the
-observed instance matches the expected id; then flip (A)–(E) to refuse in one
+The runtime builder is gated on an **actual metadata diagnostic**, not on a
+predicted one: PR #3914's preflight must have run and reported a real
+observation first. No cloud fact is invented ahead of it, and nothing here
+depends on a result that does not yet exist.
+
+Resolver + ledger then land in **record-only** mode; confirm on the droplet that
+the observed instance matches the expected id; then flip (A)–(E) to refuse in one
 change. A resolver that cannot resolve on the real droplet must never be flipped —
-that is how a cloud-only guard takes the platform down.
+that is how a cloud-only guard takes the platform down. Record-only is
+**observation, not enforcement, and not guaranteed risk-free**: it still adds a
+metadata read and a ledger write on a live path, so it is staged and watched
+rather than assumed inert.
