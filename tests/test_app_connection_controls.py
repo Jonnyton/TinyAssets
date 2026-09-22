@@ -12,6 +12,8 @@ import re
 import shutil
 import subprocess
 
+import pytest
+
 from tinyassets.onboarding import render_app_html
 
 _SLICE_START = "    // ---- your universe's connections ----"
@@ -409,3 +411,35 @@ def test_a_fresh_successful_list_read_restores_the_controls():
     assert len(posts(result)) == 2
     assert result["rows"][0]["removed"] is True
     assert result["engineConnected"] is False and result["setup"] == "disconnected"
+
+
+def test_reopening_account_during_a_load_keeps_refresh_available():
+    result = run("const pending=loadConnections(); viewGeneration++; "
+                 "await loadConnections(); await pending;")
+    assert result["rows"] == []
+    assert result["refreshDisabled"] is False
+    assert result["busy"] is False
+    assert "Refresh connections once it settles" in result["status"]
+    recovered = run("const pending=loadConnections(); viewGeneration++; "
+                    "await loadConnections(); await pending; await loadConnections();")
+    assert len(recovered["rows"]) == 1
+    assert recovered["refreshDisabled"] is False
+
+
+@pytest.mark.parametrize("hook", ["me", "meJson"])
+@pytest.mark.parametrize("change", ["queueOwner='other'", "queueScope='other'", "viewGeneration++"])
+def test_connection_state_read_never_repaints_a_changed_context(hook, change):
+    result = run(f"hooks.{hook}=()=>{{{change};}}; " + CONFIRM)
+    assert len(posts(result)) == 1
+    assert result["engineConnected"] is True
+    assert result["setup"] == "connected"
+
+
+@pytest.mark.parametrize("hook", ["getJson", "postJson", "meJson"])
+def test_failed_json_after_account_change_has_no_stale_error_repaint(hook):
+    result = run(f"hooks.{hook}=()=>{{queueOwner='other'; throw new Error('synthetic');}}; "
+                 + ("await loadConnections();" if hook == "getJson" else CONFIRM))
+    assert "Could not load" not in result["status"]
+    assert "not confirmed" not in result["status"]
+    assert "could not be re-read" not in result["status"]
+    assert result["engineConnected"] is True

@@ -5021,7 +5021,15 @@
       return !!a&&!!b&&a.owner===b.owner&&a.home===b.home&&a.universe===b.universe&&a.signedIn===b.signedIn&&a.view===b.view;
     }
     async function loadConnections(){
-      if(connectionsBusy){$("connection-status").textContent="A connection change is still finishing. Nothing else was sent; try again once it settles.";return;}
+      if(connectionsBusy){
+        // Account can be reopened while an old request still owns the lock.
+        // Do not retain its rows or let its late result repaint this view.
+        ++connectionsGeneration;openConfirmation=null;
+        $("connection-list").replaceChildren();
+        $("btn-refresh-connections").disabled=false;
+        $("connection-status").textContent="A connection request is still finishing. Nothing else was sent. Refresh connections once it settles.";
+        return;
+      }
       const ticket=holdConnections();
       const generation=++connectionsGeneration;
       const fence=connectionFence("");
