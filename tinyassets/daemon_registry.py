@@ -20,6 +20,10 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets import daemon_server
+from tinyassets.platform_runtime_provenance import (
+    PLATFORM_NOT_CLOUD_REASON,
+    resolve_process_cloud_admission,
+)
 from tinyassets.principals import has_named_principal, named_principal
 from tinyassets.storage import DB_FILENAME
 from tinyassets.storage.request_admissions import (
@@ -500,6 +504,22 @@ def ensure_daemon_runtime(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create or refresh the runtime slot for a stable worker process."""
+    # Platform admission, before any read and before any row is written. Every
+    # row this function writes is stamped `runtime_registration: "cloud_worker"`
+    # (below), so an unadmitted process must not reach the write at all. The
+    # verdict is the process-owned observation — not a hostname, not an env var,
+    # not `boot_id` (incarnation/liveness only, design.md § Enforcement sites
+    # (B)) — and it is re-resolved here rather than inherited from any existing
+    # row: a registration row is a record, never permission.
+    provenance = resolve_process_cloud_admission()
+    if not provenance.is_cloud:
+        # Sanitized tokens only: verdict + reason, no instance id, no expected
+        # id, no address, no hostname.
+        raise PermissionError(
+            f"{PLATFORM_NOT_CLOUD_REASON}: cloud-worker runtime registration "
+            f"requires an admitted cloud runtime "
+            f"(verdict={provenance.verdict}, reason={provenance.reason})"
+        )
     clean_worker_id = worker_id.strip()
     if not clean_worker_id:
         raise ValueError("worker_id is required")

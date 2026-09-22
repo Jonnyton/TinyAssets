@@ -2,13 +2,18 @@
 
 OpenSpec change `cloud-only-runtime-admission`, task 4 (record-only slice).
 
-**This module enforces nothing.** It resolves one bounded observation — does the
-DigitalOcean droplet metadata service answer from inside this process's machine,
-and does the id it reports equal the instance id the deploy recorded before this
-process started — and it hands back a typed verdict. No caller in this slice
-branches on that verdict: claim admission, runtime registration, serving startup
-and provider authority are all unchanged. Flipping refusal sites onto this
-resolver is tasks 6-8 and requires its own live positive observation first.
+**This module decides nothing on its own.** It resolves one bounded observation
+— does the DigitalOcean droplet metadata service answer from inside this
+process's machine, and does the id it reports equal the instance id the deploy
+recorded before this process started — and it hands back a typed verdict.
+
+Two callers now branch on that verdict (tasks 6-7): the assigned-claim CAS
+predicate and cloud-worker runtime registration, through the admission helpers
+at the bottom of this module. Serving startup, the provider-authority boundary
+and the recovery paths are **still unchanged** — that is task 8 — so the
+boundary is open, and the sanitized `enforced` / `mode` fields published on the
+health read deliberately still report the record-only shape rather than
+claiming a closed boundary this module cannot yet back.
 
 What the verdict is, stated honestly
 ------------------------------------
@@ -433,6 +438,43 @@ def observe_platform_runtime_provenance() -> RuntimeProvenance:
 def peek_platform_runtime_provenance() -> RuntimeProvenance | None:
     """Process-wide non-mutating read. ``None`` means nothing was observed."""
     return _PROCESS_OBSERVATION.peek()
+
+
+# --- admission helpers (tasks 6-7: claim CAS + runtime registration) -------
+
+#: The one stable refusal token an admission site may publish. A sanitized
+#: snake_case reason like every other token here: it names the class of the
+#: refusal and carries no instance id, expected id, address or hostname.
+PLATFORM_NOT_CLOUD_REASON = "platform_not_cloud"
+
+
+def resolve_process_cloud_admission() -> RuntimeProvenance:
+    """Resolve the process-owned verdict. **Never call this in a transaction.**
+
+    This is the ordering constraint from `design.md` § Enforcement sites (A):
+    the bounded metadata read happens *before* a write transaction opens, so a
+    metadata timeout can never stall the SQLite write lock. It is the same
+    once-per-process observation every other reader sees — it does not resolve
+    a second, site-local fact, and a cached refusal never upgrades here.
+    """
+    return observe_platform_runtime_provenance()
+
+
+def cached_process_is_cloud_admitted() -> bool:
+    """Cached-only admission read. No I/O, so it is safe inside a CAS.
+
+    Reads the non-mutating peek, so an unobserved process (``None``) is **not
+    admitted** rather than a trigger to go and resolve one. Callers that must
+    succeed on cloud resolve first, outside the transaction, via
+    :func:`resolve_process_cloud_admission`.
+    """
+    cached = peek_platform_runtime_provenance()
+    return cached is not None and cached.is_cloud
+
+
+def process_is_cloud_admitted() -> bool:
+    """Resolve-then-read, for an admission site that holds no transaction."""
+    return resolve_process_cloud_admission().is_cloud
 
 
 #: The verdict a read reports when there is no observation to report. Explicit,

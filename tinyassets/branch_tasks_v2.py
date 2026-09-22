@@ -22,6 +22,11 @@ from typing import Any
 
 from tinyassets.branch_tasks import BranchTask
 from tinyassets.execution_subject import ExecutionSubject
+from tinyassets.platform_runtime_provenance import (
+    PLATFORM_NOT_CLOUD_REASON,
+    cached_process_is_cloud_admitted,
+    resolve_process_cloud_admission,
+)
 from tinyassets.storage import DB_FILENAME
 from tinyassets.storage.automation_activations import (
     AutomationActivationExecutor,
@@ -473,6 +478,13 @@ class Epoch2BranchTaskAdapter:
             consumer_lease, AssignedConsumerLease
         ):
             return None
+
+        # Resolve platform admission BEFORE the write transaction opens, so the
+        # bounded metadata read can never run under the SQLite write lock. The
+        # CAS predicate below re-reads only the cached result. This call decides
+        # nothing — there is exactly one gate, in the non-optional predicate, so
+        # a refusal has a single definition and a single reason token.
+        resolve_process_cloud_admission()
 
         def transaction_check(
             conn: sqlite3.Connection,
@@ -1209,6 +1221,16 @@ def _assigned_consumer_refusal_reason(
     consumer_lease: AssignedConsumerLease,
 ) -> str | None:
     """Return the first assigned-claim predicate that fails."""
+
+    # Platform admission, read from the already-resolved process-owned verdict.
+    # Cached-only on purpose: this runs inside the claim write transaction, so
+    # it must not open a socket (design.md § Enforcement sites (A)). The
+    # resolution itself happens in `claim_assigned` before the transaction is
+    # opened. An unobserved process peeks `None` and is refused — "we never
+    # looked" is not cloud. This predicate is the non-optional one, shared with
+    # `explain_assigned_refusal`, so the diagnostic reports the same token.
+    if not cached_process_is_cloud_admitted():
+        return PLATFORM_NOT_CLOUD_REASON
 
     now = _parse_timestamp(transaction_at)
     consumer_expiry = _parse_timestamp(consumer_lease.expires_at)
