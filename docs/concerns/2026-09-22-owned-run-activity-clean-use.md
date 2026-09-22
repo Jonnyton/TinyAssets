@@ -1,6 +1,6 @@
 # Watch: organic use of owned run activity
 
-OPEN, September22,2026 UTC. PR3909/3910 are deployed and scoped rendered
+**Filed:** 2026-09-22 UTC. **Status:** OPEN. PR3909/3910 are deployed and scoped rendered
 acceptance passed on production02b1e628d2da54b2222a684f0318b19969c68a86.
 The September21 20:13PDT original app answer retrieved prior failed-run timing
 and returned-model evidence, and correctly distinguished model identity from

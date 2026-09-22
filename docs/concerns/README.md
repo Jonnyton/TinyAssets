@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **note** | [Owned run activity clean-use watch](2026-09-22-owned-run-activity-clean-use.md) — deployed diagnostics passed scoped rendered acceptance; organic owner use and historical intermittent causes remain open | 2026-09-22 |
 | **note** | [Served node editable-field parity](2026-09-21-served-node-editable-field-parity.md) — effects/workspace edits work; ordinary output-key and timeout edits remain refused | 2026-09-21 |
 | **note** | [Effect-edit organic-use watch](2026-09-21-effect-edit-organic-use-watch.md) — deployed and rendered acceptance passed; independent customer clean use not yet observed | 2026-09-21 |
 | **P1** | [Late spoken-turn failure can offer another account's text](2026-09-20-spoken-turn-account-transition.md) — source-derived missing owner/home guard; typed recovery patch does not claim voice parity | 2026-09-20 |
