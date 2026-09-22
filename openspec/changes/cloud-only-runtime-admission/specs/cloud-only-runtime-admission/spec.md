@@ -168,8 +168,8 @@ privileged agent.
   connector identifier or user data.
 
 ### Requirement: Observation-only stages are reported as incomplete
-While the resolver and the custody preflight run in record-only mode, the
-cloud-only boundary SHALL be reported as not closed. Recorded observations SHALL
+Record-only stages SHALL report the cloud-only boundary as not closed. While
+the resolver or the custody preflight runs in record-only mode, observations SHALL
 NOT be presented as enforcement, as proof of the founder boundary, or as an
 absolute security guarantee. Closure SHALL require the refusal sites to be
 active and a deployed commit to be confirmed in production.
