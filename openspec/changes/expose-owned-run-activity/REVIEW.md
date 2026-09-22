@@ -38,3 +38,36 @@ Lead source verification/dispositions:
 Before ready/merge: independent exact-head review of implementation and test
 evidence is still required. No implementation verdict is inferred from this
 pre-build recommendation.
+
+## Implementation verification (not release approval)
+
+September22,2026 around01:38UTC, Windows Python3.14: base cad07bd0 tree
+(frozen node-stream-budget worktree) selected snapshot/graph-receipt/engine
+tests: 93 passed, 3 skipped. Candidate with tests/test_run_activity.py and
+tests/test_run_activity_surface.py added: 216 passed, the same 3 skipped.
+Command: `python -m pytest -q tests/test_run_activity.py
+tests/test_run_activity_surface.py tests/test_run_snapshot_phase.py
+tests/test_graph_answer_execution.py tests/test_engine_mcp_server.py`;
+baseline omits the two new files. No new failure or skip.
+
+Opus test builder46287 wrote tests/test_run_activity.py within its sole file
+ownership, then exceeded420s and was killed by the wrapper (exit1). No passing
+result or release approval is attributed to that peer. Lead read its entire
+test file, retained it, and ran the tests above. Lead owns the integration tests.
+Initial integration setup used legacy OAuth scopes incorrectly; corrected to
+explicit extensions.read for canonical OAuth and the serving resolve-always
+founder mode for engine reads. Actual private-universe ACLs and pinned selectors
+are tested before events load; no runtime authorization policy was changed.
+
+Plugin build completed497files/import probe-ok. Linux baseline:96passed/no skips.
+First Linux candidate:219passed/no skips, but plugin rebuilding overlapped its
+archive capture and emitted changed-file warnings. Do not treat that copy as
+frozen-tree release proof; a clean candidate rerun is required before freeze.
+
+Clean candidate rerun46537 completed exit0 after archive capture with no changed
+file warnings: Linux Python3.11.15/git2.47.3/bwrap0.12.0,219passed in5.07s,
+no skips (baseline96passed in6.89s). Command: `python scripts/linux_oracle.py
+-- -q tests/test_run_activity.py tests/test_run_activity_surface.py
+tests/test_run_snapshot_phase.py tests/test_graph_answer_execution.py
+tests/test_engine_mcp_server.py`. Ruff, `git diff --check`, seven pre-commit
+invariants and strict change validation also passed before release-review freeze.

@@ -1420,6 +1420,10 @@ def _compose_run_snapshot(
         "summary": summary,
         "recursion_limit": recursion_limit,
     }
+    from tinyassets.api.run_activity import ACTIVITY_EVIDENCE, build_node_activity
+
+    snapshot["node_activity"] = build_node_activity(events, node_statuses)
+    snapshot["activity_evidence"] = ACTIVITY_EVIDENCE
     output = run_record.get("output")
     from tinyassets.api.run_outputs import output_catalog
 

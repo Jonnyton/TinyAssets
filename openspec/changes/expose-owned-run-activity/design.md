@@ -34,17 +34,23 @@ without evidence, or a complete event browser. No private workflow modifications
 
 2. Fold events once into one metadata record per real node in existing declared
    order, including observed nodes not present in the current definition. Do not
-   cap workflow shape or drop nodes silently. Bound every added string and keep
+   cap workflow shape or drop nodes silently. Preserve exact existing node IDs;
+   bound newly exposed detail labels independently of graph size and keep
    the existing faithful bounded result envelope. Do not duplicate raw events or
    construct unbounded nested metadata. Exclude synthetic system rows, not
    arbitrarily user-named nodes merely because their name starts with underscores.
 
-3. Planned metadata fields: `node_id`, existing `status`, `latest_step_index`,
+3. Metadata fields: `node_id`, existing `status`, `latest_step_index`,
    `latest_event_status`, `latest_event_at`, `local_started_at`,
    `local_finished_at`, `local_elapsed_seconds`, `start_events_observed`,
-   `return_observed_at`, `return_step_index`, normalized `execution`, selected
-   finite nonnegative returned-call latency/attempt metadata, and bounded
-   machine-label failure reason/type. Null means unavailable, never zero evidence.
+   `return_observed_at`, `return_step_index`, normalized `execution`,
+   `legacy_provider_label`, `provider_latency_ms`, `provider_attempts`,
+   `provider_degraded`, `failure_reason` and `failure_type`. Numeric observations
+   must be finite and nonnegative, not booleans or numeric strings. Integer
+   counts/steps are at most 2**53-1; degraded is boolean or unknown. Status labels
+   are at most 80 characters, legacy provider labels 400, machine failure labels
+   128. Invalid/oversized labels become null rather than being truncated into
+   plausible values. Null means unavailable, never zero evidence.
    Omit free-form exception messages, prompt/response/previews, code/output,
    provider chains, effect payloads, authority or credential fields. No general
    redaction policy or provider-name enum is introduced.
@@ -99,7 +105,7 @@ ordinary reviewed revert/image rollback; stored evidence is untouched.
 
 ## Open Questions
 
-Implementation must settle finite scalar bounds, system-row detection and
-loop-pairing tests from actual producer data. These are bounded implementation
-choices, not missing user authority. Shape review is in REVIEW.md; no runtime
-implementation or exact-head release approval has occurred yet.
+Implementation settles scalar bounds above, excludes only the reserved
+`__system__` row, and resets local timing on pending/running observations while
+keeping prior return evidence separately tagged. Shape review is in REVIEW.md;
+independent exact-head release approval and live acceptance remain pending.
