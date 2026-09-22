@@ -40,6 +40,12 @@
     .legal-link:hover{color:var(--ink)}
     .danger-zone{margin-top:1.5rem;border:1px solid var(--err);border-radius:var(--radius);padding:1rem 1.1rem}
     .danger-zone h3{margin:0 0 .5rem}
+    /* Disconnect confirms IN the page, so every client renders the same words. */
+    .connection-row{margin:1rem 0}
+    .connection-confirm{margin:.6rem 0 0;border:1px solid var(--line);border-radius:var(--radius);padding:.8rem .9rem}
+    .connection-confirm p{margin:0 0 .7rem;font-size:.9rem}
+    .connection-confirm .btn{margin:0 .5rem .25rem 0}
+    .connection-confirm:focus{outline:2px solid var(--accent);outline-offset:2px}
     .btn:disabled{opacity:.5;cursor:default}
     .model-bar{padding:.5rem 1rem;display:flex;flex-wrap:wrap;gap:.65rem;align-items:center;border-top:1px solid var(--line)}
     .model-bar button{max-width:100%;overflow-wrap:anywhere;text-align:left}
@@ -4972,40 +4978,183 @@
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
     function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); }
-    let connectionsBusy=false;
+    // ---- your universe's connections ----
+    // Disconnect is a deliberate TWO-STEP, in-page confirmation. It used to
+    // raise the browser's own confirm(): one string, drawn outside the page,
+    // that an embedded WebView, an assistive client and an automated client
+    // each present differently - and that some clients cannot present at all.
+    // What is being authorised now lives IN the page, beside the connection it
+    // names: the first click only REVEALS it, and nothing is sent until a
+    // second, separate click on "Confirm disconnect".
+    let connectionsBusy=false, connectionsTicket=null;
+    // The lock is held by an opaque ticket, so a late holder whose account is
+    // already gone releases only its OWN hold - never the lock a newly signed
+    // in user's load is holding right now.
+    function holdConnections(){ if(connectionsBusy) return null; connectionsBusy=true; return (connectionsTicket={}); }
+    function releaseConnections(ticket){ if(!ticket||connectionsTicket!==ticket) return; connectionsBusy=false; connectionsTicket=null; }
+    // Every load bumps this. Controls belong to the generation that built them,
+    // so a refresh, a reload, or leaving and returning to this view can leave
+    // no armed confirmation behind from the list before it.
+    let connectionsGeneration=0, connectionPanelSeq=0;
+    // One pending authorisation at a time: arming a second row puts the first
+    // one away rather than leaving two destructive confirmations on screen.
+    let openConfirmation=null;
+    // What a disconnect is fenced to. NOT the bearer token: that rotates every
+    // few minutes on an unchanged sign-in, so comparing tokens would abort
+    // ordinary work while answering nothing about WHO is signed in - a rotation
+    // is neither permission to act for a different owner nor a reason to stop
+    // acting for the same one. The account and the home it is bound to are the
+    // durable pair (learned from the verified /mcp/app/me, both cleared on
+    // sign-out), the universe id is the target this write actually names, and
+    // token presence catches a sign-out that has not yet learned a new pair.
+    // Compared field by field, so not-yet-known is a DIFFERENT value from any
+    // id rather than something a joined string could collide with.
+    function connectionFence(universeId){
+      return {owner:queueOwner||"", home:queueScope||"", universe:String(universeId||""), signedIn:!!token()};
+    }
+    function sameConnectionFence(a,b){
+      return !!a&&!!b&&a.owner===b.owner&&a.home===b.home&&a.universe===b.universe&&a.signedIn===b.signedIn;
+    }
     async function loadConnections(){
-      if(connectionsBusy)return;
-      const ownerToken=token();
-      connectionsBusy=true;$("btn-refresh-connections").disabled=true;
+      if(connectionsBusy){$("connection-status").textContent="A connection change is still finishing. Nothing else was sent; try again once it settles.";return;}
+      const ticket=holdConnections();
+      const generation=++connectionsGeneration;
+      const fence=connectionFence("");
+      // A reload drops any armed confirmation: the row it belonged to is gone.
+      openConfirmation=null;
+      $("btn-refresh-connections").disabled=true;
       const list=$("connection-list"),status=$("connection-status");list.replaceChildren();
       status.textContent="Checking your connections…";
+      const live=()=>generation===connectionsGeneration&&sameConnectionFence(connectionFence(""),fence);
       try{
         const response=await fetch("/mcp/app/connections",{headers:authHeaders(),credentials:"same-origin"});
         const doc=await response.json();
-        if(token()!==ownerToken)return;
+        // A late answer names the account that asked for it, not whoever is
+        // signed in now, and never repaints a newer list.
+        if(!live())return;
         if(!response.ok||doc.error||!Array.isArray(doc.connections))throw new Error("unavailable");
         status.textContent=doc.connections.length?"":"No HTTP connections are saved for this universe.";
-        for(const row of doc.connections){
-          const item=document.createElement("p"),name=document.createElement("span"),button=document.createElement("button");
-          name.textContent=row.destination+" ";button.textContent="Disconnect";button.className="btn btn--ghost";
-          button.addEventListener("click",async()=>{
-            if(connectionsBusy||token()!==ownerToken||!confirm("Disconnect "+row.destination+" from your universe? Its saved key and model access will be removed. Your history and designs stay. Already sent requests may finish."))return;
-            connectionsBusy=true;button.disabled=true;status.textContent="Disconnecting…";
-            try{
-              const result=await fetch("/mcp/app/connections",{method:"POST",credentials:"same-origin",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({universe_id:doc.universe_id,destination:row.destination,incarnation:row.incarnation})});
-              const removed=await result.json();
-              if(token()!==ownerToken)return;
-              if(!result.ok||removed.error)throw new Error("unconfirmed");
-              item.remove();status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Return to Connect a model when you want to reconnect.";
-              const me=await fetch("/mcp/app/me",{headers:authHeaders()});
-              if(me.ok){const state=await me.json();engineConnected=state.engine_connected===true;HostedModelConnect.setup=state.setup;HostedModelConnect.paint();}
-            }catch(_e){status.textContent="Disconnect is not confirmed. Refresh connections before trying again; nothing is retried automatically.";}
-            finally{connectionsBusy=false;button.disabled=false;}
-          });
-          item.append(name,button);list.append(item);
+        for(const row of doc.connections) list.append(connectionRow(doc.universe_id,row,generation));
+      }catch(_e){
+        if(!live())return;
+        status.textContent="Could not load your connections. Sign in again if your session expired, then refresh.";
+      }
+      finally{ releaseConnections(ticket); if(live()) $("btn-refresh-connections").disabled=false; }
+    }
+    // One row: the connection, the control that reveals what disconnecting it
+    // would do, and the confirmation itself.
+    function connectionRow(universeId,row,generation){
+      const status=$("connection-status");
+      const fence=connectionFence(universeId);
+      const item=document.createElement("div"),name=document.createElement("span"),
+        reveal=document.createElement("button"),panel=document.createElement("div"),
+        explain=document.createElement("p"),approve=document.createElement("button"),
+        cancel=document.createElement("button");
+      const panelId="connection-confirm-"+generation+"-"+(++connectionPanelSeq);
+      item.className="connection-row";
+      // Every user-facing string here is textContent. A destination is account
+      // data, and this sentence IS the thing being authorised.
+      name.textContent=row.destination+" ";
+      reveal.type="button";reveal.className="btn btn--ghost";reveal.textContent="Disconnect";
+      reveal.setAttribute("aria-expanded","false");reveal.setAttribute("aria-controls",panelId);
+      panel.id=panelId;panel.className="connection-confirm";panel.hidden=true;
+      panel.setAttribute("role","group");
+      panel.setAttribute("tabindex","-1");
+      panel.setAttribute("aria-label","Confirm disconnecting "+row.destination);
+      explain.id=panelId+"-detail";
+      panel.setAttribute("aria-describedby",explain.id);
+      explain.textContent="Disconnect "+row.destination+" from your universe? Its saved key and its "
+        +"model access are removed from TinyAssets. Your conversation history and your designs stay. "
+        +"Your provider account itself is not changed or deleted. Requests already sent may still finish.";
+      approve.type="button";approve.className="btn btn--danger";approve.textContent="Confirm disconnect";
+      cancel.type="button";cancel.className="btn btn--ghost";cancel.textContent="Cancel";
+      panel.append(explain,approve,cancel);
+      item.append(name,reveal,panel);
+      let armed=false,sending=false;
+      // Live means: still the list on screen, and still the same account, home
+      // and universe this row was read for.
+      const live=()=>generation===connectionsGeneration&&sameConnectionFence(connectionFence(universeId),fence);
+      function putAway(returnFocus){
+        armed=false;panel.hidden=true;reveal.setAttribute("aria-expanded","false");
+        if(openConfirmation===putAway)openConfirmation=null;
+        if(!sending){reveal.disabled=false;approve.disabled=false;cancel.disabled=false;}
+        if(returnFocus&&reveal.focus)reveal.focus();
+      }
+      reveal.addEventListener("click",()=>{
+        // Revealing is READ-ONLY: no request of any kind leaves the page here.
+        if(armed||sending||connectionsBusy||!live())return;
+        if(openConfirmation&&openConfirmation!==putAway)openConfirmation(false);
+        openConfirmation=putAway;
+        armed=true;panel.hidden=false;reveal.setAttribute("aria-expanded","true");reveal.disabled=true;
+        status.textContent="Read what disconnecting "+row.destination+" does, then choose Confirm disconnect or Cancel. Nothing has been sent.";
+        // Focus the explanation, NOT the destructive button: somebody who
+        // reached Disconnect with Enter must not authorise it with the same
+        // key. "Confirm disconnect" is the next thing Tab reaches - never the
+        // default action of the panel.
+        if(panel.focus)panel.focus();
+      });
+      cancel.addEventListener("click",()=>{
+        if(sending)return;
+        putAway(true);
+        status.textContent="Nothing was changed. "+row.destination+" is still connected.";
+      });
+      approve.addEventListener("click",async()=>{
+        // The second, deliberate step. `sending` is set before the first await,
+        // so a double click, a repeated key and a click-then-Enter are one
+        // write; a failed write is never replayed for the user.
+        if(sending||!armed)return;
+        if(generation!==connectionsGeneration){
+          putAway(false);
+          status.textContent="This list was refreshed while the confirmation was open. Nothing was sent. Refresh connections and start again.";
+          return;}
+        if(!sameConnectionFence(connectionFence(universeId),fence)){
+          putAway(false);
+          status.textContent="Your sign-in, account or universe changed while the confirmation was open. Nothing was sent. Refresh connections and check before trying again.";
+          return;}
+        const ticket=holdConnections();
+        if(!ticket){status.textContent="Another connection change is still finishing. Nothing was sent; try again once it settles.";return;}
+        sending=true;approve.disabled=true;cancel.disabled=true;
+        status.textContent="Disconnecting "+row.destination+"…";
+        let removedHere=false;
+        try{
+          // Exactly the connection that was read and shown - never a target
+          // rebuilt here, and never a second attempt.
+          const result=await fetch("/mcp/app/connections",{method:"POST",credentials:"same-origin",
+            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+            body:JSON.stringify({universe_id:universeId,destination:row.destination,incarnation:row.incarnation})});
+          const removed=await result.json();
+          if(!live())return;
+          if(!result.ok||removed.error)throw new Error("unconfirmed");
+          removedHere=true;armed=false;
+          if(openConfirmation===putAway)openConfirmation=null;
+          item.remove();
+          status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Return to Connect a model when you want to reconnect.";
+        }catch(_e){
+          if(!live())return;
+          putAway(false);
+          status.textContent="Disconnect is not confirmed - it may or may not have happened. Refresh connections to check before trying again; nothing is retried automatically.";
         }
-      }catch(_e){status.textContent="Could not load your connections. Sign in again if your session expired, then refresh.";}
-      finally{connectionsBusy=false;$("btn-refresh-connections").disabled=false;}
+        finally{
+          sending=false;releaseConnections(ticket);
+          if(live()&&!removedHere){approve.disabled=false;cancel.disabled=false;if(!armed)reveal.disabled=false;}
+        }
+        if(!removedHere||!live())return;
+        // The removal is already confirmed. Re-reading what powers this
+        // universe is a SEPARATE step: if it fails, the disconnect still
+        // happened and must not be reported back as uncertain.
+        try{
+          const me=await fetch("/mcp/app/me",{headers:authHeaders(),credentials:"same-origin"});
+          const state=me.ok?await me.json():null;
+          if(!live())return;
+          if(!state||state.error)throw new Error("unreadable");
+          engineConnected=state.engine_connected===true;
+          HostedModelConnect.setup=state.setup;HostedModelConnect.paint();
+        }catch(_e){
+          if(!live())return;
+          status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Your current connection state could not be re-read here - refresh this page to see it.";
+        }
+      });
+      return item;
     }
     $("btn-refresh-connections").addEventListener("click",loadConnections);
     function leaveAccount(){ if(engineConnected===true){ showView("chat"); startHeartbeat(); } else { showConnect(true); } }
