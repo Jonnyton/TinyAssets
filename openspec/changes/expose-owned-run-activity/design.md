@@ -30,6 +30,9 @@ without evidence, or a complete event browser. No private workflow modifications
    `get_run` remains the only integration path. No raw stream handler is exposed.
    Append diagnostics after every existing field, including cancel_requested,
    so bounded text-only results retain recovery/output guidance before evidence.
+   Within the diagnostics, place activity_evidence before node_activity so the
+   caveat survives when the node list is truncated. Define model_status as model
+   identifier provenance, never an independent request receipt/admission event.
    Alternative: a paginated event target would add routing, selectors and event
    API semantics before a user needs complete event order. This slice provides
    per-node evidence already in memory instead.

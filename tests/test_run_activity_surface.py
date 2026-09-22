@@ -84,7 +84,7 @@ def test_existing_snapshot_preserves_returned_evidence_after_outer_failure(store
     assert "first-byte" in snap["activity_evidence"]
     encoded = json.dumps(snap["node_activity"])
     assert "PRIVATE-" not in encoded and "configured-not-actual" not in encoded
-    assert list(snap)[-2:] == ["node_activity", "activity_evidence"]
+    assert list(snap)[-2:] == ["activity_evidence", "node_activity"]
 
 
 def test_validation_failure_without_a_failed_event_keeps_observed_return(stored_run):
@@ -115,6 +115,12 @@ def test_text_prefix_preserves_existing_guidance_before_new_diagnostics(stored_r
                 "actionable_by", "cancel_requested"):
         assert f'"{key}":' in text
     assert "Still running" in text
+    assert '"activity_evidence":' in text
+    assert text.index('"cancel_requested":') < text.index('"activity_evidence":')
+    assert text.index('"activity_evidence":') < text.index('"node_activity":')
+    assert "model_status=reported means the model identifier was reported" in text
+    assert "model_status=unknown means it was not reported" in text
+    assert "Neither status records request receipt or admission" in text
     assert len(result.structured_content["node_activity"]) == 13
 
 

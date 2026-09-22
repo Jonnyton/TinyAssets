@@ -15,8 +15,11 @@ ACTIVITY_EVIDENCE = (
     "local elapsed time is not provider execution time. A returned value may "
     "subsequently fail output validation. Returned-call metadata is tagged with "
     "its own step/time and may precede a later start or failure. Local start "
-    "counts are not provider attempt counts. Only normalized execution receipts "
-    "identify a reported answering model; legacy provider labels do not. Null "
+    "counts are not provider attempt counts. When present, execution is metadata "
+    "on the stored returned call: model_status=reported means the model identifier "
+    "was reported; model_status=unknown means it was not reported. Neither status "
+    "records request receipt or admission, nor establishes validated output. "
+    "Legacy provider labels do not identify the actual answering model. Null "
     "means unavailable, not evidence that the provider never started or replied. "
     "These events do not establish exact subprocess stop or cancellation."
 )

@@ -1527,8 +1527,8 @@ def _action_get_run(kwargs: dict[str, Any]) -> str:
 
     # Keep existing recovery/output guidance ahead of additive diagnostics for
     # text-only clients whose faithful result prefix has a bounded size.
-    snapshot["node_activity"] = build_node_activity(events, snapshot["node_statuses"])
     snapshot["activity_evidence"] = ACTIVITY_EVIDENCE
+    snapshot["node_activity"] = build_node_activity(events, snapshot["node_statuses"])
     return json.dumps(snapshot, default=str)
 
 

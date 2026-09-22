@@ -95,3 +95,30 @@ skips; clean Linux oracle221passed/no skips in4.43s. Two new cases cover the
 ordering and actual validation-failure event shape. Focused new files125passed.
 Ruff, rebuilt497-file mirror/import, seven invariants, strict change validation
 and diff check all pass. No baseline failure was hidden or new skip introduced.
+
+## Live follow-up: bounded Fable presentation review
+
+PR3909 subsequently passed exact-head Fable81316 approval and CI and deployed
+as8f4ee4a8 at02:15UTC September22. See
+[rendered acceptance](../../../docs/reviews/2026-09-22-owned-run-activity-acceptance.md).
+The app could recover stored failed-run evidence but misread model_status as
+provider acknowledgment, including after one ordinary correction. No further
+coaching or private-workflow rerun was used to manufacture acceptance.
+
+Independent Fable50428 completed exit0/113s at02:31UTC, verdict CLARIFY_SURFACE.
+It confirmed a generic truncation risk: current caveat follows the node array,
+while tests preserve only legacy guidance. Recommended legacy guidance first,
+then caveat, then node array, plus explicit definitions of both existing model
+status values. Full structured data remains unchanged. This is shape review,
+not exact-head approval of the follow-up implementation.
+
+Lead accepts the proposal. Regression first: two surface tests failed on the
+deployed runtime, including missing activity_evidence in a13-node text prefix.
+After the two-line order swap and constant clarification: Windows218passed/
+same3skips, matching the previous frozen five-file selection. Baseline surface
+alone8passed before new assertions. Ruff, strict change/canonical spec and
+497-file plugin mirror/import pass. No runtime policy, data or enum changes.
+Canonical spec is synced but archive/closure waits for follow-up release proof.
+Clean Linux oracle selection221passed/no skips in4.32s, matching prior baseline;
+seven pre-commit invariants passed after mirror generation. No archive capture
+overlapped code or mirror edits. Exact-head review remains required.
