@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -147,16 +148,23 @@ def test_observed_fields_are_sanitized_and_carry_no_identifier() -> None:
     assert "169.254" not in rendered
 
 
-def test_a_dead_reader_that_records_nothing_refuses_instead_of_raising() -> None:
+def test_a_dead_reader_that_records_nothing_refuses_instead_of_raising(monkeypatch) -> None:
     """`finally: finished.set()` also runs for a BaseException in the reader.
 
     The result list is then empty and indexing it would turn a startup
     observation into an IndexError.
 
-    The reader thread genuinely dies here, so pytest emits a
-    PytestUnhandledThreadExceptionWarning for it. That warning is the scenario,
-    not a defect; nothing in this repo turns warnings into errors.
+    Capture the intentional thread failure and wait for its hook, so it cannot
+    leak a warning into the following test after finished.set() wakes the caller.
     """
+    failure_reported = threading.Event()
+    failures = []
+
+    def record_failure(args):
+        failures.append(args.exc_value)
+        failure_reported.set()
+
+    monkeypatch.setattr(threading, "excepthook", record_failure)
 
     class DyingOpener:
         def open(self, _request, timeout):
@@ -165,6 +173,8 @@ def test_a_dead_reader_that_records_nothing_refuses_instead_of_raising() -> None
     result = prov.read_metadata_instance_id(opener=DyingOpener(), timeout=0.2)
     assert result.ok is False
     assert result.reason == "metadata_probe_failed"
+    assert failure_reported.wait(1)
+    assert len(failures) == 1 and str(failures[0]) == "reader died"
 
 
 # --------------------------------------------------------------------------
@@ -209,7 +219,9 @@ def test_pulse_readback_calls_no_resolver_and_opens_no_socket(client, monkeypatc
 
     monkeypatch.setattr(prov, "resolve_platform_runtime_provenance", forbidden_resolver)
     monkeypatch.setattr(prov, "read_metadata_instance_id", forbidden_reader)
-    monkeypatch.setattr(prov, "_PROCESS_OBSERVATION", prov.ProcessProvenanceObservation())
+    monkeypatch.setattr(
+        prov, "_PROCESS_OBSERVATION", prov.ProcessProvenanceObservation(forbidden_resolver),
+    )
 
     response = _canary_pulse(client)
 
