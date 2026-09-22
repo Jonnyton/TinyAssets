@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets import runtime_singletons as runtime
 from tinyassets.branches import (
     BranchDefinition,
@@ -26,6 +27,8 @@ from tinyassets.providers.base import (
     UniverseContext,
 )
 from tinyassets.providers.router import ProviderRouter
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 class _SpyProvider(BaseProvider):

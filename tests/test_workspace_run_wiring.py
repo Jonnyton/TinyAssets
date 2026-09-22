@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets import runs, workspace_pool
 
 GIB = 1024 ** 3
@@ -638,6 +639,7 @@ def test_the_fork_reset_replaces_an_inherited_locked_mutex():
     child_lock.release()
 
 
+@pytest.mark.usefixtures("cloud_runtime")
 def test_http_application_lifespan_stops_workspace_sweepers(
     tmp_path, monkeypatch
 ):

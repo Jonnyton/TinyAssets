@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 import rfc8785
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets import branch_tasks as bt_mod
 from tinyassets.auth.provider import Identity
 from tinyassets.branch_tasks import (
@@ -64,6 +65,9 @@ from tinyassets.storage.request_admissions import RequestAdmissionStore
 # ───────────────────────────────────────────────────────────────────────
 # Fixtures
 # ───────────────────────────────────────────────────────────────────────
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def _become(user_id: str) -> None:

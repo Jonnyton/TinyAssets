@@ -8,6 +8,7 @@ import pytest
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from tests import test_work_model_selection as work_model_tests
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_run_provider_session import _branch, _CountingProvider, _run_branch
 from tinyassets import engine_mcp_http, engine_tool_client
 from tinyassets.provider_assignment_manifest import ModelAccess
@@ -18,6 +19,9 @@ from tinyassets.storage.agent_turn_journal import AgentTurnJournal
 from tinyassets.storage.provider_work_authority import db_path
 
 http_wire = work_model_tests.http_wire
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture

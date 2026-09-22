@@ -28,8 +28,12 @@ observation through a non-mutating read that never invokes the resolver, never
 initializes the observation cache, and never performs network or metadata I/O.
 An observation that has not been resolved, that failed, or that was inherited
 across a process-identity change SHALL read as an explicit `unknown` verdict;
-`unknown` SHALL NOT be reported as cloud, SHALL NOT be reported as enforcement,
-and SHALL NOT trigger a fresh resolution.
+`unknown` SHALL NOT be reported as cloud or successful admission and SHALL NOT
+trigger a fresh resolution. The policy fields `enforced=true` and
+`mode=application_admission` describe installed application guards, independent
+of whether this process is admitted; they SHALL NOT establish custody or full
+boundary closure. Origin ingress SHALL refuse unknown/not-cloud HTTP requests
+with a sanitized HTTP 503 before any handler, including the release endpoint.
 
 The read SHALL be exposed on the existing authenticated release-facts endpoint
 as an optional field carrying only a sanitized fixed schema — verdict, a stable
@@ -57,7 +61,8 @@ semantics.
 - **WHEN** the release-facts endpoint is read while the process has resolved no
   observation
 - **THEN** no resolver, metadata client or network read is invoked
-- **AND** the reported verdict is an explicit unknown, not cloud.
+- **AND** the internal peek remains unknown, while origin ingress refuses HTTP
+  503 without release data rather than serving an unknown provenance response.
 
 #### Scenario: A cached observation is stable across repeated reads
 - **WHEN** a process resolves its startup observation once and the endpoint is

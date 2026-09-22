@@ -129,8 +129,8 @@ def test_unobserved_state_is_explicit_unknown_and_not_cloud() -> None:
     assert fields["verdict"] != prov.CLOUD
     assert fields["observed"] is False
     assert fields["reason"] == "not_observed"
-    assert fields["enforced"] is False
-    assert fields["mode"] == "observation_only"
+    assert fields["enforced"] is True
+    assert fields["mode"] == "application_admission"
 
 
 def test_observed_fields_are_sanitized_and_carry_no_identifier() -> None:
@@ -138,7 +138,7 @@ def test_observed_fields_are_sanitized_and_carry_no_identifier() -> None:
 
     assert fields["verdict"] == prov.CLOUD
     assert fields["observed"] is True
-    assert fields["enforced"] is False
+    assert fields["enforced"] is True
     assert set(fields) == {
         "verdict", "reason", "observed", "metadata_reachable",
         "expected_identity_prepared", "enforced", "mode",
@@ -193,6 +193,18 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv(DEV_USER_ENV, "operator-app")
     monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    # Serving startup and origin ingress now ADMIT (change tasks 7/8), so this
+    # fixture must state the runtime it is testing against instead of letting
+    # the lifespan perform a real link-local metadata read and refuse. Injected
+    # module-locally through the existing observation seam — never an env flag,
+    # and it confers no production authority.
+    _admitted = prov.ProcessProvenanceObservation(
+        resolver=lambda: prov.RuntimeProvenance(
+            prov.CLOUD, "instance_match", True, True
+        )
+    )
+    _admitted.observe()
+    monkeypatch.setattr(prov, "_PROCESS_OBSERVATION", _admitted)
     try:
         with TestClient(create_streamable_http_app()) as test_client:
             yield test_client
@@ -225,10 +237,14 @@ def test_pulse_readback_calls_no_resolver_and_opens_no_socket(client, monkeypatc
 
     response = _canary_pulse(client)
 
-    assert response.status_code == 200
+    # Updated for the origin backstop (change task 7): an unobserved process no
+    # longer *serves* an unknown readback — it refuses at the origin before the
+    # handler. The property this test exists for is unchanged and still asserted:
+    # the request resolved nothing and opened no socket on its way to refusal.
+    assert response.status_code == 503, response.status_code
+    assert prov.PLATFORM_NOT_CLOUD_REASON in response.text
     assert resolver_calls == [] and reader_calls == []
-    field = response.json()["platform_runtime_provenance"]
-    assert field["verdict"] == prov.UNKNOWN and field["observed"] is False
+    assert "platform_runtime_provenance" not in response.text
 
 
 def test_pulse_reports_the_cached_verdict_without_re_resolving(client, monkeypatch):
@@ -242,7 +258,8 @@ def test_pulse_reports_the_cached_verdict_without_re_resolving(client, monkeypat
 
     assert first == second
     assert first["verdict"] == prov.CLOUD and first["observed"] is True
-    assert first["enforced"] is False, "record-only: this is not enforcement"
+    assert first["enforced"] is True, "application admission, not custody proof"
+    assert first["mode"] == "application_admission"
     assert calls == [1], "startup resolved once; two reads resolved nothing"
 
 
@@ -318,7 +335,10 @@ def _receipt(sha, **extra):
     return state
 
 
-def test_reporter_projects_only_allowlisted_typed_fields():
+@pytest.mark.parametrize("mode,enforced", [
+    ("observation_only", False), ("application_admission", True),
+])
+def test_reporter_projects_only_allowlisted_typed_fields(mode, enforced):
     mod = load_gate()
 
     result = mod.provenance_report({
@@ -328,8 +348,8 @@ def test_reporter_projects_only_allowlisted_typed_fields():
             "observed": True,
             "metadata_reachable": True,
             "expected_identity_prepared": True,
-            "enforced": False,
-            "mode": "observation_only",
+            "enforced": enforced,
+            "mode": mode,
             # Everything below is NOT on the allowlist and must be dropped.
             "instance_id": _SECRET_INSTANCE_ID,
             "expected_instance_id": _SECRET_INSTANCE_ID,
@@ -339,7 +359,8 @@ def test_reporter_projects_only_allowlisted_typed_fields():
     })
 
     assert result["verdict"] == "cloud"
-    assert result["observed"] is True and result["enforced"] is False
+    assert result["observed"] is True and result["enforced"] is enforced
+    assert result["mode"] == mode
     assert result["reported"] is True
     rendered = json.dumps(result)
     assert _SECRET_INSTANCE_ID not in rendered

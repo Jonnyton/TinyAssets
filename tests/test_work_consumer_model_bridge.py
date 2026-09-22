@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from tests import test_workflow_http_agent as work_tests
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_run_provider_session import _branch, _run_branch
 from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
 from tinyassets.provider_assignment_manifest import ModelAccess
@@ -13,6 +14,9 @@ from tinyassets.storage.provider_work_authority import db_path
 
 http_wire = work_tests.http_wire
 work_agent = work_tests.work_agent
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def captured_selection(monkeypatch):

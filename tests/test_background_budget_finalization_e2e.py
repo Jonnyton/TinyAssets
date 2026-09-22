@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.background_branch_authority import (
     BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
@@ -38,6 +39,8 @@ from tinyassets.storage.background_branch_authority import (
     SQLiteBackgroundBranchAuthorityStore,
 )
 from tinyassets.storage.provider_work_authority import db_path as authority_db_path
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 class _CountingProvider(BaseProvider):

@@ -179,6 +179,21 @@ class SharedSelfTests(unittest.TestCase):
 
 
 class ProviderSeamTests(unittest.TestCase):
+    def setUp(self):
+        # Standalone unittest also needs explicit simulated process evidence.
+        # Preserve the real guard; this fixture grants no production authority.
+        from tinyassets import platform_runtime_provenance as provenance
+
+        observation = provenance.ProcessProvenanceObservation(
+            resolver=lambda: provenance.RuntimeProvenance(
+                provenance.CLOUD, "instance_match", True, True
+            )
+        )
+        observation.observe()
+        admission = patch.object(provenance, "_PROCESS_OBSERVATION", observation)
+        admission.start()
+        self.addCleanup(admission.stop)
+
     def test_admitted_session_gets_shared_harness_ordinary_session_unchanged(self):
         from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
         from tinyassets.providers.base import ModelConfig

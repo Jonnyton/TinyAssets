@@ -14,6 +14,7 @@ import json
 import pytest
 
 import tinyassets.webhook_inbound as wh
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.storage import webhook_hooks
 
 
@@ -201,6 +202,7 @@ def test_a_dispatch_failure_answers_uniform_404_without_leaking(tmp_path):
     assert "internal" not in json.dumps(payload)
 
 
+@pytest.mark.usefixtures("cloud_runtime")
 def test_the_hooks_route_wires_token_body_and_headers_when_enabled(monkeypatch):
     from starlette.testclient import TestClient
 
@@ -221,6 +223,7 @@ def test_the_hooks_route_wires_token_body_and_headers_when_enabled(monkeypatch):
     assert seen["headers"]["x-test"] == "y"
 
 
+@pytest.mark.usefixtures("cloud_runtime")
 def test_the_route_is_absent_when_disabled(monkeypatch):
     from starlette.testclient import TestClient
 
@@ -240,6 +243,7 @@ def test_the_route_is_absent_when_disabled(monkeypatch):
     assert resp_authenticated.status_code == 404   # route not mounted at all
 
 
+@pytest.mark.usefixtures("cloud_runtime")
 def test_the_route_rejects_an_oversized_content_length_before_reading(monkeypatch):
     from starlette.testclient import TestClient
 

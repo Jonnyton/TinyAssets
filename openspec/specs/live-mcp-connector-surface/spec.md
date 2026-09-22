@@ -417,29 +417,32 @@ fields. No new principal or permission is granted.
 
 The provenance readback SHALL NOT establish binary freshness from the mutable
 receipt, container incarnation from uptime, all-worker coverage, attestation,
-custody or enforced admission. The optional diagnostic in the deploy gate SHALL
+custody or closure of the full cloud-only boundary. `mode=application_admission`
+and `enforced=true` SHALL describe application guards, not custody or attestation.
+The reporter SHALL also recognize the prior `observation_only` mode during
+rollout. The optional diagnostic in the deploy gate SHALL
 reuse its existing pulse response and leave receipt-assertion exit semantics
 unchanged; unknown provenance is not a pass of cloud-only acceptance.
 
 #### Scenario: the deploy gate reads production's sha
-- **WHEN** `GET /mcp/pulse` is requested with the canary bearer
+- **WHEN** an admitted origin receives `GET /mcp/pulse` with the canary bearer
 - **THEN** the response is HTTP 200 carrying the four base fields and nothing a user authored
 - **AND** an optional provenance field reports only the answering process's cached observation
 
 #### Scenario: an ordinary signed-in user reads pulse
-- **WHEN** a valid non-canary user bearer requests pulse
+- **WHEN** a valid non-canary user bearer requests pulse on an admitted origin
 - **THEN** the response contains exactly the four base fields and no provenance field
 
 #### Scenario: provenance has not been observed in this process
 - **WHEN** the canary reads pulse before observation or after inheriting a parent cache
-- **THEN** provenance is unknown without a metadata read or cache initialization
+- **THEN** the origin refuses HTTP 503 with only `platform_not_cloud`, without a metadata read or cache initialization
 
 #### Scenario: an unsigned browser requests pulse
-- **WHEN** `GET /mcp/pulse` is requested without a bearer
+- **WHEN** `GET /mcp/pulse` is requested without a bearer on an admitted origin
 - **THEN** the response is the OAuth 401 challenge and no release fields are returned
 
 #### Scenario: a deeper path is not exempt
-- **WHEN** `GET /mcp/pulse/extra` is requested with no bearer
+- **WHEN** `GET /mcp/pulse/extra` is requested with no bearer on an admitted origin
 - **THEN** the response is the 401 challenge
 
 ### Requirement: Probes are the canary service principal

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import rfc8785
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.background_branch_authority import (
     BackgroundBranchAttempt,
     BackgroundBranchAttemptFence,
@@ -98,6 +99,8 @@ from tinyassets.user_owned_cloud_automation import (
     acceptance_scenario_digest,
     repository_spec_baseline_scenario,
 )
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def prepare_claimed_cloud_provider_call(*args, **kwargs):

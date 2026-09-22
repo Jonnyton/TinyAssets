@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 import tinyassets.automations as automations_module
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_background_budget_finalization_e2e import _seed_serving_assignment
 from tinyassets.automations import (
     MAX_ACTIVE_PER_UNIVERSE,
@@ -49,6 +50,9 @@ UNIVERSE = "universe_alice"
 BRANCH = "branch_automation_demo"
 
 NOW = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture(autouse=True)

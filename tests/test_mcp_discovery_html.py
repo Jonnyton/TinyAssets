@@ -13,6 +13,13 @@ from __future__ import annotations
 import pytest
 from starlette.testclient import TestClient
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+
+# Every test here enters the serving lifespan through `client`, which now
+# requires an admitted cloud runtime. The challenge/pass-through assertions
+# below are unchanged and no admission guard is stubbed.
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
+
 
 @pytest.fixture
 def app():

@@ -15,6 +15,14 @@ import threading
 import pytest
 from starlette.testclient import TestClient
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+
+# Every test here enters the real serving lifespan or hosted main, both of
+# which now require an admitted cloud runtime. Module-local and explicit --
+# never autouse -- and no admission guard is stubbed: the storage-before-
+# workers ordering and the initialization-failure negatives are unchanged.
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
+
 
 class SchedulerLikeWriter:
     """A controlled competing writer installed at the scheduler start boundary."""

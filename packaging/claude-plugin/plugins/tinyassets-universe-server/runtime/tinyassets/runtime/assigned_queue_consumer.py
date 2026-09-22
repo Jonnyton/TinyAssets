@@ -23,6 +23,9 @@ from tinyassets.branch_tasks_v2 import (
     Epoch2BranchTask,
     Epoch2BranchTaskAdapter,
 )
+from tinyassets.platform_runtime_provenance import (
+    require_process_cloud_admission,
+)
 from tinyassets.runtime.claimed_branch_execution import execute_claimed_branch_task
 
 logger = logging.getLogger(__name__)
@@ -31,6 +34,7 @@ _DEFAULT_GLOBAL_CONCURRENCY = 2
 _DEFAULT_POLL_SECONDS = 2.0
 _CONSUMER_REGISTRY_LOCK = threading.Lock()
 _STARTED_CONSUMERS: weakref.WeakSet[AssignedQueueConsumer] = weakref.WeakSet()
+
 
 # Supervisor heartbeat naming + writer-model defaults. These moved here from
 # the retired host-run `tinyassets.cloud_worker` fleet supervisor: the served
@@ -233,6 +237,7 @@ class AssignedQueueConsumer:
         # is "no side effect when off", not merely "no DB writes".
         if not assigned_queue_consumer_enabled():
             return
+        require_process_cloud_admission(surface="assigned queue consumer")
         if self._thread is not None:
             return
         self._scavenge_orphaned_credentials()
@@ -328,6 +333,9 @@ class AssignedQueueConsumer:
 
         if not assigned_queue_consumer_enabled():
             return 0
+        # A copied runtime row or cached receipt cannot authorize recovery,
+        # automatic work submission or publication of compatible capacity.
+        require_process_cloud_admission(surface="assigned queue consumer")
         from tinyassets.provider_serving_binding import list_serving_universes
         from tinyassets.storage.assigned_queue_refusals import (
             AssignedQueueRefusalStore,

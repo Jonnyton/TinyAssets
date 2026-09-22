@@ -8,8 +8,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 import rfc8785
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets import daemon_registry, daemon_server
 from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
 from tinyassets.daemon_server import initialize_author_server
@@ -21,6 +23,8 @@ from tinyassets.storage.automation_activations import (
     AutomationActivationStore,
 )
 from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def _activation_subject(ref: str) -> ExecutionSubject:

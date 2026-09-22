@@ -7,6 +7,7 @@ import pytest
 
 from tests import test_background_budget_finalization_e2e as background
 from tests import test_workflow_http_agent as foreground
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_run_provider_session import _seed_open_serving_assignment
 from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
 from tinyassets.daemon_server import grant_universe_access, set_founder_home
@@ -16,6 +17,9 @@ from tinyassets.storage.provider_work_authority import db_path
 
 http_wire = foreground.http_wire
 work_agent = foreground.work_agent
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def run(tmp_path, monkeypatch, *, native=False):

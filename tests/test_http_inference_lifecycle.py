@@ -9,10 +9,14 @@ from types import SimpleNamespace
 import pytest
 
 from tests import test_api_key_http_provider as http_tests
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.exceptions import ProviderProtocolError, ProviderRateLimitedError
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 
 base = http_tests.base
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def response(status=200, body=None):

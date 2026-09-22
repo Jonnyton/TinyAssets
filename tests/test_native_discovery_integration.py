@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from tests import test_native_model_authority as authority_tests
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_native_model_authority import _call
 from tests.test_run_provider_session import _branch, _CountingProvider, _run_branch
 from tinyassets.credential_vault import write_credential_vault
@@ -22,6 +23,9 @@ from tinyassets.providers.served_model_plan import prepare_owned_model_plan
 from tinyassets.storage.provider_work_authority import db_path
 
 native = authority_tests.native
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def catalogue(ids, *, age=0):

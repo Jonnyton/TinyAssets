@@ -5,12 +5,15 @@ from contextlib import contextmanager
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_run_provider_session import _branch, _run_branch
 from tests.test_work_model_selection import http_wire  # noqa: F401 - pytest fixture
 from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.base import ModelConfig, UniverseContext
 from tinyassets.storage.provider_work_authority import db_path
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.mark.parametrize("manifest", [False, True])

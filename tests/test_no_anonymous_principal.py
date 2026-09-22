@@ -20,10 +20,16 @@ from typing import Any
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.auth import middleware as mw
 from tinyassets.auth.provider import CANARY, DEV_USER_ENV, DevAuthProvider, Identity
 
 _CANARY_TOKEN = "c" * 40
+
+# The app-booting `client` fixture below enters the serving lifespan, which
+# now requires an admitted cloud runtime. Process provenance is orthogonal to
+# the principal: every bearer challenge and refusal asserted here is unchanged.
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture(autouse=True)

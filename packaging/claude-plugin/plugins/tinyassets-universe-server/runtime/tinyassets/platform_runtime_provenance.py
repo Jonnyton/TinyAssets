@@ -1,19 +1,17 @@
-"""Record-only platform runtime provenance observation.
+"""Platform runtime provenance and application admission.
 
-OpenSpec change `cloud-only-runtime-admission`, task 4 (record-only slice).
+OpenSpec change `cloud-only-runtime-admission`, tasks 4 and 6-8.
 
 **This module decides nothing on its own.** It resolves one bounded observation
 — does the DigitalOcean droplet metadata service answer from inside this
 process's machine, and does the id it reports equal the instance id the deploy
 recorded before this process started — and it hands back a typed verdict.
 
-Two callers now branch on that verdict (tasks 6-7): the assigned-claim CAS
-predicate and cloud-worker runtime registration, through the admission helpers
-at the bottom of this module. Serving startup, the provider-authority boundary
-and the recovery paths are **still unchanged** — that is task 8 — so the
-boundary is open, and the sanitized `enforced` / `mode` fields published on the
-health read deliberately still report the record-only shape rather than
-claiming a closed boundary this module cannot yet back.
+Serving startup, origin ingress, assigned claims, runtime registration,
+provider authority and queue recovery consume this verdict. The diagnostic
+`enforced` / `mode` fields describe these application guards only. They do not
+establish exclusive cloud credential custody, hardware attestation, or closure
+of the complete cloud-only boundary.
 
 What the verdict is, stated honestly
 ------------------------------------
@@ -139,8 +137,8 @@ class RuntimeProvenance:
     reason: str
     metadata_reachable: bool
     expected_identity_prepared: bool
-    #: Record-only slice: this is always False. Tasks 6-8 flip refusal sites.
-    enforced: bool = False
+    #: Application admission policy, NOT attestation or credential custody.
+    enforced: bool = True
 
     @property
     def is_cloud(self) -> bool:
@@ -431,7 +429,7 @@ _PROCESS_OBSERVATION = ProcessProvenanceObservation()
 
 
 def observe_platform_runtime_provenance() -> RuntimeProvenance:
-    """Process-wide entry point. Record-only: no caller branches on this."""
+    """Process-wide observation consumed by the application admission sites."""
     return _PROCESS_OBSERVATION.observe()
 
 
@@ -475,6 +473,27 @@ def cached_process_is_cloud_admitted() -> bool:
 def process_is_cloud_admitted() -> bool:
     """Resolve-then-read, for an admission site that holds no transaction."""
     return resolve_process_cloud_admission().is_cloud
+
+
+def require_process_cloud_admission(*, surface: str) -> RuntimeProvenance:
+    """Resolve-then-require, for an admission site that holds no transaction.
+
+    The one shape a *boundary* uses: it resolves the process verdict (or reuses
+    the one already cached), returns it when it admits, and otherwise raises the
+    single sanitized refusal. Callers get the verdict back so an admitted site
+    can log the same sanitized record without resolving a second fact.
+
+    **Never call this inside a database transaction** — it may perform the one
+    bounded metadata read. Sites that run under an open write lock use
+    :func:`cached_process_is_cloud_admitted`, which is peek-only.
+
+    A cached refusal never upgrades here: an unadmitted process stays unadmitted
+    for its lifetime, and recovery is an explicit restart.
+    """
+    provenance = resolve_process_cloud_admission()
+    if not provenance.is_cloud:
+        raise PermissionError(platform_not_cloud_message(provenance, surface=surface))
+    return provenance
 
 
 def admitted_cloud_executor_class() -> str:
@@ -550,8 +569,8 @@ def sanitized_peek_fields(
             "observed": False,
             "metadata_reachable": False,
             "expected_identity_prepared": False,
-            "enforced": False,
-            "mode": "observation_only",
+            "enforced": True,
+            "mode": "application_admission",
         }
     fields = sanitized_observation_fields(provenance)
     fields["observed"] = True
@@ -562,8 +581,8 @@ def sanitized_observation_fields(provenance: RuntimeProvenance) -> dict[str, obj
     """The only shape that may be logged or recorded.
 
     Verdict, reason token and two booleans. No instance id, no expected id, no
-    address, no secret, and `enforced` stated explicitly so a record-only line
-    can never be read as an enforcement claim.
+    address, no secret. `enforced` and `mode` describe application admission,
+    never credential custody or closure of the complete platform boundary.
     """
     return {
         "verdict": provenance.verdict,
@@ -571,5 +590,5 @@ def sanitized_observation_fields(provenance: RuntimeProvenance) -> dict[str, obj
         "metadata_reachable": provenance.metadata_reachable,
         "expected_identity_prepared": provenance.expected_identity_prepared,
         "enforced": provenance.enforced,
-        "mode": "observation_only",
+        "mode": "application_admission",
     }
