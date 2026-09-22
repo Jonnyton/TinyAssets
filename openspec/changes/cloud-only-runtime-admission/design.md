@@ -182,6 +182,32 @@ Every new test must be run against the **unfixed** tree and be required to fail
 there, and the suite must run on the Linux oracle before push (the resolver
 touches process/network syscalls a Windows run will skip).
 
+## Colliding as-built specs (named, not edited here)
+
+The directive says it supersedes earlier host/tray-bridge, host-fleet and
+local-fallback language. Two as-built capabilities still assert that shape, so a
+reviewer must see the collision rather than discover it at sync time:
+
+- **`openspec/specs/desktop-host-runtime/spec.md`** — `:8` has the tray
+  launching provider-pinned daemon subprocesses, *the local MCP server*, and a
+  local Cloudflare tunnel gated only on `TINYASSETS_TRAY_ENABLE_TUNNEL` plus
+  token availability; `:24,:45` have it starting daemons against a local data
+  root; `:59` has it restarting a local MCP server and tunnel after process
+  death with backoff. That is a local serving/ingress path enabled by an env var
+  and token possession — precisely what this change refuses. It is also the
+  clearest route by which the founder's desktop could serve "momentarily".
+- **`openspec/specs/daemon-identity-and-host-pool/spec.md:76,97`** — a host-pool
+  client that registers host rows and returns a `host_id`. Related fleet
+  language is already marked deleted in `daemon-runtime-and-dispatch:82`
+  ("the host-run worker fleet this originally coordinated is deleted"), so this
+  is likely stale spec text rather than live behaviour — but it is unverified
+  here and must not be assumed dead.
+
+Resolution belongs to task 12 (sync), after review: the local tray may keep
+**developer and client** functions, and must lose any requirement that lets it
+serve platform traffic or publish an ingress. A developer tool is not promoted
+into a platform service by having a token. This change does not edit those specs.
+
 ## Rollout
 
 Resolver + ledger land in **record-only** mode; confirm on the droplet that it

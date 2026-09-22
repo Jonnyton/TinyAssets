@@ -37,5 +37,9 @@ gated on task 7 attesting on the real droplet.
 - [ ] 11. Flip recovery paths: watchdog, release-reconcile and stale-runtime
   retirement leave work pending when no attested successor exists.
 - [ ] 12. Run the Linux oracle on the new tests, get the cross-family review
-  verdict, then update `PLAN.md` / `AGENTS.md` references and sync this delta
-  into `openspec/specs/cloud-only-runtime-admission/`.
+  verdict, then sync this delta into
+  `openspec/specs/cloud-only-runtime-admission/` **and** resolve the colliding
+  as-built text named in `design.md` § Colliding as-built specs
+  (`desktop-host-runtime:8,24,45,59` local MCP/tunnel serving;
+  `daemon-identity-and-host-pool:76,97` host-pool registration), verifying which
+  is live before deleting any of it.
