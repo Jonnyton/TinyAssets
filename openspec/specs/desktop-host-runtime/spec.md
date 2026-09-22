@@ -5,7 +5,7 @@ Define the current source-installed desktop host, including tray supervision, pr
 ## Requirements
 ### Requirement: The Source Tray Owns One Host Control Process Per Lock Path
 
-The source-shipped `tinyassets_tray.py` entry point SHALL acquire the checkout-local `logs/.tray.lock` before starting its tray manager, and a second launch using that same lock path while it is held SHALL exit successfully without starting another manager. The tray manager SHALL launch and supervise provider-pinned daemon subprocesses, the local MCP server, and the optional tab watchdog; it MUST leave the local Cloudflare tunnel disabled unless `TINYASSETS_TRAY_ENABLE_TUNNEL` is explicitly truthy and a tunnel token is available. The current lock does not prevent a second source checkout from starting its own manager. As-built limitation: this is a source-installed Windows-first runtime; the repository does not ship a one-click installer, and macOS/Linux tray packaging is not claimed.
+The source-shipped `tinyassets_tray.py` entry point SHALL acquire the checkout-local `logs/.tray.lock` before starting its tray manager, and a second launch using that same lock path while it is held SHALL exit successfully without starting another manager. The tray manager SHALL launch and supervise provider-pinned daemon subprocesses, the local MCP server, and the optional tab watchdog; it MUST NOT launch a local Cloudflare tunnel, even when former opt-in environment variables or tokens are present. The current lock does not prevent a second source checkout from starting its own manager. This ingress-removal requirement does not by itself establish cloud-only worker or provider admission.
 
 #### Scenario: Double-launch is harmless
 
@@ -13,10 +13,10 @@ The source-shipped `tinyassets_tray.py` entry point SHALL acquire the checkout-l
 - **THEN** it reports that TinyAssets Server is already running and returns exit code zero
 - **AND** it does not construct or run a second `UniverseServerManager`
 
-#### Scenario: Local tunnel is opt-in
+#### Scenario: Local tunnel launch is unavailable
 
-- **WHEN** the tray starts with `TINYASSETS_TRAY_ENABLE_TUNNEL` unset or false
-- **THEN** it starts no `cloudflared` process and records the tunnel as down
+- **WHEN** the tray starts, including with `TINYASSETS_TRAY_ENABLE_TUNNEL` or a legacy tunnel token present
+- **THEN** it starts no `cloudflared` process and records explicit refusal of an obsolete tunnel request
 - **AND** the daemon and local MCP startup paths remain available
 
 ### Requirement: Tray Provider Controls Enforce Current Host Constraints
@@ -56,7 +56,7 @@ The host tray SHALL resolve its universe root through `tinyassets.storage.data_d
 
 ### Requirement: Tray Health Is Observable And Supervised
 
-The tray SHALL distinguish process liveness from HTTP readiness for the MCP and public tunnel, surface daemon, MCP, tunnel, watchdog, universe, and provider state in its menu and hover text, and close daemon log handles when their processes exit or are stopped. The background monitor SHALL restart a previously-started MCP server, tunnel, or watchdog after process death with bounded backoff, but it SHALL NOT manufacture a healthy state when an HTTP probe fails. A fresh per-universe `.runtime_status.json` MAY supply best-effort provider detail only when no tray-managed daemon is visible; stale or malformed status SHALL be ignored, while a parseable naive timestamp SHALL be interpreted as UTC before freshness is checked.
+The tray SHALL distinguish local MCP process liveness from HTTP readiness, surface daemon, MCP, watchdog, universe, and provider state, and close daemon log handles when their processes exit or are stopped. Local readiness SHALL NOT be represented as proof of cloud service health. The public-app action SHALL remain available independently of all local processes; the removed tunnel SHALL NOT appear as a failing dependency. The background monitor SHALL restart a previously-started local MCP server or watchdog after process death with bounded backoff, never a tunnel. A fresh per-universe `.runtime_status.json` MAY supply best-effort provider detail only when no tray-managed daemon is visible; stale or malformed status SHALL be ignored, while a parseable naive timestamp SHALL be interpreted as UTC before freshness is checked.
 
 #### Scenario: Dead daemon is reaped
 
@@ -68,7 +68,7 @@ The tray SHALL distinguish process liveness from HTTP readiness for the MCP and 
 
 - **WHEN** the MCP subprocess is running but the local HTTP probe has not succeeded
 - **THEN** the tray reports MCP as loading rather than serving
-- **AND** the public endpoint action remains unavailable
+- **AND** the local endpoint action remains unavailable while the cloud app action remains available
 
 #### Scenario: Fresh external runtime status fills only the visibility gap
 
@@ -107,8 +107,8 @@ The desktop shortcut utility SHALL create a Windows desktop launcher for the rep
 - **THEN** it writes a desktop `.bat` launcher targeting the source entry point
 - **AND** it returns the path of the fallback shortcut
 
-### Requirement: The installed GUI entrypoint is the TinyAssets launcher with tunnel off by default
-The package SHALL publish the `tinyassets` GUI command as `tinyassets.desktop.launcher:main`. Starting through that installed GUI entrypoint SHALL construct the local daemon through the launcher without supplying a tunnel request; the legacy repository-local `tinyassets.pyw` helper remains a distinct source launcher that explicitly supplies `--tunnel`.
+### Requirement: GUI entrypoints never request local public ingress
+The package SHALL publish the `tinyassets` GUI command as `tinyassets.desktop.launcher:main`. Both that installed entrypoint and the repository-local `tinyassets.pyw` helper SHALL start without a tunnel request. The one-click batch helper SHALL NOT install a Cloudflare connector. Explicit obsolete `--tunnel` or `--tunnel-name` CLI requests SHALL refuse before mode startup with a cloud-app migration message.
 
 #### Scenario: Installed GUI command resolves to the canonical launcher
 - **WHEN** packaging metadata for GUI scripts is inspected
@@ -118,6 +118,6 @@ The package SHALL publish the `tinyassets` GUI command as `tinyassets.desktop.la
 - **WHEN** a user starts the installed `tinyassets` GUI command
 - **THEN** the launcher starts its daemon controller without requesting an API tunnel
 
-#### Scenario: Legacy source launcher remains explicit
+#### Scenario: Legacy source launcher publishes no tunnel
 - **WHEN** a developer directly runs the repository-local `tinyassets.pyw`
-- **THEN** that helper supplies `--tunnel` explicitly and does not redefine the installed GUI default
+- **THEN** that helper supplies no tunnel flag and publishes no local public ingress
