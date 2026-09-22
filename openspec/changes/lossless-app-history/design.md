@@ -1,6 +1,6 @@
 # Design — lossless app history
 
-Status: **proposed, awaiting root review. No code written.**
+Status: **implementation candidate after lead shape review, not released.**
 
 ## Verified starting state (2026-09-21, worktree at `4b6430ed`)
 
@@ -13,10 +13,10 @@ Status: **proposed, awaiting root review. No code written.**
 | The app speaks the public surface | `app.html:1451` `getConversation()` → `callTool("get_status", {include_conversation:true})` over `/mcp` |
 | `id` is stable | `conversation_store.py:80` — `id INTEGER PRIMARY KEY AUTOINCREMENT` |
 | No collision | `python scripts/check_primitive_exists.py action conversation` → CLEAN on `origin/main` |
-| Storage is intact below the status layer | `tests/test_conversation_failure_readers.py::test_a_long_reply_reaches_the_status_feed_whole` — added and passing here: a >4000-char reply with astral characters is recorded whole, `load_recent_readonly` (the feed `get_status` builds from) returns the original, and the chunk reader reassembles it exactly |
-| The server already reports the cut | `test_status_peek_labels_failure_and_marks_long_original_truncated:113` asserts `truncated` is set and `len(text) == 4000` — and has for as long as the peek has existed |
+| The local retained-store fixture is lossless | `tests/test_conversation_failure_readers.py::test_a_long_reply_reaches_the_status_feed_whole` records and reads a >4000-char Unicode fixture exactly; this does not establish retained bytes of the production message |
+| The current server reports the cut | `test_status_peek_labels_failure_and_marks_long_original_truncated:113` asserts `truncated` is set and `len(text) == 4000` |
 
-**The defect is therefore narrower than "history truncates".** The server has always
+**The source demonstrates a presentation defect.** The current server has
 told the truth about the bound; the client discards the flag and has no handle to
 act on it. That is why item 1 below is an id, not a bigger cap — the only missing
 piece on the status side is a way to *name* the message whose rest you want.
@@ -81,12 +81,22 @@ Unchanged and re-derived per call, never inherited:
 - **A new app-only HTTP endpoint under `/mcp/app`.** A second retrieval path over
   the same store, when a principal-bound one already exists.
 
-## Open question for root
+## Reviewed scope and verification
 
-Should the public `target="conversation"` expose the **catalogue** mode (no
-`field_name`) as well, or only the single-message chunk read? The app needs only
-the chunk read. The catalogue is a wider read and currently omits `execution` and
-`consumer_turn_id`, so exposing it invites a client that pages the catalogue and
-silently loses those. **Recommendation: expose the chunk read only** — require
-`field_name`, refusing a catalogue request with `conversation_message_id_invalid`
-until a caller needs it.
+Lead chose the existing catalogue AND chunk modes under the same owner/home
+binding, not an artificial public-only sub-mode. The app retains the status
+preview's display metadata and expands using its stable id; it need not render
+from the catalogue. An explicit foreign graph id refuses rather than returning
+current-home bytes under a foreign label.
+
+Chunk requests carry the rendered home and check login/owner/home both before
+requesting and after awaiting. A terminal marker must be explicit and consistent
+with total code-point length; malformed or non-advancing continuation fails
+visibly. There is no arbitrary page-count limit.
+
+Windows,2026-09-22:52 focused tests pass after four new regressions reproduced
+stale-control requests, omitted home binding, a512-page cutoff and missing terminal
+marker acceptance. Broader cohort199pass/1fail: existing symlink test raises
+WinError1314 before reaching its assertion. The exact test also fails at clean
+base4b6430ed. Docker Linux engine is unavailable; it was not started. Linux and
+live proof remain outstanding. No production-message preservation claim yet.

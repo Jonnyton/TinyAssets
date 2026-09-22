@@ -1766,6 +1766,10 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
         "offerResend", "noteHeldQueue", "offerSavedConversationCheck",
         "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
+        # loadHistory now offers the rest of a turn the peek bounded; without
+        # these the call is a ReferenceError its own catch swallows, and the
+        # rest of the thread silently stops rendering.
+        "messageBody", "expansionHandle", "offerFullMessage", "loadFullMessage",
         "restoreInflight", "setQueueScope", "setQueueOwner", "ownsSavedRow",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
         "flushSendQueue", "queueTurn",

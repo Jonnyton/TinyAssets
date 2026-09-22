@@ -162,13 +162,19 @@ def test_account_deletion_removes_failure_bytes_and_preserves_other_user(tmp_pat
 
 
 def test_a_long_reply_reaches_the_status_feed_whole(tmp_path):
-    """The app's 4000-char cut is introduced by the status preview, not storage.
+    """The status preview introduces a 4000-char cut that storage does not.
 
     A reply rendered complete in the app was redrawn cut to exactly 4000 chars
-    after an idle refresh. Everything BELOW the status layer is lossless: the
-    exchange is recorded whole and every retained-history consumer hands back
-    the original, astral characters included. So the bytes the app dropped were
-    never lost -- only never asked for.
+    after an idle refresh. This fixture shows the retained-store and read path
+    preserving ITS OWN fixture end to end -- recorded whole, returned whole by
+    the feed get_status builds from, reassembled exactly by the chunk reader,
+    astral characters included -- which pinpoints the cut at the status layer.
+
+    It does NOT prove anything about the production message the founder saw:
+    whether that specific reply is retained in full is unknown until it is read
+    live by id. The defect this names -- a preview drawn as if it were the
+    message, with the server's own `truncated` flag discarded -- is real either
+    way, and a live full read is the only thing that settles the other half.
     """
     reply = "diagnosis 🦊 α\r\n" * 700          # >4000 chars, astral + CRLF + combining
     founder_said = "why did the run fail? 🤔"
@@ -200,3 +206,156 @@ def test_a_long_reply_reaches_the_status_feed_whole(tmp_path):
         tmp_path, "principal:b", field_name=str(universe_row["id"]),
     )["error"] == "conversation_message_not_found"
     assert read_conversation_page(tmp_path, "principal:b")["messages"] == []
+
+
+def _authenticate(monkeypatch, actor):
+    """Speak as a verified subject, through the real resolvers.
+
+    Deliberately NOT ``_founder_auth``: that pins ``_request_universe`` to one
+    id, which would make a foreign ``graph_id`` unobservable — the exact case
+    the public route has to refuse rather than silently answer from the
+    caller's own home.
+    """
+    from tinyassets.api import permissions
+
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: actor)
+    monkeypatch.setattr(permissions, "current_request_actor_id", lambda: actor)
+
+
+def _two_accounts(tmp_path, monkeypatch, reply):
+    from tests.test_account_deletion import HOME_A, HOME_B, A, B, _seed_user
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    a, b = _seed_user(tmp_path, A, HOME_A), _seed_user(tmp_path, B, HOME_B)
+    assert store.record_exchange(a, f"principal:{A}", "why did the run fail? 🤔", reply)
+    assert store.record_exchange(b, f"principal:{B}", "B's private ask", "B's private reply")
+    return a, b
+
+
+def test_public_conversation_read_recovers_the_whole_message_by_its_status_id(
+    tmp_path, monkeypatch
+):
+    """The app's route to the rest of a bounded preview, end to end.
+
+    get_status hands the client an id; the public connector's
+    read_graph target=conversation hands back that message in exact
+    code-point chunks. Both modes of the existing reader are reachable — the
+    catalogue and the chunk — under the same binding the engine route uses.
+    """
+    import json as _json
+
+    from tests.test_account_deletion import HOME_A, A
+    from tinyassets import universe_server
+    from tinyassets.api.status import get_status
+
+    reply = "diagnosis 🦊 α\r\n" * 700                    # >4000 chars, astral + CRLF
+    _two_accounts(tmp_path, monkeypatch, reply)
+    _authenticate(monkeypatch, A)
+
+    peek = _json.loads(get_status(universe_id=HOME_A, include_conversation=True))
+    turns = peek["recent_conversation"]["turns"]
+    asked, answered = turns[0], turns[1]
+    assert answered["truncated"] is True and len(answered["text"]) == 4000
+    assert answered["total_chars"] == len(reply)
+    assert asked["truncated"] is False and asked["total_chars"] == len(asked["text"])
+    assert asked["id"].isdecimal() and answered["id"].isdecimal()
+
+    # The catalogue mode: the same ids, from the public surface.
+    catalogue = _json.loads(universe_server.read_graph(target="conversation"))
+    assert catalogue["available"] and catalogue["content_is_untrusted"] is True
+    assert {str(m["id"]) for m in catalogue["messages"]} == {asked["id"], answered["id"]}
+
+    # The chunk mode: the preview's own id, paged by the SERVER's offsets only.
+    chunks, offset, seen = [], 0, []
+    while offset is not None:
+        part = _json.loads(universe_server.read_graph(
+            target="conversation", field_name=answered["id"],
+            output_offset=offset, output_max_chars=997,
+        ))
+        assert part["offset_unit"] == "unicode_code_points"
+        assert part["total_chars"] == len(reply)
+        chunks.append(part["chunk"])
+        seen.append(offset)
+        offset = part["next_offset"]
+    assert "".join(chunks) == reply                        # byte-identical, astral intact
+    assert seen == sorted(set(seen)) and seen[0] == 0      # every offset advanced
+    assert answered["text"] == reply[:4000]                # the preview was a prefix
+
+
+def test_public_conversation_read_refuses_foreign_homes_and_anonymous_callers(
+    tmp_path, monkeypatch
+):
+    """A browser-supplied home never relabels this caller's bytes as another's.
+
+    ``graph_id`` is VERIFIED against the caller's current founder home rather
+    than ignored: answering a foreign id from the caller's own thread would
+    hand a client another account's label over real content.
+    """
+    import json as _json
+
+    from tests.test_account_deletion import HOME_A, HOME_B, A, B
+    from tinyassets import universe_server
+    from tinyassets.api import permissions
+
+    reply = "私的 🦊 answer " * 400
+    _two_accounts(tmp_path, monkeypatch, reply)
+
+    _authenticate(monkeypatch, A)
+    mine = _json.loads(universe_server.read_graph(target="conversation"))
+    own_ids = [str(m["id"]) for m in mine["messages"]]
+    explicit = _json.loads(universe_server.read_graph(target="conversation", graph_id=HOME_A))
+    assert [str(m["id"]) for m in explicit["messages"]] == own_ids     # own home, named
+
+    # A's session naming B's home: refused, not answered from A's own store.
+    foreign = _json.loads(universe_server.read_graph(target="conversation", graph_id=HOME_B))
+    assert foreign == {"error": "not_found"}
+    assert _json.loads(universe_server.read_graph(
+        target="conversation", graph_id=HOME_B, field_name=own_ids[0]
+    )) == {"error": "not_found"}
+
+    # B holds A's turn id. Each home keys its own store, so the same decimal
+    # names B's OWN row here — and that is the point: an id is a handle inside
+    # the reader's own resolved thread, never a reach into another account's.
+    _authenticate(monkeypatch, B)
+    theirs = _json.loads(universe_server.read_graph(
+        target="conversation", field_name=own_ids[-1]))
+    assert theirs["chunk"] in {"B's private ask", "B's private reply"}
+    assert "🦊" not in _json.dumps(theirs) and "私的" not in _json.dumps(theirs)
+    assert "🦊" not in _json.dumps(_json.loads(
+        universe_server.read_graph(target="conversation")))
+    assert _json.loads(universe_server.read_graph(
+        target="conversation", graph_id=HOME_A)) == {"error": "not_found"}
+
+    # No verified subject at all reaches nothing, by id or by catalogue.
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: False)
+    for kwargs in ({}, {"field_name": own_ids[-1]}, {"graph_id": HOME_A}):
+        assert _json.loads(
+            universe_server.read_graph(target="conversation", **kwargs)
+        ) == {"error": "not_found"}
+
+
+def test_public_conversation_read_states_a_bad_selector_and_stays_read_only(
+    tmp_path, monkeypatch
+):
+    import json as _json
+
+    from tests.test_account_deletion import HOME_A, A
+    from tinyassets import universe_server
+
+    a, _b = _two_accounts(tmp_path, monkeypatch, "short reply")
+    _authenticate(monkeypatch, A)
+    before = (a / ".conversation_memory.db").read_bytes()
+
+    for kwargs in ({"field_name": "1 OR 1=1"}, {"field_name": "١"}, {"output_offset": -1},
+                   {"output_max_chars": 99999}):
+        refusal = _json.loads(universe_server.read_graph(target="conversation", **kwargs))
+        assert refusal["error"].startswith("conversation_")
+        assert "not_found" not in refusal["error"]           # the caller's own mistake
+
+    missing = _json.loads(universe_server.read_graph(target="conversation", field_name="99999"))
+    assert missing["error"] == "conversation_message_not_found"   # stated, never invented
+    assert (a / ".conversation_memory.db").read_bytes() == before
+    assert _json.loads(universe_server.read_graph(target="conversation"))["available"]
+    assert (a / ".conversation_memory.db").read_bytes() == before
+    assert HOME_A  # the home under test, named for the record

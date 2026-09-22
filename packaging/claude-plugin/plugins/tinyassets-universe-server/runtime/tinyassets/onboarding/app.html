@@ -1451,6 +1451,15 @@
     getConversation(){
       return this.callTool("get_status",{include_conversation:true},{idempotent:true});
     },
+    // The rest of a message the peek bounded. Keyed by the turn's own stored id
+    // — never by its text or timestamp — and continued ONLY from the offset the
+    // server returned: JS String#length counts UTF-16 code units, so a client
+    // computing its own offset desynchronises on the first emoji.
+    readConversationChunk(id,offset,scope){
+      return this.callTool("read_graph",
+        {target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset},
+        {idempotent:true});
+    },
     connectLLM(service,materialB64){
       return this.callTool("write_graph",{target:"connection",operation:"connect_llm",
         payload_json:JSON.stringify({service,auth_material_b64:materialB64})});
@@ -3336,6 +3345,108 @@
       });
       note.appendChild(document.createTextNode(" "));
       note.appendChild(look);
+    }
+  }
+
+  // ---- The rest of a bounded message ---------------------------------
+  // get_status bounds each retained turn at 4000 characters and reports the cut
+  // (`truncated` + `total_chars`). Until now the app drew that preview as if it
+  // were the message: a long reply that rendered whole came back silently cut
+  // after a refresh (founder, 2026-09-21). Ask the retained-message reader for
+  // the rest; if the row is gone or unreadable, keep the preview and say so.
+  function messageBody(el){
+    // The real bubble is meta + .msg-body; fall back to the bubble itself so a
+    // structure change degrades to a visible message, never to a lost one.
+    return Array.from((el&&el.children)||[]).find(c=>c&&c.className==="msg-body")||el;
+  }
+  function expansionHandle(turn){
+    // Only a real stored id is a handle. A row that has none (a legacy store
+    // without the key) is NOT matched by timestamp or text prefix - that guess
+    // mis-pairs exactly the equal-timestamp ties this thread already has.
+    const id=turn&&turn.id;
+    return (typeof id==="string"&&/^[0-9]{1,18}$/.test(id))?id:"";
+  }
+  function offerFullMessage(el,turn){
+    const body=messageBody(el), id=expansionHandle(turn);
+    const preview=(turn&&typeof turn.text==="string")?turn.text:"";
+    const total=(turn&&typeof turn.total_chars==="number"&&Number.isFinite(turn.total_chars))
+      ? turn.total_chars : 0;
+    if(!id){
+      // Honest about the gap rather than offering a control that cannot work.
+      const gone=document.createElement("span");
+      gone.className="msg-note";
+      gone.textContent=" This message is longer than shown, and this older copy "+
+        "cannot be expanded here.";
+      el.appendChild(gone);
+      return null;
+    }
+    const more=document.createElement("button");
+    more.className="btn btn--link";
+    // One neutral label for every speaker: the founder's own words and the
+    // universe's reply are the same kind of thing to recover.
+    const label=total>preview.length
+      ? "Show full message ("+total.toLocaleString()+" characters)"
+      : "Show full message";
+    more.textContent=label;
+    // The account, home and login this expansion is FOR. A chunk that lands
+    // after a sign-out or an account switch belongs to the PREVIOUS account: it
+    // paints nothing here and stops the load.
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    let failed=null;
+    more.addEventListener("click", ()=>{
+      more.disabled=true; more.textContent="Loading the rest…";
+      loadFullMessage(id,stillOwner,scope).then(full=>{
+        if(!stillOwner()) return;
+        if(typeof full!=="string"){
+          // The preview stays exactly as it was and the control is re-armed:
+          // a failed expansion never costs the text the app already had, and
+          // retrying is one click. Said ONCE however many attempts fail.
+          more.disabled=false; more.textContent=label;
+          if(!failed){
+            failed=document.createElement("span");
+            failed.className="msg-note";
+            failed.textContent=" Couldn’t load the rest of this message.";
+            el.appendChild(failed);
+          }
+          return;
+        }
+        if(failed){ failed.remove(); failed=null; }
+        body.textContent=full;                    // verbatim; no reflow or trim
+        more.remove();
+      });
+    });
+    el.appendChild(more);
+    return more;
+  }
+  // Pages one message by the SERVER's offsets. Returns the whole text, or null
+  // when it could not be recovered - it never returns a partial answer as if it
+  // were the message.
+  async function loadFullMessage(id,stillOwner,scope){
+    const parts=[]; let offset=0, total=null;
+    try{
+      while(true){
+        if(!stillOwner()) return null;
+        const r=await MCP.readConversationChunk(id,offset,scope);
+        if(!stillOwner()) return null;            // previous account's response
+        if(!r||r.available!==true||typeof r.chunk!=="string"||r.error||
+           r.offset!==offset||r.offset_unit!=="unicode_code_points"||
+           !Number.isSafeInteger(r.total_chars)||r.total_chars<0) return null;
+        if(total===null) total=r.total_chars;
+        if(r.total_chars!==total) return null;
+        const end=offset+Array.from(r.chunk).length;
+        if(end>total) return null;
+        parts.push(r.chunk);
+        const next=r.next_offset;
+        if(next===null) return end===total?parts.join(""):null;
+        // Continue only on a numeric offset that actually ADVANCES. A repeated
+        // or malformed next_offset is refused rather than looped on.
+        if(!Number.isSafeInteger(next)||next!==end||next<=offset||next>=total) return null;
+        offset=next;
+      }
+    }catch(err){
+      if(err&&err.authRequired) return null;
+      return null;
     }
   }
 
@@ -5848,7 +5959,12 @@
           return;
         }
         const who=t.speaker==="universe"?"universe":t.speaker==="founder"?"founder":"system";
-        appendMessage(who,t.text,who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
+        const drawn=appendMessage(who,t.text,
+          who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
+        // The peek said this turn is longer than what it returned. Offer the
+        // rest instead of letting the preview pass for the message; the bubble
+        // and its metadata (time, provider/model detail) are untouched.
+        if(t.truncated===true) offerFullMessage(drawn,t);
       });
       restoreInflight(turns);
     }catch(_e){

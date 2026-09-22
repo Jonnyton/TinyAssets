@@ -1729,8 +1729,19 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
                     "turns": [
                         {
                             "speaker": getattr(t, "speaker", ""),
-                            "text": (getattr(t, "text", "") or "")[:_cap],
-                            "truncated": len(getattr(t, "text", "") or "") > _cap,
+                            "text": (_full := (getattr(t, "text", "") or ""))[:_cap],
+                            "truncated": len(_full) > _cap,
+                            # What the bound cut, stated rather than implied, and
+                            # the row's own key so a client asks for the rest by
+                            # NAME. Without it a client would pair a preview to a
+                            # stored message by text or timestamp -- the mis-pair
+                            # this peek's equal-ts ties already invite. The id is
+                            # a handle, never authority: read_graph
+                            # target=conversation re-derives who may use it.
+                            "total_chars": len(_full),
+                            **({"id": str(_row_id)} if isinstance(
+                                _row_id := getattr(t, "id", None), int
+                            ) and not isinstance(_row_id, bool) else {}),
                             "ts": getattr(t, "ts", None),
                             **({"consumer_turn_id": t.consumer_turn_id}
                                if getattr(t, "consumer_turn_id", None) else {}),
