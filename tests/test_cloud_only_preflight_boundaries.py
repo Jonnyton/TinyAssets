@@ -110,6 +110,31 @@ def test_unrelated_path_is_not_mcp_coverage(monkeypatch):
     ] != pf.PASS
 
 
+@pytest.mark.parametrize("info", [None, {}, {"total_count": 2},
+                                  {"total_count": 0}, {"total_count": "1"},
+                                  {"total_count": True}])
+def test_declared_route_pagination_must_be_complete(monkeypatch, info):
+    monkeypatch.setattr(pf, "_get_json", lambda *a: (
+        {"success": True, "result_info": info, "result": [
+            {"pattern": "tinyassets.io/mcp*", "script": "expected"},
+        ]}, "ok",
+    ))
+    assert pf.audit_public_worker_route("t", "z", "tinyassets.io", "expected")[
+        "verdict"
+    ] == pf.UNKNOWN
+
+
+def test_complete_declared_route_inventory_can_pass(monkeypatch):
+    monkeypatch.setattr(pf, "_get_json", lambda *a: (
+        {"success": True, "result_info": {"total_count": 1}, "result": [
+            {"pattern": "tinyassets.io/mcp*", "script": "expected"},
+        ]}, "ok",
+    ))
+    assert pf.audit_public_worker_route("t", "z", "tinyassets.io", "expected")[
+        "verdict"
+    ] == pf.PASS
+
+
 def test_observation_workflow_has_no_inputs_or_pr_trigger():
     path = Path(__file__).resolve().parents[1] / ".github/workflows/cloud-only-preflight.yml"
     workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)

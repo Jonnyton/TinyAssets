@@ -115,8 +115,10 @@ jobs:
           DO_SSH_KNOWN_HOSTS: /home/runner/.ssh/preflight_known_hosts
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          # Optional. Absent ids make the dependent fact `unknown`, by design.
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Optional. No configured tunnel id has been verified yet: connector
+          # and origin-binding facts are expected unknown until one is present.
+          # Never infer the expected tunnel solely from the observed DNS result.
           CLOUDFLARE_TUNNEL_ID: ${{ vars.CLOUDFLARE_TUNNEL_ID }}
           # Expected values, taken from this repo's own committed Worker config
           # (deploy/cloudflare-worker/wrangler.toml, worker.js). A variable may

@@ -850,8 +850,8 @@ def audit_public_worker_route(
     """The canonical `/mcp` surface must be served by the expected Worker.
 
     An apex CNAME alone does not establish that the public surface reaches the
-    internal origin; the Worker route is the hop that does. "A route exists for
-    the hostname" is not that fact either: route selection is per-URL and
+    internal origin. This check observes only the configured script binding,
+    not the deployed script's code or origin target. Route selection is per-URL and
     most-specific-wins, so the question is which script wins at `/mcp` and at
     its descendants -- not whether the hostname appears in the route list.
     """
@@ -893,6 +893,18 @@ def audit_public_worker_route(
             "public_worker_route", "cf_api_no_result",
             "the response `result` must be an array of route objects",
         )
+    # This endpoint's documented envelope returns the zone's complete route
+    # list without result_info. If it declares pagination, honor that evidence
+    # rather than silently assuming an unread page cannot contain an override.
+    if "result_info" in payload:
+        info = payload["result_info"]
+        if not isinstance(info, dict) or _pagination_incomplete(
+            info.get("total_count"), len(routes)
+        ):
+            return unknown(
+                "public_worker_route", "cf_route_inventory_incomplete",
+                "a complete route inventory, including any declared total_count",
+            )
     if not routes:
         return unknown(
             "public_worker_route", "no_routes",
