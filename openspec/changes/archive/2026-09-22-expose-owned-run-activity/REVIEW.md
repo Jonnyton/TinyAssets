@@ -100,7 +100,7 @@ and diff check all pass. No baseline failure was hidden or new skip introduced.
 
 PR3909 subsequently passed exact-head Fable81316 approval and CI and deployed
 as8f4ee4a8 at02:15UTC September22. See
-[rendered acceptance](../../../docs/reviews/2026-09-22-owned-run-activity-acceptance.md).
+[rendered acceptance](../../../../docs/reviews/2026-09-22-owned-run-activity-acceptance.md).
 The app could recover stored failed-run evidence but misread model_status as
 provider acknowledgment, including after one ordinary correction. No further
 coaching or private-workflow rerun was used to manufacture acceptance.
@@ -122,3 +122,13 @@ Canonical spec is synced but archive/closure waits for follow-up release proof.
 Clean Linux oracle selection221passed/no skips in4.32s, matching prior baseline;
 seven pre-commit invariants passed after mirror generation. No archive capture
 overlapped code or mirror edits. Exact-head review remains required.
+
+## Closeout
+
+PR3910 subsequently received exact-head Fable9757 approval, required CI and
+verified production deployment. Original20:13PDT rendered saved-run inspection
+correctly distinguished recorded model identity from acknowledgment/admission
+and validated output. See the linked acceptance record for immutable commit,
+deployment and test evidence, plus limits of the live answer. Canonical spec
+matches the delta. This archive closes only stored-activity exposure and its
+presentation clarification. Historical failures and organic-use watch remain open.

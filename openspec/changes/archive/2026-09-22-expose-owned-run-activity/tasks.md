@@ -7,6 +7,6 @@
 ## 2. Review and live acceptance
 
 - [x] 2.1 Obtain independent exact-head review, pass lint/spec/invariant and required CI gates, and merge through the normal draft/ready process.
-- [ ] 2.2 Verify production SHA and public canary, then obtain rendered app inspection of useful existing failed-run evidence without operator workflow edits or reruns.
-- [ ] 2.3 Inspect organic-use evidence, sync the shipped specification, archive this change and record scoped completion without closing unrelated reliability work.
-- [ ] 2.4 Address the live interpretation finding with explicit model-status semantics and caveat-before-list presentation; obtain independent exact-head review, CI, deployment and uncoached live acceptance of this follow-up.
+- [x] 2.2 Verify production SHA and public canary, then obtain rendered app inspection of useful existing failed-run evidence without operator workflow edits or reruns.
+- [x] 2.3 Inspect organic-use evidence, sync the shipped specification, archive this change and record scoped completion without closing unrelated reliability work.
+- [x] 2.4 Address the live interpretation finding with explicit model-status semantics and caveat-before-list presentation; obtain independent exact-head review, CI, deployment and uncoached live acceptance of this follow-up.
