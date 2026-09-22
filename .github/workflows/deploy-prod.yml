@@ -314,6 +314,50 @@ jobs:
                 "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_WIKI_CANARY_TOKEN"
           echo "canary bearer synced"
 
+      # Expected-instance state for the record-only cloud provenance observation
+      # (openspec change cloud-only-runtime-admission, task 4). This MUST run
+      # before the candidate starts: the release receipt below is published only
+      # after the candidate is already healthy, so a field inside it would be
+      # absent exactly when the first enforcement needs it, and the receipt is
+      # rewritten whole on every deploy, which would erase such a field. Its own
+      # typed file in the data root survives receipt replacement, and survives a
+      # rollback to the previous image because the expected identity is a
+      # property of the droplet, not of the build.
+      #
+      # Record-only: a failure here is a NOTICE, not a deploy failure. The
+      # resolver observes whatever state is actually present: missing state
+      # refuses, and a previously recorded same-instance identity may remain.
+      # No fresh-preparation or missing-state claim is inferred from a failure.
+      # The enforcement flip (tasks 6-8) must make this step required.
+      - name: Prepare expected-instance state (record-only observation)
+        id: expected_instance
+        continue-on-error: true
+        env:
+          DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          rc=0
+          python scripts/prepare_expected_instance_state.py \
+            --out platform-expected-instance.json || rc=$?
+          if [ "${rc}" -ne 0 ]; then
+            echo "::notice::expected-instance state not freshly prepared (rc=${rc}); any prior state is unchanged"
+            echo "prepared=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes platform-expected-instance.json \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/platform-expected-instance.json"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          vol="$(sudo docker volume inspect tinyassets-data --format '{{ .Mountpoint }}')"
+          [ -n "$vol" ] && [ "${vol#/}" != "$vol" ] && sudo test -d "$vol"
+          staged="$(sudo mktemp "${vol}/.platform-expected-instance.XXXXXX")"
+          trap 'sudo rm -f -- "$staged"' EXIT
+          sudo install -m 0644 -o root -g root /tmp/platform-expected-instance.json "$staged"
+          sudo mv -f -- "$staged" "${vol}/platform-expected-instance.json"
+          REMOTE
+          echo "prepared=true" >> "$GITHUB_OUTPUT"
+          echo "expected-instance state installed before candidate startup"
+
       - name: Run fail-safe deploy on the droplet
         id: deploy
         env:
@@ -402,8 +446,14 @@ jobs:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         run: |
           set -euo pipefail
+          # --report-provenance is a record-only diagnostic printed from the same
+          # pulse response this assertion already fetches (openspec change
+          # cloud-only-runtime-admission, task 5). It does not affect the exit
+          # code, and an `unknown` verdict is the absence of an observation --
+          # never a pass of cloud acceptance.
           python scripts/deployed_sha.py \
             --url https://tinyassets.io/mcp \
+            --report-provenance \
             --assert-contains "${GIT_SHA}"
 
       - name: Open deploy-failed issue

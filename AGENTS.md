@@ -20,6 +20,14 @@ verified recovery. Everything else continues but never blocks uptime.
 
 Architecture: `docs/design-notes/2026-04-18-full-platform-architecture.md`.
 
+**Personal-desktop prohibition (founder, 2026-09-21 PDT).** Never enroll,
+activate, route platform traffic/work to, or use `DESKTOP-KCPMGP3` as a platform
+dependency, including temporary/emergency fallbacks. It is the founder's home
+PC, not infrastructure. Platform service dependencies must be cloud-only; test
+and enforce the architectural boundary in PLAN.md. Local development and browser
+testing confer no production serving/execution authority. An existing local
+registration, tunnel, provider login or heartbeat is not permission to use it.
+
 ---
 
 ## Two Living Files

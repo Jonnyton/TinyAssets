@@ -42,6 +42,15 @@ What this DOES check, so the gap is as small as it can be here: ``git_sha`` and
 pass. That catches a partial or tampered receipt; it cannot catch a coherent
 receipt describing a build that is no longer running.
 
+``--report-provenance`` adds a record-only diagnostic line from the SAME pulse
+response: the cached cloud-provenance verdict the responding process resolved at
+its own startup (openspec change ``cloud-only-runtime-admission``). It makes no
+second request, prints only allowlisted typed fields, and reports anything
+missing or malformed as ``unknown``. It does NOT change this gate's exit codes,
+and an ``unknown`` verdict is the absence of an observation, never a pass of
+cloud acceptance. It samples one responding worker and says nothing about binary
+freshness, the current container incarnation, attestation or custody.
+
 **This is a post-deploy check, never a merge-required one.** A PR-required
 check cannot demand that production already contain an unmerged head; wiring it
 that way is circular and can never pass. Codex flagged exactly that in the
@@ -153,7 +162,100 @@ def live_release_state(url: str, timeout: float) -> dict[str, Any]:
     return result
 
 
-def report(url: str, timeout: float) -> dict[str, Any]:
+#: The ONLY provenance keys this reporter will print, with the type each must
+#: have. Anything else in the server's object is dropped: the point of an
+#: allowlist is that a future server field cannot start appearing in a CI log
+#: without someone editing this list.
+PROVENANCE_STR_FIELDS = ("verdict", "reason", "mode")
+PROVENANCE_BOOL_FIELDS = (
+    "observed",
+    "metadata_reachable",
+    "expected_identity_prepared",
+    "enforced",
+)
+#: Known protocol VALUES, not a token shape. A shape allowlist was the first
+#: attempt and it was wrong in three ways at once: `reason="instance_412903887"`
+#: is a perfectly good snake_case token that carries a droplet id into a CI log;
+#: `mode="enforcement_enabled"` prints a fake enforcement claim; and Python's
+#: `$` matches before a trailing newline, so `"instance_match\n"` passes a
+#: `^...$` check and injects a line break into the log. Only a value the
+#: protocol actually defines is printable. A reason this list has not learned
+#: yet prints as unknown -- the safe direction for a diagnostic whose job is to
+#: not leak.
+PROVENANCE_VERDICTS = frozenset({"cloud", "not_cloud", "unknown"})
+PROVENANCE_MODES = frozenset({"observation_only"})
+#: Every reason `tinyassets.platform_runtime_provenance` can put on a resolved
+#: verdict or an unobserved peek. Kept in step with that module by a test.
+PROVENANCE_REASONS = frozenset({
+    "not_observed",
+    "instance_match",
+    "instance_mismatch",
+    "metadata_probe_failed",
+    "metadata_timeout",
+    "metadata_unreachable",
+    "metadata_redirect_refused",
+    "metadata_http_error",
+    "metadata_malformed_body",
+    "metadata_body_too_large",
+    "metadata_empty_id",
+    "metadata_malformed_instance_id",
+    "expected_identity_root_unresolved",
+    "expected_identity_missing",
+    "expected_identity_state_too_large",
+    "expected_identity_state_unreadable",
+    "expected_identity_malformed",
+    "expected_identity_schema_unknown",
+    "expected_identity_version_unsupported",
+})
+PROVENANCE_ALLOWED_VALUES = {
+    "verdict": PROVENANCE_VERDICTS,
+    "reason": PROVENANCE_REASONS,
+    "mode": PROVENANCE_MODES,
+}
+PROVENANCE_UNKNOWN = "unknown"
+
+
+def provenance_report(release_state: Any) -> dict[str, Any]:
+    """Project allowlisted, type-checked provenance fields out of one response.
+
+    Record-only diagnostic. It reads the pulse object ALREADY fetched — there is
+    no second request — copies nothing it was not told to copy, and reports
+    missing, mistyped or unexpected values as ``unknown``. It never raises, so
+    it can never change this gate's exit code.
+
+    ``unknown`` is the absence of an observation. It is NOT a pass of cloud
+    acceptance and must never be read as one.
+    """
+    result: dict[str, Any] = {name: PROVENANCE_UNKNOWN for name in PROVENANCE_STR_FIELDS}
+    result.update({name: PROVENANCE_UNKNOWN for name in PROVENANCE_BOOL_FIELDS})
+    result["reported"] = False
+    if not isinstance(release_state, dict):
+        return result
+    raw = release_state.get("platform_runtime_provenance")
+    if not isinstance(raw, dict):
+        # Absent field = an older build that does not carry it. Unknown, not a
+        # verdict, and not an error either.
+        return result
+    result["reported"] = True
+    for name in PROVENANCE_STR_FIELDS:
+        value = raw.get(name)
+        # Exact membership, no strip() and no normalization: a value that needs
+        # cleaning up before it matches is not the protocol value, and cleaning
+        # it is how a newline or a padded id gets through.
+        if isinstance(value, str) and value in PROVENANCE_ALLOWED_VALUES[name]:
+            result[name] = value
+    for name in PROVENANCE_BOOL_FIELDS:
+        value = raw.get(name)
+        # `type(...) is bool` on purpose: 1/0 are not booleans here, and a
+        # truthy string must not become True.
+        if type(value) is bool:
+            result[name] = value
+    return result
+
+
+def report(
+    url: str, timeout: float, *, include_provenance: bool = False
+) -> dict[str, Any]:
     release_state = live_release_state(url, timeout)
     deployed = (release_state.get("git_sha") or "").strip()
     if not deployed:
@@ -209,6 +311,11 @@ def report(url: str, timeout: float) -> dict[str, Any]:
         "deployed_at": (release_state.get("deployed_at") or "").strip() or None,
         "proves": "receipt",  # not the running binary; see module docstring
     }
+    if include_provenance:
+        # Purely additive diagnostic, from the response already in hand. It is
+        # read AFTER the receipt checks above so it can neither satisfy nor
+        # break any of them.
+        info["platform_runtime_provenance"] = provenance_report(release_state)
     try:
         _git("cat-file", "-e", f"{deployed}^{{commit}}")
         info["known_to_git"] = True
@@ -264,16 +371,41 @@ def main(argv: list[str] | None = None) -> int:
         help="exit 1 unless production is serving a build containing COMMIT",
     )
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument(
+        "--report-provenance",
+        action="store_true",
+        help=(
+            "also print the responding process's cached cloud-provenance "
+            "observation from the SAME pulse response (record-only diagnostic; "
+            "does not affect the exit code, and unknown is not a pass)"
+        ),
+    )
     args = ap.parse_args(argv)
 
     try:
-        info = report(args.url, args.timeout)
+        info = report(args.url, args.timeout, include_provenance=args.report_provenance)
     except DeployedShaError as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
         else:
             print(f"cannot determine deployed sha: {exc}", file=sys.stderr)
         return 2
+
+    if args.report_provenance and not args.json:
+        prov = info.get("platform_runtime_provenance") or {}
+        # One line, allowlisted values only, and the limits stated on it so the
+        # CI log cannot be quoted as more than it is.
+        print(
+            "platform runtime provenance (record-only, one responding worker): "
+            f"verdict={prov.get('verdict')} reason={prov.get('reason')} "
+            f"observed={prov.get('observed')} enforced={prov.get('enforced')} "
+            f"reported={prov.get('reported')}"
+        )
+        print(
+            "  proves only that the process answering this probe holds that "
+            "cached startup verdict -- not binary freshness, not the current "
+            "container incarnation, not all workers, not attestation or custody"
+        )
 
     if args.assert_contains:
         if not info["known_to_git"]:

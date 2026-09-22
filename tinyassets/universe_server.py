@@ -4082,12 +4082,45 @@ def create_streamable_http_app() -> Starlette:
             state = _load_release_state() or {}
         except Exception:  # noqa: BLE001 - a missing receipt is reported, never raised
             state = {}
-        return _PulseJSON({
+        payload: dict[str, object] = {
+            # NOTE: from the MUTABLE release receipt the deploy writes, not from
+            # the running binary — see scripts/deployed_sha.py's `proves:
+            # "receipt"`. Binary freshness is not inferable from this field.
             "git_sha": str(state.get("git_sha") or ""),
             "image_tag": str(state.get("image_tag") or ""),
             "deployed_at": str(state.get("deployed_at") or ""),
+            # Elapsed since this app object was CONSTRUCTED, not process birth
+            # and not container start. Not a container-incarnation marker.
             "uptime_seconds": int(_pulse_time.monotonic() - _pulse_started),
-        })
+        }
+        # Record-only cloud provenance readback (openspec change
+        # cloud-only-runtime-admission, tasks 4/5). The startup log line alone is
+        # not evidence that THIS process cached an observation, and the hosted
+        # preflight's metadata read happens in a different, short-lived process.
+        #
+        # Canary-principal only, through the identity the auth middleware already
+        # resolved for this request: no auth rule, permission or principal is
+        # widened, and every other authenticated caller gets exactly the fields
+        # above. The read is a non-mutating peek — a health GET never resolves
+        # provenance — and an unobserved process reports an explicit unknown.
+        # Nothing branches on this; it is observation, not enforcement, and it
+        # samples ONE responding worker.
+        try:
+            from tinyassets.auth.middleware import current_identity_or_none
+            from tinyassets.auth.provider import CANARY
+            from tinyassets.platform_runtime_provenance import (
+                peek_platform_runtime_provenance,
+                sanitized_peek_fields,
+            )
+
+            _identity = current_identity_or_none()
+            if _identity is not None and _identity.user_id == CANARY.user_id:
+                payload["platform_runtime_provenance"] = sanitized_peek_fields(
+                    peek_platform_runtime_provenance()
+                )
+        except Exception:  # noqa: BLE001 - a diagnostic never breaks the health read
+            logger.exception("platform runtime provenance: pulse readback failed")
+        return _PulseJSON(payload)
 
     app = Starlette(
         routes=[
@@ -4142,6 +4175,31 @@ def main(
         "Starting TinyAssets Server on %s:%d (transport=%s)",
         host, port, transport,
     )
+
+    # Record-only cloud provenance observation (openspec change
+    # cloud-only-runtime-admission, task 4). OBSERVATION ONLY: nothing branches
+    # on this verdict. Admission, claim CAS, runtime registration, per-universe
+    # authority and provider execution are all unchanged by it, and an unadmitted
+    # verdict does not refuse anything in this slice. Enforcement is tasks 6-8
+    # and needs its own live positive observation first.
+    #
+    # Placed here deliberately: before any boot maintenance, outside every
+    # database transaction, so the single bounded link-local read can never run
+    # under the SQLite write lock. Resolves at most once per process; the logged
+    # shape is sanitized (verdict + reason token + booleans, never an id).
+    try:
+        from tinyassets.platform_runtime_provenance import (
+            observe_platform_runtime_provenance,
+            sanitized_observation_fields,
+        )
+
+        _provenance = observe_platform_runtime_provenance()
+        logger.info(
+            "platform runtime provenance (observation only, enforcement=none): %s",
+            sanitized_observation_fields(_provenance),
+        )
+    except Exception:  # noqa: BLE001 - an observation must never block boot
+        logger.exception("platform runtime provenance: observation failed")
 
     # Served-budget maintenance for ALL transports (Codex re-review 2026-08-19:
     # boot reconcile + the lease reconciler were streamable-http-only, so sse/

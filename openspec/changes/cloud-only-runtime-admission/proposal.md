@@ -21,13 +21,18 @@ process asserting it:
   `02b1e628`.
 - `claim_assigned` (`tinyassets/branch_tasks_v2.py:462-511`) is the CAS that
   actually transfers task ownership. Its in-transaction predicate is
-  `_transaction_allows_assigned_consumer` plus an optional `authority_claim`
-  callback; **executor class is a parameter of neither**. The only
-  executor-class check in the claim path is `_consumer_skip_reason`
+  `_transaction_allows_assigned_consumer` plus an **optional** `authority_claim`
+  callback; **executor class is a parameter of neither**. `transaction_check`
+  returns the existing predicate result unchanged when the callback is absent
+  (`branch_tasks_v2.py:489`), so a mandatory gate placed only in
+  `authority_claim` is opt-out by construction. The only executor-class check in
+  the claim path is `_consumer_skip_reason`
   (`tinyassets/runtime/assigned_queue_consumer.py:110-119`), evaluated in the
   claimer's own Python before the transaction — a diagnostic, not a gate.
-- Foreground and served provider execution stamp the class as a literal:
-  `agent_runtime_provider_execution.py:1225`, `background_served_provider.py:1336,1547`.
+- Foreground and served provider execution call no `claim_assigned` at all and
+  stamp the class as a literal: `foreground_run_provider.py:484,595`,
+  `background_served_provider.py:1336,1547`. Queue and registration checks
+  cannot reach these paths.
 - Public ingress accepts *token possession*: `scripts/run-tunnel.sh:55-58` execs
   `cloudflared tunnel run --token`, and `deploy/compose.yml:182` passes
   `CLOUDFLARE_TUNNEL_TOKEN`. Possession is a credential fact, not provenance.
@@ -48,6 +53,19 @@ TinyAssets or `cloudflared` service/process and the legacy drain/guard tasks are
 disabled. The gap is therefore an *architecture* gap to close before the next
 accident, not an active outage.
 
+**Live milestone (2026-09-22).** PR #3913, sha
+`dfa22598c35aabad7be27aacbff75d300e17b584`, removed daemon/tray/plugin tunnel
+startup. Hosted build `35689968798` and deploy `35690255704` passed public
+handles and the protected-SHA gate at 05:20 UTC. Ordinary primary-app retest 8
+completed 22:28 PDT: five controls pass, sequential 37.3s, parallel 158.4s;
+intermittents remain open. **This is not cloud-boundary or free-user proof.**
+The cloud-side tunnel remains and routing, credential and data custody are all
+still open. PR #3914 mergedfdb6ff15; hosted run35694437735 on2026-09-22 at06:21UTC
+observed reachable container metadata matching the expected droplet and correct
+public Worker path bindings. Tunnel/DNS unknown (missing account/tunnel IDs),
+credential custody unknown and SSH trust TOFU-unverified. Overall unknown,
+boundary_closed=false. This clears only the runtime builder's metadata gate.
+
 ## What Changes
 
 One fail-closed provenance resolver, consumed at the four boundaries a registry
@@ -58,58 +76,105 @@ enforcement from cloud network/credential custody.
    fail-closed: absent or unverifiable evidence ⇒ not cloud ⇒ refuse, never a
    host fallback. Hostname, container name, compose label and env naming are
    never evidence (they travel with a checkout).
-2. **Claim admission inside the CAS transaction** — the invariant moves into
-   `_transaction_allows_assigned_consumer` / the `authority_claim` callback,
-   which already receive `conn`, `candidate`, `consumer_lease`.
-   `_consumer_skip_reason` stays as the refusal-ledger diagnostic.
+   Its record-only verdict is also **readable back** from the process that holds
+   it, because a startup log line alone is not evidence that the main serving
+   process cached anything: an optional sanitized `platform_runtime_provenance`
+   field on the existing authenticated `/mcp/pulse`, emitted only for the
+   operational probe principal, through a **non-mutating peek** that never
+   resolves, never initializes the cache and reports explicit `unknown` for
+   unobserved, failed or PID-inherited state. No new route, workflow, secret,
+   credential or principal; no auth widening; nothing branches on it.
+2. **Claim admission bound to the non-optional refusal path** — the invariant
+   binds to `_transaction_allows_assigned_consumer` /
+   `_assigned_consumer_refusal_reason` (`branch_tasks_v2.py:1170`), which every
+   claim traverses. It SHALL NOT live only in `authority_claim`; there is no
+   opt-out when that callback is `None`. Bounded metadata resolves **before** the
+   SQLite write transaction opens, and only the resulting trusted,
+   process-owned evidence is evaluated inside the claim CAS. No HTTP I/O runs
+   under the database write lock. `_consumer_skip_reason` stays as the
+   refusal-ledger diagnostic.
 3. **Runtime registration** — `ensure_daemon_runtime` writes the *resolved*
-   registration and refuses rather than writing `cloud_worker`. A registration
-   row binds the admitted cloud instance id plus a boot epoch and is
-   re-validated on read, so a row written on cloud cannot be replayed by a
-   later local process.
-4. **Startup / foreground / served execution** — serving startup resolves provenance once and refuses to serve unadmitted, with no degraded local
-   mode; the three literal `executor_class="cloud"` sites take the resolver's
-   result.
-5. **Off-cloud ingress is prevented, not merely refused** — the repo deletes its
-   own ability to enroll a Cloudflare connector or publish a public ingress
-   (`_start_tunnel`, `fantasy_daemon/__main__.py:3294`, called at `:3542,3755,3844`,
-   re-exported at `tinyassets/__main__.py:48,63`), because a connector that
-   *receives then refuses* has already absorbed public availability. Origin
-   refusal stays as the backstop for what deletion and custody cannot cover.
+   registration and refuses rather than writing `cloud_worker`. An existing
+   registration row grants no provenance: authority is re-resolved on read. The
+   consumer's `boot_id` (`assigned_queue_consumer.py:209`) is `uuid.uuid4().hex`
+   — a process incarnation / liveness marker, **not** an identity, an ordered
+   epoch or cloud proof — so it carries no independent anti-replay claim, and no
+   new storage schema or registry is introduced merely to encode it. Legitimate
+   restarts and simultaneous cloud workers keep working unchanged; staleness
+   stays with the **existing** descriptor expiry.
+4. **Startup / foreground / served execution** — because the foreground and
+   served paths never reach the queue, they are covered by exactly two
+   boundaries: serving startup, which resolves provenance once and refuses to
+   serve unadmitted with no degraded local mode; and the last provider-authority
+   boundary, where the four literal `executor_class="cloud"` sites
+   (`foreground_run_provider.py:484,595`,
+   `background_served_provider.py:1336,1547`) take the resolver's result.
+   Per-universe, user-bound authority is preserved exactly as it is — this adds
+   a platform-provenance condition, it does not relocate authority away from the
+   universe's owner.
+5. **Off-cloud ingress is prevented, not merely refused** — the repo removes its
+   own ability to enroll a Cloudflare connector or publish a public ingress,
+   because a connector that *receives then refuses* has already absorbed public
+   availability. **Landed** in PR #3913 (`dfa22598c35aabad7be27aacbff75d300e17b584`):
+   daemon, tray and plugin tunnel startup are gone. This removes an
+   accidental-start path only — the cloud-side tunnel remains, and tunnel-token
+   custody is untouched and still open. Origin refusal stays as the backstop for
+   what deletion and custody cannot cover.
 6. **Recovery** — watchdog, release-reconcile and stale-runtime retirement leave
    work pending rather than re-homing it to an unadmitted runtime.
 7. **Custody, stated and verified, not coded here** — the cloud network and
    credential controls (Cloudflare tunnel/Access, DO firewall, GitHub secrets)
    are named as invariants and verified read-only from hosted CI by a bounded
-   preflight (`scripts/cloud_only_preflight.py`, added here, **not run**).
+   preflight (`scripts/cloud_only_preflight.py`, hosted run35694437735).
    Production authority rests on this custody layer; the resolver is an
    accidental-start guard, not attestation.
 
 ## Impact
 
-- Affected specs: new capability `cloud-only-runtime-admission`.
+- Affected specs: new capability `cloud-only-runtime-admission` and the existing
+  `live-mcp-connector-surface` release-read requirement (delta and as-built sync).
 - Affected code (implementation follows review, not in this change):
   `tinyassets/branch_tasks_v2.py`, `tinyassets/daemon_registry.py`,
   `tinyassets/runtime/assigned_queue_consumer.py`,
-  `tinyassets/agent_runtime_provider_execution.py`,
   `tinyassets/background_served_provider.py`,
   `tinyassets/foreground_run_provider.py`, serving startup, one new
   read-only verification workflow.
 - Risk: an over-strict resolver takes production down. Mitigated by landing the
-  resolver plus its ledger first in observe-and-record mode on the droplet,
-  confirming it resolves CLOUD there, and only then flipping the four refusal sites.
+  resolver plus sanitized startup record/readback first in record-only mode on the droplet,
+  confirming it resolves CLOUD there, and only then flipping the refusal sites.
+  **Record-only is not enforcement and is not guaranteed risk-free**: it still
+  adds a metadata read and a startup log record on a live path, so it is staged and
+  observed, never asserted as inert.
 - Non-goals: no new privileged agent fleet, no new provider account, no new MCP
-  tool, no runtime guard in this change, no infrastructure mutation.
+  tool, no refusal flip in the first record-only slice, no custody mutation.
 
 ## What this change does *not* claim
 
 The resolver is an **accidental-start guard**, not attestation: unsigned
 link-local metadata plus a deploy-copied expected id is forgeable by a local
-root operator. The boundary is closed by Layer C custody plus the deletion of
-the in-repo connector-enrollment path; the resolver makes accidents refuse
-loudly. Record-only preflight and record-only resolver are **observation, and
+root operator. Unsigned metadata is only the backstop — the boundary is not
+closed until actual cloud routing, credential custody and data custody close it
+too, and none of those is closed today. The removal of the in-repo
+connector-enrollment path (PR #3913) narrows accidents; it does not establish
+custody. Record-only preflight and record-only resolver are **observation, and
 explicitly incomplete** — the boundary is not closed until the refusals are
-flipped and a deployed sha proves them live. Free-user acceptance requires the
+flipped and a deployed sha proves them live.
+
+The provenance readback establishes one fact only: the process that answered one
+authenticated probe holds a cached startup verdict. It is **not** binary
+freshness (`/mcp/pulse` `git_sha` comes from the mutable release receipt, not the
+running binary), **not** the current container incarnation (`uptime_seconds` is
+measured from app construction, not process birth), **not** a statement about all
+workers (one response samples one responding worker), and **not** attestation or
+credential/data custody. An `unknown` verdict is the absence of an observation,
+never a pass. Fluentd/log-driver configuration is likewise not a runtime
+observation that `docker logs` is available — this change neither uses nor claims
+that route.
+
+Nothing here is established by a code label or by a passing local diagnostic.
+A local fixture or cloned data root satisfying these checks demonstrates no
+production authority, and a green preflight run demonstrates a reachable fact,
+not a custody policy. Full enforcement and free onboarding are **not** complete. Free-user acceptance requires the
 user's own OpenRouter OAuth authorization, an eligible free-model approval and a
 first actual tool-capable response — not a "zero-setup" or "no-credential"
 provider, which does not exist.
