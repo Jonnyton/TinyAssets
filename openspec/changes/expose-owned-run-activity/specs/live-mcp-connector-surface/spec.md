@@ -11,6 +11,7 @@ remain intact. Missing evidence SHALL remain explicitly unknown.
 - **WHEN** existing events record a completed provider response for one node and a later node fails
 - **THEN** the run read includes the earlier node's stored returned-call evidence even without a success-only run aggregate
 - **AND** normalized actual-model evidence is distinguished from an unreported model or configuration hint
+- **AND** `model_status` describes only model-identifier provenance (`reported` or `unknown`), not request receipt, provider admission or output validation
 
 #### Scenario: A node starts locally but has no returned provider evidence
 - **WHEN** an event records local node start and no subsequent returned-call receipt
@@ -37,3 +38,4 @@ remain intact. Missing evidence SHALL remain explicitly unknown.
 - **WHEN** a run has many nodes or legacy events with incomplete metadata
 - **THEN** no new workflow-size restriction is imposed and no node is silently omitted merely for exceeding a diagnostic count
 - **AND** per-node metadata remains bounded, existing result envelopes remain faithful and bounded, and unavailable facts are marked unknown
+- **AND** existing recovery guidance precedes activity caveats, which precede the node-activity list in bounded text presentation
