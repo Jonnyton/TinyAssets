@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -203,3 +204,51 @@ def test_preparation_atomically_replaces_state_without_claiming_absence(deploy_s
     assert run.index("sudo install -m 0644") < run.index("sudo mv -f")
     assert "any prior state is unchanged" in run
     assert "will observe expected_identity_missing" not in run
+
+
+def test_rollback_bundle_destinations_exclude_runtime_data() -> None:
+    """Pin actual restore inputs, not merely the workflow's wrapper command.
+
+    This is a structural regression check, not a production rollback drill.
+    Changing the bundle map requires reviewing data-custody compatibility.
+    """
+    script = (_REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    match = re.search(r"(?ms)^BUNDLE_MAP=\(\n(.*?)^\)", script)
+    assert match is not None
+    destinations = []
+    for line in match.group(1).splitlines():
+        entry = line.strip().strip('"')
+        assert len(entry.split("|")) == 4
+        destinations.append(entry.split("|")[1])
+    assert destinations == [
+        "${RUNTIME_DIR}/compose.yml",
+        "${RUNTIME_DIR}/deploy/compose.yml",
+        "${RUNTIME_DIR}/deploy/vector.yaml",
+        "${RUNTIME_DIR}/deploy/vector-betterstack.yaml",
+        "${RUNTIME_DIR}/deploy/vector-entrypoint.sh",
+        "${UNIT_FILE}",
+    ]
+
+
+def test_rollback_reconverges_without_replacing_named_data_volume() -> None:
+    compose = yaml.safe_load((_REPO / "deploy" / "compose.yml").read_text(encoding="utf-8"))
+    assert compose["volumes"]["tinyassets-data"]["name"] == "tinyassets-data"
+    daemon = compose["services"]["daemon"]
+    assert "tinyassets-data:/data" in daemon["volumes"]
+    assert daemon["environment"]["TINYASSETS_DATA_DIR"] == "/data"
+    script = (_REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    restart = re.search(r"(?ms)^restart_stack\(\) \{\n(.*?)^\}", script)
+    assert restart is not None
+    reconverge = (
+        'docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" '
+        'up -d daemon cloudflared logs'
+    )
+    assert reconverge in restart.group(1)
+    executable = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
+    # Guard explicit destructive volume operations in any rollback helper too.
+    # This source check is not a security parser for arbitrary shell programs.
+    assert not re.search(r"docker\s+(?:volume\s+(?:rm|prune)|system\s+prune)\b", executable)
+    assert not re.search(r"docker\s+compose[^\n;]*\bdown\b", executable)
+    assert "--renew-anon-volumes" not in executable
