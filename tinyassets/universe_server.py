@@ -4026,12 +4026,45 @@ def create_streamable_http_app() -> Starlette:
             state = _load_release_state() or {}
         except Exception:  # noqa: BLE001 - a missing receipt is reported, never raised
             state = {}
-        return _PulseJSON({
+        payload: dict[str, object] = {
+            # NOTE: from the MUTABLE release receipt the deploy writes, not from
+            # the running binary — see scripts/deployed_sha.py's `proves:
+            # "receipt"`. Binary freshness is not inferable from this field.
             "git_sha": str(state.get("git_sha") or ""),
             "image_tag": str(state.get("image_tag") or ""),
             "deployed_at": str(state.get("deployed_at") or ""),
+            # Elapsed since this app object was CONSTRUCTED, not process birth
+            # and not container start. Not a container-incarnation marker.
             "uptime_seconds": int(_pulse_time.monotonic() - _pulse_started),
-        })
+        }
+        # Record-only cloud provenance readback (openspec change
+        # cloud-only-runtime-admission, tasks 4/5). The startup log line alone is
+        # not evidence that THIS process cached an observation, and the hosted
+        # preflight's metadata read happens in a different, short-lived process.
+        #
+        # Canary-principal only, through the identity the auth middleware already
+        # resolved for this request: no auth rule, permission or principal is
+        # widened, and every other authenticated caller gets exactly the fields
+        # above. The read is a non-mutating peek — a health GET never resolves
+        # provenance — and an unobserved process reports an explicit unknown.
+        # Nothing branches on this; it is observation, not enforcement, and it
+        # samples ONE responding worker.
+        try:
+            from tinyassets.auth.middleware import current_identity_or_none
+            from tinyassets.auth.provider import CANARY
+            from tinyassets.platform_runtime_provenance import (
+                peek_platform_runtime_provenance,
+                sanitized_peek_fields,
+            )
+
+            _identity = current_identity_or_none()
+            if _identity is not None and _identity.user_id == CANARY.user_id:
+                payload["platform_runtime_provenance"] = sanitized_peek_fields(
+                    peek_platform_runtime_provenance()
+                )
+        except Exception:  # noqa: BLE001 - a diagnostic never breaks the health read
+            logger.exception("platform runtime provenance: pulse readback failed")
+        return _PulseJSON(payload)
 
     app = Starlette(
         routes=[

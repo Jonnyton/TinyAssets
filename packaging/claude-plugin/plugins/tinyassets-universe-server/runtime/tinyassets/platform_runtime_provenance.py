@@ -40,6 +40,11 @@ primitive, § Process lifetime and deployment ordering):
   already-resolved process-owned value inside the transaction.
 * There is no environment-variable bypass and no tests-only switch. Tests inject
   a reader/resolver, or construct their own observation object.
+* The cached verdict is readable back through a **non-mutating peek** that never
+  resolves, never initializes the cache and reports an explicit `unknown` for
+  unobserved, failed or PID-inherited state. That is what lets a health `GET`
+  report what this process already decided without becoming the thing that
+  decides it (design.md § Reading the main process's cached observation back).
 """
 
 from __future__ import annotations
@@ -200,6 +205,12 @@ def read_metadata_instance_id(
         return MetadataRead(None, "metadata_probe_failed")
     if not finished.wait(timeout):
         return MetadataRead(None, "metadata_timeout")
+    if not results:
+        # `finally: finished.set()` also runs when the reader dies on a
+        # BaseException (SystemExit, KeyboardInterrupt), which the `except
+        # Exception` above does not catch. An empty list must refuse, not
+        # IndexError out of a startup observation.
+        return MetadataRead(None, "metadata_probe_failed")
     return results[0]
 
 
@@ -380,6 +391,23 @@ class ProcessProvenanceObservation:
     def resolved(self) -> bool:
         return self._result is not None
 
+    def peek(self) -> RuntimeProvenance | None:
+        """Return the cached verdict, or ``None``. Never resolves anything.
+
+        This is the read a health endpoint may perform. It calls no resolver,
+        opens no socket, initializes no cache and takes no lock a resolving
+        caller could be holding — so an unobserved process stays unobserved and
+        a `GET` can never become the thing that triggers a metadata probe.
+
+        A result cached by a parent before a fork is refused: PID is the same
+        cache-lifetime discriminator :meth:`observe` uses, never evidence. The
+        refusal is non-mutating by design — clearing the cache here would let a
+        read decide what a later `observe()` has to redo.
+        """
+        if self._pid != os.getpid():
+            return None
+        return self._result
+
     def observe(self) -> RuntimeProvenance:
         # A fork inherits objects and potentially a locked parent mutex. A PID
         # change invalidates both before taking the lock. PID is a cache-lifetime
@@ -400,6 +428,42 @@ _PROCESS_OBSERVATION = ProcessProvenanceObservation()
 def observe_platform_runtime_provenance() -> RuntimeProvenance:
     """Process-wide entry point. Record-only: no caller branches on this."""
     return _PROCESS_OBSERVATION.observe()
+
+
+def peek_platform_runtime_provenance() -> RuntimeProvenance | None:
+    """Process-wide non-mutating read. ``None`` means nothing was observed."""
+    return _PROCESS_OBSERVATION.peek()
+
+
+#: The verdict a read reports when there is no observation to report. Explicit,
+#: because "we never looked" and "we looked and it is not cloud" are different
+#: facts and neither of them is CLOUD.
+UNKNOWN = "unknown"
+
+
+def sanitized_peek_fields(
+    provenance: RuntimeProvenance | None,
+) -> dict[str, object]:
+    """The only shape a peek may be published in.
+
+    ``None`` — unobserved, or refused because the cache was inherited across a
+    PID change — becomes an explicit unknown verdict with ``observed`` false. It
+    is never smoothed into a class, never inferred as CLOUD, and never a reason
+    to go and resolve one.
+    """
+    if provenance is None:
+        return {
+            "verdict": UNKNOWN,
+            "reason": "not_observed",
+            "observed": False,
+            "metadata_reachable": False,
+            "expected_identity_prepared": False,
+            "enforced": False,
+            "mode": "observation_only",
+        }
+    fields = sanitized_observation_fields(provenance)
+    fields["observed"] = True
+    return fields
 
 
 def sanitized_observation_fields(provenance: RuntimeProvenance) -> dict[str, object]:

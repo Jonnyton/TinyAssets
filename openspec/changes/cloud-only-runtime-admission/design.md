@@ -553,6 +553,81 @@ Task 5's live halves — that it resolves CLOUD on the real droplet, that the
 expected id survives a real redeploy, restart and rollback — are **not** proved by
 any of this and remain open.
 
+## Reading the main process's cached observation back (task 4/5 slice, 2026-09-22)
+
+The record-only candidate above resolves its verdict at startup and **only logs
+it**. That closes nothing for task 5, which has to confirm the verdict the real
+droplet's serving process actually holds. Two routes were considered and one
+rejected on evidence:
+
+* **The hosted preflight's own metadata read is not this evidence.** It is a
+  separate short-lived CI-driven child reaching a metadata service; it says
+  nothing about what the long-lived main serving process resolved and cached at
+  its own startup. Same fact class, different process, different lifetime.
+* **Raw or shared log scraping is rejected** (Opus57466 architecture review,
+  2026-09-22, accepted). A fluentd/log-driver stanza in compose is configuration,
+  not a runtime observation: a dual local cache may or may not still make
+  `docker logs` answer, and nothing in this change has *observed* that. We do
+  not claim the log route is available and we do not build on it.
+
+**Decision: read it back over the existing authenticated `/mcp/pulse`.** That
+route already exists, already sits behind the same bearer boundary as the rest of
+`/mcp`, already has the operational probe principal bound to it, and already has
+a caller (`scripts/deployed_sha.py`) that fetches it once inside the hosted
+post-receipt step. No new route, workflow, secret, credential, permission or
+principal is introduced, and no auth rule is widened.
+
+**Two review overclaims about `/mcp/pulse`, corrected (lead, 2026-09-22).** The
+architecture review justified this route partly by calling `git_sha` a binary
+identity and `uptime_seconds` a process-birth marker. Neither is true here:
+
+1. `git_sha` is read from the **mutable release receipt** the deploy writes to
+   the host volume (`_load_release_state`), exactly the limit
+   `scripts/deployed_sha.py` already documents (`proves: "receipt"`). It is not
+   derived from the running binary. Binary freshness SHALL NOT be inferred from
+   it, and this slice does not.
+2. `uptime_seconds` is measured from `_pulse_started`, a monotonic stamp taken
+   when `create_streamable_http_app()` **constructs the app**, not at strict
+   process birth and not at container start. It is an app-construction elapsed
+   time and nothing more.
+
+So the readback establishes exactly one fact: *the process that answered this
+request holds a cached startup verdict of X*. It SHALL NOT be read as binary
+freshness, as the current container incarnation, as a statement about all
+workers (one response samples one responding worker), as attestation, or as
+credential/data custody. Those remain open for the enforcement flip to prove
+separately, each on its own evidence.
+
+**Non-mutating peek.** The endpoint is a health `GET`. It must never become a
+place where a fresh metadata resolve is triggered, so the readback uses a peek
+that never calls the resolver, never initializes the cache, and holds no lock
+that a resolving caller needs. Its states are exactly three: *observed cloud*,
+*observed not-cloud with a reason*, and **explicit unknown** — unobserved,
+failed, or inherited across a PID change. Unknown is a first-class value, never
+smoothed into `CLOUD` and never a trigger to go and find out.
+
+**Sanitized, canary-only, fixed schema.** The field is `platform_runtime_provenance`
+and is emitted **only** when the request's already-resolved identity is the
+operational probe principal (`current_identity_or_none()`, the existing request
+identity API). Every other authenticated caller gets the pulse fields it gets
+today, byte-identical; unauthenticated callers stay rejected by the middleware
+before the endpoint runs. The payload is the sanitized observation shape the
+module already defines — verdict, snake_case reason token, booleans, `observed`,
+and `mode` — with no instance id, no expected id, no hash, no address, no path
+and no secret. The field is **optional in the response schema**: a consumer that
+does not see it SHALL treat provenance as unknown rather than inferring anything,
+because an older build simply does not carry it.
+
+**Reporter stays a diagnostic.** `scripts/deployed_sha.py --report-provenance`
+projects an allowlist of typed fields out of the **same already-fetched** pulse
+response — no second request, no raw server dict echoed into output. A missing,
+malformed or unexpected value prints as unknown. It SHALL NOT change the
+existing gate's exit semantics: `--assert-contains` still passes or fails purely
+on the receipt comparison, and an unknown provenance is **not** a pass of cloud
+acceptance — it is the absence of an observation. The hosted post-receipt
+`Verify protected receipt contains target revision` step gains the flag only, so
+the evidence lands in a run log that already exists.
+
 ## Rollout
 
 The runtime builder's actual-metadata gate is satisfied by hosted

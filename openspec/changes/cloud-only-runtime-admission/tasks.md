@@ -50,12 +50,32 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   preserve it across success-receipt replacement and compatible rollback.
   Resolve once per process; cached refusal never silently upgrades, and each
   explicit restart resolves anew. Operation-level authority checks remain live.
+  Add the **non-mutating peek** on the existing process observation (never calls
+  the resolver, never initializes the cache, refuses an inherited parent result
+  after a PID change, explicit `unknown` for unobserved/failed) and the sanitized
+  canary-only `platform_runtime_provenance` field on the existing authenticated
+  `/mcp/pulse`, through the existing request-identity API with no auth or
+  permission widening. A health GET SHALL NOT trigger a fresh resolve. Nothing
+  branches on the field; it is not enforcement.
 - [ ] 5. Land the resolver in record-only mode; confirm on the droplet that it
-  resolves CLOUD and the recorded id matches. Do not flip a resolver that cannot
-  resolve CLOUD in production. Report this stage as observation, not enforcement
-  and not risk-free — it still adds a read and a ledger write on a live path.
-  Prove expected-id presence/match across a real redeploy and restart, plus
-  rollback-state compatibility, before enabling refusal.
+  resolves CLOUD and the recorded id matches. Read it back from the **main
+  serving process** — a startup log line is not evidence that the main process
+  cached anything, and the hosted preflight's separate metadata child is a
+  different process. Route: `scripts/deployed_sha.py --report-provenance`
+  printing allowlisted typed fields from the pulse response it already fetched
+  (no second call, no raw dict dump, unknown stays unknown, existing
+  `--assert-contains` exit semantics unchanged), with the flag added to the
+  existing hosted post-receipt `Verify protected receipt contains target
+  revision` step — no new workflow, secret or desktop credential. Do not flip a
+  resolver that cannot resolve CLOUD in production. Report this stage as
+  observation, not enforcement and not risk-free — it still adds a read and a
+  ledger write on a live path. Useful evidence is exactly "the responding process
+  holds a cached CLOUD verdict"; it is **not** binary freshness (`git_sha` is the
+  mutable receipt), **not** the current container incarnation (`uptime_seconds`
+  starts at app construction), **not** all workers (one responding sample), and
+  **not** attestation or custody. Prove expected-id presence/match across a real
+  redeploy and restart, plus rollback-state compatibility, before enabling
+  refusal.
 - [ ] 6. Flip claim admission onto the **non-optional** predicate
   `_transaction_allows_assigned_consumer` / `_assigned_consumer_refusal_reason`
   (`branch_tasks_v2.py:1170`), not the optional `authority_claim` callback —

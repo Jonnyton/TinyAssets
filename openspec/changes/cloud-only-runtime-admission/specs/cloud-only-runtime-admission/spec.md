@@ -22,6 +22,63 @@ not carry, matched against the instance recorded by the deployment.
   compose labels
 - **THEN** provenance still resolves to not-cloud.
 
+### Requirement: The cached provenance observation is readable without re-observation
+The platform SHALL expose the executing process's already-resolved provenance
+observation through a non-mutating read that never invokes the resolver, never
+initializes the observation cache, and never performs network or metadata I/O.
+An observation that has not been resolved, that failed, or that was inherited
+across a process-identity change SHALL read as an explicit `unknown` verdict;
+`unknown` SHALL NOT be reported as cloud, SHALL NOT be reported as enforcement,
+and SHALL NOT trigger a fresh resolution.
+
+The read SHALL be exposed on the existing authenticated release-facts endpoint
+as an optional field carrying only a sanitized fixed schema — verdict, a stable
+reason token, booleans and the observation mode. It SHALL NOT carry an instance
+identifier, an expected identifier, a hash of either, a network address, a
+filesystem path or any secret. It SHALL be emitted only when the request's
+already-resolved identity is the operational probe principal; every other
+authenticated principal SHALL receive exactly the fields it receives today, and
+unauthenticated requests SHALL remain rejected. No authentication rule,
+permission or principal SHALL be widened to serve it.
+
+The field SHALL be optional in the response schema: a consumer that does not
+receive it SHALL treat provenance as unknown rather than inferring a verdict.
+Consumers SHALL NOT infer from this endpoint the freshness of the running
+binary, the current container incarnation, the state of workers other than the
+one that answered, hardware attestation, or credential or data custody. A
+diagnostic reporter of this field SHALL print only allowlisted typed values from
+the response it already fetched, SHALL report missing or malformed values as
+unknown, and SHALL NOT change the deployment gate's existing exit semantics.
+
+#### Scenario: A health read never resolves provenance
+- **WHEN** the release-facts endpoint is read while the process has resolved no
+  observation
+- **THEN** no resolver, metadata client or network read is invoked
+- **AND** the reported verdict is an explicit unknown, not cloud.
+
+#### Scenario: A cached observation is stable across repeated reads
+- **WHEN** a process resolves its startup observation once and the endpoint is
+  read twice afterwards
+- **THEN** both reads report the same cached verdict
+- **AND** the resolver is invoked exactly once in total.
+
+#### Scenario: An inherited observation does not read as the parent's verdict
+- **WHEN** the observation object was resolved under a different process
+  identity and is then read
+- **THEN** the read reports unknown rather than the inherited verdict.
+
+#### Scenario: Only the operational probe principal sees the field
+- **WHEN** an authenticated principal other than the operational probe reads the
+  endpoint
+- **THEN** the response carries exactly the fields it carried before this change
+- **AND** an unauthenticated request is still rejected.
+
+#### Scenario: A malformed or missing reported value is unknown, never a pass
+- **WHEN** the diagnostic reporter receives a response whose provenance field is
+  absent, of the wrong type, or carries unexpected values
+- **THEN** it prints unknown for those values and leaks no identifier
+- **AND** the gate's pass, fail and cannot-determine exit codes are unchanged.
+
 ### Requirement: Task claim admission enforces provenance on the non-optional refusal path
 Assigned-task claim admission SHALL evaluate resolved provenance within the
 same transaction that transfers ownership, and SHALL bind that evaluation to the

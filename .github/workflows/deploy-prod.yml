@@ -446,8 +446,14 @@ jobs:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         run: |
           set -euo pipefail
+          # --report-provenance is a record-only diagnostic printed from the same
+          # pulse response this assertion already fetches (openspec change
+          # cloud-only-runtime-admission, task 5). It does not affect the exit
+          # code, and an `unknown` verdict is the absence of an observation --
+          # never a pass of cloud acceptance.
           python scripts/deployed_sha.py \
             --url https://tinyassets.io/mcp \
+            --report-provenance \
             --assert-contains "${GIT_SHA}"
 
       - name: Open deploy-failed issue

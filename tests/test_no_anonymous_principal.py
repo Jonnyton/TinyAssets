@@ -139,7 +139,13 @@ def test_pulse_requires_a_bearer_and_canary_read_names_nothing(client, tmp_path)
     )
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"git_sha", "image_tag", "deployed_at", "uptime_seconds"}
+    # The canary additionally gets the record-only provenance readback (openspec
+    # change cloud-only-runtime-admission). Still an exact set: the point of this
+    # assertion is that no user or universe fact can drift into the receipt.
+    assert set(body) == {
+        "git_sha", "image_tag", "deployed_at", "uptime_seconds",
+        "platform_runtime_provenance",
+    }
     assert body["git_sha"] == "abc123def4567890"
     assert body["image_tag"] == "ghcr.io/x/y:abc123def456"
     assert body["deployed_at"] == "2026-09-02T10:00:00.000000Z"

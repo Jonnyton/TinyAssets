@@ -76,6 +76,14 @@ enforcement from cloud network/credential custody.
    fail-closed: absent or unverifiable evidence ⇒ not cloud ⇒ refuse, never a
    host fallback. Hostname, container name, compose label and env naming are
    never evidence (they travel with a checkout).
+   Its record-only verdict is also **readable back** from the process that holds
+   it, because a startup log line alone is not evidence that the main serving
+   process cached anything: an optional sanitized `platform_runtime_provenance`
+   field on the existing authenticated `/mcp/pulse`, emitted only for the
+   operational probe principal, through a **non-mutating peek** that never
+   resolves, never initializes the cache and reports explicit `unknown` for
+   unobserved, failed or PID-inherited state. No new route, workflow, secret,
+   credential or principal; no auth widening; nothing branches on it.
 2. **Claim admission bound to the non-optional refusal path** — the invariant
    binds to `_transaction_allows_assigned_consumer` /
    `_assigned_consumer_refusal_reason` (`branch_tasks_v2.py:1170`), which every
@@ -150,6 +158,17 @@ connector-enrollment path (PR #3913) narrows accidents; it does not establish
 custody. Record-only preflight and record-only resolver are **observation, and
 explicitly incomplete** — the boundary is not closed until the refusals are
 flipped and a deployed sha proves them live.
+
+The provenance readback establishes one fact only: the process that answered one
+authenticated probe holds a cached startup verdict. It is **not** binary
+freshness (`/mcp/pulse` `git_sha` comes from the mutable release receipt, not the
+running binary), **not** the current container incarnation (`uptime_seconds` is
+measured from app construction, not process birth), **not** a statement about all
+workers (one response samples one responding worker), and **not** attestation or
+credential/data custody. An `unknown` verdict is the absence of an observation,
+never a pass. Fluentd/log-driver configuration is likewise not a runtime
+observation that `docker logs` is available — this change neither uses nor claims
+that route.
 
 Nothing here is established by a code label or by a passing local diagnostic.
 A local fixture or cloned data root satisfying these checks demonstrates no
