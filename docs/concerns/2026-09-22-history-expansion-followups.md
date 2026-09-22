@@ -1,5 +1,7 @@
 # History expansion followups after PR3916
 
+**Filed:** 2026-09-22 UTC. **Severity:** note.
+
 Scoped long-reply defect is deployed and accepted: production68913d87, hosted
 deploy35696730874 public handles/protected SHA06:52UTC September22, ordinary
 primary-app control recovered the original4,886-character reply's whole ending
