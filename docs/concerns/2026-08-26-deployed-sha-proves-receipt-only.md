@@ -48,3 +48,14 @@ docstring.
 `get_status` carries a runtime-derived revision, `deployed_sha.py` requires it
 to agree with the receipt, and a test proves a stale-receipt/older-image
 combination returns non-zero.
+
+## Not closed by the provenance readback (2026-09-22)
+
+`/mcp/pulse` now carries an optional canary-only `platform_runtime_provenance`
+field, and `deployed_sha.py --report-provenance` prints it (openspec change
+`cloud-only-runtime-admission`, tasks 4/5). That is a runtime-derived *host
+provenance* verdict, **not** a runtime-derived *revision*: it says which machine
+class the answering process observed at its own startup, and nothing about which
+build is running. The stale-receipt/older-image case above still reads as a pass.
+This concern stays open, and the diagnostic deliberately does not change the
+gate's exit semantics.
