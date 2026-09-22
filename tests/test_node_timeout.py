@@ -300,3 +300,174 @@ def test_fast_provider_does_not_hit_timeout(tmp_path, monkeypatch):
     record = get_run(base, outcome.run_id)
     assert record is not None
     assert record["status"] == RUN_STATUS_COMPLETED
+
+
+# ─── the node's timeout must bound the PROVIDER, not only the future ─────
+#
+# Previously ``_build_prompt_template_node`` built ``ModelConfig`` with the
+# legacy ``timeout`` scalar only. Native streaming does NOT read that scalar as
+# a wall-clock deadline (by design — see ``ModelConfig.timeout`` and
+# ``StreamTimeoutProfile``); it reads ``stream_timeout_profile()`` and bounds a
+# still-progressing turn by ``absolute_cap_s``, which defaults to 600s.
+#
+# So the two clocks disagree: ``_run_with_timeout`` fails the node at
+# ``timeout_seconds`` (300s by default) and returns to the graph, while the
+# provider subprocess it launched keeps streaming for up to another 300s with
+# nothing waiting on it. Setting ``absolute_cap_s`` at the per-node config site
+# closes the gap. It is a BUDGET, not end-to-end cancellation: executor queueing
+# and provider admission both elapse before the reader's clock starts, so the
+# reader can still be cut off by the future — these tests assert the cap
+# reaches the provider, never that the two deadlines coincide.
+
+
+def _node_with_timeout(timeout_seconds: float | None):
+    kwargs = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
+    return NodeDefinition(
+        node_id="budgeted", display_name="Budgeted",
+        prompt_template="Do {x}.", input_keys=["x"], output_keys=["out"],
+        **kwargs,
+    )
+
+
+def _bridge_config(timeout_seconds: float | None):
+    """The ModelConfig a compiled node hands to an INJECTED provider bridge."""
+    from tinyassets.graph_compiler import _build_prompt_template_node
+
+    captured: dict = {}
+
+    def fake_provider_call(prompt, system, *, role="writer", config=None):
+        captured["config"] = config
+        return "done"
+
+    fn = _build_prompt_template_node(
+        _node_with_timeout(timeout_seconds),
+        provider_call=fake_provider_call, event_sink=None,
+    )
+    # A single untyped output_key takes the raw response — no JSON contract.
+    assert fn({"x": "thing"}).get("out") == "done"
+    cfg = captured.get("config")
+    assert cfg is not None, "node config was not threaded to the provider"
+    return cfg
+
+
+def _policy_config(timeout_seconds: float | None):
+    """The ModelConfig a compiled node hands to the POLICY router route."""
+    from tinyassets.graph_compiler import _build_prompt_template_node
+
+    captured: dict = {}
+
+    class _RecordingRouter:
+        available_providers = ["claude"]
+
+        def call_with_policy_sync(
+            self, role, prompt, system, policy, config=None, **kwargs,
+        ):
+            captured["config"] = config
+            return ("done", "claude", {})
+
+    fn = _build_prompt_template_node(
+        _node_with_timeout(timeout_seconds),
+        provider_call=_RecordingRouter(), event_sink=None,
+        llm_policy={"preferred": {}},
+    )
+    assert fn({"x": "thing"}).get("out") == "done"
+    cfg = captured.get("config")
+    assert cfg is not None, "node config was not threaded to the policy router"
+    return cfg
+
+
+# Fractional (sub-second authoring / tests), ordinary (the NodeDefinition
+# default), and long (a deliberately patient node). All three must arrive as
+# the node asked — the cap is a float knob, so unlike the legacy int `timeout`
+# it needs no 1s floor to stay meaningful.
+@pytest.mark.parametrize("timeout_seconds", [0.5, 300.0, 900.0])
+@pytest.mark.parametrize("route", ["bridge", "policy"])
+def test_node_timeout_becomes_the_provider_absolute_cap(timeout_seconds, route):
+    cfg = _bridge_config(timeout_seconds) if route == "bridge" else _policy_config(
+        timeout_seconds
+    )
+    assert cfg.absolute_cap_s == pytest.approx(timeout_seconds), (
+        "the node's own timeout must be handed to the provider as its absolute "
+        "cap; leaving it None lets a native stream run to the 600s library "
+        "default while the node future has already failed the node"
+    )
+    # The resolved profile is what the streaming readers actually consult.
+    profile = cfg.stream_timeout_profile()
+    assert profile.absolute_cap_s == pytest.approx(timeout_seconds)
+    # The legacy scalar keeps its existing floor-at-1s behaviour.
+    assert cfg.timeout == max(1, int(timeout_seconds))
+
+
+@pytest.mark.parametrize("route", ["bridge", "policy"])
+def test_default_node_caps_the_provider_at_the_default_node_timeout(route):
+    """A node that never declares a timeout gets 300s (NodeDefinition's
+    default) on BOTH clocks — not 300s on the future and 600s on the stream."""
+    cfg = _bridge_config(None) if route == "bridge" else _policy_config(None)
+    assert NodeDefinition(node_id="x", display_name="X").timeout_seconds == 300.0
+    assert cfg.stream_timeout_profile().absolute_cap_s == pytest.approx(300.0)
+
+
+def test_interactive_model_config_default_cap_is_unchanged_at_600s():
+    """The per-node cap is a per-node setting. An ordinary interactive
+    ModelConfig must keep its 600s library backstop. Granted served turns may
+    choose their own larger cap; this node-only fix must not change either
+    the library default or the existing served-turn configuration."""
+    from tinyassets.providers.base import DEFAULT_ABSOLUTE_CAP_S, ModelConfig
+
+    assert DEFAULT_ABSOLUTE_CAP_S == 600.0
+    assert ModelConfig().absolute_cap_s is None
+    assert ModelConfig().stream_timeout_profile().absolute_cap_s == 600.0
+    # A caller that only ever set the legacy scalar still gets the default.
+    assert ModelConfig(timeout=300).stream_timeout_profile().absolute_cap_s == 600.0
+
+
+def test_node_config_no_longer_buys_the_sync_wrapper_a_600s_budget():
+    """Supporting evidence at the second clock: the sync router wrapper sizes
+    its own timeout from ``max(legacy timeout, absolute cap) + 30``. With the
+    cap unset a 300s node bought the wrapper 630s — over twice the node's own
+    deadline."""
+    from tinyassets.providers.router import _sync_call_timeout_s
+
+    cfg = _bridge_config(300.0)
+    assert _sync_call_timeout_s(cfg) == pytest.approx(330.0)
+
+
+def test_a_progressing_native_stream_is_ended_by_the_nodes_own_cap():
+    """The decisive behavioural test, on the native streaming path.
+
+    A fake ``claude -p`` process emits real protocol progress every 50ms for
+    ~2s, so the idle watchdog never fires and ONLY the absolute cap can end it.
+    Driven with the config the compiler built for a 0.6s node, the reader must
+    stop at the node's cap and kill the subprocess. Unfixed, the cap is the
+    600s default, the fake stream simply runs to completion, and the real
+    subprocess this stands in for would outlive its node by minutes.
+
+    Claude is the native path exercised here; ``codex_provider`` reads
+    ``profile.absolute_cap_s`` off the same generic ``ModelConfig``.
+    """
+    from tests.test_provider_stream_and_classify import (
+        INIT,
+        FakeStreamProcess,
+        _line,
+        _partial_text,
+        _result,
+        _run_stream,
+    )
+    from tinyassets.exceptions import InteractiveDeadlineError
+
+    cfg = _bridge_config(0.6)
+    items = [_line(INIT)]
+    items += [(0.05, _line(_partial_text("x"))) for _ in range(40)]
+    items += [(0.05, _line(_result("done")))]
+    proc = FakeStreamProcess(items)
+
+    started = time.monotonic()
+    with pytest.raises(InteractiveDeadlineError):
+        _run_stream(proc, cfg)
+    elapsed = time.monotonic() - started
+
+    assert proc.killed is True, "the capped stream must reap its subprocess"
+    assert elapsed < 1.5, (
+        f"ended after {elapsed:.2f}s — the node's 0.6s cap did not bound the "
+        "still-progressing stream"
+    )
