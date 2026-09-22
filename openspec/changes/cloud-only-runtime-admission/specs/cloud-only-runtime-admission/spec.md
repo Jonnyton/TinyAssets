@@ -46,9 +46,12 @@ receive it SHALL treat provenance as unknown rather than inferring a verdict.
 Consumers SHALL NOT infer from this endpoint the freshness of the running
 binary, the current container incarnation, the state of workers other than the
 one that answered, hardware attestation, or credential or data custody. A
-diagnostic reporter of this field SHALL print only allowlisted typed values from
-the response it already fetched, SHALL report missing or malformed values as
-unknown, and SHALL NOT change the deployment gate's existing exit semantics.
+diagnostic reporter of this field SHALL print only values the protocol defines,
+matched exactly from the response it already fetched — an allowlist of known
+values, never of token shapes, and with no normalization applied before
+matching. Missing, mistyped and unrecognized values SHALL all report as
+unknown, and the reporter SHALL NOT change the deployment gate's existing exit
+semantics.
 
 #### Scenario: A health read never resolves provenance
 - **WHEN** the release-facts endpoint is read while the process has resolved no
@@ -78,6 +81,13 @@ unknown, and SHALL NOT change the deployment gate's existing exit semantics.
   absent, of the wrong type, or carries unexpected values
 - **THEN** it prints unknown for those values and leaks no identifier
 - **AND** the gate's pass, fail and cannot-determine exit codes are unchanged.
+
+#### Scenario: A well-formed value the protocol does not define is refused
+- **WHEN** a reported value is shaped like a valid token but is not a value the
+  protocol defines — an identifier embedded in a reason, an unrecognized
+  verdict, a mode asserting enforcement, or a value carrying trailing
+  whitespace or a line break
+- **THEN** the reporter prints unknown for it rather than echoing it.
 
 ### Requirement: Task claim admission enforces provenance on the non-optional refusal path
 Assigned-task claim admission SHALL evaluate resolved provenance within the

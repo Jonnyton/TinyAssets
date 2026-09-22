@@ -619,9 +619,22 @@ does not see it SHALL treat provenance as unknown rather than inferring anything
 because an older build simply does not carry it.
 
 **Reporter stays a diagnostic.** `scripts/deployed_sha.py --report-provenance`
-projects an allowlist of typed fields out of the **same already-fetched** pulse
-response — no second request, no raw server dict echoed into output. A missing,
-malformed or unexpected value prints as unknown. It SHALL NOT change the
+projects an allowlist out of the **same already-fetched** pulse response — no
+second request, no raw server dict echoed into output. A missing, malformed or
+unexpected value prints as unknown.
+
+The allowlist is of **known protocol values, not token shapes**. A snake_case
+shape check was tried first and was wrong three ways at once, each of them the
+leak the sanitizer exists to stop: `reason="instance_<id>"` is a well-formed
+token that carries a droplet id into a CI log; `mode="enforcement_enabled"`
+prints a fake enforcement claim out of a record-only diagnostic; and Python's
+`$` matches *before* a trailing newline, so `"instance_match\n"` satisfies a
+`^...$` check and injects a line break. Matching is exact membership with no
+`strip()` and no normalization — a value that needs cleaning up before it
+matches is not the protocol value, and cleaning it is precisely how the newline
+gets through. A reason the reporter has not learned yet prints as unknown; a
+test harvests the module's own reason-construction sites so the allowlist
+cannot silently fall behind the thing it reports on. It SHALL NOT change the
 existing gate's exit semantics: `--assert-contains` still passes or fails purely
 on the receipt comparison, and an unknown provenance is **not** a pass of cloud
 acceptance — it is the absence of an observation. The hosted post-receipt
