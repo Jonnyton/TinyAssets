@@ -11,13 +11,11 @@ desktop tray and dashboard, and runs the daemon loop until stopped.
 from __future__ import annotations
 
 import argparse
-import atexit
 import contextlib
 import json
 import logging
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -3281,163 +3279,61 @@ class DaemonController:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-# Cloudflare tunnel management
+# Public ingress: removed (cloud-only policy)
+# ---------------------------------------------------------------------------
+# This process must never publish a public ingress or enroll itself as a
+# Cloudflare connector, even momentarily: a connector that receives a public
+# request has already absorbed public availability, and refusing afterwards is
+# too late. The local tunnel launcher (``_start_tunnel``) and its drain/stop
+# helpers were deleted rather than gated, so there is no reachable code path
+# that spawns ``cloudflared`` from a client, tray or daemon start.
+#
+# Cloud ingress is unaffected: it is owned by the hosted deployment
+# (``deploy/compose.yml`` + ``scripts/run-tunnel.sh``), which this module does
+# not touch. Local API and testing runs are also unaffected -- they simply bind
+# a local port and publish nothing.
 # ---------------------------------------------------------------------------
 
-# Shared between _drain_tunnel_stderr and _run_tray_mode so the tray
-# can show the real URL without polling the schema file (which may
-# contain a stale URL from a previous session).
-_tunnel_url_ready = threading.Event()
-_tunnel_url_value: str = ""
+LOCAL_TUNNEL_REMOVED_MESSAGE = (
+    "Local Cloudflare tunnel startup has been removed: this process must never "
+    "publish a public ingress or enroll as a Cloudflare connector. Use the "
+    "cloud-hosted app at https://tinyassets.io/mcp instead. Local API and "
+    "testing runs still work -- drop --tunnel / --tunnel-name."
+)
 
 
-def _start_tunnel(
-    port: int,
-    tunnel_name: str = "",
-) -> subprocess.Popen | None:
-    """Start a Cloudflare tunnel as a subprocess.
+def _refuse_local_tunnel_request(source: str) -> None:
+    """Fail loudly when a caller asks this process to publish a public ingress.
 
     Parameters
     ----------
-    port : int
-        Local port to tunnel (the API server port).
-    tunnel_name : str
-        Named tunnel to run.  If empty, falls back to a quick tunnel
-        (ephemeral URL).
+    source : str
+        Where the request came from, for the log line (a CLI flag, tray mode).
 
-    Returns
-    -------
-    subprocess.Popen or None
-        The tunnel process, or None if cloudflared is not available.
+    Raises
+    ------
+    SystemExit
+        Always. The option is still recognised so the caller gets a migration
+        message rather than a bare argparse error, but it is never accepted:
+        silently ignoring it would let a caller believe a tunnel was started.
     """
-    import shutil
-
-    cloudflared = shutil.which("cloudflared")
-    if not cloudflared:
-        logger.warning("cloudflared not found in PATH; tunnel not started")
-        return None
-
-    if tunnel_name:
-        cmd = [cloudflared, "tunnel", "run", tunnel_name]
-        logger.info("Starting named tunnel '%s' -> localhost:%d", tunnel_name, port)
-    else:
-        cmd = [
-            cloudflared,
-            "tunnel",
-            "--url",
-            f"http://localhost:{port}",
-        ]
-        logger.info("Starting quick tunnel -> localhost:%d", port)
-
-    try:
-        kwargs: dict[str, Any] = {
-            "stdout": subprocess.DEVNULL,
-            # Capture stderr via PIPE so we can extract the tunnel URL,
-            # then drain continuously in a background thread to prevent
-            # pipe buffer deadlock.
-            "stderr": subprocess.PIPE,
-        }
-        # On Windows, fully decouple cloudflared from our process tree.
-        # CREATE_NO_WINDOW prevents console allocation (GDI exhaustion),
-        # DETACHED_PROCESS prevents it from sharing our console session
-        # (which caused black-screen crashes when the child flooded
-        # console-host resources).
-        if sys.platform == "win32":
-            kwargs["creationflags"] = (
-                subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                | subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
-            )
-        proc = subprocess.Popen(cmd, **kwargs)
-        logger.info("Cloudflare tunnel started (PID %d)", proc.pid)
-        atexit.register(_stop_tunnel, proc)
-        # Drain stderr in a daemon thread — extracts tunnel URL, prevents
-        # pipe buffer deadlock from cloudflared's verbose logging.
-        drain = threading.Thread(
-            target=_drain_tunnel_stderr,
-            args=(proc,),
-            daemon=True,
-        )
-        drain.start()
-        return proc
-    except OSError as e:
-        logger.warning("Failed to start cloudflared: %s", e)
-        return None
-
-
-def _drain_tunnel_stderr(proc: subprocess.Popen) -> None:
-    """Read cloudflared stderr, extract the tunnel URL, discard the rest.
-
-    Runs in a daemon thread. Reads line-by-line looking for the
-    trycloudflare.com URL pattern, logs it prominently when found,
-    updates the GPT actions schema with the new URL, signals
-    _tunnel_url_ready so the tray can pick it up, then continues
-    draining to keep the pipe clear.
-    """
-    global _tunnel_url_value
-    import re
-
-    url_pattern = re.compile(r"(https://[a-zA-Z0-9-]+\.trycloudflare\.com)")
-    url_found = False
-    stderr = proc.stderr
-    if stderr is None:
-        return
-    try:
-        for raw_line in stderr:
-            if url_found:
-                continue  # drain without processing
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            match = url_pattern.search(line)
-            if match:
-                url = match.group(1)
-                logger.info("Tunnel URL: %s", url)
-                _update_gpt_schema_url(url)
-                _tunnel_url_value = url
-                _tunnel_url_ready.set()
-                url_found = True
-    except (OSError, ValueError):
-        pass  # process exited or pipe closed
-
-
-def _update_gpt_schema_url(url: str) -> None:
-    """No-op stub — Custom GPT schema removed.
-
-    Retained because ``_drain_tunnel_stderr`` calls this. The tunnel URL
-    is still extracted and logged; it just no longer updates a schema file.
-    """
-    logger.debug("Tunnel URL available: %s (GPT schema update skipped — legacy)", url)
-
-
-def _stop_tunnel(proc: subprocess.Popen) -> None:
-    """Gracefully stop a tunnel subprocess."""
-    if proc.poll() is not None:
-        return
-    logger.info("Stopping Cloudflare tunnel (PID %d)", proc.pid)
-    try:
-        proc.terminate()
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            logger.warning("Cloudflare tunnel PID %d did not exit", proc.pid)
-            return
-    except OSError:
-        # Process already gone or access denied (detached process)
-        return
-    logger.info("Cloudflare tunnel stopped")
+    logger.error("%s (requested via %s)", LOCAL_TUNNEL_REMOVED_MESSAGE, source)
+    raise SystemExit(LOCAL_TUNNEL_REMOVED_MESSAGE)
 
 
 def _run_tray_mode(args: argparse.Namespace) -> None:
-    """Tray-only mode: API + daemon + tunnel with system tray icon.
+    """Tray-only mode: API + daemon with system tray icon.
 
     Designed for the desktop shortcut (pythonw.exe / .pyw): no console
     window, no Tkinter launcher GUI.  Everything runs from the system
     tray with right-click controls.
 
-    Flow: tray icon appears -> API starts -> daemon auto-selects a
-    universe -> tunnel starts -> GPT can reach it.
+    Flow: tray icon appears -> API starts (bound locally) -> daemon
+    auto-selects a universe.  No public ingress is ever published; a
+    tunnel request refuses before anything starts.
     """
+    if getattr(args, "tunnel", False) or getattr(args, "tunnel_name", ""):
+        _refuse_local_tunnel_request("--tunnel/--tunnel-name in tray mode")
     import uvicorn
 
     from fantasy_daemon.api import app, configure
@@ -3471,7 +3367,6 @@ def _run_tray_mode(args: argparse.Namespace) -> None:
     # Shared state for the tray to control
     shutdown_event = threading.Event()
     controller: DaemonController | None = None
-    tunnel_proc: subprocess.Popen | None = None
     tray: TrayApp | None = None
     uvicorn_server: Any = None
 
@@ -3493,8 +3388,6 @@ def _run_tray_mode(args: argparse.Namespace) -> None:
         if controller is not None:
             controller._stop_event.set()
             controller._paused.clear()
-        if tunnel_proc is not None:
-            _stop_tunnel(tunnel_proc)
         if uvicorn_server is not None:
             uvicorn_server.should_exit = True
 
@@ -3537,24 +3430,7 @@ def _run_tray_mode(args: argparse.Namespace) -> None:
         daemon_thread=daemon_thread,
     )
 
-    # Start tunnel
     port = args.port
-    tunnel_proc = _start_tunnel(port, args.tunnel_name)
-
-    # Wait for tunnel URL from the drain thread (not the schema file,
-    # which may contain a stale URL from a previous session).
-    def _watch_tunnel_url() -> None:
-        """Wait for _drain_tunnel_stderr to signal the URL, then update tray."""
-        # Clear any stale state from a previous tunnel start
-        _tunnel_url_ready.clear()
-        if _tunnel_url_ready.wait(timeout=30):
-            url = _tunnel_url_value
-            if url and tray is not None:
-                tray.update_extended_status(tunnel_url=url)
-                tray.notify("Tunnel Ready", url)
-
-    if tunnel_proc is not None:
-        threading.Thread(target=_watch_tunnel_url, daemon=True).start()
 
     tray.update_status("Running")
 
@@ -3597,8 +3473,6 @@ def _run_tray_mode(args: argparse.Namespace) -> None:
         controller._paused.clear()
     if daemon_thread is not None:
         daemon_thread.join(timeout=5)
-    if tunnel_proc is not None:
-        _stop_tunnel(tunnel_proc)
     if tray is not None:
         tray.stop()
 
@@ -3663,17 +3537,23 @@ def _main_unfenced() -> None:
     parser.add_argument(
         "--tunnel",
         action="store_true",
-        help="Start a Cloudflare tunnel alongside the API server",
+        help=(
+            "REMOVED -- local Cloudflare tunnels are no longer started; "
+            "use the cloud-hosted app at https://tinyassets.io/mcp"
+        ),
     )
     parser.add_argument(
         "--tunnel-name",
         default="",
-        help="Named tunnel to run (requires 'cloudflared tunnel create' first)",
+        help=(
+            "REMOVED -- local Cloudflare tunnels are no longer started; "
+            "use the cloud-hosted app at https://tinyassets.io/mcp"
+        ),
     )
     parser.add_argument(
         "--tray",
         action="store_true",
-        help="Tray-only mode: API + daemon + tunnel with system tray icon, no console",
+        help="Tray-only mode: API + daemon with system tray icon, no console",
     )
     parser.add_argument(
         "--universe-server",
@@ -3703,6 +3583,13 @@ def _main_unfenced() -> None:
     )
 
     args = parser.parse_args()
+
+    # Public ingress is cloud-only: refuse the obsolete request loudly rather
+    # than accepting the flag and starting nothing.
+    if args.tunnel:
+        _refuse_local_tunnel_request("--tunnel")
+    if args.tunnel_name:
+        _refuse_local_tunnel_request("--tunnel-name")
 
     # Apply --provider pin via TINYASSETS_PIN_WRITER env var so the router
     # consults it per-call instead of mutating FALLBACK_CHAINS at import.
@@ -3749,22 +3636,13 @@ def _main_unfenced() -> None:
             base,
         )
 
-        # Optionally start a Cloudflare tunnel for the MCP port
-        tunnel_proc = None
-        if args.tunnel:
-            tunnel_proc = _start_tunnel(args.mcp_port, args.tunnel_name)
+        from fantasy_daemon.universe_server import main as us_main
 
-        try:
-            from fantasy_daemon.universe_server import main as us_main
-
-            us_main(
-                host=args.host,
-                port=args.mcp_port,
-                transport=args.mcp_transport,
-            )
-        finally:
-            if tunnel_proc is not None:
-                _stop_tunnel(tunnel_proc)
+        us_main(
+            host=args.host,
+            port=args.mcp_port,
+            transport=args.mcp_transport,
+        )
         return
 
     if args.tray:
@@ -3838,19 +3716,12 @@ def _main_unfenced() -> None:
             daemon_thread=daemon_thread,
         )
 
-        # Start Cloudflare tunnel if requested
-        tunnel_proc = None
-        if args.tunnel:
-            tunnel_proc = _start_tunnel(args.port, args.tunnel_name)
-
         # Graceful shutdown: signal daemon to stop when uvicorn exits
         def _serve_signal_handler(sig: int, frame: Any) -> None:
             logger.info("Signal %d received, stopping daemon", sig)
             if controller is not None:
                 controller._stop_event.set()
                 controller._paused.clear()
-            if tunnel_proc is not None:
-                _stop_tunnel(tunnel_proc)
 
         signal.signal(signal.SIGINT, _serve_signal_handler)
         if hasattr(signal, "SIGTERM"):
@@ -3869,8 +3740,6 @@ def _main_unfenced() -> None:
             controller._paused.clear()
         if daemon_thread is not None:
             daemon_thread.join(timeout=5)
-        if tunnel_proc is not None:
-            _stop_tunnel(tunnel_proc)
         return
 
     controller = DaemonController(
