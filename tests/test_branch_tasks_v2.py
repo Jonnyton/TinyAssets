@@ -14,6 +14,7 @@ import pytest
 import rfc8785
 
 import tinyassets.storage.request_admissions as request_admission_storage
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.branch_tasks import (
     BranchTask,
     append_task,
@@ -38,6 +39,8 @@ from tinyassets.storage.request_admissions import (
     RequestAdmissionStore,
     migrate_request_admission_schema,
 )
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def _activation_subject(ref: str) -> ExecutionSubject:

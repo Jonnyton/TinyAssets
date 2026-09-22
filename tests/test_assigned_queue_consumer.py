@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import tinyassets.runtime.assigned_queue_consumer as consumer_module
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.background_served_provider import (
     BACKGROUND_BRANCH_RUN_OPERATION,
     _branch_roles,
@@ -16,6 +17,8 @@ from tinyassets.runtime.assigned_queue_consumer import (
     AssignedQueueConsumer,
     assigned_queue_consumer_enabled,
 )
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def test_assigned_queue_consumer_flag_is_dark_by_default(monkeypatch) -> None:
