@@ -3,6 +3,10 @@
 Blocked on root review of `design.md` (two additive public-surface changes).
 No task below is started.
 
+Premise already proven (no proposal needed, landed with this change):
+`tests/test_conversation_failure_readers.py::test_a_long_reply_reaches_the_status_feed_whole`
+shows storage and the status feed are lossless — only the preview bounds.
+
 ## 1. Public surface
 
 - [ ] 1.1 `conversation_store._read_messages` selects `id`; `Msg` gains
@@ -24,8 +28,9 @@ No task below is started.
 
 ## 3. Tests
 
-- [ ] 3.1 `tests/test_get_status_primitive.py`: a >4000-char turn reports `id`,
-      `total_chars`, `truncated`; a short turn reports `truncated: false`.
+- [ ] 3.1 Extend `test_status_peek_labels_failure_and_marks_long_original_truncated`
+      (it already pins `truncated` + `len == 4000`) to also assert `id` and
+      `total_chars`, and that a short turn reports `truncated: false`.
 - [ ] 3.2 `tests/test_conversation_failure_readers.py`: public `read_graph
       target="conversation"` returns the exact tail for a >4000-char reply and
       for a founder message containing astral emoji; offsets are code points.

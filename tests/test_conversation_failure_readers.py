@@ -159,3 +159,44 @@ def test_account_deletion_removes_failure_bytes_and_preserves_other_user(tmp_pat
     assert not a.exists()
     assert not list((tmp_path / ".deleting").rglob(".conversation_memory.db"))
     assert store.load_recent_readonly(b, f"principal:{B}") == expected_b
+
+
+def test_a_long_reply_reaches_the_status_feed_whole(tmp_path):
+    """The app's 4000-char cut is introduced by the status preview, not storage.
+
+    A reply rendered complete in the app was redrawn cut to exactly 4000 chars
+    after an idle refresh. Everything BELOW the status layer is lossless: the
+    exchange is recorded whole and every retained-history consumer hands back
+    the original, astral characters included. So the bytes the app dropped were
+    never lost -- only never asked for.
+    """
+    reply = "diagnosis 🦊 α\r\n" * 700          # >4000 chars, astral + CRLF + combining
+    founder_said = "why did the run fail? 🤔"
+    assert len(reply) > 4000
+    assert store.record_exchange(tmp_path, "principal:a", founder_said, reply)
+
+    # The feed get_status builds recent_conversation from returns the ORIGINAL.
+    feed = store.load_recent_readonly(tmp_path, "principal:a")
+    assert [m.text for m in feed] == [founder_said, reply]
+
+    # And the lossless reader reassembles the same bytes by the SERVER's own
+    # code-point offsets -- the handle the app has no route to today.
+    page = read_conversation_page(tmp_path, "principal:a")
+    universe_row = next(m for m in page["messages"] if m["speaker"] == "universe")
+    chunks, offset = [], 0
+    while offset is not None:
+        part = read_conversation_page(
+            tmp_path, "principal:a", field_name=str(universe_row["id"]),
+            offset=offset, max_chars=997,
+        )
+        assert part["offset_unit"] == "unicode_code_points"
+        chunks.append(part["chunk"])
+        offset = part["next_offset"]
+    assert "".join(chunks) == reply
+    assert part["total_chars"] == len(reply)
+
+    # A second account reaches none of it, by id or by page.
+    assert read_conversation_page(
+        tmp_path, "principal:b", field_name=str(universe_row["id"]),
+    )["error"] == "conversation_message_not_found"
+    assert read_conversation_page(tmp_path, "principal:b")["messages"] == []

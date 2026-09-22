@@ -13,6 +13,13 @@ Status: **proposed, awaiting root review. No code written.**
 | The app speaks the public surface | `app.html:1451` `getConversation()` → `callTool("get_status", {include_conversation:true})` over `/mcp` |
 | `id` is stable | `conversation_store.py:80` — `id INTEGER PRIMARY KEY AUTOINCREMENT` |
 | No collision | `python scripts/check_primitive_exists.py action conversation` → CLEAN on `origin/main` |
+| Storage is intact below the status layer | `tests/test_conversation_failure_readers.py::test_a_long_reply_reaches_the_status_feed_whole` — added and passing here: a >4000-char reply with astral characters is recorded whole, `load_recent_readonly` (the feed `get_status` builds from) returns the original, and the chunk reader reassembles it exactly |
+| The server already reports the cut | `test_status_peek_labels_failure_and_marks_long_original_truncated:113` asserts `truncated` is set and `len(text) == 4000` — and has for as long as the peek has existed |
+
+**The defect is therefore narrower than "history truncates".** The server has always
+told the truth about the bound; the client discards the flag and has no handle to
+act on it. That is why item 1 below is an id, not a bigger cap — the only missing
+piece on the status side is a way to *name* the message whose rest you want.
 
 ## Why an id, not a match
 
