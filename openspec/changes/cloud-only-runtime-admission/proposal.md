@@ -64,20 +64,26 @@ enforcement from cloud network/credential custody.
    `_consumer_skip_reason` stays as the refusal-ledger diagnostic.
 3. **Runtime registration** — `ensure_daemon_runtime` writes the *resolved*
    registration and refuses rather than writing `cloud_worker`. A registration
-   row binds the attested cloud instance id plus a boot epoch and is
+   row binds the admitted cloud instance id plus a boot epoch and is
    re-validated on read, so a row written on cloud cannot be replayed by a
    later local process.
-4. **Startup / foreground / served execution** — serving startup asserts
-   attestation once and refuses to serve unattested, with no degraded local
+4. **Startup / foreground / served execution** — serving startup resolves provenance once and refuses to serve unadmitted, with no degraded local
    mode; the three literal `executor_class="cloud"` sites take the resolver's
    result.
-5. **Ingress and recovery** — the origin refuses tunnel-forwarded platform
-   traffic when unattested (the origin is the only side we control); watchdog,
-   release-reconcile and stale-runtime retirement leave work pending rather than
-   re-homing it to an unattested runtime.
-6. **Custody, stated and verified, not coded here** — the cloud network and
+5. **Off-cloud ingress is prevented, not merely refused** — the repo deletes its
+   own ability to enroll a Cloudflare connector or publish a public ingress
+   (`_start_tunnel`, `fantasy_daemon/__main__.py:3294`, called at `:3542,3755,3844`,
+   re-exported at `tinyassets/__main__.py:48,63`), because a connector that
+   *receives then refuses* has already absorbed public availability. Origin
+   refusal stays as the backstop for what deletion and custody cannot cover.
+6. **Recovery** — watchdog, release-reconcile and stale-runtime retirement leave
+   work pending rather than re-homing it to an unadmitted runtime.
+7. **Custody, stated and verified, not coded here** — the cloud network and
    credential controls (Cloudflare tunnel/Access, DO firewall, GitHub secrets)
-   are named as invariants with a read-only verification job on hosted CI.
+   are named as invariants and verified read-only from hosted CI by a bounded
+   preflight (`scripts/cloud_only_preflight.py`, added here, **not run**).
+   Production authority rests on this custody layer; the resolver is an
+   accidental-start guard, not attestation.
 
 ## Impact
 
@@ -91,6 +97,19 @@ enforcement from cloud network/credential custody.
   read-only verification workflow.
 - Risk: an over-strict resolver takes production down. Mitigated by landing the
   resolver plus its ledger first in observe-and-record mode on the droplet,
-  confirming it attests there, and only then flipping the four refusal sites.
+  confirming it resolves CLOUD there, and only then flipping the four refusal sites.
 - Non-goals: no new privileged agent fleet, no new provider account, no new MCP
-  tool, no runtime code in this change.
+  tool, no runtime guard in this change, no infrastructure mutation.
+
+## What this change does *not* claim
+
+The resolver is an **accidental-start guard**, not attestation: unsigned
+link-local metadata plus a deploy-copied expected id is forgeable by a local
+root operator. The boundary is closed by Layer C custody plus the deletion of
+the in-repo connector-enrollment path; the resolver makes accidents refuse
+loudly. Record-only preflight and record-only resolver are **observation, and
+explicitly incomplete** — the boundary is not closed until the refusals are
+flipped and a deployed sha proves them live. Free-user acceptance requires the
+user's own OpenRouter OAuth authorization, an eligible free-model approval and a
+first actual tool-capable response — not a "zero-setup" or "no-credential"
+provider, which does not exist.
