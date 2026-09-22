@@ -6,6 +6,7 @@ synthetic. Disconnect confirms in the page now: the first click reveals what
 would happen, and only a second, separate click writes anything.
 """
 
+import functools
 import json
 import re
 import shutil
@@ -35,6 +36,9 @@ const document={createElement:node};
 // The durable account/home pair the page learns from the verified /mcp/app/me,
 // and the access token, which rotates on an unchanged sign-in.
 let queueOwner='acct-owner',queueScope='u-owner',accessToken='tok-1';
+// The page's own navigation counter: showView() bumps it, and these rows are
+// NOT torn down when the user leaves the account view.
+let viewGeneration=0;
 const token=()=>accessToken,authHeaders=()=>accessToken?{Authorization:'Bearer '+accessToken}:{};
 let engineConnected=true,HostedModelConnect={setup:'connected',paint(){}};
 let failPost=false,postRefuses=false,meOk=true,getRefuses=false;
@@ -99,6 +103,31 @@ def posts(result):
     return [r for r in result["requests"] if r["method"] == "POST"]
 
 
+@functools.lru_cache(maxsize=1)
+def page_script():
+    html, _ = render_app_html()
+    return re.search(r"<script\b[^>]*>(.*?)</script>", html, re.S).group(1)
+
+
+def compile_page_with(tail):
+    """Compile the shipped page script plus `tail` as one classic script."""
+    probe = (
+        "const fs=require('fs'),vm=require('vm');"
+        "try{new vm.Script(fs.readFileSync(0,'utf8'));console.log('OK');}"
+        "catch(e){console.log('ERR '+e.message);}"
+    )
+    result = subprocess.run(
+        [shutil.which("node"), "-e", probe],
+        input=page_script() + "\n" + tail + "\n",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
 REVEAL = "await loadConnections(); reveal().click();"
 CONFIRM = REVEAL + " await approve().click();"
 
@@ -154,6 +183,22 @@ def _calls(name, source):
     """A call to `name`, ignoring full-line comments — prose is not a call."""
     code = "\n".join(line for line in source.splitlines() if not line.strip().startswith("//"))
     return re.search(r"(?<![\w.$])" + name + r"\s*\(", code)
+
+
+def test_controller_shares_one_scope_with_the_account_and_home_globals():
+    # The synthetic harness DEFINES queueOwner/queueScope, so it can never prove
+    # the shipped page can see them - the stub is exactly where that proof would
+    # leak. The parser can prove it: re-declaring a `let` in the scope it already
+    # occupies is a SyntaxError, so a duplicate-declaration error IS evidence
+    # that the name is bound at the page script's top level, the scope `wire()`
+    # - and the connection controller inside it - closes over.
+    assert compile_page_with("let definitelyNotDeclaredInThePage;") == "OK"
+    for name in ("queueOwner", "queueScope", "viewGeneration", "wire", "engineConnected"):
+        assert "already been declared" in compile_page_with(f"let {name};"), name
+    # ...and nothing inside the controller shadows the pair it is fenced on.
+    source = controller_source()
+    for name in ("queueOwner", "queueScope", "viewGeneration"):
+        assert not re.search(r"\b(?:let|var|const)\s+" + name + r"\b", source), name
 
 
 def test_connection_ui_raises_no_native_dialog():
@@ -294,3 +339,73 @@ def test_a_failed_load_reports_it_and_leaves_the_list_usable():
     assert result["rows"] == []
     assert "Could not load your connections" in result["status"]
     assert result["busy"] is False and result["refreshDisabled"] is False
+
+
+# ---- navigating away from the account view invalidates what it drew ----------
+
+
+def test_navigating_away_before_confirming_sends_nothing():
+    # Leaving the account view does not remove these rows, so an armed
+    # confirmation outlives the screen it was read on unless the fence says no.
+    result = run(REVEAL + " viewGeneration++; await approve().click();")
+    assert posts(result) == []
+    assert result["rows"][0]["removed"] is False
+    assert "Nothing was sent" in result["status"]
+    assert "page changed" in result["status"]
+
+
+def test_a_late_list_read_does_not_paint_into_a_view_left_behind():
+    result = run("hooks.getJson=()=>{viewGeneration++;}; await loadConnections();")
+    assert result["rows"] == []
+    # The answer arrived for a screen that is gone: nothing painted, and the
+    # in-flight line is not overwritten with a verdict about another view.
+    assert result["status"] == "Checking your connections…"
+
+
+def test_navigating_away_during_the_write_repaints_nothing():
+    # Fences the awaited read, the finally, and the follow-up state read: the
+    # POST went out for this view, and every path after it belongs to that view.
+    result = run("hooks.post=()=>{viewGeneration++;}; " + CONFIRM)
+    assert len(posts(result)) == 1
+    assert result["rows"][0]["removed"] is False
+    assert [r["kind"] for r in result["requests"]] == ["get", "post"]
+    assert result["status"] == "Disconnecting my-service…"
+    assert result["engineConnected"] is True and result["setup"] == "connected"
+    assert result["busy"] is False
+
+
+def test_cancelling_a_stale_row_does_not_write_its_destination_elsewhere():
+    result = run(REVEAL + " viewGeneration++; cancel().click();")
+    assert posts(result) == []
+    assert "still connected" not in result["status"]
+    assert result["rows"][0]["panelHidden"] is True
+
+
+# ---- an uncertain disconnect is not a control any more ----------------------
+
+
+def test_an_uncertain_disconnect_cannot_be_retried_from_the_same_row():
+    result = run("failPost=true; " + CONFIRM + " reveal().click(); await approve().click();")
+    # One write, and the second attempt from the same row never reached the wire.
+    assert len(posts(result)) == 1
+    row = result["rows"][0]
+    assert row["removed"] is False and row["panelHidden"] is True
+    assert row["revealDisabled"] is True
+    assert [b["disabled"] for b in row["buttons"]] == [True, True]
+    assert row["revealExpanded"] == "false"
+    assert "not confirmed" in result["status"]
+    assert "until a refresh succeeds" in result["status"]
+    # Nothing is left holding the lock, so a refresh is still possible.
+    assert result["busy"] is False and result["refreshDisabled"] is False
+
+
+def test_a_fresh_successful_list_read_restores_the_controls():
+    # Companion to the lock above: it proves the lock is not permanent. It is
+    # the one case here that cannot go red on the pre-fix source, because there
+    # was no lock to clear - it guards the fix from over-reaching into a row
+    # the user can never act on again.
+    result = run("failPost=true; " + CONFIRM + " failPost=false; " + CONFIRM)
+    # The retry went through the refreshed row, not the one that failed.
+    assert len(posts(result)) == 2
+    assert result["rows"][0]["removed"] is True
+    assert result["engineConnected"] is False and result["setup"] == "disconnected"

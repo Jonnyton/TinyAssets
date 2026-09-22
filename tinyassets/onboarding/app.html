@@ -5009,11 +5009,16 @@
     // token presence catches a sign-out that has not yet learned a new pair.
     // Compared field by field, so not-yet-known is a DIFFERENT value from any
     // id rather than something a joined string could collide with.
+    // `view` is the page's own navigation counter: leaving the account view
+    // does not tear these rows down, so without it a confirmation armed here
+    // survives a move to chat or back to Connect and its late answers repaint
+    // a screen the user is no longer looking at. showAccount() bumps the
+    // counter BEFORE it loads, so an ordinary open is never self-stale.
     function connectionFence(universeId){
-      return {owner:queueOwner||"", home:queueScope||"", universe:String(universeId||""), signedIn:!!token()};
+      return {owner:queueOwner||"", home:queueScope||"", universe:String(universeId||""), signedIn:!!token(), view:viewGeneration};
     }
     function sameConnectionFence(a,b){
-      return !!a&&!!b&&a.owner===b.owner&&a.home===b.home&&a.universe===b.universe&&a.signedIn===b.signedIn;
+      return !!a&&!!b&&a.owner===b.owner&&a.home===b.home&&a.universe===b.universe&&a.signedIn===b.signedIn&&a.view===b.view;
     }
     async function loadConnections(){
       if(connectionsBusy){$("connection-status").textContent="A connection change is still finishing. Nothing else was sent; try again once it settles.";return;}
@@ -5070,19 +5075,24 @@
       cancel.type="button";cancel.className="btn btn--ghost";cancel.textContent="Cancel";
       panel.append(explain,approve,cancel);
       item.append(name,reveal,panel);
-      let armed=false,sending=false;
-      // Live means: still the list on screen, and still the same account, home
-      // and universe this row was read for.
+      // `uncertain` latches when a write's result could not be read. The row
+      // then describes a connection nobody can vouch for, so it stops being a
+      // control: retrying from it is exactly the second write this design
+      // refuses. Only a fresh successful list read clears it, by replacing the
+      // row with one built from an answer that was actually received.
+      let armed=false,sending=false,uncertain=false;
+      // Live means: still the list on screen, still the view it was drawn in,
+      // and still the same account, home and universe this row was read for.
       const live=()=>generation===connectionsGeneration&&sameConnectionFence(connectionFence(universeId),fence);
       function putAway(returnFocus){
         armed=false;panel.hidden=true;reveal.setAttribute("aria-expanded","false");
         if(openConfirmation===putAway)openConfirmation=null;
-        if(!sending){reveal.disabled=false;approve.disabled=false;cancel.disabled=false;}
+        if(!sending&&!uncertain){reveal.disabled=false;approve.disabled=false;cancel.disabled=false;}
         if(returnFocus&&reveal.focus)reveal.focus();
       }
       reveal.addEventListener("click",()=>{
         // Revealing is READ-ONLY: no request of any kind leaves the page here.
-        if(armed||sending||connectionsBusy||!live())return;
+        if(armed||sending||uncertain||connectionsBusy||!live())return;
         if(openConfirmation&&openConfirmation!==putAway)openConfirmation(false);
         openConfirmation=putAway;
         armed=true;panel.hidden=false;reveal.setAttribute("aria-expanded","true");reveal.disabled=true;
@@ -5094,7 +5104,11 @@
         if(panel.focus)panel.focus();
       });
       cancel.addEventListener("click",()=>{
-        if(sending)return;
+        if(sending||uncertain)return;
+        // A stale row still answers its own Cancel - but it must not write this
+        // account's destination into a status line that now belongs to another
+        // account, home or view. Put the panel away silently instead.
+        if(!live()){putAway(false);return;}
         putAway(true);
         status.textContent="Nothing was changed. "+row.destination+" is still connected.";
       });
@@ -5109,7 +5123,7 @@
           return;}
         if(!sameConnectionFence(connectionFence(universeId),fence)){
           putAway(false);
-          status.textContent="Your sign-in, account or universe changed while the confirmation was open. Nothing was sent. Refresh connections and check before trying again.";
+          status.textContent="Your sign-in, account, universe or page changed while the confirmation was open. Nothing was sent. Refresh connections and check before trying again.";
           return;}
         const ticket=holdConnections();
         if(!ticket){status.textContent="Another connection change is still finishing. Nothing was sent; try again once it settles.";return;}
@@ -5131,12 +5145,17 @@
           status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Return to Connect a model when you want to reconnect.";
         }catch(_e){
           if(!live())return;
+          // Nobody knows whether this connection is still there, so this row
+          // stops offering to act on it. Its controls stay disabled until a
+          // refresh reads the truth and builds a row that means something.
+          uncertain=true;
           putAway(false);
-          status.textContent="Disconnect is not confirmed - it may or may not have happened. Refresh connections to check before trying again; nothing is retried automatically.";
+          reveal.disabled=true;approve.disabled=true;cancel.disabled=true;
+          status.textContent="Disconnect is not confirmed - it may or may not have happened. Refresh connections to check before trying again; nothing is retried automatically, and this row stays disabled until a refresh succeeds.";
         }
         finally{
           sending=false;releaseConnections(ticket);
-          if(live()&&!removedHere){approve.disabled=false;cancel.disabled=false;if(!armed)reveal.disabled=false;}
+          if(live()&&!removedHere&&!uncertain){approve.disabled=false;cancel.disabled=false;if(!armed)reveal.disabled=false;}
         }
         if(!removedHere||!live())return;
         // The removal is already confirmed. Re-reading what powers this
