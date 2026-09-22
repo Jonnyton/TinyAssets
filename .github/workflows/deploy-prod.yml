@@ -314,7 +314,7 @@ jobs:
                 "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_WIKI_CANARY_TOKEN"
           echo "canary bearer synced"
 
-      # Expected-instance state for the record-only cloud provenance observation
+      # Expected-instance state for cloud provenance admission
       # (openspec change cloud-only-runtime-admission, task 4). This MUST run
       # before the candidate starts: the release receipt below is published only
       # after the candidate is already healthy, so a field inside it would be
@@ -324,14 +324,11 @@ jobs:
       # rollback to the previous image because the expected identity is a
       # property of the droplet, not of the build.
       #
-      # Record-only: a failure here is a NOTICE, not a deploy failure. The
-      # resolver observes whatever state is actually present: missing state
-      # refuses, and a previously recorded same-instance identity may remain.
-      # No fresh-preparation or missing-state claim is inferred from a failure.
-      # The enforcement flip (tasks 6-8) must make this step required.
-      - name: Prepare expected-instance state (record-only observation)
+      # Admission requires this preparation. Stop before replacing the running
+      # service if either identity resolution or installation fails. A previous
+      # file is not evidence that this deploy prepared the candidate correctly.
+      - name: Prepare expected-instance state (required for admission)
         id: expected_instance
-        continue-on-error: true
         env:
           DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
         run: |
@@ -340,9 +337,9 @@ jobs:
           python scripts/prepare_expected_instance_state.py \
             --out platform-expected-instance.json || rc=$?
           if [ "${rc}" -ne 0 ]; then
-            echo "::notice::expected-instance state not freshly prepared (rc=${rc}); any prior state is unchanged"
+            echo "::error::expected-instance state not freshly prepared (rc=${rc}); any prior state is unchanged; candidate deployment stopped"
             echo "prepared=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit "${rc}"
           fi
           scp -i ~/.ssh/do_deploy -o BatchMode=yes platform-expected-instance.json \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/platform-expected-instance.json"
