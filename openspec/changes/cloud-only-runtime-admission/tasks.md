@@ -8,11 +8,13 @@ resolving CLOUD on the real droplet. Record-only stages (tasks 1, 5) are
 observation and are reported as **incomplete**, never as a closed boundary.
 
 - [ ] 1. Add `.github/workflows/cloud-only-preflight.yml` as designed
-  (`ubuntu-latest`, `permissions: contents: read`, `workflow_dispatch` +
-  schedule, never `pull_request`), run `scripts/cloud_only_preflight.py` once,
-  and record its sanitized verdicts here: container metadata reachability,
-  expected droplet id digest, connector in-set/out-of-set counts, public DNS
-  target class. A typed `unknown` stops the lane; it is not a pass. If metadata
+  (`ubuntu-latest`, `permissions: contents: read`, default-branch
+  `workflow_dispatch` only, never `pull_request`), run
+  `scripts/cloud_only_preflight.py` once after review, and record sanitized
+  verdicts here: remote container metadata reachability and expected-id match,
+  connector in-set/out-of-set counts, internal-origin DNS binding and canonical
+  MCP Worker routing. Do not emit raw identities or enumerable id digests.
+  A typed `unknown` blocks enforcement acceptance, not unrelated fixes. If metadata
   is unreachable, revise `design.md` § Evidence primitive before task 4.
 - [ ] 2. Re-read each provider URL in `design.md` § Source citations and their
   limits, correct any that moved, and record the read date — none of them was
@@ -23,7 +25,8 @@ observation and are reported as **incomplete**, never as a closed boundary.
   re-exports, the plugin-runtime mirror, and the env gate that armed it. Update
   `tests/test_integration.py:2213` to assert the capability is absent. Rebuild
   the plugin (`python packaging/claude-plugin/build_plugin.py`). State tunnel-
-  token custody as the Layer C invariant it is — code cannot enforce it.
+  token custody as the separate Layer C invariant; application checks cannot
+  establish exclusive custody, and the cloud access policy remains to verify.
 - [ ] 4. Record the expected droplet id into the release state
   `deploy-prod.yml` already writes, then implement
   `resolve_platform_runtime_provenance()` — fail-closed, dedicated internal

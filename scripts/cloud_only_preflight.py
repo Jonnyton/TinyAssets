@@ -11,7 +11,10 @@ Facts, and what each one actually proves:
   A. `container_metadata` -- does the droplet metadata service answer from
      inside the *deployed* container? Only a probe that reaches the droplet over
      the existing SSH delivery path can answer this. A local `docker` daemon on
-     whatever machine runs this script is NOT production and is never consulted.
+     whatever machine runs this script is NOT production and is never consulted,
+     and there is no file-report shortcut: a one-line file matching the probe's
+     own grammar is a grammar, not provenance, so nothing but the direct probe
+     can resolve this fact.
   B. `expected_droplet` -- which droplet the DO inventory says is the deploy
      target, by exact match against `DO_DROPLET_HOST`. There is no
      single-droplet fallback: an unmatched host is `unknown`, never a pass.
@@ -22,8 +25,10 @@ Facts, and what each one actually proves:
   E. `internal_origin_dns` -- does the internal origin hostname terminate at the
      *selected* tunnel (`<CLOUDFLARE_TUNNEL_ID>.cfargotunnel.com`), not merely
      at some tunnel.
-  F. `public_worker_route` -- is the public hostname bound to the expected
-     Worker route?
+  F. `public_worker_route` -- does the expected Worker win at the canonical
+     `/mcp` path *and its descendants*, under Cloudflare's documented
+     most-specific-wins rule? A route pattern this checker cannot decide (a
+     wildcard hostname, an interior `*`) makes the fact `unknown`, not unsafe.
   G. `hosted_credential_custody` -- where this ran and who holds the secrets.
      Permanently `unknown` here; see below.
 
@@ -37,8 +42,11 @@ Hard bounds -- these are the design contract, not implementation detail:
   * NO REDIRECTS, NO PROXY INHERITANCE, BOUNDED READS. Authenticated requests
     refuse to follow redirects (a redirect would replay the Authorization
     header at an unvetted host) and ignore ambient proxy environment variables.
-    Response bodies are read to a fixed byte ceiling; a longer body is
-    `unknown`, not a truncated parse.
+    The embedded container probe installs the same refusal for itself --
+    `build_opener` keeps the default redirect handler unless one is passed, so
+    a ProxyHandler alone would still follow a 3xx off the link-local address.
+    Response bodies are read one byte past a fixed ceiling; a longer body is
+    rejected outright, never accepted as a valid truncated prefix.
   * PAGINATION COMPLETENESS IS REQUIRED. A page that does not account for the
     provider's declared total is `unknown`. A partial inventory cannot clear an
     exhaustive check.
@@ -93,16 +101,34 @@ from typing import Any
 # --- fixed literals -------------------------------------------------------
 # The probe argv is built from these. Nothing here is caller-supplied.
 METADATA_URL = "http://169.254.169.254/metadata/v1/id"
+
+# A droplet id is a short integer. Anything longer than this is not the fact we
+# came for, and is refused outright rather than parsed as a prefix.
+_PROBE_MAX_BODY = 64
+
 _PROBE_SOURCE = (
     "import urllib.request,sys\n"
-    # No proxy inheritance and no redirects: the metadata service is link-local
-    # and must be read directly or not at all.
-    "o=urllib.request.build_opener(urllib.request.ProxyHandler({}))\n"
+    # Refuse redirects *inside the probe as well*. `build_opener` installs the
+    # default HTTPRedirectHandler unless a replacement is passed, so supplying
+    # only a ProxyHandler would still follow a 3xx away from the link-local
+    # address and report whatever answered as the droplet's own identity.
+    "class R(urllib.request.HTTPRedirectHandler):\n"
+    "    def redirect_request(self,*a,**k): return None\n"
+    # No proxy inheritance: the metadata service is link-local and must be read
+    # directly or not at all.
+    "o=urllib.request.build_opener(R,urllib.request.ProxyHandler({}))\n"
     "try:\n"
-    "    v=o.open(%r,timeout=2).read(256).decode('utf-8','replace').strip()\n"
+    "    with o.open(%r,timeout=2) as r:\n"
+    "        b=r.read(%d)\n"
     "except Exception as e:\n"
     "    print('UNREACHABLE:'+type(e).__name__); sys.exit(0)\n"
-    "print('OK:'+v)\n" % (METADATA_URL,)
+    # One byte past the ceiling was requested, so a body at the ceiling is
+    # complete and a longer one is detectable. A truncated prefix of an
+    # overlong body can itself be a well-formed id, so it is never accepted.
+    "if len(b)>%d:\n"
+    "    print('OVERSIZE'); sys.exit(0)\n"
+    "print('OK:'+b.decode('utf-8','replace').strip())\n"
+    % (METADATA_URL, _PROBE_MAX_BODY + 1, _PROBE_MAX_BODY)
 )
 DO_DROPLETS_URL = "https://api.digitalocean.com/v2/droplets?per_page=200"
 CF_API = "https://api.cloudflare.com/client/v4"
@@ -122,7 +148,6 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$")
 _USER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
 _SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _INSTANCE_ID_RE = re.compile(r"^[0-9]{1,24}$")
-_PROBE_REPORT_RE = re.compile(r"^(?:OK:[0-9]{1,24}|UNREACHABLE:[A-Za-z]{1,64})$")
 
 
 def correlation_tag(value: str) -> str:
@@ -282,6 +307,15 @@ def build_remote_probe_argv(target: RemoteProbeTarget, service: str) -> list[str
 
 
 def _classify_probe_output(out: str) -> dict[str, Any]:
+    if out == "OVERSIZE":
+        # Not "unreachable" (something answered) and not a pass (we cannot tell
+        # what answered). Whatever is on that address is not the metadata
+        # service behaving as documented.
+        return unknown(
+            "container_metadata", "metadata_body_too_large",
+            "the metadata endpoint must answer with a bare numeric id inside "
+            f"{_PROBE_MAX_BODY} bytes; a longer body is not parsed as a prefix",
+        )
     if out.startswith("OK:"):
         observed = out[3:].strip()
         if not observed:
@@ -357,32 +391,6 @@ def probe_container_metadata(
             "that the deploy key may run `docker exec` read-only",
         )
     return _classify_probe_output((completed.stdout or "").strip())
-
-
-def read_probe_report(path: str, opener: Any = open) -> dict[str, Any]:
-    """Accept a report produced by the fixed remote probe, strictly validated.
-
-    The only accepted content is the probe's own one-line output grammar. Any
-    other content is `unknown` -- a free-form file would be an invented
-    attestation, which is exactly what this must not become.
-    """
-    try:
-        with opener(path, encoding="utf-8") as handle:
-            raw = handle.read(512).strip()
-    except OSError:
-        return unknown(
-            "container_metadata", "probe_report_unreadable",
-            "the report path must name a readable file written by the fixed probe",
-        )
-    if not _PROBE_REPORT_RE.match(raw):
-        return unknown(
-            "container_metadata", "probe_report_malformed",
-            "the report must be exactly one line of the fixed probe's own "
-            "grammar: 'OK:<numeric id>' or 'UNREACHABLE:<ExcName>'",
-        )
-    result = _classify_probe_output(raw)
-    result["evidence_source"] = "reported"
-    return result
 
 
 # --- fact B: expected droplet identity ------------------------------------
@@ -765,16 +773,87 @@ def audit_internal_origin_dns(
     )
 
 
+_SCHEME_RE = re.compile(r"^(https?)://", re.IGNORECASE)
+
+# The canonical MCP surface is `/mcp` **and its descendants** (Hard Rule 11;
+# as-built `deploy/cloudflare-worker/wrangler.toml` binds `tinyassets.io/mcp*`
+# to the `tinyassets-mcp-proxy` Worker). Checking only `/mcp` would miss a
+# more-specific competing route that steals `/mcp/app`, so each of these is
+# adjudicated separately and all of them must land on the expected Worker.
+CANONICAL_PUBLIC_PATHS = ("/mcp", "/mcp/", "/mcp/app")
+
+
+def _parse_route_pattern(pattern: str) -> dict[str, Any] | None:
+    """Parse a route pattern, or return None when this checker cannot decide it.
+
+    Documented semantics this relies on (Cloudflare Workers "Routes", read
+    2026-09-21, https://developers.cloudflare.com/workers/configuration/routing/routes/):
+
+      * An omitted scheme covers HTTP and HTTPS; an explicit scheme limits it.
+      * More-specific matching patterns take precedence.
+      * A trailing path wildcard includes every suffix of its literal prefix.
+      * `*` matches zero or more of *any* character -- it does not respect
+        label or path-segment boundaries (`*example.com` also matches
+        `myexample.com`). That is exactly why a wildcard anywhere in the
+        hostname is not something this checker will adjudicate.
+
+    Supported shape: optional scheme + exact hostname + a path whose only
+    wildcard is a single trailing `*`. Anything else is **undecided here**, and
+    the caller reports `unknown`. Undecided is not "unsafe": this is a fixed
+    check against one known canonical configuration, not a routing engine.
+    """
+    scheme_match = _SCHEME_RE.match(pattern)
+    scheme = None
+    rest = pattern
+    if scheme_match:
+        scheme = scheme_match.group(1).lower()
+        rest = pattern[scheme_match.end():]
+    if "/" not in rest:
+        return None  # host-only pattern: no path component to compare against
+    host, path = rest.split("/", 1)
+    path = "/" + path
+    if not host or "*" in host:
+        return None  # wildcard hostname: matches by character, not by label
+    wildcard = path.endswith("*")
+    literal = path[:-1] if wildcard else path
+    if "*" in literal:
+        return None  # interior wildcard: suffix semantics do not describe it
+    return {"scheme": scheme, "host": host.lower(), "literal": literal, "wildcard": wildcard}
+
+
+def _route_matches(parsed: dict[str, Any], host: str, path: str) -> bool:
+    """Does this parsed pattern match `https://<host><path>`?"""
+    if parsed["host"] != host:
+        return False
+    if parsed["scheme"] is not None and parsed["scheme"] != "https":
+        return False  # an http-only route does not serve the HTTPS surface
+    if parsed["wildcard"]:
+        return path.startswith(parsed["literal"])
+    return path == parsed["literal"]
+
+
+def _specificity(parsed: dict[str, Any]) -> tuple[int, int]:
+    """Most-specific-wins ordering over the supported subset.
+
+    A longer literal prefix is more specific; at equal length an exact path
+    beats a wildcard suffix.
+    """
+    return (len(parsed["literal"]), 0 if parsed["wildcard"] else 1)
+
+
 def audit_public_worker_route(
     token: str | None,
     zone_id: str | None,
     public_name: str | None,
     worker_name: str | None,
 ) -> dict[str, Any]:
-    """The public hostname must be served by the expected Worker route.
+    """The canonical `/mcp` surface must be served by the expected Worker.
 
     An apex CNAME alone does not establish that the public surface reaches the
-    internal origin; the Worker route is the hop that does.
+    internal origin; the Worker route is the hop that does. "A route exists for
+    the hostname" is not that fact either: route selection is per-URL and
+    most-specific-wins, so the question is which script wins at `/mcp` and at
+    its descendants -- not whether the hostname appears in the route list.
     """
     if not token:
         return unknown(
@@ -820,7 +899,9 @@ def audit_public_worker_route(
             "at least one Worker route must exist before route binding can be "
             "assessed",
         )
-    matching = 0
+    host = public_name.lower()
+    supported: list[dict[str, Any]] = []
+    undecidable = 0
     for route in routes:
         if not isinstance(route, dict):
             return unknown(
@@ -833,30 +914,104 @@ def audit_public_worker_route(
                 "public_worker_route", "route_without_pattern",
                 "each route must report a string `pattern`",
             )
-        host = pattern.split("/", 1)[0].lower()
-        if host != public_name.lower():
+        parsed = _parse_route_pattern(pattern)
+        if parsed is None:
+            # Could conceivably match the canonical paths -- Cloudflare's `*`
+            # ignores label boundaries -- and this checker will not guess which
+            # way. Counted here, reported as unknown below.
+            undecidable += 1
             continue
-        matching += 1
-        if route.get("script") != worker_name:
+        if parsed["host"] != host:
+            continue  # a decidable pattern for a different exact hostname
+        parsed["script"] = route.get("script")
+        supported.append(parsed)
+
+    if undecidable:
+        return unknown(
+            "public_worker_route", "route_pattern_outside_supported_shape",
+            "the zone contains route patterns outside this checker's supported "
+            "shape (optional scheme + exact hostname + at most one trailing "
+            "`*` in the path). Cloudflare's `*` matches any character, so "
+            "whether such a pattern outranks the canonical /mcp route cannot "
+            "be decided here -- read the route list by hand. This is "
+            "undecided, not a finding of misconfiguration.",
+            undecidable_patterns=undecidable,
+        )
+
+    for path in CANONICAL_PUBLIC_PATHS:
+        candidates = [p for p in supported if _route_matches(p, host, path)]
+        if not candidates:
+            return fact(
+                "public_worker_route", REFUSE, "canonical_path_has_no_route",
+                uncovered_path=path, bound_to_expected_worker=False,
+                routes_matching_public_name=len(supported),
+            )
+        best = max(_specificity(p) for p in candidates)
+        winners = [p for p in candidates if _specificity(p) == best]
+        scripts = {p["script"] for p in winners}
+        if len(scripts) > 1:
+            return unknown(
+                "public_worker_route", "competing_routes_equally_specific",
+                "two equally specific routes bind different scripts to the "
+                f"same canonical path ({path}); Cloudflare's documented "
+                "most-specific-wins rule does not break this tie, so which "
+                "script serves it is not decidable from the route list",
+                contested_path=path,
+            )
+        script = winners[0]["script"]
+        if not isinstance(script, str) or not script:
+            # Documented: "A route can be specified without being associated
+            # with a Worker. This will act to negate any less specific
+            # patterns." So the canonical path is served with no Worker at all.
+            return fact(
+                "public_worker_route", REFUSE,
+                "canonical_path_suppressed_by_scriptless_route",
+                uncovered_path=path, bound_to_expected_worker=False,
+                routes_matching_public_name=len(supported),
+            )
+        if script != worker_name:
             return fact(
                 "public_worker_route", REFUSE, "route_bound_to_unexpected_script",
-                routes_matching_public_name=matching, bound_to_expected_worker=False,
+                uncovered_path=path, bound_to_expected_worker=False,
+                routes_matching_public_name=len(supported),
             )
-    if not matching:
-        return fact(
-            "public_worker_route", REFUSE, "no_route_for_public_name",
-            routes_matching_public_name=0, bound_to_expected_worker=False,
+
+    # Finite sample URLs are not proof for every descendant. Require a
+    # continuous expected-worker prefix covering the canonical region, and
+    # decline a pass for any potentially overriding route outside the samples.
+    coverage = [p for p in supported if p["wildcard"]
+                and p["script"] == worker_name and _route_matches(p, host, "/mcp")]
+    if not coverage:
+        return unknown(
+            "public_worker_route", "continuous_mcp_coverage_unproved",
+            "the sampled URLs match, but no expected-worker prefix covers "
+            "the full canonical MCP region; inspect the remaining route shape",
         )
+    covering_specificity = max(_specificity(p) for p in coverage)
+    for route in supported:
+        if route["scheme"] == "http" or route["script"] == worker_name:
+            continue
+        overlaps = (route["literal"].startswith("/mcp")
+                    or (route["wildcard"] and "/mcp".startswith(route["literal"])))
+        if overlaps and _specificity(route) >= covering_specificity:
+            return unknown(
+                "public_worker_route", "unsampled_mcp_override_requires_resolution",
+                "a differently bound route can override part of the canonical "
+                "region outside the checked URLs; a finite sample cannot clear it",
+            )
+
     return fact(
-        "public_worker_route", PASS, "bound_to_expected_worker",
-        routes_matching_public_name=matching, bound_to_expected_worker=True,
+        "public_worker_route", PASS, "canonical_paths_bound_to_expected_worker",
+        canonical_paths_checked=len(CANONICAL_PUBLIC_PATHS),
+        routes_matching_public_name=len(supported),
+        bound_to_expected_worker=True,
     )
 
 
 # --- fact G: hosted placement and credential custody ----------------------
 
 def hosted_custody_fact() -> dict[str, Any]:
-    """Permanently unknown until the workflow is wired and deployed.
+    """Unknown until custody is independently established outside this script.
 
     `CI=true` is settable by anyone anywhere; it is an accidental-use guard, not
     evidence of where this ran or who holds the secrets.
@@ -864,9 +1019,14 @@ def hosted_custody_fact() -> dict[str, Any]:
     return unknown(
         "hosted_credential_custody", "workflow_placement_and_custody_unverified",
         "a deployed `.github/workflows/cloud-only-preflight.yml` "
-        "(ubuntu-latest, permissions: contents: read, workflow_dispatch + "
-        "schedule, never pull_request) plus a deployed sha proving the secrets "
-        "are held only by that workflow. CI=true does not establish either.",
+        "(ubuntu-latest, permissions: contents: read, default-branch-only "
+        "workflow_dispatch, never pull_request) establishes placement only; "
+        "credential custody additionally requires independently verified access "
+        "policy and credential lifecycle evidence. A deployed sha or CI=true "
+        "cannot prove exclusive possession. The existing delivery bootstrap "
+        "trust-on-first-uses the droplet host key via ssh-keyscan, so SSH host "
+        "trust is unverified too and no stronger custody claim derives from a "
+        "successful probe.",
     )
 
 
@@ -891,11 +1051,6 @@ def run(argv: list[str] | None = None, env: dict[str, str] | None = None) -> int
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--container-service", default="tinyassets-daemon")
     parser.add_argument("--public-name", default="tinyassets.io")
-    parser.add_argument(
-        "--container-probe-report",
-        default=None,
-        help="Path to a strictly-validated report line from the fixed remote probe.",
-    )
     parser.add_argument(
         "--skip-container-probe",
         action="store_true",
@@ -937,8 +1092,6 @@ def run(argv: list[str] | None = None, env: dict[str, str] | None = None) -> int
             "run without --skip-container-probe; a skipped required fact stays "
             "unknown and can never contribute to an overall pass",
         )
-    elif args.container_probe_report:
-        container = read_probe_report(args.container_probe_report)
     else:
         target, reason, requirement = resolve_remote_probe_target(env)
         container = probe_container_metadata(

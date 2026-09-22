@@ -593,34 +593,22 @@ def test_remote_probe_path_resolves_from_existing_deploy_secrets():
     assert target is not None
 
 
-def test_probe_report_input_must_match_the_fixed_probe_grammar():
-    def opener(path, encoding=None):
-        import io
+def test_there_is_no_file_report_shortcut_for_container_metadata():
+    """A one-line file matching the probe's grammar is a grammar, not provenance.
 
-        return io.StringIO("the droplet is fine, trust me")
+    The shortcut accepted any file an unauthenticated writer could produce as
+    the *observed* droplet identity, and no authenticated producer was ever
+    wired. Removed rather than hardened: only the direct remote probe, or a
+    typed unknown, can resolve this fact.
+    """
+    assert not hasattr(pf, "read_probe_report")
+    assert not hasattr(pf, "_PROBE_REPORT_RE")
 
-    result = pf.read_probe_report("report.txt", opener=opener)
-    assert result["verdict"] == pf.UNKNOWN
-    assert result["reason"] == "probe_report_malformed"
-
-
-def test_valid_probe_report_is_accepted_and_marked_as_reported():
-    def opener(path, encoding=None):
-        import io
-
-        return io.StringIO("OK:222\n")
-
-    result = pf.read_probe_report("report.txt", opener=opener)
-    assert result["verdict"] == pf.PASS
-    assert result["evidence_source"] == "reported"
-    assert result["_instance_tag"] == pf.correlation_tag("222")
-
-
-def test_unreadable_probe_report_is_unknown():
-    def opener(path, encoding=None):
-        raise OSError("nope")
-
-    assert pf.read_probe_report("missing.txt", opener=opener)["verdict"] == pf.UNKNOWN
+    parser_flags = pf.run.__doc__ or ""
+    assert "--container-probe-report" not in parser_flags
+    with open(pf.__file__, encoding="utf-8") as handle:
+        source = handle.read()
+    assert "--container-probe-report" not in source
 
 
 @pytest.mark.parametrize(
@@ -790,7 +778,7 @@ def test_worker_route_for_another_hostname_does_not_count(monkeypatch):
     )
     result = pf.audit_public_worker_route("tok", "zone", "tinyassets.io", "ta-router")
     assert result["verdict"] == pf.REFUSE
-    assert result["reason"] == "no_route_for_public_name"
+    assert result["reason"] == "canonical_path_has_no_route"
     assert result["routes_matching_public_name"] == 0
 
 
@@ -825,7 +813,8 @@ def test_hosted_custody_is_always_unknown():
     result = pf.hosted_custody_fact()
     assert result["verdict"] == pf.UNKNOWN
     assert result["reason"] == "workflow_placement_and_custody_unverified"
-    assert "CI=true does not establish either" in result["requirement"]
+    assert "cannot prove exclusive possession" in result["requirement"]
+    assert "independently verified access policy" in result["requirement"]
 
 
 def test_overall_pass_is_unreachable_while_custody_is_unverified(monkeypatch, capsys):

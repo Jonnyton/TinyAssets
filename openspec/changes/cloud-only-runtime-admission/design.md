@@ -134,7 +134,8 @@ derived value; never `set -x`.
 |---|---|---|
 | Expected droplet id, region, public IPv4 set | DO API, `DO_API_TOKEN` | `GET https://api.digitalocean.com/v2/droplets` (Bearer) — [DO API ref](https://docs.digitalocean.com/reference/api/digitalocean/#tag/Droplets) |
 | Which connectors serve the public tunnel | Cloudflare API, `CLOUDFLARE_API_TOKEN` | `GET /client/v4/accounts/{account_id}/cfd_tunnel/{tunnel_id}/connections` — assert every active connector origin IP ∈ the droplet IP set (no second connector anywhere) — [CF tunnel API](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/) |
-| Public hostname really terminates at the tunnel, not a residential IP | Cloudflare API, `CLOUDFLARE_ZONE_ID` | `GET /client/v4/zones/{zone_id}/dns_records?name=tinyassets.io` — [CF DNS API](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/list/) |
+| Internal origin resolves to the selected tunnel | Cloudflare API, `CLOUDFLARE_ZONE_ID` | `GET /client/v4/zones/{zone_id}/dns_records?name=mcp.tinyassets.io`; compare selected tunnel target, not merely record type — [CF DNS API](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/list/) |
+| Canonical MCP paths select the expected Worker | Cloudflare API, `CLOUDFLARE_ZONE_ID` | `GET /client/v4/zones/{zone_id}/workers/routes`; require continuous coverage and reject or mark unknown competing overrides. This checks configured routing, not deployed Worker source or credential custody. |
 | Which build is actually running | in-repo, existing | `python scripts/deployed_sha.py --assert-contains <sha>` (bearer `/mcp/pulse`) |
 
 Provider documentation above is official public documentation, cited as the
@@ -176,15 +177,16 @@ infrastructure the platform already owns.
 | 6 | **Recovery/fallback** — stale-cloud-worker retirement and watchdog with no admitted successor | work stays pending; nothing re-homed to an unadmitted runtime, not even momentarily |
 | 7 | **Ingress** — tunnel-forwarded platform request arriving at an unadmitted origin | origin refuses before any universe work |
 | 8 | **Cloud positive** — admitted process claims a `cloud` task | claim succeeds, audience records the resolved CLOUD class, run proceeds |
-| 9 | **Free-only first answer** — brand-new user, free/zero-setup provider only, no borrowed subscription and no automatic change to any existing user workflow | first answer served entirely on cloud, admitted end to end |
+| 9 | **Free-only first answer** — new user completes their own OpenRouter OAuth callback and eligible free-model approval, no copied key or borrowed subscription | actual tool-capable answer served entirely on admitted cloud runtime |
 
 Tests 5 and 1 are the load-bearing pair: without them the change is a rename.
 Test 9 is the acceptance the directive names (`new-user free-provider
 onboarding`) and must not be satisfied by any founder-held subscription.
 
-Every new test must be run against the **unfixed** tree and be required to fail
-there, and the suite must run on the Linux oracle before push (the resolver
-touches process/network syscalls a Windows run will skip).
+New negative regressions must demonstrate the defect against the unfixed tree;
+preserved-behavior positives may already pass there. Run the relevant suite on
+the Linux oracle before push; do not substitute Windows-only evidence for Linux
+process/network behavior.
 
 ## Colliding as-built specs (named, not edited here)
 
@@ -257,13 +259,12 @@ Enumerating the prevention levers actually available in this topology:
 | Origin refusal when unadmitted | No — refuses *after* receiving | Layer B |
 | Periodic connector audit | No — detects afterwards | CI |
 
-Cloudflare publishes **no** per-connector source-IP allowlist or enrollment
-restriction for `cloudflared` remotely-managed tunnels: possession of the tunnel
-token is sufficient to register a connector, which is why Cloudflare documents
-the token as a secret. *(Cited from the documented contract shape, see § Source
-citations and their limits — not fetched in this session.)* So there is no
-Cloudflare-side switch to flip; prevention must be **(a) in this repo** and
-**(b) in custody.**
+The verified Cloudflare contract says tunnel-token possession permits running
+a connector. That supports protecting the token; it does not establish that no
+additional provider-side restriction exists. Do not assert a universal absence
+of Cloudflare controls without evidence. Prevention here requires removing the
+repo's local enrollment path plus independently verified cloud credential/access
+policy; a periodic connector inventory only detects the currently visible set.
 
 **The in-repo path is concrete and was found by inspection**, not assumed:
 `fantasy_daemon/__main__.py:3294` defines `_start_tunnel(port, tunnel_name)`,
@@ -302,11 +303,13 @@ implementation detail:
 - **Read-only only.** No POST/PUT/PATCH/DELETE to any provider, no SSH mutation,
   no infrastructure change of any kind. The DO/Cloudflare calls used are `GET`.
 - **Not a remote command runner.** The container metadata probe is one fixed,
-  hard-coded argv (`docker exec <service> python -c <fixed literal>` reading the
+  hard-coded SSH command on the configured deployment host
+  (`docker exec <service> python -c <fixed literal>` reading the
   literal metadata URL); there is no user-supplied shell, no argument
   interpolation into a shell, and no arbitrary `exec` of caller-supplied Python.
 - **Sanitized output only.** It emits typed verdicts (`pass` / `refuse` /
-  `unknown`) plus a boolean and a truncated, salted digest for the droplet id.
+  `unknown`) plus booleans and counts. The expected instance match is a boolean;
+  no enumerable droplet-id digest is emitted.
   It never prints raw API bodies, tokens, IP addresses, hostnames, connector
   ids, user data or private connection state. Connector location is reported as
   a count of in-set vs out-of-set connectors — never the addresses.
@@ -319,12 +322,16 @@ implementation detail:
   secrets). No new secret, no new provider account, no new MCP tool. It must not
   be run on the founder's PC with production credentials.
 
-**Workflow placement (designed here, file not added — lead reviews first):** a
+**Workflow placement (candidate added, not deployed or executed):** a
 new `.github/workflows/cloud-only-preflight.yml`, `runs-on: ubuntu-latest`,
-`permissions: contents: read` only, `workflow_dispatch` plus a schedule,
+`permissions: contents: read` only, default-branch `workflow_dispatch` only,
 **never** on `pull_request` (a fork PR must not reach these secrets). It is a
 separate workflow from `deploy-prod.yml` so it never gains deploy scopes, and it
-is *not* wired as a required check in this change.
+is *not* wired as a required check in this change. The first-step branch check
+is an ordinary dispatch guard, not a secret-access policy: the workflow can be
+edited. A protected cloud access policy and credential lifecycle still require
+separate verification. A successful deployed SHA proves code placement, never
+exclusive credential possession. No production credential is used locally.
 
 **This is explicitly incomplete.** A record-only preflight and a record-only
 resolver observe; they do not enforce. Until tasks 7–10 flip the refusals and a
@@ -397,7 +404,7 @@ URL alone.
 
 ## Rollout
 
-Resolver + ledger land in **record-only** mode; confirm on the droplet that it
-attests and that the expected id matches; then flip (A)–(E) to refuse in one
-change. A resolver that cannot attest on the real droplet must never be flipped —
+Resolver + ledger land in **record-only** mode; confirm on the droplet that the
+observed instance matches the expected id; then flip (A)–(E) to refuse in one
+change. A resolver that cannot resolve on the real droplet must never be flipped —
 that is how a cloud-only guard takes the platform down.

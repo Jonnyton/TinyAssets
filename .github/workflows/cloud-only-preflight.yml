@@ -1,0 +1,167 @@
+# Bounded, read-only cloud-only preflight OBSERVATION.
+#
+# This workflow observes. It enforces nothing, changes nothing, and closes no
+# boundary. It exists so `scripts/cloud_only_preflight.py` can run somewhere
+# other than a laptop holding production credentials.
+#
+# What it deliberately is NOT:
+#   * Not a deploy, not a mutation. Every provider call the script makes is a
+#     GET; the one SSH command is a fixed read-only argv.
+#   * Not proof of credential custody. Running here does not establish who
+#     holds these secrets, so `hosted_credential_custody` stays `unknown` and
+#     the cloud-only boundary stays OPEN. `CI=true` is an accidental-use guard,
+#     not evidence of anything.
+#   * Not proof of SSH host identity. The existing delivery bootstrap
+#     (`deploy-prod.yml`) trust-on-first-uses the droplet host key via
+#     `ssh-keyscan`, and there is no pinned host key anywhere in this repo. We
+#     reuse that same bootstrap for this bounded read, and report the trust
+#     level as `tofu-unverified`. No stronger claim may be derived from a
+#     successful probe.
+#   * Not parameterised. There are no inputs: no ref, no command, no host. The
+#     only thing a dispatcher chooses is whether to run it.
+#
+# Secrets: reuses the hosted deploy credentials that already exist. It
+# requests no new secret. Optional Cloudflare ids come from repository
+# *variables*; when they are absent the corresponding fact is simply `unknown`.
+
+name: cloud-only-preflight
+
+# workflow_dispatch only. No `pull_request` (a fork PR must never reach these
+# credentials) and no `schedule` -- a recurring job is not worth its noise
+# until one reviewed manual observation has actually proved useful.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-only-preflight
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    name: Observe cloud-only facts (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # workflow_dispatch can be fired against any branch carrying this file.
+      # Reject ordinary non-default dispatches before any credential step.
+      # This mutable workflow is not itself a repository secret-access policy;
+      # protected-environment/branch policy and custody remain separate work.
+      - name: Refuse dispatch from a non-default branch
+        env:
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          expected="refs/heads/${DEFAULT_BRANCH}"
+          if [ "${REF}" != "${expected}" ]; then
+            echo "::error::refusing dispatch from ${REF}; this workflow runs only from ${expected}"
+            exit 1
+          fi
+          echo "dispatch ref accepted: ${REF}"
+
+      - name: Checkout the dispatched default-branch commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      # Reuses the key material `deploy-prod.yml` already installs, in the same
+      # ephemeral runner, with restrictive permissions. Removed unconditionally
+      # below. The key is never printed and never uploaded.
+      - name: Install the existing deploy key (ephemeral)
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+          PINNED_KNOWN_HOST: ${{ vars.DO_SSH_KNOWN_HOSTS_ENTRY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${DO_DROPLET_HOST:?DO_DROPLET_HOST secret missing}"
+          [ -n "${SSH_KEY}" ] || { echo "::error::DO_SSH_KEY secret missing"; exit 1; }
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s' "${SSH_KEY}" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          if [ -n "${PINNED_KNOWN_HOST}" ]; then
+            # A pinned host key was configured out of band: real host trust.
+            printf '%s\n' "${PINNED_KNOWN_HOST}" > ~/.ssh/preflight_known_hosts
+            echo "ssh_host_trust=pinned" >> "$GITHUB_ENV"
+          else
+            # No pinned key exists in this repo. This is the same
+            # trust-on-first-use bootstrap deploy-prod.yml performs. It is
+            # reported as unverified and must not be described as custody.
+            ssh-keyscan -t ed25519,rsa "${DO_DROPLET_HOST}" \
+              > ~/.ssh/preflight_known_hosts 2>/dev/null
+            echo "ssh_host_trust=tofu-unverified" >> "$GITHUB_ENV"
+          fi
+          chmod 600 ~/.ssh/preflight_known_hosts
+
+      - name: Run the read-only preflight
+        env:
+          CI: 'true'
+          # Existing hosted deploy credentials. No new secret is requested.
+          DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
+          DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+          DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+          DO_SSH_KEY_PATH: /home/runner/.ssh/do_deploy
+          DO_SSH_KNOWN_HOSTS: /home/runner/.ssh/preflight_known_hosts
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Optional. Absent ids make the dependent fact `unknown`, by design.
+          CLOUDFLARE_TUNNEL_ID: ${{ vars.CLOUDFLARE_TUNNEL_ID }}
+          # Expected values, taken from this repo's own committed Worker config
+          # (deploy/cloudflare-worker/wrangler.toml, worker.js). A variable may
+          # override them; it may not silently remove the expectation.
+          TINYASSETS_WORKER_NAME: ${{ vars.TINYASSETS_WORKER_NAME || 'tinyassets-mcp-proxy' }}
+          TINYASSETS_INTERNAL_ORIGIN_NAME: ${{ vars.TINYASSETS_INTERNAL_ORIGIN_NAME || 'mcp.tinyassets.io' }}
+        run: |
+          set -euo pipefail
+          rc=0
+          python scripts/cloud_only_preflight.py > preflight.json || rc=$?
+          cat preflight.json
+          echo "preflight_rc=${rc}" >> "$GITHUB_ENV"
+          # 0 = all facts clean (not reachable while custody is unknown)
+          # 1 = a fact resolved to a refusal -> a real finding, fail the job
+          # 2 = one or more facts unknown -> the expected outcome today
+          if [ "${rc}" != "0" ] && [ "${rc}" != "2" ]; then
+            echo "::error::preflight refused or failed unexpectedly; see the report above"
+            exit "${rc}"
+          fi
+
+      - name: Remove the ephemeral key material
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f ~/.ssh/do_deploy ~/.ssh/preflight_known_hosts
+          echo "ephemeral key material removed"
+
+      # Sanitized facts only. The script strips every internal key (ids,
+      # addresses, hostnames) before printing, so this carries verdicts,
+      # booleans and counts. No raw API payload and no key is ever uploaded --
+      # there is deliberately no upload-artifact step in this workflow.
+      - name: Summarise (sanitized verdicts only)
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## cloud-only preflight — OBSERVATION"
+            echo
+            echo "- workflow placement: **this run**, \`ubuntu-latest\`, \`contents: read\`, default-branch dispatch only"
+            echo "- credential custody: **OPEN / unverified** — running here does not establish who holds these secrets"
+            echo "- cloud-only boundary: **OPEN** — this workflow enforces nothing"
+            echo "- SSH host trust: \`${ssh_host_trust:-unknown}\` — \`tofu-unverified\` means the host key was accepted on first use, exactly as deploy-prod.yml does; it is not custody"
+            echo "- preflight exit code: \`${preflight_rc:-unset}\` (2 = one or more facts unknown, the expected result today)"
+            echo
+            echo '```json'
+            if [ -f preflight.json ]; then cat preflight.json; else echo '{"status":"not_run"}'; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
