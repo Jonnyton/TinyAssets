@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import tinyassets.background_served_provider as background_provider
+import tinyassets.platform_runtime_provenance as platform_runtime_provenance
 from tinyassets.background_branch_authority import (
     BackgroundBranchAttempt,
     BackgroundBranchAttemptFence,
@@ -24,7 +25,51 @@ from tinyassets.background_branch_authority_service import (
 )
 from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTask
 from tinyassets.exceptions import ProviderAuthorityHeldError
+from tinyassets.platform_runtime_provenance import (
+    CLOUD,
+    ProcessProvenanceObservation,
+    RuntimeProvenance,
+)
 from tinyassets.providers.base import UniverseContext
+
+#: One admitted verdict for this module, built from the production dataclass.
+_ADMITTED_PROVENANCE = RuntimeProvenance(
+    verdict=CLOUD,
+    reason="instance_match",
+    metadata_reachable=True,
+    expected_identity_prepared=True,
+)
+
+
+@pytest.fixture(autouse=True)
+def _module_local_cloud_admission(monkeypatch):
+    """Admit this module's process, through the real observation seam.
+
+    Every test in this file drives the cloud provider lane, which now requires
+    an admitted cloud runtime (`cloud-only-runtime-admission`, enforcement site
+    (C)). With no verdict these processes are unobserved, and unobserved is a
+    refusal -- so without this each test would be asserting the admission gate
+    instead of the behaviour it was written for.
+
+    Deliberately module-local and NOT in `tests/conftest.py`: a suite-wide
+    autouse admission would silently admit the negative regressions in
+    `tests/test_cloud_only_admission_regressions.py` and
+    `tests/test_cloud_only_provider_admission_regressions.py` as well, and
+    those tests are the whole point. Those files bind their own verdict per
+    test through the same seam.
+
+    The seam is the production one -- a `ProcessProvenanceObservation` with an
+    injected resolver -- not an env var, not a flag and not a tests-only branch
+    in production code. No metadata socket is opened, and a green run here
+    establishes no cloud fact and no production authority.
+    """
+    observation = ProcessProvenanceObservation(resolver=lambda: _ADMITTED_PROVENANCE)
+    observation.observe()
+    monkeypatch.setattr(
+        platform_runtime_provenance, "_PROCESS_OBSERVATION", observation
+    )
+    return observation
+
 
 
 @contextmanager

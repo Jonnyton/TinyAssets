@@ -33,17 +33,26 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 import tinyassets.background_served_provider as background_provider
+import tinyassets.platform_runtime_provenance as provenance
 from tests.test_background_served_provider import _authority_fixture, _lease
 from tests.test_cloud_only_admission_regressions import (
     ADMITTED,
     UNADMITTED,
+    _cloud_registration_args,
 )
 from tests.test_cloud_only_admission_regressions import (
     bind_provenance as _bind_provenance_fixture,
 )
 from tests.test_run_provider_session import _branch, _run_branch
+from tinyassets.daemon_registry import (
+    ensure_daemon_runtime,
+    runtime_matches_worker_provider,
+)
 from tinyassets.exceptions import ProviderAuthorityHeldError
+from tinyassets.platform_runtime_provenance import ProcessProvenanceObservation
 from tinyassets.storage.provider_work_authority import db_path as authority_db_path
 
 #: The only outcomes that count as a refusal. Anything else — a KeyError, an
@@ -57,6 +66,32 @@ REFUSALS = (ProviderAuthorityHeldError, PermissionError)
 #: is enough; importing the name directly collides with the test parameters
 #: that request it.
 bind_provenance = _bind_provenance_fixture
+
+
+@pytest.fixture
+def unobserved_provenance(monkeypatch):
+    """Install an observation that has **not** resolved, and never resolves.
+
+    `bind_provenance` warms its cache, which models a process that already ran
+    its startup observation. This models the other real state: a process that
+    reached an admission site having never resolved at all. The resolver would
+    raise if a guard tried to trigger it, so a site that quietly resolves its
+    own evidence at the last moment — instead of refusing an unobserved
+    process — fails loudly here rather than passing.
+    """
+
+    def _bind() -> ProcessProvenanceObservation:
+        def _never() -> object:
+            raise AssertionError(
+                "an admission site resolved provenance from inside a guard"
+            )
+
+        observation = ProcessProvenanceObservation(resolver=_never)
+        monkeypatch.setattr(provenance, "_PROCESS_OBSERVATION", observation)
+        return observation
+
+    _bind()
+    return _bind
 
 
 def _receipt_rows(base_path: Path) -> list[tuple[str, str]]:
@@ -209,3 +244,195 @@ def test_admitted_background_served_turn_still_launches(
     assert session("prompt") == "ok"
     assert raw_calls == ["raw"]
     assert _reservations(conn) == 1
+
+
+# --- lane 1/2, structured entry (call_with_policy_sync) -------------------
+
+
+def test_unadmitted_structured_served_call_never_reaches_the_provider(
+    tmp_path: Path, monkeypatch, bind_provenance
+) -> None:
+    """The structured entry is a second public door onto the same mint path.
+
+    `__call__` above takes a raw prompt/system pair; `call_with_policy_sync`
+    takes role/prompt/system/policy and returns the provider name and an
+    authority metadata dict. A gate installed only on the raw shape would leave
+    the compiler's own entry — which is the one a real branch run uses — wide
+    open, so the negative is asserted on both doors rather than inferred from
+    one.
+    """
+    bind_provenance(UNADMITTED)
+    task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
+    raw_calls: list[str] = []
+
+    session = background_provider_session(
+        tmp_path, task, lambda *_a, **_k: raw_calls.append("raw") or "unexpected"
+    )
+    try:
+        session.call_with_policy_sync("writer", "prompt", "", None)
+    except REFUSALS:
+        pass
+
+    assert raw_calls == [], (
+        "unadmitted structured served call invoked the provider before admission"
+    )
+    assert _reservations(conn) == 0, (
+        "unadmitted structured served call reserved cloud-class provider budget"
+    )
+
+
+def test_admitted_structured_served_call_still_launches(
+    tmp_path: Path, monkeypatch, bind_provenance
+) -> None:
+    """Control for the structured negative: same door, admitted verdict."""
+    bind_provenance(ADMITTED)
+    task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
+    raw_calls: list[str] = []
+
+    def raw_provider(*_args, **kwargs):
+        raw_calls.append("raw")
+        return "ok"
+
+    session = background_provider_session(tmp_path, task, raw_provider)
+    response, provider, metadata = session.call_with_policy_sync("writer", "prompt", "", None)
+
+    assert response == "ok"
+    assert raw_calls == ["raw"]
+    assert provider
+    assert metadata["authority"] == _SERVED_OPERATION
+    assert _reservations(conn) == 1
+
+
+# --- the refusal itself: sanitized, and not an arbitrary crash ------------
+
+
+def test_served_refusal_is_the_stable_token_and_leaks_no_identifier(
+    tmp_path: Path, monkeypatch, bind_provenance
+) -> None:
+    """A refusal has to be *this* refusal, not any exception that happens to fly.
+
+    Two separable claims. First, the message carries the stable
+    `platform_not_cloud` token plus the sanitized verdict/reason pair and
+    nothing else — no universe id, no task id, no daemon id, no worker id, no
+    instance id, no address. Second, the type is a refusal the callers above
+    already handle, so `REFUSALS` in the negatives is a real contract rather
+    than a net wide enough to catch a `KeyError` from broken setup.
+    """
+    bind_provenance(UNADMITTED)
+    task, _conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
+
+    session = background_provider_session(tmp_path, task, lambda *_a, **_k: "unexpected")
+    with pytest.raises(PermissionError) as raised:
+        session("prompt")
+
+    message = str(raised.value)
+    assert provenance.PLATFORM_NOT_CLOUD_REASON in message
+    assert "verdict=not_cloud" in message
+    assert "reason=metadata_unreachable" in message
+    for identifier in (
+        task.universe_id,
+        task.branch_task_id,
+        task.actor_id,
+        "169.254.169.254",
+    ):
+        assert identifier not in message, f"refusal leaked {identifier!r}"
+
+
+def test_in_transaction_stamp_refuses_unobserved_without_resolving(
+    unobserved_provenance,
+) -> None:
+    """The in-transaction stamp must refuse "we never looked" without looking.
+
+    `admitted_cloud_executor_class()` is what both lanes call where the literal
+    `executor_class="cloud"` used to be, and both call sites hold an open
+    `BEGIN IMMEDIATE` transaction. Two properties matter there and neither
+    follows from the other: it must refuse an unobserved process, and it must
+    not resolve one — a resolve inside that block would put a bounded socket
+    read under the SQLite write lock, which is the exact failure the design
+    forbids. The injected resolver raises, so a stamp that quietly resolved its
+    own evidence fails here instead of passing.
+    """
+    del unobserved_provenance
+
+    with pytest.raises(PermissionError) as raised:
+        provenance.admitted_cloud_executor_class()
+
+    message = str(raised.value)
+    assert provenance.PLATFORM_NOT_CLOUD_REASON in message
+    assert "verdict=unknown" in message
+    assert "reason=not_observed" in message
+
+
+def test_admitted_stamp_returns_the_cloud_class(bind_provenance) -> None:
+    """Control: the same stamp still produces `cloud` for an admitted process.
+
+    Without this, a stamp that raised unconditionally would satisfy every
+    negative above.
+    """
+    bind_provenance(ADMITTED)
+
+    assert provenance.admitted_cloud_executor_class() == provenance.CLOUD
+
+
+# --- registration-read eligibility (design.md § Enforcement sites (B)) ----
+
+
+def test_existing_runtime_row_matches_nothing_for_an_unadmitted_process(
+    tmp_path: Path, bind_provenance
+) -> None:
+    """A row an admitted process wrote grants an unadmitted reader nothing.
+
+    The registration is created for real, by an admitted process, through
+    `ensure_daemon_runtime` — so the row genuinely is the exact provider-bound
+    worker and `runtime_matches_worker_provider` has every reason to say yes.
+    Then the process verdict flips and the *same* row is read back. This is the
+    replayed-registration shape from matrix row 4: a copied data volume, a
+    restored backup or a restarted off-cloud process finds the row intact.
+
+    The admitted read immediately before is the discriminator — it proves the
+    identifiers match and the row is live, so the unadmitted `False` is the
+    admission gate rather than a mismatched fixture.
+    """
+    bind_provenance(ADMITTED)
+    args = _cloud_registration_args(tmp_path)
+    runtime = ensure_daemon_runtime(tmp_path, **args)
+    match_args = dict(
+        universe_id=args["universe_id"],
+        runtime_instance_id=str(runtime["runtime_instance_id"]),
+        daemon_id=args["daemon_id"],
+        worker_id=args["worker_id"],
+        provider_name=args["provider_name"],
+    )
+
+    assert runtime_matches_worker_provider(tmp_path, **match_args) is True
+
+    bind_provenance(UNADMITTED)
+    assert runtime_matches_worker_provider(tmp_path, **match_args) is False, (
+        "an existing cloud-worker registration row authorized an unadmitted process"
+    )
+
+
+def test_unobserved_process_matches_no_runtime_row(
+    tmp_path: Path, bind_provenance, unobserved_provenance
+) -> None:
+    """Same row, a process that never resolved: still not eligible.
+
+    The row is written under an admitted verdict, then the observation is
+    replaced with an unresolved one. `runtime_matches_worker_provider` is
+    cached-only by design, so this is also the assertion that the cached-only
+    read refuses `None` rather than treating "no verdict" as permission.
+    """
+    bind_provenance(ADMITTED)
+    args = _cloud_registration_args(tmp_path)
+    runtime = ensure_daemon_runtime(tmp_path, **args)
+    match_args = dict(
+        universe_id=args["universe_id"],
+        runtime_instance_id=str(runtime["runtime_instance_id"]),
+        daemon_id=args["daemon_id"],
+        worker_id=args["worker_id"],
+        provider_name=args["provider_name"],
+    )
+    assert runtime_matches_worker_provider(tmp_path, **match_args) is True
+
+    unobserved_provenance()
+    assert runtime_matches_worker_provider(tmp_path, **match_args) is False

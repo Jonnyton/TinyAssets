@@ -477,6 +477,56 @@ def process_is_cloud_admitted() -> bool:
     return resolve_process_cloud_admission().is_cloud
 
 
+def admitted_cloud_executor_class() -> str:
+    """Return the `cloud` executor class, or refuse. **Cached-only: no I/O.**
+
+    Every provider-authority site that stamps `executor_class="cloud"` calls
+    this instead of writing the literal, so the stamp is a *derivation of the
+    process verdict* rather than a label. That is the difference between
+    admission and a relabel: there is no expression left that produces the
+    string `"cloud"` at a provider-authority boundary without the verdict
+    holding.
+
+    Reads the non-mutating peek only, so it is safe inside an open write
+    transaction — it opens no socket and touches no file. An unobserved process
+    peeks ``None`` and is refused; a caller that must succeed on cloud resolves
+    first, outside the transaction, via :func:`resolve_process_cloud_admission`.
+    """
+    if not cached_process_is_cloud_admitted():
+        raise PermissionError(
+            platform_not_cloud_message(
+                peek_platform_runtime_provenance(),
+                surface="cloud-class provider work authority",
+            )
+        )
+    return CLOUD
+
+
+def platform_not_cloud_message(
+    provenance: "RuntimeProvenance | None", *, surface: str
+) -> str:
+    """Build the one refusal string an admission site may raise.
+
+    `surface` is a literal written at the refusal site, never caller-supplied
+    input, and everything else is a sanitized token this module already
+    publishes: a verdict and a snake_case reason. No instance id, no expected
+    id, no address, no hostname, no universe id, no principal and no secret can
+    reach the message, so an admission refusal that surfaces in a log, a run
+    error or an API body leaks no identifier.
+
+    ``None`` is the unobserved process (or a cache refused across a PID change);
+    it reports an explicit unknown verdict rather than borrowing NOT_CLOUD's
+    reason, because "we never looked" and "we looked and it is not cloud" are
+    different facts and neither of them admits.
+    """
+    verdict = UNKNOWN if provenance is None else provenance.verdict
+    reason = "not_observed" if provenance is None else provenance.reason
+    return (
+        f"{PLATFORM_NOT_CLOUD_REASON}: {surface} requires an admitted cloud "
+        f"runtime (verdict={verdict}, reason={reason})"
+    )
+
+
 #: The verdict a read reports when there is no observation to report. Explicit,
 #: because "we never looked" and "we looked and it is not cloud" are different
 #: facts and neither of them is CLOUD.

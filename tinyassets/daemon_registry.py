@@ -22,6 +22,7 @@ from typing import Any
 from tinyassets import daemon_server
 from tinyassets.platform_runtime_provenance import (
     PLATFORM_NOT_CLOUD_REASON,
+    cached_process_is_cloud_admitted,
     resolve_process_cloud_admission,
 )
 from tinyassets.principals import has_named_principal, named_principal
@@ -965,6 +966,25 @@ def runtime_matches_worker_provider(
     provider_name: str,
 ) -> bool:
     """Return whether one live runtime is the exact provider-bound worker."""
+    # Existing-row eligibility, not permission (design.md § Enforcement sites
+    # (B): "an existing registration row is not permission, so authority is
+    # re-resolved on read rather than inherited from the row"). A row written
+    # by an admitted process earlier — or copied, or restored from a volume —
+    # must grant nothing to a process that is not itself admitted now.
+    #
+    # Cached-only on purpose. Callers pass this predicate's result straight into
+    # authority decisions and at least one of them (`_ExactAudienceResolver` in
+    # `cloud_automation_runtime.py`) is handed to an activation service that
+    # calls it from inside its own transaction, so a resolve here could put a
+    # bounded socket read under a write lock. Entry points that must succeed on
+    # cloud resolve first, outside any transaction.
+    #
+    # `False` is the existing "not the exact worker" answer every caller already
+    # handles (return None / PermissionError / recorded refusal reason), so an
+    # unadmitted process is refused through the path callers already understand
+    # rather than a new exception type they would not catch.
+    if not cached_process_is_cloud_admitted():
+        return False
     runtime = next(
         (
             value
