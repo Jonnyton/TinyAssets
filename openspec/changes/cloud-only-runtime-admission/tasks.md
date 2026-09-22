@@ -40,11 +40,16 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   unchanged), recorded-instance match, refusal ledger. Resolution happens
   outside any database write transaction. Resolver is **injected** in tests,
   never satisfied by an environment variable. Do not build against a predicted
-  metadata result.
+  metadata result. Prepare the expected-id state before candidate startup;
+  preserve it across success-receipt replacement and compatible rollback.
+  Resolve once per process; cached refusal never silently upgrades, and each
+  explicit restart resolves anew. Operation-level authority checks remain live.
 - [ ] 5. Land the resolver in record-only mode; confirm on the droplet that it
   resolves CLOUD and the recorded id matches. Do not flip a resolver that cannot
   resolve CLOUD in production. Report this stage as observation, not enforcement
   and not risk-free — it still adds a read and a ledger write on a live path.
+  Prove expected-id presence/match across a real redeploy and restart, plus
+  rollback-state compatibility, before enabling refusal.
 - [ ] 6. Flip claim admission onto the **non-optional** predicate
   `_transaction_allows_assigned_consumer` / `_assigned_consumer_refusal_reason`
   (`branch_tasks_v2.py:1170`), not the optional `authority_claim` callback —

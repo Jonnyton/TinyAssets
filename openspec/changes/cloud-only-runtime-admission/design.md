@@ -52,14 +52,14 @@ determines it. Ranked by what a copied checkout does *not* carry:
 
 1. **DO droplet metadata service — primary.**
    `http://169.254.169.254/metadata/v1/id` and `/metadata/v1/region`
-   ([DigitalOcean metadata API docs](https://docs.digitalocean.com/reference/api/metadata-api/)).
-   Link-local; answered only from inside a droplet. A checkout, env file,
-   hostname or compose label does not carry it, and on the founder's desktop
-   nothing answers that address, so the resolver's natural failure there is
-   refusal. **Honest strength:** unauthenticated and unsigned — readable by any
+   ([DigitalOcean metadata API docs](https://docs.digitalocean.com/reference/api/metadata/droplet-properties/)).
+   Link-local; the provider supplies this service inside its droplets. A checkout,
+   env file, hostname or compose label does not carry it. No desktop endpoint
+   observation is claimed here; absence or mismatch must refuse.
+   **Honest strength:** unauthenticated and unsigned — readable by any
    process inside the droplet, and forgeable by a local root operator who adds a
    route/listener. It is absent-by-default, not attestation: unsigned metadata plus a copied expected id is an accidental-start guard, nothing stronger.
-2. **Deploy-recorded expected instance — second factor.** The droplet id CI
+2. **Deploy-recorded expected instance — correlation, not a security factor.** The droplet id CI
    reads from the DO API is recorded into the release state the deploy already
    writes (`release-state.json`, `deploy-prod.yml:391-393`;
    `_load_release_state` / `scripts/deployed_sha.py`). The resolver requires the
@@ -79,6 +79,28 @@ must therefore be a dedicated internal client with a hard-coded literal address,
 no redirects, a sub-second timeout and no user-supplied input — never routed
 through the HTTP-connection/effect surface, and never reachable as a user
 capability. Adding it must not relax that classification.
+
+**Process lifetime and deployment ordering (lead + Opus84478, 2026-09-22).**
+Resolve the bounded metadata observation and expected-id match once for each new
+serving/worker process, before any write transaction. Retain that immutable result
+for the process lifetime; claims and provider admission read it without network
+I/O. A refused process never silently upgrades its cached evidence: an explicitly
+restarted process performs a fresh bounded resolution. This is a startup-origin
+backstop, not continuing cloud attestation or a replacement for live lease and
+per-universe authority checks. Those checks continue unchanged on each operation.
+No per-request metadata poll or retry storm is introduced. Runtime implementation
+review must verify that every entry point uses the same process-owned result.
+
+`deploy-prod.yml:317-375` starts and checks the service before its receipt write
+at376-395. Merely adding an expected ID to that success receipt would make first
+enforcement depend on a field that does not yet exist. Task4 must prepare and
+verify the expected-id state before starting the candidate, preserve it across
+receipt replacement, and preserve compatible state on rollback. Do not publish a
+successful build receipt before health checks to solve this ordering problem.
+Record-only acceptance must cover a real redeploy/restart and rollback-state
+compatibility, not only one metadata read. Final storage placement is an
+implementation-review question; the mutable successful-release receipt is not
+itself an unforgeable trust anchor.
 
 `DESKTOP-KCPMGP3` appears in the design only as a loud tripwire log line, never
 as the reason for a refusal. The requirement reads *not admitted ⇒ refuse*, so
@@ -259,7 +281,8 @@ software-visible and copyable. It is therefore:
 who holds `CLOUDFLARE_TUNNEL_TOKEN`, the Access service token, `DO_SSH_KEY`, and
 the GitHub Actions secret store. Layer B refusals reduce blast radius and make
 accidents loud; they do not substitute for custody. Any claim that the founder
-boundary is closed must cite both layers, and Layer C is verified, never coded.
+boundary is closed must cite both layers. Layer C requires verified cloud access
+and custody controls; Python refusal checks alone cannot establish it.
 Unsigned metadata is the **backstop only**: the boundary is not closed until
 actual cloud routing, credential custody and data custody close it too.
 
@@ -290,8 +313,8 @@ Enumerating the prevention levers actually available in this topology:
 
 | Lever | Prevents off-cloud enrollment? | Where it lives |
 |---|---|---|
-| Remove the in-repo code path that can enroll a connector | **Yes, for accidents** — the only class in scope | This repo (Layer B) |
-| Tunnel-token custody: token exists only in the droplet's env, rotated on any exposure | **Yes, for the credential** | Layer C, founder/CI |
+| Remove the in-repo code path that can enroll a connector | **Yes, for that accidental-start path only** | This repo (Layer B) |
+| Tunnel-token custody: only authorized cloud systems can obtain connector credentials | Prevents unauthorized enrollment only to the extent custody/access policy is actually enforced | Cloud infrastructure (Layer C) |
 | Origin refusal when unadmitted | No — refuses *after* receiving | Layer B |
 | Periodic connector audit | No — detects afterwards | CI |
 
@@ -301,6 +324,17 @@ additional provider-side restriction exists. Do not assert a universal absence
 of Cloudflare controls without evidence. Prevention here requires removing the
 repo's local enrollment path plus independently verified cloud credential/access
 policy; a periodic connector inventory only detects the currently visible set.
+
+Credential exposure requires both invalidating future enrollment with the old
+credential and evicting established unauthorized connections. Rotation alone is
+insufficient. The provider's tunnel-token documentation describes connection
+cleanup as well as rotation; replacing the whole tunnel is not assumed to be the
+only eviction mechanism. Determine the supported targeted cleanup and availability
+sequence before any mutation. No rotation, eviction or tunnel replacement is
+authorized by an observation report. Repository secret names read at05:43UTC
+2026-09-22 include no `CLOUDFLARE_TUNNEL_TOKEN`; this is not proof of absence from
+environment/organization secrets, cloud files, backups or prior copies. Secret
+values were not read. Data-root and session-key custody remain separately open.
 
 **The in-repo path is concrete and was found by inspection**, not assumed:
 `fantasy_daemon/__main__.py:3294` defines `_start_tunnel(port, tunnel_name)`,

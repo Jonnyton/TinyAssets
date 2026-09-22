@@ -33,6 +33,28 @@ be evaluated inside the compare-and-swap; no network request SHALL be issued
 while the database write lock is held. Pre-claim consumer checks MAY remain as
 diagnostics but SHALL NOT be the only enforcement.
 
+The startup-origin observation SHALL resolve once per process before execution
+authority is exercised. Admission SHALL reuse the immutable process-owned result
+without per-operation network reads. A refused result SHALL NOT silently upgrade;
+a restarted process SHALL resolve anew. Existing live lease, registration expiry
+and per-universe authorization checks SHALL remain in force independently.
+
+#### Scenario: Metadata outage after admitted startup does not create request-time polling
+- **WHEN** an admitted process handles later operations and metadata becomes unreachable
+- **THEN** no request-time metadata call is made, while live operation authority checks still apply.
+
+#### Scenario: Restart cannot inherit old process evidence
+- **WHEN** a new process starts after a previous process was admitted
+- **THEN** it resolves its own bounded evidence and refuses if that evidence cannot be established.
+
+#### Scenario: First enforcement starts with prepared expected identity
+- **WHEN** an enforcement-capable candidate is started by deployment
+- **THEN** expected identity is prepared and verified before startup, without prematurely publishing a successful release receipt.
+
+#### Scenario: Redeployment preserves expected identity independently of success reporting
+- **WHEN** a record-only candidate is redeployed or restarted, or deployment restores a compatible rollback target
+- **THEN** expected identity remains available and matching, and receipt replacement does not erase it.
+
 #### Scenario: Direct claim by an unadmitted process is refused
 - **WHEN** an unadmitted process calls the assigned-task claim directly with a
   valid consumer lease, a ready pending cloud task, and no optional authority
