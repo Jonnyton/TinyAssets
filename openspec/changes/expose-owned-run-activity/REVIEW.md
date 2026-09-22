@@ -71,3 +71,27 @@ no skips (baseline96passed in6.89s). Command: `python scripts/linux_oracle.py
 tests/test_run_snapshot_phase.py tests/test_graph_answer_execution.py
 tests/test_engine_mcp_server.py`. Ruff, `git diff --check`, seven pre-commit
 invariants and strict change validation also passed before release-review freeze.
+
+## Exact-head review1: ADAPT
+
+Fable34490 completed exit0/314s at abd21c920ec90cb4598d087c14630cb2d5ff64f4,
+verified unchanged and mirror equal; independently ran surface tests6passed.
+AGREE on truthful event/receipt semantics, metadata allowlist, ACL-before-load,
+pins and unchanged envelopes. DISAGREE_CONCERN: placing the new fields before
+existing guidance pushes that guidance beyond the6000-character text prefix
+at roughly8nodes. Lead accepts this concrete compatibility risk before release.
+Move the additive fields to the end of get_run after cancel_requested, and add
+a10-node text-prefix regression. No authorization or envelope-policy change.
+
+Also add a producer-shaped outer-validation-failure test: real generic validation
+failure updates the run only, without a new failed node event. Existing pure
+ran-then-failed fixture tests fold semantics, not a claim that that producer
+emits the hypothetical failure row. Design clarifies both facts and elapsed
+start-to-failure versus separately tagged return time. New exact-head review
+is required; review1 does not approve the adapted head.
+
+Adapted tree verification at01:48UTC: same Windows selection218passed/3unchanged
+skips; clean Linux oracle221passed/no skips in4.43s. Two new cases cover the
+ordering and actual validation-failure event shape. Focused new files125passed.
+Ruff, rebuilt497-file mirror/import, seven invariants, strict change validation
+and diff check all pass. No baseline failure was hidden or new skip introduced.

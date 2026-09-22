@@ -28,6 +28,8 @@ without evidence, or a complete event browser. No private workflow modifications
    accepted targets, generated-content envelope and adapters unchanged. The new
    helper is pure, in `tinyassets/api/run_activity.py`; the existing authorized
    `get_run` remains the only integration path. No raw stream handler is exposed.
+   Append diagnostics after every existing field, including cancel_requested,
+   so bounded text-only results retain recovery/output guidance before evidence.
    Alternative: a paginated event target would add routing, selectors and event
    API semantics before a user needs complete event order. This slice provides
    per-node evidence already in memory instead.
@@ -69,6 +71,10 @@ without evidence, or a complete event browser. No private workflow modifications
    values yield null. Keep the most recent returned-call receipt with its own
    step/time so a later retry or failure cannot misattribute it to the latest
    attempt. `start_events_observed` counts local starts, not provider attempts.
+   A subsequent failure terminal updates local elapsed to start-to-failure;
+   the separately tagged return time still identifies when a value returned.
+   Generic output validation can fail the outer run without a failed node event;
+   preserve the stored ran observation rather than inventing a node failure.
 
 6. Explain that local start precedes concurrency/provider admission, a returned
    value may subsequently fail output validation, and no provider acknowledgment,

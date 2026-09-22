@@ -84,6 +84,38 @@ def test_existing_snapshot_preserves_returned_evidence_after_outer_failure(store
     assert "first-byte" in snap["activity_evidence"]
     encoded = json.dumps(snap["node_activity"])
     assert "PRIVATE-" not in encoded and "configured-not-actual" not in encoded
+    assert list(snap)[-2:] == ["node_activity", "activity_evidence"]
+
+
+def test_validation_failure_without_a_failed_event_keeps_observed_return(stored_run):
+    # Actual generic compiler failure shape: outer failure only, no new node
+    # failed event. Preserve the ran observation; do not fabricate node evidence.
+    record, events = stored_run
+    record.update(last_node_id="first", error="Invalid JSON output")
+    del events[2:]
+    snap = json.loads(runs_api._action_get_run({"run_id": "saved-run", "universe_id": "owned"}))
+    first = snap["node_activity"][0]
+    assert snap["status"] == "failed"
+    assert first["status"] == first["latest_event_status"] == "ran"
+    assert first["execution"]["model"] == "reported-model"
+    assert first["failure_reason"] is None and first["failure_type"] is None
+
+
+def test_text_prefix_preserves_existing_guidance_before_new_diagnostics(stored_run):
+    record, events = stored_run
+    record.update(status="running", last_node_id="n-9", finished_at=None)
+    events[:] = [{"step_index": i, "node_id": f"n-{i}", "status": "running",
+                 "started_at": 10.0 + i} for i in range(10)]
+    result = universe_server._structured_return(runs_api._action_get_run({
+        "run_id": "saved-run", "universe_id": "owned",
+    }))
+    text = result.content[0].text
+    assert "truncated" in text
+    for key in ("output_catalog", "output_read", "phase", "suggested_action",
+                "actionable_by", "cancel_requested"):
+        assert f'"{key}":' in text
+    assert "Still running" in text
+    assert len(result.structured_content["node_activity"]) == 13
 
 
 @pytest.mark.parametrize("boundary", ["private-other-reader", "different-public-universe"])
