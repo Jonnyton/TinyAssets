@@ -1,7 +1,11 @@
 """TinyAssets -- double-click to launch (tray mode).
 
-Runs via pythonw.exe (no console window).  Starts the API server,
-daemon, and Cloudflare tunnel with a system tray icon for control.
+Runs via pythonw.exe (no console window).  Starts the API server and
+daemon with a system tray icon for control.  Local Cloudflare tunnel
+startup was removed, so this launcher publishes no public ingress; the
+public app is served from the cloud deployment at
+https://tinyassets.io/mcp.  Removing the ingress launch is not by itself
+a claim that the machine serves no platform traffic.
 """
 import sys
 
@@ -12,7 +16,6 @@ try:
         "--tray",
         "--serve",
         "--port", "8321",
-        "--tunnel",
     ]
     # Use default universe path (~/Documents/Fantasy Author)
     from pathlib import Path

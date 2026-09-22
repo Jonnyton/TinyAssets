@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -2205,167 +2204,414 @@ class TestEditorialVerdict:
 
 
 # =====================================================================
-# Tunnel management
+# Public ingress removal (cloud-only)
 # =====================================================================
 
 
-class TestTunnelManagement:
-    def test_start_tunnel_returns_none_without_cloudflared(self):
-        """_start_tunnel returns None when cloudflared is not found."""
-        from unittest.mock import patch
+def _import_tray_headless(monkeypatch, tmp_path):
+    """Import the real ``tinyassets_tray`` with only its GUI deps stubbed.
 
-        from tinyassets.__main__ import _start_tunnel
+    Same technique as the ``tray_manager`` fixture in
+    ``tests/test_runtime_status_bridge.py``: stand-ins for ``pystray``/``PIL``
+    are installed only when the real package cannot be imported here, so a dev
+    box with a usable display exercises the real import and headless Linux CI
+    runs the module under test instead of skipping it.
 
-        with patch("shutil.which", return_value=None):
-            result = _start_tunnel(8321)
-        assert result is None
+    ``LOG_DIR`` is redirected into ``tmp_path`` so tray writes cannot land in
+    the repository's ``logs/``.
+    """
+    import importlib
+    import sys
+    import types
 
-    def test_start_tunnel_quick_mode(self):
-        """_start_tunnel starts a quick tunnel when no name given."""
-        from unittest.mock import patch
+    for name in ("pystray", "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont"):
+        if name in sys.modules:
+            continue
+        try:
+            importlib.import_module(name)
+        except Exception:
+            # Substitution, not a skip: the body under test still runs. The
+            # broad except is deliberate -- a headless box does not fail with
+            # ImportError. pystray is installed on Linux CI and picks its X11
+            # backend at import, raising Xlib.error.DisplayNameError when
+            # DISPLAY is unset.
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
 
-        from tinyassets.__main__ import _start_tunnel
+    pystray = sys.modules["pystray"]
+    if not hasattr(pystray, "Icon"):
+        pystray.Icon = object
+        pystray.Menu = type("Menu", (), {"SEPARATOR": object()})
+        pystray.MenuItem = object
+    pil = sys.modules["PIL"]
+    for attr in ("Image", "ImageDraw", "ImageFont"):
+        if not hasattr(pil, attr):
+            setattr(pil, attr, sys.modules[f"PIL.{attr}"])
 
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "data"))
+    tray_mod = importlib.import_module("tinyassets_tray")
+    monkeypatch.setattr(tray_mod, "LOG_DIR", tmp_path / "logs")
+    return tray_mod
 
-        mock_thread = MagicMock()
-        with (
-            patch("shutil.which", return_value="/usr/bin/cloudflared"),
-            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch("atexit.register"),
-            patch("fantasy_daemon.__main__.threading.Thread", return_value=mock_thread),
+
+@pytest.fixture(
+    params=[
+        {"TINYASSETS_TRAY_ENABLE_TUNNEL": "1"},
+        {
+            "TINYASSETS_TRAY_ENABLE_TUNNEL": "1",
+            "CLOUDFLARE_TUNNEL_TOKEN": "not-a-real-token",
+        },
+        {"TUNNEL_TOKEN": "legacy-not-a-real-token"},
+    ],
+    ids=["flag-only", "flag-and-token", "legacy-token-only"],
+)
+def tray_env(request):
+    """Every way the removed tray tunnel used to be armed, legacy env included."""
+    return request.param
+
+
+@pytest.fixture
+def guarded_cli(monkeypatch, tmp_path):
+    """Drive the real ``_main_unfenced`` with every startup call trapped.
+
+    Returns the list each trap appends to. Nothing binds a port, imports the
+    FastAPI app, or constructs a ``DaemonController``: a regression that starts
+    a server shows up as a recorded name, never as a live process.
+    """
+    import signal as signal_mod
+    import subprocess as subprocess_mod
+    import sys
+    import types
+
+    import fantasy_daemon.__main__ as fa_main
+
+    reached: list[str] = []
+
+    def refuse_process(*args, **kwargs):
+        reached.append("subprocess.Popen")
+        raise AssertionError("CLI regression attempted a real subprocess")
+
+    # A regression can restore the deleted launcher before a mode's trapped
+    # entrypoint. Never let the negative test itself enroll a real connector.
+    monkeypatch.setattr(subprocess_mod, "Popen", refuse_process)
+
+    uvicorn_stub = types.ModuleType("uvicorn")
+    uvicorn_stub.run = lambda *a, **kw: reached.append("uvicorn.run")
+    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn_stub)
+
+    api_stub = types.ModuleType("fantasy_daemon.api")
+    api_stub.app = object()
+    api_stub.configure = lambda **kw: reached.append("api.configure")
+    monkeypatch.setitem(sys.modules, "fantasy_daemon.api", api_stub)
+
+    us_stub = types.ModuleType("fantasy_daemon.universe_server")
+    us_stub.main = lambda **kw: reached.append("universe_server.main")
+    monkeypatch.setitem(sys.modules, "fantasy_daemon.universe_server", us_stub)
+
+    mcp_stub = types.ModuleType("fantasy_daemon.mcp_server")
+    mcp_stub.main = lambda *a, **kw: reached.append("mcp_server.main")
+    monkeypatch.setitem(sys.modules, "fantasy_daemon.mcp_server", mcp_stub)
+
+    monkeypatch.setattr(
+        fa_main, "_run_tray_mode", lambda args: reached.append("tray_mode")
+    )
+
+    class _TrapController:
+        def __init__(self, *a, **kw):
+            reached.append("DaemonController")
+
+        def start(self):  # pragma: no cover - a recorded name fails the test
+            raise AssertionError("the CLI started a daemon")
+
+    monkeypatch.setattr(fa_main, "DaemonController", _TrapController)
+    monkeypatch.setattr(signal_mod, "signal", lambda *a, **kw: None)
+    # --universe-server does os.environ.setdefault on this; keep it scoped.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "cli-data-dir"))
+    return reached
+
+
+class TestLocalTunnelCapabilityRemoved:
+    """The shipped client/tray/daemon must not be able to publish an ingress.
+
+    These assert the *absence* of the capability, not that it is disabled:
+    a gated launcher is still a launcher, and this machine must never enroll
+    a Cloudflare connector even momentarily.
+    """
+
+    def test_start_tunnel_symbol_is_gone(self):
+        """No module still exports a local tunnel launcher."""
+        import fantasy_daemon.__main__ as fa_main
+        import tinyassets.__main__ as ta_main
+
+        for mod in (fa_main, ta_main):
+            for name in (
+                "_start_tunnel",
+                "_stop_tunnel",
+                "_drain_tunnel_stderr",
+                "_update_gpt_schema_url",
+                "_tunnel_url_ready",
+                "_tunnel_url_value",
+            ):
+                assert not hasattr(mod, name), f"{mod.__name__}.{name} still exists"
+
+    def test_no_cloudflared_spawn_in_entrypoints(self):
+        """No entry point still names cloudflared as a process to spawn."""
+        root = Path(__file__).resolve().parent.parent
+        for rel in (
+            "fantasy_daemon/__main__.py",
+            "tinyassets/__main__.py",
+            "tinyassets_tray.py",
+            "tinyassets.pyw",
         ):
-            result = _start_tunnel(8321)
+            text = (root / rel).read_text(encoding="utf-8")
+            assert '"cloudflared"' not in text, rel
+            assert "shutil.which(" not in text or "cloudflared" not in text, rel
 
-        assert result is mock_proc
-        cmd = mock_popen.call_args[0][0]
-        assert "tunnel" in cmd
-        assert "--url" in cmd
-        assert "http://localhost:8321" in cmd
-        # stdout goes to DEVNULL; stderr is PIPE (drained by background thread
-        # to extract the tunnel URL without deadlocking)
-        kwargs = mock_popen.call_args[1]
-        assert kwargs["stdout"] == subprocess.DEVNULL
-        assert kwargs["stderr"] == subprocess.PIPE
-        mock_thread.start.assert_called_once()
+    def test_one_click_startup_does_not_provision_cloudflared(self):
+        """The packaged one-click .bat must not install or invoke cloudflared.
 
-    def test_start_tunnel_named_mode(self):
-        """_start_tunnel runs a named tunnel when name is given."""
-        from unittest.mock import patch
+        Shipping the connector binary as a startup prerequisite keeps the
+        ingress capability one command away on a machine that must never
+        serve platform traffic.
+        """
+        root = Path(__file__).resolve().parent.parent
+        text = (root / "start-tinyassets-server.bat").read_text(encoding="utf-8")
+        assert "cloudflared" not in text
+        assert "winget install Cloudflare" not in text
 
-        from tinyassets.__main__ import _start_tunnel
+    def test_tunnel_flag_refuses_instead_of_starting(self):
+        """--tunnel exits with a migration message; it is never silently accepted."""
+        import fantasy_daemon.__main__ as fa_main
 
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
+        with pytest.raises(SystemExit) as exc:
+            fa_main._refuse_local_tunnel_request("--tunnel")
+        assert "tinyassets.io/mcp" in str(exc.value)
+        assert fa_main.LOCAL_TUNNEL_REMOVED_MESSAGE in str(exc.value)
 
-        mock_thread = MagicMock()
-        with (
-            patch("shutil.which", return_value="/usr/bin/cloudflared"),
-            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch("atexit.register"),
-            patch("fantasy_daemon.__main__.threading.Thread", return_value=mock_thread),
+    def test_tray_mode_refuses_a_tunnel_request_before_starting_anything(self):
+        """_run_tray_mode refuses a tunnel request before any startup work."""
+        import argparse
+
+        import fantasy_daemon.__main__ as fa_main
+
+        args = argparse.Namespace(tunnel=True, tunnel_name="", port=8321)
+        with pytest.raises(SystemExit):
+            fa_main._run_tray_mode(args)
+
+        args = argparse.Namespace(tunnel=False, tunnel_name="prod", port=8321)
+        with pytest.raises(SystemExit):
+            fa_main._run_tray_mode(args)
+
+    def test_tray_start_tunnel_never_spawns_even_when_env_armed(
+        self, tray_env, monkeypatch, tmp_path
+    ):
+        """The old arming env vars spawn nothing -- checked on every platform.
+
+        This loads the real ``tinyassets_tray`` with only its GUI deps stubbed
+        (same shape as ``tests/test_runtime_status_bridge.py``), so the removal
+        is exercised in headless Linux CI rather than skipped there: a skip on
+        the one platform CI runs is no protection at all. ``LOG_DIR`` is pinned
+        into ``tmp_path`` so the refusal record cannot land in the repo's
+        ``logs/``.
+        """
+        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
+
+        for name in (
+            "TINYASSETS_TRAY_ENABLE_TUNNEL",
+            "CLOUDFLARE_TUNNEL_TOKEN",
+            "TUNNEL_TOKEN",
         ):
-            result = _start_tunnel(8321, "fantasy-author")
+            monkeypatch.delenv(name, raising=False)
+        for name, value in tray_env.items():
+            monkeypatch.setenv(name, value)
 
-        assert result is mock_proc
-        cmd = mock_popen.call_args[0][0]
-        assert cmd[-1] == "fantasy-author"
-        assert "run" in cmd
+        spawned: list[Any] = []
 
-    def test_start_tunnel_registers_atexit_cleanup(self):
-        """_start_tunnel registers atexit handler for orphan prevention."""
-        from unittest.mock import patch
+        def _trip_popen(cmd, *args, **kwargs):
+            spawned.append(cmd)
+            raise AssertionError(f"tray spawned a process: {cmd}")
 
-        from tinyassets.__main__ import _start_tunnel, _stop_tunnel
+        monkeypatch.setattr(tray_mod.subprocess, "Popen", _trip_popen)
 
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
+        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
+        manager.tunnel_proc = object()
+        manager._tunnel_alive = True
+        manager._tunnel_ok = True
 
-        mock_thread = MagicMock()
-        with (
-            patch("shutil.which", return_value="/usr/bin/cloudflared"),
-            patch("subprocess.Popen", return_value=mock_proc),
-            patch("atexit.register") as mock_atexit,
-            patch("fantasy_daemon.__main__.threading.Thread", return_value=mock_thread),
+        manager.start_tunnel()
+
+        assert spawned == []
+        assert manager.tunnel_proc is None
+        assert manager._tunnel_alive is False
+        assert manager._tunnel_ok is False
+
+        # The refusal is recorded, and recorded under tmp_path: an empty log
+        # would mean the body never ran, and a missing file would mean LOG_DIR
+        # still pointed at the repo.
+        log_text = (tmp_path / "logs" / "tunnel.log").read_text(encoding="utf-8")
+        assert "REFUSED" in log_text
+        assert "no tunnel was started" in log_text
+        assert "https://tinyassets.io/mcp" in log_text
+
+    def test_tray_start_tunnel_records_a_skip_when_nothing_is_armed(
+        self, monkeypatch, tmp_path
+    ):
+        """With no env arming the tray still starts nothing and says so.
+
+        Guards the discriminator for the test above: the refusal branch must be
+        reachable only via the env vars, so an always-REFUSED log would not
+        prove the arming path was taken.
+        """
+        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
+        for name in (
+            "TINYASSETS_TRAY_ENABLE_TUNNEL",
+            "CLOUDFLARE_TUNNEL_TOKEN",
+            "TUNNEL_TOKEN",
         ):
-            _start_tunnel(8321)
+            monkeypatch.delenv(name, raising=False)
 
-        mock_atexit.assert_called_once_with(_stop_tunnel, mock_proc)
+        def _trip_popen(cmd, *args, **kwargs):
+            raise AssertionError(f"tray spawned a process: {cmd}")
 
-    def test_start_tunnel_windows_creationflags(self):
-        """On Windows, _start_tunnel sets CREATE_NO_WINDOW | DETACHED_PROCESS."""
-        from unittest.mock import patch
+        monkeypatch.setattr(tray_mod.subprocess, "Popen", _trip_popen)
 
-        from tinyassets.__main__ import _start_tunnel
+        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
+        manager.tunnel_proc = None
+        manager._tunnel_alive = False
+        manager._tunnel_ok = False
 
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
+        manager.start_tunnel()
 
-        mock_thread = MagicMock()
-        with (
-            patch("shutil.which", return_value="C:/bin/cloudflared.exe"),
-            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch("atexit.register"),
-            patch("fantasy_daemon.__main__.sys") as mock_sys,
-            patch("fantasy_daemon.__main__.threading.Thread", return_value=mock_thread),
-        ):
-            mock_sys.platform = "win32"
-            _start_tunnel(8321)
+        log_text = (tmp_path / "logs" / "tunnel.log").read_text(encoding="utf-8")
+        assert "nothing started" in log_text
+        assert "REFUSED" not in log_text
 
-        kwargs = mock_popen.call_args[1]
-        expected = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-        assert kwargs["creationflags"] == expected
+    def test_cloud_app_menu_does_not_depend_on_any_local_process(self, monkeypatch, tmp_path):
+        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
 
-    def test_drain_tunnel_stderr_extracts_url(self):
-        """_drain_tunnel_stderr extracts the trycloudflare.com URL."""
-        import io
-        from unittest.mock import patch
+        class Menu(list):
+            SEPARATOR = object()
 
-        from tinyassets.__main__ import _drain_tunnel_stderr
+            def __init__(self, *items):
+                super().__init__(items)
 
-        # Simulate cloudflared stderr output with a URL line
-        fake_stderr = io.BytesIO(
-            b"2026-04-03T00:00:00Z INF Starting tunnel\n"
-            b"2026-04-03T00:00:01Z INF +-------------------------------------------+\n"
-            b"2026-04-03T00:00:01Z INF |  https://fancy-name-here.trycloudflare.com |\n"
-            b"2026-04-03T00:00:01Z INF +-------------------------------------------+\n"
-            b"2026-04-03T00:00:02Z INF Connection established\n"
+        monkeypatch.setattr(tray_mod, "Menu", Menu)
+        monkeypatch.setattr(tray_mod, "MenuItem", lambda name, action, **kw: {
+            "name": name, "action": action, **kw,
+        })
+        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
+        manager._mcp_serving = manager._tunnel_ok = False
+        menu = manager._build_menu()
+        item = next(item for item in menu if isinstance(item, dict)
+                    and item["name"] == "Open tinyassets.io/mcp")
+        enabled = item.get("enabled", True)
+        assert enabled(None) if callable(enabled) else enabled
+
+    def test_local_readiness_does_not_claim_cloud_health(self, monkeypatch, tmp_path):
+        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
+        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
+        manager._running_providers = lambda: ["codex"]
+        manager._mcp_serving = True
+        manager._tunnel_ok = manager._tunnel_alive = False
+        manager._active_universe = "fixture"
+        manager._watchdog_alive = False
+        assert manager.icon_color == tray_mod.GREEN
+        assert "Local tools ready" in manager.hover_text
+        assert "Live at" not in manager.hover_text
+        assert "Tunnel:" not in manager.status_text
+
+    def test_healthy_local_monitor_uses_normal_interval_without_tunnel(
+        self, monkeypatch, tmp_path
+    ):
+        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
+        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
+
+        class StopEvent:
+            def __init__(self):
+                self.waits = []
+
+            def is_set(self):
+                return len(self.waits) == 2
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+
+        manager._stop_event = StopEvent()
+        manager._running_providers = lambda: ["codex"]
+        manager._mcp_serving = manager._mcp_alive = True
+        manager._tunnel_ok = manager._watchdog_alive = False
+        manager.watchdog_proc = None
+        manager.check_health = lambda: None
+        manager._update_icon = lambda: None
+        manager._check_universe_switch = lambda: False
+        manager._monitor_loop()
+        assert manager._stop_event.waits == [3, 10]
+
+    # -- real CLI parsing -------------------------------------------------
+    #
+    # The helper test above proves the refusal function; these drive
+    # ``_main_unfenced`` with real argv so a regression in *parsing or
+    # routing* (a dropped flag check, a reordered branch) is caught too.
+
+    @pytest.mark.parametrize("mode", ["--serve", "--universe-server", "--tray"])
+    @pytest.mark.parametrize(
+        "flag", [["--tunnel"], ["--tunnel-name", "tinyassets-local"]]
+    )
+    def test_cli_refuses_tunnel_flags_before_any_mode_starts(
+        self, mode, flag, guarded_cli, monkeypatch, tmp_path
+    ):
+        """Real argv: every entry point refuses before it starts anything."""
+        import sys
+
+        import fantasy_daemon.__main__ as fa_main
+
+        reached = guarded_cli
+        argv = [
+            "fantasy-author",
+            mode,
+            "--universe",
+            str(tmp_path / "universes"),
+            *flag,
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+
+        with pytest.raises(SystemExit) as exc:
+            fa_main._main_unfenced()
+
+        assert fa_main.LOCAL_TUNNEL_REMOVED_MESSAGE in str(exc.value)
+        assert "tinyassets.io/mcp" in str(exc.value)
+        assert reached == [], f"{mode} started something before refusing: {reached}"
+
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [
+            ("--tray", ["tray_mode"]),
+            ("--universe-server", ["universe_server.main"]),
+            ("--serve", ["api.configure", "uvicorn.run"]),
+        ],
+    )
+    def test_cli_modes_still_route_without_the_removed_flags(
+        self, mode, expected, guarded_cli, monkeypatch, tmp_path
+    ):
+        """Positive control for the refusal tests above.
+
+        Without ``--tunnel`` the same argv reaches the mode's startup call, so
+        the empty ``reached`` list in those tests means "refused before
+        startup" rather than "the trap was never wired up".
+        """
+        import sys
+
+        import fantasy_daemon.__main__ as fa_main
+
+        reached = guarded_cli
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["fantasy-author", mode, "--universe", str(tmp_path / "universes")],
         )
 
-        mock_proc = MagicMock()
-        mock_proc.stderr = fake_stderr
+        fa_main._main_unfenced()
 
-        with patch("fantasy_daemon.__main__.logger") as mock_logger:
-            _drain_tunnel_stderr(mock_proc)
-
-        # Verify the URL was logged
-        mock_logger.info.assert_any_call(
-            "Tunnel URL: %s", "https://fancy-name-here.trycloudflare.com"
-        )
-
-    def test_stop_tunnel_terminates_process(self):
-        """_stop_tunnel should terminate a running tunnel process."""
-        from tinyassets.__main__ import _stop_tunnel
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None  # still running
-        mock_proc.wait.return_value = None
-
-        _stop_tunnel(mock_proc)
-        mock_proc.terminate.assert_called_once()
-
-    def test_stop_tunnel_skips_already_exited(self):
-        """_stop_tunnel should skip processes that already exited."""
-        from tinyassets.__main__ import _stop_tunnel
-
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 0  # already exited
-
-        _stop_tunnel(mock_proc)
-        mock_proc.terminate.assert_not_called()
-
-
+        assert reached == expected
 
 # =====================================================================
 # Tray Mode
@@ -2401,29 +2647,10 @@ class TestTrayMode:
         text = pyw.read_text(encoding="utf-8")
         assert "8321" in text
 
-    def test_drain_tunnel_sets_shared_event(self):
-        """_drain_tunnel_stderr sets _tunnel_url_ready and _tunnel_url_value."""
-        import io
-        from unittest.mock import MagicMock
-
-        import fantasy_daemon.__main__ as main_mod
-        from tinyassets.__main__ import (
-            _drain_tunnel_stderr,
-            _tunnel_url_ready,
-        )
-
-        _tunnel_url_ready.clear()
-        main_mod._tunnel_url_value = ""
-
-        fake_stderr = io.BytesIO(
-            b"2026-04-02T00:00:01Z INF https://fresh-url.trycloudflare.com\n"
-        )
-        mock_proc = MagicMock()
-        mock_proc.stderr = fake_stderr
-
-        _drain_tunnel_stderr(mock_proc)
-
-        assert _tunnel_url_ready.is_set()
-        assert main_mod._tunnel_url_value == "https://fresh-url.trycloudflare.com"
+    def test_pyw_does_not_request_a_tunnel(self):
+        """tinyassets.pyw must not ask for a public ingress."""
+        pyw = Path(__file__).resolve().parent.parent / "tinyassets.pyw"
+        text = pyw.read_text(encoding="utf-8")
+        assert '"--tunnel"' not in text
 
 

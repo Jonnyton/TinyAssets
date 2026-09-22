@@ -74,3 +74,50 @@ caveat before node activity. Two test assertions fail before and pass after.
 Windows selected218passed/same3skips; lint/spec/mirror pass. Exact-head review,
 CI, redeployment and uncoached live interpretation acceptance remain pending.
 No organic post-fix owner use is visible.
+
+## Clarification release
+
+Follow-up [PR3910](https://github.com/Jonnyton/TinyAssets/pull/3910), reviewed
+headabfc4865635dc538d2c400a7fefe8eaaf172c5b9, received independent Fable9757
+APPROVE (exit0,117s; no reviewer tests). [Exact receipt](https://github.com/Jonnyton/TinyAssets/pull/3910#issuecomment-5770429108).
+The reviewer agrees on producer semantics, legacy guidance, unchanged scope,
+mirror, exact spec sync and focused regressions. Nonblocking note: unknown can
+also mean no usable recorded model label, not literal absence of any provider
+label; no admission/acknowledgment is established either way.
+
+Required CI35680224724 passed:20056passed/100skipped/10deselected/5known failures/
+2known collection errors/70subtests;0new failures/0stale quarantines. Job19m31s;
+slow1m18s. Prior draft run35680053632 was cancelled by ready-event concurrency,
+not a test regression. Main's earlier heavy-test failures were set-compared to
+previous deployment: same101 identifiers, no new failure (runs35678486011 and
+35674112352). No whole-suite-green claim or ledger edit.
+
+Merged02:59:53UTC as02b1e628d2da54b2222a684f0318b19969c68a86. Reviewed head,
+CI checkout907af248220206835fbe9cb378b71c90ee94c6b9 and actual merge share tree
+7232ad1bb4f5e5175665b8b9ff166fc5623bf56c, verified by completed checkout logs,
+exact git fetch and tree comparison. Image build35681508241 passed3m26s.
+Deployment35681740530 passed1m14s. Protected receipt03:04:41.1061197UTC confirms
+production contains02b1e628d2da54b2222a684f0318b19969c68a86; public handles
+canary passed. Image `sha256:28a68ce42723b7823e27e67d13b5a089f625d897eec2046f065f7a189dcb7a4a`.
+Verified from completed hosted deployment job logs.
+
+At03:06UTC exact checklist prompt sent once after idle refresh; original20:10PDT
+retest6 completed without replay or mid-turn refresh. Editing/output0b0ce5ae48e34e40
+returned RETEST6 then restored; workspaceacb2e2ad9c324452 create/discard1.4s;
+cancelled6a39c8bd93274506 around7s into60s hold; parallelb2a0b2c0b8374ad8
+all4nodes52.5s, sequential3e63e98d7d594acb43.5s. This does not prove exact
+underlying subprocess stop or resolve intermittent causes, which the app retains.
+At03:12UTC asked naturally what saved evidence now establishes for earlier
+failedabc24482d97a4d8b and what remains unknown, without start/rerun. No field
+definitions or desired interpretation supplied. Original20:13PDT response arrived
+without refresh/replay. It retrieved the prior failed run's split6.299s and
+angle_b182.463s returned-model receipt, angle_a300.016s timeout with null receipt,
+and pending synthesis. It explicitly defines reported as a recorded model
+identifier, not acknowledgment/admission/validated output, and leaves provider
+state and empty-catalog mechanism unknown. This accepts the scoped clarification.
+It is not proof of every inference: the answer calls local starts dispatch and
+pending/no-start never dispatched; these are not independent transport evidence.
+Historical reliability remains open. No newer organic owner use visible; keep
+the watch open. The already-shipped canonical requirement was compared against
+the delta and matches. This documentation-only closeout archives the change;
+it changes no runtime behavior and does not close wider reliability work.

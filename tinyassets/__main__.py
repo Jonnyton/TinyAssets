@@ -31,38 +31,32 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Phase 5 bridge re-exports
 # ---------------------------------------------------------------------------
-# Re-export DaemonController + tunnel helpers from ``fantasy_daemon.__main__``
-# so callers can ``from tinyassets.__main__ import …`` without reaching into the
+# Re-export DaemonController from ``fantasy_daemon.__main__`` so callers can
+# ``from tinyassets.__main__ import …`` without reaching into the
 # fantasy_daemon package directly. Tests still target this surface; the
 # block retires when the runtime fully moves out of fantasy_daemon.
+#
+# The Cloudflare tunnel helpers are deliberately absent: local public-ingress
+# launch was removed, so there is nothing here to re-export.
 # ---------------------------------------------------------------------------
 import threading  # noqa: E402, F401  — tests patch tinyassets.__main__.threading
 
-import fantasy_daemon.__main__ as _fa_main  # noqa: E402
 from fantasy_daemon.__main__ import (  # noqa: E402, F401
+    LOCAL_TUNNEL_REMOVED_MESSAGE,
     DaemonController,
     _build_provider_router,
-    _drain_tunnel_stderr,
     _first_trace,
+    _refuse_local_tunnel_request,
     _run_tray_mode,
-    _start_tunnel,
-    _stop_tunnel,
-    _tunnel_url_ready,
-    _update_gpt_schema_url,
 )
 
-# Module-level mutable that tests poke via ``main_mod._tunnel_url_value``
-_tunnel_url_value: str = getattr(_fa_main, "_tunnel_url_value", "")
-
 __all__ = [
+    "LOCAL_TUNNEL_REMOVED_MESSAGE",
     "DaemonController",
     "_build_provider_router",
-    "_drain_tunnel_stderr",
     "_first_trace",
+    "_refuse_local_tunnel_request",
     "_run_tray_mode",
-    "_start_tunnel",
-    "_stop_tunnel",
-    "_update_gpt_schema_url",
     "main",
 ]
 

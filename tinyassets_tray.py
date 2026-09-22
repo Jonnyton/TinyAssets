@@ -3,8 +3,11 @@
 Double-click the desktop shortcut -> this script starts:
   1. One daemon per preferred provider (Author Daemons, LangGraph writing
      engines) with the writer role pinned via ``--provider <name>``
-  2. MCP TinyAssets Server (Python, port 8001)
-  3. Optional local Cloudflare Tunnel for dev-only debugging
+  2. MCP TinyAssets Server (Python, port 8001), bound locally
+
+The tray starts no Cloudflare tunnel and publishes no public ingress from
+this machine: that capability was removed, not gated. Public traffic is
+served by the cloud deployment at https://tinyassets.io/mcp.
 
 A system tray icon shows live status. Hover aggregates active providers.
 Right-click to start/stop per-provider daemons, change defaults, or quit.
@@ -149,7 +152,7 @@ def make_icon(color: tuple, size: int = 64) -> Image.Image:
 # ---------------------------------------------------------------------------
 
 class UniverseServerManager:
-    """Manages daemons, local MCP, optional dev tunnel, and tab watchdog."""
+    """Manages daemons, local MCP, and the tab watchdog (no public ingress)."""
 
     def __init__(self) -> None:
         # One entry per daemon process. The first process for a provider uses
@@ -314,12 +317,7 @@ class UniverseServerManager:
             parts.append("MCP: Loading")
         else:
             parts.append("MCP: Down")
-        if self._tunnel_ok:
-            parts.append("Tunnel: Connected")
-        elif self._tunnel_alive:
-            parts.append("Tunnel: Connecting")
-        else:
-            parts.append("Tunnel: Down")
+        parts.append("Public app: Cloud-hosted")
         if self._watchdog_alive:
             parts.append("Tab watchdog: Running")
         else:
@@ -329,8 +327,8 @@ class UniverseServerManager:
     @property
     def hover_text(self) -> str:
         running = self._running_providers()
-        if running and self._mcp_serving and self._tunnel_ok:
-            base = "TinyAssets Server - Live at tinyassets.io/mcp"
+        if running and self._mcp_serving:
+            base = "TinyAssets - Local tools ready"
         else:
             base = f"TinyAssets Server - {self._phase}"
         if running:
@@ -353,9 +351,9 @@ class UniverseServerManager:
     @property
     def icon_color(self) -> tuple:
         running = bool(self._running_providers())
-        if running and self._mcp_serving and self._tunnel_ok:
+        if running and self._mcp_serving:
             return GREEN
-        elif running or self._mcp_alive or self._tunnel_alive:
+        elif running or self._mcp_alive:
             return YELLOW
         elif self._stop_event.is_set():
             return RED
@@ -495,37 +493,37 @@ class UniverseServerManager:
         return True
 
     def start_tunnel(self) -> None:
+        """Refuse to publish a public ingress -- never starts ``cloudflared``.
+
+        The tray used to enroll a local Cloudflare connector when
+        ``TINYASSETS_TRAY_ENABLE_TUNNEL`` was truthy. That capability was
+        removed rather than gated: no token, flag or env value starts a
+        tunnel here. A request is recorded as an explicit refusal rather than
+        ignored, so nothing reports a tunnel that does not exist.
+
+        Scope: this removes the local *ingress launch*. It is not on its own
+        a guarantee that the machine serves no platform traffic -- worker,
+        provider and custody paths are separate and still open.
+        """
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-        log = open(LOG_DIR / "tunnel.log", "a", encoding="utf-8")
-        log.write(f"\n--- Tunnel start {time.strftime('%H:%M:%S')} ---\n")
-        log.flush()
+        self.tunnel_proc = None
+        self._tunnel_alive = False
+        self._tunnel_ok = False
 
-        if not _local_tunnel_enabled():
-            self.tunnel_proc = None
-            self._tunnel_alive = False
-            self._tunnel_ok = False
-            log.write(
-                "local tunnel disabled by default; set "
-                f"{TRAY_TUNNEL_ENABLED_ENV}=1 and {TUNNEL_TOKEN_ENV} for "
-                "dev-only tunnel debugging\n"
-            )
-            log.close()
-            return
-
-        token = _local_tunnel_token()
-        if not token:
-            log.close()
-            raise RuntimeError(
-                f"{TRAY_TUNNEL_ENABLED_ENV}=1 requires {TUNNEL_TOKEN_ENV}"
-            )
-
-        self.tunnel_proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "run", "--token", token],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        with open(LOG_DIR / "tunnel.log", "a", encoding="utf-8") as log:
+            log.write(f"\n--- Tunnel start {time.strftime('%H:%M:%S')} ---\n")
+            if _local_tunnel_enabled() or _local_tunnel_token():
+                log.write(
+                    f"REFUSED: {TRAY_TUNNEL_ENABLED_ENV} / {TUNNEL_TOKEN_ENV} "
+                    "are no longer honoured -- local Cloudflare tunnel startup "
+                    "has been removed. Use the cloud-hosted app at "
+                    "https://tinyassets.io/mcp; no tunnel was started.\n"
+                )
+            else:
+                log.write(
+                    "local Cloudflare tunnel startup removed; nothing started\n"
+                )
 
     def start_watchdog(self) -> None:
         """Launch the tab-hygiene watchdog as a background process.
@@ -587,9 +585,8 @@ class UniverseServerManager:
         self._mcp_alive = (
             self.mcp_proc is not None and self.mcp_proc.poll() is None
         )
-        self._tunnel_alive = (
-            self.tunnel_proc is not None and self.tunnel_proc.poll() is None
-        )
+        self._tunnel_alive = False
+        self._tunnel_ok = False
         self._watchdog_alive = (
             self.watchdog_proc is not None
             and self.watchdog_proc.poll() is None
@@ -605,23 +602,11 @@ class UniverseServerManager:
         elif not self._mcp_alive:
             self._mcp_serving = False
 
-        if self._mcp_serving and self._tunnel_alive and not self._tunnel_ok:
-            self._phase = "Verifying public endpoint..."
-            self._tunnel_ok = self._probe_url(MCP_URL, timeout=5)
-            if self._tunnel_ok:
-                if self._any_daemon_alive:
-                    self._phase = "Live"
-                else:
-                    self._phase = "MCP live, no daemons"
-        elif not self._tunnel_alive:
-            self._tunnel_ok = False
-
-        if self._any_daemon_alive and self._mcp_serving and self._tunnel_ok:
-            self._phase = "Live"
+        if self._any_daemon_alive and self._mcp_serving:
+            self._phase = "Local tools ready"
         elif (
             not self._any_daemon_alive
             and not self._mcp_alive
-            and not self._tunnel_alive
             and not self._stop_event.is_set()
         ):
             self._phase = "All processes down"
@@ -789,7 +774,6 @@ class UniverseServerManager:
             MenuItem(
                 "Open tinyassets.io/mcp",
                 lambda: webbrowser.open(MCP_URL),
-                enabled=lambda _: self._mcp_serving and self._tunnel_ok,
             ),
             MenuItem(
                 "Open localhost:8001",
@@ -825,11 +809,7 @@ class UniverseServerManager:
         self._phase = "Starting MCP server on port 8001..."
         self.start_mcp()
         time.sleep(2)
-        self._phase = (
-            "Starting Cloudflare tunnel..."
-            if _local_tunnel_enabled()
-            else "Skipping local Cloudflare tunnel"
-        )
+        self._phase = "Skipping local Cloudflare tunnel (removed)"
         self.start_tunnel()
         self._phase = "Starting tab watchdog..."
         self.start_watchdog()
@@ -864,10 +844,6 @@ class UniverseServerManager:
                     self._phase = "MCP server died, restarting..."
                     self.start_mcp()
                     restarted = True
-                if not self._tunnel_alive and self.tunnel_proc is not None:
-                    self._phase = "Tunnel died, restarting..."
-                    self.start_tunnel()
-                    restarted = True
                 if (
                     not self._watchdog_alive
                     and self.watchdog_proc is not None
@@ -879,7 +855,7 @@ class UniverseServerManager:
                 if restarted:
                     restart_backoff = min(restart_backoff + 1, 6)
                     wait = 5 * (2 ** restart_backoff)
-                elif self._any_daemon_alive and self._mcp_serving and self._tunnel_ok:
+                elif self._any_daemon_alive and self._mcp_serving:
                     restart_backoff = 0
                     wait = 10
                 else:
@@ -919,17 +895,10 @@ class UniverseServerManager:
 
         time.sleep(2)
 
-        # 3. Launch optional dev tunnel
-        self._phase = (
-            "Starting Cloudflare tunnel..."
-            if _local_tunnel_enabled()
-            else "Skipping local Cloudflare tunnel"
-        )
+        # 3. No public ingress: local Cloudflare tunnel startup was removed
+        self._phase = "Skipping local Cloudflare tunnel (removed)"
         self.start_tunnel()
-        if self.tunnel_proc is not None:
-            print("  [OK] Cloudflare tunnel starting")
-        else:
-            print("  [skip] Local Cloudflare tunnel disabled")
+        print("  [skip] Local Cloudflare tunnel startup removed")
 
         # 4. Launch tab watchdog
         self._phase = "Starting tab watchdog..."
