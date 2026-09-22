@@ -1091,3 +1091,29 @@ IDs, outputs, credentials or raw logs to the sender.
 - **WHEN** receiver execution fails
 - **THEN** each authorized party sees a safe failure receipt rather than successful processing
 - **AND** sender responses and ledger entries identify the delivery, not a private receiver run
+
+### Requirement: Prompt-node provider budgets retain the node's streaming cap
+
+A prompt-template node SHALL pass its effective timeout as the provider
+configuration's streaming absolute cap, on both the injected bridge and policy
+router paths. It SHALL preserve fractional values for that cap and retain the
+existing integer, minimum-one-second legacy timeout for non-streaming providers.
+This node-local setting SHALL NOT change library or served-conversation defaults,
+provider selection, authority, fallback or automatic-replay policy.
+
+The cap is the streaming reader's execution budget, not proof of end-to-end
+cancellation: executor queueing and provider admission can occur before the
+reader's clock begins. A node timeout SHALL NOT be described as proof that the
+provider never started or that its subprocess stopped at that exact instant.
+
+#### Scenario: Default, fractional and longer node budgets
+
+- **WHEN** a prompt node uses its default timeout or an explicit positive fractional or longer timeout
+- **THEN** both provider call paths receive that same value as the streaming absolute cap
+- **AND** the library's unconfigured streaming cap and independently configured conversation cap remain unchanged
+
+#### Scenario: A progressing stream exceeds the node-local provider cap
+
+- **WHEN** the streaming reader continues receiving protocol progress beyond its supplied node-local absolute cap
+- **THEN** the reader ends the provider process through its existing deadline and cleanup path
+- **AND** progress does not extend that absolute cap or authorize another attempt

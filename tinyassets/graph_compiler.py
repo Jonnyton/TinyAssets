@@ -1191,6 +1191,8 @@ def _build_prompt_template_node(
             # Floor at 1s: a sub-second node timeout (e.g. 0.5) must not become
             # a provider timeout of 0 (int(0.5)==0 → instant provider timeout).
             timeout=max(1, int(timeout_s)),
+            # Streaming providers use this cap, not the legacy timeout scalar.
+            absolute_cap_s=timeout_s,
             reasoning_effort=_node_reasoning_effort,
         )
     except Exception:  # pragma: no cover - defensive; provider import is optional
