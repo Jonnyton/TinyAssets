@@ -127,7 +127,7 @@ def _cloud_worker_rows(tmp_path: Path) -> list[dict]:
     ]
 
 
-def _register_cloud_worker(tmp_path: Path, *, worker_id: str = "worker-cloud-1"):
+def _cloud_registration_args(tmp_path: Path, *, worker_id: str = "worker-cloud-1"):
     initialize_author_server(tmp_path)
     daemon = create_daemon(
         tmp_path,
@@ -136,8 +136,7 @@ def _register_cloud_worker(tmp_path: Path, *, worker_id: str = "worker-cloud-1")
         soul_mode="soul",
         soul_text="Own one bounded cloud registration.",
     )
-    return ensure_daemon_runtime(
-        tmp_path,
+    return dict(
         daemon_id=str(daemon["daemon_id"]),
         universe_id="universe-a",
         provider_name="codex",
@@ -145,6 +144,12 @@ def _register_cloud_worker(tmp_path: Path, *, worker_id: str = "worker-cloud-1")
         created_by="cloud-worker",
         worker_id=worker_id,
         metadata={"automation_executor_class": "cloud"},
+    )
+
+
+def _register_cloud_worker(tmp_path: Path, *, worker_id: str = "worker-cloud-1"):
+    return ensure_daemon_runtime(
+        tmp_path, **_cloud_registration_args(tmp_path, worker_id=worker_id)
     )
 
 
@@ -166,10 +171,7 @@ def test_unadmitted_direct_claim_assigned_claims_nothing(
     bind_provenance(UNADMITTED)
     adapter, candidate, lease = _ready_cloud_assignment(tmp_path)
 
-    try:
-        claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
-    except Exception:  # noqa: BLE001 - a raised refusal is an acceptable shape
-        claimed = None
+    claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
 
     status, claimed_by = _claimed_row(tmp_path, candidate.branch_task_id)
     assert claimed is None, "unadmitted process claimed an assigned cloud task"
@@ -207,15 +209,16 @@ def test_unadmitted_ensure_daemon_runtime_writes_no_cloud_worker_row(
 ) -> None:
     """Matrix 2. Asserted on the persisted row, never on source text.
 
-    The refusal shape is deliberately not pinned — a raise and a refusing
-    return are both acceptable. What is asserted is the boundary: after an
-    unadmitted call there is no `runtime_registration: cloud_worker` row.
+    A permission refusal or a refusing return is acceptable. An arbitrary
+    programming/setup error must fail the test, not count as admission safety.
+    After an unadmitted call there must be no cloud-worker registration row.
     """
     bind_provenance(UNADMITTED)
+    registration_args = _cloud_registration_args(tmp_path)
 
     try:
-        _register_cloud_worker(tmp_path)
-    except Exception:  # noqa: BLE001 - a raised refusal is an acceptable shape
+        ensure_daemon_runtime(tmp_path, **registration_args)
+    except PermissionError:
         pass
 
     rows = _cloud_worker_rows(tmp_path)
@@ -266,10 +269,7 @@ def test_existing_registration_and_cloud_labels_do_not_authorize_claim(
     monkeypatch.setenv("TINYASSETS_CONTAINER", "tinyassets-daemon")
     monkeypatch.setattr("socket.gethostname", lambda: "mcp.tinyassets.io")
 
-    try:
-        claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
-    except Exception:  # noqa: BLE001 - a raised refusal is an acceptable shape
-        claimed = None
+    claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
 
     status, claimed_by = _claimed_row(tmp_path, candidate.branch_task_id)
     assert claimed is None, (
