@@ -3,8 +3,11 @@
 Double-click the desktop shortcut -> this script starts:
   1. One daemon per preferred provider (Author Daemons, LangGraph writing
      engines) with the writer role pinned via ``--provider <name>``
-  2. MCP TinyAssets Server (Python, port 8001)
-  3. Optional local Cloudflare Tunnel for dev-only debugging
+  2. MCP TinyAssets Server (Python, port 8001), bound locally
+
+The tray starts no Cloudflare tunnel and publishes no public ingress from
+this machine: that capability was removed, not gated. Public traffic is
+served by the cloud deployment at https://tinyassets.io/mcp.
 
 A system tray icon shows live status. Hover aggregates active providers.
 Right-click to start/stop per-provider daemons, change defaults, or quit.
@@ -499,10 +502,13 @@ class UniverseServerManager:
 
         The tray used to enroll a local Cloudflare connector when
         ``TINYASSETS_TRAY_ENABLE_TUNNEL`` was truthy. That capability was
-        removed: this machine must never serve platform traffic, even
-        momentarily, so there is no token, flag or env value that starts a
+        removed rather than gated: no token, flag or env value starts a
         tunnel here. A request is recorded as an explicit refusal rather than
         ignored, so nothing reports a tunnel that does not exist.
+
+        Scope: this removes the local *ingress launch*. It is not on its own
+        a guarantee that the machine serves no platform traffic -- worker,
+        provider and custody paths are separate and still open.
         """
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 

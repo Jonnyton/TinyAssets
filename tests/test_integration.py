@@ -2208,6 +2208,127 @@ class TestEditorialVerdict:
 # =====================================================================
 
 
+def _import_tray_headless(monkeypatch, tmp_path):
+    """Import the real ``tinyassets_tray`` with only its GUI deps stubbed.
+
+    Same technique as the ``tray_manager`` fixture in
+    ``tests/test_runtime_status_bridge.py``: stand-ins for ``pystray``/``PIL``
+    are installed only when the real package cannot be imported here, so a dev
+    box with a usable display exercises the real import and headless Linux CI
+    runs the module under test instead of skipping it.
+
+    ``LOG_DIR`` is redirected into ``tmp_path`` so tray writes cannot land in
+    the repository's ``logs/``.
+    """
+    import importlib
+    import sys
+    import types
+
+    for name in ("pystray", "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont"):
+        if name in sys.modules:
+            continue
+        try:
+            importlib.import_module(name)
+        except Exception:
+            # Substitution, not a skip: the body under test still runs. The
+            # broad except is deliberate -- a headless box does not fail with
+            # ImportError. pystray is installed on Linux CI and picks its X11
+            # backend at import, raising Xlib.error.DisplayNameError when
+            # DISPLAY is unset.
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+
+    pystray = sys.modules["pystray"]
+    if not hasattr(pystray, "Icon"):
+        pystray.Icon = object
+        pystray.Menu = type("Menu", (), {"SEPARATOR": object()})
+        pystray.MenuItem = object
+    pil = sys.modules["PIL"]
+    for attr in ("Image", "ImageDraw", "ImageFont"):
+        if not hasattr(pil, attr):
+            setattr(pil, attr, sys.modules[f"PIL.{attr}"])
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "data"))
+    tray_mod = importlib.import_module("tinyassets_tray")
+    monkeypatch.setattr(tray_mod, "LOG_DIR", tmp_path / "logs")
+    return tray_mod
+
+
+@pytest.fixture(
+    params=[
+        {"TINYASSETS_TRAY_ENABLE_TUNNEL": "1"},
+        {
+            "TINYASSETS_TRAY_ENABLE_TUNNEL": "1",
+            "CLOUDFLARE_TUNNEL_TOKEN": "not-a-real-token",
+        },
+        {"TUNNEL_TOKEN": "legacy-not-a-real-token"},
+    ],
+    ids=["flag-only", "flag-and-token", "legacy-token-only"],
+)
+def tray_env(request):
+    """Every way the removed tray tunnel used to be armed, legacy env included."""
+    return request.param
+
+
+@pytest.fixture
+def guarded_cli(monkeypatch, tmp_path):
+    """Drive the real ``_main_unfenced`` with every startup call trapped.
+
+    Returns the list each trap appends to. Nothing binds a port, imports the
+    FastAPI app, or constructs a ``DaemonController``: a regression that starts
+    a server shows up as a recorded name, never as a live process.
+    """
+    import signal as signal_mod
+    import subprocess as subprocess_mod
+    import sys
+    import types
+
+    import fantasy_daemon.__main__ as fa_main
+
+    reached: list[str] = []
+
+    def refuse_process(*args, **kwargs):
+        reached.append("subprocess.Popen")
+        raise AssertionError("CLI regression attempted a real subprocess")
+
+    # A regression can restore the deleted launcher before a mode's trapped
+    # entrypoint. Never let the negative test itself enroll a real connector.
+    monkeypatch.setattr(subprocess_mod, "Popen", refuse_process)
+
+    uvicorn_stub = types.ModuleType("uvicorn")
+    uvicorn_stub.run = lambda *a, **kw: reached.append("uvicorn.run")
+    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn_stub)
+
+    api_stub = types.ModuleType("fantasy_daemon.api")
+    api_stub.app = object()
+    api_stub.configure = lambda **kw: reached.append("api.configure")
+    monkeypatch.setitem(sys.modules, "fantasy_daemon.api", api_stub)
+
+    us_stub = types.ModuleType("fantasy_daemon.universe_server")
+    us_stub.main = lambda **kw: reached.append("universe_server.main")
+    monkeypatch.setitem(sys.modules, "fantasy_daemon.universe_server", us_stub)
+
+    mcp_stub = types.ModuleType("fantasy_daemon.mcp_server")
+    mcp_stub.main = lambda *a, **kw: reached.append("mcp_server.main")
+    monkeypatch.setitem(sys.modules, "fantasy_daemon.mcp_server", mcp_stub)
+
+    monkeypatch.setattr(
+        fa_main, "_run_tray_mode", lambda args: reached.append("tray_mode")
+    )
+
+    class _TrapController:
+        def __init__(self, *a, **kw):
+            reached.append("DaemonController")
+
+        def start(self):  # pragma: no cover - a recorded name fails the test
+            raise AssertionError("the CLI started a daemon")
+
+    monkeypatch.setattr(fa_main, "DaemonController", _TrapController)
+    monkeypatch.setattr(signal_mod, "signal", lambda *a, **kw: None)
+    # --universe-server does os.environ.setdefault on this; keep it scoped.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "cli-data-dir"))
+    return reached
+
+
 class TestLocalTunnelCapabilityRemoved:
     """The shipped client/tray/daemon must not be able to publish an ingress.
 
@@ -2245,6 +2366,18 @@ class TestLocalTunnelCapabilityRemoved:
             assert '"cloudflared"' not in text, rel
             assert "shutil.which(" not in text or "cloudflared" not in text, rel
 
+    def test_one_click_startup_does_not_provision_cloudflared(self):
+        """The packaged one-click .bat must not install or invoke cloudflared.
+
+        Shipping the connector binary as a startup prerequisite keeps the
+        ingress capability one command away on a machine that must never
+        serve platform traffic.
+        """
+        root = Path(__file__).resolve().parent.parent
+        text = (root / "start-tinyassets-server.bat").read_text(encoding="utf-8")
+        assert "cloudflared" not in text
+        assert "winget install Cloudflare" not in text
+
     def test_tunnel_flag_refuses_instead_of_starting(self):
         """--tunnel exits with a migration message; it is never silently accepted."""
         import fantasy_daemon.__main__ as fa_main
@@ -2268,26 +2401,36 @@ class TestLocalTunnelCapabilityRemoved:
         with pytest.raises(SystemExit):
             fa_main._run_tray_mode(args)
 
-    def test_tray_start_tunnel_never_spawns_even_when_env_armed(self, monkeypatch):
-        """The old TINYASSETS_TRAY_ENABLE_TUNNEL arming path spawns nothing."""
-        import subprocess as subprocess_mod
+    def test_tray_start_tunnel_never_spawns_even_when_env_armed(
+        self, tray_env, monkeypatch, tmp_path
+    ):
+        """The old arming env vars spawn nothing -- checked on every platform.
 
-        try:
-            import tinyassets_tray as tray_mod
-        except Exception as exc:  # headless CI: the tray GUI deps need a display
-            pytest.skip(f"tinyassets_tray not importable here: {exc}")
+        This loads the real ``tinyassets_tray`` with only its GUI deps stubbed
+        (same shape as ``tests/test_runtime_status_bridge.py``), so the removal
+        is exercised in headless Linux CI rather than skipped there: a skip on
+        the one platform CI runs is no protection at all. ``LOG_DIR`` is pinned
+        into ``tmp_path`` so the refusal record cannot land in the repo's
+        ``logs/``.
+        """
+        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
 
-        monkeypatch.setenv("TINYASSETS_TRAY_ENABLE_TUNNEL", "1")
-        monkeypatch.setenv("CLOUDFLARE_TUNNEL_TOKEN", "not-a-real-token")
+        for name in (
+            "TINYASSETS_TRAY_ENABLE_TUNNEL",
+            "CLOUDFLARE_TUNNEL_TOKEN",
+            "TUNNEL_TOKEN",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in tray_env.items():
+            monkeypatch.setenv(name, value)
 
-        spawned = []
+        spawned: list[Any] = []
 
-        def _fail_popen(cmd, *a, **kw):
+        def _trip_popen(cmd, *args, **kwargs):
             spawned.append(cmd)
             raise AssertionError(f"tray spawned a process: {cmd}")
 
-        monkeypatch.setattr(subprocess_mod, "Popen", _fail_popen)
-        monkeypatch.setattr(tray_mod.subprocess, "Popen", _fail_popen)
+        monkeypatch.setattr(tray_mod.subprocess, "Popen", _trip_popen)
 
         manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
         manager.tunnel_proc = object()
@@ -2301,6 +2444,113 @@ class TestLocalTunnelCapabilityRemoved:
         assert manager._tunnel_alive is False
         assert manager._tunnel_ok is False
 
+        # The refusal is recorded, and recorded under tmp_path: an empty log
+        # would mean the body never ran, and a missing file would mean LOG_DIR
+        # still pointed at the repo.
+        log_text = (tmp_path / "logs" / "tunnel.log").read_text(encoding="utf-8")
+        assert "REFUSED" in log_text
+        assert "no tunnel was started" in log_text
+        assert "https://tinyassets.io/mcp" in log_text
+
+    def test_tray_start_tunnel_records_a_skip_when_nothing_is_armed(
+        self, monkeypatch, tmp_path
+    ):
+        """With no env arming the tray still starts nothing and says so.
+
+        Guards the discriminator for the test above: the refusal branch must be
+        reachable only via the env vars, so an always-REFUSED log would not
+        prove the arming path was taken.
+        """
+        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
+        for name in (
+            "TINYASSETS_TRAY_ENABLE_TUNNEL",
+            "CLOUDFLARE_TUNNEL_TOKEN",
+            "TUNNEL_TOKEN",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        def _trip_popen(cmd, *args, **kwargs):
+            raise AssertionError(f"tray spawned a process: {cmd}")
+
+        monkeypatch.setattr(tray_mod.subprocess, "Popen", _trip_popen)
+
+        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
+        manager.tunnel_proc = None
+        manager._tunnel_alive = False
+        manager._tunnel_ok = False
+
+        manager.start_tunnel()
+
+        log_text = (tmp_path / "logs" / "tunnel.log").read_text(encoding="utf-8")
+        assert "nothing started" in log_text
+        assert "REFUSED" not in log_text
+
+    # -- real CLI parsing -------------------------------------------------
+    #
+    # The helper test above proves the refusal function; these drive
+    # ``_main_unfenced`` with real argv so a regression in *parsing or
+    # routing* (a dropped flag check, a reordered branch) is caught too.
+
+    @pytest.mark.parametrize("mode", ["--serve", "--universe-server", "--tray"])
+    @pytest.mark.parametrize(
+        "flag", [["--tunnel"], ["--tunnel-name", "tinyassets-local"]]
+    )
+    def test_cli_refuses_tunnel_flags_before_any_mode_starts(
+        self, mode, flag, guarded_cli, monkeypatch, tmp_path
+    ):
+        """Real argv: every entry point refuses before it starts anything."""
+        import sys
+
+        import fantasy_daemon.__main__ as fa_main
+
+        reached = guarded_cli
+        argv = [
+            "fantasy-author",
+            mode,
+            "--universe",
+            str(tmp_path / "universes"),
+            *flag,
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+
+        with pytest.raises(SystemExit) as exc:
+            fa_main._main_unfenced()
+
+        assert fa_main.LOCAL_TUNNEL_REMOVED_MESSAGE in str(exc.value)
+        assert "tinyassets.io/mcp" in str(exc.value)
+        assert reached == [], f"{mode} started something before refusing: {reached}"
+
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [
+            ("--tray", ["tray_mode"]),
+            ("--universe-server", ["universe_server.main"]),
+            ("--serve", ["api.configure", "uvicorn.run"]),
+        ],
+    )
+    def test_cli_modes_still_route_without_the_removed_flags(
+        self, mode, expected, guarded_cli, monkeypatch, tmp_path
+    ):
+        """Positive control for the refusal tests above.
+
+        Without ``--tunnel`` the same argv reaches the mode's startup call, so
+        the empty ``reached`` list in those tests means "refused before
+        startup" rather than "the trap was never wired up".
+        """
+        import sys
+
+        import fantasy_daemon.__main__ as fa_main
+
+        reached = guarded_cli
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["fantasy-author", mode, "--universe", str(tmp_path / "universes")],
+        )
+
+        fa_main._main_unfenced()
+
+        assert reached == expected
 
 # =====================================================================
 # Tray Mode

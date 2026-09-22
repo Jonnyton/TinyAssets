@@ -1,8 +1,11 @@
 @echo off
 :: ============================================================
 :: TinyAssets Server - One-Click Startup
-:: Launches tray icon that manages MCP server + Cloudflare tunnel
-:: Endpoint: https://tinyassets.io/mcp
+:: Launches the tray icon that manages the LOCAL MCP server.
+:: It starts no Cloudflare tunnel and publishes no public ingress from
+:: this machine; the public app at https://tinyassets.io/mcp is served
+:: by the cloud deployment. Removing the ingress launch is not by itself
+:: a claim that this machine serves no platform traffic.
 :: ============================================================
 
 set PROJECT_DIR=%~dp0
@@ -33,18 +36,6 @@ if %errorlevel% neq 0 (
     exit /b 0
 )
 
-:: ---- Check cloudflared ----
-where cloudflared >nul 2>&1
-if %errorlevel% neq 0 (
-    echo cloudflared not found. Installing via winget...
-    winget install Cloudflare.cloudflared --accept-package-agreements --accept-source-agreements
-    if %errorlevel% neq 0 (
-        echo Failed to install cloudflared. See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
-        pause
-        exit /b 1
-    )
-)
-
 :: ---- Create venv if needed ----
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     echo First run - setting up environment...
@@ -58,7 +49,7 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
     call "%VENV_DIR%\Scripts\activate.bat"
 )
 
-:: ---- Launch tray app (replaces this console window) ----
+:: ---- Launch tray app (local only, no public ingress) ----
 cd /d "%PROJECT_DIR%"
 start /b pythonw tinyassets_tray.py
 exit

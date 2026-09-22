@@ -1,9 +1,11 @@
 """TinyAssets -- double-click to launch (tray mode).
 
 Runs via pythonw.exe (no console window).  Starts the API server and
-daemon with a system tray icon for control.  It publishes no public
-ingress: local Cloudflare tunnel startup was removed, so this machine
-never serves platform traffic.
+daemon with a system tray icon for control.  Local Cloudflare tunnel
+startup was removed, so this launcher publishes no public ingress; the
+public app is served from the cloud deployment at
+https://tinyassets.io/mcp.  Removing the ingress launch is not by itself
+a claim that the machine serves no platform traffic.
 """
 import sys
 
