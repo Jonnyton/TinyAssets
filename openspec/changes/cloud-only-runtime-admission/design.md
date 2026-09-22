@@ -1,5 +1,24 @@
 # Design — cloud-only runtime admission
 
+**Candidate verification correction,2026-09-22:** root reproduced four failures
+in builder5345d4ad before correcting them: a socket inactivity timeout was not a
+whole startup-observation deadline; inherited process evidence was not cleared
+after a PID change; a stat/read race could exceed the expected-state read bound;
+and boolean true was accepted as schema version1. The candidate now bounds the
+caller's wait with one daemon reader, rejects its late result, reads state with a
+byte ceiling, validates the version's integer type, and invalidates inherited
+cache/mutex state on PID change (PID is not cloud proof). One late metadata reader
+may still finish in the background; this is a startup-wait bound, not a claim
+that an arbitrary blocked transport thread was forcibly terminated. Independent
+review must assess that explicit lifetime tradeoff before release.
+
+Expected-state installation now stages in the same validated volume and uses an
+atomic rename so readers never see an in-place partial write. Preparation failure
+preserves prior state and does not falsely report it missing. Focused Windows
+cohort175passed; workflow actionlint passed, plugin mirror rebuilt. Local Linux
+oracle was attempted and reports no Docker engine; it was not started. Linux
+and deployed redeploy/restart/rollback evidence remain required and unclaimed.
+
 ## Threat model, stated precisely
 
 The founder requirement is that the personal desktop never serves or executes

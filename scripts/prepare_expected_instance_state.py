@@ -30,9 +30,10 @@ Exit codes
 ----------
 0  state written
 3  expected identity could not be resolved (sanitized reason on stdout). In the
-   record-only slice the caller may continue: the resolver then observes
-   `expected_identity_missing` and records not-cloud, which is the fail-closed
-   direction. Enforcement (tasks 6-8) must treat 3 as fatal.
+   record-only slice the caller may continue without a fresh preparation claim.
+   Any earlier remote state remains; the resolver observes that actual state,
+   which may be missing or may still match. Enforcement (tasks 6-8) must treat
+   3 as fatal.
 2  usage / write error
 """
 

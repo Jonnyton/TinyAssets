@@ -45,6 +45,7 @@ primitive, § Process lifetime and deployment ordering):
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import urllib.error
@@ -173,10 +174,39 @@ def read_metadata_instance_id(
     opener: _UrlOpener | None = None,
     timeout: float = METADATA_TIMEOUT_SECONDS,
 ) -> MetadataRead:
-    """Read the droplet id once, bounded, with no redirects and no proxy.
+    """Bound the entire startup observation, not only socket inactivity.
 
-    Every failure mode is a typed refusal reason; nothing raises.
+    urllib's socket timeout restarts as bytes arrive. A slow response must not
+    turn a nominal half-second startup observation into an indefinite wait.
+    One daemon reader may finish after this caller's deadline, but its late
+    result is never returned or used to upgrade cached process evidence. This
+    is a once-per-process observation, not a retrying worker pool.
     """
+    finished = threading.Event()
+    results: list[MetadataRead] = []
+
+    def read() -> None:
+        try:
+            results.append(_read_metadata_instance_id(opener=opener, timeout=timeout))
+        except Exception:  # noqa: BLE001 - unexpected reader faults refuse
+            results.append(MetadataRead(None, "metadata_probe_failed"))
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=read, name="platform-metadata-read", daemon=True)
+    try:
+        worker.start()
+    except RuntimeError:
+        return MetadataRead(None, "metadata_probe_failed")
+    if not finished.wait(timeout):
+        return MetadataRead(None, "metadata_timeout")
+    return results[0]
+
+
+def _read_metadata_instance_id(
+    *, opener: _UrlOpener | None, timeout: float
+) -> MetadataRead:
+    """Read only the fixed endpoint with transport and body-size bounds."""
     active = opener if opener is not None else build_metadata_opener()
     request = urllib.request.Request(METADATA_URL, method="GET")
     try:
@@ -248,14 +278,19 @@ def read_expected_instance_id(
             return ExpectedInstanceRead(None, "expected_identity_missing")
         if path.stat().st_size > MAX_EXPECTED_STATE_BYTES:
             return ExpectedInstanceRead(None, "expected_identity_state_too_large")
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as stream:
+            body = stream.read(MAX_EXPECTED_STATE_BYTES + 1)
+        if len(body) > MAX_EXPECTED_STATE_BYTES:
+            return ExpectedInstanceRead(None, "expected_identity_state_too_large")
+        payload = json.loads(body.decode("utf-8"))
     except Exception:  # noqa: BLE001 - unreadable/invalid state refuses
         return ExpectedInstanceRead(None, "expected_identity_state_unreadable")
     if not isinstance(payload, dict):
         return ExpectedInstanceRead(None, "expected_identity_malformed")
     if payload.get("schema") != EXPECTED_INSTANCE_SCHEMA:
         return ExpectedInstanceRead(None, "expected_identity_schema_unknown")
-    if payload.get("version") != EXPECTED_INSTANCE_VERSION:
+    version = payload.get("version")
+    if type(version) is not int or version != EXPECTED_INSTANCE_VERSION:
         return ExpectedInstanceRead(None, "expected_identity_version_unsupported")
     recorded = payload.get("expected_instance_id")
     if not isinstance(recorded, str) or not _INSTANCE_ID_RE.match(recorded.strip()):
@@ -337,6 +372,7 @@ class ProcessProvenanceObservation:
         resolver: Callable[[], RuntimeProvenance] = resolve_platform_runtime_provenance,
     ) -> None:
         self._resolver = resolver
+        self._pid = os.getpid()
         self._lock = threading.Lock()
         self._result: RuntimeProvenance | None = None
 
@@ -345,6 +381,13 @@ class ProcessProvenanceObservation:
         return self._result is not None
 
     def observe(self) -> RuntimeProvenance:
+        # A fork inherits objects and potentially a locked parent mutex. A PID
+        # change invalidates both before taking the lock. PID is a cache-lifetime
+        # discriminator only; it is never cloud evidence or execution authority.
+        if self._pid != os.getpid():
+            self._lock = threading.Lock()
+            self._result = None
+            self._pid = os.getpid()
         with self._lock:
             if self._result is None:
                 self._result = self._resolver()

@@ -192,3 +192,14 @@ def test_expected_state_lands_in_the_mounted_data_root(deploy_steps) -> None:
     # resolver reads it through data_dir() with no path logic of its own.
     assert "docker volume inspect tinyassets-data" in run
     assert "install -m 0644" in run
+
+
+def test_preparation_atomically_replaces_state_without_claiming_absence(deploy_steps) -> None:
+    prepare = deploy_steps[_index(deploy_steps, "Prepare expected-instance state")]
+    run = str(prepare.get("run", ""))
+    assert 'mktemp "${vol}/.platform-expected-instance.XXXXXX"' in run
+    assert 'mv -f -- "$staged" "${vol}/platform-expected-instance.json"' in run
+    assert run.index('sudo test -d "$vol"') < run.index("sudo mktemp")
+    assert run.index("sudo install -m 0644") < run.index("sudo mv -f")
+    assert "any prior state is unchanged" in run
+    assert "will observe expected_identity_missing" not in run
