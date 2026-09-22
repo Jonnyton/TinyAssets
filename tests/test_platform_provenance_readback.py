@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -364,6 +365,54 @@ def test_reporter_survives_a_malformed_payload(malformed):
 
     assert result["verdict"] == "unknown"
     assert result["reported"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        # A snake_case SHAPE check passes all of these. Only a known protocol
+        # VALUE may print, or the reason field becomes a leak channel.
+        ("reason", f"instance_{_SECRET_INSTANCE_ID}"),
+        ("reason", "token_sensitive_value"),
+        ("verdict", "unexpected_claim"),
+        # "don't fake enforcement": a mode this reporter does not know must not
+        # print as though enforcement were live.
+        ("mode", "enforcement_enabled"),
+        # Python's `$` matches BEFORE a trailing newline, so a `^...$` shape
+        # check lets a log-injecting newline through.
+        ("reason", "instance_match\n"),
+    ],
+)
+def test_only_known_protocol_values_print_not_token_shapes(field, value):
+    mod = load_gate()
+
+    result = mod.provenance_report({"platform_runtime_provenance": {field: value}})
+
+    assert result[field] == "unknown"
+    assert value not in str(result.values())
+    assert _SECRET_INSTANCE_ID not in json.dumps(result)
+
+
+def test_reporter_value_allowlist_covers_every_reason_the_module_emits():
+    """The allowlist must not silently fall behind the module it reports on."""
+    mod = load_gate()
+    source = (REPO_ROOT / "tinyassets" / "platform_runtime_provenance.py").read_text(
+        encoding="utf-8"
+    )
+    # Harvest the CONSTRUCTION sites only. A bare string search also sweeps up
+    # boolean field names like `metadata_reachable`, which are not reasons.
+    emitted = set(
+        re.findall(
+            r'(?:MetadataRead|ExpectedInstanceRead)\([^,]+,\s*"([a-z0-9_]+)"', source
+        )
+    ) | set(re.findall(r'reason="([a-z0-9_]+)"', source))
+    # "reachable" and "prepared" describe a successful intermediate read; the
+    # resolver copies a reason only on the failure branches, so neither can ever
+    # land on a verdict and neither is printable.
+    emitted -= {"reachable", "prepared"}
+    missing = emitted - mod.PROVENANCE_REASONS
+    assert not missing, f"reporter allowlist is behind the module: {sorted(missing)}"
+    assert mod.PROVENANCE_VERDICTS == {prov.CLOUD, prov.NOT_CLOUD, prov.UNKNOWN}
 
 
 def test_reporter_rejects_wrong_types_and_unexpected_tokens():

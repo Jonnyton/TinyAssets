@@ -173,9 +173,45 @@ PROVENANCE_BOOL_FIELDS = (
     "expected_identity_prepared",
     "enforced",
 )
-#: A short snake_case token, nothing else. An id, a path, an address or a
-#: sentence all fail this and print as unknown rather than reaching a log.
-PROVENANCE_TOKEN_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+#: Known protocol VALUES, not a token shape. A shape allowlist was the first
+#: attempt and it was wrong in three ways at once: `reason="instance_412903887"`
+#: is a perfectly good snake_case token that carries a droplet id into a CI log;
+#: `mode="enforcement_enabled"` prints a fake enforcement claim; and Python's
+#: `$` matches before a trailing newline, so `"instance_match\n"` passes a
+#: `^...$` check and injects a line break into the log. Only a value the
+#: protocol actually defines is printable. A reason this list has not learned
+#: yet prints as unknown -- the safe direction for a diagnostic whose job is to
+#: not leak.
+PROVENANCE_VERDICTS = frozenset({"cloud", "not_cloud", "unknown"})
+PROVENANCE_MODES = frozenset({"observation_only"})
+#: Every reason `tinyassets.platform_runtime_provenance` can put on a resolved
+#: verdict or an unobserved peek. Kept in step with that module by a test.
+PROVENANCE_REASONS = frozenset({
+    "not_observed",
+    "instance_match",
+    "instance_mismatch",
+    "metadata_probe_failed",
+    "metadata_timeout",
+    "metadata_unreachable",
+    "metadata_redirect_refused",
+    "metadata_http_error",
+    "metadata_malformed_body",
+    "metadata_body_too_large",
+    "metadata_empty_id",
+    "metadata_malformed_instance_id",
+    "expected_identity_root_unresolved",
+    "expected_identity_missing",
+    "expected_identity_state_too_large",
+    "expected_identity_state_unreadable",
+    "expected_identity_malformed",
+    "expected_identity_schema_unknown",
+    "expected_identity_version_unsupported",
+})
+PROVENANCE_ALLOWED_VALUES = {
+    "verdict": PROVENANCE_VERDICTS,
+    "reason": PROVENANCE_REASONS,
+    "mode": PROVENANCE_MODES,
+}
 PROVENANCE_UNKNOWN = "unknown"
 
 
@@ -203,7 +239,10 @@ def provenance_report(release_state: Any) -> dict[str, Any]:
     result["reported"] = True
     for name in PROVENANCE_STR_FIELDS:
         value = raw.get(name)
-        if isinstance(value, str) and PROVENANCE_TOKEN_RE.match(value):
+        # Exact membership, no strip() and no normalization: a value that needs
+        # cleaning up before it matches is not the protocol value, and cleaning
+        # it is how a newline or a padded id gets through.
+        if isinstance(value, str) and value in PROVENANCE_ALLOWED_VALUES[name]:
             result[name] = value
     for name in PROVENANCE_BOOL_FIELDS:
         value = raw.get(name)
