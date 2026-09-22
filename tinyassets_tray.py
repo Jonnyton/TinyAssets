@@ -317,12 +317,7 @@ class UniverseServerManager:
             parts.append("MCP: Loading")
         else:
             parts.append("MCP: Down")
-        if self._tunnel_ok:
-            parts.append("Tunnel: Connected")
-        elif self._tunnel_alive:
-            parts.append("Tunnel: Connecting")
-        else:
-            parts.append("Tunnel: Down")
+        parts.append("Public app: Cloud-hosted")
         if self._watchdog_alive:
             parts.append("Tab watchdog: Running")
         else:
@@ -332,8 +327,8 @@ class UniverseServerManager:
     @property
     def hover_text(self) -> str:
         running = self._running_providers()
-        if running and self._mcp_serving and self._tunnel_ok:
-            base = "TinyAssets Server - Live at tinyassets.io/mcp"
+        if running and self._mcp_serving:
+            base = "TinyAssets - Local tools ready"
         else:
             base = f"TinyAssets Server - {self._phase}"
         if running:
@@ -356,9 +351,9 @@ class UniverseServerManager:
     @property
     def icon_color(self) -> tuple:
         running = bool(self._running_providers())
-        if running and self._mcp_serving and self._tunnel_ok:
+        if running and self._mcp_serving:
             return GREEN
-        elif running or self._mcp_alive or self._tunnel_alive:
+        elif running or self._mcp_alive:
             return YELLOW
         elif self._stop_event.is_set():
             return RED
@@ -590,9 +585,8 @@ class UniverseServerManager:
         self._mcp_alive = (
             self.mcp_proc is not None and self.mcp_proc.poll() is None
         )
-        self._tunnel_alive = (
-            self.tunnel_proc is not None and self.tunnel_proc.poll() is None
-        )
+        self._tunnel_alive = False
+        self._tunnel_ok = False
         self._watchdog_alive = (
             self.watchdog_proc is not None
             and self.watchdog_proc.poll() is None
@@ -608,23 +602,11 @@ class UniverseServerManager:
         elif not self._mcp_alive:
             self._mcp_serving = False
 
-        if self._mcp_serving and self._tunnel_alive and not self._tunnel_ok:
-            self._phase = "Verifying public endpoint..."
-            self._tunnel_ok = self._probe_url(MCP_URL, timeout=5)
-            if self._tunnel_ok:
-                if self._any_daemon_alive:
-                    self._phase = "Live"
-                else:
-                    self._phase = "MCP live, no daemons"
-        elif not self._tunnel_alive:
-            self._tunnel_ok = False
-
-        if self._any_daemon_alive and self._mcp_serving and self._tunnel_ok:
-            self._phase = "Live"
+        if self._any_daemon_alive and self._mcp_serving:
+            self._phase = "Local tools ready"
         elif (
             not self._any_daemon_alive
             and not self._mcp_alive
-            and not self._tunnel_alive
             and not self._stop_event.is_set()
         ):
             self._phase = "All processes down"
@@ -792,7 +774,6 @@ class UniverseServerManager:
             MenuItem(
                 "Open tinyassets.io/mcp",
                 lambda: webbrowser.open(MCP_URL),
-                enabled=lambda _: self._mcp_serving and self._tunnel_ok,
             ),
             MenuItem(
                 "Open localhost:8001",
@@ -874,7 +855,7 @@ class UniverseServerManager:
                 if restarted:
                     restart_backoff = min(restart_backoff + 1, 6)
                     wait = 5 * (2 ** restart_backoff)
-                elif self._any_daemon_alive and self._mcp_serving and self._tunnel_ok:
+                elif self._any_daemon_alive and self._mcp_serving:
                     restart_backoff = 0
                     wait = 10
                 else:

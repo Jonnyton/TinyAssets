@@ -2485,6 +2485,67 @@ class TestLocalTunnelCapabilityRemoved:
         assert "nothing started" in log_text
         assert "REFUSED" not in log_text
 
+    def test_cloud_app_menu_does_not_depend_on_any_local_process(self, monkeypatch, tmp_path):
+        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
+
+        class Menu(list):
+            SEPARATOR = object()
+
+            def __init__(self, *items):
+                super().__init__(items)
+
+        monkeypatch.setattr(tray_mod, "Menu", Menu)
+        monkeypatch.setattr(tray_mod, "MenuItem", lambda name, action, **kw: {
+            "name": name, "action": action, **kw,
+        })
+        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
+        manager._mcp_serving = manager._tunnel_ok = False
+        menu = manager._build_menu()
+        item = next(item for item in menu if isinstance(item, dict)
+                    and item["name"] == "Open tinyassets.io/mcp")
+        enabled = item.get("enabled", True)
+        assert enabled(None) if callable(enabled) else enabled
+
+    def test_local_readiness_does_not_claim_cloud_health(self, monkeypatch, tmp_path):
+        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
+        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
+        manager._running_providers = lambda: ["codex"]
+        manager._mcp_serving = True
+        manager._tunnel_ok = manager._tunnel_alive = False
+        manager._active_universe = "fixture"
+        manager._watchdog_alive = False
+        assert manager.icon_color == tray_mod.GREEN
+        assert "Local tools ready" in manager.hover_text
+        assert "Live at" not in manager.hover_text
+        assert "Tunnel:" not in manager.status_text
+
+    def test_healthy_local_monitor_uses_normal_interval_without_tunnel(
+        self, monkeypatch, tmp_path
+    ):
+        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
+        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
+
+        class StopEvent:
+            def __init__(self):
+                self.waits = []
+
+            def is_set(self):
+                return len(self.waits) == 2
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+
+        manager._stop_event = StopEvent()
+        manager._running_providers = lambda: ["codex"]
+        manager._mcp_serving = manager._mcp_alive = True
+        manager._tunnel_ok = manager._watchdog_alive = False
+        manager.watchdog_proc = None
+        manager.check_health = lambda: None
+        manager._update_icon = lambda: None
+        manager._check_universe_switch = lambda: False
+        manager._monitor_loop()
+        assert manager._stop_event.waits == [3, 10]
+
     # -- real CLI parsing -------------------------------------------------
     #
     # The helper test above proves the refusal function; these drive
