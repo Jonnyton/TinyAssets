@@ -424,24 +424,33 @@ first would be theatre.
 Every provider URL in this document is the official public documentation for the
 contract shape being relied on:
 
-- DigitalOcean droplet metadata — `https://docs.digitalocean.com/products/droplets/how-to/retrieve-droplet-metadata/`
-  (reference: `https://docs.digitalocean.com/reference/api/metadata-api/`).
+- DigitalOcean droplet metadata — `https://docs.digitalocean.com/products/droplets/how-to/access-metadata/`
+  (reference: `https://docs.digitalocean.com/reference/api/metadata/droplet-properties/`).
   **Limit:** the service is unauthenticated and unsigned; DO documents it as a
   convenience, not an identity proof.
-- DigitalOcean API, droplet list — `https://docs.digitalocean.com/reference/api/digitalocean/` (Droplets tag).
+- DigitalOcean API, droplet list — `https://docs.digitalocean.com/reference/api/reference/droplets/`.
   **Limit:** requires a token with droplet read; a read-scoped token is enough.
-- Cloudflare Tunnel connections — `https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/`.
+- Cloudflare Tunnel connections — `https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/connections/methods/get/`.
   **Limit:** requires the account id and tunnel id plus `Cloudflare Tunnel: Read`;
   neither id is in the inventoried secret names.
 - Cloudflare DNS records list — `https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/list/`.
-- OpenRouter OAuth PKCE — `https://openrouter.ai/docs/use-cases/oauth-pkce`.
+- OpenRouter OAuth PKCE — `https://openrouter.ai/docs/guides/overview/auth/oauth`.
 
-**Limitation stated plainly:** these URLs were **not fetched in this session** —
-this branch is under a no-live-network constraint, so they are cited from the
-documented contract shape rather than from a read performed here. Task 2
-re-reads each URL and corrects any that moved *before* the resolver commits to
-the primitive. No behaviour in this change may be justified by an unverified doc
-URL alone.
+**Lead verification, 2026-09-22 UTC:** the official pages above were read through
+the web research tool; moved metadata and OAuth URLs are corrected here. The
+metadata ID is an integer returned over link-local HTTP, not signed attestation.
+Tunnel connections expose nested `conns[].origin_ip`; incomplete pagination and
+absent observations must remain unknown. These public contracts do not establish
+the actual deployed account, routing, metadata reachability or credential custody.
+
+Two additional custody contracts were read, not exercised:
+`https://developers.cloudflare.com/tunnel/reference/tunnel-tokens/` says token
+rotation prevents new connections using the old token but existing connectors
+remain until restarted; rotation alone therefore does not establish exclusion.
+`https://developers.cloudflare.com/fundamentals/api/how-to/restrict-tokens/`
+describes API-token IP/TTL restrictions (Verify Token is exempt from IP filtering),
+not an IP restriction on connector tokens. No token rotation or access change was
+performed. These constraints require cross-family review before implementation.
 
 ## Rollout
 

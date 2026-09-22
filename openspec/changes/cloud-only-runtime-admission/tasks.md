@@ -19,9 +19,10 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   exists. A typed `unknown` blocks enforcement acceptance, not unrelated fixes.
   If metadata is unreachable, revise `design.md` § Evidence primitive before
   task 4.
-- [ ] 2. Re-read each provider URL in `design.md` § Source citations and their
-  limits, correct any that moved, and record the read date — none of them was
-  fetched when this change was written.
+- [x] 2. Re-read each provider URL in `design.md` § Source citations and their
+  limits, correct any that moved, and record the read date. Lead read the
+  official contracts on 2026-09-22 UTC and corrected metadata/API/OAuth links.
+  Public contract reads do not establish deployed facts or approve runtime code.
 - [x] 3. **Prevention (review finding 2):** delete the off-cloud ingress
   capability — daemon, tray and plugin-runtime tunnel startup, its call sites,
   the re-exports and the env gate that armed it. **Landed** in PR #3913, sha
