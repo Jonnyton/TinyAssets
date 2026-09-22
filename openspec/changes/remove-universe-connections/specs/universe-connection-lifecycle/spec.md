@@ -15,6 +15,28 @@ explicit disconnect action to the authenticated owner without model execution.
 - **WHEN** a caller targets another owner's connection or an obsolete incarnation
 - **THEN** removal refuses without changing the current connection or its secret
 
+### Requirement: Disconnect confirmation remains in the app
+The first Disconnect action SHALL display the affected connection and its
+consequences without sending a removal request. Only a separate Confirm
+disconnect action SHALL send the exact observed owner/home/incarnation request.
+Cancel SHALL leave access unchanged. Browser-native confirmation support SHALL
+NOT be required.
+
+#### Scenario: Owner reviews and cancels
+- **WHEN** the owner selects Disconnect for a listed connection
+- **THEN** the app shows the consequences and separate Confirm disconnect and Cancel controls
+- **AND** Cancel closes the confirmation and reports that the connection remains
+
+#### Scenario: Unconfirmed removal is not replayed
+- **WHEN** a submitted removal has an uncertain outcome
+- **THEN** the old row remains unavailable for another removal until a successful fresh inventory read
+- **AND** no removal request is automatically replayed
+
+#### Scenario: Account changes during a request
+- **WHEN** the owner, home or account-view generation changes before an inventory or removal result arrives
+- **THEN** the obsolete result cannot replace the current connection list or controls
+- **AND** reopening Account clears obsolete rows and keeps Refresh connections available
+
 ### Requirement: Disconnect is an authority transition
 Removal SHALL fence dependent model authority and old approvals, serialize with
 connection mutation, and preserve unrelated owner/source authority.
