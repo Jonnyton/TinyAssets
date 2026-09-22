@@ -1523,6 +1523,12 @@ def _action_get_run(kwargs: dict[str, Any]) -> str:
     events = list_events(_base_path(), rid)
     snapshot = _compose_run_snapshot(record, events)
     snapshot["cancel_requested"] = is_cancel_requested(_base_path(), rid)
+    from tinyassets.api.run_activity import ACTIVITY_EVIDENCE, build_node_activity
+
+    # Keep existing recovery/output guidance ahead of additive diagnostics for
+    # text-only clients whose faithful result prefix has a bounded size.
+    snapshot["node_activity"] = build_node_activity(events, snapshot["node_statuses"])
+    snapshot["activity_evidence"] = ACTIVITY_EVIDENCE
     return json.dumps(snapshot, default=str)
 
 
