@@ -357,9 +357,20 @@ replayed: its thread is never killed, and the provider's own subprocess/HTTP
 timeout remains the backstop, because an interrupted call leaves an effect that
 cannot be classified.
 
+A call that waited in the queue for a material part of its budget and then
+started SHALL have that wait subtracted from the provider cap it is given, so
+the provider's own deadline expires with the node's rather than the queue wait
+beyond it. The subtraction SHALL produce a fresh per-invocation config, never a
+mutation of the per-node one, and SHALL leave a call that did not queue with the
+node's full timeout unchanged.
+
 #### Scenario: queued work is cancelled rather than started after the deadline
 - **WHEN** a node's call is still waiting in the worker pool queue as its `timeout_seconds` elapses
 - **THEN** the node fails as a node timeout and the queued call is cancelled, never executing
+
+#### Scenario: a queue wait comes out of the provider's cap, not the node's deadline
+- **WHEN** a node's call waits in the worker pool queue for a material part of its `timeout_seconds` and then starts
+- **THEN** the provider receives the remaining budget as its absolute cap, while a call that did not queue still receives the node's full timeout
 
 #### Scenario: work already running is left to settle
 - **WHEN** a node's call has already started on a worker as its `timeout_seconds` elapses

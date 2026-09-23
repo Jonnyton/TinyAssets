@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
+import dataclasses as _dataclasses
 import json
 import logging
 import operator
@@ -304,14 +305,19 @@ class ConcurrencyTracker:
 #
 # NOTE: when all 8 workers are busy, the 9th submit queues and its
 # timeout is measured from submit(), not from worker-allocated-start.
-# A call that spends its whole budget queued is cancelled by
-# _run_with_timeout rather than started after its node went terminal.
-# Residual, NOT yet corrected: a call that starts partway through its
-# budget still receives the node's FULL timeout as its provider cap
-# (built once per node closure), so it can outlive the node's deadline
-# by the queue wait. Fixing that needs a per-invocation deadline rather
-# than the per-closure ModelConfig built below.
+# Both consequences are corrected, not absorbed: a call that spends its
+# whole budget queued is cancelled rather than started after its node
+# went terminal, and a call that waited only part of its budget has that
+# wait subtracted from its provider cap (see _deadline_cfg) instead of
+# receiving the node's full timeout from the per-closure ModelConfig.
 _TIMEOUT_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
+
+# Below this, the gap between submit() and worker start is scheduling jitter
+# rather than queue wait, and the node's config is handed over untouched.
+_QUEUE_WAIT_SUBTRACT_THRESHOLD_S = 0.05
+# A call that waited out its whole budget is normally cancelled; if it wins the
+# race and starts anyway, it still gets a usable floor rather than timeout=0.
+_MIN_REMAINING_PROVIDER_CAP_S = 1.0
 
 
 def _get_timeout_executor() -> concurrent.futures.ThreadPoolExecutor:
@@ -1239,10 +1245,11 @@ def _build_prompt_template_node(
         else None
     )
 
-    def _bridge(_p: str, _s: str, observer) -> str:
+    def _bridge(_p: str, _s: str, observer, cfg: Any = None) -> str:
         kwargs: dict[str, Any] = {"role": role}
-        if _bridge_takes_config and _node_cfg is not None:
-            kwargs["config"] = _node_cfg
+        effective_cfg = cfg if cfg is not None else _node_cfg
+        if _bridge_takes_config and effective_cfg is not None:
+            kwargs["config"] = effective_cfg
         if universe_context is not None:
             kwargs["universe_context"] = universe_context
         if _bridge_takes_observer:
@@ -1403,6 +1410,39 @@ def _build_prompt_template_node(
             execution_receipt = WriterExecutionReceipt()
             provider_served: str = "unknown"
             provider_meta: dict[str, Any] = {}
+
+            # _run_with_timeout counts timeout_s from submit(), so a call that
+            # waited in the pool queue must not then be handed the node's FULL
+            # budget as its provider cap — it would outlive the node's own
+            # deadline by exactly the queue wait. Measured on the worker (these
+            # closures run there), so it reflects real wait, not submit time.
+            _submitted_at = time.monotonic()
+
+            def _deadline_cfg() -> Any:
+                """The node's REMAINING budget as a provider cap.
+
+                Returns a fresh ModelConfig — never a mutation. ModelConfig is
+                frozen, and one compiled closure serves concurrent invocations,
+                so the shared per-node config must stay untouched.
+                """
+                if _node_cfg is None:
+                    return None
+                waited = time.monotonic() - _submitted_at
+                if waited < _QUEUE_WAIT_SUBTRACT_THRESHOLD_S:
+                    # Scheduling jitter, not queue wait. Hand over the node's
+                    # own config unchanged so an unqueued call is unaffected.
+                    return _node_cfg
+                # The floor must never exceed what the node itself asked for:
+                # flooring a 0.5s node at 1.0s would RAISE its timeout, which is
+                # the opposite of the correction.
+                floor = min(_MIN_REMAINING_PROVIDER_CAP_S, timeout_s)
+                remaining = max(floor, timeout_s - waited)
+                return _dataclasses.replace(
+                    _node_cfg,
+                    timeout=max(1, int(remaining)),
+                    absolute_cap_s=remaining,
+                )
+
             if provider_call is None:
                 response = f"[Mock response for {node.node_id}]"
                 provider_served = "mock"
@@ -1428,7 +1468,7 @@ def _build_prompt_template_node(
                                 prompt=prompt,
                                 system="",
                                 policy=effective_policy,
-                                config=_node_cfg,
+                                config=_deadline_cfg(),
                                 universe_context=universe_context,
                                 response_observer=execution_receipt.observe,
                             )
@@ -1442,7 +1482,9 @@ def _build_prompt_template_node(
                         # Router unavailable or empty — fall through to the
                         # run_branch-injected provider bridge.
                         response = _run_with_timeout(
-                            lambda: _bridge(prompt, "", execution_receipt.observe),
+                            lambda: _bridge(
+                                prompt, "", execution_receipt.observe, _deadline_cfg(),
+                            ),
                             timeout_s=timeout_s,
                             node_id=node.node_id,
                         )
@@ -1457,7 +1499,9 @@ def _build_prompt_template_node(
             else:
                 try:
                     response = _run_with_timeout(
-                        lambda: _bridge(prompt, "", execution_receipt.observe),
+                        lambda: _bridge(
+                                prompt, "", execution_receipt.observe, _deadline_cfg(),
+                            ),
                         timeout_s=timeout_s,
                         node_id=node.node_id,
                     )

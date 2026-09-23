@@ -16,7 +16,8 @@ below therefore comes from reading the runtime directly, not from the cited docs
 
 ## Verdict on root's proposed shape
 
-**AGREE, in part, with one component split off as unjustified-as-stated.**
+**AGREE on both components.** One was initially split off as wrong-sized; that
+objection was mine, it did not survive re-verification, and it is withdrawn below.
 
 ### AGREE — cancel work not yet started
 
@@ -36,9 +37,17 @@ been picked up, so it is structurally incapable of interrupting a started call.
 Settlement and uncertain-effect protection are preserved by the API's own
 guarantee, not by a convention a later edit could erode.
 
-### DISAGREE_CONCERN — "subtract elapsed queue/admission time before launch"
+### DISAGREE_CONCERN — withdrawn on re-verification; now AGREE and implemented
 
-Real defect, wrong-sized as a same-lane change. The provider cap is
+Originally filed as "real defect, wrong-sized as a same-lane change." **That
+blocker was my own and it did not survive re-checking**, so it is withdrawn.
+Two premises behind it were wrong: the submitted callables are defined *inside*
+`_fn`, so the queue wait is measurable on the worker without touching
+`_run_with_timeout`'s contract; and `ModelConfig` is `@dataclass(frozen=True)`,
+so the race I feared is impossible by construction and `dataclasses.replace`
+gives a per-invocation config for free. Implemented as `_deadline_cfg()`.
+
+The original reasoning, kept for the record: The provider cap is
 `ModelConfig(timeout=..., absolute_cap_s=timeout_s)` built **once per node
 closure** at `graph_compiler.py:1192`, outside `_fn`. A call that starts partway
 through its budget still receives the node's *full* timeout as its cap, so it
@@ -48,14 +57,21 @@ in place would be a cross-invocation race under parallel fan-out, since one
 compiled closure serves concurrent invocations. That is a different change with
 its own review surface, and it is not needed to close the abandonment path —
 once queued work is cancelled, the residual overrun is bounded by the queue wait
-on work that genuinely started. Recorded in-place at `graph_compiler.py:305`
-rather than left implicit.
+on work that genuinely started. That reasoning held only for the *mutation* shape;
+a fresh per-invocation config sidesteps it entirely.
+
+One real bug surfaced while implementing it: a fixed 1s floor on the remaining
+budget would RAISE a sub-second node's timeout (a 0.5s node handed a 1.0s cap)
+— "never just raise all timeouts" violated under cover of lowering one. The
+floor is now `min(1.0, timeout_s)`, pinned by a test verified red without it.
 
 ### AGREE — the stated prohibitions
 
 No auto-replay of unknown effects, no treating a requested model as reported
 identity, no blanket timeout raise. The landed change does none of these: it
-adds one `future.cancel()` call and touches no timeout value.
+cancels queued work and hands a started call a cap that is only ever SMALLER
+than the node's own declared timeout, never larger — the sub-second floor bug
+above was exactly the case where that could have inverted, and it is pinned.
 
 ## Scope honesty
 
@@ -70,9 +86,15 @@ concern. Nothing here should be cited as retiring that issue.
   `test_queued_work_never_starts_once_its_node_is_terminal` failed; the
   companion settlement guard passed, establishing it as a real baseline rather
   than a test written to the fix.
-- GREEN after: 37 passed across
+- GREEN after: 40 passed across
   `test_node_timeout_queue_cancellation.py`, `test_node_timeout.py`,
   `test_graph_compiler_empty_response.py`.
+- A one-off failure of
+  `test_runner_emits_node_timeout_event_and_marks_run_failed` during this lane
+  was chased to a PRE-EXISTING boundary flake, not a regression: the unchanged
+  tree measured 5.06s/4.85s against its own `wait_for(timeout=5.0)`, the changed
+  tree 4.70s/4.41s, and both pass 3/3. Filed as
+  `docs/concerns/2026-09-23-node-timeout-runner-test-sits-on-its-own-deadline.md`.
 - Windows only. Not run under `scripts/linux_oracle.py`; the change touches no
   sandbox, filesystem or process-limit behaviour, but CI remains authoritative.
 - No independent cross-family review: agent dispatch was prohibited for this
