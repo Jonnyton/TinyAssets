@@ -72,6 +72,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 from datetime import datetime, timezone
@@ -2316,10 +2317,37 @@ def _coerce_node_update_bool(raw: Any, field: str) -> tuple[bool | None, str]:
 
 
 def _coerce_timeout_seconds_update(raw: Any, field: str) -> tuple[float, str]:
-    try:
-        return float(raw), ""
-    except (TypeError, ValueError):
+    """Coerce a node timeout to a FINITE, POSITIVE number of seconds.
+
+    A bare ``float()`` admitted four values no runtime can honour, and this is
+    the only coercer between an edit and the stored column:
+
+    * ``0`` and negatives — the compiler reads ``float(node.timeout_seconds or
+      300.0)``, so a stored ``0`` silently becomes the 300s default (an edit
+      that reports success and changes nothing) and a negative is a deadline
+      that expired before the node started.
+    * ``nan`` / ``inf`` — unusable deadlines admitted by the old coercer.
+      Workspace read-side validation rejects them, but ran only after an
+      edit had persisted; non-workspace nodes lacked that validation.
+    * an integer too large to be a float — ``float()`` raises ``OverflowError``,
+      which is not in the caught tuple, so it escaped the updater as an
+      exception instead of a refusal.
+
+    A bool is a type confusion rather than a one-second timeout, so it is
+    refused by name too. Numeric STRINGS stay accepted: the kwargs update
+    surface cannot send anything else.
+    """
+    if isinstance(raw, bool):
         return 0.0, f"{field} must be a number."
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0, f"{field} must be a number."
+    if not math.isfinite(value):
+        return 0.0, f"{field} must be a finite number of seconds."
+    if value <= 0:
+        return 0.0, f"{field} must be greater than 0 seconds, got {value}."
+    return value, ""
 
 
 def _coerce_retry_policy_update(raw: Any, field: str) -> tuple[dict[str, Any], str]:
@@ -2505,6 +2533,20 @@ def _apply_node_updates(
             if err:
                 return err
             setattr(node, spec_field, val)
+    # workspace and timeout_seconds are valid APART and invalid TOGETHER: a
+    # workspace-bound node's timeout must be within 0 < t <= 1800. Each field
+    # is coerced in isolation above, so the pair can only be judged once both
+    # assignments have landed -- and it is judged on the STAGED copy, before
+    # any caller persists. Without this the pair was checked only in
+    # ``NodeDefinition.__post_init__``, i.e. on the way back IN: the row saved
+    # first and the very next read of the branch raised, leaving an edited
+    # branch that could not be loaded at all. Returned as an error string, not
+    # raised, so the caller refuses the whole batch the same way it refuses any
+    # other bad field.
+    try:
+        node._validate_workspace_timeout()
+    except ValueError as exc:
+        return str(exc)
     return ""
 
 

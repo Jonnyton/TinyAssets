@@ -6407,7 +6407,9 @@ WORKSPACE_SUGGESTED_ACTIONS: dict[str, str] = {
     ),
     "workspace_command_timeout": (
         "A ws.run command outlived its timeout and the whole sandbox was ended. "
-        "Run a narrower command, raise the node's timeout_seconds (up to 1800), "
+        "Run a narrower command, raise the node's timeout_seconds (up to 1800) "
+        "in place with write_graph (operation=patch, payload "
+        '[{"op":"update_node","node_id":"<node>","timeout_seconds":1800}]), '
         "or split the work across nodes; then run again."
     ),
     "workspace_provision_refused": (

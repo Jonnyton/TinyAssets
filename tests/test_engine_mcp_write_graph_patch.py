@@ -150,26 +150,43 @@ def test_patch_add_node_strips_approval(monkeypatch):
 
 
 def test_patch_update_node_allowlist_blocks_authority_fields(monkeypatch):
-    """update_node may only retune content — execution/data-authority fields
-    (tools_allowed/enabled/retry_policy/input_keys/output_keys) and the
+    """update_node may not touch execution authority — tools_allowed and the
     sub-branch-invoke fields are refused, so an update can't re-activate an approved
-    node with new powers without re-invalidating approval (Codex #1). llm_policy is
-    a routing preference, not authority, and is NOT in this cohort: it passes the
-    served layer untyped and the canonical coercer decides (see the persistence
-    test below, which keeps the malformed preferred_provider refusal alive)."""
+    node with new powers without re-invalidating approval (Codex #1). retry_policy
+    and enabled are refused for a different reason: the canonical updater stores
+    them but no graph runtime consumes either, and serving a control that does
+    nothing is the silent failure Hard Rule 8 forbids.
+
+    input_keys / output_keys are NOT in this cohort any more (2026-09-23,
+    `served-node-edit-parity`): they name state the branch itself declares, the
+    compiler still refuses a key the state schema does not carry, and classifying
+    them as authority meant an agent had to rebuild a whole workflow to rename its
+    own output. Their persistence and their malformed-value refusal are pinned in
+    tests/test_served_node_edit_parity.py. llm_policy is likewise a routing
+    preference, not authority: it passes the served layer untyped and the canonical
+    coercer decides (see the persistence test below, which keeps the malformed
+    preferred_provider refusal alive)."""
     s = _bind(monkeypatch)
     seen = _capture(monkeypatch)
     for danger in (
         {"tools_allowed": ["enqueue_branch_run"]},
         {"enabled": True},
         {"retry_policy": {"max_retries": 99}},
-        {"input_keys": ["secret"]},
-        {"output_keys": ["x"]},
         {"invoke_branch_spec": {"x": 1}},
+        {"invoke_branch_version_spec": {"x": 1}},
+        {"await_run_spec": {"x": 1}},
+        {"approved": True},
+        {"author": "someone-else"},
     ):
         out = _patch(s, [{"op": "update_node", "node_id": "n1", **danger}])
         assert "may not set" in out["error"], danger
     assert seen == {}
+    # The refusal names what WOULD work, derived from the allowlist itself, so a
+    # widening can never leave a stale list telling the agent a field is refused
+    # when it is not.
+    out = _patch(s, [{"op": "update_node", "node_id": "n1", "enabled": True}])
+    for admitted in ("output_keys", "input_keys", "timeout_seconds", "phase"):
+        assert admitted in out["error"], out
     # a non-string content field is refused; a plain content edit routes through.
     bad = _patch(s, [{"op": "update_node", "node_id": "n1", "source_code": ["x"]}])
     assert "must be a string" in bad["error"]
@@ -292,8 +309,7 @@ def test_update_node_llm_policy_foreign_owner_and_protected_fields(tmp_path, mon
         {"tools_allowed": ["enqueue_branch_run"]},
         {"enabled": False},
         {"retry_policy": {"max_retries": 9}},
-        {"input_keys": ["secret"]},
-        {"output_keys": ["leak"]},
+        {"invoke_branch_spec": {"branch_def_id": "b-other"}},
     ):
         out = _patch(s, [{"op": "update_node", "node_id": "definition",
                           "llm_policy": {"preferred": {"provider": "claude-code"}},

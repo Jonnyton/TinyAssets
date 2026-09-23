@@ -967,9 +967,29 @@ _SERVED_PATCH_SAFE_OPS = frozenset({
 #: Refused outright: these expose the branch publicly or graft a foreign lineage — the
 #: exact top-level fields the create sanitizer strips (published/public/visibility/fork_from).
 _SERVED_PATCH_DANGEROUS_OPS = frozenset({"set_published", "set_visibility", "set_fork_from"})
-#: A served update_node retunes content, routing preferences and validated effect /
-#: workspace declarations. The canonical updater also permits tools_allowed, enabled,
-#: retry_policy, input_keys and output_keys; those remain outside this edit contract.
+#: A served update_node retunes content, ordinary configuration, routing preferences
+#: and validated effect / workspace declarations. The canonical updater also permits
+#: tools_allowed, enabled, retry_policy and the sub-branch invocation specs; those
+#: remain outside this edit contract.
+#:
+#: ORDINARY CONFIGURATION joined on 2026-09-23 (`served-node-edit-parity`): an app
+#: agent could BUILD a node with output_keys and a timeout but could not revise either
+#: afterwards, so repairing its own wiring meant rebuilding the workflow -- a platform
+#: limitation, not user work. ``description`` / ``phase`` are labels; ``model_hint`` /
+#: ``reasoning_effort`` are routing preferences of the same kind as ``llm_policy``;
+#: ``input_keys`` / ``output_keys`` name state this branch already declares (the
+#: compiler still refuses a key the state schema does not carry, and no key names
+#: anything outside this universe); ``timeout_seconds`` bounds the node's OWN slot
+#: downward and is bounded above for a workspace node by the canonical pair check.
+#: None of the seven is an authority: they configure an owned definition, and the
+#: runtime re-derives admission, budget, consent and sandboxing per dispatch
+#: regardless of what any of them says.
+#:
+#: ``retry_policy`` and ``enabled`` are deliberately NOT here even though the
+#: canonical updater stores them: nothing in the graph runtime consumes either, so
+#: serving them would promise an agent a retry schedule and an off switch that do not
+#: exist. They stay refused until a runtime consumer does (Hard Rule 8 -- a stored
+#: value that looks like a control and does nothing is the silent failure).
 #: Source approval is provenance, not execution authority: authorship, the sandbox
 #: and per-dispatch consent enforce execution. ``llm_policy`` is
 #: different in kind: it is a preference the runtime consults when choosing among
@@ -990,8 +1010,27 @@ _SERVED_PATCH_DANGEROUS_OPS = frozenset({"set_published", "set_visibility", "set
 #: (a second grammar here would drift from create/add_node).
 _SERVED_PATCH_UPDATE_NODE_ALLOWED = frozenset({
     "op", "node_id", "prompt_template", "source_code", "display_name", "llm_policy",
-    "effects", "workspace",
+    "effects", "workspace", "description", "phase", "model_hint", "reasoning_effort",
+    "input_keys", "output_keys", "timeout_seconds",
 })
+#: The refusal names the fields that WOULD have worked, derived from the allowlist
+#: itself so a widening can never leave a stale prose list behind telling the agent
+#: a field is refused when it is not (`op` / `node_id` are the op's own addressing,
+#: not editable settings).
+_SERVED_PATCH_UPDATE_NODE_HINT = ", ".join(
+    sorted(_SERVED_PATCH_UPDATE_NODE_ALLOWED - {"op", "node_id"}),
+)
+#: Served-side string check for the text fields that otherwise reach a text column or
+#: an unhashable membership test verbatim: canonical ``_apply_node_updates`` assigns
+#: ``description`` with no type check (a dict persists malformed, Codex #4) and tests
+#: ``phase`` against a frozenset (a dict raises TypeError: unhashable). The rest of
+#: the cohort is left untyped ON PURPOSE -- ``model_hint``, ``reasoning_effort``,
+#: ``input_keys``, ``output_keys``, ``timeout_seconds``, ``llm_policy`` and
+#: ``workspace`` each have exactly one canonical grammar downstream, inside the same
+#: staging transaction, and a second grammar here would drift from create/add_node.
+_SERVED_PATCH_UPDATE_NODE_TEXT = (
+    "node_id", "prompt_template", "source_code", "display_name", "description", "phase",
+)
 #: Metadata setter ops whose single field must be a string, else SQLite raises
 #: ProgrammingError or persists a malformed value (Codex #4, PR #2518).
 _SERVED_PATCH_STR_SETTERS = {
@@ -1101,10 +1140,9 @@ def _sanitize_served_patch_changes(changes: object) -> str:
                 if field not in _SERVED_PATCH_UPDATE_NODE_ALLOWED:
                     raise ValueError(
                         f"patch update_node may not set '{field}' on the served edit "
-                        "surface (only node_id + prompt_template/source_code/"
-                        "display_name/llm_policy/effects/workspace)"
+                        f"surface (only node_id + {_SERVED_PATCH_UPDATE_NODE_HINT})"
                     )
-            for field in ("node_id", "prompt_template", "source_code", "display_name"):
+            for field in _SERVED_PATCH_UPDATE_NODE_TEXT:
                 if field in op and not isinstance(op[field], str):
                     raise ValueError(f"patch update_node '{field}' must be a string")
             if "effects" in op:
@@ -1112,13 +1150,16 @@ def _sanitize_served_patch_changes(changes: object) -> str:
                 # validator, so the edit surface can never admit a sink create refuses.
                 # `[]` or null clears it; omitting the key leaves it unchanged.
                 _validate_served_effect_declaration(op["effects"])
-            # llm_policy and workspace are deliberately NOT type-checked here: a dict
-            # replaces the node's preference, explicit null clears it, a JSON string is
-            # decoded, anything else is refused; a workspace string binds an ancestor
-            # checkout node and null/"" clears it - all by the canonical coercers
-            # downstream, in the same staging transaction, so a malformed value leaves
-            # the branch untouched. A second grammar here would drift from
-            # create/add_node. The workspace NAME is not a grant and not a host path:
+            # llm_policy, workspace, model_hint, reasoning_effort, input_keys,
+            # output_keys and timeout_seconds are deliberately NOT type-checked here: a
+            # dict replaces the node's preference, explicit null clears it, a JSON
+            # string is decoded, anything else is refused; a workspace string binds an
+            # ancestor checkout node and null/"" clears it; keys accept list/CSV/JSON
+            # and refuse the rest; a timeout must coerce to a finite positive number
+            # and, for a workspace-bound node, land inside 0 < t <= 1800 - all by the
+            # canonical coercers downstream, in the same staging transaction, so a
+            # malformed value leaves the branch untouched. A second grammar here would
+            # drift from create/add_node. The workspace NAME is not a grant and not a host path:
             # the compiler still refuses one that is not an ancestor in the run, and
             # the lease/admission checks still run per dispatch.
         elif kind in _SERVED_PATCH_SAFE_OPS:
@@ -1609,6 +1650,17 @@ def write_graph(
     checked against the connection grant bound to this universe, the
     per-destination consent granted via ``source_channel``, and the workspace
     admission + ancestor/lease rules. Editing fires nothing.
+    The same op also revises a node's ORDINARY SETTINGS in place, so a mis-wired
+    or slow workflow is repaired rather than rebuilt: ``description``, ``phase``,
+    ``model_hint``, ``reasoning_effort``, ``input_keys``, ``output_keys`` and
+    ``timeout_seconds``. Renaming an output is one batch with the state field and
+    the source that produces it — ``[{"op":"add_state_field","name":"revised",
+    "type":"str"}, {"op":"update_node","node_id":"edit","output_keys":["revised"],
+    "source_code":"..."}]`` — because a batch is all-or-nothing: one bad value and
+    NOTHING in it is written. ``timeout_seconds`` must be a finite number above 0
+    (and at most 1800 for a node that binds a ``workspace``). Any key you omit
+    keeps its current value. ``tools_allowed``, sub-branch invocation, approval and
+    authorship are not editable here at all.
     Code runs only in the
     universe that authored it: a public branch's code must be remixed
     (``fork_from``) before it runs as yours. Stdlib only (``json re base64
