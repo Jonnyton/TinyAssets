@@ -19,3 +19,20 @@ def cloud_runtime(monkeypatch):
     observation.observe()
     monkeypatch.setattr(provenance, "_PROCESS_OBSERVATION", observation)
     return observation
+
+
+def install_admitted_observation() -> provenance.ProcessProvenanceObservation:
+    """Install the fake admitted observation in THIS process, no monkeypatch.
+
+    Only for a spawned child that cannot inherit the parent's monkeypatch (the
+    cross-process load tests). Still explicit opt-in — a child calls it by name
+    on its first line — and still an injected resolver: no network, no
+    credential, no environment variable and no production authority.
+    """
+    verdict = provenance.RuntimeProvenance(
+        provenance.CLOUD, "instance_match", True, True
+    )
+    observation = provenance.ProcessProvenanceObservation(resolver=lambda: verdict)
+    observation.observe()
+    provenance._PROCESS_OBSERVATION = observation
+    return observation

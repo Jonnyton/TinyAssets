@@ -7,6 +7,7 @@ from datetime import timedelta
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_agent_runtime_invocation import NOW, _request
 from tests.test_agent_runtime_provider_call import _execution_service, _RecordingProvider
 from tinyassets.agent_runtime_provider_execution import (
@@ -15,6 +16,16 @@ from tinyassets.agent_runtime_provider_execution import (
 from tinyassets.providers.router import ProviderRouter
 from tinyassets.storage import db_path
 from tinyassets.storage.automation_activations import AutomationActivationStore
+
+# Explicit opt-in, never autouse: this module exercises the provider-authority
+# path, which now DERIVES `executor_class` from the process verdict rather than
+# writing the literal. It asserts receipt/claim/reservation semantics under an
+# already-admitted runtime; the admission negatives live in
+# tests/test_cloud_only_provider_admission_regressions.py and
+# tests/test_cloud_admission_remaining_authority.py, which install their own
+# refused/unobserved observation.
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
+
 
 
 def _restarted(service, tmp_path, *, seconds: int):

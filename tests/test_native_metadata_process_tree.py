@@ -14,7 +14,16 @@ from tests.test_native_model_discovery import PROTOCOL, peer_script, row
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.native_jsonrpc_discovery import read_native_catalogue
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX process-group lifecycle")
+# Only the two tests that spawn real processes need POSIX; the state-helper
+# tests are pure parsing and must not be skipped where they can still run.
+requires_posix = pytest.mark.skipif(
+    os.name != "posix", reason="POSIX process-group lifecycle",
+)
+
+# proc_pid_stat(5) field 3 defines Z as zombie and X as dead. Neither is a
+# live child; the integration test separately checks launcher exit and that
+# the child's exclusive file lock can be acquired again.
+_TERMINATED_STATES = frozenset({"Z", "X"})
 
 
 def _assert_reaped_or_zombie(status):
@@ -24,7 +33,8 @@ def _assert_reaped_or_zombie(status):
         # init can reap a killed orphan between opening and reading /proc.
         # Only absence is success; permission and other I/O failures propagate.
         return
-    assert state.split(") ", 1)[1].startswith("Z")
+    # Exact token, never a prefix: live states and unknown tokens must fail.
+    assert state.split(") ", 1)[1].split()[0] in _TERMINATED_STATES
 
 
 @pytest.mark.parametrize("error", [FileNotFoundError, ProcessLookupError])
@@ -43,10 +53,13 @@ def test_process_status_permission_failure_is_not_hidden():
         _assert_reaped_or_zombie(status)
 
 
-def test_process_status_live_child_still_fails():
+# Live states plus tokens no kernel we run reports: an unrecognized state is
+# not evidence of termination, and a prefix of an accepted one is not either.
+@pytest.mark.parametrize("state", ["R", "S", "D", "T", "t", "I", "Zz", "Xx", "?"])
+def test_process_status_live_or_unknown_state_still_fails(state):
     status = Mock()
     status.exists.return_value = True
-    status.read_text.return_value = "123 (child) S 1 2 3"
+    status.read_text.return_value = f"123 (child) {state} 1 2 3"
     with pytest.raises(AssertionError):
         _assert_reaped_or_zombie(status)
 
@@ -57,6 +70,14 @@ def test_process_status_zombie_has_released_execution_resources():
     _assert_reaped_or_zombie(status)
 
 
+def test_process_status_dead_has_released_execution_resources():
+    # CI read exactly this: the SIGKILLed orphan had already left Z for X.
+    status = Mock()
+    status.read_text.return_value = "123 (child) X 1 2 3"
+    _assert_reaped_or_zombie(status)
+
+
+@requires_posix
 @pytest.mark.parametrize("mode", ["success", "launcher_exited", "timeout", "cancel", "malformed"])
 def test_launcher_and_inherited_pipe_child_are_cleaned_without_losing_result(tmp_path, mode):
     pid_file = tmp_path / "child.pid"
@@ -143,6 +164,7 @@ if {mode!r} != 'launcher_exited':
     asyncio.run(exercise())
 
 
+@requires_posix
 @pytest.mark.parametrize("cancel", [False, True])
 def test_cleanup_pipe_wait_is_bounded_and_cancellation_is_not_swallowed(cancel):
     from tinyassets.providers import native_jsonrpc_discovery as module

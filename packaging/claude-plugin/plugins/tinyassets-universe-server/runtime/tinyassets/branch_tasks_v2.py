@@ -441,6 +441,14 @@ class Epoch2BranchTaskAdapter:
         if not _descriptor_shape_is_valid(descriptor):
             return None
 
+        # Resolve platform admission BEFORE the write transaction opens, the
+        # same ordering `claim_assigned` uses: the bounded metadata read must
+        # never run under the SQLite write lock. This call decides nothing --
+        # the single gate is the non-optional cloud-activation predicate in
+        # `_transaction_allows_epoch2_lifecycle`, which reads only the cached
+        # result.
+        resolve_process_cloud_admission()
+
         def transaction_check(
             conn: sqlite3.Connection,
             task: Mapping[str, Any],
@@ -604,6 +612,14 @@ class Epoch2BranchTaskAdapter:
         """Revalidate a live claim before material work resumes."""
         if not _descriptor_shape_is_valid(descriptor):
             return None
+
+        # Resolve platform admission BEFORE the write transaction opens, the
+        # same ordering `claim_assigned` uses: the bounded metadata read must
+        # never run under the SQLite write lock. This call decides nothing --
+        # the single gate is the non-optional cloud-activation predicate in
+        # `_transaction_allows_epoch2_lifecycle`, which reads only the cached
+        # result.
+        resolve_process_cloud_admission()
 
         def transaction_check(
             conn: sqlite3.Connection,
@@ -1122,6 +1138,29 @@ def _transaction_allows_epoch2_lifecycle(
     )
     if not any(value is not None for value in activation_fields):
         return True
+    # Cloud-class activations only. Two arms are deliberately NOT gated here:
+    # a generic task with no activation fields returned above, and a `tray`
+    # activation falls through this predicate untouched. Measured at base
+    # e389505b: a tray-class task with a matching tray descriptor claims
+    # successfully on a not_cloud AND on an unobserved process, so refusing it
+    # here would be a silent policy expansion this change does not own. The
+    # row's own `automation_executor_class` is the discriminator, and
+    # `_classify_epoch2_row` above has already proved it is exactly one of
+    # `tray`/`cloud` with every activation field populated.
+    #
+    # Cached-only, because this runs inside the claim write transaction; every
+    # caller resolves before opening it. An unobserved process peeks `None` and
+    # is refused -- "we never looked" is not cloud.
+    #
+    # Non-optional on purpose: the persisted descriptor below is trusted for
+    # worker identity and liveness, and `descriptor_reader` is caller-supplied,
+    # so descriptor trust alone would let a live cloud-stamped row authorize a
+    # cloud-class claim from an unadmitted process.
+    if (
+        task["automation_executor_class"] == AutomationActivationExecutor.CLOUD.value
+        and not cached_process_is_cloud_admitted()
+    ):
+        return False
     if (
         trusted.executor_class is None
         or trusted.executor_class.value != task["automation_executor_class"]

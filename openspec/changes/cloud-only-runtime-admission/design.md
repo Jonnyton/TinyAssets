@@ -645,6 +645,38 @@ the evidence lands in a run log that already exists.
 
 ## Rollout
 
+### Residual authority repair after deployed PR3919
+
+PR3919 deployed the initial guards as042cdce8; PR3920 synced their bounded
+as-built contract as16e6f0bf. The subsequent source audit identified a remaining
+provider-service class literal, worker-descriptor renewal based only on stored
+identity, and the legacy cloud-activation claim/resume predicate. These are
+concrete missing application checks, not demonstrated access from a local clone
+to production state or a proved production execution bypass.
+
+This repair uses the same process observation: provider-work authority derives
+its class through the cache-only helper inside its existing transaction;
+descriptor publication and renewal require admission before reading/writing the
+slot; cloud-class legacy claims and resumption resolve before the store call and
+check only cached admission inside their mandatory lifecycle predicate. No
+network observation may occur under a database transaction. Existing owner,
+lease, grant and model-binding checks remain independent and unchanged.
+
+Descriptor clearing remains a capacity-removing operation, with existing exact
+worker checks intact; it is not publication or renewal. Existing generic and
+non-cloud activation semantics are not silently redefined by the cloud-class
+repair. This does not grant them platform-serving/provider-execution authority.
+The test seam stays an explicitly injected observation, including independently
+in spawned test children, never a production environment bypass.
+
+New negatives must fail on the unchanged runtime before the guards and pass
+afterward; existing admitted-path checks retain their assertions. The local
+Linux engine remains unavailable and must not be started on the personal PC;
+hosted Linux evidence is required, not replaced by Windows results. Exact-head
+independent review, verified deployment, public canary and ordinary rendered app
+acceptance still gate release claims. Custody, maintenance-authority coverage,
+the broader recovery matrix and clean free-user onboarding remain open.
+
 The runtime builder's actual-metadata gate is satisfied by hosted
 run35694437735, not by prediction. Runtime code may now be built for the
 record-only slice; enforcement still requires its own live positive observation

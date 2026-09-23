@@ -53,6 +53,23 @@ and report the stable `platform_not_cloud` reason through existing diagnostics.
 - **WHEN** an unadmitted process directly attempts an otherwise valid assigned claim
 - **THEN** no claim is acquired, even without an optional authority callback.
 
+### Requirement: Legacy cloud activation claims and resumes enforce admission
+The Epoch2 adapter's cloud-activation claim and resume paths SHALL resolve
+observation before entering their store transaction and check only cached
+admission in the mandatory lifecycle predicate. A persisted cloud descriptor
+SHALL NOT substitute for process admission. Existing generic and non-cloud
+activation semantics SHALL remain unchanged; preserving those storage operations
+SHALL NOT grant platform serving or provider-execution authority.
+
+#### Scenario: A stored cloud descriptor cannot authorize a legacy claim
+- **WHEN** an unadmitted process presents a valid cloud activation and descriptor
+- **THEN** its claim is refused and the task remains pending.
+
+#### Scenario: Admitted cloud lifecycle ordering is preserved
+- **WHEN** an admitted process claims or resumes a valid cloud activation
+- **THEN** observation resolution completes before the store transaction begins
+- **AND** the lifecycle predicate reads only the cached observation.
+
 ### Requirement: Worker registration and existing-row eligibility require process admission
 `ensure_daemon_runtime` SHALL require admission before reading or creating its
 cloud-worker slot. Existing exact-worker eligibility SHALL check cached process
@@ -60,9 +77,18 @@ admission before considering the stored row. A restored or copied registration
 SHALL grant no execution authority. Existing ownership, model binding, expiry,
 incarnation and worker-matching requirements SHALL remain in force.
 
+Publishing or refreshing a non-null queue descriptor SHALL require admission
+before reading the registration, including an unchanged-descriptor fast return.
+Clearing a descriptor SHALL remain allowed as revocation with the existing exact
+worker checks; it SHALL NOT publish or renew execution capacity.
+
 #### Scenario: Stored registration cannot admit an unadmitted process
 - **WHEN** an unadmitted process presents an existing worker registration
 - **THEN** exact-worker eligibility refuses rather than inheriting the row's authority.
+
+#### Scenario: An unadmitted process cannot extend a descriptor lifetime
+- **WHEN** an unadmitted process attempts to publish or refresh a queue descriptor
+- **THEN** the operation refuses with `platform_not_cloud` and leaves the descriptor unchanged.
 
 ### Requirement: Platform serving and provider boundaries refuse unadmitted execution
 Platform server startup and its serving lifespan SHALL require admission before
@@ -73,6 +99,12 @@ SHALL refuse before provider execution and derive their cloud executor class
 from admitted observation rather than an unconditional label. Existing
 user-bound permissions SHALL not be widened by cloud admission.
 
+The agent-runtime provider execution service SHALL also derive its executor
+class from cached admitted observation within its authority transaction. An
+unobserved or refused process SHALL mint no provider receipt, execution claim or
+invocation reservation, and SHALL invoke no provider. Reading an already-settled
+outcome SHALL NOT cause another provider invocation.
+
 #### Scenario: Unadmitted canonical server startup
 - **WHEN** the server is launched without admission
 - **THEN** it exits with code78 and sanitized `platform_not_cloud` refusal before serving.
@@ -80,6 +112,10 @@ user-bound permissions SHALL not be widened by cloud admission.
 #### Scenario: Foreground or served-background provider call is unadmitted
 - **WHEN** an unadmitted process reaches either covered provider boundary
 - **THEN** it refuses before spawning the provider or using its execution authority.
+
+#### Scenario: Unadmitted direct agent-runtime provider execution
+- **WHEN** an otherwise-ready invocation reaches the execution service on an unadmitted process
+- **THEN** it refuses with `platform_not_cloud`, creates no provider-authority rows, and makes no provider call.
 
 ### Requirement: Origin admission is an outer cached-only backstop
 The outer origin wrapper SHALL refuse unadmitted HTTP with503, no-store and only

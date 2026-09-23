@@ -19,11 +19,24 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_agent_runtime_invocation import NOW, _ProviderResolver, _request
 from tests.test_agent_runtime_provider_call import _execution_service, _RecordingProvider
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
 from tinyassets.providers.router import ProviderRouter
 from tinyassets.storage import db_path
+
+# Explicit opt-in, never autouse: this module exercises the provider-authority
+# path, which now DERIVES `executor_class` from the process verdict rather than
+# writing the literal. It asserts receipt/claim/reservation semantics under an
+# already-admitted runtime; the admission negatives live in
+# tests/test_cloud_only_provider_admission_regressions.py and
+# tests/test_cloud_admission_remaining_authority.py, which install their own
+# refused/unobserved observation.
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
+
 
 PROCESS_WORKERS = 8
 PROCESS_REQUESTS = 64
@@ -74,6 +87,13 @@ def _prepare_in_fresh_process(
     invocation_id: str,
     observed_at: str,
 ) -> dict[str, object]:
+    # Same reason as `_launch_in_fresh_process`: a spawned child inherits no
+    # monkeypatch, and a cached admitted verdict never crosses a process
+    # boundary by design.
+    from tests.cloud_runtime_fixture import install_admitted_observation
+
+    install_admitted_observation()
+
     from tinyassets.agent_runtime_grants import (
         AccountCapabilityGrantSource,
         AgentRuntimeGrantResolver,
@@ -117,6 +137,15 @@ def _launch_in_fresh_process(
     marker_dir: str,
     release_path: str,
 ) -> dict[str, str]:
+    # A spawned child inherits no monkeypatch, and a cached admitted verdict
+    # deliberately never crosses a process boundary, so this child installs its
+    # own injected observation explicitly. Without it the child resolves for
+    # real, is refused, and the test would be measuring admission rather than
+    # cross-process launch convergence.
+    from tests.cloud_runtime_fixture import install_admitted_observation
+
+    install_admitted_observation()
+
     from tinyassets.agent_runtime_grants import (
         AccountCapabilityGrantSource,
         AgentRuntimeGrantResolver,
