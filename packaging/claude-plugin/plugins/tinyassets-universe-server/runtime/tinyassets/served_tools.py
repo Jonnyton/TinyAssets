@@ -68,10 +68,14 @@ from __future__ import annotations
 #:       (operation=patch, 2026-08-24): edit an OWN branch in place — safe self-edit
 #:       ops (add/remove edges+nodes+state, set entry_point, rename/retag/goal,
 #:       remove_skill) ALLOWLISTED; publish / set-visibility-public / fork REFUSED; an
-#:       add_node op runs the SAME create per-node sanitizer and may NOT declare an
-#:       effect (channel nodes go through create, which caps them); update_node may
-#:       ONLY retune content (prompt/source/display_name) — never execution/data
-#:       authority (tools_allowed/enabled/input_keys/retry_policy/invoke); metadata
+#:       add_node op runs the SAME create per-node sanitizer and MAY declare an effect
+#:       on exactly creation's terms (2026-08-31; no per-branch effect-node ceiling
+#:       exists — `no-graph-size-caps`); update_node retunes content
+#:       (prompt/source/display_name), ordinary configuration (description/phase/
+#:       model_hint/reasoning_effort/input_keys/output_keys/timeout_seconds, 2026-09-23
+#:       `served-node-edit-parity`) and declarations (llm_policy/effects/workspace) —
+#:       never execution/data authority (tools_allowed/invoke/handoffs/approval/author),
+#:       and never the inert retry_policy/enabled pair no graph runtime consumes; metadata
 #:       field types validated; author-gated + transactional patch_branch. Codex ADAPT
 #:       (PR #2518) closed. Residuals tracked (same as create): author-scoped not
 #:       universe-scoped, and no expected-version CAS (concurrency harden gate).

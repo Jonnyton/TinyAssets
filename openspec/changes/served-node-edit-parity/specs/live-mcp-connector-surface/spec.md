@@ -2,13 +2,13 @@
 
 ### Requirement: Served owners can edit ordinary node configuration in place
 
-The served `write_graph` branch patch surface SHALL permit an authorized owner to revise a node's description, phase, model preference, reasoning effort, input/output keys, timeout, retry policy and enabled state through the canonical staged updater, in addition to its existing content, policy, effect and workspace declarations. Editing SHALL preserve branch/node identity, unrelated fields and immutable previously admitted run definitions; it SHALL NOT confer execution or connection authority.
+The served `write_graph` branch patch surface SHALL permit an authorized owner to revise a node's description, phase, model preference, reasoning effort, input/output keys and timeout through the canonical staged updater, in addition to its existing content, policy, effect and workspace declarations. Editing SHALL preserve branch/node identity, unrelated fields and previously admitted version-pinned definitions; it SHALL NOT confer execution or connection authority. Stored retry/enabled fields without graph runtime behavior SHALL remain refused on this surface.
 
 #### Scenario: Output mapping and timeout are repaired without rebuilding
 
 - **WHEN** an owner patches an existing node's output keys with matching state-schema changes and lowers its timeout to a valid value
 - **THEN** canonical readback shows those values on the same branch and node
-- **AND** a subsequent admitted run uses the revised definition without altering a previously admitted snapshot
+- **AND** a subsequent run admitted from the revised definition uses the new values without altering a previously admitted version-pinned snapshot
 
 #### Scenario: Ordinary settings share canonical validation
 
