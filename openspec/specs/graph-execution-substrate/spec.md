@@ -1159,7 +1159,7 @@ IDs, outputs, credentials or raw logs to the sender.
 
 ### Requirement: Prompt-node provider budgets retain the node's streaming cap
 
-A prompt-template node SHALL pass its effective timeout as the provider
+A prompt-template node without material worker-queue delay SHALL pass its effective timeout as the provider
 configuration's streaming absolute cap, on both the injected bridge and policy
 router paths. It SHALL preserve fractional values for that cap and retain the
 existing integer, minimum-one-second legacy timeout for non-streaming providers.
@@ -1173,7 +1173,7 @@ provider never started or that its subprocess stopped at that exact instant.
 
 #### Scenario: Default, fractional and longer node budgets
 
-- **WHEN** a prompt node uses its default timeout or an explicit positive fractional or longer timeout
+- **WHEN** a prompt node uses its default timeout or an explicit positive fractional or longer timeout without material worker-queue delay
 - **THEN** both provider call paths receive that same value as the streaming absolute cap
 - **AND** the library's unconfigured streaming cap and independently configured conversation cap remain unchanged
 
