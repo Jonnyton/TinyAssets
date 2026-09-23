@@ -13,6 +13,7 @@ import pytest
 import rfc8785
 
 import fantasy_daemon.__main__ as daemon_main
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets import branch_tasks_v2
 from tinyassets.branch_tasks_v2 import (
     Epoch2BranchTaskAdapter,
@@ -32,6 +33,8 @@ from tinyassets.storage.automation_activations import (
     AutomationActivationStore,
 )
 from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def _activation_subject(ref: str) -> ExecutionSubject:

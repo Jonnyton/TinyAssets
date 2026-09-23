@@ -183,7 +183,7 @@ PROVENANCE_BOOL_FIELDS = (
 #: yet prints as unknown -- the safe direction for a diagnostic whose job is to
 #: not leak.
 PROVENANCE_VERDICTS = frozenset({"cloud", "not_cloud", "unknown"})
-PROVENANCE_MODES = frozenset({"observation_only"})
+PROVENANCE_MODES = frozenset({"observation_only", "application_admission"})
 #: Every reason `tinyassets.platform_runtime_provenance` can put on a resolved
 #: verdict or an unobserved peek. Kept in step with that module by a test.
 PROVENANCE_REASONS = frozenset({

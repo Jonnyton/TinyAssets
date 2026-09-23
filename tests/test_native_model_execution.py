@@ -6,10 +6,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_run_provider_session import _branch, _run_branch
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.base import ModelConfig
 from tinyassets.storage.provider_work_authority import db_path
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.mark.parametrize("value", [None, 1, True, " spaced ", "line\nbreak", "x" * 201])

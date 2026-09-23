@@ -27,6 +27,10 @@ import pytest
 from sse_starlette.sse import EventSourceResponse
 from starlette.testclient import TestClient
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
+
 #: The daemon serves no anonymous read, so a probe driving the REAL app through
 #: the real middleware has to present a bearer -- exactly as the connector does.
 #: Without it every request here 401s before the transport is exercised at all,

@@ -6,10 +6,12 @@ import uuid
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_consumer_run_envelope import reserve, setup
 from tests.test_consumer_selection import store as store
 
 
+@pytest.mark.usefixtures("cloud_runtime")
 def test_actual_main_nominates_saved_consumer_on_boot_and_periodic_tick(store, monkeypatch):
     from tinyassets import (
         delivery_runtime,

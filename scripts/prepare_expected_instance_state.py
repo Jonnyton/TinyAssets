@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Emit the deploy-recorded expected-instance state for the cloud provenance resolver.
 
-OpenSpec change `cloud-only-runtime-admission`, task 4. Record-only: the state
-this writes is *observed* by `tinyassets.platform_runtime_provenance` and gates
-nothing yet.
+OpenSpec change `cloud-only-runtime-admission`, tasks 4 and 6. This state is an
+input to `tinyassets.platform_runtime_provenance`; it is not itself authority.
+Deployment must prepare and install it before starting an enforcing candidate.
 
 Why a dedicated file and not a field in `release-state.json`
 -----------------------------------------------------------
-`deploy-prod.yml` starts and health-checks the candidate at :317-375 and only
-then publishes the release receipt at :376-395. A field added to that receipt
+`deploy-prod.yml` starts and health-checks the candidate and only then publishes
+the release receipt. A field added to that receipt
 would therefore be absent at the exact moment the first enforcement needs it,
 and the receipt is rewritten whole (`cat > release-state.json`) on every deploy,
 so any rewrite that does not know about the field erases it. Publishing the
@@ -29,11 +29,9 @@ would be circular.
 Exit codes
 ----------
 0  state written
-3  expected identity could not be resolved (sanitized reason on stdout). In the
-   record-only slice the caller may continue without a fresh preparation claim.
-   Any earlier remote state remains; the resolver observes that actual state,
-   which may be missing or may still match. Enforcement (tasks 6-8) must treat
-   3 as fatal.
+3  expected identity could not be resolved (sanitized reason on stdout).
+   Deployment treats this as fatal before candidate startup. Any earlier remote
+   state remains unchanged, not a substitute for successful preparation.
 2  usage / write error
 """
 

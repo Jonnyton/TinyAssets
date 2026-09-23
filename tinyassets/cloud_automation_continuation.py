@@ -59,6 +59,7 @@ from tinyassets.cloud_automation_control import (
     CloudAutomationTriggerStatus,
 )
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
+from tinyassets.platform_runtime_provenance import resolve_process_cloud_admission
 from tinyassets.provider_work_authority import (
     ProviderInvocationReservationRequest,
     ProviderUniverseWorkAuthority,
@@ -2466,6 +2467,17 @@ def prepare_claimed_cloud_provider_call(
         return None
     if str(getattr(claimed_task, "automation_executor_class", "") or "") != "cloud":
         raise PermissionError("cloud automation task has the wrong executor class")
+    # Caller ordering for the registration-read gate, not a new enforcement
+    # site. `runtime_matches_worker_provider` below is deliberately cached-only
+    # (`daemon_registry.py`) so it can be called from inside a transaction, and
+    # it refuses an unobserved process. This is the last point in this flow that
+    # is provably outside every transaction — the admission read above closes
+    # its connection before the runtime match — so the one bounded resolve
+    # happens here and the predicate downstream stays a pure peek.
+    #
+    # The task has already declared itself `cloud`-class; resolving the process
+    # verdict here is what stops that declaration from being self-certifying.
+    resolve_process_cloud_admission()
     now_clock = clock or (lambda: datetime.now(timezone.utc))
     now = now_clock()
     if now.tzinfo is None or now.utcoffset() is None:

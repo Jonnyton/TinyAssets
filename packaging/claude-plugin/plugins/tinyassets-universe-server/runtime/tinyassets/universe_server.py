@@ -3968,6 +3968,13 @@ class _MCPDiscoveryMiddleware:
         await response(scope, receive, send)
 
 
+#: Non-zero startup failure for an unadmitted serving process. 78 is sysexits'
+#: ``EX_CONFIG``: the process started fine and its runtime is not one this
+#: platform may serve from. Distinct from 1 so a supervisor can tell a refused
+#: boot from an ordinary crash; any non-zero code refuses, none of them serves.
+PLATFORM_NOT_CLOUD_EXIT_CODE = 78
+
+
 def create_streamable_http_app() -> Starlette:
     """Create the production HTTP app for canonical `/mcp`."""
     # Browser deposit flow (byo-llm-deposit-browser-form) — dark by default, gated
@@ -3980,6 +3987,31 @@ def create_streamable_http_app() -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app: Starlette):  # type: ignore[no-untyped-def]
+        # Serving admission (openspec change cloud-only-runtime-admission,
+        # enforcement site C). FIRST, before the writer barrier, storage
+        # initialization, the scheduler and the transport's own lifespan: this
+        # app is constructible WITHOUT main() -- a uvicorn factory, an embedding
+        # host or a test client can enter this lifespan directly -- so serving
+        # startup is admitted here in its own right rather than trusting that
+        # some earlier caller checked. There is no degraded local mode: an
+        # unadmitted process raises out of startup instead of serving.
+        #
+        # Reuses the one process observation; when main() already resolved, this
+        # is the cached verdict and performs no I/O at all. Nothing here holds a
+        # database handle or an open transaction, so the one bounded link-local
+        # read can never run under the SQLite write lock, and it is never a
+        # socket probe triggered by a request.
+        from tinyassets.platform_runtime_provenance import (
+            require_process_cloud_admission,
+            sanitized_observation_fields,
+        )
+
+        _admitted = require_process_cloud_admission(surface="platform serving startup")
+        logger.info(
+            "platform runtime provenance (serving admitted): %s",
+            sanitized_observation_fields(_admitted),
+        )
+
         from tinyassets.scoped_reset import prepare_service_writer_barrier
         from tinyassets.storage import data_dir
 
@@ -4093,8 +4125,8 @@ def create_streamable_http_app() -> Starlette:
             # and not container start. Not a container-incarnation marker.
             "uptime_seconds": int(_pulse_time.monotonic() - _pulse_started),
         }
-        # Record-only cloud provenance readback (openspec change
-        # cloud-only-runtime-admission, tasks 4/5). The startup log line alone is
+        # Cached cloud provenance readback (openspec change
+        # cloud-only-runtime-admission). The startup log line alone is
         # not evidence that THIS process cached an observation, and the hosted
         # preflight's metadata read happens in a different, short-lived process.
         #
@@ -4102,9 +4134,9 @@ def create_streamable_http_app() -> Starlette:
         # resolved for this request: no auth rule, permission or principal is
         # widened, and every other authenticated caller gets exactly the fields
         # above. The read is a non-mutating peek — a health GET never resolves
-        # provenance — and an unobserved process reports an explicit unknown.
-        # Nothing branches on this; it is observation, not enforcement, and it
-        # samples ONE responding worker.
+        # provenance. Unknown evidence is refused by the outer origin guard.
+        # This diagnostic samples ONE responding worker; its policy fields
+        # describe application admission, not custody or boundary closure.
         try:
             from tinyassets.auth.middleware import current_identity_or_none
             from tinyassets.auth.provider import CANARY
@@ -4142,6 +4174,17 @@ def create_streamable_http_app() -> Starlette:
     from tinyassets.auth.middleware import AuthContextMiddleware
 
     app = AuthContextMiddleware(_MCPDiscoveryMiddleware(app))
+    # Origin-ingress backstop (enforcement site D) -- OUTERMOST, so an
+    # unadmitted origin refuses before auth, discovery, the MCP transport and
+    # every route handler. Cached-only: it reads the non-mutating peek, so no
+    # request ever triggers a resolve, and "nothing observed" refuses like
+    # not_cloud. It removes reachability only -- authentication, principal
+    # resolution and the canary-only pulse diagnostic are unchanged for an
+    # admitted process. `lifespan` passes through, because that is where
+    # admission is resolved.
+    from tinyassets.origin_admission import PlatformOriginAdmission
+
+    app = PlatformOriginAdmission(app)
     return app
 
 
@@ -4176,30 +4219,46 @@ def main(
         host, port, transport,
     )
 
-    # Record-only cloud provenance observation (openspec change
-    # cloud-only-runtime-admission, task 4). OBSERVATION ONLY: nothing branches
-    # on this verdict. Admission, claim CAS, runtime registration, per-universe
-    # authority and provider execution are all unchanged by it, and an unadmitted
-    # verdict does not refuse anything in this slice. Enforcement is tasks 6-8
-    # and needs its own live positive observation first.
+    # Serving admission (openspec change cloud-only-runtime-admission,
+    # enforcement site C). The serving process refuses to boot unless it is an
+    # admitted cloud runtime: NOT_CLOUD, an unobserved process and a failed or
+    # unreachable resolution are all refusals, and there is no degraded local
+    # mode to fall back to. Foreground and served provider execution never reach
+    # the queue, so startup plus the last provider-authority boundary is the only
+    # pair of gates that covers them.
     #
-    # Placed here deliberately: before any boot maintenance, outside every
-    # database transaction, so the single bounded link-local read can never run
-    # under the SQLite write lock. Resolves at most once per process; the logged
-    # shape is sanitized (verdict + reason token + booleans, never an id).
-    try:
-        from tinyassets.platform_runtime_provenance import (
-            observe_platform_runtime_provenance,
-            sanitized_observation_fields,
-        )
+    # Placed exactly here on purpose. After the session-seal arm, which stays the
+    # first statement in this function (anything spawned before it inherits the
+    # seal key), and before every other thing boot does: no maintenance, thread,
+    # queue worker, provider child, engine-MCP child, listener or storage writer
+    # runs ahead of it, and it is outside every database transaction, so the one
+    # bounded link-local read can never happen under the SQLite write lock.
+    #
+    # Resolves at most once per process; the logged shape is sanitized (verdict +
+    # reason token + booleans, never an id, address or secret). A cached refusal
+    # never upgrades itself -- recovery from a refusal is an explicit restart.
+    from tinyassets.platform_runtime_provenance import (
+        require_process_cloud_admission,
+        sanitized_observation_fields,
+    )
 
-        _provenance = observe_platform_runtime_provenance()
-        logger.info(
-            "platform runtime provenance (observation only, enforcement=none): %s",
-            sanitized_observation_fields(_provenance),
+    try:
+        _provenance = require_process_cloud_admission(surface="platform serving startup")
+    except PermissionError as exc:
+        # Loud, sanitized, non-zero. Not swallowed: an admission failure that
+        # let boot continue would be the opt-out this gate exists to remove.
+        logger.error("refusing to serve: %s", exc)
+        raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
+    except Exception as exc:  # noqa: BLE001 - fail closed on an unexpected failure
+        logger.exception(
+            "refusing to serve: platform runtime provenance could not be resolved"
         )
-    except Exception:  # noqa: BLE001 - an observation must never block boot
-        logger.exception("platform runtime provenance: observation failed")
+        raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
+
+    logger.info(
+        "platform runtime provenance (serving admitted): %s",
+        sanitized_observation_fields(_provenance),
+    )
 
     # Served-budget maintenance for ALL transports (Codex re-review 2026-08-19:
     # boot reconcile + the lease reconciler were streamable-http-only, so sse/

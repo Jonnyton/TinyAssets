@@ -17,6 +17,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -162,14 +166,56 @@ def test_preparation_does_not_publish_a_success_receipt_early(deploy_steps) -> N
     assert prov.EXPECTED_INSTANCE_FILENAME in run
 
 
-def test_preparation_failure_cannot_break_the_deploy_in_record_only_mode(
+def test_preparation_failure_blocks_candidate_deployment(
     deploy_steps,
 ) -> None:
     prepare = deploy_steps[_index(deploy_steps, "Prepare expected-instance state")]
-    # Record-only: an observation must not be able to take a deploy down. The
-    # enforcement flip has to make this required, which is why it is asserted
-    # here rather than left implicit.
-    assert prepare.get("continue-on-error") is True
+    assert prepare.get("continue-on-error", False) is False
+    start = deploy_steps[_index(deploy_steps, "Run fail-safe deploy")]
+    assert start.get("if", "success()") == "success()"
+
+
+@pytest.mark.parametrize(
+    ("prepare_rc", "upload_rc", "expected_rc", "remote_commands"),
+    [(3, 0, 3, ""), (2, 0, 2, ""), (0, 7, 7, "scp\n"), (0, 0, 0, "scp\nssh\n")],
+)
+def test_preparation_shell_propagates_failures_before_candidate_start(
+    deploy_steps, tmp_path, prepare_rc, upload_rc, expected_rc, remote_commands
+) -> None:
+    """Run the actual workflow shell with inert commands, no API/SSH calls."""
+    if os.name == "nt":
+        bash = Path("C:/Program Files/Git/bin/bash.exe")
+        if not bash.is_file():
+            pytest.skip("Git Bash unavailable; do not start WSL")
+    else:
+        bash = shutil.which("bash")
+        if not bash:
+            pytest.skip("bash unavailable")
+    prepare = deploy_steps[_index(deploy_steps, "Prepare expected-instance state")]
+    output = tmp_path / "github-output"
+    trace = tmp_path / "remote-commands"
+    prelude = (
+        f"python() {{ return {prepare_rc}; }}\n"
+        f'scp() {{ printf "scp\\n" >> "$TRACE"; return {upload_rc}; }}\n'
+        'ssh() { printf "ssh\\n" >> "$TRACE"; '
+        'while IFS= read -r ignored; do :; done; }\n'
+    )
+    result = subprocess.run(
+        [str(bash), "--noprofile", "--norc", "-s"],
+        input=prelude + prepare["run"], text=True, capture_output=True,
+        cwd=tmp_path, timeout=10,
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": output.as_posix(), "TRACE": trace.as_posix(),
+            "DO_SSH_USER": "fixture", "DO_DROPLET_HOST": "fixture.invalid",
+        },
+    )
+    assert result.returncode == expected_rc, result.stderr
+    assert (trace.read_text() if trace.exists() else "") == remote_commands
+    if expected_rc:
+        assert not output.exists() or "prepared=true" not in output.read_text()
+    else:
+        assert "prepared=true" in output.read_text()
 
 
 def test_receipt_and_rollback_preserve_the_expected_state(deploy_steps) -> None:
@@ -203,3 +249,51 @@ def test_preparation_atomically_replaces_state_without_claiming_absence(deploy_s
     assert run.index("sudo install -m 0644") < run.index("sudo mv -f")
     assert "any prior state is unchanged" in run
     assert "will observe expected_identity_missing" not in run
+
+
+def test_rollback_bundle_destinations_exclude_runtime_data() -> None:
+    """Pin actual restore inputs, not merely the workflow's wrapper command.
+
+    This is a structural regression check, not a production rollback drill.
+    Changing the bundle map requires reviewing data-custody compatibility.
+    """
+    script = (_REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    match = re.search(r"(?ms)^BUNDLE_MAP=\(\n(.*?)^\)", script)
+    assert match is not None
+    destinations = []
+    for line in match.group(1).splitlines():
+        entry = line.strip().strip('"')
+        assert len(entry.split("|")) == 4
+        destinations.append(entry.split("|")[1])
+    assert destinations == [
+        "${RUNTIME_DIR}/compose.yml",
+        "${RUNTIME_DIR}/deploy/compose.yml",
+        "${RUNTIME_DIR}/deploy/vector.yaml",
+        "${RUNTIME_DIR}/deploy/vector-betterstack.yaml",
+        "${RUNTIME_DIR}/deploy/vector-entrypoint.sh",
+        "${UNIT_FILE}",
+    ]
+
+
+def test_rollback_reconverges_without_replacing_named_data_volume() -> None:
+    compose = yaml.safe_load((_REPO / "deploy" / "compose.yml").read_text(encoding="utf-8"))
+    assert compose["volumes"]["tinyassets-data"]["name"] == "tinyassets-data"
+    daemon = compose["services"]["daemon"]
+    assert "tinyassets-data:/data" in daemon["volumes"]
+    assert daemon["environment"]["TINYASSETS_DATA_DIR"] == "/data"
+    script = (_REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    restart = re.search(r"(?ms)^restart_stack\(\) \{\n(.*?)^\}", script)
+    assert restart is not None
+    reconverge = (
+        'docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" '
+        'up -d daemon cloudflared logs'
+    )
+    assert reconverge in restart.group(1)
+    executable = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
+    # Guard explicit destructive volume operations in any rollback helper too.
+    # This source check is not a security parser for arbitrary shell programs.
+    assert not re.search(r"docker\s+(?:volume\s+(?:rm|prune)|system\s+prune)\b", executable)
+    assert not re.search(r"docker\s+compose[^\n;]*\bdown\b", executable)
+    assert "--renew-anon-volumes" not in executable

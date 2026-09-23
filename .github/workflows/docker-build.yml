@@ -21,6 +21,8 @@ on:
       - 'tinyassets/**'
       - 'domains/**'
       - 'deploy/**'
+      - 'tests/fixtures/docker_admitted_process.py'
+      - 'tests/fixtures/docker_protocol_probe.py'
       - '.github/workflows/docker-build.yml'
   pull_request:
     paths:
@@ -30,6 +32,8 @@ on:
       - 'tinyassets/**'
       - 'domains/**'
       - 'deploy/**'
+      - 'tests/fixtures/docker_admitted_process.py'
+      - 'tests/fixtures/docker_protocol_probe.py'
       - '.github/workflows/docker-build.yml'
   workflow_dispatch:
 
@@ -65,21 +69,45 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Start container
+      - name: Unmodified image refuses unadmitted startup
         run: |
+          # No published port, credentials, mounted state or admission fixture.
+          # Keep the exited container until logs and exit status are checked.
+          docker run -d --network none \
+              --name tinyassets-daemon-unadmitted-ci \
+              -e TINYASSETS_IMAGE=tinyassets-daemon:ci \
+              -e UNIVERSE_SERVER_DEV_USER=ci-smoke \
+              tinyassets-daemon:ci
+          EXIT_CODE="$(timeout 60 docker wait tinyassets-daemon-unadmitted-ci)"
+          docker logs tinyassets-daemon-unadmitted-ci > "$RUNNER_TEMP/unadmitted.log" 2>&1
+          cat "$RUNNER_TEMP/unadmitted.log"
+          test "$EXIT_CODE" = 78
+          grep -q 'platform_not_cloud' "$RUNNER_TEMP/unadmitted.log"
+          if grep -q 'Uvicorn running on' "$RUNNER_TEMP/unadmitted.log"; then
+            echo "::error::Unadmitted image started a listener"
+            exit 1
+          fi
+
+      - name: Start isolated protocol fixture with simulated admission
+        run: |
+          # This is NOT cloud acceptance. The harness is test-only, excluded
+          # from the image and mounted read-only. Production admission stays
+          # unchanged; the previous step tests the unmodified image's refusal.
           # The daemon serves nobody anonymously: dev auth mode needs a named
           # local operator, and the smoke below probes as the canary principal
           # with a token minted here for this run only.
           CANARY_TOKEN="$(python -c 'import secrets; print(secrets.token_hex(32))')"
           echo "::add-mask::${CANARY_TOKEN}"
           echo "TINYASSETS_WIKI_CANARY_TOKEN=${CANARY_TOKEN}" >> "$GITHUB_ENV"
-          docker run -d --rm \
+          docker run -d \
               --name tinyassets-daemon-ci \
-              -p 8001:8001 \
+              -p 127.0.0.1:8001:8001 \
+              --mount "type=bind,src=${GITHUB_WORKSPACE}/tests/fixtures/docker_admitted_process.py,dst=/ci/admitted_process.py,readonly" \
               -e TINYASSETS_IMAGE=tinyassets-daemon:ci \
               -e UNIVERSE_SERVER_DEV_USER=ci-smoke \
               -e TINYASSETS_WIKI_CANARY_TOKEN="${CANARY_TOKEN}" \
-              tinyassets-daemon:ci
+              -e UNIVERSE_SERVER_URL=http://localhost:8001/mcp \
+              tinyassets-daemon:ci python /ci/admitted_process.py
 
           # Give uvicorn + FastMCP a moment to bind. Poll rather than
           # sleep-blindly so slow cold-starts don't false-fail.
@@ -104,12 +132,13 @@ jobs:
       - name: MCP initialize smoke
         run: |
           # Full MCP handshake via the same canary script the live tray
-          # uses. Exit 0 = green image; any nonzero = regression to
-          # investigate.
-          python scripts/mcp_public_canary.py \
-              --url http://localhost:8001/mcp \
-              --timeout 15 \
-              --verbose
+          # uses. This checks the simulated-admission fixture's protocol,
+          # not real cloud admission or live production acceptance.
+          # The public canary deliberately pins production's AuthKit issuer.
+          # This isolated fixture uses its local authorization server instead.
+          # Its client retains all --assert-handles/auth/status checks, while
+          # the real post-deploy canary keeps the production pin unchanged.
+          python tests/fixtures/docker_protocol_probe.py
 
       - name: Container logs on success
         if: success()
@@ -120,8 +149,10 @@ jobs:
         run: |
           echo "::error::Docker build or smoke failed"
           docker logs tinyassets-daemon-ci 2>&1 || true
+          docker logs tinyassets-daemon-unadmitted-ci 2>&1 || true
           docker ps -a || true
 
       - name: Stop container
         if: always()
-        run: docker stop tinyassets-daemon-ci || true
+        run: |
+          docker rm -f tinyassets-daemon-ci tinyassets-daemon-unadmitted-ci || true

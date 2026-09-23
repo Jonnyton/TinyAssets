@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
+from tinyassets.platform_runtime_provenance import (
+    admitted_cloud_executor_class as _admitted_cloud_class,
+)
+from tinyassets.platform_runtime_provenance import (
+    platform_not_cloud_message,
+    resolve_process_cloud_admission,
+)
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationSelection,
@@ -345,6 +352,26 @@ class _ForegroundRunProviderSession:
 
         if not self._run_id or self._branch_snapshot is None:
             raise ProviderAuthorityHeldError(_HELD)
+        # Enforcement site (C), foreground half (design.md § Enforcement sites).
+        # This lane never calls `claim_assigned`, so the claim CAS cannot cover
+        # it; admission has to happen here, and it has to happen *here* rather
+        # than next to the `executor_class="cloud"` literals below: everything
+        # after this point reads the serving agent binding, the per-universe
+        # credential reference and the parent provider binding, and mints child
+        # authority. Refusing before that keeps an unadmitted process away from
+        # credential access and authority mint, not merely away from dispatch.
+        #
+        # Ordering: this resolve runs before `store.connection()` /
+        # `BEGIN IMMEDIATE` opens below, so the bounded metadata read can never
+        # happen while the SQLite write lock is held. Inside the transaction the
+        # two literal sites read the cached-only peek instead.
+        provenance = resolve_process_cloud_admission()
+        if not provenance.is_cloud:
+            raise PermissionError(
+                platform_not_cloud_message(
+                    provenance, surface="foreground run provider authority"
+                )
+            )
         try:
             self._validate_founder_home()
             self._capture_choices()
@@ -481,7 +508,11 @@ class _ForegroundRunProviderSession:
                             operation=RUN_GRAPH_OPERATION,
                             role=roles[0],
                             allowed_roles=roles,
-                            executor_class="cloud",
+                            # Cached-only: a peek, never a resolve, so no socket
+                            # opens under the write lock this block holds. The
+                            # class below is stamped `cloud` as a literal, so the
+                            # value has to be true rather than asserted.
+                            executor_class=_admitted_cloud_class(),
                             max_invocations=_work_invocation_allowance(
                                 snapshot, minimum=len(nodes),
                                 ceiling=child_binding.max_invocations,
@@ -592,7 +623,12 @@ class _ForegroundRunProviderSession:
             principal_id=self._principal_id, actor_id=f"universe:{self._universe_id}",
             universe_id=self._universe_id, branch_def_id=self._branch_def_id,
             branch_version_id=subject_ref, assignment_generation=assignment.generation,
-            assignment_digest=assignment.assignment_digest, executor_class="cloud",
+            assignment_digest=assignment.assignment_digest,
+            # Manifest path: same in-transaction cached-only admission as the
+            # non-manifest branch. A manifest run mints one aggregate receipt
+            # over several member bindings and would otherwise be the way around
+            # the check above.
+            executor_class=_admitted_cloud_class(),
             allowed_operations=(RUN_GRAPH_OPERATION,), allowed_roles=roles,
             max_invocations=max_invocations,
             max_tokens=min(binding.max_tokens for binding in bindings),
@@ -797,6 +833,9 @@ class _ForegroundRunProviderSession:
             SQLiteProviderWorkAuthorityStore,
         )
 
+        # Agent tool rounds can enter directly, without going through _call.
+        # A retained receipt is not process admission. This check is cached-only.
+        _admitted_cloud_class()
         snapshot = None
         carrier = None
         try:
@@ -958,6 +997,32 @@ class _ForegroundRunProviderSession:
             from tinyassets.exceptions import ProviderAuthorityHeldError
 
             raise ProviderAuthorityHeldError(_HELD)
+
+        # Enforcement site (C), foreground half, at the call boundary — the
+        # mirror of the served lane's gate in `background_served_provider._call`.
+        # `_admit()` alone is not enough here, for two independent reasons:
+        #
+        #  * the injected-stub branch immediately below dispatches to the
+        #    caller's callable *before* `_ensure_admitted()` is ever reached, so
+        #    an unadmitted process would reach a provider invocation with no
+        #    admission at all; and
+        #  * `_ensure_admitted()` returns early once `self._receipt` is set, so
+        #    on a multi-node run only the first call would be admitted and every
+        #    later node would ride the cached receipt. A receipt is a record of
+        #    an earlier admission, never a standing permission — the same rule
+        #    `runtime_matches_worker_provider` applies to a registration row.
+        #
+        # Covers both public doors: `__call__` (raw) and `call_with_policy_sync`
+        # (structured) both funnel through `_call`. Outside every transaction —
+        # `_admit()` opens its own below — so this may resolve; the two
+        # in-transaction stamp sites stay cached-only.
+        call_provenance = resolve_process_cloud_admission()
+        if not call_provenance.is_cloud:
+            raise PermissionError(
+                platform_not_cloud_message(
+                    call_provenance, surface="foreground run provider call"
+                )
+            )
 
         # Server-owned in-process callers may inject a provider stub instead of
         # the production call primitive. Give that stub one fail-closed,

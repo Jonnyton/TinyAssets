@@ -6,7 +6,10 @@ import time
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.runtime import assigned_queue_consumer as runtime
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture

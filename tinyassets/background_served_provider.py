@@ -21,6 +21,13 @@ from tinyassets.background_branch_authority import (
 )
 from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTask
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
+from tinyassets.platform_runtime_provenance import (
+    admitted_cloud_executor_class as _admitted_cloud_class,
+)
+from tinyassets.platform_runtime_provenance import (
+    platform_not_cloud_message,
+    resolve_process_cloud_admission,
+)
 from tinyassets.provider_assignment import (
     load_provider_assignment_in_transaction,
     provider_assignment_admission,
@@ -799,6 +806,23 @@ class _BackgroundAssignedProviderSession:
         ):
             raise PermissionError("background provider authority cannot be substituted")
         declared_providers = self._declared_policy_providers(policy)
+        # Enforcement site (C), served half (design.md § Enforcement sites).
+        # Both public entries land here — `__call__` (raw prompt/system) and
+        # `call_with_policy_sync` (structured role/policy) — so one gate covers
+        # both shapes. It has to be *before* the shared-self branch below:
+        # that branch calls `load_background_executor_identity` and
+        # `prepare_shared_self_turn` and then hands the turn to the workflow
+        # agent, all before `_authorize_launch` is ever reached.
+        #
+        # Ordering: resolve here, outside every transaction in this module. The
+        # in-transaction sites read the cached peek only.
+        provenance = resolve_process_cloud_admission()
+        if not provenance.is_cloud:
+            raise PermissionError(
+                platform_not_cloud_message(
+                    provenance, surface="background served provider authority"
+                )
+            )
         with self._lock:
             from tinyassets.exceptions import ProviderAuthorityHeldError
             from tinyassets.shared_self import prepare_shared_self_turn, shared_self_requested
@@ -1061,6 +1085,25 @@ class _BackgroundAssignedProviderSession:
         from tinyassets.storage.request_admissions import RequestAdmissionStore
 
         held = "Assigned background provider authority is unavailable; retry after repair."
+        # `_authorize_launch` is the single mint path for this lane: `_call`
+        # above and `_authorize_attempt` (the workflow-agent tool loop) both
+        # funnel through it, and both `executor_class="cloud"` literals live
+        # inside its transaction. Re-resolving here rather than trusting the
+        # `_call` gate means an agent tool round entering through
+        # `_authorize_attempt` is admitted on its own, not on its caller's.
+        #
+        # Still outside the transaction: `admission_store.connection()` /
+        # `BEGIN IMMEDIATE` opens further down, and `load_background_executor
+        # _identity` and `snapshot_llm_subscription_credential` both run after
+        # this point, so an unadmitted process reaches neither the credential
+        # snapshot nor the write lock.
+        launch_provenance = resolve_process_cloud_admission()
+        if not launch_provenance.is_cloud:
+            raise PermissionError(
+                platform_not_cloud_message(
+                    launch_provenance, surface="background served provider launch"
+                )
+            )
         universe_dir = self._base_path / self._task.universe_id
         snapshot = None
         carrier = None
@@ -1333,7 +1376,11 @@ class _BackgroundAssignedProviderSession:
                                 operation=BACKGROUND_BRANCH_RUN_OPERATION,
                                 role=role,
                                 allowed_roles=roles,
-                                executor_class="cloud",
+                                # Cached-only peek inside the open transaction:
+                                # the class is derived from the process verdict
+                                # rather than written as a literal, and no
+                                # socket can open under the write lock.
+                                executor_class=_admitted_cloud_class(),
                                 max_invocations=max_invocations,
                                 max_tokens=max_tokens,
                                 max_cost_microunits=max_cost,
@@ -1544,7 +1591,11 @@ class _BackgroundAssignedProviderSession:
             branch_version_id=self._task.automation_branch_version,
             assignment_generation=assignment.generation,
             assignment_digest=assignment.assignment_digest,
-            executor_class="cloud",
+            # Manifest path: same cached-only admission as the non-manifest
+            # branch above. `_manifest_authority` is called from inside
+            # `_authorize_launch`'s transaction, so this is a peek, never a
+            # resolve.
+            executor_class=_admitted_cloud_class(),
             allowed_operations=(BACKGROUND_BRANCH_RUN_OPERATION,),
             allowed_roles=roles,
             max_invocations=max_invocations,

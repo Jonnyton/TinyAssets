@@ -263,8 +263,8 @@ def test_match_resolves_cloud() -> None:
     assert result.reason == "instance_match"
     assert result.is_cloud is True
     assert result.metadata_reachable and result.expected_identity_prepared
-    # Record-only slice: nothing is enforced on this verdict.
-    assert result.enforced is False
+    # Application guards are enabled; this does not establish cloud custody.
+    assert result.enforced is True
 
 
 def test_comparison_is_strict_integer_not_string() -> None:
@@ -400,8 +400,8 @@ def test_sanitized_fields_carry_no_identifier() -> None:
         "reason": "instance_match",
         "metadata_reachable": True,
         "expected_identity_prepared": True,
-        "enforced": False,
-        "mode": "observation_only",
+        "enforced": True,
+        "mode": "application_admission",
     }
     rendered = json.dumps(fields)
     assert not re.search(r"\d{5,}", rendered)
@@ -419,7 +419,16 @@ def test_verdict_object_never_stores_an_instance_id() -> None:
     )
 
 
-# --- structural pins: record-only, no lock-held I/O, no bypass ------------
+# --- structural pins: admission sites, no lock-held I/O, no bypass --------
+
+
+def _code_only(source: str) -> str:
+    """Drop comment lines: the prose around an admission site legitimately
+    discusses refusal and record-only history, and matching that would be a
+    prose test rather than a pin on the code."""
+    return "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
 
 
 def test_module_opens_no_database_transaction() -> None:
@@ -434,39 +443,94 @@ def test_module_has_no_environment_bypass() -> None:
         assert forbidden not in MODULE_SOURCE, forbidden
 
 
-def test_startup_hook_is_the_only_call_site_and_changes_no_admission() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    call_sites = sorted(
-        path.relative_to(repo).as_posix()
-        for path in (repo / "tinyassets").rglob("*.py")
-        if path.name != "platform_runtime_provenance.py"
-        and "observe_platform_runtime_provenance" in path.read_text(encoding="utf-8")
-    )
-    # Record-only: exactly one observation site. Claim admission, runtime
-    # registration and provider execution must not consume the resolver yet.
-    assert call_sites == ["tinyassets/universe_server.py"], call_sites
+def test_serving_startup_refuses_rather_than_merely_recording() -> None:
+    """The record-only contract is gone: startup is an admission site now.
 
+    Updated for tasks 7/8 (it previously pinned "exactly one call site, and it
+    changes no admission"). Both serving entry points must refuse: ``main`` for
+    every transport it serves, and the HTTP app's own lifespan, because that app
+    is constructible without ``main``.
+    """
+    repo = Path(__file__).resolve().parents[1]
     source = (repo / "tinyassets" / "universe_server.py").read_text(encoding="utf-8")
-    start = source.index("observe_platform_runtime_provenance")
-    block = source[start - 1400 : start + 900]
-    assert "observation only" in block
-    # Scan CODE only: the surrounding comment prose legitimately talks about
-    # refusal and enforcement, and matching that would be a prose test.
-    code = "\n".join(
-        line for line in block.splitlines() if not line.lstrip().startswith("#")
+
+    # Code only: the surrounding comment prose legitimately discusses record-only
+    # history, and matching that would be a prose test.
+    code = _code_only(source)
+    assert code.count("require_process_cloud_admission(") == 2, (
+        "serving startup must admit in main() AND in the HTTP app's lifespan"
     )
-    for forbidden in ("sys.exit", "SystemExit", "is_cloud", "verdict =="):
+    assert "SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE)" in code
+    assert prov.PLATFORM_NOT_CLOUD_REASON == "platform_not_cloud"
+
+    # No env/hostname escape hatch at the admission site, and no swallow that
+    # would let an unadmitted process carry on serving.
+    for forbidden in ("TINYASSETS_ALLOW_NOT_CLOUD", "getenv(\"TINYASSETS_CLOUD"):
+        assert forbidden not in source, forbidden
+
+
+def test_the_boot_refusal_exit_code_is_nonzero() -> None:
+    from tinyassets.universe_server import PLATFORM_NOT_CLOUD_EXIT_CODE
+
+    assert isinstance(PLATFORM_NOT_CLOUD_EXIT_CODE, int)
+    assert PLATFORM_NOT_CLOUD_EXIT_CODE != 0
+
+
+def test_the_origin_backstop_reads_only_the_cache() -> None:
+    """Site (D): a request may never resolve, probe or open storage."""
+    repo = Path(__file__).resolve().parents[1]
+    source = (repo / "tinyassets" / "origin_admission.py").read_text(encoding="utf-8")
+    # Strip the module docstring as well as the comments: it explains *why* the
+    # backstop opens no socket, and a pin that matched its prose would fail on
+    # the explanation rather than on the code.
+    code = _code_only(source.split('"""', 2)[-1])
+
+    assert "cached_process_is_cloud_admitted" in code
+    for forbidden in (
+        "resolve_platform_runtime_provenance",
+        "require_process_cloud_admission",
+        "observe_platform_runtime_provenance",
+        "read_metadata_instance_id",
+        "import socket",
+        "socket.socket",
+        "urllib",
+        "requests.get",
+        "os.environ",
+        "getenv",
+        "gethostname",
+    ):
         assert forbidden not in code, forbidden
 
+    # The refusal body is one stable sanitized token, never an identifier.
+    from tinyassets.origin_admission import _REFUSAL_BODY, PLATFORM_NOT_CLOUD_STATUS
 
-def test_claim_and_registration_paths_do_not_consume_provenance_yet() -> None:
+    assert PLATFORM_NOT_CLOUD_STATUS == 503
+    assert _REFUSAL_BODY == b'{"error":"platform_not_cloud"}'
+
+
+def test_admission_sites_consume_the_one_resolver() -> None:
+    """Flipped from the record-only pin: these paths MUST consume provenance.
+
+    Its predecessor asserted the opposite ("...do_not_consume_provenance_yet")
+    and was true only for the record-only slice. It is updated rather than
+    skipped: a skipped pin would keep asserting the contract the code moved past.
+    """
     repo = Path(__file__).resolve().parents[1]
     for module in (
         "branch_tasks_v2.py",
         "daemon_registry.py",
         "foreground_run_provider.py",
         "background_served_provider.py",
-        "runtime/assigned_queue_consumer.py",
+        "universe_server.py",
+        "origin_admission.py",
     ):
         text = (repo / "tinyassets" / module).read_text(encoding="utf-8")
-        assert "platform_runtime_provenance" not in text, module
+        assert "platform_runtime_provenance" in text, module
+
+    # One resolver, not a second implementation per site.
+    resolvers = sorted(
+        path.relative_to(repo).as_posix()
+        for path in (repo / "tinyassets").rglob("*.py")
+        if "def resolve_platform_runtime_provenance" in path.read_text(encoding="utf-8")
+    )
+    assert resolvers == ["tinyassets/platform_runtime_provenance.py"], resolvers

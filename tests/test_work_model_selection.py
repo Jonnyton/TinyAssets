@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_discovery_snapshot import _model
 from tests.test_run_provider_session import _branch, _run_branch
 from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
@@ -14,6 +15,8 @@ from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers import discovery_snapshot
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.storage.provider_work_authority import db_path
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture

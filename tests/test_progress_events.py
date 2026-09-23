@@ -19,6 +19,7 @@ import time
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -37,6 +38,8 @@ from tinyassets.runs import (
 #: `branch_run_requires_universe` without one, and
 #: `universe_access_denied` if it is registered but not ACL-granted.
 _UNIVERSE = "universe_progress_events"
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture

@@ -24,6 +24,7 @@ import time
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.runs import (
     NODE_STATUS_RAN,
     RunStepEvent,
@@ -37,6 +38,8 @@ from tinyassets.runs import (
 #: `branch_run_requires_universe`; registered-but-ungranted returns
 #: `universe_access_denied`. The ACL grant is the easy half to miss.
 _UNIVERSE = "universe_wait_for_run"
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture

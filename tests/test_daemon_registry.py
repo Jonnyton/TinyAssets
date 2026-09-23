@@ -5,7 +5,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets import daemon_registry, daemon_server
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def test_create_soulless_daemon_uses_project_wide_daemon_id(tmp_path):

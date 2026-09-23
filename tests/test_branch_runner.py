@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -23,6 +24,9 @@ from tinyassets.branches import (
 #: universe, not by a bare actor, so this is registered + ACL-granted in the
 #: fixture and threaded through every `run_branch` call below.
 RUNNER_UNIVERSE = "runner-universe"
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture

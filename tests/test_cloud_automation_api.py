@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.evaluation.scenario_runner import AcceptanceScenario
 from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.provider_work_authority import ProviderWorkBindingSeed
@@ -48,6 +49,9 @@ NOW = datetime.now(timezone.utc).replace(microsecond=0)
 #: expiry sat ~26 days after the old NOW.
 GRANT_EXPIRES_AT = (NOW + timedelta(days=26)).strftime("%Y-%m-%dT%H:%M:%SZ")
 ACCEPTED_SPEC_CONTENT = "# Accepted repository specification\n"
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def _baseline_scenario() -> AcceptanceScenario:
@@ -1746,4 +1750,3 @@ def test_no_hardcoded_date_literals_in_this_module() -> None:
 # replaces the end-to-end convergence case, and the "worker served the wrong
 # universe" case (the 2026-08-05 five-hour outage) is structurally gone: the
 # consumer pumps per universe_id instead of resolving one universe per process.
-

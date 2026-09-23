@@ -12,6 +12,7 @@ import pytest
 
 from tests import test_run_provider_session as work_session
 from tests import test_workflow_http_agent as work_tests
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_run_provider_session import (
     _branch,
     _run_branch,
@@ -24,6 +25,9 @@ work_agent = work_tests.work_agent
 
 OWNER, HOME = "acct_alice", "universe_alice"
 PRIMARY, TAIL = "synthetic-model", "future-company/new-choice"
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def _observe_sessions(monkeypatch):

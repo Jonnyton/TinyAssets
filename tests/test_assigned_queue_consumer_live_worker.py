@@ -6,7 +6,10 @@ from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 import tinyassets.providers.call as provider_call_module
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_background_budget_finalization_e2e import (
     _CountingProvider,
     _seed_claimable_background_path,
@@ -26,6 +29,8 @@ from tinyassets.runtime.assigned_queue_consumer import (
 )
 from tinyassets.storage import db_path
 from tinyassets.storage.automation_activations import AutomationActivationStore
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 def _prepare_live_automation(tmp_path: Path):

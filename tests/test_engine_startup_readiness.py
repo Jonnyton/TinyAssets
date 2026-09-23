@@ -9,6 +9,7 @@ import pytest
 
 from tests import test_engine_tool_client as tool_tests
 from tests import test_workflow_http_agent as workflow_tests
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets import engine_mcp_http as routes
 from tinyassets import engine_tool_client as client
 from tinyassets.storage import DB_FILENAME
@@ -18,6 +19,9 @@ route = tool_tests.route
 http_wire = workflow_tests.http_wire
 work_agent = workflow_tests.work_agent
 run_workflow = workflow_tests.run
+
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture
