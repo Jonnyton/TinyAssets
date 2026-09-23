@@ -346,15 +346,47 @@ other clauses of this requirement are unchanged.
 - **WHEN** a node's provider returns an empty response that surfaces as an empty-response error
 - **THEN** the run status becomes `failed` with a message identifying the empty response and the responsible node
 
+#### Scenario: exceeding the recursion limit terminates the run as failed
+- **WHEN** a run trips the applied recursion limit
+- **THEN** the run status becomes `failed` with a `GraphRecursionError` message naming the applied limit and how to raise it
+
+#### Scenario: a cancelled run reports cancelled, not failed
+- **WHEN** a run is cancelled between nodes
+- **THEN** the run status becomes `cancelled` with a cancellation message, distinct from a crash
+
+#### Scenario: a code node that raises fails the run with its stderr
+- **WHEN** `run()` raises inside the sandbox
+- **THEN** the run status is `failed`, the class is `code_node_failed`, and the error contains the exception text from the child's stderr
+
+The executor SHALL additionally classify `workspace_checkout_failed`,
+`workspace_push_refused`, `workspace_busy`, `workspace_pool_busy`,
+`workspace_quota_exceeded`, `workspace_command_timeout`,
+`workspace_provision_refused`, `workspace_provision_failed` and
+`workspace_discard_failed`, each actionable by the chatbot with a fixed
+suggested action. `workspace_provision_failed` is classified but not yet
+raised: the resolver whose transport, cache-bound and offline-install failures
+would produce it is the named follow-up. All other clauses of this requirement
+are unchanged.
+
+#### Scenario: a busy workspace is a wait, not a crash
+- **WHEN** a second workspace job starts while the universe's (or the host's) slot is held
+- **THEN** it waits up to its timeout and then fails as `workspace_busy` with the advice to retry
+
+#### Scenario: a workspace command timeout is its own class
+- **WHEN** a `ws.run` command outlives its budget
+- **THEN** the run fails as `workspace_command_timeout`, distinct from a node timeout, classified from a flag on the sandbox result rather than by matching a message
+
 ### Requirement: A node that went terminal on timeout SHALL NOT launch new work
+The shared worker pool SHALL refuse node work that reaches worker entry after its admitted deadline.
+
 A prompt-template node's `timeout_seconds` is measured from the moment its
 provider call is submitted to the shared bounded worker pool, so a call can
 spend its entire budget queued behind a saturated pool. When the deadline fires,
 the executor SHALL cancel work that has not yet begun, and SHALL additionally
 refuse, at worker entry, any submitted work whose deadline has already passed —
 `Future.cancel()` returns `False` once a worker has picked the item up, so
-cancellation alone leaves the outcome to scheduling. With both, no provider call
-starts strictly after the node that admitted it became terminal. Work with
+cancellation alone leaves the outcome to scheduling. The check defines the start of the submitted callable; it does not interrupt
+a callable which has already passed that check. Work with
 budget remaining at worker entry SHALL start normally.
 
 Scope, stated as the guarantee actually implemented: the worker-entry check
@@ -372,10 +404,11 @@ timeout remains the backstop, because an interrupted call leaves an effect that
 cannot be classified.
 
 A call that waited in the queue for a material part of its budget and then
-started SHALL be given exactly the remaining budget as its provider absolute
+started SHALL be given the remaining budget as its provider absolute
 cap, so the provider's own deadline expires with the node's rather than the
 queue wait beyond it. The remaining budget SHALL NOT be floored at any value
-that re-grants elapsed queue wait; the only clamp is strict positivity, because
+that re-grants material elapsed queue wait; the implementation retains a 1ms
+positivity clamp and ignores scheduling delays below50ms, because
 `ModelConfig.stream_timeout_profile()` accepts any finite positive float but
 discards a non-positive cap in favour of its 600s default. The legacy
 integer-seconds `timeout` scalar, which cannot represent a sub-second budget,
@@ -407,36 +440,6 @@ leave a call that did not queue with the node's full timeout unchanged.
 #### Scenario: work already running is left to settle
 - **WHEN** a node's call has already started on a worker as its `timeout_seconds` elapses
 - **THEN** the node fails as a node timeout while that call runs to completion undisturbed and is never re-dispatched
-
-#### Scenario: exceeding the recursion limit terminates the run as failed
-- **WHEN** a run trips the applied recursion limit
-- **THEN** the run status becomes `failed` with a `GraphRecursionError` message naming the applied limit and how to raise it
-
-#### Scenario: a cancelled run reports cancelled, not failed
-- **WHEN** a run is cancelled between nodes
-- **THEN** the run status becomes `cancelled` with a cancellation message, distinct from a crash
-
-#### Scenario: a code node that raises fails the run with its stderr
-- **WHEN** `run()` raises inside the sandbox
-- **THEN** the run status is `failed`, the class is `code_node_failed`, and the error contains the exception text from the child's stderr
-
-The executor SHALL additionally classify `workspace_checkout_failed`,
-`workspace_push_refused`, `workspace_busy`, `workspace_pool_busy`,
-`workspace_quota_exceeded`, `workspace_command_timeout`,
-`workspace_provision_refused`, `workspace_provision_failed` and
-`workspace_discard_failed`, each actionable by the chatbot with a fixed
-suggested action. `workspace_provision_failed` is classified but not yet
-raised: the resolver whose transport, cache-bound and offline-install failures
-would produce it is the named follow-up. All other clauses of this requirement
-are unchanged.
-
-#### Scenario: a busy workspace is a wait, not a crash
-- **WHEN** a second workspace job starts while the universe's (or the host's) slot is held
-- **THEN** it waits up to its timeout and then fails as `workspace_busy` with the advice to retry
-
-#### Scenario: a workspace command timeout is its own class
-- **WHEN** a `ws.run` command outlives its budget
-- **THEN** the run fails as `workspace_command_timeout`, distinct from a node timeout, classified from a flag on the sandbox result rather than by matching a message
 
 ### Requirement: Interrupted runs resume from checkpoint under owner, status, checkpoint, and version guards
 `resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only when four guards pass: the caller `actor` owns the run (else `auth_failed`), the run is `interrupted` (a run already `resumed` is idempotently returned; any other status raises `not_interrupted`), a checkpoint exists for the run's `thread_id` (else `no_checkpoint`), and the exact branch version the run used still resolves (else `branch_version_mismatch`). On resume the run SHALL be marked `resumed` before background re-invocation with `None` inputs (LangGraph's resume signal). At server startup `recover_in_flight_runs` SHALL sweep ordinary `queued` or `running` rows without a managed-family association or durable prepared admission to `interrupted` so no run is falsely reported in flight after a restart. As-built limitation: the `recover_in_flight_runs` docstring still states that `interrupted` is terminal and that mid-run resume via checkpoint is "not available today" — that docstring is stale, because `resume_run` implements exactly that checkpoint-based resume.
