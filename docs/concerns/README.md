@@ -27,7 +27,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 |---|---|---|
 | **note** | [History expansion followups](2026-09-22-history-expansion-followups.md) — retained long reply accepted live; organic owner use and peripheral expansion cases remain unverified | 2026-09-22 |
 | **note** | [Owned run activity clean-use watch](2026-09-22-owned-run-activity-clean-use.md) — deployed diagnostics passed scoped rendered acceptance; organic owner use and historical intermittent causes remain open | 2026-09-22 |
-| **note** | [Served node editable-field parity](2026-09-21-served-node-editable-field-parity.md) — effects/workspace edits work; ordinary output-key and timeout edits remain refused | 2026-09-21 |
+| **note** | [Ordinary node edit clean-use watch](2026-09-23-node-edit-organic-use-watch.md) — output/timeout editing accepted live; independent customer use not yet observed | 2026-09-23 |
 | **note** | [Effect-edit organic-use watch](2026-09-21-effect-edit-organic-use-watch.md) — deployed and rendered acceptance passed; independent customer clean use not yet observed | 2026-09-21 |
 | **P1** | [Late spoken-turn failure can offer another account's text](2026-09-20-spoken-turn-account-transition.md) — source-derived missing owner/home guard; typed recovery patch does not claim voice parity | 2026-09-20 |
 | **P1** | [Uploaded attachment cannot be processed through ordinary agent use](2026-09-20-uploaded-file-binding-discovery.md) — guidance deployed213454c4; fresh ordinary upload still lacks live byte-read proof, so the concern remains open | 2026-09-20 |

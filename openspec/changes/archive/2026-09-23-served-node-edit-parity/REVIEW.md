@@ -46,3 +46,15 @@ are clean. `git diff --check` and strict change validation pass.
 Canonical specification synchronized in the implementation patch to avoid a
 separate specification-only release cycle. Change is NOT archived: hosted CI,
 cloud deployment and rendered agent acceptance remain required.
+
+## Accepted September23,2026 UTC
+
+Required CI passed; merged1f121719 has the exact reviewed tree. Authenticated
+public handles and protected SHA confirmed cloud deployment23:13UTC. Candidate
+Linux artifacts prove all171 relevant tests passed with0skips. Original16:31PDT
+app agent reply independently renamed/reran/read output and changed/read timeout,
+then explicitly reported both issues fixed. No operator workflow edits. Exact
+evidence, scope limits and review:
+`docs/reviews/2026-09-23-node-edit-parity-lead-review.md`.
+Canonical specification shipped with runtime3924; archival changes no runtime.
+Organic use and provider reliability remain separate, not false blanket closure.
