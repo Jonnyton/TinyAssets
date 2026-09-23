@@ -1783,8 +1783,9 @@ def test_bash_path_does_not_follow_symlinks(tmp_path):
 
 WATCHDOG = REPO / "deploy" / "daemon-watchdog.sh"
 
-# Verbs that only read. Anything outside this set is a mutation and has to be
-# accounted for explicitly by the assertions below.
+# Command families used for reads in the expected transcript. The exact
+# transcript assertion, not this family filter, excludes mutations such as
+# `compose down` or `volume rm`.
 _WATCHDOG_READ_ONLY_DOCKER_VERBS = frozenset({"inspect", "volume", "compose"})
 
 # Record common relay commands in addition to the exact docker/systemctl

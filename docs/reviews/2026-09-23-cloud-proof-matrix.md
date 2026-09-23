@@ -1,9 +1,11 @@
 # Cloud admission: copied-setting regression proof
 
 2026-09-23 UTC. Candidate base `219af0aa`, branch
-`codex/cloud-admission-proof-matrix`. Scope: three test modules, this review,
+`codex/cloud-admission-proof-matrix`. Scope: four test modules, this review,
 and correction of stale planning wording. No runtime, permission, schema,
-workflow or account change; no skip, xfail or quarantine added.
+workflow or account change; no xfail or quarantine added. The added watchdog
+test skips when bash is unavailable, matching this installer's existing test
+harness. Required Linux evidence must explicitly show its three cases ran.
 
 ## Independent review
 
@@ -93,8 +95,9 @@ systemd half is exactly `is-active --quiet` / `reset-failed` / `restart` of
 succeed; none is invoked. This list is not an exhaustive network prohibition
 or a sandbox for arbitrary future shell commands.
 
-**This is a preservation test against an unchanged script.** The watchdog was
-not modified on this branch, so there is no red-first result to report and
+**This is a preservation test of unchanged watchdog behaviour.** Parent PR3922
+added comments only; this test delta changes no watchdog code. There is no
+red-first result to report and
 none is claimed. The builder additionally reports three mutants of a *copy*
 of the script -- a second container target,
 an `ssh` hop to a standby host, and a second systemd unit -- were run through
