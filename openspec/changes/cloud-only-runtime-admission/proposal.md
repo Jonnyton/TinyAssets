@@ -128,7 +128,7 @@ enforcement from cloud network/credential custody.
    --apply`) is a different act: it is a digest- and count-confirmed
    cancellation of exactly the reviewed stale tasks, it assigns no work, and it
    is admitted like any other platform write. Two clarifications the earlier
-   wording blurred: `release-reconcile.yml` reconciles the **deployed image**
+   wording blurred: `release-reconcile.yml` reconciles the **deployed release**
    against `main` and is not a universe-reassignment path at all; and
    `deploy/daemon-watchdog.sh` restarts the **same cloud service/container**, so
    an admission refusal producing no heartbeat and a restart loop is the

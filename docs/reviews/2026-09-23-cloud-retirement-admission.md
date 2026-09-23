@@ -97,7 +97,9 @@ mismatched-digest, wrong-count and missing-argument negatives are untouched.
 Codex independently reviewed the Claude-authored runtime/tests on September23,
 2026 UTC. The earlier shape reviewer was **Claude Opus**, not Codex; its ADAPT
 verdict corrected the recovery classification before implementation. It was a
-shape review, not exact-head implementation approval. The builder's mistaken
+shape review, not exact-head implementation approval. Its original artifact is
+`output/cloud-recovery-boundary-review-result.md` in the lead checkout (not
+shipped in this candidate). The builder's mistaken
 family attribution is corrected here rather than adopted.
 
 The guard precedes every apply write/store construction, and the shared resolver
@@ -127,6 +129,16 @@ remain); read-only planning may construct adapters before the apply guard.
 No production behavior changed in those corrections.
 
 ## Remaining release gates and limits
+
+The base is deployment-verified, not merely merged:
+[PR3921's public receipt](https://github.com/Jonnyton/TinyAssets/pull/3921#issuecomment-5788453081)
+records hosted `deployed_sha.py --assert-contains fab37a6cf1c2dd341555ffcbe806690f320b9895`
+and public `--assert-handles` PASS at03:21UTC September23.
+[Deploy35813917911](https://github.com/Jonnyton/TinyAssets/actions/runs/35813917911)
+completed SUCCESS for that exact merge; re-read via `gh run view` and the public
+comment API at04:01UTC. This receipt was external to the candidate checkout;
+its absence from the earlier local acceptance doc did not mean no receipt existed.
+These facts apply to the base, NOT this candidate or exclusive cloud custody.
 
 Exact-head review receipt, hosted Linux checks, image/deployment, protected SHA
 and public MCP handles still gate release. Then send one ordinary rendered

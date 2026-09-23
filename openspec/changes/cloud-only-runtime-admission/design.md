@@ -201,8 +201,8 @@ resolve_platform_runtime_provenance()   <- one resolver, fail-closed
 Short, because this is a correction to wording, not a new ops system.
 
 - **`release-reconcile.yml` reconciles the *deployment*.** It compares the
-  deployed image against `main` on a nominal 15-minute schedule (delivery is
-  best-effort, not a guaranteed interval). It reads
+  last successful `Deploy prod` run on main against current main, on a nominal
+  15-minute schedule (delivery is best-effort, not a guaranteed interval). It reads
   no task, touches no universe and reassigns nothing. It must not be listed as a
   recovery path that could re-home work; it never could.
 - **`deploy/daemon-watchdog.sh` restarts the *same* cloud service/container.**

@@ -166,7 +166,9 @@ matrix/baseline mapping is not closed and local Linux oracle was unavailable;
 no Docker Desktop/WSL startup is authorized. Skips are not coverage.
 Task11 remains open; no free-account action occurred. Task12 is partially synced:
 the main admission spec syncs this candidate's maintenance contract for landing;
-other admission contracts are already deployed, pulse already matched,
+other admission contracts are already deployed per
+[PR3921's public receipt](https://github.com/Jonnyton/TinyAssets/pull/3921#issuecomment-5788453081),
+pulse already matched,
 and desktop/daemon collision text now separates process launch/discovery from
 admission. REST primitives were preserved, not falsely reported removed. Full
 delta sync/archive waits for custody, recovery coverage and free-user acceptance.
