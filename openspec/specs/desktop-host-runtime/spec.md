@@ -5,7 +5,7 @@ Define the current source-installed desktop host, including tray supervision, pr
 ## Requirements
 ### Requirement: The Source Tray Owns One Host Control Process Per Lock Path
 
-The source-shipped `tinyassets_tray.py` entry point SHALL acquire the checkout-local `logs/.tray.lock` before starting its tray manager, and a second launch using that same lock path while it is held SHALL exit successfully without starting another manager. The tray manager SHALL launch and supervise provider-pinned daemon subprocesses, the local MCP server, and the optional tab watchdog; it MUST NOT launch a local Cloudflare tunnel, even when former opt-in environment variables or tokens are present. The current lock does not prevent a second source checkout from starting its own manager. This ingress-removal requirement does not by itself establish cloud-only worker or provider admission.
+The source-shipped `tinyassets_tray.py` entry point SHALL acquire the checkout-local `logs/.tray.lock` before starting its tray manager, and a second launch using that same lock path while it is held SHALL exit successfully without starting another manager. The tray manager SHALL launch and supervise provider-pinned daemon subprocesses, the canonical MCP server subprocess, whose serving startup independently requires cloud admission, and the optional tab watchdog; it MUST NOT launch a local Cloudflare tunnel, even when former opt-in environment variables or tokens are present. The current lock does not prevent a second source checkout from starting its own manager. Tray process creation is not serving or execution admission. A personal desktop SHALL NOT become a platform dependency through a tray-launched child.
 
 #### Scenario: Double-launch is harmless
 
@@ -17,7 +17,7 @@ The source-shipped `tinyassets_tray.py` entry point SHALL acquire the checkout-l
 
 - **WHEN** the tray starts, including with `TINYASSETS_TRAY_ENABLE_TUNNEL` or a legacy tunnel token present
 - **THEN** it starts no `cloudflared` process and records explicit refusal of an obsolete tunnel request
-- **AND** the daemon and local MCP startup paths remain available
+- **AND** retaining daemon or MCP subprocess launch controls grants no cloud serving or provider-execution authority; an unadmitted MCP child exits before serving
 
 ### Requirement: Tray Provider Controls Enforce Current Host Constraints
 
@@ -31,8 +31,8 @@ The host tray SHALL list the providers known to `tinyassets.preferences`, allow 
 #### Scenario: Duplicate subscription daemons remain distinguishable
 
 - **WHEN** the user starts the same subscription provider twice
-- **THEN** both daemons may run with distinct instance keys and distinct per-instance log files
-- **AND** the tray reports both instances as that provider
+- **THEN** both daemon subprocesses may be spawned with distinct instance keys and distinct per-instance log files
+- **AND** the tray reports both instances as that provider; spawning or instance-key distinction does not grant platform-work authority
 
 #### Scenario: Preferences drive startup
 
@@ -56,7 +56,7 @@ The host tray SHALL resolve its universe root through `tinyassets.storage.data_d
 
 ### Requirement: Tray Health Is Observable And Supervised
 
-The tray SHALL distinguish local MCP process liveness from HTTP readiness, surface daemon, MCP, watchdog, universe, and provider state, and close daemon log handles when their processes exit or are stopped. Local readiness SHALL NOT be represented as proof of cloud service health. The public-app action SHALL remain available independently of all local processes; the removed tunnel SHALL NOT appear as a failing dependency. The background monitor SHALL restart a previously-started local MCP server or watchdog after process death with bounded backoff, never a tunnel. A fresh per-universe `.runtime_status.json` MAY supply best-effort provider detail only when no tray-managed daemon is visible; stale or malformed status SHALL be ignored, while a parseable naive timestamp SHALL be interpreted as UTC before freshness is checked.
+The tray SHALL distinguish local MCP process liveness from HTTP readiness, surface daemon, MCP, watchdog, universe, and provider state, and close daemon log handles when their processes exit or are stopped. Local readiness SHALL NOT be represented as proof of cloud service health. The public-app action SHALL remain available independently of all local processes; the removed tunnel SHALL NOT appear as a failing dependency. The background monitor SHALL restart a previously-started local MCP server or watchdog after process death with bounded backoff, never a tunnel. A restarted MCP child remains subject to admission; supervision SHALL NOT convert startup refusal into readiness or cloud authority. A fresh per-universe `.runtime_status.json` MAY supply best-effort provider detail only when no tray-managed daemon is visible; stale or malformed status SHALL be ignored, while a parseable naive timestamp SHALL be interpreted as UTC before freshness is checked.
 
 #### Scenario: Dead daemon is reaped
 
