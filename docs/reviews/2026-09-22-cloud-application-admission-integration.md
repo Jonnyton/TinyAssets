@@ -103,3 +103,15 @@ Root verification September23 00:21UTC, Windows/Python3.14.3:
 8warnings,108.77s. Focused Ruff passed. Local actionlint is absent (hook SKIPPED)
 and Linux oracle cannot connect to the absent engine; neither is a pass. No
 Docker Desktop/WSL was started. Hosted checks still gate this candidate.
+
+Required Linux35800404638 completed16m23s:20363ran,13failures,6new,
+zero stale quarantine. The two packaging failures above plus four fake-provider
+callers in progress_events/text_channel_id_redaction/wait_for_run lacked
+explicit process admission. Windows candidate reproduced the same4fail/24pass;
+cleanbase a468232c passed28. Adding only the existing opt-in cloud_runtime
+fixture import/mark to those three modules restores28pass. Combined with the
+five direct cloud-admission regressions:33pass,38warnings,11.02s, focused Ruff
+clean. Behavioral assertions, runtime, global fixtures and quarantine unchanged.
+JUnit: outside-repo Temp ta-cloud-final-callers-{red,base,fixed}-20260922.xml.
+Independent Opus98413 approved the preceding f50bffac CI-contract delta
+(exit0/190s); that approval alone does not cover this later fixture integration.

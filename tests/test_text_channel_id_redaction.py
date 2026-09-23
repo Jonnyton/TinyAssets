@@ -16,8 +16,12 @@ import time
 
 import pytest
 
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+
 #: Runs are attributed to this universe; registered + ACL-granted in `env`.
 REDACTION_UNIVERSE = "redaction-universe"
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
 @pytest.fixture
