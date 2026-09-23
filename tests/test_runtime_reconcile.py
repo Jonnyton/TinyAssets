@@ -665,12 +665,30 @@ def _stale_fleet_fixture(base_path: Path) -> tuple[dict, dict]:
     return task, runtime
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# A spawned child inherits no monkeypatch and, by design, no cached verdict. The
+# CLI coverage here stays a real subprocess -- the seam is one explicit test-only
+# line the child runs before `main`, installing the SAME injected fake resolver
+# `cloud_runtime` uses in-process. No environment variable, no production bypass
+# and no network: an env switch would be reachable from a real deployment's
+# env_file, whereas this is only reachable by a caller that imports `tests`.
+# Kept on ONE line: cmd.exe truncates argv at a newline on this host.
+_ADMITTED_CLI_BOOTSTRAP = (
+    "import sys; "
+    "from tests.cloud_runtime_fixture import install_admitted_observation; "
+    "install_admitted_observation(); "
+    "from tinyassets.runtime_reconcile import main; "
+    "raise SystemExit(main(sys.argv[1:]))"
+)
+
+
 def _run_reconciler(base_path: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
-            "-m",
-            "tinyassets.runtime_reconcile",
+            "-c",
+            _ADMITTED_CLI_BOOTSTRAP,
             "stale-fleet",
             "--data-dir",
             str(base_path),
@@ -681,6 +699,7 @@ def _run_reconciler(base_path: Path, *args: str) -> subprocess.CompletedProcess:
         check=False,
         capture_output=True,
         text=True,
+        cwd=str(_REPO_ROOT),
     )
 
 

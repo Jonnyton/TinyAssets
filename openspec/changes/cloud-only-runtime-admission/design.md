@@ -141,7 +141,9 @@ resolve_platform_runtime_provenance()   <- one resolver, fail-closed
    |                        boundary (foreground_run_provider.py:484,595,
    |                        background_served_provider.py:1336,1547)
    +-- (D) origin ingress   platform request admission at the origin
-   +-- (E) recovery         watchdog / release-reconcile / stale-runtime retirement
+   +-- (E) recovery         watchdog (same-container restart) / assigned-consumer
+   |                        startup+poll; and, separately, the explicit operator
+   |                        retirement CLI (tinyassets/runtime_reconcile.py)
 ```
 
 - **(A)** must be in-transaction because `_consumer_skip_reason` is
@@ -181,9 +183,49 @@ resolve_platform_runtime_provenance()   <- one resolver, fail-closed
   off-cloud connector has already absorbed public traffic (see § Off-cloud
   public routing). Prevention is removing the in-repo enrollment path plus
   token custody; the origin refusal covers what custody cannot.
-- **(E)** closes the fallback hole the directive names explicitly: a retirement
-  or recovery plan that finds no admitted successor leaves work **pending**. It
-  never re-homes to an unadmitted runtime, and "temporarily" is not an exception.
+- **(E)** closes the fallback hole the directive names explicitly, and it covers
+  two distinct acts that must not be described in one sentence:
+  - *Automatic recovery* — the watchdog and the assigned consumer's
+    startup/poll paths. Finding no admitted successor leaves work **pending**.
+    It never re-homes to an unadmitted runtime, and "temporarily" is not an
+    exception. This rule is not weakened anywhere below.
+  - *Explicit operator retirement* — `tinyassets.runtime_reconcile stale-fleet
+    --apply`. A human reviews a dry-run plan and re-supplies its digest and both
+    exact counts; the tool then cancels **exactly** those approved stale tasks
+    and retires exactly those stale runtimes. It assigns nothing and mints
+    nothing, so it is not a successor path — but it is a platform write, so it
+    is admitted like every other one (§ Ops note below).
+
+### Ops note — recovery mechanics that are fail-closed by design
+
+Short, because this is a correction to wording, not a new ops system.
+
+- **`release-reconcile.yml` reconciles the *deployment*.** It compares the
+  deployed image against `main` on a nominal 15-minute schedule (delivery is
+  best-effort, not a guaranteed interval). It reads
+  no task, touches no universe and reassigns nothing. It must not be listed as a
+  recovery path that could re-home work; it never could.
+- **`deploy/daemon-watchdog.sh` restarts the *same* cloud service/container.**
+  Its whole repertoire is `docker restart tinyassets-daemon` plus `systemctl
+  restart` of the same unit on the same droplet. It has no notion of another
+  host, so it cannot fail over anywhere — least of all to a personal desktop.
+- **Repeated refusal is an intended fail-closed outcome.** An unadmitted daemon
+  refuses; failed unit/container checks or an existing stale heartbeat can
+  trigger a restart of the same container. Each new process must pass admission
+  again. A missing heartbeat alone is not `heartbeat_stale`; the script instead
+  relies on unit/container checks. Repeated refusal is fail-closed
+  behaviour working, not a silent-serving bug and not evidence that a local
+  fallback is needed. Adding one would be the defect this change exists to
+  prevent. The remedy for a genuinely wrong refusal is fixing admission or the
+  droplet's identity, never widening what may serve.
+
+**Evidence classes must stay separate.** "The guard is wired at this call site"
+is *source-wiring evidence* — a read, a grep, a test that the symbol is invoked.
+"The guard refuses on the real path" is *executable runtime proof* — a red-first
+test that fails without the guard, or a live observation. This slice's watchdog
+and release-reconcile statements are source-wiring evidence about scripts whose
+behaviour is unchanged here; they are not a claim that watchdog admission was
+integrated or executed.
 
 Storage (Layer A) stays descriptive in this change: the `'tray'` CHECK value is
 not removed here, because removing a degenerate enum value kills every branch
@@ -240,7 +282,8 @@ infrastructure the platform already owns.
 | 3 | **Negative startup/foreground** — unadmitted serving boot and an unadmitted foreground/served provider turn | boot exits non-zero; turn refuses, no provider process spawned |
 | 4 | **Replayed stale registration** — a row admitted for instance X + boot epoch N, then read by an unadmitted process (and by a different boot epoch) | authority refused on read; row existence confers nothing |
 | 5 | **Local spoofed labels** — set every env var the container sets (incl. `TINYASSETS_ALLOW_CLAUDE_SERVING`, `TINYASSETS_DATA_DIR=/data`), hostname aliased to `mcp.tinyassets.io`, compose labels matched | still refused at all four sites |
-| 6 | **Recovery/fallback** — stale-cloud-worker retirement and watchdog with no admitted successor | work stays pending; nothing re-homed to an unadmitted runtime, not even momentarily |
+| 6 | **Recovery/fallback** — automatic recovery (assigned-consumer startup/poll, watchdog) with no admitted successor | work stays pending; nothing re-homed to an unadmitted runtime, not even momentarily |
+| 6b | **Explicit operator retirement** — `runtime_reconcile stale-fleet --apply` from an unadmitted process, correct digest and counts | refused before store construction; the approved stale task stays pending and its runtime stays provisioned. Admitted, the same confirmed plan cancels exactly those tasks |
 | 7 | **Ingress** — tunnel-forwarded platform request arriving at an unadmitted origin | origin refuses before any universe work |
 | 8 | **Cloud positive** — admitted process claims a `cloud` task | claim succeeds, audience records the resolved CLOUD class, run proceeds |
 | 9 | **Free-only first answer** — new user completes their own OpenRouter OAuth callback and eligible free-model approval, no copied key or borrowed subscription | actual tool-capable answer served entirely on admitted cloud runtime |

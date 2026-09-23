@@ -19,6 +19,7 @@ from tinyassets.branch_tasks_v2 import (
     Epoch2BranchTaskAdapter,
 )
 from tinyassets.dispatcher import load_dispatcher_config, prefers_request_type
+from tinyassets.platform_runtime_provenance import require_process_cloud_admission
 from tinyassets.storage import DB_FILENAME, data_dir
 from tinyassets.storage.request_admissions import RequestAdmissionStore
 
@@ -218,6 +219,21 @@ def build_stale_fleet_plan(
 
 
 def _apply_plan(base_path: Path, plan: StaleFleetPlan) -> dict[str, int]:
+    """Write boundary. Read-only planning and the dry run stay ungated.
+
+    This is explicit operator retirement, not automatic recovery: a human has
+    already reviewed a dry-run plan and re-supplied its digest and both exact
+    counts, and what follows cancels exactly those approved stale tasks and
+    retires exactly those stale runtimes. It assigns nothing and mints nothing,
+    so it is never an admitted successor for pending work -- but it is a
+    platform write, so the process must be admitted like any other write site.
+
+    Gated here rather than in ``main`` so the boundary is the writes themselves:
+    an in-process caller gets the same refusal as the CLI. The resolve happens
+    before the store is constructed and before any transaction opens, per
+    `design.md` § Enforcement sites (A).
+    """
+    require_process_cloud_admission(surface="stale fleet retirement")
     cutoff = datetime.fromisoformat(plan.cutoff)
     store = RequestAdmissionStore(base_path)
     applied_tasks = 0
@@ -314,7 +330,11 @@ def main(argv: list[str] | None = None) -> int:
         output.update(_apply_plan(base_path, plan))
         print(json.dumps(output, sort_keys=True, indent=2))
         return 0
-    except (ReconcileGuardError, ValueError) as exc:
+    # PermissionError is the admission refusal from `_apply_plan`. Its message
+    # is the sanitized `platform_not_cloud` token plus a literal surface name --
+    # it carries no id, path, address or hostname -- so it belongs in the same
+    # JSON error channel as the guard errors rather than as a traceback.
+    except (ReconcileGuardError, PermissionError, ValueError) as exc:
         print(json.dumps({"error": str(exc)}, sort_keys=True), file=sys.stderr)
         return 2
 
