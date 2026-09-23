@@ -47,8 +47,8 @@ same-branch use. The declarations grant no credentials, consent or execution rig
 
 No post-fix independent customer clean use was visible in the inspected history.
 That watch remains in docs/concerns/2026-09-21-effect-edit-organic-use-watch.md.
-Output-key and timeout editing remain separately open in
-docs/concerns/2026-09-21-served-node-editable-field-parity.md. The retest also
+Output-key and timeout editing were separately open at this review; both were
+accepted September23 in docs/reviews/2026-09-23-node-edit-parity-lead-review.md. The retest also
 surfaced an unrelated sequential provider_idle_timeout; successful retries do
 not close provider reliability. The full platform goal remains open.
 
