@@ -365,7 +365,92 @@ def _build_staged_bundle() -> None:
     )
 
 
-def _stdio_handshake(env: dict[str, str]) -> dict[int, dict]:
+#: Fixture-only child harness. It injects ONE simulated admitted-process
+#: observation through the runtime's existing Python seam
+#: (`ProcessProvenanceObservation`), then executes the *real*, unmodified
+#: staged launcher over real stdio.
+#:
+#: What it is NOT: a cloud deployment, a successful desktop installation, or
+#: evidence that a user's off-cloud install serves anything. Under the
+#: founder's cloud-only rule an unadmitted local install refuses to boot —
+#: that is `test_staged_bundle_refuses_unadmitted_startup`, and it drives the
+#: shipped launcher with no harness at all. This fixture exists only so the
+#: *catalog* half of the packaging proof (real stdio `initialize` + the
+#: canonical seven handles out of the artifact users install) survives the
+#: new serving contract instead of being deleted with it.
+#:
+#: Constraints held by construction: it never enters a production file or an
+#: environment flag (it is written to a temp dir outside the repo, and takes
+#: the stage path as argv), it tripwires the metadata readers so the positive
+#: makes no metadata network call, and it never issues `tools/call`.
+_ADMITTED_PROCESS_HARNESS = '''\
+"""FIXTURE ONLY (tests/test_packaging_build.py) — simulated admitted process.
+
+Injects one `ProcessProvenanceObservation` into the STAGED runtime, then runs
+the staged `server.py` unmodified. Not a cloud deployment, not a desktop
+install, not proof that an off-cloud installation runs.
+"""
+import runpy
+import sys
+from pathlib import Path
+
+STAGE = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(STAGE))
+
+import tinyassets
+import tinyassets.platform_runtime_provenance as prov
+
+# The harness must exercise the shipped artifact, not the checkout it was
+# built from. A module resolved outside the stage fails the run loudly.
+for _module in (tinyassets, prov):
+    _resolved = Path(_module.__file__).resolve()
+    if STAGE not in _resolved.parents:
+        raise SystemExit(
+            f"harness imported {_module.__name__} from outside the staged "
+            f"bundle: {_resolved}"
+        )
+
+
+def _no_metadata_network(*_args, **_kwargs):
+    raise AssertionError(
+        "fixture-only harness must not read droplet metadata"
+    )
+
+
+prov.read_metadata_instance_id = _no_metadata_network
+prov._read_metadata_instance_id = _no_metadata_network
+prov.build_metadata_opener = _no_metadata_network
+
+SIMULATED = prov.RuntimeProvenance(
+    verdict=prov.CLOUD,
+    reason="fixture_simulated_admitted_process",
+    metadata_reachable=True,
+    expected_identity_prepared=True,
+)
+prov._PROCESS_OBSERVATION = prov.ProcessProvenanceObservation(
+    resolver=lambda: SIMULATED,
+)
+if not prov.observe_platform_runtime_provenance().is_cloud:
+    raise SystemExit("fixture-only admitted-process injection did not take")
+
+print(f"FIXTURE_STAGED_RUNTIME={Path(prov.__file__).resolve()}", file=sys.stderr)
+print(f"FIXTURE_SIMULATED_REASON={SIMULATED.reason}", file=sys.stderr)
+sys.stderr.flush()
+
+runpy.run_path(str(STAGE / "server.py"), run_name="__main__")
+'''
+
+
+def _write_admitted_process_harness(directory: str) -> Path:
+    """Write the fixture-only harness into a temp dir outside the repo."""
+    path = Path(directory) / "fixture_only_admitted_process_harness.py"
+    path.write_text(_ADMITTED_PROCESS_HARNESS, encoding="utf-8")
+    return path
+
+
+def _stdio_handshake(
+    env: dict[str, str], command: list[str] | None = None,
+) -> SimpleNamespace:
     """Drive the staged bundle over real stdio like an installing host would.
 
     Speaks newline-delimited JSON-RPC into ``server.py``'s stdin exactly as
@@ -373,6 +458,11 @@ def _stdio_handshake(env: dict[str, str]) -> dict[int, dict]:
     request id. Each request waits for its response before the next write —
     writing the whole script and closing stdin immediately races the
     server's EOF shutdown against its in-flight dispatch.
+
+    ``command`` substitutes the fixture-only harness above for a bare
+    ``server.py`` invocation. The protocol, the launcher and the staged
+    runtime are identical either way — only the process-provenance
+    observation differs.
     """
     initialize = {
         "jsonrpc": "2.0",
@@ -394,7 +484,7 @@ def _stdio_handshake(env: dict[str, str]) -> dict[int, dict]:
     # Binary: the child's stderr banner/log is console-codepage encoded.
     with tempfile.TemporaryFile() as err_file:
         proc = subprocess.Popen(
-            [sys.executable, str(DIST_STAGE / "server.py")],
+            command or [sys.executable, str(DIST_STAGE / "server.py")],
             cwd=str(DIST_STAGE),
             env=env,
             stdin=subprocess.PIPE,
@@ -451,7 +541,7 @@ def _stdio_handshake(env: dict[str, str]) -> dict[int, dict]:
         f"stdio launch failed (rc={returncode}).\nstderr={stderr}"
     )
     assert set(responses) == {1, 2}, f"stderr={stderr}"
-    return responses
+    return SimpleNamespace(responses=responses, stderr=stderr)
 
 
 @pytest.fixture
@@ -658,16 +748,131 @@ def test_mcpb_manifest_declares_local_stdio_configuration():
         assert claim not in blob, f"MCPB manifest must not claim {claim}"
 
 
-def test_staged_bundle_launches_over_stdio_and_enumerates_seven():
-    """Real launcher proof: install-shaped stdio boot from an isolated dir."""
+def test_staged_bundle_refuses_unadmitted_startup():
+    """Cloud-only serving contract, proven on the artifact users install.
+
+    No harness, no injection, no mock: the shipped staged launcher is spawned
+    exactly as the manifest's `mcp_config` spawns it, in a provider-free
+    temporary data root with no deploy-recorded instance identity. The
+    process must refuse before any transport starts — a non-zero
+    `PLATFORM_NOT_CLOUD_EXIT_CODE` (78, sysexits `EX_CONFIG`), the stable
+    `platform_not_cloud` refusal token published to stderr, and no
+    `initialize`/`tools` response on stdout.
+
+    This supersedes the previous claim that an off-cloud local install boots
+    and enumerates. Under the founder's cloud-only rule it does not, and this
+    test is the assertion that it must not.
+    """
+    _build_staged_bundle()
+    probe = "\n".join(
+        json.dumps(payload)
+        for payload in (
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "packaging-probe", "version": "0"},
+                },
+            },
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        )
+    ) + "\n"
+
+    with tempfile.TemporaryDirectory(prefix="tinyassets-mcpb-unadmitted-") as data:
+        env = _provider_free_env(data)
+        assert not (Path(data) / "platform-expected-instance.json").exists(), (
+            "an unadmitted proof must not be handed a deploy-recorded identity"
+        )
+        proc = subprocess.run(
+            [sys.executable, str(DIST_STAGE / "server.py")],
+            cwd=str(DIST_STAGE),
+            env=env,
+            input=probe,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=300,
+        )
+
+    assert proc.returncode == 78, (
+        "an unadmitted local process must exit non-zero with the serving "
+        f"admission code.\nrc={proc.returncode}\nstdout={proc.stdout}\n"
+        f"stderr={proc.stderr}"
+    )
+    assert "platform_not_cloud" in proc.stderr, (
+        f"the refusal token must be published.\nstderr={proc.stderr}"
+    )
+    for leaked in ('"result"', "serverInfo", '"tools"'):
+        assert leaked not in proc.stdout, (
+            f"transport must not have started; stdout carried {leaked}: "
+            f"{proc.stdout}"
+        )
+
+
+def test_staged_bundle_enumerates_seven_under_simulated_admission():
+    """Real launcher + real stdio, fixture-only admitted-process evidence.
+
+    The catalog half of the packaging proof. The staged `server.py` and the
+    staged runtime are unmodified and the JSON-RPC handshake is real; only
+    the process-provenance observation is simulated, injected through the
+    runtime's existing Python seam by the fixture-only child harness.
+
+    Read this for exactly what it proves: the artifact users install carries
+    a runtime whose stdio transport answers `initialize` and enumerates the
+    canonical seven. It is **not** a cloud deployment, **not** a successful
+    desktop installation, and **not** evidence that an off-cloud install
+    serves — that shape is refused, by the test directly above.
+    """
     _build_staged_bundle()
     with tempfile.TemporaryDirectory(prefix="tinyassets-mcpb-stdio-") as data:
-        responses = _stdio_handshake(_provider_free_env(data))
+        harness = _write_admitted_process_harness(data)
+        assert REPO_ROOT not in harness.resolve().parents, (
+            "the fixture-only harness must never live inside the repo"
+        )
+        outcome = _stdio_handshake(
+            _provider_free_env(data),
+            [sys.executable, str(harness), str(DIST_STAGE)],
+        )
 
-    initialize = responses[1]["result"]
+    # The harness asserted its own imports resolved inside the stage and
+    # echoed the proof; a checkout import would have failed the run.
+    assert f"FIXTURE_STAGED_RUNTIME={DIST_STAGE.resolve()}" in outcome.stderr, (
+        f"harness did not report a staged runtime.\nstderr={outcome.stderr}"
+    )
+    assert "FIXTURE_SIMULATED_REASON=fixture_simulated_admitted_process" in (
+        outcome.stderr
+    ), f"admission evidence must be labelled simulated.\nstderr={outcome.stderr}"
+
+    initialize = outcome.responses[1]["result"]
     assert initialize["serverInfo"]["name"] == "TinyAssets"
-    tools = {tool["name"] for tool in responses[2]["result"]["tools"]}
+    tools = {tool["name"] for tool in outcome.responses[2]["result"]["tools"]}
     assert tools == CANONICAL_MCPB_TOOLS
+
+
+def test_admitted_process_harness_is_fixture_only():
+    """The positive's harness may not become a product bypass.
+
+    It touches no production file and no environment flag, it makes no
+    metadata network call, and it never issues `tools/call`.
+    """
+    source = _ADMITTED_PROCESS_HARNESS
+    assert "FIXTURE ONLY" in source
+    assert "tools/call" not in source
+    assert "os.environ" not in source, (
+        "admission must not be reachable through an environment flag"
+    )
+    assert "_no_metadata_network" in source and "169.254" not in source, (
+        "the positive must not read droplet metadata"
+    )
+    # It lives only in the test module: nothing under packaging/ ships it.
+    for shipped in sorted(Path(MCPB_SERVER).parent.rglob("*.py")):
+        text = shipped.read_text(encoding="utf-8")
+        assert "_PROCESS_OBSERVATION" not in text, (
+            f"packaging file {shipped} must not inject process provenance"
+        )
 
 
 def test_staged_bundle_stdio_launch_fails_closed_without_data_dir():
@@ -740,15 +945,21 @@ def test_bundle_configures_no_auth_provider_selection():
 def test_staged_bundle_enumerates_without_credentials():
     """An uncredentialed client completes initialize and enumeration.
 
-    Enumeration is not an authorization check — per-call gating is not
-    proven here, and `LOCAL_ACCEPTANCE.md` says so.
+    Same fixture-only simulated admission as the catalog proof above: cloud
+    admission and client credentials are different facts, and this asserts
+    the second one only. Enumeration is not an authorization check either —
+    per-call gating is not proven here, and `LOCAL_ACCEPTANCE.md` says so.
     """
     _build_staged_bundle()
     with tempfile.TemporaryDirectory(prefix="tinyassets-mcpb-anon-") as data:
-        responses = _stdio_handshake(_provider_free_env(data))
+        harness = _write_admitted_process_harness(data)
+        outcome = _stdio_handshake(
+            _provider_free_env(data),
+            [sys.executable, str(harness), str(DIST_STAGE)],
+        )
 
-    assert "error" not in responses[2]
-    assert responses[2]["result"]["tools"], "catalog must enumerate"
+    assert "error" not in outcome.responses[2]
+    assert outcome.responses[2]["result"]["tools"], "catalog must enumerate"
 
 
 def test_packaging_probes_are_provider_free():

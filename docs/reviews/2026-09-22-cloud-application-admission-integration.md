@@ -77,3 +77,29 @@ Cloudflare browser observation found one connected Linux cloud origin and no
 listed desktop connector. Hosted connector read was401/unknown; custody and SSH
 host trust remain unverified. This patch does not resolve those external facts.
 Free-user onboarding remains unattempted until the generalized path is ready.
+
+## CI contract integration, September 23 UTC
+
+Draft PR3919 head c20ab0cd: hosted packaging35800404593 failed two handshake
+tests (32 passed) because the actual launcher refused unadmitted startup with
+exit78/platform_not_cloud. Opus91106 corrected the test contract, preserving
+an unmodified-launcher refusal test and real staged stdio enumeration through
+an explicitly simulated process-observation fixture. Focused Windows test
+file36passed; root corrected the reported interpreter to Python3.14.3.
+No production admission flag, launcher override or guard weakening was added.
+
+Docker smoke35800404480 failed container readiness; --rm removed the exited
+container's logs, so its specific exit cause was not observed. CI now retains
+and tests an unmodified image's refusal (network disabled, no state/credentials)
+and separately mounts an image-excluded, read-only test fixture supplying
+simulated admission for authenticated loopback-only HTTP/catalog verification.
+The actual Docker entrypoint, server and auth are unchanged. The fixture is
+not cloud provenance or deployed acceptance. Three local fixture/structural
+tests pass; actual container execution and workflow lint remain hosted gates.
+
+Root verification September23 00:21UTC, Windows/Python3.14.3:
+`python -m pytest -q tests/test_packaging_build.py tests/test_docker_admission_fixture.py
+--junitxml=<outside-repo-temp>/ta-cloud-packaging-20260922.xml` passed39tests,
+8warnings,108.77s. Focused Ruff passed. Local actionlint is absent (hook SKIPPED)
+and Linux oracle cannot connect to the absent engine; neither is a pass. No
+Docker Desktop/WSL was started. Hosted checks still gate this candidate.

@@ -11,6 +11,16 @@ Use the build script to stage a minimal bundle that contains:
 - a synced copy of `fantasy_author/universe_server.py`
 - the bundle icon asset
 
+## Cloud-runtime caveat
+
+Staging, validating and packing this bundle is a packaging operation only. It
+does not make the bundle a runnable local server: under the cloud-only
+serving rule (`cloud-only-runtime-admission`), `universe_server.main` admits
+only a cloud-resolved process for every transport, stdio included. A staged
+or installed bundle launched off-cloud refuses to start — exit `78`, refusal
+token `platform_not_cloud`, no transport. `LOCAL_ACCEPTANCE.md` records what
+the packaging proof therefore does and does not establish.
+
 ## Commands
 
 Validate the staged bundle:
