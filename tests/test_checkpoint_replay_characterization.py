@@ -62,9 +62,14 @@ def _finish(_state):
 
 
 def _frontier(app, config):
-    """Return ``(next, [(task name, parked?, errored?)], log)`` for a thread."""
+    """Return ``(next, {task name: (parked?, errored?)}, log)`` for a thread.
+
+    Tasks come back as a dict, not a list: LangGraph documents no ordering for
+    ``state.tasks`` across parallel branches, so asserting a list order would
+    be a latent false-red on a platform that schedules the fan-out differently.
+    """
     state = app.get_state(config)
-    tasks = [(t.name, bool(t.interrupts), bool(t.error)) for t in state.tasks]
+    tasks = {t.name: (bool(t.interrupts), bool(t.error)) for t in state.tasks}
     return state.next, tasks, list(state.values["log"])
 
 
@@ -144,7 +149,7 @@ def test_sequential_predecessor_survives_but_parked_body_replays(tmp_path):
 
     assert counters == {"pred": 1, "parked-pre": 1}
     assert nxt == ("parked",)
-    assert tasks == [("parked", True, False)]
+    assert tasks == {"parked": (True, False)}
     assert log == ["pred"]
 
     # Reopen the SAME file with a fresh saver and a freshly compiled graph --
@@ -179,7 +184,7 @@ def test_completed_parallel_sibling_is_not_replayed(tmp_path):
 
     assert counters == {"parked-pre": 1, "sib": 1}
     assert nxt == ("parked",), "only the parked node is on the frontier"
-    assert tasks == [("sib", False, False), ("parked", True, False)]
+    assert tasks == {"sib": (False, False), "parked": (True, False)}
     assert log == ["sib"], "the sibling's write is durable before the join runs"
 
     with create_checkpointer(db) as saver:
@@ -213,7 +218,7 @@ def test_raised_failure_and_park_share_frontier_and_replay(tmp_path):
     assert isinstance(raised, RuntimeError)
     assert nxt == ("parked",)
     # Same frontier as the park case above; only the task flags differ.
-    assert tasks == [("sib", False, False), ("parked", False, True)]
+    assert tasks == {"sib": (False, False), "parked": (False, True)}
     assert log == ["sib"]
     assert counters == {"parked-pre": 1, "sib": 1}
 
@@ -249,7 +254,7 @@ def test_pre_park_body_replays_once_per_resume_attempt(tmp_path):
             nxt, tasks, log = _frontier(app, config)
         assert counters["parked-pre"] == attempt
         assert nxt == ("parked",), "a still-parked node stays on the frontier"
-        assert tasks == [("parked", True, False)]
+        assert tasks == {"parked": (True, False)}
         assert log == ["pred"], "no state accumulates across failed resumes"
 
     assert counters["pred"] == 1, "the predecessor never replays, however many resumes"
