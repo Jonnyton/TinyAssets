@@ -20,3 +20,16 @@ worth investigating — the timeout value is the symptom. Do not "fix" this by
 raising `timeout=5.0` alone without establishing where the 5 seconds goes.
 
 Reproduce: run the test in isolation with `-p no:randomly`, several times.
+
+## Re-measured after the worker-entry deadline guard (73e92e2d)
+
+The round-2 correction adds a wrapper closure and one `time.monotonic()` call
+to every `_run_with_timeout` submit, so the fair question is whether it pushed
+this marginal test closer to its own bound. It did not: 3/3 passes at
+**4.81s / 4.63s / 4.73s**, in line with the changed tree's earlier 4.70s/4.41s
+and still under the unchanged tree's 5.06s/4.85s. The guard's cost is not
+measurable here.
+
+This does not retire the concern. The bound still straddles the observed range,
+and the ~5s fixed cost is still unexplained — that remains the thing worth
+investigating, not the timeout value.
