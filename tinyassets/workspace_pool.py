@@ -535,6 +535,22 @@ def _no_universe_bytes(_universe_id: str) -> int:
     return 0
 
 
+def _raise_if_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    """Stop an admission whose run the owner already cancelled.
+
+    Raises the runner's OWN ``RunCancelledError`` rather than a fourth refusal
+    code: cancellation already has a vocabulary that ``graph_compiler`` and
+    ``runs`` both recognise, and a new pool code would unwind as a workspace
+    failure - telling the owner their workflow broke when in fact they stopped
+    it. Imported inside the call because ``runs`` reaches into this module.
+    """
+    if should_cancel is None or not should_cancel():
+        return
+    from tinyassets.runs import RunCancelledError
+
+    raise RunCancelledError("workspace admission cancelled while waiting for the pool")
+
+
 def admit(
     db: Path,
     *,
@@ -560,6 +576,7 @@ def admit(
     observation: AdmissionObservation | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     family_admission=None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Lease:
     """Admit one workspace job in ONE ``BEGIN IMMEDIATE`` transaction.
 
@@ -575,6 +592,13 @@ def admit(
     can afford; 0 (the default) refuses immediately. Nothing else is waited on -
     an exhausted quota will not clear inside a node's timeout, and sleeping on
     it would turn a clear refusal into a hang.
+
+    ``should_cancel`` is the caller's OWN cancellation predicate (the run's, not
+    this module's): consulted before the first admission and after every wake,
+    so a cancelled run parked on another holder's lock stops promptly instead of
+    sleeping to its deadline and then taking a lease nobody will use. It is
+    never consulted mid-transaction: a cancellation observed between attempts
+    leaves the pool exactly as it was, because no attempt is in flight.
 
     ``universe_used_bytes_fn`` is called inside the transaction and MUST NOT open
     this database. The returned lease's ``path`` does not exist yet: the caller
@@ -598,6 +622,11 @@ def admit(
             raise ValueError("universe storage needs universe_used_bytes_fn")
         quota_bytes = int(universe_quota_bytes)
         used_fn = universe_used_bytes_fn
+
+    # Before anything is allocated: an already-cancelled run takes no lease even
+    # when the lock is free, because a lease it will never populate or release
+    # is a leak the pool can only reclaim through the outbox.
+    _raise_if_cancelled(should_cancel)
 
     lease_id = _require_path_key("lease_id", lease_id_factory())
     deadline = float(now()) + max(0.0, float(wait_s))
@@ -791,6 +820,10 @@ def admit(
                     observation.retry_sleep_seconds += max(
                         0.0, monotonic() - sleep_started
                     )
+            # Waking is the only moment a cancellation can have arrived since
+            # the last check. Retrying past it would admit a run the owner
+            # already stopped.
+            _raise_if_cancelled(should_cancel)
 
 
 def reconcile_bytes(
