@@ -1763,3 +1763,303 @@ def test_bash_path_does_not_follow_symlinks(tmp_path):
     assert _bash_path(link) == os.path.abspath(link)
     assert _bash_path(link) != os.path.abspath(target)
     assert Path(_bash_path(link)).is_symlink()
+
+
+# --- deploy/daemon-watchdog.sh command repertoire -------------------------
+#
+# Preservation, not a new guarantee. The watchdog script is UNCHANGED by this
+# branch; these cases exist because matrix row 6 ("automatic recovery never
+# re-homes work to an unadmitted runtime") cited the watchdog in prose with no
+# executable evidence behind it. What is actually proven here is narrow and
+# worth stating plainly: on each of the three triggers the script can fire on,
+# the ONLY things it invokes are a restart of the same daemon container and a
+# reset-failed/restart of the same configured cloud unit. No second host, no
+# relay binary, no reassignment.
+#
+# Deliberately NOT proven: locking (flock is mocked, so concurrency behaviour
+# is untested here), real docker/systemd semantics, and anything about what the
+# daemon does after it restarts. Admission refusal after a restart is asserted
+# nowhere in this file — it belongs to the admission modules.
+
+WATCHDOG = REPO / "deploy" / "daemon-watchdog.sh"
+
+# Verbs that only read. Anything outside this set is a mutation and has to be
+# accounted for explicitly by the assertions below.
+_WATCHDOG_READ_ONLY_DOCKER_VERBS = frozenset({"inspect", "volume", "compose"})
+
+# Record common relay commands in addition to the exact docker/systemctl
+# transcripts. This list is not a sandbox or exhaustive network prohibition.
+_WATCHDOG_RELAY_TOOLS = (
+    "ssh",
+    "scp",
+    "curl",
+    "wget",
+    "rsync",
+    "nc",
+    "kubectl",
+    "doctl",
+    "ansible",
+)
+
+
+def _watchdog_arg(path: Path) -> str:
+    """Bash-visible path for the watchdog fixtures.
+
+    `_bash_path` is correct under WSL, but on Git Bash it hands back a
+    backslashed Windows path and bash eats the backslashes as escapes. MSYS
+    bash accepts a forward-slashed drive path verbatim, so that is what this
+    returns off WSL. PATH entries cannot use this form at all -- a drive letter
+    colon would split the variable -- so `_run_watchdog` has the shell derive
+    those itself with `cd`/`pwd`.
+    """
+    if _is_wsl_bash():
+        return _bash_path(path)
+    return Path(os.path.abspath(path)).as_posix()
+
+
+def _watchdog_fake_bin(tmp_path: Path) -> Path:
+    """External commands the watchdog reaches for, replaced by recorders.
+
+    Named `wd-bin` rather than `bin` on purpose: `_fake_tools` already owns
+    `tmp_path / "bin"`, and two fixtures writing one scratch name produce a
+    command log that belongs to neither test.
+    """
+    fake_bin = tmp_path / "wd-bin"
+    fake_bin.mkdir()
+
+    (fake_bin / "systemctl").write_text(
+        """#!/usr/bin/env bash
+echo "$*" >> "$WATCHDOG_SYSTEMCTL_LOG"
+case "$1" in
+  is-active)
+    [[ "${WATCHDOG_UNIT_ACTIVE:-1}" == "1" ]]
+    ;;
+  reset-failed|restart)
+    exit 0
+    ;;
+  *)
+    exit 97
+    ;;
+esac
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (fake_bin / "systemctl").chmod(0o755)
+
+    (fake_bin / "docker").write_text(
+        """#!/usr/bin/env bash
+echo "$*" >> "$WATCHDOG_DOCKER_LOG"
+case "$1" in
+  inspect)
+    if [[ "$2" == "-f" ]]; then
+      echo "${WATCHDOG_CONTAINER_RUNNING:-true}"
+    fi
+    exit 0
+    ;;
+  volume)
+    [[ -n "${WATCHDOG_VOLUME_MOUNT:-}" ]] || exit 1
+    echo "$WATCHDOG_VOLUME_MOUNT"
+    ;;
+  compose|restart)
+    exit 0
+    ;;
+  *)
+    exit 98
+    ;;
+esac
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (fake_bin / "docker").chmod(0o755)
+
+    # Git Bash ships no flock at all. Mocking it makes the script reach its
+    # checks; it proves nothing about the lock itself.
+    (fake_bin / "flock").write_text(
+        """#!/usr/bin/env bash
+echo "$*" >> "$WATCHDOG_FLOCK_LOG"
+exit 0
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (fake_bin / "flock").chmod(0o755)
+
+    for tool in _WATCHDOG_RELAY_TOOLS:
+        (fake_bin / tool).write_text(
+            f"""#!/usr/bin/env bash
+echo "{tool} $*" >> "$WATCHDOG_RELAY_LOG"
+exit 0
+""",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (fake_bin / tool).chmod(0o755)
+
+    return fake_bin
+
+
+def _run_watchdog(tmp_path: Path, trigger: str) -> tuple[
+    subprocess.CompletedProcess[str], list[str], list[str], Path, str
+]:
+    """Run the real watchdog against mocked externals; return its command logs.
+
+    State paths are under pytest's temp root. The unchanged script's service
+    commands resolve to recorders; find/stat/date and other shell utilities
+    remain real. This is not a sandbox for arbitrary future shell commands.
+    """
+    if not _BASH:
+        pytest.skip("bash unavailable")
+
+    fake_bin = _watchdog_fake_bin(tmp_path)
+    volume = tmp_path / "wd-volume"
+    (volume / "founder").mkdir(parents=True)
+    heartbeat = volume / "founder" / ".worker_supervisor.json"
+    heartbeat.write_text("{}", encoding="utf-8")
+    # Only the third trigger ever reads this; the first two exit earlier.
+    stamp = time.time() - (7200 if trigger == "stale-heartbeat" else 0)
+    os.utime(heartbeat, (stamp, stamp))
+
+    compose = tmp_path / "wd-compose.yml"
+    compose.write_text("services: {}\n", encoding="utf-8")
+    compose_arg = _watchdog_arg(compose)
+
+    systemctl_log = tmp_path / "wd-systemctl.log"
+    docker_log = tmp_path / "wd-docker.log"
+    relay_log = tmp_path / "wd-relay.log"
+
+    assignments = {
+        "WATCHDOG_SYSTEMCTL_LOG": _watchdog_arg(systemctl_log),
+        "WATCHDOG_DOCKER_LOG": _watchdog_arg(docker_log),
+        "WATCHDOG_RELAY_LOG": _watchdog_arg(relay_log),
+        "WATCHDOG_FLOCK_LOG": _watchdog_arg(tmp_path / "wd-flock.log"),
+        "WATCHDOG_UNIT_ACTIVE": "0" if trigger == "inactive-unit" else "1",
+        "WATCHDOG_CONTAINER_RUNNING": (
+            "false" if trigger == "stopped-container" else "true"
+        ),
+        "WATCHDOG_VOLUME_MOUNT": _watchdog_arg(volume),
+        "TINYASSETS_COMPOSE_FILE": compose_arg,
+        "TINYASSETS_DAEMON_WATCHDOG_LOCK": _watchdog_arg(tmp_path / "wd.lock"),
+        "TINYASSETS_HEARTBEAT_MAX_AGE_SECONDS": "60",
+        # Emptied rather than omitted: `${VAR:-default}` falls through on an
+        # empty value, so this pins the script's own production defaults even
+        # if the invoking shell already exports them.
+        "TINYASSETS_DAEMON_UNIT": "",
+        "TINYASSETS_DATA_VOLUME": "",
+        "TINYASSETS_HEARTBEAT_RELATIVE": "",
+    }
+    exported = " ".join(
+        f"{key}={shlex.quote(value)}" for key, value in assignments.items()
+    )
+    # The shell derives the POSIX forms: a Windows drive path cannot go into
+    # PATH, and `bash script.sh` wants a path its own runtime understands.
+    command = (
+        f'wd_bin="$(cd {shlex.quote(_watchdog_arg(fake_bin))} && pwd)"; '
+        f'wd_dir="$(cd {shlex.quote(_watchdog_arg(WATCHDOG.parent))} && pwd)"; '
+        f'exec /usr/bin/env PATH="$wd_bin:/usr/local/bin:/usr/bin:/bin" '
+        f'{exported} bash "$wd_dir/{WATCHDOG.name}"'
+    )
+    result = subprocess.run(
+        [_BASH, "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    def _lines(path: Path) -> list[str]:
+        if not path.exists():
+            return []
+        return [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    return result, _lines(systemctl_log), _lines(docker_log), relay_log, compose_arg
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+@pytest.mark.parametrize(
+    "trigger,reason,docker_prefix",
+    [
+        ("inactive-unit", "systemd unit is not active", []),
+        (
+            "stopped-container",
+            "tinyassets-daemon container is not running",
+            ["inspect -f {{.State.Running}} tinyassets-daemon"],
+        ),
+        (
+            "stale-heartbeat",
+            "heartbeat stale",
+            [
+                "inspect -f {{.State.Running}} tinyassets-daemon",
+                "compose -f {compose} ps",
+                "volume inspect tinyassets-data --format {{ .Mountpoint }}",
+            ],
+        ),
+    ],
+)
+def test_daemon_watchdog_restart_repertoire_is_same_service_only(
+    tmp_path, trigger, reason, docker_prefix
+):
+    """Each watchdog trigger restarts this droplet's daemon and nothing else.
+
+    The three cases are the three ways `main` can decide to act: the systemd
+    unit reporting inactive, the daemon container not running, and the
+    freshest worker-supervisor heartbeat aging past the configured maximum.
+    All three converge on one repertoire, and pinning it is the point -- a
+    future edit that added a second host, a relay hop or a work reassignment
+    would have to change these lists to stay green.
+    """
+    result, systemctl_lines, docker_lines, relay_log, compose_arg = _run_watchdog(
+        tmp_path, trigger
+    )
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert f"restarting daemon container: {reason}" in result.stdout
+    assert "healthy: unit active" not in result.stdout
+
+    # The systemd half is identical on every trigger: probe the configured
+    # unit, then reset-failed and restart that same unit. Nothing else.
+    assert systemctl_lines == [
+        "is-active --quiet tinyassets-daemon.service",
+        "reset-failed tinyassets-daemon.service",
+        "restart tinyassets-daemon.service",
+    ]
+
+    # A literal replace, not `.format`: these lines carry Go template braces
+    # (`{{.State.Running}}`) and format() would collapse them to one level.
+    expected_docker = [
+        line.replace("{compose}", compose_arg) for line in docker_prefix
+    ] + [
+        "inspect tinyassets-daemon",
+        "restart tinyassets-daemon",
+    ]
+    assert docker_lines == expected_docker
+
+    # Stated as a repertoire and not just a transcript: every docker call is
+    # either a read or the one permitted mutation.
+    mutations = [
+        line
+        for line in docker_lines
+        if line.split()[0] not in _WATCHDOG_READ_ONLY_DOCKER_VERBS
+    ]
+    assert mutations == ["restart tinyassets-daemon"]
+
+    # No second target anywhere. Path-shaped tokens are excluded because the
+    # temp root is not ours to predict.
+    named = {
+        token
+        for line in (*systemctl_lines, *docker_lines)
+        for token in line.split()
+        if token.startswith("tinyassets") and "/" not in token
+    }
+    allowed = {"tinyassets-daemon", "tinyassets-daemon.service"}
+    if trigger == "stale-heartbeat":
+        allowed.add("tinyassets-data")
+    assert named == allowed
+
+    # No invocation of the specifically shimmed relay tools.
+    assert not relay_log.exists(), relay_log.read_text(encoding="utf-8")

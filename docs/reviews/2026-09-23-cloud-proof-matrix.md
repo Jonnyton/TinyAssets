@@ -34,7 +34,7 @@ credential custody, real metadata access, or production authority is claimed.
 | 3 startup/provider | Existing startup sentinel tests and foreground/served refusal tests | No listener/provider call/receipt/reservation on refusal |
 | 4 existing registration | `test_existing_runtime_row_matches_nothing_for_an_unadmitted_process`, `test_unobserved_process_matches_no_runtime_row` | Existing row grants no authority to an unadmitted or unresolved reader |
 | 5 copied settings | Six negative cases spanning claim, registration, foreground provider, served provider, existing-row eligibility, and startup | All execute against old and fixed code; admitted controls share the same settings |
-| 6 recovery | Existing `test_cloud_recovery_admission.py` | Assigned-consumer tests; watchdog integration is not established by this slice |
+| 6 recovery | Existing `test_cloud_recovery_admission.py` plus `test_daemon_watchdog_restart_repertoire_is_same_service_only` | Assigned-consumer refusals, and the watchdog's restart repertoire pinned on all three triggers; see the watchdog section below for what that does and does not establish |
 | 6b retirement | [retirement proof](2026-09-23-cloud-retirement-admission.md) | Separate PR3922, not newly exercised here |
 | 7 ingress | Existing origin-client refusal tests in the startup module | Fixture request, not a live tunnel-forwarded negative |
 | 8 admitted positive | Registration plus four parameterized admitted controls | Allowed behavior preserved with and without copied settings |
@@ -78,10 +78,57 @@ These are local red/green results, not Linux or live boundary proof. Earlier
 3921 Linux artifact10730483284 contains96 original admission cases with0skips
 across seven modules; it does not cover these new cases.
 
+## Watchdog command repertoire (added after the review above)
+
+`tests/test_host_uptime_installers.py::test_daemon_watchdog_restart_repertoire_is_same_service_only`
+runs the real `deploy/daemon-watchdog.sh` under a temporary PATH of recorder
+shims, parameterized over the three triggers `main` can act on: an inactive
+systemd unit, a stopped `tinyassets-daemon` container, and a heartbeat older
+than the configured maximum. It asserts the full command transcript, so the
+repertoire is pinned rather than merely sampled: `docker restart
+tinyassets-daemon` is the only docker mutation on every trigger, and the
+systemd half is exactly `is-active --quiet` / `reset-failed` / `restart` of
+`tinyassets-daemon.service` on all three. `ssh`, `scp`, `curl`, `wget`,
+`rsync`, `nc`, `kubectl`, `doctl` and `ansible` are shimmed to recorders that
+succeed; none is invoked. This list is not an exhaustive network prohibition
+or a sandbox for arbitrary future shell commands.
+
+**This is a preservation test against an unchanged script.** The watchdog was
+not modified on this branch, so there is no red-first result to report and
+none is claimed. The builder additionally reports three mutants of a *copy*
+of the script -- a second container target,
+an `ssh` hop to a standby host, and a second systemd unit -- were run through
+the same test, and **9 of 9 mutant runs went red** (3 mutants x 3 triggers).
+That report is not independently reproduced by the lead. The real script is
+unchanged in the reviewed diff.
+
+Not established by this test: locking (`flock` is mocked, so nothing about
+concurrent watchdog runs is proven), real docker or systemd semantics, and any
+claim about admission after the restart -- repeated refusal is asserted in the
+admission modules, not here.
+
+Measured: Windows, Python 3.14, Git Bash 2.x (`C:/Program Files/Git/bin/bash.exe`,
+selected by a process-local PATH override so the module's `shutil.which("bash")`
+does not resolve WSL). `python -m pytest -q tests/test_host_uptime_installers.py
+-k daemon_watchdog_restart_repertoire -p no:randomly --basetemp <external temp>`
+-> **3 passed, 0 skipped, 2.21s**. `ruff check` clean. No WSL or Docker Desktop
+was started; no real docker, systemctl, host network or production state was
+touched.
+
+Codex independently reviewed the added test and actual watchdog script, then
+ran the three new cases plus `tests/test_cloud_recovery_admission.py` and
+`tests/test_cloud_admission_serving_startup.py` on September23 UTC, Windows3.14
+with verified Git Bash selected by process-local PATH: **26passed,0skipped,
+6.46s**, one dependency deprecation warning; Ruff clean. Command:
+`python -m pytest -q tests/test_host_uptime_installers.py::test_daemon_watchdog_restart_repertoire_is_same_service_only tests/test_cloud_recovery_admission.py tests/test_cloud_admission_serving_startup.py -p no:randomly --basetemp <external temp> --junitxml <external temp>/ta-wd-lead-20260923.xml`.
+The lead narrowed overbroad comments: shell utilities remain real, and the
+relay recorder list is not an exhaustive network/security boundary.
+
 ## Remaining acceptance
 
 Hosted Linux proof for this slice is pending. No Docker Desktop/WSL was started.
-Task9 is not complete: watchdog integration and relevant broader matrix proof
-must stay explicit. Full cloud credential/routing custody and clean free-only
+Task9 is not complete. The watchdog's command repertoire is now covered
+locally (above), but Linux execution of it, the live recovery path end to end,
+and the relevant broader matrix proof must stay explicit. Full cloud credential/routing custody and clean free-only
 onboarding are also not established. This test-only change does not authorize
 retesting that account or close the whole cloud-only change.

@@ -98,8 +98,9 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   admitted successor exists, while *explicit operator retirement*
   (`tinyassets.runtime_reconcile stale-fleet --apply`) is admitted maintenance
   that cancels exactly the approved stale tasks and assigns nothing.
-  `release-reconcile.yml` reconciles the deployed image only and is not a
-  reassignment path; `deploy/daemon-watchdog.sh` restarts the same cloud
+  `release-reconcile.yml` compares current main against the last successful
+  `Deploy prod` run on main -- not directly against the running image -- and is
+  not a reassignment path; `deploy/daemon-watchdog.sh` restarts the same cloud
   service/container. Repeated admission refusal after restart is intended
   fail-closed behaviour, never permission for a local fallback. Per-universe
   user-bound authority stays exactly as it is.
