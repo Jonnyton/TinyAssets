@@ -40,8 +40,11 @@ import tinyassets.platform_runtime_provenance as provenance
 from tests.test_background_served_provider import _authority_fixture, _lease
 from tests.test_cloud_only_admission_regressions import (
     ADMITTED,
+    COPIED_LABEL_VARIANTS,
     UNADMITTED,
     _cloud_registration_args,
+    apply_copied_cloud_labels,
+    maybe_copied_cloud_labels,
 )
 from tests.test_cloud_only_admission_regressions import (
     bind_provenance as _bind_provenance_fixture,
@@ -163,16 +166,23 @@ def test_unadmitted_foreground_run_never_reaches_the_provider(
     )
 
 
+@pytest.mark.parametrize("copied_labels", COPIED_LABEL_VARIANTS)
 def test_admitted_foreground_run_still_launches_and_settles(
-    tmp_path: Path, monkeypatch, authenticate_request, bind_provenance
+    copied_labels: bool, tmp_path: Path, monkeypatch, authenticate_request, bind_provenance
 ) -> None:
     """Preserved behaviour, and the control for the negative above.
 
     Identical branch, identical harness, identical authority — only the
     injected verdict differs. If this fails, the negative's red is setup
     breakage rather than a refusal.
+
+    The `copied_labels` leg is the positive control for
+    `test_copied_cloud_labels_never_reach_the_foreground_provider`: an empty
+    `provider.calls` list is only evidence of a refusal if a dressed *admitted*
+    process still fills it.
     """
     bind_provenance(ADMITTED)
+    maybe_copied_cloud_labels(copied_labels, monkeypatch, tmp_path)
 
     response, provider, _captured = _run_branch(
         tmp_path, monkeypatch, authenticate_request, _branch(node_count=1)
@@ -225,11 +235,19 @@ def test_unadmitted_background_served_turn_never_reaches_the_provider(
     )
 
 
+@pytest.mark.parametrize("copied_labels", COPIED_LABEL_VARIANTS)
 def test_admitted_background_served_turn_still_launches(
-    tmp_path: Path, monkeypatch, bind_provenance
+    copied_labels: bool, tmp_path: Path, monkeypatch, bind_provenance
 ) -> None:
-    """Preserved behaviour and the control: same fixture, admitted verdict."""
+    """Preserved behaviour and the control: same fixture, admitted verdict.
+
+    The `copied_labels` leg is the positive control for
+    `test_copied_cloud_labels_never_reach_the_served_provider`: the served
+    lane's negative asserts an empty call list and a zero reservation count,
+    both of which a broken fixture would also produce.
+    """
     bind_provenance(ADMITTED)
+    maybe_copied_cloud_labels(copied_labels, monkeypatch, tmp_path)
     task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
     raw_calls: list[str] = []
 
@@ -436,3 +454,101 @@ def test_unobserved_process_matches_no_runtime_row(
 
     unobserved_provenance()
     assert runtime_matches_worker_provider(tmp_path, **match_args) is False
+
+
+# --- matrix 5 at the provider sites ---------------------------------------
+#
+# Row 5 requires the copied-container label set to be refused "at all four
+# sites". Rows 1 and 2 (claim, registration) carry it in
+# `tests/test_cloud_only_admission_regressions.py`; these two carry it here,
+# onto the exact foreground and served negatives above. The label set and the
+# honest ``/data`` -> temp-root distinction are documented on
+# `apply_copied_cloud_labels`.
+
+
+def test_copied_cloud_labels_never_reach_the_foreground_provider(
+    tmp_path: Path, monkeypatch, authenticate_request, bind_provenance
+) -> None:
+    """Matrix 5, foreground provider site.
+
+    Identical to `test_unadmitted_foreground_run_never_reaches_the_provider`
+    except that the process now wears the whole copied container config —
+    every compose env var, the `mcp.tinyassets.io` hostname, the service name
+    and a patched `socket.gethostname`. The refusal must not move, and the
+    assertion is on the provider call list plus the persisted receipt rows.
+    """
+    bind_provenance(UNADMITTED)
+    apply_copied_cloud_labels(monkeypatch, tmp_path)
+
+    response, provider, _captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, _branch(node_count=1)
+    )
+
+    assert provider.calls == [], (
+        f"a process wearing copied cloud labels dispatched {len(provider.calls)} "
+        "foreground provider call(s)"
+    )
+    assert response["terminal_status"] != "completed"
+    assert _receipt_rows(tmp_path) == [], (
+        "copied cloud labels minted a cloud-class provider work receipt"
+    )
+
+
+def test_copied_cloud_labels_never_reach_the_served_provider(
+    tmp_path: Path, monkeypatch, bind_provenance
+) -> None:
+    """Matrix 5, served provider site.
+
+    The served lane is the one a real universe turn takes, and it is a
+    different literal (`background_served_provider.py`) from the foreground
+    lane, so the labels have to be refused here in their own right.
+    """
+    bind_provenance(UNADMITTED)
+    apply_copied_cloud_labels(monkeypatch, tmp_path)
+    task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
+    raw_calls: list[str] = []
+
+    session = background_provider_session(
+        tmp_path, task, lambda *_a, **_k: raw_calls.append("raw") or "unexpected"
+    )
+    try:
+        session("prompt")
+    except REFUSALS:
+        pass
+
+    assert raw_calls == [], (
+        "a process wearing copied cloud labels invoked the served provider"
+    )
+    assert _reservations(conn) == 0, (
+        "copied cloud labels reserved cloud-class provider budget"
+    )
+
+
+def test_copied_cloud_labels_still_match_no_runtime_row(
+    tmp_path: Path, bind_provenance, monkeypatch
+) -> None:
+    """Matrix 4 + 5 together at the eligibility read.
+
+    `test_existing_runtime_row_matches_nothing_for_an_unadmitted_process`
+    covers the replayed row; this adds the labels on top, so the combination a
+    real copied deployment would actually present — an intact registration row
+    *and* a matching container config — is the thing proven insufficient.
+    """
+    bind_provenance(ADMITTED)
+    args = _cloud_registration_args(tmp_path)
+    runtime = ensure_daemon_runtime(tmp_path, **args)
+    match_args = dict(
+        universe_id=args["universe_id"],
+        runtime_instance_id=str(runtime["runtime_instance_id"]),
+        daemon_id=args["daemon_id"],
+        worker_id=args["worker_id"],
+        provider_name=args["provider_name"],
+    )
+    assert runtime_matches_worker_provider(tmp_path, **match_args) is True
+
+    bind_provenance(UNADMITTED)
+    apply_copied_cloud_labels(monkeypatch, tmp_path)
+    assert runtime_matches_worker_provider(tmp_path, **match_args) is False, (
+        "an intact registration row plus copied cloud labels authorized an "
+        "unadmitted process"
+    )
