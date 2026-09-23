@@ -1,6 +1,6 @@
 # Design — lossless app history
 
-Status: **implementation candidate after lead shape review, not released.**
+Status: **deployed PR3916, scoped live expansion accepted; see tasks receipt.**
 
 ## Verified starting state (2026-09-21, worktree at `4b6430ed`)
 
@@ -99,4 +99,8 @@ stale-control requests, omitted home binding, a512-page cutoff and missing termi
 marker acceptance. Broader cohort199pass/1fail: existing symlink test raises
 WinError1314 before reaching its assertion. The exact test also fails at clean
 base4b6430ed. Docker Linux engine is unavailable; it was not started. Linux and
-live proof remain outstanding. No production-message preservation claim yet.
+live proof were outstanding at that point. Hosted Linux CI35694487522 later
+passed; deploy35696730874 verified68913d87 at06:52UTC September22. Ordinary
+primary-app expansion of the previously cut-off4,886-character production reply
+recovered its complete ending. This proves that retained reply, not every
+historical message or organic post-fix use.
