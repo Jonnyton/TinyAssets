@@ -51,7 +51,7 @@ is how "cloud-only" became a label.
 |---|---|---|---|
 | **C — Network/credential custody** | Cloudflare tunnel credential scope, Cloudflare Access on the internal origin, DO firewall, GitHub Actions secret custody (`DO_API_TOKEN`, `DO_DROPLET_HOST`, `DO_SSH_KEY`, `DO_SSH_USER`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`), deploy-only SSH path | Cloud control planes; founder as account holder | **No.** Stated as invariants + verified read-only. Code cannot enforce them. |
 | **B — Application admission** | Provenance resolver + refusals at claim CAS, registration, startup/foreground/served execution, origin ingress, recovery | This repo | **Yes.** |
-| **A — Storage shape** | `automation_executor_class` CHECK still admits `'tray'`; runtime metadata carries a self-asserted string | This repo | **Yes**, narrowly: registration binds admitted instance id + boot epoch. |
+| **A — Storage shape** | `automation_executor_class` CHECK still admits `'tray'`; runtime metadata carries a self-asserted string | This repo | **Yes**, narrowly: registration requires resolved process admission; existing-row reads require current process admission. No new epoch schema; see (B). |
 
 Layer C is *necessary and insufficient*: a copied tunnel token lets any machine
 register a connector for the same tunnel and **receive public requests** — and a
@@ -280,7 +280,7 @@ infrastructure the platform already owns.
 | 1 | **Negative direct claim** — unadmitted, valid ready assignment, pending `cloud` task, `claim_assigned` called **directly** | zero claims; refusal reason recorded |
 | 2 | **Negative registration** — unadmitted `ensure_daemon_runtime` | refuses; no `runtime_registration: cloud_worker` row written |
 | 3 | **Negative startup/foreground** — unadmitted serving boot and an unadmitted foreground/served provider turn | boot exits non-zero; turn refuses, no provider process spawned |
-| 4 | **Replayed stale registration** — a row admitted for instance X + boot epoch N, then read by an unadmitted process (and by a different boot epoch) | authority refused on read; row existence confers nothing |
+| 4 | **Replayed registration** — a row written while admitted, then read by an unadmitted or never-resolved process | authority refused on read; row existence confers nothing. Per (B), a changed `boot_id` is not itself a security refusal: legitimate admitted restarts remain valid |
 | 5 | **Local spoofed labels** — set every env var the container sets (incl. `TINYASSETS_ALLOW_CLAUDE_SERVING`, `TINYASSETS_DATA_DIR=/data`), hostname aliased to `mcp.tinyassets.io`, compose labels matched | still refused at all four sites |
 | 6 | **Recovery/fallback** — automatic recovery (assigned-consumer startup/poll, watchdog) with no admitted successor | work stays pending; nothing re-homed to an unadmitted runtime, not even momentarily |
 | 6b | **Explicit operator retirement** — `runtime_reconcile stale-fleet --apply` from an unadmitted process, correct digest and counts | refused before store construction; the approved stale task stays pending and its runtime stays provisioned. Admitted, the same confirmed plan cancels exactly those tasks |

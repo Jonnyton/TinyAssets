@@ -33,6 +33,11 @@ from __future__ import annotations
 
 import pytest
 
+from tests.test_cloud_only_admission_regressions import (
+    COPIED_LABEL_VARIANTS,
+    apply_copied_cloud_labels,
+    maybe_copied_cloud_labels,
+)
 from tinyassets import platform_runtime_provenance as prov
 from tinyassets import universe_server as us
 from tinyassets.auth import middleware as mw
@@ -207,8 +212,22 @@ def test_the_seal_is_armed_before_admission_resolves_anything(
     assert boot_sentinels == ["seal-arm", "resolve"], boot_sentinels
 
 
-def test_admitted_boot_reaches_the_listener(cached, boot_sentinels):
+@pytest.mark.parametrize("copied_labels", COPIED_LABEL_VARIANTS)
+def test_admitted_boot_reaches_the_listener(
+    copied_labels, cached, boot_sentinels, monkeypatch, tmp_path
+):
+    """Preserved behaviour, and the positive control for the row-5 boot case.
+
+    The `copied_labels` leg dresses an *admitted* boot in the same copied
+    container config as
+    `test_boot_refuses_a_process_wearing_copied_cloud_labels`. That negative
+    asserts `boot_sentinels == ["seal-arm"]`, which is exactly what a boot
+    broken by the label set would also produce; this leg is what separates the
+    two. `boot_sentinels` already points `TINYASSETS_DATA_DIR` at `tmp_path`
+    and the label set re-roots it to the same place, so nothing moves.
+    """
     cached(ADMITTED)
+    maybe_copied_cloud_labels(copied_labels, monkeypatch, tmp_path)
 
     us.main(transport="streamable-http")
 
@@ -409,4 +428,36 @@ def test_an_admitted_origin_grants_no_anonymous_release_read(origin_client, cach
 
     assert "platform_runtime_provenance" not in payload, (
         "the canary-only diagnostic leaked to an unauthenticated caller"
+    )
+
+
+# --------------------------------------------------------------------------
+# matrix 5 at the startup site
+# --------------------------------------------------------------------------
+
+
+def test_boot_refuses_a_process_wearing_copied_cloud_labels(
+    monkeypatch, tmp_path, unresolved, boot_sentinels
+):
+    """Matrix row 5, startup half.
+
+    Same unadmitted boot as `test_serving_boot_refuses_unadmitted_with_a_
+    nonzero_exit`, except the process now wears the full copied-container
+    config: every compose env var, `mcp.tinyassets.io` as hostname and
+    `socket.gethostname`, and the service name. `boot_sentinels` already
+    pointed `TINYASSETS_DATA_DIR` at the temp root; the label set re-roots the
+    same variable to the same temp root, which is the honest local stand-in for
+    the container's `/data` (see `apply_copied_cloud_labels`). The boot must
+    still exit non-zero having reached nothing past the seal.
+    """
+    apply_copied_cloud_labels(monkeypatch, tmp_path)
+    unresolved(lambda: UNADMITTED)
+
+    with pytest.raises(SystemExit) as excinfo:
+        us.main(transport="streamable-http")
+
+    code = excinfo.value.code
+    assert isinstance(code, int) and code != 0, f"boot must exit non-zero, got {code!r}"
+    assert boot_sentinels == ["seal-arm"], (
+        f"a boot wearing copied cloud labels reached: {boot_sentinels}"
     )

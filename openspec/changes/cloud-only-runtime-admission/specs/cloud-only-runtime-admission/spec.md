@@ -253,8 +253,10 @@ Automatic recovery SHALL leave work pending when no admitted cloud successor
 exists. This covers the daemon watchdog and assigned-consumer startup/polling.
 Temporary, emergency, development-labelled and fallback
 re-homing to an unadmitted runtime SHALL be refused, including momentarily.
-Release reconciliation SHALL be understood as reconciling the deployed image
-only and SHALL NOT be described as a work-reassignment path. A watchdog restart
+Release reconciliation SHALL be understood as comparing current main against
+the last successful `Deploy prod` run on main -- a deployment-state
+comparison, not a direct read of the running image -- and SHALL NOT be
+described as a work-reassignment path. A watchdog restart
 of the same cloud service or container following an admission refusal SHALL be
 treated as intended fail-closed behaviour and SHALL NOT be treated as grounds
 for a local or personal-desktop fallback.
