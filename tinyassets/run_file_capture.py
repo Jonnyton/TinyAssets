@@ -177,11 +177,16 @@ def capture_authoring_files(base, *, owner_id, universe_id, label, sources, shou
 
 def _capture_files(base, *, owner_id, universe_id, operation, request, metadata_provider,
                    open_source, source_fence, should_cancel=None, require_current_home=False,
-                   ready_to_copy=None, replay_result=None):
-    """Two trusted source adapters share ONE journal/allocation/publication path.
+                   ready_to_copy=None, replay_result=None, publication_check=None):
+    """Trusted source adapters share ONE journal/allocation/publication path.
 
     Callbacks are platform code only, never a workflow/plugin registry. The same
     worker thread owns the maintenance barrier and operation guard throughout.
+
+    ``publication_check`` is called WITH the publication connection, inside its
+    ``BEGIN IMMEDIATE``, for a source whose authority serializes on that same
+    database: a ``source_fence`` cannot order such a source without opening a
+    second writer against the one held here. Raising rolls the publication back.
     """
     base = Path(base).absolute()
 
@@ -291,6 +296,8 @@ def _capture_files(base, *, owner_id, universe_id, operation, request, metadata_
                         with runs._connect(base) as conn:
                             conn.execute("BEGIN IMMEDIATE")
                             guard.require_held(conn)
+                            if publication_check is not None:
+                                publication_check(conn)
                             store.commit_objects_in_transaction(
                                 conn,
                                 operation_id=operation,
