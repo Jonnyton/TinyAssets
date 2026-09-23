@@ -21,6 +21,15 @@ log() {
 
 restart_daemon() {
     local reason="$1"
+    # Fail-closed by design: every restart here targets the SAME cloud service
+    # and container on this droplet. There is no other host in this script's
+    # repertoire, so it cannot fail work over anywhere. If the daemon refuses
+    # platform admission (`platform_not_cloud`), failed unit/container checks
+    # or an existing stale heartbeat may restart it; each new process must
+    # pass admission again. Missing heartbeat alone is not heartbeat_stale.
+    # Repeated refusal is the intended fail-closed outcome, not serving — fix
+    # admission or the droplet identity, never widen what may serve and never
+    # add a local/personal-desktop fallback.
     # Daemon-scoped: restart the daemon CONTAINER, never the whole unit. The
     # unit's restart used to run `compose down`, taking the tunnel and logs
     # down with the daemon on every watchdog fire (2026-08-21 Codex review).

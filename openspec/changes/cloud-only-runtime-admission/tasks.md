@@ -93,8 +93,15 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   no degraded mode, the four `executor_class="cloud"` literals
   (`tinyassets/foreground_run_provider.py:515,631`,
   `tinyassets/background_served_provider.py:1383,1598` at042cdce8), which the queue path cannot reach —
-  and the recovery paths: watchdog, release-reconcile and stale-runtime
-  retirement leave work pending when no admitted successor exists. Per-universe
+  and the recovery paths, keeping the two acts distinct: *automatic* recovery
+  (watchdog, assigned-consumer startup/poll) leaves work pending when no
+  admitted successor exists, while *explicit operator retirement*
+  (`tinyassets.runtime_reconcile stale-fleet --apply`) is admitted maintenance
+  that cancels exactly the approved stale tasks and assigns nothing.
+  `release-reconcile.yml` reconciles the deployed image only and is not a
+  reassignment path; `deploy/daemon-watchdog.sh` restarts the same cloud
+  service/container. Repeated admission refusal after restart is intended
+  fail-closed behaviour, never permission for a local fallback. Per-universe
   user-bound authority stays exactly as it is.
 - [ ] 9. Write the test matrix from `design.md`. Negatives 1–7 **must be run
   against the unfixed tree and fail there**; the claim negative passes **no**
@@ -135,14 +142,33 @@ exact-worker eligibility plus origin HTTP/websocket refusal are deployed.
 Task10: protected SHA/public handles passed01:23UTC; ordinary owner workflows
 completed01:29UTC. That is not the new-user acceptance required by task11.
 
-Task8 remains partial: startup/provider boundaries and assigned-consumer
-startup/poll recovery are guarded, but named watchdog/reconcile/retirement
-coverage and the two source-coverage findings remain open. Task9 remains open:
-hosted Linux passed with no new regressions, but the complete planned negative
+Task8 remains partial pending this retirement slice's verified deployment and
+the remaining evidence reconciliation. Startup/provider, descriptor publication,
+legacy cloud claims and assigned-consumer startup/poll recovery are guarded by
+PR3919/3921; those already-landed findings are not still missing code.
+
+**2026-09-23 retirement slice (task8, still partial).** The explicit stale-fleet
+retirement write boundary (`tinyassets/runtime_reconcile.py::_apply_plan`) now
+requires process admission; `main` reports the refusal through its existing
+sanitized JSON/exit-2 channel. Red-first and green evidence, with the exact
+commands and counts, is in
+[docs/reviews/2026-09-23-cloud-retirement-admission.md](../../../docs/reviews/2026-09-23-cloud-retirement-admission.md).
+This closed `docs/concerns/2026-09-23-runtime-reconcile-retirement-ungated.md`
+(deleted in the same change) and synced one scoped maintenance requirement into
+the main spec. **Evidence class:** executable runtime proof for the retirement
+CLI only. The watchdog and `release-reconcile.yml` statements in this change are
+*source-wiring evidence* about scripts whose behaviour is unchanged here — this
+slice adds no watchdog admission integration and claims none. No deployment, no
+hosted Linux run are claimed for it; the candidate evidence records independent
+review separately. Task9 remains open: earlier released slices passed hosted
+Linux with no new regressions, but the complete planned negative
 matrix/baseline mapping is not closed and local Linux oracle was unavailable;
 no Docker Desktop/WSL startup is authorized. Skips are not coverage.
 Task11 remains open; no free-account action occurred. Task12 is partially synced:
-the main admission spec captures only deployed contracts, pulse already matched,
+the main admission spec syncs this candidate's maintenance contract for landing;
+other admission contracts are already deployed per
+[PR3921's public receipt](https://github.com/Jonnyton/TinyAssets/pull/3921#issuecomment-5788453081),
+pulse already matched,
 and desktop/daemon collision text now separates process launch/discovery from
 admission. REST primitives were preserved, not falsely reported removed. Full
 delta sync/archive waits for custody, recovery coverage and free-user acceptance.

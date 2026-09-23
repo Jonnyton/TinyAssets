@@ -150,3 +150,27 @@ SHALL never be counted as cloud-boundary acceptance.
 #### Scenario: A guard-policy report is not full cloud-boundary proof
 - **WHEN** the answering process reports enforced application admission
 - **THEN** consumers do not infer exclusive custody or completion of free-user onboarding.
+
+### Requirement: Explicit stale-fleet retirement is admitted maintenance
+The explicit stale-fleet retirement tool SHALL require process cloud admission
+at its apply write boundary, before constructing the write store or writing a row, and SHALL
+raise the single sanitized `platform_not_cloud` refusal otherwise. Its read-only
+dry run SHALL remain ungated. The existing reviewed-plan confirmation (plan
+digest plus both exact counts) and the per-row compare-and-set fences SHALL
+remain in force. An admitted operator retirement SHALL cancel exactly the
+approved stale tasks and retire exactly the approved stale runtimes; it assigns,
+re-homes and mints nothing, so it SHALL NOT be treated as an admitted successor
+for any pending task. The command-line entrypoint SHALL report the refusal
+through its existing sanitized JSON error channel with exit status 2, printing
+no plan output and no traceback.
+
+#### Scenario: Unadmitted confirmed apply mutates nothing
+- **WHEN** an unadmitted process applies a stale-fleet plan whose digest and
+  both counts match the freshly rebuilt plan
+- **THEN** it refuses before constructing the write store, the approved task
+  remains pending, its runtime remains provisioned, and the entrypoint exits 2
+  with only the sanitized refusal on stderr.
+
+#### Scenario: Unadmitted dry run still reports the plan
+- **WHEN** an unadmitted process runs the read-only dry run
+- **THEN** it succeeds, prints the plan, and mutates nothing.

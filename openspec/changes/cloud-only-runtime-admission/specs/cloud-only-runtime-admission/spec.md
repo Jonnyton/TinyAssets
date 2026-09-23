@@ -248,17 +248,46 @@ a public hostname or a proxied DNS record SHALL NOT admit platform work.
 - **THEN** the origin refuses before any universe work, model relay or storage
   write.
 
-### Requirement: Recovery and retirement never re-home work to an unadmitted runtime
-Watchdog, release reconciliation, drain and stale-runtime retirement paths SHALL
-leave work pending when no admitted cloud successor exists. Temporary,
-emergency, development-labelled and fallback re-homing to an unadmitted runtime
-SHALL be refused, including momentarily.
+### Requirement: Automatic recovery never re-homes work to an unadmitted runtime
+Automatic recovery SHALL leave work pending when no admitted cloud successor
+exists. This covers the daemon watchdog and assigned-consumer startup/polling.
+Temporary, emergency, development-labelled and fallback
+re-homing to an unadmitted runtime SHALL be refused, including momentarily.
+Release reconciliation SHALL be understood as reconciling the deployed image
+only and SHALL NOT be described as a work-reassignment path. A watchdog restart
+of the same cloud service or container following an admission refusal SHALL be
+treated as intended fail-closed behaviour and SHALL NOT be treated as grounds
+for a local or personal-desktop fallback.
 
 #### Scenario: No admitted successor leaves work pending
 - **WHEN** a stale cloud runtime is retired and the only reachable candidate
   runtime is unadmitted
 - **THEN** the work remains pending, no assignment is transferred, and a refusal
   reason is recorded.
+
+### Requirement: Explicit stale-fleet retirement is admitted maintenance
+The explicit stale-fleet retirement tool SHALL require process cloud admission
+at its apply write boundary before constructing the write store or performing
+any write, and SHALL raise the
+single sanitized `platform_not_cloud` refusal otherwise. Its read-only dry run
+SHALL remain ungated. Its existing plan-digest and exact task/runtime count
+confirmation and its per-row compare-and-set fences SHALL remain in force. An
+admitted operator retirement SHALL cancel exactly the approved stale tasks and
+retire exactly the approved stale runtimes; it SHALL NOT assign, re-home or mint
+work, so it SHALL NOT be treated as an admitted successor for any pending task.
+The command-line entrypoint SHALL report a refusal through its existing
+sanitized JSON error channel with exit status 2 and SHALL NOT emit a traceback.
+
+#### Scenario: Unadmitted apply mutates nothing
+- **WHEN** an unadmitted process applies a stale-fleet plan whose digest and
+  counts match the freshly rebuilt plan
+- **THEN** the refusal happens before the apply write store is constructed, the planned task
+  remains pending, the planned runtime remains provisioned, and the entrypoint
+  exits 2 with only the sanitized refusal on stderr.
+
+#### Scenario: Unadmitted dry run still reports the plan
+- **WHEN** an unadmitted process runs the read-only dry run
+- **THEN** it succeeds, prints the plan, and mutates nothing.
 
 ### Requirement: Free acceptance uses the user's own authorization, not a borrowed credential
 Acceptance SHALL include a brand-new user who completes that user's own

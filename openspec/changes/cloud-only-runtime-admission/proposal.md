@@ -120,8 +120,19 @@ enforcement from cloud network/credential custody.
    accidental-start path only — the cloud-side tunnel remains, and tunnel-token
    custody is untouched and still open. Origin refusal stays as the backstop for
    what deletion and custody cannot cover.
-6. **Recovery** — watchdog, release-reconcile and stale-runtime retirement leave
-   work pending rather than re-homing it to an unadmitted runtime.
+6. **Recovery and operator retirement are different things.** *Automatic*
+   recovery — the daemon watchdog and the assigned consumer's startup/poll
+   paths — leaves work **pending** when no admitted cloud successor exists; it
+   never re-homes work to an unadmitted runtime, not even momentarily. An
+   *explicit operator retirement* (`tinyassets.runtime_reconcile stale-fleet
+   --apply`) is a different act: it is a digest- and count-confirmed
+   cancellation of exactly the reviewed stale tasks, it assigns no work, and it
+   is admitted like any other platform write. Two clarifications the earlier
+   wording blurred: `release-reconcile.yml` reconciles the **deployed release**
+   against `main` and is not a universe-reassignment path at all; and
+   `deploy/daemon-watchdog.sh` restarts the **same cloud service/container**, so
+   an admission refusal producing no heartbeat and a restart loop is the
+   intended fail-closed outcome, never a licence to add a local fallback.
 7. **Custody, stated and verified, not coded here** — the cloud network and
    credential controls (Cloudflare tunnel/Access, DO firewall, GitHub secrets)
    are named as invariants and verified read-only from hosted CI by a bounded
