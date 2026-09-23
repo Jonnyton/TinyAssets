@@ -115,3 +115,15 @@ clean. Behavioral assertions, runtime, global fixtures and quarantine unchanged.
 JUnit: outside-repo Temp ta-cloud-final-callers-{red,base,fixed}-20260922.xml.
 Independent Opus98413 approved the preceding f50bffac CI-contract delta
 (exit0/190s); that approval alone does not cover this later fixture integration.
+
+September23 00:32UTC: hosted Docker35802129672 proves the unmodified image
+refuses with platform_not_cloud/metadata_unreachable and the isolated simulated
+process starts. The added --assert-handles check then fails because it pins
+production AuthKit metadata while the fixture runs local dev authentication.
+No runtime/auth failure is inferred from that configuration mismatch. CI now
+sets its existing non-secret UNIVERSE_SERVER_URL to the tested local /mcp and
+uses an image-excluded fixture client that adjusts only the expected issuer to
+that local AS, restoring it afterward. All real canary checks remain enabled;
+the production script and deploy workflow remain unchanged. Root Windows3.14.3
+`pytest -q tests/test_docker_admission_fixture.py tests/test_mcp_public_canary.py`
+passed39/8warnings/1.06s; focused Ruff clean. Hosted end-to-end remains required.

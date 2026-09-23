@@ -22,6 +22,7 @@ on:
       - 'domains/**'
       - 'deploy/**'
       - 'tests/fixtures/docker_admitted_process.py'
+      - 'tests/fixtures/docker_protocol_probe.py'
       - '.github/workflows/docker-build.yml'
   pull_request:
     paths:
@@ -32,6 +33,7 @@ on:
       - 'domains/**'
       - 'deploy/**'
       - 'tests/fixtures/docker_admitted_process.py'
+      - 'tests/fixtures/docker_protocol_probe.py'
       - '.github/workflows/docker-build.yml'
   workflow_dispatch:
 
@@ -104,6 +106,7 @@ jobs:
               -e TINYASSETS_IMAGE=tinyassets-daemon:ci \
               -e UNIVERSE_SERVER_DEV_USER=ci-smoke \
               -e TINYASSETS_WIKI_CANARY_TOKEN="${CANARY_TOKEN}" \
+              -e UNIVERSE_SERVER_URL=http://localhost:8001/mcp \
               tinyassets-daemon:ci python /ci/admitted_process.py
 
           # Give uvicorn + FastMCP a moment to bind. Poll rather than
@@ -131,11 +134,11 @@ jobs:
           # Full MCP handshake via the same canary script the live tray
           # uses. This checks the simulated-admission fixture's protocol,
           # not real cloud admission or live production acceptance.
-          python scripts/mcp_public_canary.py \
-              --url http://localhost:8001/mcp \
-              --timeout 15 \
-              --assert-handles \
-              --verbose
+          # The public canary deliberately pins production's AuthKit issuer.
+          # This isolated fixture uses its local authorization server instead.
+          # Its client retains all --assert-handles/auth/status checks, while
+          # the real post-deploy canary keeps the production pin unchanged.
+          python tests/fixtures/docker_protocol_probe.py
 
       - name: Container logs on success
         if: success()
