@@ -28,7 +28,7 @@ The finding holds; two citations moved.
   `resolve_process_cloud_admission`, `cached_process_is_cloud_admitted` or
   `require_process_cloud_admission`. Grep over the whole file returns nothing.
 - **Corrected:** `_apply_plan` is at `:220-256` (unchanged). The CAS fence the audit cited as
-  `L289-312` is in `main()` at **`:288-312`** — `--expected-plan-digest` / `--expect-task-count` /
+  `L289-312` is in `main()` at **`:289-312`** — `--expected-plan-digest` / `--expect-task-count` /
   `--expect-runtime-count` must all be supplied and must match the freshly rebuilt plan, else
   `ReconcileGuardError`.
 - **Confirmed direction-safe:** the only two writes are
@@ -42,10 +42,10 @@ The finding holds; two citations moved.
 The cloud-only principle treats an existing row as a record, never permission.
 The audited *granting* sites in this candidate derive from the process verdict — runtime
 registration (`daemon_registry.py:515`), descriptor publication and refresh
-(`daemon_registry.py:561`, added 2026-09-23), the assigned-consumer claim
-(`branch_tasks_v2.py:487`/`:1232`), the Epoch2 cloud-activation claim (`branch_tasks_v2.py:447`/
-`:1113`, added 2026-09-23) and the provider-authority `executor_class` derivation
-(`agent_runtime_provider_execution.py:1225`, added 2026-09-23).
+(`daemon_registry.py:568`, added 2026-09-23), the assigned-consumer claim
+(`branch_tasks_v2.py:487`/`:1232`), the Epoch2 cloud-activation claim (`branch_tasks_v2.py:450`/
+`:1156`, added 2026-09-23) and the provider-authority `executor_class` derivation
+(`agent_runtime_provider_execution.py:1235`, added 2026-09-23).
 
 This module is an audited *revoking* site with no process check. An unadmitted
 process can cancel and retire matching rows in a data root it can write. No path
