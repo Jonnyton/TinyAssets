@@ -38,7 +38,7 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   cloud-side tunnel remains, tunnel-token custody is the separate Layer C
   invariant, application checks cannot establish exclusive custody, and the
   cloud access policy is still unverified.
-- [ ] 4. **Gated on task 1 having actually run.** Record the expected droplet id
+- [x] 4. **Gated on task 1 having actually run.** Record the expected droplet id
   into dedicated typed expected-instance state in the canonical data volume
   before candidate startup, separate from the release receipt, then implement
   `resolve_platform_runtime_provenance()` — fail-closed, dedicated internal
@@ -58,7 +58,7 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   `/mcp/pulse`, through the existing request-identity API with no auth or
   permission widening. A health GET SHALL NOT trigger a fresh resolve. Nothing
   branches on the field; it is not enforcement.
-- [ ] 5. Land the resolver in record-only mode; confirm on the droplet that it
+- [x] 5. Land the resolver in record-only mode; confirm on the droplet that it
   resolves CLOUD and the recorded id matches. Read it back from the **main
   serving process** — a startup log line is not evidence that the main process
   cached anything, and the hosted preflight's separate metadata child is a
@@ -77,22 +77,22 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   **not** attestation or custody. Prove expected-id presence/match across a real
   redeploy and restart, plus rollback-state compatibility, before enabling
   refusal.
-- [ ] 6. Flip claim admission onto the **non-optional** predicate
+- [x] 6. Flip claim admission onto the **non-optional** predicate
   `_transaction_allows_assigned_consumer` / `_assigned_consumer_refusal_reason`
-  (`branch_tasks_v2.py:1170`), not the optional `authority_claim` callback —
+  (`tinyassets/branch_tasks_v2.py:1225-1233` at042cdce8), not the optional `authority_claim` callback —
   `transaction_check` returns `allowed` unchanged when it is `None`
-  (`:489`). Evidence is resolved before the write transaction opens and only the
+  (`tinyassets/branch_tasks_v2.py:482-520`). Evidence is resolved before the write transaction opens and only the
   resulting process-owned value is read inside the CAS; no HTTP I/O under the
   write lock. Keep `_consumer_skip_reason` as the diagnostic.
-- [ ] 7. Flip runtime registration to resolved provenance, re-resolved on read so
+- [x] 7. Flip runtime registration to resolved provenance, checked against cached process admission on exact-worker eligibility reads so
   an existing row grants nothing, plus the origin-ingress backstop refusal. Do
-  **not** derive anti-replay from `boot_id` (`uuid.uuid4().hex`,
-  `assigned_queue_consumer.py:209`): it is incarnation/liveness only. Keep the
+  **not** derive anti-replay from `boot_id` (`uuid.uuid4().hex` in
+  `tinyassets/runtime/assigned_queue_consumer.py`): it is incarnation/liveness only. Keep the
   existing descriptor expiry and add no storage schema for it.
 - [ ] 8. Flip startup and the last provider-authority boundary — boot assertion,
   no degraded mode, the four `executor_class="cloud"` literals
-  (`foreground_run_provider.py:484,595`,
-  `background_served_provider.py:1336,1547`), which the queue path cannot reach —
+  (`tinyassets/foreground_run_provider.py:515,631`,
+  `tinyassets/background_served_provider.py:1383,1598` at042cdce8), which the queue path cannot reach —
   and the recovery paths: watchdog, release-reconcile and stale-runtime
   retirement leave work pending when no admitted successor exists. Per-universe
   user-bound authority stays exactly as it is.
@@ -104,7 +104,7 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   with no real API calls. Run `python scripts/linux_oracle.py` on the new tests
   (they touch process/network syscalls Windows skips) and
   `python scripts/skip_census.py`.
-- [ ] 10. Get the cross-family review verdict, merge, then prove deployment:
+- [x] 10. Get the cross-family review verdict, merge, then prove deployment:
   `python scripts/deployed_sha.py --assert-contains <sha>` and
   `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
   --assert-handles` (export `TINYASSETS_WIKI_CANARY_TOKEN` first).
@@ -119,3 +119,30 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   removes the behaviour, so the spec text follows it;
   `daemon-identity-and-host-pool:76,97` host-pool registration — verify live
   before deleting), and archive the change in the same lane.
+
+
+## September 23 deployed-slice evidence
+
+[Release and rendered acceptance](../../../docs/reviews/2026-09-23-cloud-admission-deployed-acceptance.md)
+records PR3919/042cdce8, exact-head cross-family approval, hosted Linux and
+Docker results, deployment35805988252 and the original rendered retest11.
+
+Tasks4/5: PR3917 first proved record-only cached CLOUD; subsequent real redeploy
+prepared matching expected state before enforced startup. Rollback-state
+compatibility is structurally tested, not an actual production rollback drill.
+Tasks6/7: mandatory assigned claim, worker-slot provisioning and cached
+exact-worker eligibility plus origin HTTP/websocket refusal are deployed.
+Task10: protected SHA/public handles passed01:23UTC; ordinary owner workflows
+completed01:29UTC. That is not the new-user acceptance required by task11.
+
+Task8 remains partial: startup/provider boundaries and assigned-consumer
+startup/poll recovery are guarded, but named watchdog/reconcile/retirement
+coverage and the two source-coverage findings remain open. Task9 remains open:
+hosted Linux passed with no new regressions, but the complete planned negative
+matrix/baseline mapping is not closed and local Linux oracle was unavailable;
+no Docker Desktop/WSL startup is authorized. Skips are not coverage.
+Task11 remains open; no free-account action occurred. Task12 is partially synced:
+the main admission spec captures only deployed contracts, pulse already matched,
+and desktop/daemon collision text now separates process launch/discovery from
+admission. REST primitives were preserved, not falsely reported removed. Full
+delta sync/archive waits for custody, recovery coverage and free-user acceptance.

@@ -34,6 +34,18 @@ has an allowed-model binding, summon MUST reject a model outside that binding;
 `ensure_daemon_runtime` SHALL reuse a matching worker slot or adopt one matching
 unassigned slot before creating another instance.
 
+Cloud-worker slot provisioning through `ensure_daemon_runtime` SHALL additionally
+require the current process's admitted cloud observation before accessing the slot.
+Exact-worker eligibility SHALL read cached admission before accepting an existing
+row. The presence of a daemon identity or runtime record SHALL not itself confer
+platform execution authority.
+
+#### Scenario: A matching worker record cannot admit an unadmitted process
+
+- **WHEN** an unadmitted process requests a cloud-worker slot, even with identity,
+  model and worker fields matching an existing slot
+- **THEN** provisioning refuses with `platform_not_cloud` before accessing the slot.
+
 #### Scenario: A bound daemon cannot be summoned with another model
 
 - **GIVEN** a daemon whose metadata binds it to `gpt-5.5`
@@ -87,6 +99,10 @@ intervals below 30 seconds, and on `HostPoolError` set the first retry delay to
 `min(30 seconds, configured maximum)`, then double the prior delay up to that
 maximum. An exception raised by the optional error callback MUST be logged and
 swallowed so the loop continues until stopped.
+
+These REST discovery records and heartbeats SHALL NOT confer platform admission.
+Their existence does not replace the cloud-worker admission checks; this contract
+of REST registration does not claim that the REST operation itself enforces them.
 
 #### Scenario: Registration provisions capability before the host row
 
