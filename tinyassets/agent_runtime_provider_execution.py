@@ -37,6 +37,9 @@ from tinyassets.cloud_automation_continuation import (
     CloudContinuationWriteResult,
 )
 from tinyassets.config import load_universe_config
+from tinyassets.platform_runtime_provenance import (
+    admitted_cloud_executor_class,
+)
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationReservation,
@@ -1222,7 +1225,14 @@ class AgentRuntimeProviderExecutionService:
             actor_id=command.lease_id,
             operation="agent_invocation",
             role="agent_runtime",
-            executor_class="cloud",
+            # Derivation, not a label. `storage/provider_work_authority.py`
+            # equality-checks this field against the constant `"cloud"`, so a
+            # literal here would let a caller-supplied string satisfy a
+            # platform-authority check. The helper is peek-only (no socket, no
+            # file), which is why it is safe under the write transaction this
+            # runs inside; it refuses an unobserved process rather than
+            # resolving one, so no bounded metadata read happens under the lock.
+            executor_class=admitted_cloud_executor_class(),
             max_invocations=1,
             max_tokens=command.budget.max_tokens,
             max_cost_microunits=command.budget.max_cost_microunits,

@@ -165,6 +165,20 @@ record the boot identifier.
 - **THEN** authority is refused because provenance is re-resolved on read, and
   the row itself grants nothing.
 
+#### Scenario: An existing descriptor cannot be renewed by an unadmitted process
+- **WHEN** an unadmitted process publishes or refreshes a non-null queue descriptor,
+  including an unchanged-descriptor fast return
+- **THEN** the operation refuses with `platform_not_cloud` before reading the row
+  and the descriptor remains unchanged.
+- **AND** clearing a descriptor remains revocation under the existing worker checks.
+
+#### Scenario: Legacy cloud activation claim and resume use the process observation
+- **WHEN** the Epoch2 adapter claims or resumes a cloud activation
+- **THEN** observation resolution completes before the store transaction and the
+  mandatory lifecycle predicate reads only cached admission.
+- **AND** an unadmitted claim is refused, with pending work preserved; existing
+  generic and non-cloud activation semantics do not grant platform serving authority.
+
 #### Scenario: Restarts and concurrent cloud workers are preserved
 - **WHEN** an admitted cloud runtime restarts with a new boot identifier, or two
   admitted cloud workers run at the same time with different boot identifiers
@@ -195,6 +209,13 @@ NOT move, widen or narrow the authority a universe's owner holds.
 - **WHEN** a foreground conversation turn or a served background turn is
   requested on an unadmitted runtime
 - **THEN** the turn refuses and no provider subprocess or model relay is started.
+
+#### Scenario: Direct agent-runtime provider authority requires cached admission
+- **WHEN** an otherwise-ready invocation reaches the agent-runtime execution
+  service with an unobserved or refused process observation
+- **THEN** it refuses with `platform_not_cloud` before minting a provider receipt,
+  execution claim or invocation reservation, and no provider is called.
+- **AND** replaying an already-settled outcome never causes a new provider call.
 
 ### Requirement: The platform has no code path that publishes off-cloud public ingress
 The platform daemon, tray and packaged plugin runtime SHALL NOT contain a code

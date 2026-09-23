@@ -565,6 +565,32 @@ def set_worker_queue_descriptor(
     expected_worker_id: str = "",
 ) -> dict[str, Any]:
     """Persist vetted worker protocol evidence on its exact runtime slot."""
+    # Platform admission on PUBLICATION and REFRESH only, before any read and
+    # before the write. Minting the cloud-stamped runtime row is already gated
+    # in `ensure_daemon_runtime`, but the liveness half of the same descriptor
+    # (`expires_at`, `boot_id`, `build_sha`) is written here -- so without this
+    # gate an unadmitted process holding the data dir could renew an existing
+    # cloud descriptor indefinitely and keep the claim lane's validity window
+    # open. An existing cloud-stamped slot is a record, never permission.
+    #
+    # Clearing (`descriptor is None`) is deliberately NOT gated: it is
+    # revocation. It only removes a claim, so it cannot widen authority, and
+    # refusing it would strand a live-looking descriptor for the rest of its
+    # validity window on exactly the process that has lost admission -- the
+    # opposite of the invariant, and it would break shutdown cleanup.
+    #
+    # Resolve here rather than peek: this function holds no transaction, so the
+    # bounded metadata read cannot stall a write lock. Placed before the
+    # unchanged-descriptor fast return below, because that return is itself an
+    # authority-bearing answer about a runtime slot.
+    if descriptor is not None:
+        provenance = resolve_process_cloud_admission()
+        if not provenance.is_cloud:
+            raise PermissionError(
+                f"{PLATFORM_NOT_CLOUD_REASON}: worker queue descriptor "
+                f"publication requires an admitted cloud runtime "
+                f"(verdict={provenance.verdict}, reason={provenance.reason})"
+            )
     raw = daemon_server.get_runtime_instance(
         base_path,
         instance_id=runtime_instance_id,

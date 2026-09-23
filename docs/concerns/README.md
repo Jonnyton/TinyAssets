@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P2** | [Stale-fleet reconcile cancels and retires without platform admission](2026-09-23-runtime-reconcile-retirement-ungated.md) — `runtime_reconcile.py` has no process admission call; an unadmitted host holding the data dir can cancel a live universe's pending work. Removes capacity only, so not a serving bypass. Gate-vs-document decision owed before spec sync | 2026-09-23 |
 | **note** | [Owned run activity clean-use watch](2026-09-22-owned-run-activity-clean-use.md) — deployed diagnostics passed scoped rendered acceptance; organic owner use and historical intermittent causes remain open | 2026-09-22 |
 | **note** | [Served node editable-field parity](2026-09-21-served-node-editable-field-parity.md) — effects/workspace edits work; ordinary output-key and timeout edits remain refused | 2026-09-21 |
 | **note** | [Effect-edit organic-use watch](2026-09-21-effect-edit-organic-use-watch.md) — deployed and rendered acceptance passed; independent customer clean use not yet observed | 2026-09-21 |
