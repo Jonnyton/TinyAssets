@@ -303,9 +303,14 @@ class ConcurrencyTracker:
 # spawning unbounded threads on a slow provider.
 #
 # NOTE: when all 8 workers are busy, the 9th submit queues and its
-# timeout is measured from submit(), not from worker-allocated-start —
-# queued calls can exceed nominal timeout_seconds by the queue wait.
-# Fine for single-run today; revisit if multi-run concurrency saturates.
+# timeout is measured from submit(), not from worker-allocated-start.
+# A call that spends its whole budget queued is cancelled by
+# _run_with_timeout rather than started after its node went terminal.
+# Residual, NOT yet corrected: a call that starts partway through its
+# budget still receives the node's FULL timeout as its provider cap
+# (built once per node closure), so it can outlive the node's deadline
+# by the queue wait. Fixing that needs a per-invocation deadline rather
+# than the per-closure ModelConfig built below.
 _TIMEOUT_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 
 
@@ -347,17 +352,29 @@ def _run_with_timeout(
 ) -> Any:
     """Call ``fn()`` on a worker thread, raise NodeTimeoutError on overrun.
 
-    When a timeout fires, the worker thread is NOT killed — Python has
-    no safe way to do that. The provider call keeps running in the
-    background (the provider's own subprocess/HTTP timeout is the
-    backstop). We return to the graph so the overall run can fail-fast
-    instead of hanging the executor.
+    When a timeout fires, a worker thread that has ALREADY STARTED is NOT
+    killed — Python has no safe way to do that. That call keeps running in
+    the background (the provider's own subprocess/HTTP timeout is the
+    backstop) and is left to settle, because an interrupted provider call
+    leaves an effect nobody can classify. We return to the graph so the
+    overall run can fail-fast instead of hanging the executor.
+
+    Work still QUEUED at the deadline is a different case and is cancelled.
+    ``timeout_s`` is measured from ``submit()``, so a call that waited out
+    its whole budget behind a saturated pool would otherwise start strictly
+    after the node went terminal — a provider call nobody awaits, holding a
+    worker, outside the deadline that admitted it. ``Future.cancel()`` is
+    the bounded correction: by contract it succeeds only while the work has
+    not begun, so it can never interrupt a call that already made it out.
     """
     executor = _get_timeout_executor()
     future = executor.submit(fn)
     try:
         return future.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError as exc:
+        # Returns False once the worker picked it up; that call settles
+        # normally and is never replayed.
+        future.cancel()
         raise NodeTimeoutError(
             f"Node '{node_id}' exceeded {timeout_s:.0f}s timeout. "
             "The provider call may still be running in the background; "

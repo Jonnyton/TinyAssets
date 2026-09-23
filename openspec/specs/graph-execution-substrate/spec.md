@@ -346,6 +346,25 @@ other clauses of this requirement are unchanged.
 - **WHEN** a node's provider returns an empty response that surfaces as an empty-response error
 - **THEN** the run status becomes `failed` with a message identifying the empty response and the responsible node
 
+### Requirement: A node that went terminal on timeout SHALL NOT launch new work
+A node's `timeout_seconds` is measured from the moment its provider or
+source_code call is submitted to the shared bounded worker pool, so a call can
+spend its entire budget queued behind a saturated pool. When the deadline fires,
+the executor SHALL cancel work that has not yet begun, so no provider call
+starts strictly after the node that admitted it became terminal. Work that has
+already begun SHALL be left to run to completion untouched and SHALL NOT be
+replayed: its thread is never killed, and the provider's own subprocess/HTTP
+timeout remains the backstop, because an interrupted call leaves an effect that
+cannot be classified.
+
+#### Scenario: queued work is cancelled rather than started after the deadline
+- **WHEN** a node's call is still waiting in the worker pool queue as its `timeout_seconds` elapses
+- **THEN** the node fails as a node timeout and the queued call is cancelled, never executing
+
+#### Scenario: work already running is left to settle
+- **WHEN** a node's call has already started on a worker as its `timeout_seconds` elapses
+- **THEN** the node fails as a node timeout while that call runs to completion undisturbed and is never re-dispatched
+
 #### Scenario: exceeding the recursion limit terminates the run as failed
 - **WHEN** a run trips the applied recursion limit
 - **THEN** the run status becomes `failed` with a `GraphRecursionError` message naming the applied limit and how to raise it
