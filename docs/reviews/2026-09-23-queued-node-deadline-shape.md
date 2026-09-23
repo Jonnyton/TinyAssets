@@ -62,8 +62,13 @@ a fresh per-invocation config sidesteps it entirely.
 
 One real bug surfaced while implementing it: a fixed 1s floor on the remaining
 budget would RAISE a sub-second node's timeout (a 0.5s node handed a 1.0s cap)
-— "never just raise all timeouts" violated under cover of lowering one. The
-floor is now `min(1.0, timeout_s)`, pinned by a test verified red without it.
+— "never just raise all timeouts" violated under cover of lowering one.
+
+**That first correction was itself wrong, and the lead review caught it** (see
+the round-2 section below). `min(1.0, timeout_s)` stops the cap exceeding the
+node's timeout but re-grants the queue wait for every node at or under a
+second: a 0.9s node that queued 0.4s was handed 0.9s again. There is now no
+floor at all beyond strict positivity.
 
 ### AGREE — the stated prohibitions
 
@@ -99,3 +104,85 @@ concern. Nothing here should be cited as retiring that issue.
   sandbox, filesystem or process-limit behaviour, but CI remains authoritative.
 - No independent cross-family review: agent dispatch was prohibited for this
   lane. Root supplies the opposite-family review.
+
+---
+
+## Round 2 — corrections from the independent lead review
+
+Receipt: [`2026-09-23-queued-deadline-lead-review.md`](2026-09-23-queued-deadline-lead-review.md)
+(Codex lead, reviewing head `5e5678de` against `1f121719`; verdict **ADAPT**).
+Two concrete contract holes, both accepted and corrected here. No broadening:
+the historical intermittent-failure cause and the router internals stay out of
+scope, exactly as the receipt asks.
+
+### Finding 1 — remaining-budget floor: **AGREE**
+
+`min(_MIN_REMAINING_PROVIDER_CAP_S, timeout_s)` is not a safe floor, it is the
+full node timeout for every node at or under a second. A 0.5s node that queued
+0.4s got 0.5s, not the remaining 0.1s — the queue wait handed straight back.
+The reviewer's premise checks out: `ModelConfig.stream_timeout_profile()` runs
+every knob through `_pos()`, which accepts any finite positive float, so the
+absolute cap needs no 1s floor.
+
+The floor is gone. `_MIN_POSITIVE_PROVIDER_CAP_S = 0.001` replaces it and is an
+epsilon, not a budget — `_pos()` *discards* a non-positive cap in favour of the
+600s default, so zero would invert the correction far worse than the old floor
+did. The legacy integer-seconds `timeout` scalar keeps `max(1, int(remaining))`,
+now documented for what it is: a representation limit of a field that cannot
+express a sub-second budget, identical to the floor the per-node config already
+carries, never raised above it. The streaming path reads `absolute_cap_s`.
+
+The old test asserted only `cap <= original`, which the reviewer is right to
+call insufficient — it passes on a cap of 29.999s for a 30s node. Both cap
+tests now pin the cap from *both* sides against the actual measured wait.
+
+### Finding 2 — worker pickup after the deadline: **AGREE**
+
+`future.cancel()` returns `False` once a worker has the item, and nothing
+orders the caller's post-deadline `cancel()` against that pickup. The previous
+module comment acknowledged the losing case and then let the work run with a
+fresh positive provider budget — so the spec's no-new-work-after-the-deadline
+claim rested on scheduling luck.
+
+`_run_with_timeout` now wraps every submitted callable in a worker-entry
+deadline check: past the deadline, it raises `_DeadlineExpiredBeforeStart`
+(a `NodeTimeoutError` subclass, so no handler anywhere needs to change) instead
+of invoking the call. Budget remaining → the call starts normally. The check
+precedes the first line of the wrapped call, so nothing already started is
+touched and nothing is replayed. It sits in the shared helper as the reviewer
+suggested, so it covers every path routed through the shared pool.
+
+Honest scope on the "queued source_code" half: `source_code` nodes do **not**
+route through `_run_with_timeout` today — they carry their own sandbox-runner
+timeout — so they are covered the moment they do, and not before. The spec now
+says exactly that rather than implying the guarantee is already theirs.
+
+### Flake guidance — accepted
+
+The cap tests no longer sleep-and-assume the caller enqueued. `_EnqueueSignallingPool`
+signals the actual `submit()`, the wait is timed from that signal, and the
+assertions use two hard bounds derived from measurements (`lower_wait` from the
+interval the worker was provably still held after enqueue; `upper_wait` from a
+timestamp taken inside the provider call) rather than a nominal sleep duration.
+The race test uses a controlled executor stub whose `cancel()` always loses and
+whose callable the test itself invokes, so the pickup happens after the
+deadline by construction, never by luck.
+
+### Round-2 evidence
+
+Head under test: `5e5678de` + this commit.
+
+- RED on the unchanged runtime (`git show HEAD:tinyassets/graph_compiler.py`
+  swapped in, tests unchanged): 2 failed, 5 passed —
+  `test_remaining_budget_has_no_floor_that_regrants_the_queue_wait` and
+  `test_work_reaching_a_worker_after_the_deadline_is_never_started`. One test
+  per finding, each red for its own finding's reason.
+- GREEN after: `tests/test_node_timeout_queue_cancellation.py` 7 passed.
+- Regression set: `test_node_timeout_queue_cancellation.py`,
+  `test_node_timeout.py`, `test_graph_compiler_empty_response.py`.
+- `python -m ruff check` clean on both changed files;
+  `packaging/claude-plugin/build_plugin.py` re-run for mirror parity.
+- Windows only, as in round 1. No sandbox/filesystem/process-limit surface is
+  touched, so the Linux oracle is not indicated; CI stays authoritative.
+- Still no cross-family review from this lane — dispatch remains prohibited
+  here. Root supplies the independent final review and tests.

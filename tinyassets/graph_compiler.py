@@ -97,6 +97,18 @@ class NodeTimeoutError(CompilerError):
         self.node_id = node_id
 
 
+class _DeadlineExpiredBeforeStart(NodeTimeoutError):
+    """A worker reached queued node work whose deadline had already passed.
+
+    Internal to ``_run_with_timeout``: raised on the worker thread instead of
+    invoking the call. A subclass of :class:`NodeTimeoutError` so it needs no
+    new handling anywhere — in the ordinary case the caller has already raised
+    its own ``NodeTimeoutError`` and nobody reads this one, and in the boundary
+    case where the caller is still inside ``future.result()`` it surfaces as
+    the node timeout it is.
+    """
+
+
 class ForeignCodeError(CompilerError):
     """Raised when a run would execute source_code it did not author (design
     D2, Codex round 1 P0): ``run_graph`` admits a PUBLIC foreign branch
@@ -306,18 +318,23 @@ class ConcurrencyTracker:
 # NOTE: when all 8 workers are busy, the 9th submit queues and its
 # timeout is measured from submit(), not from worker-allocated-start.
 # Both consequences are corrected, not absorbed: a call that spends its
-# whole budget queued is cancelled rather than started after its node
-# went terminal, and a call that waited only part of its budget has that
-# wait subtracted from its provider cap (see _deadline_cfg) instead of
-# receiving the node's full timeout from the per-closure ModelConfig.
+# whole budget queued is cancelled, and refused at worker entry if it wins
+# the cancel race, rather than started after its node went terminal; and a
+# call that waited only part of its budget has that wait subtracted from
+# its provider cap (see _deadline_cfg) instead of receiving the node's full
+# timeout from the per-closure ModelConfig.
 _TIMEOUT_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 
 # Below this, the gap between submit() and worker start is scheduling jitter
 # rather than queue wait, and the node's config is handed over untouched.
 _QUEUE_WAIT_SUBTRACT_THRESHOLD_S = 0.05
-# A call that waited out its whole budget is normally cancelled; if it wins the
-# race and starts anyway, it still gets a usable floor rather than timeout=0.
-_MIN_REMAINING_PROVIDER_CAP_S = 1.0
+# The remaining budget is handed over as-is: ModelConfig.stream_timeout_profile()
+# accepts any finite positive float, so the absolute cap needs no floor of its
+# own. This is an epsilon, NOT a budget: that resolver discards a non-positive
+# cap and substitutes the 600s default, which would invert the correction. An
+# already-expired call is stopped by the worker guard in _run_with_timeout, so
+# this clamp never has to invent a budget for one.
+_MIN_POSITIVE_PROVIDER_CAP_S = 0.001
 
 
 def _get_timeout_executor() -> concurrent.futures.ThreadPoolExecutor:
@@ -365,21 +382,47 @@ def _run_with_timeout(
     leaves an effect nobody can classify. We return to the graph so the
     overall run can fail-fast instead of hanging the executor.
 
-    Work still QUEUED at the deadline is a different case and is cancelled.
+    Work still QUEUED at the deadline is a different case and never starts.
     ``timeout_s`` is measured from ``submit()``, so a call that waited out
     its whole budget behind a saturated pool would otherwise start strictly
     after the node went terminal — a provider call nobody awaits, holding a
-    worker, outside the deadline that admitted it. ``Future.cancel()`` is
-    the bounded correction: by contract it succeeds only while the work has
-    not begun, so it can never interrupt a call that already made it out.
+    worker, outside the deadline that admitted it. Two mechanisms close it,
+    because neither is sufficient alone:
+
+    * ``Future.cancel()`` — by contract it succeeds only while the work has
+      not begun, so it can never interrupt a call that already made it out.
+      It is also a race the worker can WIN: it returns ``False`` once the
+      item has been picked up, and the work then runs anyway.
+    * The worker-entry deadline check below, which is what makes the
+      no-new-work-after-the-deadline guarantee provable rather than a matter
+      of scheduling luck. It runs on the worker, immediately before ``fn``,
+      and refuses only work whose deadline has ALREADY passed. Work with
+      positive budget left starts normally.
+
+    Neither touches work that has already begun: the check is before the
+    first line of ``fn``, so a call past it settles untouched.
     """
     executor = _get_timeout_executor()
-    future = executor.submit(fn)
+    deadline = time.monotonic() + timeout_s
+
+    def _guarded() -> Any:
+        if time.monotonic() >= deadline:
+            raise _DeadlineExpiredBeforeStart(
+                f"Node '{node_id}' work reached a worker after its "
+                f"{timeout_s:.3g}s deadline had already passed; it was "
+                "never started.",
+                node_id=node_id,
+            )
+        return fn()
+
+    future = executor.submit(_guarded)
     try:
         return future.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError as exc:
-        # Returns False once the worker picked it up; that call settles
-        # normally and is never replayed.
+        # Returns False once the worker picked it up. That case is not left to
+        # chance: the worker-entry check refuses the pickup if the deadline has
+        # passed, and a call that got past the check settles normally and is
+        # never replayed.
         future.cancel()
         raise NodeTimeoutError(
             f"Node '{node_id}' exceeded {timeout_s:.0f}s timeout. "
@@ -1432,13 +1475,20 @@ def _build_prompt_template_node(
                     # Scheduling jitter, not queue wait. Hand over the node's
                     # own config unchanged so an unqueued call is unaffected.
                     return _node_cfg
-                # The floor must never exceed what the node itself asked for:
-                # flooring a 0.5s node at 1.0s would RAISE its timeout, which is
-                # the opposite of the correction.
-                floor = min(_MIN_REMAINING_PROVIDER_CAP_S, timeout_s)
-                remaining = max(floor, timeout_s - waited)
+                # The cap is the REMAINING budget, with no floor of its own: a
+                # 0.5s node that spent 0.4s queued gets 0.1s, not 0.5s. Any
+                # floor above an epsilon re-grants time the queue already
+                # spent, which is the defect. See _MIN_POSITIVE_PROVIDER_CAP_S.
+                remaining = max(_MIN_POSITIVE_PROVIDER_CAP_S, timeout_s - waited)
                 return _dataclasses.replace(
                     _node_cfg,
+                    # Legacy int-seconds scalar, honored by the NON-streaming
+                    # providers. It cannot represent a sub-second budget at all,
+                    # so it carries the same max(1, int(...)) floor the node's
+                    # own config already carries — a representation limit of
+                    # that field, NOT the node's remaining budget, which is
+                    # absolute_cap_s. It is never raised above the node's own
+                    # legacy timeout, since remaining <= timeout_s.
                     timeout=max(1, int(remaining)),
                     absolute_cap_s=remaining,
                 )

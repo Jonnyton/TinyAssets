@@ -39,6 +39,24 @@ from tinyassets.graph_compiler import (
 )
 
 
+class _EnqueueSignallingPool(concurrent.futures.ThreadPoolExecutor):
+    """A pool that says when an item has been ENQUEUED.
+
+    The queue-wait tests must know the node's call is actually sitting in the
+    queue before they start timing the wait. Sleeping and assuming the caller
+    thread got there first is the flake the lead review called out.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.enqueued = threading.Event()
+
+    def submit(self, fn, /, *args, **kwargs):
+        future = super().submit(fn, *args, **kwargs)
+        self.enqueued.set()
+        return future
+
+
 @pytest.fixture()
 def single_worker_pool(monkeypatch):
     """Pin the shared executor to one worker so queueing is deterministic.
@@ -46,7 +64,7 @@ def single_worker_pool(monkeypatch):
     Saturation is then a single occupied worker rather than a race against
     the real 8-wide pool, so neither test depends on timing luck.
     """
-    pool = concurrent.futures.ThreadPoolExecutor(
+    pool = _EnqueueSignallingPool(
         max_workers=1, thread_name_prefix="test-node-timeout",
     )
     monkeypatch.setattr(graph_compiler, "_TIMEOUT_EXECUTOR", pool)
@@ -140,12 +158,26 @@ def _node(timeout_seconds: float):
 
 
 def _cap_after_queue_wait(pool, *, route: str, node_timeout: float, wait_s: float):
-    """Run one node behind an occupied worker; return the cap it handed over."""
+    """Run one node behind an occupied worker; return its cap and wait bounds.
+
+    Deterministic by construction rather than by timing luck: the wait is
+    started only once the pool reports the node's call ENQUEUED, so the
+    returned bounds hold regardless of machine load.
+
+    Returns ``(config, lower_wait, upper_wait)`` where the true queue wait the
+    node observed is provably within ``[lower_wait, upper_wait]``:
+
+    * ``lower_wait`` is the interval the blocker was still holding the only
+      worker AFTER the call was enqueued — the call cannot have waited less.
+    * ``upper_wait`` is measured from before the caller even began the node to
+      the instant the provider was entered — the call cannot have waited more.
+    """
     captured: dict = {}
     release_blocker = threading.Event()
 
     def fake_provider_call(prompt, system, *, role="writer", config=None):
         captured["config"] = config
+        captured["entered_at"] = time.monotonic()
         return "done"
 
     class _RecordingRouter:
@@ -155,6 +187,7 @@ def _cap_after_queue_wait(pool, *, route: str, node_timeout: float, wait_s: floa
             self, role, prompt, system, policy, config=None, **kwargs,
         ):
             captured["config"] = config
+            captured["entered_at"] = time.monotonic()
             return ("done", "claude", {})
 
     if route == "policy":
@@ -168,62 +201,187 @@ def _cap_after_queue_wait(pool, *, route: str, node_timeout: float, wait_s: floa
         )
 
     blocker_future = pool.submit(lambda: release_blocker.wait(timeout=10.0))
+    pool.enqueued.clear()  # the blocker's own submit, not the node's
+
     outcome: list = []
+    caller_began = time.monotonic()
     caller = threading.Thread(target=lambda: outcome.append(fn({"x": "thing"})))
     caller.start()
     try:
-        # The node's call is now queued behind the occupied worker.
+        # Wait for the ENQUEUE, never for a guessed interval: only now is the
+        # node's call provably sitting in the queue behind the held worker.
+        assert pool.enqueued.wait(timeout=10.0), "node call was never enqueued"
+        held_from = time.monotonic()
         time.sleep(wait_s)
+        lower_wait = time.monotonic() - held_from
         release_blocker.set()
         blocker_future.result(timeout=10.0)
         caller.join(timeout=10.0)
     finally:
         release_blocker.set()
 
-    assert outcome and outcome[0].get("out") == "done"
+    assert outcome and outcome[0].get("out") == "done", (
+        f"node did not complete through the {route} route: {outcome}"
+    )
     cfg = captured.get("config")
     assert cfg is not None, "node config was not threaded to the provider"
-    return cfg
+    return cfg, lower_wait, captured["entered_at"] - caller_began
 
 
 @pytest.mark.parametrize("route", ["bridge", "policy"])
 def test_queue_wait_comes_out_of_the_provider_cap(single_worker_pool, route):
-    """A call that waited in the queue gets the REMAINING budget, not the full one."""
+    """The cap must be the REMAINING budget, not merely less than the full one."""
     node_timeout = 30.0
-    queue_wait = 0.4
-    cfg = _cap_after_queue_wait(
-        single_worker_pool, route=route,
-        node_timeout=node_timeout, wait_s=queue_wait,
+    cfg, lower_wait, upper_wait = _cap_after_queue_wait(
+        single_worker_pool, route=route, node_timeout=node_timeout, wait_s=0.4,
     )
 
-    assert cfg.absolute_cap_s < node_timeout - (queue_wait / 2), (
-        f"node waited ~{queue_wait}s in the pool queue but was still handed the "
-        f"full {node_timeout}s as its provider cap ({cfg.absolute_cap_s}); the "
-        "provider therefore outlives the node's own deadline by the queue wait"
+    # Both bounds are hard, not tolerances. The cap is timeout - true_wait, and
+    # lower_wait <= true_wait <= upper_wait, so the cap is pinned to the actual
+    # remaining budget from both sides. "cap < full timeout" would pass on a
+    # cap of 29.999s; this does not.
+    assert cfg.absolute_cap_s <= node_timeout - lower_wait, (
+        f"node provably queued at least {lower_wait:.3f}s but was handed "
+        f"{cfg.absolute_cap_s}s of a {node_timeout}s budget — the provider "
+        "outlives the node's own deadline by the difference"
     )
-    # Still a usable budget — subtracting the wait must not starve the call.
-    assert cfg.absolute_cap_s > node_timeout - (queue_wait * 4)
+    assert cfg.absolute_cap_s >= node_timeout - upper_wait, (
+        f"cap {cfg.absolute_cap_s}s is below the remaining budget; the node "
+        f"waited at most {upper_wait:.3f}s of {node_timeout}s and must not be "
+        "charged more than it waited"
+    )
+    # The cap the streaming path actually reads resolves to the same number:
+    # a non-positive or non-finite value would silently become the 600s default.
     assert cfg.stream_timeout_profile().absolute_cap_s == pytest.approx(
         cfg.absolute_cap_s
     )
 
 
-def test_subtracting_a_queue_wait_never_raises_a_sub_second_node_timeout(
+def test_remaining_budget_has_no_floor_that_regrants_the_queue_wait(
     single_worker_pool,
 ):
-    """The remaining-budget floor must not exceed the node's own timeout.
+    """A sub-second node must get what is LEFT, not a floor of its own.
 
-    A 0.5s node queued behind a 0.4s wait has almost nothing left. Flooring
-    that at a fixed 1s would hand the provider a LARGER cap than the node ever
-    asked for — raising a timeout under cover of lowering one.
+    The earlier correction floored the remaining budget at
+    ``min(1.0, timeout_s)``. For any node at or under a second that floor IS
+    the node's full timeout, so a 0.9s node that spent 0.4s queued was handed
+    0.9s again — the queue wait re-granted under cover of subtracting it.
+    ``ModelConfig.stream_timeout_profile()`` accepts any finite positive float,
+    so no such floor is needed.
     """
-    node_timeout = 0.5
-    cfg = _cap_after_queue_wait(
-        single_worker_pool, route="bridge",
-        node_timeout=node_timeout, wait_s=0.4,
+    node_timeout = 0.9
+    cfg, lower_wait, upper_wait = _cap_after_queue_wait(
+        single_worker_pool, route="bridge", node_timeout=node_timeout, wait_s=0.4,
     )
-    assert cfg.absolute_cap_s <= node_timeout, (
-        f"queued sub-second node was handed {cfg.absolute_cap_s}s, more than "
-        f"the {node_timeout}s it declared"
+
+    assert cfg.absolute_cap_s <= node_timeout - lower_wait, (
+        f"sub-second node queued at least {lower_wait:.3f}s of its "
+        f"{node_timeout}s budget but was handed {cfg.absolute_cap_s}s back"
     )
+    assert cfg.absolute_cap_s >= node_timeout - upper_wait
+    assert cfg.absolute_cap_s < node_timeout, "the cap must never be the full timeout"
     assert cfg.absolute_cap_s > 0, "the cap must stay usable, never zero"
+    # A non-positive cap is discarded by the resolver in favour of the 600s
+    # default, so "small but positive" is load-bearing, not cosmetic.
+    assert cfg.stream_timeout_profile().absolute_cap_s == pytest.approx(
+        cfg.absolute_cap_s
+    )
+    # The legacy int-seconds scalar cannot express a sub-second budget; it is
+    # floored exactly as the node's own config is, and never raised above it.
+    assert cfg.timeout <= max(1, int(node_timeout))
+
+
+# ─── the other half: cancel() is a race the worker can win ────────────────
+#
+# Future.cancel() returns False once the pool has picked the item up. Nothing
+# in `concurrent.futures` orders the caller's post-deadline cancel() against
+# the worker's pickup, so cancellation ALONE cannot prove that no work starts
+# after the deadline — under load the worker simply wins sometimes. These
+# tests drive that race directly instead of waiting for it to happen.
+
+
+class _WorkerWinsTheCancelRace:
+    """An executor stub where ``cancel()`` always loses, as it does on pickup.
+
+    The submitted callable is captured, never run, so the test itself plays
+    the worker and decides exactly WHEN the pickup happens relative to the
+    deadline. No scheduling luck is involved in either direction.
+    """
+
+    def __init__(self) -> None:
+        self.submitted = None
+        self.future: concurrent.futures.Future | None = None
+        self.did_submit = threading.Event()
+
+    def submit(self, fn, /, *args, **kwargs):
+        self.submitted = fn
+
+        class _Uncancellable(concurrent.futures.Future):
+            def cancel(self) -> bool:
+                # Exactly what a real Future returns once a worker has it.
+                return False
+
+        self.future = _Uncancellable()
+        self.did_submit.set()
+        return self.future
+
+
+def test_work_reaching_a_worker_after_the_deadline_is_never_started(monkeypatch):
+    """Pickup after the deadline must refuse, not launch the provider."""
+    pool = _WorkerWinsTheCancelRace()
+    monkeypatch.setattr(graph_compiler, "_TIMEOUT_EXECUTOR", pool)
+    invoked: list[str] = []
+
+    with pytest.raises(NodeTimeoutError) as exc_info:
+        _run_with_timeout(
+            lambda: invoked.append("provider call"),
+            timeout_s=0.05,
+            node_id="raced_node",
+        )
+    assert exc_info.value.node_id == "raced_node"
+    assert invoked == [], "the call ran before its own deadline even elapsed"
+
+    # The node is terminal and cancel() lost. The worker now picks the item up
+    # — strictly after the deadline that admitted it.
+    with pytest.raises(NodeTimeoutError):
+        pool.submitted()
+
+    assert invoked == [], (
+        "a worker picked up queued work AFTER the node's deadline and launched "
+        "the provider anyway; future.cancel() had already returned False, so "
+        "cancellation alone cannot carry the no-new-work-after-the-deadline "
+        "guarantee"
+    )
+
+
+def test_work_reaching_a_worker_within_its_deadline_still_runs(monkeypatch):
+    """The guard must refuse only EXPIRED work, never merely queued work."""
+    pool = _WorkerWinsTheCancelRace()
+    monkeypatch.setattr(graph_compiler, "_TIMEOUT_EXECUTOR", pool)
+    invoked: list[str] = []
+    returned: list[str] = []
+
+    def _work() -> str:
+        invoked.append("provider call")
+        return "settled"
+
+    caller = threading.Thread(
+        target=lambda: returned.append(
+            _run_with_timeout(_work, timeout_s=30.0, node_id="in_time_node"),
+        ),
+    )
+    caller.start()
+    try:
+        assert pool.did_submit.wait(timeout=10.0), "work was never submitted"
+        # Play the worker, well inside the 30s deadline.
+        pool.future.set_result(pool.submitted())
+        caller.join(timeout=10.0)
+    finally:
+        if pool.future is not None and not pool.future.done():
+            pool.future.cancel()
+
+    assert invoked == ["provider call"], (
+        "work picked up with budget remaining was refused; the guard must "
+        "stop expired work only, not queued work"
+    )
+    assert returned == ["settled"]

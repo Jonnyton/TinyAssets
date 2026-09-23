@@ -347,30 +347,62 @@ other clauses of this requirement are unchanged.
 - **THEN** the run status becomes `failed` with a message identifying the empty response and the responsible node
 
 ### Requirement: A node that went terminal on timeout SHALL NOT launch new work
-A node's `timeout_seconds` is measured from the moment its provider or
-source_code call is submitted to the shared bounded worker pool, so a call can
+A prompt-template node's `timeout_seconds` is measured from the moment its
+provider call is submitted to the shared bounded worker pool, so a call can
 spend its entire budget queued behind a saturated pool. When the deadline fires,
-the executor SHALL cancel work that has not yet begun, so no provider call
-starts strictly after the node that admitted it became terminal. Work that has
-already begun SHALL be left to run to completion untouched and SHALL NOT be
-replayed: its thread is never killed, and the provider's own subprocess/HTTP
+the executor SHALL cancel work that has not yet begun, and SHALL additionally
+refuse, at worker entry, any submitted work whose deadline has already passed —
+`Future.cancel()` returns `False` once a worker has picked the item up, so
+cancellation alone leaves the outcome to scheduling. With both, no provider call
+starts strictly after the node that admitted it became terminal. Work with
+budget remaining at worker entry SHALL start normally.
+
+Scope, stated as the guarantee actually implemented: the worker-entry check
+lives in the shared `_run_with_timeout` helper, so it covers every call routed
+through the shared pool — today the prompt-template node's policy-router and
+provider-bridge paths. `source_code` nodes do not route through that pool; they
+carry their own sandbox-runner timeout, and this requirement makes no claim
+about their runtime budget propagation. Router-internal retry and admission
+budgets are likewise out of scope.
+
+Work that has already begun SHALL be left to run to completion untouched and
+SHALL NOT be replayed: its thread is never killed, the deadline check precedes
+the first line of the submitted call, and the provider's own subprocess/HTTP
 timeout remains the backstop, because an interrupted call leaves an effect that
 cannot be classified.
 
 A call that waited in the queue for a material part of its budget and then
-started SHALL have that wait subtracted from the provider cap it is given, so
-the provider's own deadline expires with the node's rather than the queue wait
-beyond it. The subtraction SHALL produce a fresh per-invocation config, never a
-mutation of the per-node one, and SHALL leave a call that did not queue with the
-node's full timeout unchanged.
+started SHALL be given exactly the remaining budget as its provider absolute
+cap, so the provider's own deadline expires with the node's rather than the
+queue wait beyond it. The remaining budget SHALL NOT be floored at any value
+that re-grants elapsed queue wait; the only clamp is strict positivity, because
+`ModelConfig.stream_timeout_profile()` accepts any finite positive float but
+discards a non-positive cap in favour of its 600s default. The legacy
+integer-seconds `timeout` scalar, which cannot represent a sub-second budget,
+SHALL keep the same `max(1, int(...))` representation floor the per-node config
+already carries and SHALL NOT be raised above it. The subtraction SHALL produce
+a fresh per-invocation config, never a mutation of the per-node one, and SHALL
+leave a call that did not queue with the node's full timeout unchanged.
 
 #### Scenario: queued work is cancelled rather than started after the deadline
 - **WHEN** a node's call is still waiting in the worker pool queue as its `timeout_seconds` elapses
 - **THEN** the node fails as a node timeout and the queued call is cancelled, never executing
 
+#### Scenario: work reaching a worker after the deadline is refused, not started
+- **WHEN** a worker picks up a node's queued call after its `timeout_seconds` has already elapsed, cancellation having lost the race
+- **THEN** the call is refused at worker entry as a node timeout and the provider is never invoked
+
+#### Scenario: work reaching a worker within its deadline still runs
+- **WHEN** a worker picks up a node's queued call while budget remains
+- **THEN** the call executes normally, the worker-entry check refusing expired work only
+
 #### Scenario: a queue wait comes out of the provider's cap, not the node's deadline
 - **WHEN** a node's call waits in the worker pool queue for a material part of its `timeout_seconds` and then starts
 - **THEN** the provider receives the remaining budget as its absolute cap, while a call that did not queue still receives the node's full timeout
+
+#### Scenario: a sub-second node is not handed its queue wait back by a floor
+- **WHEN** a node whose `timeout_seconds` is at or below the legacy one-second floor spends a material part of that budget queued
+- **THEN** its provider absolute cap is the remaining fraction, strictly less than the node's own timeout and strictly positive
 
 #### Scenario: work already running is left to settle
 - **WHEN** a node's call has already started on a worker as its `timeout_seconds` elapses
