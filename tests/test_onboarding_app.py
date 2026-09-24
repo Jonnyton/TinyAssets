@@ -674,10 +674,10 @@ const els={"btn-voice":new El(),"btn-send":new El(),
   "voice-disclosure":new El(),"btn-voice-accept":new El(),
   "voice-service-name":new El(),"voice-privacy-link":new El(),
   "voice-disclosure-browser":new El(),"voice-disclosure-bridge":new El(),
-  "voice-output-select":new El()};
+  "voice-output-select":new El(),"voice-status-line":new El()};
 const $=id=>els[id]; let status="",conversationStatus="",turnStartedAt=0;
 function setStatusLine(v){conversationStatus=v||"";}
-function setVoiceStatusLine(v){status=v||"";}
+function setVoiceStatusLine(v){status=v||"";els["voice-status-line"].textContent=status;}
 const document={createElement:()=>new El(),documentElement:{lang:"en-US"}};
 const window={};
 let mediaRequests=0;
@@ -1064,6 +1064,42 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
   els["btn-send"].disabled=false;turnStartedAt=0;conversationStatus="";
   Voice.conversationSettled(true);
   out.pendingSettled={conversationStatus,voiceStatus:status};
+  // Seen live 2026-09-23 PDT: Voice stopped during the 17:39 turn, that turn's
+  // transport went unconfirmed at 17:46 and the line said the reply did not
+  // arrive and the message was available to retry. "Send it again" was NEVER
+  // clicked - the founder typed two NEW questions at 17:47 and 17:54 (answered
+  // 17:51 and 18:01) and the sentence was still sitting beside the answered
+  // ones. A new turn of this same account
+  // and home retires it; another account's or home's turn does not.
+  const missing={message:"Retest my checklist",ts:4242,consumerRequest:null,
+    owner:"p-1",scope:"u-1"};
+  const goStale=()=>{els["btn-send"].disabled=true;turnStartedAt=123;Voice.stop(true);
+    els["btn-send"].disabled=false;turnStartedAt=0;Voice.conversationSettled(false,missing);};
+  goStale();
+  const staleLine=status;
+  Voice.turnStarted("p-2","u-1");
+  const afterOtherOwnerTurn=status;
+  Voice.turnStarted("p-1","u-9");
+  const afterOtherHomeTurn=status;
+  // The new turn is a DIFFERENT message: Voice is told only whose turn it is.
+  Voice.turnStarted("p-1","u-1");
+  out.newTurnRetiresStaleRetry={staleLine,afterOtherOwnerTurn,afterOtherHomeTurn,
+    afterNewTurn:status,stateLabel:VOICE_LABELS[Voice.state],state:Voice.state,
+    marker:Voice.pendingReplyMissing,
+    secondNewTurnRewrites:(status="",Voice.turnStarted("p-1","u-1"),status!=="")};
+  // Anything rendered over the sentence since owns the line: a real voice error
+  // (which is what the founder would actually need to read) is never erased.
+  goStale();
+  Voice.fail(new Error("voice_permission_denied"));
+  const realError=status;
+  Voice.turnStarted("p-1","u-1");
+  out.newTurnKeepsRealError={realError,after:status,state:Voice.state};
+  // Belt and braces: marker still set, but the sentence on screen is not ours.
+  goStale();
+  Voice.pendingReplyMissing=Object.assign({},missing);
+  setVoiceStatusLine("Voice is off. Something else entirely.");
+  Voice.turnStarted("p-1","u-1");
+  out.newTurnKeepsForeignLine=status;
   console.log(JSON.stringify(out));
 })().catch(e=>{console.error(e&&e.stack||e);process.exit(1);});
 """
@@ -1517,7 +1553,7 @@ const els={
   "thread":new El("div"), "status-line":new El("div"),
 };
 const $=id=>els[id];
-const Voice={isActive:()=>!!SCENARIO.voiceActive,conversationSettled:()=>{}};
+const Voice={isActive:()=>!!SCENARIO.voiceActive,conversationSettled:()=>{},turnStarted:()=>{}};
 const messages=[], executionDetails=[];
 const observedModels=[];
 const ModelPicker={observe(text){observedModels.push(text);}};
@@ -2762,3 +2798,32 @@ def test_the_app_itself_links_a_privacy_policy():
     # way back to their universe.
     assert 'a[data-external]' in html
     assert "openExternal(a.getAttribute(\"href\"))" in html
+
+
+def test_voice_stale_retry_line_stops_at_the_next_turn_of_that_account(tmp_path):
+    """The rendered owner app (2026-09-23 18:01 PDT) showed a delivered answer
+    to a question asked minutes AFTER the failed one, Send enabled, an empty
+    conversation status - and a Voice line still saying the pending reply did
+    not arrive and the message was available to retry. No resend was ever
+    clicked, so nothing keyed to the failed message could ever have cleared it.
+    The next turn of the same account and home retires that sentence; another
+    account's or home's turn, and anything rendered over it since (a real voice
+    error), leave it exactly where it is."""
+    out = _run_voice_adapter(tmp_path)
+    fresh = out["newTurnRetiresStaleRetry"]
+    VOICE_OFF_IDLE_LINE = "Voice is off. Start it when you want to talk."
+    missing = ("Voice is off. The pending reply did not arrive; "
+               "your message is available to retry.")
+    arrived = "Voice is off. The pending text reply arrived and was not spoken."
+    assert fresh["staleLine"] == missing
+    assert fresh["afterOtherOwnerTurn"] == missing, "another account's turn cleared the notice"
+    assert fresh["afterOtherHomeTurn"] == missing, "another home's turn cleared the notice"
+    # Retired for the CURRENT voice state, not for a claim about the old turn.
+    assert fresh["afterNewTurn"] == fresh["stateLabel"] == VOICE_OFF_IDLE_LINE
+    assert fresh["state"] == "idle"
+    assert fresh["afterNewTurn"] not in (missing, arrived)
+    assert fresh["marker"] is None and fresh["secondNewTurnRewrites"] is False
+    kept = out["newTurnKeepsRealError"]
+    assert kept["state"] == "error" and kept["realError"] not in (missing, arrived)
+    assert kept["after"] == kept["realError"], "a new turn overwrote a real voice error"
+    assert out["newTurnKeepsForeignLine"] == "Voice is off. Something else entirely."

@@ -54,20 +54,31 @@ def _headroom_bytes():
     return store._integer(int(raw))
 
 
+def check_admin_grant(conn, owner, universe, *, require_current_home=False):
+    """The canonical tombstone + universe admin check, on a CALLER-HELD connection.
+
+    The only definition of "this principal may act in this universe" for custody.
+    Exposed separately so a path already holding the platform writer -- notably the
+    cross-owner publication fence, which must revalidate a SECOND principal -- runs
+    exactly these checks instead of opening a nested writer with its own copy.
+    """
+    check_principal_not_deleted(conn, owner)
+    if require_current_home:
+        check_current_home(conn, owner, universe)
+    # Exact existing universe admin grant, not home ownership or attribution.
+    row = conn.execute(
+        "SELECT permission FROM universe_acl WHERE universe_id=? AND actor_id=?",
+        (universe, owner),
+    ).fetchone()
+    if row is None or row[0] != "admin":
+        raise store.FileCustodyRefused("run_file_access_denied")
+
+
 @contextmanager
 def _authority(base, owner, universe, *, write=False, require_current_home=False):
     with author_connection(base) as conn:
         conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
-        check_principal_not_deleted(conn, owner)
-        if require_current_home:
-            check_current_home(conn, owner, universe)
-        # Exact existing universe admin grant, not home ownership or attribution.
-        row = conn.execute(
-            "SELECT permission FROM universe_acl WHERE universe_id=? AND actor_id=?",
-            (universe, owner),
-        ).fetchone()
-        if row is None or row[0] != "admin":
-            raise store.FileCustodyRefused("run_file_access_denied")
+        check_admin_grant(conn, owner, universe, require_current_home=require_current_home)
         yield conn
 
 
@@ -177,11 +188,17 @@ def capture_authoring_files(base, *, owner_id, universe_id, label, sources, shou
 
 def _capture_files(base, *, owner_id, universe_id, operation, request, metadata_provider,
                    open_source, source_fence, should_cancel=None, require_current_home=False,
-                   ready_to_copy=None, replay_result=None):
-    """Two trusted source adapters share ONE journal/allocation/publication path.
+                   ready_to_copy=None, replay_result=None, publication_check=None):
+    """Trusted source adapters share ONE journal/allocation/publication path.
 
     Callbacks are platform code only, never a workflow/plugin registry. The same
     worker thread owns the maintenance barrier and operation guard throughout.
+
+    ``publication_check`` is called WITH the publication connection and the held
+    platform connection, inside their ``BEGIN IMMEDIATE``, for a source whose
+    authority serializes on those same databases: a ``source_fence`` cannot order
+    such a source without opening a second writer against one held here. Raising
+    rolls the publication back.
     """
     base = Path(base).absolute()
 
@@ -284,13 +301,18 @@ def _capture_files(base, *, owner_id, universe_id, operation, request, metadata_
                     except BlobStreamError as exc:
                         transferred += exc.bytes_read
                         raise
-                with authority(write=True):
+                with authority(write=True) as platform:
                     with source_fence(metadata):
                         if should_cancel is not None and should_cancel():
                             raise store.FileCustodyRefused("file_capture_cancelled")
                         with runs._connect(base) as conn:
                             conn.execute("BEGIN IMMEDIATE")
                             guard.require_held(conn)
+                            if publication_check is not None:
+                                # The held platform writer is handed over so a
+                                # cross-owner source can revalidate its OWN
+                                # principal here without a nested writer.
+                                publication_check(conn, platform)
                             store.commit_objects_in_transaction(
                                 conn,
                                 operation_id=operation,

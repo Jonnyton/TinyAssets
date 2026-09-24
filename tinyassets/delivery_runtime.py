@@ -27,7 +27,7 @@ _submitted_lock = threading.Lock()
 
 
 def reject_file_references(value):
-    """Fail explicitly until immutable runtime file bindings are implemented.
+    """Fail-closed default for any path with no resolved file custody authority.
 
     These are reference envelope fields, not credential-key redaction. Ordinary
     structured fields named key/token remain exact data.
@@ -43,7 +43,99 @@ def reject_file_references(value):
             reject_file_references(child)
 
 
-def _execution_subject(base, delivery):
+def is_file_reference(value):
+    """Exactly the versioned public custody reference shape, nothing adjacent."""
+    from tinyassets.run_file_contract import _FIELDS
+
+    return isinstance(value, dict) and set(value) == _FIELDS | {"version"}
+
+
+def carries_file_reference(value):
+    if is_file_reference(value):
+        return True
+    if isinstance(value, dict):
+        return any(carries_file_reference(child) for child in value.values())
+    if isinstance(value, list):
+        return any(carries_file_reference(child) for child in value)
+    return False
+
+
+def validate_output_envelopes(value, *, allow_file_references=False):
+    """Typed pre-authority validator. Ownership resolution happens later and
+    elsewhere; this only decides whether a *shape* may travel at all.
+
+    Without a trusted source run there is nothing to resolve a reference against,
+    so the refusal stays exactly as before. With one, only the exact versioned
+    reference shape is admitted: ad-hoc handle/artifact envelopes and declared
+    ``type: file`` markers stay refused everywhere.
+    """
+    from tinyassets.run_file_contract import _metadata
+
+    if not allow_file_references:
+        reject_file_references(value)
+        return
+    if is_file_reference(value):
+        _metadata(value)
+        return
+    if isinstance(value, dict):
+        if ({"handle_id", "artifact_id", "file_id"} & value.keys()
+                or value.get("type") in ("file", "file_bundle")):
+            raise ValueError("delivery_file_reference_invalid")
+        for child in value.values():
+            validate_output_envelopes(child, allow_file_references=True)
+    elif isinstance(value, list):
+        for child in value:
+            validate_output_envelopes(child, allow_file_references=True)
+
+
+def receiver_file_inputs(conn, delivery, branch, inputs, run_id):
+    """Rewrite sender envelopes to the receiver's OWN bound references (Phase D).
+
+    Ownership resolution at the acting principal IS the discriminator: at
+    execution time the acting owner is the receiver, so a sender reference that
+    survived into ``inputs_json`` cannot resolve and refuses. Nothing is bound
+    here -- acceptance already bound these ids inside its own transaction -- and
+    no sender file id, path or storage key is ever placed in the result.
+    """
+    from tinyassets.run_file_binding import validate_bound_files
+    from tinyassets.run_file_crossowner import receiver_reference
+
+    rows = conn.execute(
+        "SELECT * FROM graph_delivery_files WHERE delivery_id=? ORDER BY field_name, ordinal",
+        (delivery["delivery_id"],),
+    ).fetchall()
+    if not rows:
+        reject_file_references(inputs)
+        return inputs
+    kinds = {field["name"]: field.get("type") for field in branch.state_schema
+             if isinstance(field, dict) and type(field.get("name")) is str}
+    fields = {}
+    for row in rows:
+        reference = receiver_reference(
+            conn, run_id=run_id, owner_id=delivery["receiver_owner_id"],
+            universe_id=delivery["receiver_universe_id"], file_id=row["receiver_file_id"],
+        )
+        if (reference["sha256"], reference["size_bytes"]) != (row["sha256"], row["size_bytes"]):
+            raise ValueError("receiver_file_provenance_mismatch")
+        fields.setdefault(row["field_name"], []).append(reference)
+    # Every non-provenance position keeps the fail-closed default.
+    reject_file_references({name: value for name, value in inputs.items() if name not in fields})
+    result = dict(inputs)
+    for field, references in fields.items():
+        if kinds.get(field) == "list":
+            result[field] = references
+        elif len(references) == 1:
+            result[field] = references[0]
+        else:
+            raise ValueError("receiver_file_cardinality_mismatch")
+    validate_bound_files(
+        conn, run_id=run_id, owner_id=delivery["receiver_owner_id"],
+        universe_id=delivery["receiver_universe_id"], branch=branch, inputs=result,
+    )
+    return result
+
+
+def _execution_subject(base, delivery, conn=None, run_id=None):
     """Revalidate the persisted receiver grant; never use sender authority."""
     _owned_branch(
         base, delivery["receiver_universe_id"], delivery["receiver_branch_id"],
@@ -54,7 +146,11 @@ def _execution_subject(base, delivery):
         raise ValueError("receiver_snapshot_integrity_failed")
     branch = BranchDefinition.from_dict(json.loads(snapshot))
     inputs = json.loads(delivery["inputs_json"])
-    reject_file_references(inputs)
+    if conn is None or run_id is None:
+        # No receiver custody transaction to resolve against: fail closed.
+        reject_file_references(inputs)
+    else:
+        inputs = receiver_file_inputs(conn, delivery, branch, inputs, run_id)
     if branch.validate():
         raise ValueError("receiver_snapshot_invalid")
     runs.preflight_required_inputs(branch, inputs)
@@ -102,7 +198,11 @@ def _work(base, delivery_id, attempt):
                     delivery = dict(conn.execute(
                         "SELECT * FROM graph_deliveries WHERE delivery_id=?", (delivery_id,),
                     ).fetchone())
-                    branch, inputs, identity = _execution_subject(base, delivery)
+                    # Phase D: receiver-owned references are resolved here, inside
+                    # the same transaction that claims the attempt. No binding.
+                    branch, inputs, identity = _execution_subject(
+                        base, delivery, conn=conn, run_id=run_id,
+                    )
                     claim = deliveries.start_attempt_in_transaction(conn, guard)
             if not claim:
                 return

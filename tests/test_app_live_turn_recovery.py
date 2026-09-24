@@ -535,3 +535,55 @@ console.log(JSON.stringify({beforeResume,calls:converseCalls.slice(),queued:send
     assert out["beforeResume"] == {"calls": ["run the deploy", "What finished?"], "queued": 1}
     assert out["calls"] == ["run the deploy", "What finished?", "and then tell me the result"]
     assert out["queued"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Voice's stale "did not arrive" line is retired by the NEXT turn of the same
+# account and home - the live sequence contained no resend at all.
+# ---------------------------------------------------------------------------
+
+def test_a_new_typed_turn_tells_voice_to_retire_the_older_turns_retry_line(tmp_path, html):
+    """Live, 2026-09-23 PDT: the 17:39 turn failed at 17:46 and Voice said the
+    pending reply did not arrive and the message was available to retry. The
+    founder never clicked "Send it again" - they typed two NEW questions, at
+    17:47 and 17:54, answered at 17:51 and 18:01, and the sentence was still
+    there beside them. So the page's
+    own sendTurn must tell Voice at the START of each new turn whose turn it is
+    (owner and home, the same fence the reply uses), and hand it the settling
+    turn's identity on the failure. Nothing here resends anything."""
+    out = _run(tmp_path, html, r"""
+    setQueueOwner("p-1");
+    await loadHistory(); await pollStatus();
+    const settled=[], started=[];
+    Voice.conversationSettled=(delivered,record)=>settled.push({delivered,record});
+    Voice.turnStarted=(owner,scope)=>started.push({owner,scope});
+    // 17:39, failing at 17:46 - so Voice's retry sentence goes up.
+    const failing=sendTurn("Retest my checklist");
+    await settle();
+    const e=new Error("offline"); e.transport=true; gates[0].reject(e);
+    await failing; await settle();
+    const afterFailure=snapshot();
+    // 17:47 and 17:54 - NEW questions, typed from scratch, answered 17:51/18:01.
+    const second=sendTurn("How is the progress going?"); await settle();
+    gates[1].resolve({reply:"Two of three are done."}); await second; await settle();
+    const third=sendTurn("Test cancellation for me"); await settle();
+    gates[2].resolve({reply:"Cancellation works."}); await third; await settle();
+    console.log(JSON.stringify({settled,started,afterFailure,done:snapshot(),
+      resendClicks:0}));
+    """)
+    # The only resend offer on screen was never clicked: every send is an
+    # original with its own text, exactly as the live sequence ran.
+    assert out["afterFailure"]["resendButtons"] == 1
+    assert out["done"]["converseCalls"] == [
+        "Retest my checklist", "How is the progress going?", "Test cancellation for me"]
+    assert len(set(out["done"]["converseCalls"])) == 3, "a message was sent twice"
+    # Each new turn announces itself to Voice with the account and home fence.
+    assert out["started"] == [{"owner": "p-1", "scope": "u-1"}] * 3
+    # And the failed turn is the one Voice is told did not arrive.
+    assert [s["delivered"] for s in out["settled"]] == [False, True, True]
+    failed = out["settled"][0]["record"]
+    assert failed["message"] == "Retest my checklist" and failed["ts"] > 0
+    assert failed["owner"] == "p-1" and failed["scope"] == "u-1"
+    assert failed["consumerRequest"] is None
+    assert out["done"]["messages"][-1] == {"role": "universe", "text": "Cancellation works."}
+    assert out["done"]["inflight"] is None and out["done"]["sendDisabled"] is False

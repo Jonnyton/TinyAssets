@@ -648,11 +648,17 @@ def _delivery_deletion_targets(conn, *, principal: str, home: str):
                 f"OR link_id IN ({link_sql}) OR receiver_id IN ({receiver_sql})"
             )
             params = (principal, principal, home, home, home, home, home)
-            targets.extend([
-                ("graph_delivery_attempts", "delivery_id IN (SELECT delivery_id "
-                 f"FROM graph_deliveries WHERE {delivery_where})", params),
-                ("graph_deliveries", delivery_where, params),
-            ])
+            child_where = ("delivery_id IN (SELECT delivery_id "
+                           f"FROM graph_deliveries WHERE {delivery_where})")
+            targets.append(("graph_delivery_attempts", child_where, params))
+            if "graph_delivery_files" in live:
+                # Sender->receiver custody provenance is control-plane mapping, not
+                # the bytes: it precedes its parent so the FK cannot dangle, and it
+                # is NOT how the receiver resolves its accepted input. That resolves
+                # through the receiver's own run bindings and receiver-owned objects,
+                # which this deletion never touches for the other party.
+                targets.append(("graph_delivery_files", child_where, params))
+            targets.append(("graph_deliveries", delivery_where, params))
         targets.extend([
             ("graph_output_links", f"link_id IN ({link_sql})", (home, home)),
             ("graph_receivers", "universe_id = ?", (home,)),

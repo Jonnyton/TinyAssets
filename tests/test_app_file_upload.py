@@ -410,9 +410,15 @@ def test_discovery_advertises_app_upload_only_when_route_is_enabled(app, monkeyp
     limits = json.loads(run_files_api.file_limits(universe_id=HOME_A))
     assert limits.get("app_upload_available") is True, limits
     assert limits["app_upload_max_bytes"] == upload.MAX_UPLOAD_BYTES == 8 * MIB
-    assert limits["supported_intake"] == ["authoring_handle", "app_upload"]
+    assert limits["supported_intake"] == [
+        "authoring_handle", "app_upload", "cross_owner_delivery",
+    ]
+    assert limits["file_delivery_available"] is True
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "0")
     dark = json.loads(run_files_api.file_limits(universe_id=HOME_A))
     assert dark["app_upload_available"] is False
-    assert dark["supported_intake"] == ["authoring_handle"]
+    # Disabling browser upload does not disable the separately authorized
+    # receiver-owned delivery path.
+    assert dark["supported_intake"] == ["authoring_handle", "cross_owner_delivery"]
+    assert dark["file_delivery_available"] is True
     assert call(application, headers(b"x"), [b"x"])[0] == 404
