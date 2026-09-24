@@ -94,8 +94,14 @@ from tinyassets.storage.provider_work_authority import (
 # The one documented divergence is WebSearch: the engine turn is web-via-WebFetch
 # only, while this path is explicitly authorized for WebSearch as well, so every
 # allowed tool is subtracted from the floor instead of the floor being copied.
-# No model tool is added by this change, and this path configures no MCP server,
-# so denying `mcp__*` removes nothing it used.
+# No model tool is added by this change.
+#
+# Denying `mcp__*` closes a second, real leak rather than being a no-op. This
+# path configures no MCP server of its own, but the claude CLI still loads the
+# logged-in claude.ai account's MCP connectors: `--setting-sources project` only
+# strips settings-file servers, and this path passes no `--strict-mcp-config`
+# (claude_provider adds that only for the engine-MCP turn). Without the wildcard
+# deny those account connectors would be callable from foreign graph content.
 AGENT_INVOCATION_ALLOWED_TOOLS: tuple[str, ...] = ("WebFetch", "WebSearch")
 
 

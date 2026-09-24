@@ -53,6 +53,7 @@ import asyncio
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -88,6 +89,29 @@ _PROBE = (
 )
 
 _PROBE_PATHS = (ALLOWED_FILE, LAUNCH_FILE)
+
+
+@pytest.fixture
+def jail_root():
+    """A fresh directory the jail's own identity can traverse to.
+
+    NOT ``tmp_path``. On the hosted runner's sudo fallback, bwrap runs as root
+    and maps ONLY uid 0 into its user namespace; root's capabilities do not
+    reach inodes owned by an unmapped uid, so it cannot traverse the runner's
+    0750 ``/home/runner`` to reach a ``--basetemp`` under ``runner.temp`` and
+    dies with ``Can't find source path ...: Permission denied`` (run
+    36043548734; reproduced in the linux oracle with a uid-1001 0750 parent).
+    ``/tmp`` is world-traversable, and the ``mkdtemp`` leaf is owned by
+    whichever identity runs the test, so the bind source resolves on both the
+    unprivileged and the sudo path. The production shape is unchanged: the
+    provider still ro-binds exactly the directory it is handed.
+    """
+
+    root = Path(tempfile.mkdtemp(prefix="ta-native-jail-", dir="/tmp"))
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def _synthetic_universe(root: Path) -> Path:
@@ -209,11 +233,11 @@ def _strip_mask(argv: list[str], mountpoint: str) -> list[str]:
 
 
 def test_jail_reads_workspace_but_not_launch_credentials(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, jail_root: Path
 ) -> None:
     """Positive control passes; the launch snapshot is an empty dir in the jail."""
 
-    root = _synthetic_universe(tmp_path / "universe")
+    root = _synthetic_universe(jail_root / "universe")
     out = _run_in_jail(_sandbox_argv(monkeypatch, root))
 
     # Positive control: the whole-universe bind IS live, so the negatives below
@@ -227,11 +251,11 @@ def test_jail_reads_workspace_but_not_launch_credentials(
 
 
 def test_removing_the_launch_mask_exposes_the_snapshot(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, jail_root: Path
 ) -> None:
     """Detection control: without the mask the synthetic bytes ARE readable."""
 
-    root = _synthetic_universe(tmp_path / "universe")
+    root = _synthetic_universe(jail_root / "universe")
     argv = _sandbox_argv(monkeypatch, root)
     out = _run_in_jail(_strip_mask(argv, LAUNCH_MOUNT))
 
