@@ -28,8 +28,9 @@ public-surface change.
 `github.event.pull_request.draft == false`). The Codex review is a background
 subprocess whose verdict lands in a file nobody but the dispatching agent
 reads. Nothing binds the two: when the review takes longer than CI, CI wins.
-`docs/concerns/2026-08-31-the-exact-head-receipt-loops-against-iterative-review.md`
-is the same seam from the other side — the exact-head receipt is the one
+The resolved exact-head-receipt concern (deleted 2026-09-24 when the
+three-round cap was retired; see git history) was the same seam from the
+other side. The exact-head receipt is the one
 mechanism that DOES bind a review to a head, and it only covers `AUTHORITY_RE`
 paths, not a `WebSite/` privacy page or a release workflow.
 
