@@ -1654,6 +1654,13 @@
     reconnecting:false, reconnectAttempts:0,
     epoch:0, handledCalls:new Set(), expectedReply:"", canonicalResponsePending:false,
     canonicalResponseInterrupted:false, stoppedWithPending:false,
+    // The settled turn (text, send stamp, exact request, owner, home) the
+    // status line currently says did not arrive; null once anything else is
+    // rendered, so only THAT sentence can ever be replaced.
+    pendingReplyMissing:null,
+    pendingReplyLine:{
+      arrived:"Voice is off. The pending text reply arrived and was not spoken.",
+      missing:"Voice is off. The pending reply did not arrive; your message is available to retry."},
     init(){
       this.state="checking"; this.capability=null;
       const btn=$("btn-voice");
@@ -1665,6 +1672,7 @@
       return !(["unavailable","checking","unpowered","incompatible","idle","error"].includes(this.state));
     },
     _render(detail){
+      this.pendingReplyMissing=null;
       const btn=$("btn-voice"), active=this.isActive();
       const browserMode=!!(this.capability&&this.capability.mode==="browser");
       const canRemediate=this.state==="unpowered"&&
@@ -2290,16 +2298,32 @@
         ?detail+" Your universe is still thinking; its text reply will still appear here, but it will not be spoken."
         :detail);
     },
-    conversationSettled(delivered){
+    conversationSettled(delivered,record){
       if(!this.stoppedWithPending)return;
       if($("btn-send").disabled&&turnStartedAt>0){
         setVoiceStatusLine("Voice is off. Your universe is still thinking; its text reply will still appear here, but it will not be spoken.");
         return;
       }
       this.stoppedWithPending=false;
-      setVoiceStatusLine(delivered
-        ?"Voice is off. The pending text reply arrived and was not spoken."
-        :"Voice is off. The pending reply did not arrive; your message is available to retry.");
+      this.pendingReplyMissing=delivered?null:(record||null);
+      setVoiceStatusLine(delivered?this.pendingReplyLine.arrived:this.pendingReplyLine.missing);
+    },
+    // A new turn is starting in this same account and home. The retry sentence
+    // names ONE earlier request; the moment the user sends anything else it is
+    // talking about a conversation they have moved past. Live, 2026-09-23 PDT:
+    // a 17:39 turn failed that way at 17:46, two LATER requests were asked and
+    // answered (17:47->17:51, 17:54->18:01) with no resend ever clicked, and
+    // the sentence was still sitting beside them. Dropped for CURRENT state -
+    // never for another account or home, and never when something else has
+    // been rendered since (a real voice error, a new session), which is what
+    // the record and the exact-sentence check below test.
+    turnStarted(owner,scope){
+      const missing=this.pendingReplyMissing;
+      if(!missing||missing.owner!==owner||missing.scope!==scope) return;
+      const line=$("voice-status-line");
+      if(!line||line.textContent!==this.pendingReplyLine.missing) return;
+      this.pendingReplyMissing=null;
+      this._render();
     }
   };
 
@@ -3129,6 +3153,9 @@
     const sentEpoch=MCP._loginEpoch, sentScope=queueScope, sentOwner=queueOwner;
     const stillHere=()=>sentEpoch===MCP._loginEpoch&&sentScope===queueScope&&
       sentOwner===queueOwner;
+    // Same account, same home, new request: a retry sentence left over from an
+    // earlier turn stops speaking for this one (see Voice.turnStarted).
+    Voice.turnStarted(sentOwner,sentScope);
     try{
       const answer=await sendConversationRequest(message,display,sentAt,opts);
       if(!stillHere()) return;
@@ -3174,7 +3201,8 @@
         // the user explicitly resumes them, even after another manual send.
         if(unconfirmed) noteHeldQueue();
         else flushSendQueue();
-        Voice.conversationSettled(delivered);
+        Voice.conversationSettled(delivered,{message,ts:sentAt,
+          consumerRequest:opts.consumerRequest||null,owner:sentOwner,scope:sentScope});
       }
     }
   }
@@ -3220,6 +3248,9 @@
     const sentEpoch=MCP._loginEpoch, sentScope=queueScope, sentOwner=queueOwner;
     const stillHere=()=>sentEpoch===MCP._loginEpoch&&sentScope===queueScope&&
       sentOwner===queueOwner;
+    // Same rule for a spoken turn: a new request retires the older turn's
+    // retry sentence, and only that sentence (see Voice.turnStarted).
+    Voice.turnStarted(sentOwner,sentScope);
     try{
       const payload=await sendConversationRequest(message,message,voiceSentAt,opts);
       // Thrown, not returned: the awaited Voice caller must never receive a
@@ -3263,7 +3294,8 @@
       if(stillHere()&&mine){
         if(unconfirmed) noteHeldQueue();
         else flushSendQueue();
-        Voice.conversationSettled(delivered);
+        Voice.conversationSettled(delivered,{message,ts:voiceSentAt,
+          consumerRequest:opts.consumerRequest||null,owner:sentOwner,scope:sentScope});
       }
     }
   }
