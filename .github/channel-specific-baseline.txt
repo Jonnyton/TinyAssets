@@ -5,7 +5,7 @@
 # TODAY, so the number can only go down. Regenerate with:
 #     python scripts/check_channel_agnostic.py --update
 #
-# Total: 674 across 54 files.
+# Total: 661 across 54 files.
 
 tinyassets/account_deletion.py:stripe:3
 tinyassets/action_result_delivery.py:github:1
@@ -25,7 +25,7 @@ tinyassets/api/runs.py:gemini:1
 tinyassets/api/runs.py:grok:1
 tinyassets/api/runs.py:groq:1
 tinyassets/api/status.py:anthropic:2
-tinyassets/api/status.py:claude:9
+tinyassets/api/status.py:claude:8
 tinyassets/api/status.py:codex:11
 tinyassets/api/status.py:gemini:2
 tinyassets/api/status.py:groq:2
@@ -41,7 +41,7 @@ tinyassets/api/wiki.py:claude:1
 tinyassets/auth/host_proof.py:claude:1
 tinyassets/auth/host_proof.py:codex:1
 tinyassets/auth/host_proof.py:gemini:1
-tinyassets/auth/provider.py:github:6
+tinyassets/auth/provider.py:github:4
 tinyassets/automations.py:codex:1
 tinyassets/branches.py:codex:1
 tinyassets/config.py:anthropic:1
@@ -117,9 +117,9 @@ tinyassets/providers/quota.py:groq:1
 tinyassets/providers/quota.py:ollama:1
 tinyassets/providers/router.py:claude:1
 tinyassets/providers/router.py:codex:3
-tinyassets/providers/router.py:gemini:4
-tinyassets/providers/router.py:grok:3
-tinyassets/providers/router.py:groq:4
+tinyassets/providers/router.py:gemini:3
+tinyassets/providers/router.py:grok:2
+tinyassets/providers/router.py:groq:3
 tinyassets/providers/router.py:ollama:4
 tinyassets/runtime/assigned_queue_consumer.py:claude:5
 tinyassets/runtime/assigned_queue_consumer.py:codex:4
