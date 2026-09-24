@@ -1626,6 +1626,22 @@ def _branch_authoring_batch_receipt(
         "edge_count": len(getattr(branch, "edges", []) or []),
         "skill_count": len(getattr(branch, "skills", []) or []),
         "state_field_count": len(getattr(branch, "state_schema", []) or []),
+        # The execution choices that are actually stored after this call.
+        # This is a REPORT, not a check. `_validate_llm_policy_shape`
+        # deliberately tolerates unknown policy keys for forward-compat, and
+        # this echo returns the stored policy dict verbatim — so a key
+        # misspelled INSIDE that dict is echoed back looking applied, because
+        # it was in fact stored. Detecting that would need a policy-key
+        # allowlist, which this change explicitly does not add.
+        # What the echo does expose is the FIELD-level miss: a misspelled
+        # top-level spec key (`default_llm_polcy`) leaves the choice `null`
+        # here while the call still reports "built"/"patched", so an author
+        # can see that nothing was applied instead of assuming it was. Both
+        # are `null` when unset — clearing and never-setting are the same fact.
+        "execution_choices": {
+            "default_llm_policy": getattr(branch, "default_llm_policy", None),
+            "concurrency_budget": getattr(branch, "concurrency_budget", None),
+        },
         "validation": {
             "status": "ok",
             "valid": True,
@@ -2643,6 +2659,30 @@ def _staged_branch_from_spec(
             graph_blob is not None and graph_blob.get(key) is not None
         )
 
+    # Branch-level execution choices. `_spec_get` above falls through on an
+    # explicit null, which is right for topology (a null `edges` should not
+    # shadow the nested `graph.edges`) and wrong here: an author clearing a
+    # choice would silently re-inherit the nested value or the fork parent's.
+    # So these two keys resolve PRESENCE, not truthiness — the top-level key
+    # wins even when null, then the nested `graph` key wins even when null,
+    # and only a wholly absent key falls through to fork inheritance.
+    # `_spec_get`'s semantics are deliberately left unchanged for every other
+    # key.
+    def _choice_present(key: str) -> bool:
+        return key in spec or (graph_blob is not None and key in graph_blob)
+
+    def _choice_value(key: str) -> Any:
+        if key in spec:
+            return spec.get(key)
+        if graph_blob is not None:
+            return graph_blob.get(key)
+        return None
+
+    if _choice_present("default_llm_policy"):
+        branch.default_llm_policy = _choice_value("default_llm_policy")
+    if _choice_present("concurrency_budget"):
+        branch.concurrency_budget = _choice_value("concurrency_budget")
+
     if branch.fork_from:
         if fork_version is not None:
             parent = BranchDefinition.from_dict(fork_version["snapshot"])
@@ -2704,6 +2744,13 @@ def _staged_branch_from_spec(
                 branch.state_schema = list(parent_copy.state_schema)
             if not manifest_present:
                 branch.io_manifest = parent_copy.io_manifest
+            # Execution choices travel with the fork like state_schema and
+            # io_manifest do. An explicit null in the fork's own spec is a
+            # clear, not an absence, so it must not re-inherit here.
+            if not _choice_present("default_llm_policy"):
+                branch.default_llm_policy = parent_copy.default_llm_policy
+            if not _choice_present("concurrency_budget"):
+                branch.concurrency_budget = parent_copy.concurrency_budget
 
     for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
         err = _apply_node_spec(branch, raw)
@@ -2756,10 +2803,39 @@ def _build_branch_text(branch: Any, *, truncated: bool) -> str:
             f"    entry --> more[\"... {node_count - 1} more nodes\"]",
             '    more --> END(["END"])',
             "```",
+            *_execution_choice_lines(branch),
         ])
     mermaid = _branch_mermaid(branch)
     state_lines = [f"State schema: {len(branch.state_schema)} field(s)."]
+    state_lines += _execution_choice_lines(branch)
     return "\n".join([head, "", mermaid, "", *state_lines])
+
+
+def _execution_choice_lines(branch: Any) -> list[str]:
+    """One prose line per branch-wide execution choice that is set.
+
+    Silent when neither is set, so an unset branch reads exactly as before;
+    present when either is, so an author can DISCOVER controls that are
+    otherwise invisible on the authoring surface.
+    """
+    lines: list[str] = []
+    policy = getattr(branch, "default_llm_policy", None)
+    if policy is not None:
+        preferred = ""
+        if isinstance(policy, dict) and isinstance(policy.get("preferred"), dict):
+            preferred = str(policy["preferred"].get("provider") or "")
+        lines.append(
+            "Default model policy: set"
+            + (f" (preferred provider `{preferred}`)." if preferred else ".")
+            + " Nodes without their own llm_policy use it."
+        )
+    budget = getattr(branch, "concurrency_budget", None)
+    if budget is not None:
+        lines.append(
+            f"Concurrency budget: {budget} node(s) at a time per run "
+            "(unset means unbounded)."
+        )
+    return lines
 
 
 def _ext_branch_build(kwargs: dict[str, Any]) -> str:
@@ -3124,6 +3200,32 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
     # retag / redescribe / publish a branch atomically, without the
     # previous delete-and-rebuild workaround that lost run history and
     # judgments.
+    if name == "set_default_llm_policy":
+        # Branch-wide model policy. Mirrors `set_io_manifest`: the field is
+        # required (so a missing key is an explicit error, never a silent
+        # clear) and an explicit `null` clears. Shape errors come from
+        # `validate()` below so build, patch and compile share one check.
+        if "default_llm_policy" not in op:
+            return (
+                "set_default_llm_policy requires a default_llm_policy field "
+                "(null clears the branch default)"
+            )
+        policy = op["default_llm_policy"]
+        if policy is not None and not isinstance(policy, dict):
+            return (
+                "set_default_llm_policy 'default_llm_policy' must be an "
+                f"object or null, got {type(policy).__name__}"
+            )
+        branch.default_llm_policy = policy
+        return ""
+    if name == "set_concurrency_budget":
+        if "concurrency_budget" not in op:
+            return (
+                "set_concurrency_budget requires a concurrency_budget field "
+                "(null clears the branch budget)"
+            )
+        branch.concurrency_budget = op["concurrency_budget"]
+        return ""
     if name == "set_name":
         new_name = (op.get("name") or "").strip()
         if not new_name:
@@ -3372,6 +3474,9 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     ]
     if patched_fields:
         text_lines += ["", f"Changed fields: {', '.join(patched_fields)}."]
+    choice_lines = _execution_choice_lines(persisted)
+    if choice_lines:
+        text_lines += ["", *choice_lines]
     if truncated:
         text_lines += [
             "",

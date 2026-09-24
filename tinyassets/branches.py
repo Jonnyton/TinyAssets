@@ -842,6 +842,54 @@ def _validate_invoke_output_mapping(
             )
 
 
+#: Largest value a SQLite INTEGER column can represent. A budget beyond this
+#: is refused at authoring time rather than bound and silently coerced to a
+#: float (or crashed on later) — a storage-representation bound, NOT a
+#: provider or admission concurrency ceiling.
+SQLITE_MAX_INT64 = 2**63 - 1
+
+
+def validate_concurrency_budget(
+    budget: Any, *, context: str = "branch concurrency_budget",
+) -> list[str]:
+    """Return validation errors for a branch-level concurrency budget.
+
+    The contract is copied verbatim from the per-run override
+    (``tinyassets/run_input_runtime.py``): ``type(value) is int and value > 0``.
+    ``type(...) is int`` rather than ``isinstance`` is the point — it refuses
+    ``bool`` instead of coercing it.
+
+    Why every other value has to be refused here: ``ConcurrencyTracker`` does
+    ``threading.Semaphore(budget) if budget else None``, so ``0`` silently
+    means *unbounded* while reporting a budget of 0, ``True`` silently means
+    ``Semaphore(1)``, and ``-1`` / ``"4"`` raise inside compile long after the
+    author has left. There is deliberately **no ceiling**: usage limits belong
+    at admission, not in a field validator.
+    """
+    if type(budget) is not int:  # noqa: E721 — bool must be refused, not coerced
+        return [
+            f"{context}: must be a positive integer, got "
+            f"{type(budget).__name__}. Booleans, floats and numeric strings "
+            "are refused rather than coerced. Omit the field entirely to "
+            "leave the branch unbounded."
+        ]
+    if budget <= 0:
+        return [
+            f"{context}: must be a positive integer greater than 0, got "
+            f"{budget}. A budget of 0 or less would run unbounded or crash at "
+            "compile time rather than limiting anything. Omit the field "
+            "entirely to leave the branch unbounded."
+        ]
+    if budget > SQLITE_MAX_INT64:
+        return [
+            f"{context}: {budget} is larger than the maximum integer this "
+            f"platform can store ({SQLITE_MAX_INT64}). This is a storage "
+            "representation limit, not a concurrency cap — ordinary positive "
+            "budgets are not limited by any platform constant."
+        ]
+    return []
+
+
 def _validate_llm_policy_shape(
     policy: dict[str, Any], *, context: str,
 ) -> list[str]:
@@ -1315,6 +1363,11 @@ class BranchDefinition:
                 self.default_llm_policy, context="branch default_llm_policy",
             )
             errors.extend(policy_errors)
+
+        # Branch-level concurrency budget. One check for every authoring
+        # surface: build, patch and compile all arrive through validate().
+        if self.concurrency_budget is not None:
+            errors.extend(validate_concurrency_budget(self.concurrency_budget))
 
         for n in self.node_defs:
             if n.llm_policy is not None:
