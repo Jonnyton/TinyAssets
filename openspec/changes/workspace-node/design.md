@@ -355,6 +355,14 @@ neither feeds it nor relaxes it. The known limit is node granularity: a node
 re-recorded by the outgoing segment is not carried, so its prior sink-level
 detail is dropped in favour of the fresher receipt.
 
+Other known evidence limits: an exception reading prior output is logged and
+treated as an empty prior record so a terminal status can still settle; malformed
+non-dict receipt entries are ignored. The prior read occurs before, not inside,
+the conditional status-write transaction. Corrupt storage, an unreadable row or
+a concurrent same-run output update can therefore lose prior forensic evidence.
+These are recorded follow-ups, not guarantees of crash/concurrency-safe receipt
+retention; they do not change the separate at-most-once effect ledger.
+
 **Server-owned.** The key is in the `_branch_authored_*` quarantine set, and
 the status write drops whatever value arrives on the output it is handed
 before recomputing from the row — two layers, because the carry reads its own
