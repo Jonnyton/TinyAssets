@@ -1,0 +1,183 @@
+name: linux-jail-proof
+
+# Why this exists
+# ---------------
+# tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
+# is the ONE case that runs the file-delivery RPC through the real bubblewrap
+# jail (tinyassets/node_sandbox.py BwrapLauncher). It is
+# `skipif(not shutil.which("bwrap"))`, and no other job installs bubblewrap, so
+# `required-tests` records it as SKIPPED on every run. A skip is invisible in a
+# green run and is not evidence in either direction.
+#
+# This job supplies the jail on a disposable GitHub-hosted Ubuntu VM and FAILS
+# unless that named case is present in JUnit with no skip, failure or error.
+# It is cloud-only test infrastructure: no deployment, no production surface,
+# no account secrets, no self-hosted runner, never the founder's desktop.
+#
+# It is deliberately NOT a branch-protection context. `required-tests` in
+# tests.yml remains the merge gate; this is the independent Linux proof for the
+# file-delivery jail slice, read by a human before a "proven live" claim.
+#
+# Hardening it does NOT do, on purpose: no `sysctl` relaxation of
+# kernel.apparmor_restrict_unprivileged_userns, no AppArmor profile edits, no
+# privileged daemon. If the hosted image refuses an unprivileged user
+# namespace, the same hermetic test runs once under `sudo -n` with the exact
+# setup-python interpreter on the throwaway VM — and if that also cannot jail,
+# the job is red, not skipped.
+
+on:
+  pull_request:
+    paths:
+      # This job and its assertion helper.
+      - ".github/workflows/linux-jail-proof.yml"
+      - "scripts/ci_assert_junit_case.py"
+      # The jail and the runtime that drives delivery RPC through it.
+      - "tinyassets/node_sandbox.py"
+      - "tinyassets/graph_compiler.py"
+      - "tinyassets/runs.py"
+      - "tinyassets/engine_admissions.py"
+      - "tinyassets/delivery_runtime.py"
+      - "tinyassets/action_result_delivery.py"
+      - "tinyassets/conversation_custody.py"
+      - "tinyassets/run_file_*.py"
+      # Delivery / receiver / file custody API and storage.
+      - "tinyassets/api/deliveries.py"
+      - "tinyassets/api/receiver_links.py"
+      - "tinyassets/api/run_files.py"
+      - "tinyassets/storage/deliveries.py"
+      - "tinyassets/storage/delivery_lock.py"
+      - "tinyassets/storage/receiver_links.py"
+      - "tinyassets/storage/run_files.py"
+      - "tinyassets/storage/run_file_lock.py"
+      - "tinyassets/storage/conversation_custody.py"
+      # The module under proof and the fixtures it imports.
+      - "tests/test_delivery_node_rpc.py"
+      - "tests/test_delivery_public.py"
+      - "tests/test_receiver_links.py"
+      - "tests/conftest.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-jail-proof-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # The ONLY test file this job runs, and the ONE case it must see executed.
+  # Kept as env so the shell steps never interpolate an expression.
+  JAIL_TEST_FILE: tests/test_delivery_node_rpc.py
+  JAIL_TEST_NODEID: tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
+
+jobs:
+  linux-jail-proof:
+    name: linux-jail-proof
+    # Ephemeral GitHub-hosted VM only. Never self-hosted, never a container
+    # image (Docker's default seccomp blocks bubblewrap's clone flags, which
+    # is why the local oracle has to relax seccomp — this job does not).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Install bubblewrap
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          command -v bwrap
+          bwrap --version
+
+      - name: Probe the jail (functional smoke)
+        id: probe
+        run: |
+          set -euo pipefail
+          # Mirrors the flags node_sandbox.BwrapLauncher actually uses:
+          # --die-with-parent --new-session --unshare-all. If a jail cannot be
+          # created with these, the real test cannot pass, so decide it here
+          # with a clear message instead of inside pytest.
+          smoke=(bwrap --die-with-parent --new-session --unshare-all
+                 --ro-bind / / --proc /proc --dev /dev -- /bin/true)
+          if "${smoke[@]}"; then
+            echo "runner=unprivileged" >> "$GITHUB_OUTPUT"
+            echo "bubblewrap jail OK without privilege"
+          elif sudo -n "${smoke[@]}"; then
+            # Root-approved fallback: the VM is disposable and the test is
+            # hermetic. No sysctl, no AppArmor edit — just the same argv as root.
+            echo "runner=sudo" >> "$GITHUB_OUTPUT"
+            echo "bubblewrap jail OK only under sudo (unprivileged userns refused)"
+          else
+            echo "::error::bubblewrap cannot create a jail on this runner (unprivileged and sudo both failed)"
+            exit 1
+          fi
+
+      - name: Run the delivery RPC module inside the real jail
+        env:
+          # Everything the run writes lives under runner.temp, outside the
+          # checkout, so tests/conftest.py's temp-root guard is satisfied and
+          # no repo path is touched.
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-jail
+          PYTEST_BASETEMP: ${{ runner.temp }}/ta-pt-jail
+          JUNIT_PATH: ${{ runner.temp }}/junit-linux-jail.xml
+          JAIL_RUNNER: ${{ steps.probe.outputs.runner }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$TINYASSETS_DATA_DIR" "$PYTEST_BASETEMP"
+          # The exact interpreter setup-python put on PATH, resolved once so the
+          # sudo path runs the SAME binary (and the same site-packages that
+          # `pip install -e` populated), not the system python.
+          py="$(command -v python)"
+          "$py" --version
+          args=("$JAIL_TEST_FILE"
+                -q -p no:cacheprovider
+                -o junit_family=xunit1
+                --basetemp "$PYTEST_BASETEMP"
+                --junitxml "$JUNIT_PATH")
+          case "$JAIL_RUNNER" in
+            unprivileged)
+              "$py" -m pytest "${args[@]}"
+              ;;
+            sudo)
+              sudo -n --preserve-env=TINYASSETS_DATA_DIR,GITHUB_ACTIONS,CI,RUNNER_OS,RUNNER_TEMP \
+                "$py" -m pytest "${args[@]}"
+              ;;
+            *)
+              echo "::error::probe step produced no runner decision"
+              exit 1
+              ;;
+          esac
+
+      - name: Assert the real-jail case executed (a skip is not a pass)
+        # Runs even when pytest is red so the summary names the case state.
+        if: always()
+        env:
+          JUNIT_PATH: ${{ runner.temp }}/junit-linux-jail.xml
+        run: |
+          set -euo pipefail
+          python scripts/ci_assert_junit_case.py \
+            --junit "$JUNIT_PATH" \
+            --nodeid "$JAIL_TEST_NODEID" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-linux-jail-proof
+          path: ${{ runner.temp }}/junit-linux-jail.xml
+          if-no-files-found: warn
