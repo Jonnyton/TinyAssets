@@ -102,6 +102,23 @@ no grace-window reuse.
 - **WHEN** deletion of a quarantined lease fails permanently
 - **THEN** the lease is marked `LOST`, its bytes remain charged against the pool, both locks are released, and the loss is reported
 
+### Requirement: Bounded workspace admission waits honor owner cancellation
+
+Workspace create and checkout admission SHALL consult the run's existing cancellation predicate before admission and after each contention-wait sleep, outside the admission transaction. An observed cancellation SHALL propagate through workspace and node-effect dispatch as cancellation, without allocating a new lease or dispatching later effects. Existing holder leases, locks, published generations and quota-refusal behavior SHALL remain unchanged. This bounded in-process wait SHALL NOT imply a durable waiting queue or automatic resumption after restart.
+
+#### Scenario: the owner cancels a run waiting for another holder
+- **WHEN** create or checkout is waiting on an occupied workspace slot and its cancellation predicate becomes true
+- **THEN** the next wait wake propagates cancellation without populating a workspace, acquiring a new lease or firing later node effects
+- **AND** the existing holder's lease and locks remain intact
+
+#### Scenario: admission begins after cancellation
+- **WHEN** an already-cancelled run requests admission even with a free slot
+- **THEN** it is cancelled before allocating a lease
+
+#### Scenario: uncancelled admission preserves existing behavior
+- **WHEN** the caller is not cancelled
+- **THEN** quota refusals remain immediate and a bounded contention wait may acquire the slot after the holder releases it
+
 ### Requirement: Permanent workspaces are immutable-by-host generations chosen at checkout
 
 A checkout with `storage: "universe"` SHALL build a new opaque generation from staging's bundle beneath a no-follow universe directory handle, SHALL count it against the universe's quota, SHALL be refused as `workspace_quota_exceeded` before any bytes move when it would exceed that quota — leaving the existing generation unchanged — and SHALL publish it only by atomically switching the repository key's authoritative generation, enqueuing the previous generation for `discard_permanent_generation`.
