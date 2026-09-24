@@ -12,6 +12,34 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Rotate the production Cloudflare tunnel token (2026-09-24)
+
+The `tinyassets-tunnel` container's start command carries the tunnel token in
+plain text (`docker inspect tinyassets-tunnel`). On 2026-09-24 a debugging agent
+printed it into a local session transcript. Rotate it in Cloudflare Zero Trust →
+Networks → Tunnels, then redeploy the tunnel with the new token, supplied from
+the vault rather than as a command-line argument. After rotating, check that
+`python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp` is green.
+Agents may not change credentials.
+
+## Add Cloudflare Tunnel: Read to the `workflow` API token (2026-09-24)
+
+My Profile → API Tokens → `workflow` → Edit → Add more: **Account ·
+Cloudflare Tunnel · Read**. Change nothing else. This lets the hosted
+cloud-only preflight read the tunnel's connectors (currently `cf_api_http_401`),
+which proves there is exactly one cloud connector and no desktop. It also helps
+diagnose the 2026-09-24 app 503s
+(`docs/concerns/2026-09-24-app-503-authored-in-front-of-origin.md`, PR #3948).
+Claude Code's permission guard refuses scope grants from agents, so the founder
+must do this.
+
+## Connect the Claude extension in the free test user's Chrome profile (2026-09-24)
+
+Only the founder's profile is connected. The free-only OpenRouter onboarding
+test (capability C5/C1) needs the second profile's extension connected so it
+can run as that user. No other founder step is needed; the agent drives the
+rest.
+
 ## Decide: what should be publicly discoverable, now that the site shows it?
 
 The rewritten `/commons` page lists what the endpoint reports as publicly
