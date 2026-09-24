@@ -1617,6 +1617,71 @@ def _guard_status_write(function):
     return guarded
 
 
+#: Server-owned record of the effect receipts earlier SEGMENTS of a run wrote.
+#: A resume records its own segment's receipts at ``external_write_results``,
+#: which is what a reader of "this run's effects" means; the segments before it
+#: keep theirs here instead of being erased by the resume that followed them.
+#: Bounded evidence only, exactly as it was already persisted - never the full
+#: results the chain holds in memory, and never fed back into a chain: an
+#: effect that fired before an interrupt stays unreadable to a later node
+#: (design D1), and at-most-once stays ``already_fired``'s job.
+PRIOR_EXTERNAL_WRITE_RESULTS_KEY = "prior_external_write_results"
+
+
+def _prior_effect_receipts(base_path: str | Path, run_id: str) -> dict[str, Any]:
+    """Receipts already on the run row, read the instant before a write
+    replaces them.
+
+    Straight off ``output_json`` rather than ``get_run``, which orphan-marks
+    and releases workspaces - a status write must not carry those side
+    effects. Both receipt keys are read, so a run resumed twice carries its
+    first segment's receipts past its second.
+    """
+    try:
+        with _connect(base_path) as conn:
+            row = conn.execute(
+                "SELECT output_json FROM runs WHERE run_id = ?", (run_id,),
+            ).fetchone()
+        if row is None or not row["output_json"]:
+            return {}
+        prior_output = json.loads(row["output_json"])
+    except Exception:  # noqa: BLE001 - a receipt carry never breaks a status write
+        logger.exception("prior effect receipt read failed for run %s", run_id)
+        return {}
+    if not isinstance(prior_output, dict):
+        return {}
+    carried: dict[str, Any] = {}
+    # Order is the merge rule: an older segment's record first, then the
+    # receipts written at the canonical key by the segment that just ended.
+    for key in (PRIOR_EXTERNAL_WRITE_RESULTS_KEY, "external_write_results"):
+        section = prior_output.get(key)
+        if not isinstance(section, dict):
+            continue
+        for node_id, per_sink in section.items():
+            if isinstance(per_sink, dict):
+                carried[str(node_id)] = per_sink
+    return carried
+
+
+def _carry_prior_effect_receipts(
+    base_path: str | Path, run_id: str, persisted: dict[str, Any],
+) -> None:
+    """Attach the prior segments' receipts to the output about to land.
+
+    System-authoritative: whatever a branch left at the key is dropped first,
+    the same rule ``external_write_results`` follows. A node this segment
+    re-recorded is not prior - its fresh receipt is the canonical one and this
+    record keeps every node the fresh evidence does not mention.
+    """
+    persisted.pop(PRIOR_EXTERNAL_WRITE_RESULTS_KEY, None)
+    carried = _prior_effect_receipts(base_path, run_id)
+    fresh = persisted.get("external_write_results")
+    if isinstance(fresh, dict):
+        carried = {k: v for k, v in carried.items() if k not in fresh}
+    if carried:
+        persisted[PRIOR_EXTERNAL_WRITE_RESULTS_KEY] = dict(sorted(carried.items()))
+
+
 @_guard_status_write
 def update_run_status(
     base_path: str | Path,
@@ -1683,6 +1748,7 @@ def update_run_status(
             )
 
             chain = active_effect_chain(run_id)
+            persisted: dict[str, Any] | None = None
             if chain is not None:
                 # Settle while still registered, THEN forget: a concurrent
                 # terminal caller must never find "no chain" mid-settlement
@@ -1697,7 +1763,7 @@ def update_run_status(
                     # Merge into whatever the caller persisted (an interrupt's
                     # receipt gate, for instance) - never clobber, never drop
                     # (Codex round 2, P1).
-                    persisted: dict[str, Any] = dict(output) if isinstance(output, dict) else {}
+                    persisted = dict(output) if isinstance(output, dict) else {}
                     persisted.setdefault("external_write_results", evidence)
                     rows = _collect_external_write_errors(evidence)
                     if rows:
@@ -1715,14 +1781,25 @@ def update_run_status(
                     )
                     persisted["rpc_calls"] = int(chain.rpc_calls)
                     persisted["invocation_depth"] = int(chain.invocation_depth)
-                    encoded = json.dumps(persisted, default=str)
-                    if "output_json = ?" in sets:
-                        params[sets.index("output_json = ?")] = encoded
-                    else:
-                        sets.append("output_json = ?")
-                        params.append(encoded)
             elif status in (RUN_STATUS_FAILED, RUN_STATUS_CANCELLED):
                 settle_engine_admission(run_id, [])
+            if persisted is None and isinstance(output, dict):
+                # A completed segment persists its own output, so the carry
+                # above did not run - this write still replaces the row's
+                # receipts and still has to carry the earlier ones through.
+                persisted = dict(output)
+            if persisted is not None:
+                # Whatever this terminal write persists REPLACES output_json,
+                # so a resume's receipts are the only ones left unless the
+                # segments before it are carried forward here. Server-owned
+                # and last, after the chain has had its say.
+                _carry_prior_effect_receipts(base_path, run_id, persisted)
+                encoded = json.dumps(persisted, default=str)
+                if "output_json = ?" in sets:
+                    params[sets.index("output_json = ?")] = encoded
+                else:
+                    sets.append("output_json = ?")
+                    params.append(encoded)
         except Exception:  # pragma: no cover - never let accounting break a status write
             logger.exception("engine admission settle failed for run %s", run_id)
     if not sets:
@@ -4362,6 +4439,7 @@ def _invoke_graph(
 _EXTERNAL_WRITE_RESERVED_KEYS = (
     "external_write_results",
     "external_write_errors",
+    PRIOR_EXTERNAL_WRITE_RESULTS_KEY,
 )
 
 

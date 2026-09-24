@@ -18,9 +18,9 @@ MEASURED (2026-09-24 UTC, Windows, ``pytest tests/test_resume_lifecycle_integrat
 
 1. Interrupt BEFORE the frontier node's effects: the completed predecessor is
    neither re-served nor re-fired; the frontier node's body is re-served
-   exactly once; the run completes. But the completed run's
-   ``external_write_results`` then contains ONLY the resumed segment -- the
-   predecessor's receipt, written by the interrupted segment, is gone.
+   exactly once; the run completes. The resumed segment's receipts land at
+   ``external_write_results``, and the predecessor's receipt -- written by the
+   interrupted segment -- survives at ``prior_external_write_results``.
 
 2. Interrupt AFTER one frontier-node effect fired: the current resume cannot
    get past that partially fired node. This is one hazardous possible waiting
@@ -28,17 +28,29 @@ MEASURED (2026-09-24 UTC, Windows, ``pytest tests/test_resume_lifecycle_integrat
    refused by the run-scoped ``already_fired`` ledger (keyed by node, not by
    sink), the refusal fails the node, the run returns to ``failed``, and a
    second resume is rejected by the status gate. The already-landed external
-   write is not re-fired -- and its receipt is erased by the failed resume.
+   write is not re-fired, and its receipt survives the failed resume.
 
 3. Branch admission is by lineage version NUMBER only: whatever definition
    ``branch_lookup`` returns for that number is compiled and invoked against
    the old checkpoint, with no identity check against the graph the checkpoint
    was written by. A branch patched to add a node runs that node on resume.
 
+4. A resume cancelled mid-segment is the same shape: what the cancelled
+   segment fired lands at the canonical key, what earlier segments fired
+   survives beside it.
+
+The preservation is a persisted RECORD, not a rehydrated chain. Prior receipts
+never enter the resumed run's ``EffectChain``: they are not results a later
+node may read (design D1), and the at-most-once refusal keeps running off
+``already_fired``, which case 2 exercises directly.
+
 NOT established here: whether a production park/wait frontier is reachable at
 all, provider-authorized public resume behavior, or concurrency between a live
-worker and a resume of the same run. The third case measures an injected lookup,
-not the production immutable-version resolver's behavior.
+worker and a resume of the same run. The provider is an injected synthetic
+callable and the interrupted row is flipped by hand, so nothing here is
+evidence about a real provider's authority or about an actual daemon restart.
+The third case measures an injected lookup, not the production
+immutable-version resolver's behavior.
 """
 
 from __future__ import annotations
@@ -153,12 +165,19 @@ def _evidence(row) -> dict:
     return dict((row.get("output") or {}).get("external_write_results") or {})
 
 
+def _prior_evidence(row) -> dict:
+    """Receipts the segments BEFORE this one wrote, as the row keeps them."""
+    from tinyassets.runs import PRIOR_EXTERNAL_WRITE_RESULTS_KEY
+
+    return dict((row.get("output") or {}).get(PRIOR_EXTERNAL_WRITE_RESULTS_KEY) or {})
+
+
 # ---------------------------------------------------------------------------
 # Case 1 -- interrupt BEFORE the frontier node's effects
 # ---------------------------------------------------------------------------
 
 
-def test_resume_replays_only_the_frontier_node_but_drops_prior_receipts(base, monkeypatch):
+def test_resume_replays_only_the_frontier_node_and_keeps_prior_receipts(base, monkeypatch):
     from tinyassets import runs
 
     provider = _Provider(die_on={("n2", 1)})
@@ -189,12 +208,19 @@ def test_resume_replays_only_the_frontier_node_but_drops_prior_receipts(base, mo
     # re-fired; the frontier node's body replays exactly once.
     assert provider.calls == {"n1": 1, "n2": 2, "n3": 1}
     assert adapter.calls == ["n1", "n2", "n3"]
-    # ...and the defect: the resumed segment's evidence REPLACES the row's, so
-    # the interrupted segment's receipt for a real external write is lost.
-    assert set(_evidence(final)) == {"n2", "n3"}, (
-        "current behaviour: a completed resume drops the interrupted segment's "
-        "external_write_results instead of merging them"
+    # The canonical key is this segment's receipts...
+    assert set(_evidence(final)) == {"n2", "n3"}
+    # ...and the interrupted segment's receipt for a real external write is
+    # still on the row, unchanged, instead of being replaced by the resume.
+    assert set(_prior_evidence(final)) == {"n1"}, (
+        "a completed resume must not drop the interrupted segment's receipts"
     )
+    assert _prior_evidence(final)["n1"] == before["n1"], (
+        "the preserved receipt is the one the first segment actually wrote"
+    )
+    # Preserved as a record, never rehydrated: the resumed chain's own ledger
+    # is the resumed segment only, and the prior node is not in it.
+    assert "n1" not in _evidence(final)
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +276,16 @@ def test_node_that_already_fired_can_never_be_resumed_past(base, monkeypatch):
     assert flaky.calls == ["n2"]
     # n3 never runs: resuming cannot get the run past n2, at all.
     assert "n3" not in provider.calls
-    # And the failed resume erases the receipt for the write that DID land.
-    assert _evidence(final) == {}, (
-        "current behaviour: a failed resume replaces the row's "
-        "external_write_results with the resumed segment's empty ledger"
+    # The resumed segment fired nothing, so its canonical ledger is empty...
+    assert _evidence(final) == {}
+    # ...and the receipt for the write that DID land survives the failed
+    # resume, including the sink-level detail of the half that failed.
+    preserved = _prior_evidence(final)
+    assert set(preserved) == {"n1", "n2"}
+    assert preserved["n2"][SINK]["ok"] is True
+    assert preserved["n2"][SECOND_SINK]["error_kind"] == "effector_crashed"
+    assert preserved == before, (
+        "a failed resume must preserve the interrupted segment's receipts verbatim"
     )
     # Terminal: the status gate rejects a second attempt, so no retry loop
     # recovers this run.
@@ -313,3 +345,225 @@ def test_resume_admits_the_lineage_version_number_without_a_graph_identity_check
     assert final["status"] == runs.RUN_STATUS_COMPLETED
     assert provider.calls["n4"] == 1
     assert adapter.calls[-1] == "n4"
+
+
+# ---------------------------------------------------------------------------
+# Case 4 -- a resume cancelled mid-segment
+# ---------------------------------------------------------------------------
+
+
+def test_cancelled_resume_keeps_prior_receipts_beside_its_own(base, monkeypatch):
+    """Cancel is the third terminal exit a resume has, and it persists the
+    same way failure does: the row's output is rewritten from the resumed
+    chain. The interrupted segment's receipt has to come through it too.
+    """
+    from tinyassets import runs
+
+    provider = _Provider(die_on={("n2", 1)})
+    adapter = _Adapter(SINK)
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    branch = _linear(_node("n1"), _node("n2"), _node("n3"))
+
+    first = runs.execute_branch(
+        base, branch=branch, inputs={}, actor=ACTOR, provider_call=provider,
+    )
+    assert first.status == runs.RUN_STATUS_FAILED
+    before = _evidence(runs.get_run(base, first.run_id))
+    assert set(before) == {"n1"}
+
+    # Cancel arrives while the resumed segment is serving its frontier node,
+    # the way a user's cancel would land on a running resume.
+    plain = provider.__call__
+
+    def cancelling(prompt, system="", *, role="writer", fallback_response=None):
+        text = plain(prompt, system, role=role, fallback_response=fallback_response)
+        if prompt.split("packet:", 1)[1].strip() == "n2":
+            runs.request_cancel(base, first.run_id)
+        return text
+
+    _interrupt(base, first.run_id)
+    runs.resume_run(
+        base, run_id=first.run_id, actor=ACTOR,
+        branch_lookup=lambda branch_def_id, version: branch,
+        provider_call=cancelling,
+    )
+    runs.wait_for(first.run_id, timeout=120)
+    final = runs.get_run(base, first.run_id)
+
+    assert final["status"] == runs.RUN_STATUS_CANCELLED
+    # n3 is never reached, so whatever the cancelled segment recorded is at
+    # most n2 -- and n1's receipt is preserved regardless.
+    assert "n3" not in _evidence(final)
+    assert _prior_evidence(final) == before, (
+        "a cancelled resume must preserve the interrupted segment's receipts"
+    )
+    assert "n1" not in _evidence(final), "preserved as a record, not rehydrated"
+
+
+# ---------------------------------------------------------------------------
+# Case 5 -- the key is server-owned, not branch-authored
+# ---------------------------------------------------------------------------
+
+
+def test_prior_receipt_key_is_server_owned_and_cannot_be_forged(base, monkeypatch):
+    """Two independent layers own the key, and a branch owns neither.
+
+    The quarantine strips a branch-authored value before the effector runs,
+    and the status write drops whatever survived that and recomputes the key
+    from the row. Either layer alone would make the key trustworthy; the test
+    pins both, because the carry reads its own key back off the row and would
+    otherwise launder a forged value into a server-owned one on the next
+    segment.
+    """
+    from tinyassets import runs
+
+    # Layer 1: a branch-authored value never reaches the effector's output.
+    forged_branch_output = {
+        runs.PRIOR_EXTERNAL_WRITE_RESULTS_KEY: {"n_forged": {SINK: {"ok": True}}},
+    }
+    runs._quarantine_branch_authored_external_write_keys(forged_branch_output)
+    assert runs.PRIOR_EXTERNAL_WRITE_RESULTS_KEY not in forged_branch_output
+    assert forged_branch_output[
+        f"_branch_authored_{runs.PRIOR_EXTERNAL_WRITE_RESULTS_KEY}"
+    ] == {"n_forged": {SINK: {"ok": True}}}
+
+    # Layer 2: the status write recomputes the key from the row, so a forged
+    # value riding on the persisted output is dropped rather than merged.
+    provider = _Provider(die_on={("n2", 1)})
+    adapter = _Adapter(SINK)
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    branch = _linear(_node("n1"), _node("n2"))
+    first = runs.execute_branch(
+        base, branch=branch, inputs={}, actor=ACTOR, provider_call=provider,
+    )
+    assert first.status == runs.RUN_STATUS_FAILED
+    real_prior = _evidence(runs.get_run(base, first.run_id))
+    assert set(real_prior) == {"n1"}
+
+    persisted = {
+        "some_branch_key": "kept",
+        runs.PRIOR_EXTERNAL_WRITE_RESULTS_KEY: {"n_forged": {SINK: {"ok": True}}},
+    }
+    runs._carry_prior_effect_receipts(base, first.run_id, persisted)
+
+    carried = persisted[runs.PRIOR_EXTERNAL_WRITE_RESULTS_KEY]
+    assert "n_forged" not in carried, "a branch-supplied value must not survive"
+    assert set(carried) == {"n1"}
+    assert carried["n1"] == real_prior["n1"]
+    assert persisted["some_branch_key"] == "kept", "only the reserved key is owned"
+
+
+# ---------------------------------------------------------------------------
+# Case 6 -- the record survives TWO resumes, not just one
+# ---------------------------------------------------------------------------
+
+
+def test_prior_receipts_accumulate_across_two_resumes(base, monkeypatch):
+    """Each resume replaces the row's canonical receipts with its own segment.
+
+    With three segments the carry has to read its OWN key back and re-persist
+    it, not just the canonical one -- so this is the case that separates a
+    real accumulating record from a one-deep merge.
+    """
+    from tinyassets import runs
+
+    provider = _Provider(die_on={("n2", 1), ("n3", 1)})
+    adapter = _Adapter(SINK)
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    branch = _linear(_node("n1"), _node("n2"), _node("n3"), _node("n4"))
+    lookup = lambda branch_def_id, version: branch  # noqa: E731
+
+    # Segment 1: n1 fires, n2's body dies.
+    first = runs.execute_branch(
+        base, branch=branch, inputs={}, actor=ACTOR, provider_call=provider,
+    )
+    assert first.status == runs.RUN_STATUS_FAILED
+    seg1 = _evidence(runs.get_run(base, first.run_id))
+    assert set(seg1) == {"n1"}
+
+    # Segment 2: n2 replays and fires, n3's body dies.
+    _interrupt(base, first.run_id)
+    runs.resume_run(
+        base, run_id=first.run_id, actor=ACTOR,
+        branch_lookup=lookup, provider_call=provider,
+    )
+    runs.wait_for(first.run_id, timeout=120)
+    mid = runs.get_run(base, first.run_id)
+    assert mid["status"] == runs.RUN_STATUS_FAILED
+    seg2 = _evidence(mid)
+    assert set(seg2) == {"n2"}
+    assert set(_prior_evidence(mid)) == {"n1"}
+
+    # Segment 3: n3 replays and fires, n4 fires, the run completes.
+    _interrupt(base, first.run_id)
+    runs.resume_run(
+        base, run_id=first.run_id, actor=ACTOR,
+        branch_lookup=lookup, provider_call=provider,
+    )
+    runs.wait_for(first.run_id, timeout=120)
+    final = runs.get_run(base, first.run_id)
+
+    assert final["status"] == runs.RUN_STATUS_COMPLETED
+    assert provider.calls == {"n1": 1, "n2": 2, "n3": 2, "n4": 1}
+    # The canonical key is the LAST segment only...
+    assert set(_evidence(final)) == {"n3", "n4"}
+    # ...and BOTH earlier segments' receipts are still on the row, verbatim.
+    preserved = _prior_evidence(final)
+    assert set(preserved) == {"n1", "n2"}
+    assert preserved["n1"] == seg1["n1"], "segment 1 survived two resumes"
+    assert preserved["n2"] == seg2["n2"], "segment 2 survived one resume"
+    # Still a record, never rehydrated: each node fired exactly once.
+    assert adapter.calls == ["n1", "n2", "n3", "n4"]
+
+
+# ---------------------------------------------------------------------------
+# Case 7 -- a resume that fails to COMPILE still replaces the row's output
+# ---------------------------------------------------------------------------
+
+
+def test_compile_failure_on_resume_does_not_erase_prior_receipts(base, monkeypatch):
+    """The compile-failure exit passes ``output=None``, which reads as "writes
+    nothing" -- but the terminal status write still rebuilds ``output_json``
+    from the resumed chain, whose ledger is empty because nothing ran. That is
+    a path that genuinely REPLACES the row's receipts with an empty record, so
+    it needs the carry as much as the paths that executed nodes do.
+    """
+    from tinyassets import runs
+
+    provider = _Provider(die_on={("n2", 1)})
+    adapter = _Adapter(SINK)
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    branch = _linear(_node("n1"), _node("n2"), _node("n3"))
+
+    first = runs.execute_branch(
+        base, branch=branch, inputs={}, actor=ACTOR, provider_call=provider,
+    )
+    assert first.status == runs.RUN_STATUS_FAILED
+    before = _evidence(runs.get_run(base, first.run_id))
+    assert set(before) == {"n1"}
+
+    # Patched only after the first segment ran, so the failure is the resume's.
+    def boom(*a, **kw):
+        raise runs.CompilerError("branch no longer compiles")
+
+    monkeypatch.setattr(runs, "compile_branch", boom)
+
+    _interrupt(base, first.run_id)
+    runs.resume_run(
+        base, run_id=first.run_id, actor=ACTOR,
+        branch_lookup=lambda branch_def_id, version: branch,
+        provider_call=provider,
+    )
+    runs.wait_for(first.run_id, timeout=120)
+    final = runs.get_run(base, first.run_id)
+
+    assert final["status"] == runs.RUN_STATUS_FAILED
+    assert "no longer compiles" in (final.get("error") or "")
+    # Nothing ran, so the canonical key holds nothing...
+    assert _evidence(final) == {}
+    # ...and the receipt for the write that DID land is still on the row.
+    assert _prior_evidence(final) == before, (
+        "a resume that never compiled must not erase the earlier segment's "
+        "external-write receipts"
+    )
+    assert adapter.calls == ["n1"], "the compile failure fired nothing"
