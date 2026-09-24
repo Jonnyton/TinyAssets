@@ -37,6 +37,32 @@ without granting foreign session, path, credential or unrelated run access.
 - **THEN** the receiving node can consume the exact accepted bytes under its own run scope
 - **AND** a third user cannot read them using the delivery ID or content hash
 
+#### Scenario: Accepted file becomes receiver-owned custody
+- **WHEN** a `file` or `file_bundle` contract field is delivered from sender-owned custody
+- **THEN** the exact bytes are copied into receiver-owned custody before acceptance commits
+- **AND** the receiver resolves them through its OWN run binding, never the sender's handle
+- **AND** a bundle preserves declared order and each member's exact bytes
+
+#### Scenario: File limits come from the receiver's own branch
+- **WHEN** a receiver contract advertises a `file` or `file_bundle` field
+- **THEN** count and byte limits resolve from that receiver branch's own input declarations
+- **AND** a field whose branch carries no matching declaration is refused at acceptance
+
+#### Scenario: Receiving deployment has no custody capacity configured
+- **WHEN** a file delivery is attempted where receiver custody capacity is unconfigured
+- **THEN** it refuses explicitly rather than accepting bytes it cannot durably own
+
+#### Scenario: Sender loses read authority before publication
+- **WHEN** the sender's authority over the source bytes is revoked before publication completes
+- **THEN** no receiver custody object, binding, delivery or provenance row is created
+
+#### Scenario: Acceptance refuses after the copy already ran
+- **WHEN** the sender's source binding changes after the copy but before acceptance commits
+- **THEN** acceptance refuses and no delivery or file-provenance row exists
+- **AND** the captured receiver-owned custody object is NOT itself a delivery: it is
+  unreferenced by any delivery and unreachable through any receiver run binding,
+  and it is reclaimed by ordinary receiver-owned custody retention, not by this refusal
+
 #### Scenario: Invalid input or foreign source artifact
 - **WHEN** inputs violate the advertised contract or reference an artifact the sender cannot read
 - **THEN** acceptance fails explicitly without a receiver run or leaked artifact

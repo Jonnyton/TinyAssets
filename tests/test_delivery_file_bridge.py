@@ -41,16 +41,42 @@ def _send(base, branch, link, outputs, *, occurrence="one"):
     )
 
 
-def _declare_receiver_file(base):
-    """Receiver declares a file input on its OWN branch: the only consent there is."""
+def _declare_receiver_file(base, auth, *, max_bytes=1024):
+    """Receiver declares a file input on its OWN branch, then re-exposes it.
+
+    The admitted snapshot governs, so the declaration has to exist before the
+    receiver and link are created; editing the branch afterwards changes nothing
+    about an already admitted contract.
+    """
+    from tinyassets import universe_server as server
+
+    auth("receiver")
     branch = BranchDefinition.from_dict(get_branch_definition(base, branch_def_id="b-receiver"))
-    branch.state_schema = [{"name": "topic", "type": "dict"}]
     definition = branch.to_dict()
+    definition["state_schema"] = [
+        {**field, "type": "dict"} if field.get("name") == "topic" else field
+        for field in branch.state_schema
+    ]
     definition["io_manifest"] = {"inputs": [
-        {"name": "topic", "io_type": "file", "max_count": 1, "max_bytes": 1024},
+        {"name": "topic", "io_type": "file", "max_count": 1, "max_bytes": max_bytes},
     ]}
     save_branch_definition(base, branch_def=definition)
-    return BranchDefinition.from_dict(definition)
+    receiver = json.loads(server.write_graph(
+        target="receiver", operation="create", graph_id="u-receiver",
+        payload_json=json.dumps({"branch_def_id": "b-receiver", "node_id": "entry",
+                                 "input_keys": ["topic"], "allowed_senders": ["sender"]}),
+    ))
+    assert "receiver_id" in receiver, receiver
+    auth("sender")
+    link = json.loads(server.write_graph(
+        target="output_link", operation="connect", graph_id="u-sender",
+        payload_json=json.dumps({"branch_def_id": "b-sender", "node_id": "entry",
+                                 "receiver_id": receiver["receiver_id"],
+                                 "expected_generation": receiver["generation"],
+                                 "mapping": {"result": "topic"}}),
+    ))
+    assert "link_id" in link, link
+    return BranchDefinition.from_dict(definition), link
 
 
 def test_unsourced_rpc_file_envelope_stays_refused(linked):
@@ -74,8 +100,8 @@ def test_unsourced_rpc_file_envelope_stays_refused(linked):
 def test_sourced_delivery_refuses_ad_hoc_reference_envelopes(node_env):
     """A trusted source admits the exact versioned reference shape and nothing
     adjacent: handle/artifact envelopes and declared file markers still refuse."""
-    base, _, _, link, branch, _ = node_env
-    _declare_receiver_file(base)
+    base, auth, _, _, branch, _ = node_env
+    _, link = _declare_receiver_file(base, auth)
     for envelope in ({"handle_id": "h", "session_id": "s"}, {"type": "file_bundle"},
                      {**REFERENCE, "extra": 1}, {**REFERENCE, "version": 2}):
         with pytest.raises(ValueError) as caught:
@@ -86,45 +112,59 @@ def test_sourced_delivery_refuses_ad_hoc_reference_envelopes(node_env):
 
 
 def test_file_reference_needs_a_receiver_branch_declaration(node_env):
-    """The receiver's branch, not the sender and not the contract, grants this."""
+    """The receiver's branch, not the sender and not the contract, grants this.
+
+    An undeclared field refuses the reference as an ordinary contract type
+    mismatch -- measured, not assumed -- and accepts nothing.
+    """
     base, _, _, link, branch, _ = node_env
     with pytest.raises(ValueError) as caught:
         _send(base, branch, link, {"result": REFERENCE})
-    assert "delivery_file_transfer_not_implemented" in str(caught.value)
+    assert "receiver input type mismatch" in str(caught.value)
+    with deliveries.transaction(base) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM graph_deliveries").fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='graph_delivery_files'"
+        ).fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM graph_delivery_files").fetchone()[0] == 0
 
 
 def test_declared_file_field_resolves_ownership_not_metadata(node_env):
     """Declaration is consent, never authority: an envelope the sender does not
     own under its trusted run resolves to nothing and no delivery is accepted."""
-    base, _, _, link, branch, _ = node_env
-    _declare_receiver_file(base)
+    base, auth, _, _, branch, _ = node_env
+    _, link = _declare_receiver_file(base, auth)
     with pytest.raises(Exception) as caught:
         _send(base, branch, link, {"result": REFERENCE})
     assert "run_file_not_found" in str(caught.value), caught.value
     with deliveries.transaction(base) as conn:
         assert conn.execute("SELECT COUNT(*) FROM graph_deliveries").fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM run_file_operations").fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM run_file_allocations").fetchone()[0] == 0
+        # Nothing was reserved or journalled: the custody schema was never even
+        # created, which is the strongest available form of "no allocation".
+        for table in ("run_file_operations", "run_file_allocations", "run_file_objects"):
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", (table,),
+            ).fetchone()[0]
+            assert existing == 0 or conn.execute(
+                f"SELECT COUNT(*) FROM {table}"  # noqa: S608 -- fixed literal names
+            ).fetchone()[0] == 0
 
 
 def test_declared_limits_come_from_the_receiver_branch(node_env):
     """max_bytes/max_count are the receiver's declaration; no per-user quota exists."""
-    base, _, _, link, branch, _ = node_env
-    receiver_branch = _declare_receiver_file(base)
-    definition = receiver_branch.to_dict()
-    definition["io_manifest"]["inputs"][0]["max_bytes"] = 4
-    save_branch_definition(base, branch_def=definition)
+    base, auth, _, _, branch, _ = node_env
+    _, link = _declare_receiver_file(base, auth, max_bytes=4)
     with pytest.raises(ValueError) as caught:
         _send(base, branch, link, {"result": REFERENCE})
     assert "receiver_file_declaration_refused" in str(caught.value)
-    assert "run_file_size_limit" in str(caught.value)
+    assert "manifest.invalid_reference" in str(caught.value)
 
 
 def test_dispatch_rewrite_fails_closed_without_receiver_provenance(node_env):
     """Phase D resolves at the ACTING principal. With no receiver custody rows a
     sender reference surviving into inputs_json refuses at every dispatch."""
-    base, _, _, link, branch, _ = node_env
-    receiver_branch = _declare_receiver_file(base)
+    base, auth, _, _, branch, _ = node_env
+    receiver_branch, _ = _declare_receiver_file(base, auth)
     delivery = {
         "delivery_id": "d1", "receiver_owner_id": "receiver",
         "receiver_universe_id": "u-receiver",
@@ -160,7 +200,7 @@ def test_cross_owner_source_fence_would_deadlock_on_the_runs_writer(intake):
     base, _, sources, _ = intake
     seen = {}
 
-    def publication_check(conn):
+    def publication_check(conn, platform):
         second = sqlite3.connect(str(runs.runs_db_path(base)), timeout=0.2)
         try:
             with pytest.raises(sqlite3.OperationalError) as caught:

@@ -283,9 +283,30 @@ def _transfer_files(base, *, principal, universe_id, link_id, occurrence_id, out
         {"field_name": record["field_name"], "ordinal": record["ordinal"],
          "sender_file_id": record["reference"]["file_id"],
          "receiver_file_id": copy["file_id"], "sha256": copy["sha256"],
-         "size_bytes": copy["size_bytes"], "reference": copy}
+         "size_bytes": copy["size_bytes"], "reference": copy,
+         # Kept so final acceptance can freshly resolve the SENDER envelope in
+         # its own transaction; never persisted and never shown to the receiver.
+         "source_reference": record["reference"]}
         for record, copy in zip(records, copies)
     ]}
+
+
+def _revalidate_source_bindings(conn, source, transfer):
+    """Acceptance re-resolves the sender bindings before the delivery exists.
+
+    The copy runs above every acceptance fence, so a sender release, rebind or
+    metadata change between the copy and this transaction would otherwise be
+    accepted. Only a FIRST acceptance re-resolves: an accepted replay keeps its
+    admitted custody rows and must never re-check, re-copy or re-bind.
+    """
+    from tinyassets import run_file_crossowner
+
+    rows = run_file_crossowner.assert_bound_sources(
+        conn, source, [record["source_reference"] for record in transfer["records"]],
+    )
+    for row, record in zip(rows, transfer["records"]):
+        if (row["sha256"], row["size_bytes"]) != (record["sha256"], record["size_bytes"]):
+            raise run_file_crossowner.store.FileCustodyRefused("file_source_changed")
 
 
 def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outputs,
@@ -341,6 +362,8 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
                 raise deliveries.OccurrenceConflict()
         values = (_structured_inputs(receiver, link, outputs, allow_files=source is not None)
                   if prior is None else mapped)
+        if prior is None and transfer is not None and not transfer["replay"]:
+            _revalidate_source_bindings(conn, source, transfer)
         if should_cancel():
             raise ValueError("delivery_source_cancelled")
         ticket = None

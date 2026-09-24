@@ -9,10 +9,16 @@ reaches a receiver copy. No storage row is shared, no receiver-visible value eve
 carries a sender file id, path or storage key, and no DB write lock is held while
 bytes move.
 
-Source authority is re-resolved ON the publication connection: sender custody,
+Source authority is re-resolved ON the publication connections: sender custody,
 sender binding and receiver link generation all serialize on the runs database,
-so a ``source_fence`` taking that database would self-deadlock against the
-publication writer opened inside it. See ``_capture_files(publication_check=...)``.
+and the sender's universe grant on the platform database, so a ``source_fence``
+taking either would self-deadlock against the writers opened inside it. Both held
+connections are therefore handed to ``_capture_files(publication_check=...)``.
+
+Publication is not the last gate. The copy runs ABOVE every acceptance fence, so
+``assert_bound_sources`` is called once more by final acceptance inside its own
+transaction -- the last point at which a sender change still costs the receiver
+nothing.
 """
 
 from contextlib import contextmanager
@@ -20,7 +26,13 @@ from contextlib import contextmanager
 from tinyassets import runs
 from tinyassets.execution_authority.blob_proof import BlobRef
 from tinyassets.execution_authority.blob_stream import CHUNK_BYTES
-from tinyassets.run_file_capture import _authority, _capture_files, _digest, _physical_store
+from tinyassets.run_file_capture import (
+    _authority,
+    _capture_files,
+    _digest,
+    _physical_store,
+    check_admin_grant,
+)
 from tinyassets.run_file_contract import public_reference, verify_reference
 from tinyassets.storage import receiver_links
 from tinyassets.storage import run_files as store
@@ -51,6 +63,12 @@ def resolve_bound_source(conn, source, reference):
     metadata alone never grants a read. Returns the private row; callers must not
     hand its ``storage_key`` or ``file_id`` to the receiver.
     """
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='run_file_objects'"
+    ).fetchone() is None:
+        # No custody has ever been created here: a typed refusal, never a raw
+        # OperationalError leaking out of an acceptance path.
+        raise store.FileCustodyRefused("run_file_not_found")
     row = store.bound_file_in_transaction(
         conn,
         run_id=source.run_id,
@@ -60,6 +78,19 @@ def resolve_bound_source(conn, source, reference):
     )
     verify_reference(reference, row)
     return row
+
+
+def assert_bound_sources(conn, source, references):
+    """Re-resolve sender envelopes against the trusted source run, read-only.
+
+    The ONE definition of "these sender files are still exactly what was read".
+    Used by the publication fence and again by final acceptance: the byte copy
+    runs above the acceptance fence, so acceptance is the last point at which a
+    sender release, rebind or replacement can still be refused before the
+    receiver is told yes. Binds nothing and returns the private rows.
+    """
+    _trusted_source_run(conn, source)
+    return [resolve_bound_source(conn, source, reference) for reference in references]
 
 
 def _resolve_all(base, source, references):
@@ -146,10 +177,13 @@ def copy_owned_custody_file(
         # with the publication writer opened inside this context.
         yield
 
-    def publication_check(conn):
-        _trusted_source_run(conn, source)
-        for reference, current in zip(references, expected):
-            row = resolve_bound_source(conn, source, reference)
+    def publication_check(conn, platform):
+        # The sender's grant is revalidated HERE, on the held platform writer: the
+        # last source read happened above this fence, so a grant revoked or a
+        # principal tombstoned since then must still stop the bytes from becoming
+        # receiver-owned. The receiver's own grant is what _capture_files holds.
+        check_admin_grant(platform, source.owner_user_id, source.universe_id)
+        for row, current in zip(assert_bound_sources(conn, source, references), expected):
             if any(row[key] != current[key] for key in _IDENTITY):
                 raise store.FileCustodyRefused("file_source_changed")
         _, receiver = receiver_links.resolve_link_in_transaction(
