@@ -150,3 +150,32 @@ def test_report_counts_only_runtime_commits_as_behind(history, monkeypatch):
     info = deployed_sha.report("https://example.invalid/mcp", 1.0)
     assert info["commits_on_main_not_deployed"] == 3
     assert info["build_affecting_not_deployed"] == 1
+
+
+def test_a_deploy_workflow_edit_is_not_served_until_deployed(history, monkeypatch, capsys):
+    """#3936 shape: deploy-prod.yml changed. That edit mutates the host only on
+    the next deploy, so it is not served until then -- never "equivalent"."""
+    repo, base = history
+    text = (repo.root / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8")
+    head = repo.commit(
+        "deploy tweak",
+        {".github/workflows/deploy-prod.yml": text + "# x\n", "docs/review.md": "r\n"},
+    )
+    _serve(monkeypatch, base)
+
+    assert deployed_sha.main(["--assert-contains", head]) == 1
+    assert ".github/workflows/deploy-prod.yml" in capsys.readouterr().err
+
+
+def test_equivalence_requires_descent_even_when_the_trees_match_on_runtime(
+    history, monkeypatch
+):
+    """The ancestor gate, isolated: served and asserted differ only in docs,
+    but the asserted commit is on a side line production never served."""
+    repo, base = history
+    served = repo.commit("docs on main", {"docs/notes.md": "main\n"})
+    repo.git("checkout", "-q", "-b", "side", base)
+    side = repo.commit("docs on side", {"docs/other.md": "side\n"})
+    _serve(monkeypatch, served)
+
+    assert deployed_sha.main(["--assert-contains", side]) == 1

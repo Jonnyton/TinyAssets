@@ -60,6 +60,15 @@ on:
       - 'scripts/github-app-token-refresher.py'
       - 'scripts/retire_cheat_loop_deploy_fence.py'
       - 'scripts/prepare_expected_instance_state.py'
+      # The deploy chain itself and every workflow that writes to the host
+      # (scripts/runtime_paths.py deploy_chain_workflows): an edit to one is
+      # inert until the next deploy, so it deploys itself.
+      - '.github/workflows/build-image.yml'
+      - '.github/workflows/deploy-prod.yml'
+      - '.github/workflows/install-host-services.yml'
+      - '.github/workflows/apply-daemon-env.yml'
+      - '.github/workflows/p0-outage-triage.yml'
+      - '.github/workflows/restart-daemon.yml'
   workflow_dispatch:
 
 permissions:

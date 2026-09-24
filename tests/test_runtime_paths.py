@@ -121,7 +121,7 @@ def test_host_manifest_matches_what_the_installer_prints():
     assert set(parsed) <= set(printed)
     # Everything the installer ships is runtime, whether it came from the
     # array, the unit list, or deploy/.
-    inputs = rp.runtime_inputs_from(_working_tree)
+    inputs = _working_tree_inputs()
     assert [p for p in printed if not inputs.covers(p)] == []
 
 
@@ -417,10 +417,49 @@ def _working_tree(path: str) -> str | None:
     return target.read_text(encoding="utf-8") if target.is_file() else None
 
 
-def _build_image_push_paths() -> list[str]:
+def _working_tree_workflows() -> list[str]:
+    return sorted(
+        f".github/workflows/{p.name}" for p in WORKFLOWS.iterdir() if p.is_file()
+    )
+
+
+def _working_tree_inputs():
+    return rp.runtime_inputs_from(_working_tree, _working_tree_workflows)
+
+
+def _reconcile_path_parser() -> str:
+    """The exact inline parser release-reconcile.yml uses to read the filter."""
+    wf = yaml.safe_load((WORKFLOWS / "release-reconcile.yml").read_text(encoding="utf-8"))
+    step = next(
+        s
+        for s in wf["jobs"]["reconcile"]["steps"]
+        if s.get("name") == "Compare main against the last successful deploy"
+    )
+    script = step["run"]
+    start = script.index("<<'PY'") + len("<<'PY'")
+    return script[start : script.index("\nPY\n", start)].lstrip("\n")
+
+
+def _build_image_push_paths(tmp_path: Path) -> list[str]:
+    """build-image's push filter AS RELEASE-RECONCILE READS IT."""
+    parser = tmp_path / "reconcile_paths.py"
+    parser.write_text(_reconcile_path_parser(), encoding="utf-8")
+    out = subprocess.run(
+        [sys.executable, str(parser)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def test_reconcile_reads_every_path_in_the_build_filter(tmp_path):
+    """The filter carries comment lines; reconcile's parser once stopped at the
+    first one and silently saw 10 paths."""
     wf = yaml.safe_load((WORKFLOWS / "build-image.yml").read_text(encoding="utf-8"))
-    on = wf.get("on", wf.get(True))
-    return list(on["push"]["paths"])
+    declared = list(wf.get("on", wf.get(True))["push"]["paths"])
+    assert _build_image_push_paths(tmp_path) == declared
 
 
 def _filter_covers(patterns: list[str], path: str) -> bool:
@@ -434,12 +473,13 @@ def _filter_covers(patterns: list[str], path: str) -> bool:
     return False
 
 
-def test_build_image_path_filter_is_a_superset_of_every_runtime_input():
+def test_build_image_path_filter_is_a_superset_of_every_runtime_input(tmp_path):
     """The dangerous direction: a runtime input the pre-filter never sees is a
-    change that never builds, never deploys, and never alarms."""
-    inputs = rp.runtime_inputs_from(_working_tree)
+    change that never builds, never deploys, and never alarms. Read through
+    release-reconcile's own parser, so the backstop sees the same list."""
+    inputs = _working_tree_inputs()
     assert inputs.everything is False
-    patterns = _build_image_push_paths()
+    patterns = _build_image_push_paths(tmp_path)
     missing = [p for p in inputs.paths if not _filter_covers(patterns, p)]
     assert missing == [], f"build-image.yml push paths omit runtime inputs: {missing}"
 
@@ -453,5 +493,106 @@ def test_every_script_the_deploy_workflows_ship_is_runtime(workflow):
     text = (WORKFLOWS / workflow).read_text(encoding="utf-8")
     named = set(re.findall(r"scripts/[A-Za-z0-9_.-]+\.py", text)) - RUNNER_ONLY_SCRIPTS
     assert named, f"{workflow} names no scripts -- the scan is broken"
-    inputs = rp.runtime_inputs_from(_working_tree)
+    inputs = _working_tree_inputs()
     assert sorted(p for p in named if not inputs.covers(p)) == []
+
+
+# --- the deploy chain is runtime (#3936 shape) --------------------------------
+
+
+def test_real_deploy_chain_is_derived_from_the_workflows():
+    chain = rp.deploy_chain_workflows(
+        {p: _working_tree(p) for p in _working_tree_workflows() if p.endswith(".yml")}
+    )
+    assert chain is not None
+    assert {
+        ".github/workflows/build-image.yml",
+        ".github/workflows/deploy-prod.yml",
+        ".github/workflows/install-host-services.yml",
+    } <= set(chain)
+    # Post-deploy observers hold no host credential: not part of what deploys.
+    assert ".github/workflows/uptime-canary.yml" not in chain
+    assert ".github/workflows/tests.yml" not in chain
+
+
+def test_deploy_chain_follows_triggers_calls_and_the_host_group():
+    workflows = {
+        ".github/workflows/build-image.yml": "name: Build\n",
+        ".github/workflows/a.yml": (
+            "name: A\non:\n  workflow_run:\n    workflows: ['Build']\n"
+            "jobs:\n  x:\n    uses: ./.github/workflows/called.yml\n"
+            "    secrets: ${{ secrets.DO_SSH_KEY }}\n"
+        ),
+        ".github/workflows/called.yml": "name: Called\n",
+        ".github/workflows/b.yml": (
+            "name: B\non:\n  workflow_run:\n    workflows:\n    - A\n"
+            "env:\n  K: ${{ secrets.DO_SSH_KEY }}\n"
+        ),
+        ".github/workflows/observer.yml": (
+            "name: Obs\non:\n  workflow_run:\n    workflows: [\"B\"]\n"
+        ),
+        ".github/workflows/manual.yml": (
+            "name: Manual\nconcurrency:\n  group: 'production-host-mutation'\n"
+        ),
+        ".github/workflows/other.yml": "name: Other\n",
+    }
+    assert rp.deploy_chain_workflows(workflows) == [
+        ".github/workflows/a.yml",
+        ".github/workflows/b.yml",
+        ".github/workflows/build-image.yml",
+        ".github/workflows/called.yml",
+        ".github/workflows/manual.yml",
+    ]
+
+
+def test_a_deploy_workflow_edit_builds(repo):
+    """#3936 shape: only deploy-prod.yml changed. Inert until the next deploy,
+    so it must deploy itself -- never read as runtime-equivalent."""
+    r, base = repo
+    text = (r.root / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8")
+    head = r.commit("deploy tweak", {".github/workflows/deploy-prod.yml": text + "# x\n"})
+    decision = _decide(r, base, head)
+    assert decision.build is True
+    assert decision.runtime_paths == (".github/workflows/deploy-prod.yml",)
+
+
+@pytest.mark.parametrize(
+    "path", [".github/workflows/install-host-services.yml", ".github/workflows/build-image.yml"]
+)
+def test_every_deploy_chain_edit_builds(repo, path):
+    r, base = repo
+    text = (r.root / path).read_text(encoding="utf-8")
+    head = r.commit("chain tweak", {path: text + "# x\n"})
+    assert _decide(r, base, head).runtime_paths == (path,)
+
+
+def test_an_observer_or_ci_workflow_edit_skips(repo):
+    r, base = repo
+    head = r.commit(
+        "ci",
+        {
+            ".github/workflows/uptime-canary.yml": "name: Uptime canary\n# edited\n",
+            ".github/workflows/tests.yml": "name: Tests\n# edited\n",
+        },
+    )
+    assert _decide(r, base, head).build is False
+
+
+def test_unreadable_deploy_chain_makes_every_workflow_runtime(repo):
+    r, _ = repo
+    gone = r.commit("drop root", {".github/workflows/build-image.yml": None})
+    head = r.commit("ci", {".github/workflows/tests.yml": "name: Tests\n# edited\n"})
+    assert _decide(r, gone, head).build is True
+
+
+def test_the_real_3936_merge_builds():
+    """#3936 touched deploy-prod.yml, recovery-retag-image.yml, a review doc
+    and a test. It changed what the next deploy does to the host."""
+    sha = "92ee9488"
+    if subprocess.run(
+        ["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=REPO_ROOT, capture_output=True
+    ).returncode:
+        pytest.skip("shallow checkout lacks #3936")
+    decision = rp.decide(REPO_ROOT, f"{sha}^", sha)
+    assert decision.build is True
+    assert ".github/workflows/deploy-prod.yml" in decision.runtime_paths

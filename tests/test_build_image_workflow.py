@@ -57,7 +57,15 @@ def test_build_image_push_is_limited_to_runtime_paths():
     assert "STATUS.md" not in paths
     assert "docs/**" not in paths
     assert "WebSite/**" not in paths
-    assert ".github/workflows/build-image.yml" not in paths
+    # The deploy chain deploys itself: an edit to it is inert until the next
+    # deploy (#3936 changed only deploy-prod.yml among runtime inputs).
+    for chain in {
+        ".github/workflows/build-image.yml",
+        ".github/workflows/deploy-prod.yml",
+        ".github/workflows/install-host-services.yml",
+    }:
+        assert chain in paths
+    assert ".github/workflows/tests.yml" not in paths
 
     for required in {
         "Dockerfile",
@@ -252,3 +260,75 @@ def test_decide_step_builds_when_the_classifier_crashes(tmp_path):
     )
     assert values["decision"] == "build"
     assert values["reason"] == "runtime classifier failed"
+
+
+# --- the served sha must be a full commit sha, or the head builds (M7) --------
+
+
+def _run_served_step(tmp_path, *, receipt, rc=0):
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    bash = (
+        "C:/Program Files/Git/bin/bash.exe"
+        if Path("C:/Program Files/Git/bin/bash.exe").exists()
+        else shutil.which("bash")
+    )
+    if not bash:
+        pytest.skip("bash is required to execute the served-sha step")
+    python = Path(sys.executable).as_posix()
+    receipt_file = tmp_path / "receipt.json"
+    receipt_file.write_text(receipt, encoding="utf-8")
+    # The receipt reader is stubbed; every other python call is the real one.
+    shim = (
+        "python() {\n"
+        '  if [ "$1" = "scripts/deployed_sha.py" ]; then\n'
+        f'    cat "{receipt_file.as_posix()}"; return {rc}\n'
+        "  fi\n"
+        f'  "{python}" "$@"\n'
+        "}\n"
+    )
+    out = tmp_path / "gh-output"
+    result = subprocess.run(
+        [bash, "-s"],
+        cwd=_REPO,
+        input=shim + _step("decide", "Read the sha production serves")["run"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "GITHUB_OUTPUT": out.as_posix()},
+    )
+    assert result.returncode == 0, result.stderr
+    values = dict(
+        line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines()
+    )
+    return values["sha"]
+
+
+def test_served_step_passes_a_full_commit_sha(tmp_path):
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    assert _run_served_step(tmp_path, receipt=f'{{"ok": true, "deployed_sha": "{sha}"}}') == sha
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "HEAD",  # a ref would resolve to whatever the runner has checked out
+        "0123456789ab",  # short sha
+        "0123456789ABCDEF0123456789ABCDEF01234567",  # not git's lowercase form
+        "0123456789abcdef0123456789abcdef01234567 --help",
+        "main~1",
+    ],
+)
+def test_served_step_refuses_anything_but_a_full_commit_sha(tmp_path, value):
+    receipt = '{"ok": true, "deployed_sha": "%s"}' % value
+    assert _run_served_step(tmp_path, receipt=receipt) == ""
+
+
+@pytest.mark.parametrize(
+    ("receipt", "rc"),
+    [('{"ok": false, "error": "x"}', 2), ("not json", 0), ('{"ok": true}', 0)],
+)
+def test_served_step_unreadable_receipt_means_unknown(tmp_path, receipt, rc):
+    assert _run_served_step(tmp_path, receipt=receipt, rc=rc) == ""

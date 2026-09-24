@@ -112,11 +112,19 @@ jobs:
           except OSError:
               raise SystemExit(0)
 
-          block = re.search(r"\n\s*paths:\s*\n((?:\s*-\s*.+\n)+)", text)
+          # Comment and blank lines inside the list are part of the block: a
+          # pattern that stopped at the first `#` line silently dropped every
+          # path after it.
+          block = re.search(
+              r"\n[ \t]*paths:[ \t]*\n((?:[ \t]*(?:-[^\n]*|#[^\n]*)?\n)+)", text
+          )
           if not block:
               raise SystemExit(0)
           for line in block.group(1).splitlines():
-              item = line.strip().lstrip("-").strip().strip("'\"")
+              line = line.strip()
+              if not line.startswith("-"):
+                  continue
+              item = line[1:].split(" #", 1)[0].strip().strip("'\"")
               if item:
                   print(item)
           PY

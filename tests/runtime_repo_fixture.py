@@ -73,7 +73,41 @@ def plan(*, scoping_tail: str = "tail", unserved: str = "unserved", daemon: str 
     )
 
 
+WORKFLOWS: dict[str, str] = {
+    ".github/workflows/build-image.yml": (
+        "name: Build and publish image\n"
+        "on:\n  push:\n    paths:\n      - 'tinyassets/**'\n"
+    ),
+    # Flow-list trigger + the droplet's host-mutation group + the SSH key.
+    ".github/workflows/deploy-prod.yml": (
+        "name: Deploy prod\n"
+        "on:\n  workflow_run:\n    workflows: [\"Build and publish image\"]\n"
+        "    types: [completed]\n"
+        "concurrency:\n  group: production-host-mutation\n"
+        "jobs:\n  deploy:\n    steps:\n"
+        "      - run: echo \"${{ secrets.DO_SSH_KEY }}\"\n"
+    ),
+    # Block-list trigger, chained on the deploy, holds the SSH key.
+    ".github/workflows/install-host-services.yml": (
+        "name: Install host services\n"
+        "on:\n  workflow_run:\n    workflows:\n      - Deploy prod\n"
+        "    types: [completed]\n"
+        "jobs:\n  install:\n    steps:\n"
+        "      - run: echo \"${{ secrets.DO_SSH_KEY }}\"\n"
+    ),
+    # Chained on the deploy, but a pure observer: no host credential.
+    ".github/workflows/uptime-canary.yml": (
+        "name: Uptime canary\n"
+        "on:\n  workflow_run:\n    workflows: [\"Deploy prod\"]\n"
+        "jobs:\n  probe:\n    steps:\n      - run: echo probe\n"
+    ),
+    ".github/workflows/tests.yml": (
+        "name: Tests\non:\n  push:\njobs:\n  t:\n    steps:\n      - run: pytest\n"
+    ),
+}
+
 BASE_FILES: dict[str, str] = {
+    **WORKFLOWS,
     "Dockerfile": DOCKERFILE,
     ".dockerignore": "docs/\n",
     "pyproject.toml": "[project]\nname = 'x'\n",

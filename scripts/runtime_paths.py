@@ -24,6 +24,10 @@ from a hand-kept list that can drift:
 * every file ``deploy/install-host-uptime-services.sh`` installs on the host
   (its ``RUNTIME_FILES`` array), all of ``deploy/``, and the few scripts the
   deploy workflows ship to the host (:data:`HOST_SCRIPTS`);
+* the deploy chain's own workflows -- ``build-image.yml``, everything its
+  ``workflow_run`` triggers reach that holds the droplet SSH key, anything they
+  call, and every workflow in the ``production-host-mutation`` group. An edit to
+  one is inert until the next deploy, so it deploys itself;
 * ``PLAN.md`` is copied into the image, but the daemon serves only a
   1400-character excerpt of each section named by ``_CHANGE_LOOP_PLAN_HEADINGS``
   (``_change_loop_plan_context`` in ``tinyassets/api/universe.py``). A
@@ -78,6 +82,18 @@ HOST_SCRIPTS = (
     "scripts/retire_cheat_loop_deploy_fence.py",
     "scripts/prepare_expected_instance_state.py",
 )
+
+#: The deploy chain's root. Every workflow reachable from it through
+#: ``workflow_run`` triggers or ``uses: ./.github/workflows/...`` calls is part
+#: of the deploy (deploy-prod, then install-host-services), and so is every
+#: workflow declaring the droplet's :data:`HOST_MUTATION_GROUP`. An edit to any
+#: of them changes what the next deploy does to the host -- inert until then --
+#: so it is runtime: it builds, deploys itself, and is never "equivalent".
+WORKFLOWS_DIR = ".github/workflows/"
+DEPLOY_CHAIN_ROOT = ".github/workflows/build-image.yml"
+HOST_MUTATION_GROUP = "production-host-mutation"
+#: The droplet SSH credential; a workflow that names it can write the host.
+HOST_CREDENTIAL = "secrets.DO_SSH_KEY"
 
 #: How far back ``newest-runtime-commit`` walks before giving up. Giving up
 #: returns the starting commit, i.e. "treat it as runtime" (fail open).
@@ -376,16 +392,117 @@ class RuntimeInputs:
         return any(path == p or path.startswith(p.rstrip("/") + "/") for p in self.paths)
 
 
+_WORKFLOW_NAME = re.compile(r"^name:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+_WORKFLOW_RUN_FLOW = re.compile(r"^[ \t]*workflows:[ \t]*\[([^\]]*)\]", re.MULTILINE)
+_WORKFLOW_RUN_BLOCK = re.compile(
+    r"^([ \t]*)workflows:[ \t]*\n((?:\1[ \t]*-[^\n]*\n)+)", re.MULTILINE
+)
+_LOCAL_CALL = re.compile(r"uses:[ \t]*['\"]?\./(\.github/workflows/[^\s'\"@]+)")
+_HOST_GROUP = re.compile(
+    rf"^[ \t]*group:[ \t]*['\"]?{re.escape(HOST_MUTATION_GROUP)}['\"]?[ \t]*(?:#.*)?$",
+    re.MULTILINE,
+)
+
+
+def _unquote(value: str) -> str:
+    return value.strip().strip("'\"").strip()
+
+
+def _triggering_workflow_names(text: str) -> set[str]:
+    names: set[str] = set()
+    for match in _WORKFLOW_RUN_FLOW.finditer(text):
+        names.update(_unquote(item) for item in match.group(1).split(",") if item.strip())
+    for match in _WORKFLOW_RUN_BLOCK.finditer(text):
+        for line in match.group(2).splitlines():
+            names.add(_unquote(line.strip().lstrip("-")))
+    names.discard("")
+    return names
+
+
+def deploy_chain_workflows(workflows: dict[str, str]) -> list[str] | None:
+    """Workflow files that make up, or write to the host alongside, the deploy.
+
+    ``workflows`` maps each ``.github/workflows/*.yml`` path to its text. None
+    when the chain's root is missing or unnamed -- the caller then counts every
+    workflow (fail open).
+    """
+    root = workflows.get(DEPLOY_CHAIN_ROOT)
+    if root is None or not _WORKFLOW_NAME.search(root):
+        return None
+    names = {path: _unquote(m.group(1)) for path, text in workflows.items()
+             if (m := _WORKFLOW_NAME.search(text))}
+    chain = {DEPLOY_CHAIN_ROOT}
+    changed = True
+    while changed:
+        changed = False
+        chain_names = {names[p] for p in chain if p in names}
+        for path, text in workflows.items():
+            if path in chain:
+                continue
+            if _triggering_workflow_names(text) & chain_names:
+                chain.add(path)
+                changed = True
+        for path in list(chain):
+            for called in _LOCAL_CALL.findall(workflows.get(path, "")):
+                if called not in chain:
+                    chain.add(called)
+                    changed = True
+    # Of what the deploy sets off, keep what can reach the host (or is called
+    # by the chain). Post-deploy observers such as the uptime canary hold no
+    # host credential; an edit to them changes nothing a deploy applies.
+    kept = {
+        path
+        for path in chain
+        if path == DEPLOY_CHAIN_ROOT
+        or HOST_CREDENTIAL in workflows.get(path, "")
+        or path not in workflows  # a called workflow that cannot be read
+    }
+    kept.update(
+        called for path in chain for called in _LOCAL_CALL.findall(workflows.get(path, ""))
+    )
+    kept.update(path for path, text in workflows.items() if _HOST_GROUP.search(text))
+    return sorted(kept)
+
+
 def runtime_inputs(repo: Path, rev: str) -> RuntimeInputs:
     """Runtime inputs as the tree at ``rev`` defines them."""
-    return runtime_inputs_from(lambda path: _show(repo, rev, path))
+
+    def list_workflows() -> list[str] | None:
+        proc = _git(repo, "ls-tree", "--name-only", rev, "--", WORKFLOWS_DIR)
+        if proc.returncode != 0:
+            return None
+        return [line for line in proc.stdout.splitlines() if line]
+
+    return runtime_inputs_from(lambda path: _show(repo, rev, path), list_workflows)
 
 
-def runtime_inputs_from(read: Callable[[str], str | None]) -> RuntimeInputs:
-    """Runtime inputs from any tree; ``read(path)`` is None for a missing file."""
+def runtime_inputs_from(
+    read: Callable[[str], str | None],
+    list_workflows: Callable[[], list[str] | None],
+) -> RuntimeInputs:
+    """Runtime inputs from any tree.
+
+    ``read(path)`` is None for a missing file; ``list_workflows()`` returns the
+    paths under ``.github/workflows/``, or None when it cannot tell.
+    """
     notes: list[str] = []
     paths: list[str] = [*BUILD_DEFINITION, *HOST_PATHS, *HOST_SCRIPTS]
     everything = False
+
+    listed = list_workflows()
+    chain = None
+    if listed is not None:
+        texts = {
+            p: t
+            for p in listed
+            if p.endswith((".yml", ".yaml")) and (t := read(p)) is not None
+        }
+        chain = deploy_chain_workflows(texts)
+    if chain is None:
+        paths.append(WORKFLOWS_DIR)
+        notes.append("deploy chain unreadable -- every workflow counts as runtime")
+    else:
+        paths.extend(chain)
 
     dockerfile = read(DOCKERFILE)
     if dockerfile is None:
