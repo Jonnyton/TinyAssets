@@ -666,6 +666,57 @@ interactive-deadline outcome, not as provider unavailability.
 - **AND** an unknown frame type, an undocumented or non-string status value
   (`requesting` is not in the allowlist), a missing `status` key, or free text
   that merely mentions compaction is one liveness reset and never opens a window
+### Requirement: A provider CLI is spawned as an owned family and ended as one
+
+Every provider CLI subprocess the Claude and Codex adapters spawn — streamed and
+non-streamed paths, direct and shell-shim — SHALL be spawned through one
+owned-process helper and ended through it, so a deadline, a cancellation or a
+dropped handle ends the descendants that CLI started (the Windows `.cmd` shim's
+real CLI, the engine-MCP server) and not only the direct child.
+
+On POSIX, ownership SHALL be held by a **live in-group anchor**, never by a
+recorded numeric group id. The adapter spawns a fresh isolated interpreter
+(`-I -S`, so no inherited `PYTHON*` var, user site dir or site hook can run — and
+so cannot start a thread — before the fork) in a new session; that wrapper forks
+one anchor, waits for the anchor's readiness line, and only then `execvp`s the
+original argv **in the leader pid**, leaving argv, environment, cwd and stdio
+exactly as the adapter built them. Teardown SHALL be a control-pipe write and
+close rather than a signal from the daemon: the anchor treats a command byte and
+EOF alike and kills **its own** group while alive in it. Spawn SHALL fail closed
+with `FamilyAnchorError` when the anchor cannot be established or its readiness
+line does not parse exactly.
+
+Declared limits, which this requirement states rather than promises away: Windows
+teardown remains a bounded best-effort `taskkill /F /T` tree walk, run only while
+a live child handle is still held — it is **not** a Job Object, so a descendant
+already reparented or spawned inside the walk's window survives it. POSIX
+containment is **process-group** containment, not a cgroup or pid namespace, so a
+descendant that deliberately `setsid`s out is **not** contained. Holding a
+`pidfd` is NOT claimed to reserve the numeric id. There SHALL be no degraded mode
+that group-signals without a live anchor and no fallback that signals a recorded
+pgid. This requirement changes no timeout value, no retry or replay behaviour,
+and no provider authority.
+
+#### Scenario: A bound deadline ends the family, not just the child
+
+- **WHEN** a provider node's absolute cap binds while the CLI's descendants are running
+- **THEN** teardown ends the owned family and the direct child, the descendants' inherited stdout/stderr pipes close, and the outcome is reported as the existing interactive-deadline failure with no replay
+
+#### Scenario: An anchor that cannot be established hands back nothing
+
+- **WHEN** the POSIX anchor does not report ready within its bound, or its line is not exactly `ANCHOR <anchor-pid> <leader-pgid>` with a distinct positive anchor pid
+- **THEN** the half-spawned family is torn down and `FamilyAnchorError` is raised rather than an unowned CLI being returned
+- **AND** a missing CLI binary still raises `FileNotFoundError`, the same exception the direct spawn raised
+
+#### Scenario: Ownership is never inferred for a process we did not spawn
+
+- **WHEN** a process was not registered by the owned-process helper (a test double, an externally supplied handle), or is a POSIX process that never got an anchor
+- **THEN** it is killed individually — no group signal, no recorded-pgid lookup, no tree walk
+
+#### Scenario: A dropped handle still ends the family
+
+- **WHEN** a provider `Process` is garbage-collected without teardown, such as a cancellation that never reached its `finally`
+- **THEN** weakref finalization closes the control descriptor, the anchor reads that EOF as the end command, and no anchor process or control descriptor leaks per turn
 
 ### Requirement: Persisted provider failures retain safe tool-wait evidence
 

@@ -17,6 +17,7 @@ import json
 
 import pytest
 
+from tests.support.owned_spawn import fake_owned_spawn
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     InteractiveDeadlineError,
@@ -137,12 +138,31 @@ class FakeStreamProcess:
     or ``(delay_s, bytes)`` tuples (the reader sleeps ``delay_s`` before the
     line arrives — a large delay simulates a hung/idle stream that the watchdog
     catches via ``asyncio.wait_for``).
+
+    Process lifecycle follows ``asyncio.subprocess.Process`` rather than a
+    convenient shortcut, because teardown *reads* it. The precise rule is not
+    "only ``wait()`` publishes the exit status": on the real class the child
+    watcher reaps **asynchronously**, so ``returncode`` can flip from ``None``
+    to a status at any await point once the child exits, with no ``wait()``
+    call of ours in between. What holds is the direction -- ``None`` means not
+    yet reaped, and once it is set it never goes back. This fake publishes the
+    status on ``wait()`` because that is the point this file's flows reach it;
+    it is a deliberately conservative stand-in, not a claim about when the real
+    runtime reaps.
+
+    What matters for these assertions is the other half: a fake that exposes an
+    exit status **while still streaming** claims the adapter has already reaped
+    the child, which silently voids every ``proc.killed`` assertion in this
+    file -- teardown correctly declines to signal a pid it no longer owns.
     """
 
     def __init__(self, stdout_items, *, stderr: bytes = b"", returncode: int = 0):
         self._items = list(stdout_items)
         self._idx = 0
-        self.returncode = returncode
+        #: Status the child reports when reaped; published by ``wait()`` only.
+        self._exit_status = returncode
+        #: Live, unreaped handle — exactly what asyncio reports before ``wait()``.
+        self.returncode = None
         self.killed = False
         self.stdout = self._Stdout(self)
         self.stderr = self._Stderr(stderr)
@@ -182,9 +202,20 @@ class FakeStreamProcess:
         def close(self): ...
 
     def kill(self):
+        # ``asyncio.subprocess.Process.kill`` raises ProcessLookupError once the
+        # process has been reaped (``_check_proc``). Reproducing that keeps the
+        # fake honest about the window in which a kill is meaningful.
+        if self.returncode is not None:
+            raise ProcessLookupError("process already reaped")
         self.killed = True
 
     async def wait(self):
+        # Reaping publishes the exit status. A kill signal does not rewrite it:
+        # these fakes model a child that has already produced its status (EOF
+        # reached, zombie awaiting reap), which is what the streaming teardown
+        # path actually meets.
+        if self.returncode is None:
+            self.returncode = self._exit_status
         return self.returncode
 
 
@@ -1204,7 +1235,9 @@ class TestBackwardSafeNonStreaming:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=mock_proc,
+            ),
         ):
             resp = await CodexProvider().complete("prompt", "system", ModelConfig())
 
@@ -1226,7 +1259,9 @@ class TestBackwardSafeNonStreaming:
         with (
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            fake_owned_spawn(
+                "tinyassets.providers.claude_provider", return_value=mock_proc,
+            ),
         ):
             resp = await ClaudeProvider().complete_json(
                 "prompt", "system", ModelConfig(),
@@ -1519,7 +1554,7 @@ class TestSyncWrapperTimeout:
         with (
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=proc),
+            fake_owned_spawn("tinyassets.providers.claude_provider", return_value=proc),
         ):
             with pytest.raises(_PTE):
                 router.call_sync("writer", "prompt", "system", ModelConfig())

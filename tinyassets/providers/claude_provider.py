@@ -20,9 +20,7 @@ import asyncio
 import json
 import logging
 import math
-import shlex
 import shutil
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -45,6 +43,12 @@ from tinyassets.providers.base import (
     ProviderResponse,
     check_bwrap_failure,
     subprocess_env_for_provider,
+)
+from tinyassets.providers.owned_process import (
+    akill_owned_tree,
+    aspawn_owned,
+    kill_owned_tree,
+    no_window_kwargs,
 )
 from tinyassets.providers.protocol_encoders import model_receipt
 
@@ -397,9 +401,7 @@ def _result_is_success(obj: dict) -> bool:
 
 def _no_window_kwargs() -> dict:
     """Return subprocess kwargs to suppress console windows on Windows."""
-    if sys.platform == "win32":
-        return {"creationflags": subprocess.CREATE_NO_WINDOW}
-    return {}
+    return no_window_kwargs()
 
 
 def _resolve_claude_cmd() -> tuple[list[str], bool]:
@@ -607,38 +609,30 @@ class ClaudeProvider(BaseProvider):
             universe_dir=universe_dir,
             credential_snapshot_dir=config.credential_snapshot_dir,
         )
-        win_kw = _no_window_kwargs()
-        if use_shell:
-            proc = await asyncio.create_subprocess_shell(
-                shlex.join(cmd),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=proc_env,
-                cwd=run_cwd,
-                limit=_STDOUT_READER_LIMIT,
-                **win_kw,
-            )
-        else:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=proc_env,
-                cwd=run_cwd,
-                limit=_STDOUT_READER_LIMIT,
-                **win_kw,
-            )
+        # Spawn as an owned FAMILY: on POSIX a live anchor holds the group id
+        # so teardown reaches what the CLI starts without ever naming a group
+        # integer that could have been recycled. Fails closed if it cannot.
+        proc = await aspawn_owned(
+            cmd,
+            shell=use_shell,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=proc_env,
+            cwd=run_cwd,
+            limit=_STDOUT_READER_LIMIT,
+        )
         return await self._read_stream(proc, prompt, config)
 
     @staticmethod
     async def _terminate(proc) -> None:
-        """Kill and reap a subprocess, tolerating an already-dead process."""
-        try:
-            proc.kill()
-        except Exception:  # noqa: BLE001 - already exited / mock
-            pass
+        """Kill and reap a subprocess tree, tolerating an already-dead process.
+
+        Targets only the group recorded for this process at spawn; a process we
+        did not spawn (a test double, an externally supplied handle) is killed
+        individually exactly as before.
+        """
+        await akill_owned_tree(proc)
         try:
             await asyncio.wait_for(proc.wait(), timeout=5)
         except Exception:  # noqa: BLE001 - reap best-effort
@@ -1036,10 +1030,9 @@ class ClaudeProvider(BaseProvider):
             # synchronous, so the process is signalled even if a subsequent await
             # is itself cancelled; the in-band ``_terminate`` above is idempotent
             # with this.
-            try:
-                proc.kill()
-            except Exception:  # noqa: BLE001 - already exited / mock
-                pass
+            # Synchronous, so the tree is signalled even if a later await is
+            # itself cancelled; idempotent with the in-band ``_terminate``.
+            kill_owned_tree(proc)
             stdin_task.cancel()
             stderr_task.cancel()
             # BOUND the reap (Codex re-review #2 blocker E): a kill-resistant or
@@ -1081,70 +1074,65 @@ class ClaudeProvider(BaseProvider):
             universe_dir=universe_dir,
             credential_snapshot_dir=config.credential_snapshot_dir,
         )
-        win_kw = _no_window_kwargs()
-        if use_shell:
-            proc = await asyncio.create_subprocess_shell(
-                shlex.join(cmd),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=proc_env,
-                cwd=run_cwd,
-                **win_kw,
-            )
-        else:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=proc_env,
-                cwd=run_cwd,
-                **win_kw,
-            )
-
-        start = time.monotonic()
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode("utf-8")),
-                timeout=config.timeout,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise ProviderTimeoutError("claude -p (json) timed out")
-
-        elapsed_ms = (time.monotonic() - start) * 1000
-
-        if proc.returncode == 1 and elapsed_ms < 5000:
-            raise ProviderUnavailableError(
-                "claude -p (json) returned exit code 1 quickly"
-            )
-
-        _WINDOWS_CRASH_CODES = {3221225588, 3221225477, 3221225786}
-        if proc.returncode in _WINDOWS_CRASH_CODES:
-            raise ProviderUnavailableError(
-                f"claude -p (json) crashed with Windows exit code "
-                f"{proc.returncode:#x} — applying cooldown"
-            )
-
-        stderr_text_json = stderr.decode(errors="replace")
-        check_bwrap_failure(stderr_text_json)
-
-        if proc.returncode != 0:
-            raise ProviderError(
-                f"claude -p (json) exit {proc.returncode}: {stderr_text_json}"
-            )
-
-        raw = stdout.decode("utf-8", errors="replace")
-        parsed = json.loads(raw)
-        text = parsed.get("result", raw)
-
-        return ProviderResponse(
-            text=text,
-            provider=self.name,
-            model=config.native_model_id or self.native_credential_service,
-            family=self.family,
-            latency_ms=elapsed_ms,
+        # Same owned-family spawn as the streamed path.
+        proc = await aspawn_owned(
+            cmd,
+            shell=use_shell,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=proc_env,
+            cwd=run_cwd,
         )
+
+        # EVERY exit -- success, classified raise, cancellation -- ends the
+        # owned family. Without this the anchor and its control descriptor
+        # outlive each successful turn until the Process is collected.
+        try:
+            start = time.monotonic()
+
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode("utf-8")),
+                    timeout=config.timeout,
+                )
+            except asyncio.TimeoutError:
+                await akill_owned_tree(proc)
+                await proc.wait()
+                raise ProviderTimeoutError("claude -p (json) timed out")
+
+            elapsed_ms = (time.monotonic() - start) * 1000
+
+            if proc.returncode == 1 and elapsed_ms < 5000:
+                raise ProviderUnavailableError(
+                    "claude -p (json) returned exit code 1 quickly"
+                )
+
+            _WINDOWS_CRASH_CODES = {3221225588, 3221225477, 3221225786}
+            if proc.returncode in _WINDOWS_CRASH_CODES:
+                raise ProviderUnavailableError(
+                    f"claude -p (json) crashed with Windows exit code "
+                    f"{proc.returncode:#x} — applying cooldown"
+                )
+
+            stderr_text_json = stderr.decode(errors="replace")
+            check_bwrap_failure(stderr_text_json)
+
+            if proc.returncode != 0:
+                raise ProviderError(
+                    f"claude -p (json) exit {proc.returncode}: {stderr_text_json}"
+                )
+
+            raw = stdout.decode("utf-8", errors="replace")
+            parsed = json.loads(raw)
+            text = parsed.get("result", raw)
+
+            return ProviderResponse(
+                text=text,
+                provider=self.name,
+                model=config.native_model_id or self.native_credential_service,
+                family=self.family,
+                latency_ms=elapsed_ms,
+            )
+        finally:
+            kill_owned_tree(proc)

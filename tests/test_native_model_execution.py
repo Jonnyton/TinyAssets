@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.support.owned_spawn import fake_owned_spawn
 from tests.test_run_provider_session import _branch, _run_branch
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.base import ModelConfig
@@ -114,7 +115,7 @@ def test_codex_explicit_or_default_argument_ignores_global_model(requested, monk
     with (
         patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
               return_value=(["codex"], False)),
-        patch("asyncio.create_subprocess_exec", return_value=proc) as spawn,
+        fake_owned_spawn("tinyassets.providers.codex_provider", return_value=proc) as spawn,
     ):
         result = asyncio.run(CodexProvider().complete(
             "hello", "", ModelConfig(native_model_id=requested),
@@ -139,7 +140,9 @@ def test_claude_both_paths_emit_only_requested_primary(method, requested):
     with (
         patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
               return_value=(["claude"], False)),
-        patch("asyncio.create_subprocess_exec", side_effect=ObservedLaunch) as spawn,
+        fake_owned_spawn(
+            "tinyassets.providers.claude_provider", side_effect=ObservedLaunch,
+        ) as spawn,
     ):
         with pytest.raises(ObservedLaunch):
             asyncio.run(getattr(ClaudeProvider(), method)(
