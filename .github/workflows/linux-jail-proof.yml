@@ -2,21 +2,27 @@ name: linux-jail-proof
 
 # Why this exists
 # ---------------
-# tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
-# is the ONE case that runs the file-delivery RPC through the real bubblewrap
-# jail (tinyassets/node_sandbox.py BwrapLauncher). It is
-# `skipif(not shutil.which("bwrap"))`, and no other job installs bubblewrap, so
-# `required-tests` records it as SKIPPED on every run. A skip is invisible in a
-# green run and is not evidence in either direction.
+# Some proofs only mean anything inside a real bubblewrap jail, and every one
+# of them is `skipif`-gated on bwrap. No other job installs bubblewrap, so
+# `required-tests` records them as SKIPPED on every run. A skip is invisible in
+# a green run and is not evidence in either direction. The guarded cases:
+#
+#   * tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
+#     runs the file-delivery RPC through the real jail
+#     (tinyassets/node_sandbox.py BwrapLauncher);
+#   * tests/test_native_refresh_jail.py runs the argv the shipping codex
+#     provider builds for a coding turn (tinyassets/providers/codex_provider.py)
+#     and proves the launch-credential mask holds, with a detection control.
 #
 # This job supplies the jail on a disposable GitHub-hosted Ubuntu VM and FAILS
-# unless that named case is present in JUnit with no skip, failure or error.
+# unless EVERY named case is present in JUnit with no skip, failure or error.
 # It is cloud-only test infrastructure: no deployment, no production surface,
 # no account secrets, no self-hosted runner, never the founder's desktop.
 #
 # It is deliberately NOT a branch-protection context. `required-tests` in
 # tests.yml remains the merge gate; this is the independent Linux proof for the
-# file-delivery jail slice, read by a human before a "proven live" claim.
+# file-delivery and codex coding-turn jail slices, read by a human before a
+# "proven live" claim.
 #
 # Hardening it does NOT do, on purpose: no `sysctl` relaxation of
 # kernel.apparmor_restrict_unprivileged_userns, no AppArmor profile edits, no
@@ -55,6 +61,11 @@ on:
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
+      # The codex coding-turn jail proof, the provider whose argv it runs, and
+      # the governed agent-invocation path that launches that provider.
+      - "tests/test_native_refresh_jail.py"
+      - "tinyassets/providers/codex_provider.py"
+      - "tinyassets/agent_runtime_provider_execution.py"
   workflow_dispatch:
 
 permissions:
@@ -65,10 +76,16 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The ONLY test file this job runs, and the ONE case it must see executed.
-  # Kept as env so the shell steps never interpolate an expression.
-  JAIL_TEST_FILE: tests/test_delivery_node_rpc.py
-  JAIL_TEST_NODEID: tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
+  # The ONLY test files this job runs, and EVERY case it must see executed
+  # (space-separated; no path or nodeid here contains a space). Kept as env so
+  # the shell steps never interpolate an expression.
+  JAIL_TEST_FILES: >-
+    tests/test_delivery_node_rpc.py
+    tests/test_native_refresh_jail.py
+  JAIL_TEST_NODEIDS: >-
+    tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
+    tests/test_native_refresh_jail.py::test_jail_reads_workspace_but_not_launch_credentials
+    tests/test_native_refresh_jail.py::test_removing_the_launch_mask_exposes_the_snapshot
 
 jobs:
   linux-jail-proof:
@@ -126,7 +143,7 @@ jobs:
             exit 1
           fi
 
-      - name: Run the delivery RPC module inside the real jail
+      - name: Run the jail proof modules inside the real jail
         env:
           # Everything the run writes lives under runner.temp, outside the
           # checkout, so tests/conftest.py's temp-root guard is satisfied and
@@ -143,7 +160,12 @@ jobs:
           # `pip install -e` populated), not the system python.
           py="$(command -v python)"
           "$py" --version
-          args=("$JAIL_TEST_FILE"
+          read -r -a files <<< "$JAIL_TEST_FILES"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::JAIL_TEST_FILES is empty"
+            exit 1
+          fi
+          args=("${files[@]}"
                 -q -p no:cacheprovider
                 -o junit_family=xunit1
                 --basetemp "$PYTEST_BASETEMP"
@@ -162,16 +184,25 @@ jobs:
               ;;
           esac
 
-      - name: Assert the real-jail case executed (a skip is not a pass)
-        # Runs even when pytest is red so the summary names the case state.
+      - name: Assert every real-jail case executed (a skip is not a pass)
+        # Runs even when pytest is red so the summary names each case's state.
         if: always()
         env:
           JUNIT_PATH: ${{ runner.temp }}/junit-linux-jail.xml
         run: |
           set -euo pipefail
+          read -r -a nodeids <<< "$JAIL_TEST_NODEIDS"
+          if [ "${#nodeids[@]}" -eq 0 ]; then
+            echo "::error::JAIL_TEST_NODEIDS is empty"
+            exit 1
+          fi
+          nodeid_args=()
+          for nodeid in "${nodeids[@]}"; do
+            nodeid_args+=(--nodeid "$nodeid")
+          done
           python scripts/ci_assert_junit_case.py \
             --junit "$JUNIT_PATH" \
-            --nodeid "$JAIL_TEST_NODEID" \
+            "${nodeid_args[@]}" \
             --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload junit
