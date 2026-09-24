@@ -137,6 +137,11 @@ def test_anthropic_decode_fails_loud(bad: object) -> None:
 
 
 def test_encoder_dispatch_table_covers_both_protocols() -> None:
-    assert set(pe.ENCODERS) == {"openai_chat", "anthropic_messages"}
+    # Structural dialect names, plus the aliases stored rows still carry.
+    assert set(pe.ENCODERS) == {
+        "chat_messages", "content_blocks", "openai_chat", "anthropic_messages",
+    }
+    assert pe.PROTOCOLS["openai_chat"] is pe.PROTOCOLS["chat_messages"]
+    assert pe.PROTOCOLS["anthropic_messages"] is pe.PROTOCOLS["content_blocks"]
     for _proto, (enc, dec) in pe.ENCODERS.items():
         assert callable(enc) and callable(dec)

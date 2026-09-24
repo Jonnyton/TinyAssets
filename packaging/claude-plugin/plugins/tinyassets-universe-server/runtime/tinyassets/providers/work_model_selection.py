@@ -72,8 +72,14 @@ def selected_work_model(selection):
     if evidence is None or evidence.get("kind") == "native":
         return None
     contract = evidence["execution_contract"]
-    compiled = (SourceContract.compile(contract["value"]) if contract["kind"] == "configured"
-                else discovery_protocol(contract["value"]))
+    if contract["kind"] == "declared":
+        from tinyassets.providers.declared_models import contract_from_evidence
+
+        compiled = contract_from_evidence(contract["value"])
+    else:
+        compiled = (SourceContract.compile(contract["value"])
+                    if contract["kind"] == "configured"
+                    else discovery_protocol(contract["value"]))
     return SelectedModel(
         selection.provider, selection.model_id, evidence["discovery_protocol"],
         tuple(sorted(evidence["cost_caps"].items())), evidence["source_digest"],
@@ -86,20 +92,23 @@ def selection_with_model(selection, model, snapshot):
     import json
     from dataclasses import replace
 
+    from tinyassets.providers.declared_models import DeclaredModelContract
     from tinyassets.providers.discovery_contract import SourceContract
 
     contract = model.contract()
+    if isinstance(contract, DeclaredModelContract):
+        persisted = {"kind": "declared", "value": contract.descriptor()}
+    elif isinstance(contract, SourceContract):
+        persisted = {"kind": "configured", "value": json.loads(contract.descriptor_json)}
+    else:
+        persisted = {"kind": "installed", "value": model.discovery_protocol}
     evidence = {
         "discovery_protocol": model.discovery_protocol,
         "source_digest": model.source_digest,
         "context_tokens": model.context_tokens,
         "supports_tools": model.supports_tools,
         "cost_caps": dict(model.cost_caps),
-        "execution_contract": (
-            {"kind": "configured", "value": json.loads(contract.descriptor_json)}
-            if isinstance(contract, SourceContract)
-            else {"kind": "installed", "value": model.discovery_protocol}
-        ),
+        "execution_contract": persisted,
         "observed_at": snapshot.observed_at.isoformat().replace("+00:00", "Z"),
         "completed_at": snapshot.completed_at.isoformat().replace("+00:00", "Z"),
     }

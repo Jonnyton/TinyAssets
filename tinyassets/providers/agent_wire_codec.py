@@ -8,11 +8,9 @@ Inner messages still require the installed canonical text/tool representation.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from functools import cache
-from pathlib import Path
 from typing import Any
 
 from tinyassets.providers.agent_chat_codec import (
@@ -115,7 +113,31 @@ class AgentWireShape:
 
 
 @cache
+def agent_wire_for(dialect: str) -> AgentWireShape:
+    """The agent envelope a bundled dialect document declares, by dialect name.
+
+    Resolved through the dialect registry, so a stored alias and the structural
+    name compile the same document. A text-only dialect has no envelope.
+    """
+    from tinyassets.providers.wire_dialects import canonical_dialect
+
+    return _compiled_envelope(canonical_dialect(dialect))
+
+
+@cache
+def _compiled_envelope(canonical: str) -> AgentWireShape:
+    from tinyassets.providers.wire_dialects import dialect_document
+
+    document = dialect_document(canonical)
+    if "envelope" not in document:
+        raise ValueError(f"wire dialect {canonical} declares no agent envelope")
+    return AgentWireShape.compile(document["envelope"])
+
+
+@cache
 def installed_agent_wire() -> AgentWireShape:
-    """CWD-independent immutable installed capability; not connection metadata."""
-    document = json.loads(Path(__file__).with_name("agent_wire_shape.json").read_text("utf-8"))
-    return AgentWireShape.compile(document)
+    """CWD-independent immutable installed capability; not connection metadata.
+
+    The ``chat_messages`` dialect document's envelope (formerly its own file).
+    """
+    return agent_wire_for("chat_messages")

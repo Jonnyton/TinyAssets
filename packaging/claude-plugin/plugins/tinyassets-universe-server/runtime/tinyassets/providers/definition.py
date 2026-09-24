@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _universe_dir
+from tinyassets.providers.wire_dialects import known_names
 
 ACCESS_METHODS = ("subscription_cli", "api_key_http")
 VISIBILITIES = ("private", "commons")
@@ -51,7 +52,11 @@ VISIBILITIES = ("private", "commons")
 # protocol may only pair with subscription_cli; an HTTP protocol only with
 # api_key_http — so the descriptor cannot describe an incoherent executor.
 _CLI_PROTOCOLS = ("cli:codex", "cli:claude-code")
-_HTTP_PROTOCOLS = ("openai_chat", "anthropic_messages")
+# HTTP protocols are the bundled wire dialects (``providers/dialects/*.json``):
+# their structural names (``chat_messages``, ``content_blocks``) and the aliases
+# stored rows already carry (``openai_chat``, ``anthropic_messages``). A stored
+# row keeps its exact string, because the definition id content-addresses it.
+_HTTP_PROTOCOLS = known_names()
 PROTOCOLS = _CLI_PROTOCOLS + _HTTP_PROTOCOLS
 
 _STORE_FILENAME = "provider_definitions.json"
@@ -138,7 +143,8 @@ def _validate(
         )
     if access_method == "api_key_http" and protocol not in _HTTP_PROTOCOLS:
         raise ProviderDefinitionError(
-            "api_key_http requires an http protocol (openai_chat/anthropic_messages)"
+            "api_key_http requires a bundled wire dialect ("
+            + "/".join(_HTTP_PROTOCOLS) + ")"
         )
     if not isinstance(model, str) or not _MODEL_RE.match(model):
         raise ProviderDefinitionError(

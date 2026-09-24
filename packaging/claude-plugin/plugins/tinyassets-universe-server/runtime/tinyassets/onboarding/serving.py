@@ -185,8 +185,14 @@ def ensure_founder_serving(
     owner_user_id: str,
     universe_id: str,
     service: str,
+    model_access: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Point the founder's universe at the just-deposited ``service`` and enable it.
+
+    ``model_access`` is the complete accepted membership for a first binding
+    (``{provider: ModelAccess}``), used when the owner has just confirmed the
+    exact model list on a connection request. None keeps the legacy
+    single-provider binding. It never widens an existing accepted setup.
 
     Returns a non-secret projection: ``{"status": "serving", "provider", "agent_binding_id",
     "revision"}`` on success, or ``{"status": "held", "reason": ...}`` when the
@@ -213,7 +219,7 @@ def ensure_founder_serving(
         # sit here could never fire, because its own broad catches ran first.
         return _ensure_founder_serving_locked(
             base, universe_dir=universe_dir, owner=owner, uid=uid,
-            provider=provider,
+            provider=provider, model_access=model_access,
         )
 
 
@@ -340,6 +346,7 @@ def _reconnect_manifest(
 
 def _ensure_founder_serving_locked(
     base: Path, *, universe_dir: str | Path, owner: str, uid: str, provider: str,
+    model_access: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from tinyassets.provider_serving_binding import (
         ServingProviderNotOwned,
@@ -367,6 +374,7 @@ def _ensure_founder_serving_locked(
             agent_binding_id=binding["agent_binding_id"],
             expected_revision=int(binding["revision"]),
             provider=provider,
+            model_access=model_access,
         )
         after_bind = bound.get("agent_binding") or binding
         enabled = set_serving(

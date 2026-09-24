@@ -1352,6 +1352,16 @@ def write_graph(
                     payload=payload_json,
                 )
             )
+        if connection_operation == "configure":
+            # Non-secret edits on a connection the owner already holds: what it
+            # is USED for (uses.model{wire, models, billing}) and its constant
+            # headers. No endpoints, no secret, no serving change. A new
+            # OPERATION on the pinned handle, so the catalog is unchanged.
+            from tinyassets.api.connection_uses import configure_connection
+
+            return json.dumps(
+                configure_connection(universe_id=graph_id, payload=payload_json)
+            )
         if connection_operation == "configure_provider_capability":
             # The handler derives live authority from the current serving chain
             # for voice, or a verified owned definition for discovery metadata.

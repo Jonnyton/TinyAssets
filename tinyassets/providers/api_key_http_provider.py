@@ -48,6 +48,7 @@ from tinyassets.exceptions import (
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
 from tinyassets.providers.definition import ProviderDefinition
 from tinyassets.providers.protocol_encoders import ENCODERS, ProtocolDecodeError, reported_model
+from tinyassets.providers.wire_dialects import same_dialect
 
 _LOG = logging.getLogger(__name__)
 
@@ -229,7 +230,7 @@ class ApiKeyHttpProvider(BaseProvider):
             contract = selection.contract()
             if (
                 selection.provider != self.name
-                or contract.inference_protocol != self._definition.protocol
+                or not same_dialect(contract.inference_protocol, self._definition.protocol)
             ):
                 raise ProviderUnavailableError("selected model does not match the compute source")
             if config.engine_mcp_enabled and agent_request is None:

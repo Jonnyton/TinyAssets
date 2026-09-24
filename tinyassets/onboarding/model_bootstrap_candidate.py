@@ -28,6 +28,7 @@ def prepare_candidate(*, base: Path, uid: str, owner: str, grant_id: str,
         order_models,
     )
     from tinyassets.providers.protocol_encoders import agent_codec_for
+    from tinyassets.providers.wire_dialects import same_dialect
     from tinyassets.shared_self import require_founder_home
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
@@ -43,7 +44,7 @@ def prepare_candidate(*, base: Path, uid: str, owner: str, grant_id: str,
     if matches:
         definition = matches[0]
         if (definition.owner_user_id != owner or definition.access_method != "api_key_http"
-                or definition.protocol != contract.inference_protocol
+                or not same_dialect(definition.protocol, contract.inference_protocol)
                 or definition.visibility != "private"):
             raise HostedAuthError("model_candidate_requires_review", 409)
         did = definition.id

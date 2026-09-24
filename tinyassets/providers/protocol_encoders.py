@@ -234,35 +234,88 @@ def _validate_chat_request(body, *, legacy=False):
         raise ValueError("unsupported constrained wire messages")
 
 
-def _chat_agent_codec() -> AgentCodec:
+def _dialect_agent_codec(dialect: str) -> AgentCodec:
     # Installed envelope capability, separate from canonical history validation.
-    from tinyassets.providers.agent_wire_codec import installed_agent_wire
+    from tinyassets.providers.agent_wire_codec import agent_wire_for
 
-    shape = installed_agent_wire()
+    shape = agent_wire_for(dialect)
     return AgentCodec(shape.encode, shape.decode)
 
-#: The Anthropic Messages API REQUIRES an ``anthropic-version`` request header
-#: (independent of the api key). Pinned to the stable GA version.
+
+def _chat_agent_codec() -> AgentCodec:
+    """Compatibility name: the ``chat_messages`` dialect's agent codec."""
+    return _dialect_agent_codec("chat_messages")
+
+
+#: The Anthropic Messages API REQUIRES an ``anthropic-version`` request header.
+#: Kept as a name for existing importers; the value the executor sends now lives
+#: in the ``content_blocks`` dialect document's ``headers``.
 ANTHROPIC_VERSION = "2023-06-01"
 
-#: Protocol -> static (credential-free) request headers the executor must send on
-#: every call, beyond the auth header the broker applies from the connection's
-#: auth_scheme. anthropic_messages needs ``anthropic-version`` or the API 400s; the
-#: api key itself rides the connection's auth (auth_scheme="header",
-#: header_name="x-api-key" for Anthropic — never in these static headers).
-PROTOCOLS = {
-    "openai_chat": WireProtocol(
-        encode_openai_chat, decode_openai_chat, agent_factory=_chat_agent_codec,
-        request_validator=_validate_chat_request,
-        legacy_request_validator=partial(_validate_chat_request, legacy=True),
-        request_fields=frozenset({"model", "messages", "temperature", "max_tokens",
-                                  "tools", "tool_choice"}),
-    ),
-    "anthropic_messages": WireProtocol(
-        encode_anthropic_messages, decode_anthropic_messages,
-        headers=(("anthropic-version", ANTHROPIC_VERSION),),
+#: Structural encoder pairs, keyed by a dialect document's ``message_dialect``.
+#: These are the only code in the dialect system; everything that varies by
+#: endpoint (paths, field names, pointers, headers) is document data.
+_MESSAGE_ENCODERS = {
+    "chat_messages": (encode_openai_chat, decode_openai_chat),
+    "content_blocks": (encode_anthropic_messages, decode_anthropic_messages),
+}
+_CONSTRAINED = {
+    "chat_messages": (
+        _validate_chat_request,
+        partial(_validate_chat_request, legacy=True),
+        frozenset({"model", "messages", "temperature", "max_tokens", "tools", "tool_choice"}),
     ),
 }
+
+
+def _with_path(encode: Callable, path: str) -> Callable:
+    def encode_at(**kwargs):
+        _, body = encode(**kwargs)
+        return path, body
+
+    return encode_at
+
+
+def _wire_from_document(document: dict[str, Any]) -> WireProtocol:
+    message = document["message_dialect"]
+    encode, decode = _MESSAGE_ENCODERS[message]
+    validator, legacy_validator, fields = _CONSTRAINED.get(message, (None, None, frozenset()))
+    tools = document["tool_dialect"] != "none"
+    return WireProtocol(
+        _with_path(encode, document["text_path"]), decode,
+        headers=tuple(sorted(document["headers"].items())),
+        agent_factory=partial(_dialect_agent_codec, document["dialect"]) if tools else None,
+        request_validator=validator,
+        legacy_request_validator=legacy_validator,
+        request_fields=fields,
+    )
+
+
+def _installed_protocols() -> dict[str, WireProtocol]:
+    """Every bundled dialect under its structural name AND its stored aliases.
+
+    An alias maps to the very same :class:`WireProtocol`, so a stored row that
+    says ``openai_chat`` executes exactly what a new row saying
+    ``chat_messages`` does.
+    """
+    from tinyassets.providers.wire_dialects import (
+        canonical_dialect,
+        dialect_document,
+        known_names,
+    )
+
+    wires = {}
+    for name in known_names():
+        canonical = canonical_dialect(name)
+        if canonical not in wires:
+            wires[canonical] = _wire_from_document(dialect_document(canonical))
+    return {name: wires[canonical_dialect(name)] for name in known_names()}
+
+
+#: Dialect name (structural or stored alias) -> installed wire. The api key is
+#: never here: the broker applies it from the connection's auth scheme, and a
+#: connection's own ``constant_headers`` are applied by the broker too.
+PROTOCOLS = _installed_protocols()
 
 # Preserve legacy text-only lookup shapes. Agent readiness is a separate,
 # optional local capability and never changes a legacy text encoder's contract.

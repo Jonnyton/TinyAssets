@@ -1909,8 +1909,17 @@ def write_graph(
             fallback order from model_options. This grants no model access.
             connection/configure_provider_capability accepts model_discovery
             metadata only, on an already owned registered compute definition.
+            connection/configure sets constant headers on a held connection:
+            {"destination", "constant_headers": {name: value}}. It cannot add or
+            change a model use: models and billing need the owner's answer to a
+            connect ask with "uses": {"model": {"wire": "chat_messages"|
+            "content_blocks", "models": [{"id", "tools", "context"}],
+            "billing": "free"|"flat"}}.
             Metadata never adds endpoints or grants inference/spending. Read your
             existing connections/compute before asking for new credentials.
+            To connect ANY model or platform, ask with pending_request action
+            type "connect": the connect_http fields plus "uses" and
+            "constant_headers". An LLM is just a connection with uses.model.
         operation: branch create/patch/delete; automation create/pause/resume/delete;
             webhook create/revoke;
             pending_request ask. For model access, ask with action type
@@ -2010,6 +2019,24 @@ def write_graph(
         from tinyassets.providers.model_preferences import strict_json
 
         op = (operation or "").strip().lower()
+        if t == "connection" and op == "configure":
+            # Non-secret uses/constant headers on a connection the owner holds.
+            # No secret, no endpoints, no serving change (the owner's answer to a
+            # connect request is what selects a model for an unpowered universe).
+            ticket, refused = _admission_parts(
+                _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
+            )
+            if ticket is None:
+                return _engine_refusal("connection setup", refused)
+            from tinyassets.api.connection_uses import configure_connection
+
+            token = _bind_founder_identity(("write",))
+            try:
+                return json.dumps(configure_connection(
+                    universe_id=_GRAPH_ID, payload=payload_json,
+                ))
+            finally:
+                _current_identity.reset(token)
         expected_op = ("save" if t == "model_preferences" else "configure_provider_capability")
         if op != expected_op:
             return json.dumps({"error": f"{t} supports operation={expected_op!r} only"})
