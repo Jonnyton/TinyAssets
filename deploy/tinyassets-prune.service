@@ -1,8 +1,12 @@
-# Pressure-triggered recoverable daemon image cache retention only.
+# Count-based recoverable daemon image cache retention only: keep the running
+# image, every container reference, the configured and receipt rollback refs,
+# anything newer than the running image and the two newest older images;
+# remove the rest (bounded, registry-verified). Pressure grades the pass.
+# Started by the daily timer AND by deploy-prod.yml after a green canary.
 # Same policy and serialization as hourly cleanup; no broad Docker prune.
 
 [Unit]
-Description=TinyAssets bounded daemon image retention (weekly)
+Description=TinyAssets bounded daemon image retention (post-deploy + daily)
 Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/deploy/hetzner-bootstrap.sh
 After=docker.service
 

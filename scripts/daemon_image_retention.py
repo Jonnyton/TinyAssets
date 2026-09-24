@@ -1,4 +1,23 @@
-"""Bounded, fail-closed retention of recoverable daemon image cache only."""
+"""Bounded, fail-closed retention of recoverable daemon image cache only.
+
+Two modes, selected by ``TINYASSETS_DAEMON_IMAGE_RETENTION_MODE``:
+
+``count`` (default)
+    The keep set is a rule, not a pressure response. Every pass removes each
+    registry-verified daemon image outside the keep set, whatever the disk
+    percentage: the running image, every image any container (running or
+    stopped) references, the configured ``TINYASSETS_IMAGE``, the release
+    receipt's ``rollback_target``, every image at least as new as the running
+    one (a pulled candidate or a roll-forward target), and the two newest older
+    images -- the deploy workflow's captured canary-rollback target plus one
+    spare. That is the last three deployed digests on the normal path.
+    Pressure at or above the trigger still grades the pass, so disk the rule
+    cannot relieve stays loud (``pressure_unmet``, exit 1).
+
+``threshold``
+    The original pressure-gated path: nothing happens below the trigger, and
+    removal stops at the low watermark. Kept as an operator lever.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +43,14 @@ FENCE_LOCK = Path("/run/lock/tinyassets-deploy-fence.lock")
 MUTATION_LOCK = Path("/var/lock/tinyassets-host-mutation.lock")
 FENCE_STATE = Path("/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json")
 MAX_OUTPUT = 4 * 1024 * 1024
+MODES = ("count", "threshold")
+# Older daemon images kept besides the running one: N=3 distinct digests total.
+KEEP_OLDER = 2
+MAX_REMOVALS = 4
+# Registry proof per pass is bounded so one unrecoverable image cannot starve
+# the rest, and so the locked phase always keeps its 60-second budget.
+MAX_VERIFY_ATTEMPTS = 8
+LOCKED_BUDGET = 60
 
 
 class Refusal(Exception):
@@ -192,7 +219,7 @@ def read_receipt(docker, containers):
     return daemon, receipt
 
 
-def candidates(images, containers, daemon, configured, receipt):
+def candidates(images, containers, daemon, configured, receipt, keep_older=KEEP_OLDER):
     """Pure selection; mutable aliases and every ambiguity preserve cache."""
     by_id = {}
     refs = {}
@@ -239,7 +266,7 @@ def candidates(images, containers, daemon, configured, receipt):
         tags = row.get("RepoTags") or []
         if len(digests) == 1 and immutable(digests[0]) and (not tags or tags == digests):
             eligible.append((created, identity, digests[0]))
-    protected.update(identity for _, identity in sorted(older, reverse=True)[:2])
+    protected.update(identity for _, identity in sorted(older, reverse=True)[:keep_older])
     return [
         dict(image_id=identity, ref=ref)
         for _, identity, ref in sorted(eligible)
@@ -393,6 +420,7 @@ def retain(
     dry_run=True,
     high=85,
     low=75,
+    mode="count",
     environ=None,
     docker=None,
     registry=None,
@@ -402,6 +430,8 @@ def retain(
     measure=pressure,
     clock=time.monotonic,
 ):
+    if mode not in MODES:
+        raise Refusal("invalid_retention_mode")
     if not 0 < low < high < 100:
         raise Refusal("invalid_watermarks")
     env = os.environ if environ is None else environ
@@ -413,15 +443,20 @@ def retain(
     before = measure(path)
     report = dict(
         status="below_threshold",
+        mode=mode,
         dry_run=dry_run,
         before_pct=before,
         after_pct=before,
         driver=info.get("Driver"),
         removed=[],
         selected=[],
+        unverified=[],
     )
     triggered = before >= high
-    if not triggered and not dry_run:
+    counting = mode == "count"
+    # Count mode removes excess by rule; threshold mode only under pressure.
+    acting = counting or triggered
+    if not acting and not dry_run:
         return report
     platform = (
         info.get("OSType"),
@@ -435,40 +470,52 @@ def retain(
     daemon, receipt = receipt_reader(docker, containers)
     choices, protected = candidates(images, containers, daemon, config_reader(), receipt)
     verified = []
-    for choice in choices[:4]:
-        registry.verify(choice, platform)
+    for choice in choices[:MAX_VERIFY_ATTEMPTS]:
+        if len(verified) >= MAX_REMOVALS or clock() >= deadline - LOCKED_BUDGET:
+            break
+        try:
+            registry.verify(choice, platform)
+        except Refusal as exc:
+            # Never remove what cannot be re-pulled, but one such image must
+            # not block the rule for every other excess image.
+            report["unverified"].append(dict(ref=choice["ref"], reason=str(exc)))
+            continue
         verified.append(choice)
-    report.update(
-        verified=verified,
-        protected_image_ids=protected,
-        status="dry_run" if dry_run else "pressure_unmet",
-    )
-    with locker():
-        docker.deadline = min(deadline, clock() + 60)
-        for choice in verified:
-            if clock() >= docker.deadline:
-                raise Refusal("budget_expired")
-            images, containers = docker.inventory()
-            daemon, receipt = receipt_reader(docker, containers)
-            fresh, protected = candidates(images, containers, daemon, config_reader(), receipt)
-            report["protected_image_ids"] = protected
-            if choice not in fresh:
-                continue
-            if not triggered:
-                continue  # Dry-run still proves preservation below the trigger.
-            report["after_pct"] = measure(path)
-            if report["after_pct"] <= low:
-                break
-            report["selected"].append(choice)
-            if not dry_run:
-                docker.command("image", "rm", choice["ref"])
-                report["removed"].append(choice["ref"])
-                print(json.dumps(dict(event="daemon_image_removed", ref=choice["ref"])))
-                report["after_pct"] = measure(path)
-        if not dry_run and report["after_pct"] <= low:
-            report["status"] = "pressure_relieved"
-        elif not triggered:
-            report["status"] = "below_threshold"
+    report.update(verified=verified, protected_image_ids=protected, candidates=len(choices))
+    if verified:
+        with locker():
+            docker.deadline = min(deadline, clock() + LOCKED_BUDGET)
+            for choice in verified:
+                if clock() >= docker.deadline:
+                    raise Refusal("budget_expired")
+                images, containers = docker.inventory()
+                daemon, receipt = receipt_reader(docker, containers)
+                fresh, protected = candidates(
+                    images, containers, daemon, config_reader(), receipt
+                )
+                report["protected_image_ids"] = protected
+                if choice not in fresh:
+                    continue
+                if not acting:
+                    continue  # Threshold dry-run still proves preservation below the trigger.
+                if not counting:
+                    report["after_pct"] = measure(path)
+                    if report["after_pct"] <= low:
+                        break
+                report["selected"].append(choice)
+                if not dry_run:
+                    docker.command("image", "rm", choice["ref"])
+                    report["removed"].append(choice["ref"])
+                    print(json.dumps(dict(event="daemon_image_removed", ref=choice["ref"])))
+                    report["after_pct"] = measure(path)
+    if dry_run:
+        report["status"] = "dry_run" if acting else "below_threshold"
+    elif triggered:
+        report["status"] = (
+            "pressure_relieved" if report["after_pct"] <= low else "pressure_unmet"
+        )
+    elif counting:
+        report["status"] = "retention_incomplete" if report["unverified"] else "retained"
     return report
 
 
@@ -484,12 +531,16 @@ def main(argv=None):
         activation = os.environ.get("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "0")
         if activation not in ("0", "1"):
             raise Refusal("invalid_retention_activation")
+        mode = os.environ.get("TINYASSETS_DAEMON_IMAGE_RETENTION_MODE", "count")
+        if mode not in MODES:
+            raise Refusal("invalid_retention_mode")
         report = retain(
             dry_run=not options.apply
             or activation != "1"
             or os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"),
             high=float(os.environ.get("DISK_AUTOPRUNE_PCT", "85")),
             low=float(os.environ.get("DISK_AUTOPRUNE_LOW_PCT", "75")),
+            mode=mode,
         )
     except (Refusal, OSError, ValueError, TypeError, KeyError, AttributeError, ImportError) as exc:
         reason = str(exc) if isinstance(exc, Refusal) else "evidence_unavailable"
@@ -497,7 +548,7 @@ def main(argv=None):
         return 2
     report.update(apply_requested=options.apply, apply_enabled=activation == "1")
     print(json.dumps(report, sort_keys=True))
-    return 0 if report["status"] in ("below_threshold", "pressure_relieved") else 1
+    return 0 if report["status"] in ("below_threshold", "pressure_relieved", "retained") else 1
 
 
 if __name__ == "__main__":

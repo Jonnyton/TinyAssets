@@ -453,6 +453,48 @@ jobs:
             --report-provenance \
             --assert-contains "${GIT_SHA}"
 
+      - name: Enforce daemon image retention (post-canary)
+        # Every deploy pulls a ~2.7 GB daemon image; on 2026-09-24 the droplet
+        # held 23 of them (50 GB disk, 87% used) because retention only acted
+        # above a pressure threshold and the dedicated timer was weekly.
+        #
+        # This runs only after the public canary is green and the protected
+        # receipt names the target revision, i.e. after the canary rollback
+        # step can no longer fire. It starts the SAME installed unit the daily
+        # timer and the hourly disk-watch use -- fence then host-mutation lock,
+        # registry-verified, at most four removals, bounded budget -- rather
+        # than a second copy of the policy. Keep set (scripts/
+        # daemon_image_retention.py): the running image, every container's
+        # image, the configured TINYASSETS_IMAGE and receipt rollback_target,
+        # anything newer than the running image, and the two newest older
+        # daemon images. Everything else is removed regardless of disk percent.
+        #
+        # A retention refusal must not fail a deploy that succeeded: that would
+        # open a deploy-failed issue and suppress the install-host-services
+        # chain, which only runs after a successful deploy. It is a warning, and
+        # the daily timer plus the hourly disk-watch retry.
+        id: retention
+        if: ${{ success() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          set -uo pipefail
+          rc=0
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'bash -s' <<'REMOTE' || rc=$?
+          set -uo pipefail
+          status=0
+          sudo systemctl start tinyassets-prune.service || status=$?
+          invocation="$(systemctl show --property=InvocationID --value tinyassets-prune.service)"
+          if [ -n "${invocation}" ]; then
+            sudo journalctl --no-pager --output=cat "_SYSTEMD_INVOCATION_ID=${invocation}" | tail -n 20
+          fi
+          df -h / | tail -n 1
+          exit "${status}"
+          REMOTE
+          if [ "${rc}" -ne 0 ]; then
+            echo "::warning::post-deploy image retention did not complete (rc=${rc}); the daily timer and hourly disk-watch retry. The pass report is above."
+          fi
+
       - name: Open deploy-failed issue
         if: ${{ failure() }}
         env:
@@ -475,4 +517,5 @@ jobs:
             echo "- deployed image: \`${{ steps.deploy.outputs.deployed_image }}\`"
             echo "- public canary: \`${{ steps.canary.outcome }}\`"
             echo "- protected receipt assertion: \`${{ steps.deployed_sha.outcome }}\`"
+            echo "- image retention: \`${{ steps.retention.outcome }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

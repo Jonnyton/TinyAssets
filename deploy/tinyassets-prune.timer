@@ -1,15 +1,22 @@
-# TinyAssets docker image prune — weekly on Sunday 04:00 UTC.
+# TinyAssets daemon image retention — daily backstop at 04:00 UTC.
+#
+# The primary trigger is the deploy workflow, which starts
+# tinyassets-prune.service after every deploy whose public canary is green.
+# This timer is the backstop for hosts that stop receiving deploys; the hourly
+# disk-watch service runs the same retention command as a third entrypoint.
+# Weekly (Sun 04:00) until 2026-09-24: deploys pull a ~2.7 GB image several
+# times a day, so a weekly pass let the disk fill between runs.
 #
 # Runs after the nightly backup window (02:00–03:00) and before the
-# tier-3 OSS clone (07:17). Persistent=true so a missed prune runs on
+# tier-3 OSS clone (07:17). Persistent=true so a missed pass runs on
 # next boot.
 
 [Unit]
-Description=Timer for TinyAssets docker image prune
+Description=Timer for TinyAssets daemon image retention (daily backstop)
 Requires=tinyassets-prune.service
 
 [Timer]
-OnCalendar=Sun 04:00 UTC
+OnCalendar=*-*-* 04:00:00 UTC
 AccuracySec=5min
 Persistent=true
 Unit=tinyassets-prune.service
