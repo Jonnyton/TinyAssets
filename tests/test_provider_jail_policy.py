@@ -152,8 +152,10 @@ def test_default_view_binds_the_universe_masks_launches_and_rebinds_its_own(tmp_
     for i, arg in enumerate(argv[:-3]):
         if arg in ("--bind", "--ro-bind"):
             assert not Path(universe.parent).is_relative_to(Path(argv[i + 1])), argv[i + 1]
-    # A cwd outside the universe is not honoured; the universe is.
-    assert argv[argv.index("--chdir") + 1] == str(universe)
+    # A cwd inside the universe is honoured; one outside falls back to the universe.
+    assert argv[argv.index("--chdir") + 1] == str(universe / "sub")
+    outside = default_view(universe, cwd=str(universe.parent))
+    assert outside.chdir == str(universe)
     assert argv[argv.index("--") + 1:] == ["cli", "-p"]
 
 
