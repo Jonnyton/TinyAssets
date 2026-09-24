@@ -750,7 +750,6 @@ class CodexProvider(BaseProvider):
             credential_snapshot_dir=config.credential_snapshot_dir,
         )
         machine_accounting = bool(config.sandbox_workspace)
-        binary_mounts: tuple[Path, ...] | None = None
         if config.sandbox_workspace:
             if universe_dir is None or use_shell or not sandbox_status.get("bwrap_available"):
                 raise ProviderError(
@@ -767,7 +766,6 @@ class CodexProvider(BaseProvider):
                 raise ProviderError(
                     "codex served turns require an available OS sandbox and universe auth"
                 )
-            binary_mounts = _codex_sandbox_mounts(base_cmd)
             sandbox_args = [
                 "--sandbox",
                 "workspace-write",
@@ -892,10 +890,7 @@ class CodexProvider(BaseProvider):
             limit=_STDOUT_READER_LIMIT,
             env=proc_env,
             universe_view=universe_view,
-            install_mounts=(
-                (lambda: binary_mounts) if binary_mounts is not None
-                else (lambda: _codex_sandbox_mounts(base_cmd))
-            ),
+            install_mounts=lambda: _codex_sandbox_mounts(base_cmd),
         )
 
         # EVERY exit -- success, classified raise, cancellation -- ends the

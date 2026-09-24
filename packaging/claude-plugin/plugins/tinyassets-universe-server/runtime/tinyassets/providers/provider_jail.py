@@ -2,8 +2,8 @@
 
 Why this exists
 ---------------
-A provider CLI (``claude -p``, ``codex exec``, any future command adapter) is a
-model with tools. Before 2026-09-24 a workflow node launched it in the daemon's
+A provider CLI (any command-style adapter, today's or a future one) is a model
+with tools. Before 2026-09-24 a workflow node launched it in the daemon's
 own working directory (``/app``, the platform source) as the daemon's user, so
 its shell and file tools could list ``/data`` -- every user's universe -- and
 read ``/proc/1/environ``, the daemon's platform secrets. A tool deny list does
@@ -17,9 +17,8 @@ Every provider subprocess spawned through
 bound (:func:`provider_launch_scope`) runs inside bubblewrap. The jail holds:
 
 * the owning universe's own directory, read-write at its own path, so every
-  path the provider environment already points at (``HOME``, ``TMPDIR``,
-  ``CLAUDE_CONFIG_DIR``, ``CODEX_HOME``, the universe's ``.claude`` settings)
-  resolves unchanged;
+  path the provider environment already points at (its home, temp and
+  credential directories, the universe's own CLI settings) resolves unchanged;
 * over it, an empty ``tmpfs`` on ``.runtime/provider-launch-credentials``, with
   ONLY this launch's own credential snapshot bound back -- a concurrent launch's
   snapshot for another provider is not readable;
@@ -30,14 +29,14 @@ bound (:func:`provider_launch_scope`) runs inside bubblewrap. The jail holds:
 
 Nothing else. Not ``/data`` or another universe, not ``/app``, not the daemon's
 ``/proc``, not the host credential homes. Everything the CLI starts -- hooks
-from the universe's ``.claude/settings.json``, an MCP stdio server, a shell
+from the universe's own CLI settings, an MCP stdio server, a shell
 tool -- is a descendant inside the same namespaces.
 
 The key is the OWNING UNIVERSE, not the vendor. The router binds it around every
 provider call (``provider_launch_scope``), and the shared spawn point reads it,
 so a provider inherits the jail by spawning through ``aspawn_owned`` and needs
 no code of its own. An adapter MAY narrow what the universe looks like inside
-the jail (:class:`UniverseView`: codex's chat turn sees an empty workspace), but
+the jail (:class:`UniverseView`: a chat turn may see an empty workspace), but
 every bind it asks for must come from inside the owning universe, so it can
 never widen the jail.
 
@@ -172,13 +171,6 @@ _RESERVED_DESTS: tuple[str, ...] = (
 
 #: Where every universe keeps its per-launch credential snapshots.
 _LAUNCH_CREDENTIALS = Path(".runtime") / "provider-launch-credentials"
-
-#: Environment variables naming a CA bundle file the provider child keeps
-#: (see ``providers.base._PROVIDER_CHILD_CA_FILE_ENV_VARS``).
-_CA_FILE_ENV_VARS: tuple[str, ...] = (
-    "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-    "NODE_EXTRA_CA_CERTS", "CODEX_CA_CERTIFICATE",
-)
 
 
 def _refuse(detail: str) -> ProviderConfinementError:
@@ -331,9 +323,12 @@ def _ca_file_binds(
     Public certificate files only; one that would sit in a universe or the
     source tree is left out rather than exposing that tree.
     """
+    # The one list of CA-file variables a provider child keeps.
+    from tinyassets.providers.base import _PROVIDER_CHILD_CA_FILE_ENV_VARS
+
     forbidden = _forbidden_install_roots(view)
     argv: list[str] = []
-    for name in _CA_FILE_ENV_VARS:
+    for name in _PROVIDER_CHILD_CA_FILE_ENV_VARS:
         value = (env or {}).get(name)
         if not value or not os.path.isabs(value) or not os.path.isfile(value):
             continue

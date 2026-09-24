@@ -220,8 +220,8 @@ class ModelConfig:
     Provider-agnostic marker. The cross-user boundary does NOT depend on it:
     every provider launch made for a universe is OS-jailed to that universe by
     the shared spawn point, whatever its config (``provider_jail``). A provider
-    may use the mark to narrow further; claude pins cwd to the universe and
-    denies :data:`HOST_REACH_TOOLS`."""
+    may use the mark to narrow further, e.g. pin cwd to the universe and deny
+    :data:`HOST_REACH_TOOLS`."""
 
     sandbox_workspace: bool = False
     # A chat turn (converse): still OS-isolated, but NOT handed the universe as a
