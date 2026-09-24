@@ -246,7 +246,7 @@ Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/e
 
 1. **SqliteSaver only** -- not AsyncSqliteSaver (not production-safe).
 2. **LanceDB singleton** -- reuse connection objects, never recreate.
-3. **No API SDKs for primary writer** -- Claude/Codex use `claude -p` and `codex exec` subprocesses.
+3. **No vendor-specific compute or connection code** (founder, 2026-09-24). Any LLM or platform connects through vendor-neutral connectors the user's agent configures; a new vendor never needs a patch. Existing vendor paths are migration debt (`PLAN.md` Providers). Dev tooling is exempt.
 4. **Executable gates need autonomous defaults** -- never block a workflow gate on human input when a safe default exists. True host-only authority only as a concrete `host-decision`/`host-action` row with the smallest ask; it must not block unrelated autonomous work.
 5. **TypedDict + Annotated reducers** -- `Annotated[list, operator.add]` for accumulating fields.
 6. **FactWithContext with truth-value typing** -- every extracted fact needs source_type, reliability, temporal_bounds, language_type.
