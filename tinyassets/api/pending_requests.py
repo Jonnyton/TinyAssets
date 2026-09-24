@@ -26,7 +26,11 @@ Two actions exist, and the difference is where the answer goes:
   non-secret ``constant_headers``. One answer deposits the key, creates the
   connection and grant, records the uses, and - when the universe has no model
   yet and this one serves models - makes it the universe's model. An LLM is
-  just another connection (founder, 2026-09-24).
+  just another connection (founder, 2026-09-24). When the provider offers
+  OAuth for what the connection needs (found by standard discovery, or from
+  ``oauth`` connection data on the ask), signing in is the request's primary
+  action and key paste the fallback (founder, 2026-09-24: "prefer OAuth when
+  the provider allows for what the request is trying to accomplish").
 * ``{"type": "answer"}`` — the answer is ordinary data the agent reads back.
 
 Nothing is inferred anywhere in this flow. For a credential the agent already
@@ -313,6 +317,7 @@ def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
         validate_constant_headers,
         validate_uses,
     )
+    from tinyassets.connection_oauth.discovery import validate_request
 
     deposit = _validated_action({**action, "type": "connect_http"})
     try:
@@ -320,13 +325,50 @@ def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
         headers = validate_constant_headers(action.get("constant_headers"))
     except ConnectionUseError as exc:
         raise ValueError(str(exc)) from None
+    # What the agent knows about signing in (endpoints, issuer, scopes). It is
+    # REPLACED by the resolved offer before the ask is stored, so a caller can
+    # never claim an offer was discovered.
+    oauth_request = validate_request(action.get("oauth"))
     if "model" in uses and deposit["access"] == "exact" and not any(
         "POST" in (endpoint.get("methods") or []) for endpoint in deposit["endpoints"]
     ):
         raise ValueError(
             "a model use needs a POST endpoint for inference (the model URL path)"
         )
-    return {**deposit, "type": "connect", "uses": uses, "constant_headers": headers}
+    return {**deposit, "type": "connect", "uses": uses, "constant_headers": headers,
+            "oauth_request": oauth_request}
+
+
+def _has_sign_in(action: dict[str, Any]) -> bool:
+    offer = action.get("oauth") if isinstance(action, dict) else None
+    return action.get("type") == "connect" and isinstance(offer, dict) and bool(
+        offer.get("authorize_url"))
+
+
+def _with_sign_in_offer(action: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve whether the provider offers OAuth for this connection.
+
+    Returns the action to store (with ``oauth`` = the offer when there is one)
+    and what to tell the requester. Discovery never fails the ask: without an
+    offer the ask is a key paste, and the reason says why.
+    """
+    from tinyassets.connection_oauth.discovery import resolve_offer
+    from tinyassets.connection_oauth.flow import configured_redirect_uri
+
+    requested = action.pop("oauth_request", {}) or {}
+    hosts = list(dict.fromkeys(
+        [str(e.get("host") or "") for e in action.get("endpoints") or []]
+        + [str(h) for h in action.get("hosts") or []]
+    ))
+    offer, reason = resolve_offer(requested, [h for h in hosts if h])
+    if offer is None:
+        return action, {"oauth_unavailable": reason}
+    note: dict[str, Any] = {"primary": "sign_in"}
+    callback = configured_redirect_uri()
+    if callback:
+        # A client registered by hand must list exactly this redirect URI.
+        note["redirect_uri"] = callback
+    return {**action, "oauth": offer}, note
 
 
 #: A channel is 1-4 hosts. More than that is not one channel; it is a request
@@ -557,6 +599,9 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
         if raw not in (None, []):
             raise ValueError("model access is a fieldless owner confirmation")
         return []
+    if not fields and _has_sign_in(action):
+        # Signing in IS the answer; key fields, when present, are the fallback.
+        return []
     if not fields:
         # NO unlabelled fallback for a credential ask.
         #
@@ -719,11 +764,15 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
         return _bad("kind is the tab header (e.g. 'API'); it is required")
     if not title:
         return _bad("title is required; the user is being asked for something")
+    sign_in: dict[str, Any] = {}
     try:
         action = _validated_action(document.get("action"))
+        if action.get("type") == "connect":
+            action, sign_in = _with_sign_in_offer(action)
         fields = _validated_fields(document.get("fields"), action)
     except ValueError as exc:
-        return _bad(str(exc))
+        reason = sign_in.get("oauth_unavailable")
+        return _bad(str(exc) + (f" (no sign-in is offered: {reason})" if reason else ""))
     except Exception as exc:  # noqa: BLE001 - endpoint validator
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
 
@@ -810,7 +859,7 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
                 "decision rather than asking again."
             ),
         }
-    return {**row, "grant_sentence": _grant_sentence(row)}
+    return {**row, "grant_sentence": _grant_sentence(row), **sign_in}
 
 
 def _full_channel_reach(universe_id: str, action: dict[str, Any]) -> dict[str, Any]:
@@ -1061,7 +1110,7 @@ def _grant_sentence(row: dict[str, Any]) -> str:
         )
     if action.get("type") == "connect":
         base = _grant_sentence({**row, "action": {**action, "type": "connect_http"}})
-        return (base + _uses_sentence(action)) if base else ""
+        return (base + _uses_sentence(action) + _sign_in_sentence(row)) if base else ""
     if action.get("type") in ("extend_http", "connect_http") and action.get("access") == "full":
         return _full_channel_sentence(action)
     if action.get("type") == "extend_http":
@@ -1101,6 +1150,22 @@ def _grant_sentence(row: dict[str, Any]) -> str:
         f"This key{where} will be able to {verb} exactly these, and nothing "
         "else: " + "; ".join(lines) + "."
     )
+
+
+def _sign_in_sentence(row: dict[str, Any]) -> str:
+    """How a sign-in-capable ask is completed, naming where the click goes."""
+    action = row.get("action") or {}
+    if not _has_sign_in(action):
+        return ""
+    from urllib.parse import urlsplit
+
+    offer = action["oauth"]
+    host = urlsplit(offer["authorize_url"]).hostname or "the provider"
+    scopes = offer.get("scopes") or []
+    asks = f" It asks {host} for: {', '.join(scopes)}." if scopes else ""
+    paste = " You can paste a key instead." if row.get("fields") else ""
+    return (f" Sign in at {host} to connect it - no key to copy.{asks} Its access "
+            "renews itself, and only your universe can use it." + paste)
 
 
 def _uses_sentence(action: dict[str, Any]) -> str:
@@ -1353,7 +1418,6 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     is deposited under the policy stored ON THE REQUEST — never one supplied
     here — so the tab's promise is what gets granted.
     """
-    from tinyassets.api.http_connection import connect_http
     from tinyassets.storage.pending_requests import get_request, resolve_request
 
     _uid, udir, denied = _owner_gate(universe_id)
@@ -1460,11 +1524,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     # tab that reads "also let me write one more file" and have it delete their
     # credential instead: the fields check below never ran for a fieldless row,
     # and nothing ever compared the action to what was on screen.
-    expected = json.dumps(
-        [row["kind"], row["title"], row["body"], row["fields"], action],
-        sort_keys=True, separators=(",", ":"),
-    )
-    if row.get("dedupe_key") and row["dedupe_key"] != expected:
+    if not displayed_row_matches(row):
         return _bad(
             "this request no longer matches what it was created as, so what "
             "you were shown is not what would happen; ask again"
@@ -1604,6 +1664,11 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         refused = _model_use_refusal(_uid, action)
         if refused is not None:
             return {**refused, "request_pending": True}
+    if action.get("type") in _DEPOSIT_TYPES and not secret_names and _has_sign_in(action):
+        return _bad(
+            "this connection is completed by signing in: use the request's "
+            "Sign in button, which returns here connected"
+        )
     if action.get("type") in _DEPOSIT_TYPES:
         # ONE secret field -> its value. SEVERAL -> a JSON object keyed by field
         # name, which is the encoding a multi-value scheme's vault string uses.
@@ -1643,46 +1708,11 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             secret = f"{supplied['username']}:{supplied['password']}"
         else:
             secret = json.dumps(supplied)
-        deposited = connect_http(
-            universe_id=universe_id,
-            payload=json.dumps(
-                {
-                    "destination": action["destination"],
-                    "secret": secret,
-                    "auth_scheme": action["auth_scheme"],
-                    "allowed_endpoints": action["endpoints"],
-                    "scopes": action.get("scopes") or [],
-                    # As above: the owner accepted a full channel, so the
-                    # connection is created full. It was stored exact, and the
-                    # first call outside the recorded endpoints was refused.
-                    "access": action.get("access") or "exact",
-                }
-            ),
+        return _deposit_answer(
+            universe_id=universe_id, uid=_uid, udir=udir, row=row, secret=secret,
+            auth_scheme=action["auth_scheme"], answer=answer, feedback=feedback,
+            dont_ask_again=dont_ask_again,
         )
-        if deposited.get("error"):
-            # Leave it PENDING: the answer did not land, and closing the tab
-            # here would lose the ask with nothing deposited.
-            return deposited
-        extra: dict[str, Any] = {}
-        if action.get("type") == "connect":
-            extra = _complete_connect(_uid, action, deposited)
-            if extra.get("error"):
-                # The key is in the vault, but the uses did not land. Leave the
-                # ask PENDING: answering again re-deposits idempotently and
-                # retries the uses, so nothing is half-granted for long.
-                return {**extra, "request_pending": True}
-        resolve_request(udir, request_id, status="answered", answer=answer,
-                        feedback=feedback, dont_ask_again=dont_ask_again,
-                        decision="allowed")
-        return {
-            "status": "answered",
-            "request_id": request_id,
-            "suppressed": dont_ask_again,
-            "destination": action["destination"],
-            "receipt": _grant_sentence(row).replace("will be able to", "may"),
-            "connection_id": deposited.get("connection_id"),
-            **extra,
-        }
 
     # For a plain answer the user's own words decide it: an explicit decline
     # field, else answering at all is a yes.
@@ -1705,6 +1735,110 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         "feedback": feedback,
         "suppressed": dont_ask_again,
     }
+
+
+def displayed_row_matches(row: dict[str, Any]) -> bool:
+    """Whether the stored row still reproduces what the owner was shown.
+
+    The dedupe key is a hash of exactly [kind, title, body, fields, action] --
+    the tuple the tab renders from -- so a row whose action was rewritten after
+    rendering no longer reproduces it and must not execute.
+    """
+    expected = json.dumps(
+        [row["kind"], row["title"], row["body"], row["fields"], row["action"]],
+        sort_keys=True, separators=(",", ":"),
+    )
+    return not row.get("dedupe_key") or row["dedupe_key"] == expected
+
+
+def _deposit_answer(
+    *, universe_id: str, uid: str, udir: Any, row: dict[str, Any], secret: str,
+    auth_scheme: str, answer: dict[str, Any], feedback: str, dont_ask_again: bool,
+) -> dict[str, Any]:
+    """Deposit under the policy stored ON THE REQUEST, then finish a connect.
+
+    One path for a pasted key and for a completed sign-in (``oauth2`` tokens),
+    so what the owner was shown is what gets granted either way.
+    """
+    from tinyassets.api.http_connection import connect_http
+    from tinyassets.storage.pending_requests import resolve_request
+
+    action = row["action"]
+    request_id = row["request_id"]
+    deposited = connect_http(
+        universe_id=universe_id,
+        payload=json.dumps(
+            {
+                "destination": action["destination"],
+                "secret": secret,
+                "auth_scheme": auth_scheme,
+                "allowed_endpoints": action["endpoints"],
+                "scopes": action.get("scopes") or [],
+                # As above: the owner accepted a full channel, so the
+                # connection is created full. It was stored exact, and the
+                # first call outside the recorded endpoints was refused.
+                "access": action.get("access") or "exact",
+            }
+        ),
+        allow_oauth2=auth_scheme == "oauth2",
+    )
+    if deposited.get("error"):
+        # Leave it PENDING: the answer did not land, and closing the tab
+        # here would lose the ask with nothing deposited.
+        return deposited
+    extra: dict[str, Any] = {}
+    if action.get("type") == "connect":
+        extra = _complete_connect(uid, action, deposited)
+        if extra.get("error"):
+            # The key is in the vault, but the uses did not land. Leave the
+            # ask PENDING: answering again re-deposits idempotently and
+            # retries the uses, so nothing is half-granted for long.
+            return {**extra, "request_pending": True}
+    resolve_request(udir, request_id, status="answered", answer=answer,
+                    feedback=feedback, dont_ask_again=dont_ask_again,
+                    decision="allowed")
+    return {
+        "status": "answered",
+        "request_id": request_id,
+        "suppressed": dont_ask_again,
+        "destination": action["destination"],
+        "receipt": _grant_sentence(row).replace("will be able to", "may"),
+        "connection_id": deposited.get("connection_id"),
+        **({"signed_in": True} if auth_scheme == "oauth2" else {}),
+        **extra,
+    }
+
+
+def answer_connect_with_token(
+    *, universe_id: str = "", request_id: str = "", token: str = "",
+) -> dict[str, Any]:
+    """The owner answered a sign-in-capable ``connect`` by signing in.
+
+    Called only by the sign-in flow after a code exchange, with the token bundle
+    as the secret. The same checks as a pasted answer run first: owner, still
+    pending, still what was shown, and the money floor for a model use.
+    """
+    from tinyassets.storage.pending_requests import get_request
+
+    uid, udir, denied = _owner_gate(universe_id)
+    if denied is not None:
+        return denied
+    row = get_request(udir, request_id) if request_id else None
+    if row is None:
+        return {"error": "not_found", "resource": "pending_request"}
+    if row["status"] != "pending":
+        return {"error": "already_resolved", "status": row["status"]}
+    action = row["action"]
+    if not _has_sign_in(action) or not displayed_row_matches(row):
+        return _bad("this request no longer offers sign-in as it was shown; ask again")
+    if "model" in (action.get("uses") or {}):
+        refused = _model_use_refusal(uid, action)
+        if refused is not None:
+            return {**refused, "request_pending": True}
+    return _deposit_answer(
+        universe_id=universe_id, uid=uid, udir=udir, row=row, secret=token,
+        auth_scheme="oauth2", answer={}, feedback="", dont_ask_again=False,
+    )
 
 
 def _model_use_refusal(uid: str, action: dict[str, Any]) -> dict[str, Any] | None:
@@ -1765,6 +1899,7 @@ def _complete_connect(
 
 
 __all__ = [
+    "answer_connect_with_token",
     "answer_request",
     "list_requests",
     "request_from_user",

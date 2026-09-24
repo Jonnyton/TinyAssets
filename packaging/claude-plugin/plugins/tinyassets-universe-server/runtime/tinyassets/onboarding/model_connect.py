@@ -1,4 +1,10 @@
-"""Authenticated same-origin ingress for hosted model connection, unpowered-safe."""
+"""Authenticated same-origin ingress for browser sign-in, unpowered-safe.
+
+Two flows share it: the bundled first-power preset (``begin``/``exchange``/
+``resume``/``deposit_key``) and signing in to answer ANY pending ``connect``
+request whose provider offers OAuth (``oauth_begin``/``oauth_exchange``,
+``connection_oauth.flow``).
+"""
 
 import json
 from urllib.parse import urlsplit
@@ -41,7 +47,9 @@ async def handle_model_connect(request):
     operation = request.path_params.get("operation")
     fields = {"begin": {"preset_id", "code_challenge"},
               "exchange": {"flow", "code", "code_verifier"}, "resume": {"preset_id"},
-              "deposit_key": {"preset_id", "key"}}
+              "deposit_key": {"preset_id", "key"},
+              "oauth_begin": {"request_id", "code_challenge"},
+              "oauth_exchange": {"flow", "code", "code_verifier"}}
     if operation not in fields:
         return JSONResponse({"error": "not_found"}, 404, headers=_HEADERS)
     raw = await onboarding._read_bounded_body(request, 8192)
@@ -52,7 +60,8 @@ async def handle_model_connect(request):
             raise ValueError
     except (ValueError, UnicodeError, RecursionError):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
-    if operation == "begin" and not hosted._HANDLE.fullmatch(data["code_challenge"]):
+    if operation in {"begin", "oauth_begin"} and not hosted._HANDLE.fullmatch(
+            data["code_challenge"]):
         return JSONResponse({"error": "invalid_pkce_challenge"}, 400, headers=_HEADERS)
     if operation == "deposit_key" and any(not 33 <= ord(char) <= 126 for char in data["key"]):
         return JSONResponse({"error": "invalid_model_connection"}, 400, headers=_HEADERS)
@@ -102,8 +111,32 @@ async def handle_model_connect(request):
             return complete_bootstrap(base=base, uid=home, owner=identity.user_id,
                                       preset=preset, key=key)
 
+    def oauth_begin():
+        from tinyassets.connection_oauth import flow as sign_in
+
+        with identity_context(identity):
+            _, home = scope()
+            return sign_in.begin(owner=identity.user_id, universe_id=home,
+                                 request_id=data["request_id"],
+                                 challenge=data["code_challenge"], public_resource=resource)
+
+    def oauth_exchange():
+        from tinyassets.connection_oauth import flow as sign_in
+
+        with identity_context(identity):
+            _, home = scope()
+            return sign_in.complete(owner=identity.user_id, universe_id=home,
+                                    handle=data["flow"], code=data["code"],
+                                    verifier=data["code_verifier"])
+
+    from tinyassets.connection_oauth.flow import FlowError
+
     try:
-        if operation == "begin":
+        if operation == "oauth_begin":
+            result = await run_in_threadpool(oauth_begin)
+        elif operation == "oauth_exchange":
+            result = await run_in_threadpool(oauth_exchange)
+        elif operation == "begin":
             result = await run_in_threadpool(begin)
         elif operation == "deposit_key":
             result = await run_in_threadpool(deposit_key)
@@ -119,6 +152,11 @@ async def handle_model_connect(request):
         return JSONResponse(result, headers=_HEADERS)
     except hosted.HostedAuthError as exc:
         return JSONResponse({"error": exc.code}, exc.status, headers=_HEADERS)
+    except FlowError as exc:
+        # The provider's own bounded words, never a token: the owner reads
+        # why their sign-in did not complete.
+        body = {"error": exc.code, **({"detail": exc.detail} if exc.detail else {})}
+        return JSONResponse(body, exc.status, headers=_HEADERS)
     except PermissionError:
         return JSONResponse({"error": "model_connection_requires_recovery"}, 409, headers=_HEADERS)
     except Exception:  # noqa: BLE001 - credentials and upstream errors never enter logs or JSON

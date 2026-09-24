@@ -401,6 +401,31 @@ class SsrfValidationError(ProxyRequestError):
     """
 
 
+class ConnectionAuthorizationError(ProxyRequestError):
+    """The connection's authorization could not be made current.
+
+    Raised when an ``oauth2`` refresh fails (the token endpoint refused, the
+    provider issued no refresh token, or the rotated token could not be
+    saved). It is an ordinary connection failure, recorded as structured
+    fields rather than a vendor message: stage ``connection``, class ``auth``,
+    and the token endpoint's own bounded, secret-free words as the detail.
+    """
+
+    STAGE = "connection"
+    CLASS = "auth"
+
+    def __init__(self, detail: str = "") -> None:
+        super().__init__("outbound request failed: connection authorization failed")
+        self.detail = str(detail or "")[:200]
+
+    @property
+    def failure(self) -> dict[str, str]:
+        record = {"stage": self.STAGE, "class": self.CLASS}
+        if self.detail:
+            record["provider_detail"] = self.detail
+        return record
+
+
 _MAX_PROXY_FRAME_BYTES = 16 * 1024 * 1024
 
 
@@ -499,8 +524,10 @@ _KNOWN_CONNECTION_TYPES = frozenset({"", "http"})
 
 #: Auth schemes an ``http`` connection may declare. ``oauth1a`` (Twitter) signs
 #: with the four OAuth secrets carried in the bundle; the rest use one token.
+#: ``oauth2`` sends a Bearer access token the broker keeps current from the
+#: connection's refreshable token bundle (``connection_oauth.tokens``).
 _SUPPORTED_HTTP_AUTH_SCHEMES = frozenset(
-    {"none", "bearer", "basic", "header", "oauth1a"}
+    {"none", "bearer", "basic", "header", "oauth1a", "oauth2"}
 )
 
 #: The ONLY credential_ref scheme an ``http`` connection may reference. Binding
@@ -692,6 +719,16 @@ def _run_proxy_worker(
                 continue
             try:
                 result = dispatch(grant_id, verb, message.get("request"))
+            except ConnectionAuthorizationError as exc:
+                _send_message(
+                    channel,
+                    {
+                        "ok": False,
+                        "error_type": "ConnectionAuthorizationError",
+                        "message": str(exc),
+                        "failure": exc.failure,
+                    },
+                )
             except (
                 AmbiguousProxyOutcome,
                 GrantResolutionError,
@@ -755,6 +792,10 @@ class _ProxyChannel:
             raise GrantResolutionError(message)
         if error_type == "AmbiguousProxyOutcome":
             raise AmbiguousProxyOutcome(message)
+        if error_type == "ConnectionAuthorizationError":
+            failure = response.get("failure")
+            detail = failure.get("provider_detail", "") if isinstance(failure, dict) else ""
+            raise ConnectionAuthorizationError(str(detail))
         raise ProxyRequestError(message)
 
     def close(self) -> None:
@@ -802,7 +843,9 @@ class ScopedConnectionProxy:
 class CredentialBlindBroker:
     """Trusted daemon-side dispatcher; adapter-facing errors are secret-free."""
 
-    __slots__ = ("_audit", "_ledger", "_network_request", "_resolve_credential")
+    __slots__ = (
+        "_audit", "_ledger", "_network_request", "_oauth_tokens", "_resolve_credential",
+    )
 
     def __init__(
         self,
@@ -811,11 +854,15 @@ class CredentialBlindBroker:
         resolve_credential: Callable[[str], str],
         network_request: Callable[..., Any],
         audit: Callable[[dict[str, object]], None] | None = None,
+        oauth_tokens: Any = None,
     ) -> None:
         self._ledger = ledger
         self._resolve_credential = resolve_credential
         self._network_request = network_request
         self._audit = audit or (lambda _record: None)
+        # Keeps an oauth2 connection's access token current (refresh before
+        # expiry and once on 401, single-flight). None refuses oauth2 loudly.
+        self._oauth_tokens = oauth_tokens
 
     def dispatch(self, grant_id: str, verb: str, request: object) -> Any:
         resource = self._ledger._active_resource_for_grant(grant_id)
@@ -873,8 +920,62 @@ class CredentialBlindBroker:
                     "outbound request failed: constant headers unavailable"
                 ) from None
             request = merge_constant_headers(request, headers)
+        oauth = (
+            resource.connection_type == "http"
+            and (resource.auth_scheme or "").strip().lower() == "oauth2"
+        )
+        # Every value to keep out of a response. For oauth2 that is the access
+        # AND refresh token, never the JSON bundle string as a whole.
+        secrets_held: tuple[str, ...] = (credential,)
+        wire_credential = credential
+        if oauth:
+            bundle = self._oauth_bundle(resource, grant_id, verb, credential)
+            wire_credential = bundle.access_token
+            secrets_held = bundle.secret_values()
+        response = self._send(resource, grant_id, verb, request, wire_credential,
+                              revalidate_authority)
+        if oauth and isinstance(response, dict) and response.get("status") == 401:
+            # The service rejected the token before doing anything: refresh
+            # once (unless another holder already did) and send once more.
+            bundle = self._oauth_bundle(resource, grant_id, verb, credential,
+                                        rejected=wire_credential)
+            if bundle.access_token != wire_credential:
+                wire_credential = bundle.access_token
+                secrets_held = tuple(dict.fromkeys((*secrets_held, *bundle.secret_values())))
+                response = self._send(resource, grant_id, verb, request, wire_credential,
+                                      revalidate_authority)
+        if any(_contains_secret(response, secret) for secret in secrets_held if secret):
+            self._record_error(
+                resource,
+                grant_id,
+                verb,
+                "destination response contained credential material",
+            )
+            raise ProxyRequestError(
+                "outbound request failed: unsafe destination response"
+            )
+        return response
+
+    def _oauth_bundle(
+        self, resource: ConnectionResource, grant_id: str, verb: str, credential: str,
+        *, rejected: str = "",
+    ) -> Any:
+        if self._oauth_tokens is None:
+            self._record_error(resource, grant_id, verb, "oauth2 tokens unavailable")
+            raise ProxyRequestError("outbound request failed: credential unavailable")
+        destination = (resource.credential_ref or "")[len(_HTTP_CREDENTIAL_REF_PREFIX):].strip()
         try:
-            response = self._network_request(
+            return self._oauth_tokens.current(destination, credential, rejected=rejected)
+        except ConnectionAuthorizationError:
+            self._record_error(resource, grant_id, verb, "connection authorization failed")
+            raise
+
+    def _send(
+        self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
+        credential: str, revalidate_authority: Any,
+    ) -> Any:
+        try:
+            return self._network_request(
                 credential=credential,
                 provider=resource.provider,
                 destination=resource.destination,
@@ -904,17 +1005,6 @@ class CredentialBlindBroker:
             raise ProxyRequestError(
                 "outbound request failed at destination"
             ) from None
-        if _contains_secret(response, credential):
-            self._record_error(
-                resource,
-                grant_id,
-                verb,
-                "destination response contained credential material",
-            )
-            raise ProxyRequestError(
-                "outbound request failed: unsafe destination response"
-            )
-        return response
 
     def _record_error(
         self,
@@ -1438,6 +1528,9 @@ def _ssrf_auth_headers(
             raise SsrfValidationError("custom auth header name is not permitted")
         _reject_forbidden_header_name(name)
         result = {name: bundle.get("token")}
+    elif scheme == "oauth2":
+        # The broker already replaced the bundle with the CURRENT access token.
+        result = {"Authorization": f"Bearer {bundle.get('token')}"}
     elif scheme == "oauth1a":
         # OAuth 1.0a (Twitter): the signature is over the request method + URL, so
         # they are threaded in from the driver. Signed entirely in the child.
@@ -3188,7 +3281,17 @@ def _build_http_secret_bundle(auth_scheme: str, credential: str) -> ConnectionSe
         raise SsrfValidationError(
             "credential encoding does not match the connection's auth scheme"
         )
-    if scheme in ("bearer", "header"):
+    # The same binding for oauth2: its vault string holds a refresh token and
+    # must never be sent as a bearer/header/basic value by a mutated row. The
+    # broker hands the driver the access token alone, so an oauth2 connection
+    # that still sees a bundle here was bypassed and is refused too.
+    from tinyassets.connection_oauth.tokens import looks_like_bundle
+
+    if looks_like_bundle(credential):
+        raise SsrfValidationError(
+            "credential encoding does not match the connection's auth scheme"
+        )
+    if scheme in ("bearer", "header", "oauth2"):
         return ConnectionSecretBundle(token=credential)
     if scheme == "basic":
         if ":" not in credential:
@@ -3315,11 +3418,17 @@ def _build_credential_broker_dispatch(
 ) -> Callable[[str, str, object], Any]:
     runtime_root = Path(config["runtime_root"])
     runtime_root.mkdir(parents=True, exist_ok=True)
+    from tinyassets.connection_oauth.tokens import ConnectionTokens
+
     broker = CredentialBlindBroker(
         ConnectionLedger(config["ledger_db_path"]),
         resolve_credential=_TrustedCredentialResolver(config),
         network_request=_TrustedNetworkDriver(config, runtime_root),
         audit=_JsonlAuditWriter(str(runtime_root / "audit.jsonl")),
+        oauth_tokens=ConnectionTokens(
+            universe_dir=config["universe_dir"],
+            owner_user_id=config["owner_user_id"],
+        ),
     )
     return broker.dispatch
 

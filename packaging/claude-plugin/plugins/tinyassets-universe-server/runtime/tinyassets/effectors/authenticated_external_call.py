@@ -991,6 +991,20 @@ def _run(
     except Exception as exc:
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.
+        failure = getattr(exc, "failure", None)
+        if isinstance(failure, dict):
+            # A connection whose authorization could not be made current (an
+            # oauth2 refresh failed): the structured record, not a message.
+            return {
+                "error": str(exc),
+                "error_kind": "connection_authorization_failed",
+                "failure": dict(failure),
+                "matched_output_key": matched_key,
+                "connection_id": connection_id,
+                "grant_id": grant_id,
+                "verb": verb,
+                "url": url,
+            }
         return {
             "error": f"outbound request failed: {type(exc).__name__}",
             "error_kind": "outbound_request_failed",

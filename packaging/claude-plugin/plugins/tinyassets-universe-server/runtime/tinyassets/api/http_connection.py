@@ -101,6 +101,11 @@ _ABSENT = object()
 #: depositable with no service code, and ``header`` does the same for every
 #: custom-header API.
 _DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "header", "oauth1a"})
+#: ``oauth2`` is deposited ONLY by a completed sign-in (``connection_oauth.flow``
+#: through ``pending_requests.answer_connect_with_token``), never pasted: its
+#: token bundle names the token URL a refresh token is sent to, so only the
+#: owner's own sign-in may write it.
+_SIGN_IN_AUTH_SCHEME = "oauth2"
 _OAUTH1A_FIELDS = ("api_key", "api_secret", "access_token", "access_token_secret")
 
 
@@ -117,6 +122,16 @@ def _secret_shape_error(scheme: str, secret: str) -> str:
         if not sep or not username or not password:
             return "basic secret must be username:password (both non-empty)"
         return ""
+    from tinyassets.connection_oauth.tokens import decode, looks_like_bundle
+
+    if scheme == _SIGN_IN_AUTH_SCHEME:
+        try:
+            decode(secret)
+        except (TypeError, ValueError):
+            return "oauth2 secret must be a token bundle from a completed sign-in"
+        return ""
+    if looks_like_bundle(secret):
+        return "a sign-in token bundle is only valid on an oauth2 connection"
     if scheme == "oauth1a":
         try:
             values = json.loads(secret)
@@ -363,14 +378,19 @@ def _canonical_policy(endpoints: list[dict[str, Any]]) -> str:
     return json.dumps(normalized, sort_keys=True)
 
 
-def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+def connect_http(
+    *, universe_id: str = "", payload: Any = None, allow_oauth2: bool = False,
+) -> dict[str, Any]:
     from tinyassets.onboarding.serving import _gesture_lock
 
     with _gesture_lock(_request_universe(universe_id)):
-        return _connect_http(universe_id=universe_id, payload=payload)
+        return _connect_http(universe_id=universe_id, payload=payload,
+                             allow_oauth2=allow_oauth2)
 
 
-def _connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+def _connect_http(
+    *, universe_id: str = "", payload: Any = None, allow_oauth2: bool = False,
+) -> dict[str, Any]:
     """Provision (or rotate) a generic http connection for the owner's universe.
 
     Returns a redacted projection on success and a sanitized error otherwise.
@@ -448,7 +468,9 @@ def _connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, An
         # An explicit non-string / empty scheme is a malformed request, NOT an
         # invitation to silently default to bearer (Codex: falsy schemes defaulted).
         scheme = ""
-    if scheme not in _DEPOSITABLE_AUTH_SCHEMES:
+    if scheme not in _DEPOSITABLE_AUTH_SCHEMES and not (
+        allow_oauth2 and scheme == _SIGN_IN_AUTH_SCHEME
+    ):
         return {
             "error": "unsupported_auth_scheme",
             "detail": (
