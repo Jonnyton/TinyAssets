@@ -175,7 +175,7 @@ def test_limits_wrap_the_command_and_prove_themselves_before_it_runs(monkeypatch
                                        file_bytes=4, open_files=5)
     wrapped = universe_tools._limited(["/usr/bin/bash", "-c", "x"], limits, cpu_seconds=3)
     assert wrapped[0] == "/usr/bin/prlimit"
-    assert wrapped[1:8] == ["--as=1", "--nproc=2", "--cpu=3", "--fsize=4", "--nofile=5",
+    assert wrapped[1:8] == ["--as=1", "--nproc=2", "--cpu=3:4", "--fsize=4", "--nofile=5",
                             "--core=0", "--"]
     assert wrapped[-3:] == ["/usr/bin/bash", "-c", "x"]
     assert universe_tools._LIMITS_MARK.decode() in wrapped
@@ -340,6 +340,7 @@ def test_paths_are_the_jails_paths_and_the_jail_is_the_boundary(tmp_path, monkey
     (ToolRun(137, b"", "process_limit", 0.1), "more than 64 processes"),
     (ToolRun(137, b"", "disk_limit", 0.1), "disk was nearly full"),
     (ToolRun(152, b"", None, 2.0), "cpu time limit"),
+    (ToolRun(137, b"", None, 2.0), "killed by the kernel"),
 ])
 def test_bash_reports_how_the_command_ended(tmp_path, monkeypatch, run, trailer):
     universe = _universe(tmp_path)

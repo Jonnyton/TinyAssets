@@ -316,7 +316,10 @@ def test_process_limit_holds_and_a_fork_bomb_is_contained(world):
                      f"bomb() {{ bomb | bomb & }}; bomb; sleep 5; echo {token}-alive",
                      limits=tools.ToolLimits(processes=32), timeout=6)
     assert time.monotonic() - started < 30, "the call came back"
-    assert "killed" in out or "[exit code 0]" not in out or token not in out, out
+    # The kernel refused the bomb's forks (RLIMIT_NPROC unprivileged, pids.max
+    # as root), or the watch killed it: either way it hit a wall, and the
+    # command itself still ran to its end or was stopped.
+    assert "Resource temporarily unavailable" in out or "[killed:" in out, out[-500:]
     time.sleep(1)
     assert _host_processes_with(token) == [], "nothing from the jail survives it"
     # The universe still works afterwards.

@@ -182,7 +182,9 @@ class ToolLimits:
         return [
             f"--as={int(self.memory_bytes)}",
             f"--nproc={int(self.processes)}",
-            f"--cpu={max(1, cpu)}",
+            # soft < hard: SIGXCPU names the limit; SIGKILL one second later
+            # if the process ignores it.
+            f"--cpu={max(1, cpu)}:{max(1, cpu) + 1}",
             f"--fsize={int(self.file_bytes)}",
             f"--nofile={int(self.open_files)}",
             "--core=0",
@@ -697,6 +699,7 @@ def _text(data: bytes) -> str:
 
 
 _SIGXCPU = getattr(signal, "SIGXCPU", 24)
+_SIGKILL = getattr(signal, "SIGKILL", 9)
 
 
 def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
@@ -712,6 +715,8 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
         return "[killed: the shared disk was nearly full]"
     if run.exit_code == 128 + _SIGXCPU:
         return "[killed: cpu time limit]"
+    if run.exit_code == 128 + _SIGKILL:
+        return "[killed by the kernel: a cpu time or memory limit]"
     return f"[exit code {run.exit_code}]"
 
 
