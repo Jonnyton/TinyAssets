@@ -12,7 +12,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -211,41 +211,21 @@ class _SpawningProvider(BaseProvider):
         raise AssertionError("unreachable: the launch should have been refused")
 
 
-def _owner_carrier(provider: str, *, role: str = "writer", operation: str = "run_graph"):
-    """The owner authority a bound call carries (``test_platform_has_no_llm``)."""
-    from tinyassets.provider_work_authority import ProviderInvocationCarrier
-
-    carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier.provider = provider
-    carrier.role = role
-    carrier.operation = operation
-    carrier.max_tokens = 50
-    carrier.max_cost_microunits = 5
-    carrier.selected_model = None
-    carrier.native_selection = None
-    carrier.settlement_owner = None
-    carrier.validate_for_call.return_value = provider
-    return carrier
-
-
-def _resolver(carrier):
-    def resolve(_context, *, role, operation):
-        carrier.validate_for_call(role=role, operation=operation)
-        return carrier
-    return resolve
-
-
 def test_router_binds_the_owning_universe_around_the_provider_call(tmp_path):
+    from tests.support.owner_bound import owner_carrier
     from tinyassets.providers.router import ProviderRouter
 
     universe = _universe(tmp_path)
     recorder = _ScopeRecorder("codex")
     router = ProviderRouter(providers={"codex": recorder})
-    carrier = _owner_carrier("codex")
+    # Hard Rule 15 refuses an unbound call before the jail is reached. The
+    # universe must be the real one on disk for the scope assertion below, so
+    # the carrier is bound by hand rather than through ``owner_bound_call``.
+    carrier = owner_carrier("codex")
     context = UniverseContext(universe_dir=universe, provider_invocation=carrier)
 
     with patch("tinyassets.providers.router._provider_invocation_carrier",
-               side_effect=_resolver(carrier)):
+               return_value=carrier):
         asyncio.run(router.call(
             "writer", "p", "", ModelConfig(max_tokens=10),
             operation="run_graph", universe_context=context,
