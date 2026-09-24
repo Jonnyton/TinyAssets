@@ -18,9 +18,11 @@ from tinyassets.providers.discovery_http import (
 )
 from tinyassets.providers.discovery_protocols import DiscoveryProtocol
 from tinyassets.providers.model_policy import ConnectionModels
+from tinyassets.providers.wire_dialects import same_dialect
 from tinyassets.storage.outbound_connections import (
     ConnectionLedger,
     ModelDiscoveryCapability,
+    ModelUseCapability,
     _resource_from_row,
     _validate_connection_capability,
     _verb_within_scopes,
@@ -41,6 +43,7 @@ class DiscoverySnapshot:
     completed_at: datetime
     models: ConnectionModels
     warnings: tuple[str, ...]
+    # SourceContract, DiscoveryProtocol, or a DeclaredModelContract.
     execution_contract: SourceContract | DiscoveryProtocol | None = field(default=None, repr=False)
 
     def contract(self) -> SourceContract | DiscoveryProtocol:
@@ -56,8 +59,10 @@ class DiscoverySnapshot:
 @dataclass(frozen=True, slots=True)
 class _Context:
     definition: ProviderDefinition
-    profile: ModelDiscoveryCapability
+    # A fetched catalogue (model_discovery) or the owner's declared list (model_use).
+    profile: ModelDiscoveryCapability | ModelUseCapability
     digest: str
+    auth_scheme: str = ""
 
 
 def _now() -> datetime:
@@ -106,22 +111,41 @@ def _context(base: Path, owner: str, uid: str, definition_id: str) -> _Context:
                 or resource.connection_type != "http"
             ):
                 raise ModelDiscoveryUnavailable("source_revoked")
-            if not _verb_within_scopes("GET", resource.scopes, resource.access_mode):
-                raise ModelDiscoveryUnavailable("missing_discovery_scope")
-            profile_row = conn.execute(
+            # A declared model use (uses.model with a static list) needs no
+            # catalogue fetch, so it needs no GET scope; it wins over a
+            # catalogue because it is the owner's explicit list for this source.
+            use_row = conn.execute(
                 "SELECT descriptor_json FROM connection_capabilities WHERE connection_id = ? "
-                "AND capability_kind = 'model_discovery'",
+                "AND capability_kind = 'model_use'",
                 (resource.connection_id,),
             ).fetchone()
-            if profile_row is None:
-                raise ModelDiscoveryUnavailable("missing_discovery_scope")
-            profile = _validate_connection_capability(
-                resource.connection_id, "model_discovery", json.loads(profile_row[0])
-            )
-            if not isinstance(profile, ModelDiscoveryCapability):
-                raise ValueError("wrong profile kind")
-            if resource.auth_scheme != profile.execution_contract().auth_scheme:
-                raise ModelDiscoveryUnavailable("protocol_mismatch")
+            if use_row is not None:
+                profile = _validate_connection_capability(
+                    resource.connection_id, "model_use", json.loads(use_row[0])
+                )
+                if not isinstance(profile, ModelUseCapability):
+                    raise ValueError("wrong profile kind")
+                if not _verb_within_scopes("POST", resource.scopes, resource.access_mode):
+                    raise ModelDiscoveryUnavailable("missing_discovery_scope")
+                if not same_dialect(definition.protocol, profile.wire):
+                    raise ModelDiscoveryUnavailable("protocol_mismatch")
+            else:
+                if not _verb_within_scopes("GET", resource.scopes, resource.access_mode):
+                    raise ModelDiscoveryUnavailable("missing_discovery_scope")
+                profile_row = conn.execute(
+                    "SELECT descriptor_json FROM connection_capabilities WHERE connection_id = ? "
+                    "AND capability_kind = 'model_discovery'",
+                    (resource.connection_id,),
+                ).fetchone()
+                if profile_row is None:
+                    raise ModelDiscoveryUnavailable("missing_discovery_scope")
+                profile = _validate_connection_capability(
+                    resource.connection_id, "model_discovery", json.loads(profile_row[0])
+                )
+                if not isinstance(profile, ModelDiscoveryCapability):
+                    raise ValueError("wrong profile kind")
+                if resource.auth_scheme != profile.execution_contract().auth_scheme:
+                    raise ModelDiscoveryUnavailable("protocol_mismatch")
             # Existing custody identity, not a new secret hash or permission.
             identity = _connection_grant_record_digest(
                 grant_id=definition.ref,
@@ -142,7 +166,7 @@ def _context(base: Path, owner: str, uid: str, definition_id: str) -> _Context:
                     material, sort_keys=True, separators=(",", ":"), allow_nan=False
                 ).encode()
             ).hexdigest()
-            return _Context(definition, profile, digest)
+            return _Context(definition, profile, digest, resource.auth_scheme)
     except (LookupError, OSError, TypeError, ValueError):
         raise ModelDiscoveryUnavailable("discovery_unavailable") from None
 
@@ -159,6 +183,8 @@ def refresh_model_discovery(
     base = _base_path()
     before = _context(base, owner_user_id, universe_id, definition_id)
     profile = before.profile
+    if isinstance(profile, ModelUseCapability):
+        return _declared_snapshot(base, before, owner_user_id, universe_id, definition_id)
     contract = profile.execution_contract()
     custom = isinstance(contract, SourceContract)
     from tinyassets.providers.protocol_encoders import agent_codec_for
@@ -224,6 +250,33 @@ def refresh_model_discovery(
         completed_at,
         models,
         warnings,
+        contract,
+    )
+
+
+def _declared_snapshot(
+    base: Path, before: _Context, owner_user_id: str, universe_id: str, definition_id: str,
+) -> DiscoverySnapshot:
+    """The owner's declared models as a fresh snapshot; nothing is fetched.
+
+    The same authority re-read as a catalogue refresh brackets it, so a grant
+    revoked or a declaration edited in between still fails closed.
+    """
+    from tinyassets.providers.declared_models import (
+        declared_connection_models,
+        declared_model_contract,
+    )
+
+    observed_at = _now()
+    contract = declared_model_contract(before.profile.descriptor(), auth_scheme=before.auth_scheme)
+    provider = f"api_key_http:{before.definition.id}"
+    models = declared_connection_models(contract, provider=provider)
+    after = _context(base, owner_user_id, universe_id, definition_id)
+    if after.digest != before.digest or after.definition != before.definition:
+        raise ModelDiscoveryUnavailable("source_revoked")
+    return DiscoverySnapshot(
+        owner_user_id, universe_id, provider, before.profile.connection_id,
+        before.definition.ref, before.digest, "", "", observed_at, _now(), models, (),
         contract,
     )
 

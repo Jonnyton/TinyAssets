@@ -36,6 +36,7 @@ from tinyassets.providers.model_policy import (
     order_models,
 )
 from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
+from tinyassets.providers.wire_dialects import same_dialect
 from tinyassets.storage.current_home import check_current_home
 from tinyassets.storage.model_preferences import ModelPreferenceStore
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
@@ -204,7 +205,7 @@ def _http_models(owner, uid, member, *, snapshot=None):
     contract = snapshot.contract()
     definition = get_definition(uid, member.provider.removeprefix("api_key_http:"))
     if (definition is None or definition.owner_user_id != owner
-            or definition.protocol != contract.inference_protocol):
+            or not same_dialect(definition.protocol, contract.inference_protocol)):
         raise ModelSourceUnavailable("protocol_mismatch")
     caps = member.access.cost_caps
     if caps is None:

@@ -283,6 +283,51 @@ class ModelDiscoveryCapability:
         return discovery_protocol(self.protocol)
 
 
+@dataclass(frozen=True, slots=True)
+class ModelUseCapability:
+    """A connection's ``model`` use: which wire it speaks and which models it serves.
+
+    Declared by the owner (or their agent) as data. It names a bundled wire
+    dialect by structure, a static model list, and a billing class. It is
+    metadata, never authority: serving still needs the owner's accepted model
+    access, and ``free``/``flat`` billing admits no spending.
+    """
+
+    connection_id: str
+    capability_kind: str
+    wire: str
+    models: tuple[tuple[str, bool, int], ...]
+    billing: str
+
+    def descriptor(self) -> dict[str, Any]:
+        return {
+            "wire": self.wire,
+            "models": [
+                {"id": model_id, "tools": tools, "context": context}
+                for model_id, tools, context in self.models
+            ],
+            "billing": self.billing,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ConstantHeadersCapability:
+    """Non-secret headers the broker adds to every call on this connection.
+
+    For the version and API-shape headers a service requires on each request
+    (``X-Api-Version: 2``), so a workflow node never retypes them. Never a
+    credential: auth stays in the vault and the auth scheme, which the driver
+    applies after these, so a constant header cannot replace it.
+    """
+
+    connection_id: str
+    capability_kind: str
+    headers: tuple[tuple[str, str], ...]
+
+    def descriptor(self) -> dict[str, Any]:
+        return {"headers": dict(self.headers)}
+
+
 @dataclass(frozen=True)
 class ActionCap:
     name: str
@@ -815,6 +860,19 @@ class CredentialBlindBroker:
         if not credential:
             self._record_error(resource, grant_id, verb, "credential unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
+        if resource.connection_type == "http":
+            try:
+                headers = self._ledger.get_connection_capability(
+                    resource.connection_id, "constant_headers"
+                )
+            except Exception:
+                # Fail loudly: sending without a header the owner declared would
+                # reach the service with a different contract than configured.
+                self._record_error(resource, grant_id, verb, "constant headers unavailable")
+                raise ProxyRequestError(
+                    "outbound request failed: constant headers unavailable"
+                ) from None
+            request = merge_constant_headers(request, headers)
         try:
             response = self._network_request(
                 credential=credential,
@@ -1956,10 +2014,126 @@ def _validate_model_discovery_capability(
     )
 
 
+_MODEL_USE_MAX_MODELS = 64
+_MODEL_USE_MAX_CONTEXT = 100_000_000
+#: Billing classes a static model list may declare. ``free`` and ``flat``
+#: (a subscription or a local source) carry no prices, so they admit no
+#: spending. ``metered`` needs prices, which the ``model_discovery`` source
+#: contract carries; it is not declared here.
+MODEL_USE_BILLING = frozenset({"free", "flat"})
+
+
+def _validate_model_use_capability(connection_id: str, descriptor: Any) -> ModelUseCapability:
+    from tinyassets.providers.wire_dialects import UnknownDialect, canonical_dialect
+
+    if not isinstance(descriptor, dict) or set(descriptor) != {"wire", "models", "billing"}:
+        raise ValueError("model use needs exactly wire, models and billing")
+    try:
+        wire = canonical_dialect(descriptor["wire"])
+    except UnknownDialect as exc:
+        raise ValueError(str(exc)) from None
+    billing = descriptor["billing"]
+    if billing == "metered" or (isinstance(billing, dict) and "metered" in billing):
+        raise ValueError(
+            "metered billing needs prices: declare them with a model_discovery source "
+            "contract; a static model list may be billing 'free' or 'flat'"
+        )
+    if billing not in MODEL_USE_BILLING:
+        raise ValueError("billing must be 'free' or 'flat'")
+    raw_models = descriptor["models"]
+    if type(raw_models) is not list or not 1 <= len(raw_models) <= _MODEL_USE_MAX_MODELS:
+        raise ValueError(
+            f"models must list 1-{_MODEL_USE_MAX_MODELS} models as "
+            '{"id", "tools", "context"}'
+        )
+    models: list[tuple[str, bool, int]] = []
+    for raw in raw_models:
+        if not isinstance(raw, dict) or set(raw) != {"id", "tools", "context"}:
+            raise ValueError('each model needs exactly "id", "tools" and "context"')
+        model_id, tools, context = raw["id"], raw["tools"], raw["context"]
+        if (type(model_id) is not str or not 1 <= len(model_id) <= 200
+                or not model_id.isprintable() or model_id != model_id.strip()):
+            raise ValueError("model id must be 1-200 printable characters")
+        if type(tools) is not bool:
+            raise ValueError("model tools must be true or false")
+        if type(context) is not int or not 1 <= context <= _MODEL_USE_MAX_CONTEXT:
+            raise ValueError("model context must be a positive token count")
+        if any(existing[0] == model_id for existing in models):
+            raise ValueError("model ids must be unique")
+        models.append((model_id, tools, context))
+    return ModelUseCapability(
+        _required("connection_id", connection_id), "model_use", wire, tuple(models), billing,
+    )
+
+
+_CONSTANT_HEADERS_MAX = 16
+_CONSTANT_HEADER_VALUE_MAX = 256
+_HEADER_TOKEN_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
+#: A run this long is a credential, not a version string. Constant headers are
+#: readable connection metadata, so a secret belongs in the auth scheme.
+_CONSTANT_HEADER_SECRET_RUN = re.compile(r"[A-Za-z0-9_\-]{32,}")
+
+
+def _validate_constant_headers_capability(
+    connection_id: str, descriptor: Any
+) -> ConstantHeadersCapability:
+    if not isinstance(descriptor, dict) or set(descriptor) != {"headers"}:
+        raise ValueError('constant headers need exactly {"headers": {name: value}}')
+    raw = descriptor["headers"]
+    if type(raw) is not dict or not 1 <= len(raw) <= _CONSTANT_HEADERS_MAX:
+        raise ValueError(f"constant headers must name 1-{_CONSTANT_HEADERS_MAX} headers")
+    headers: dict[str, str] = {}
+    for name, value in raw.items():
+        if type(name) is not str or not _HEADER_TOKEN_RE.match(name):
+            raise ValueError("constant header name is not a valid header token")
+        try:
+            _reject_forbidden_header_name(name)
+        except SsrfValidationError:
+            raise ValueError(f"header {name!r} may not be set as a constant") from None
+        if name.lower() in {existing.lower() for existing in headers}:
+            raise ValueError("constant header names must be unique")
+        if (type(value) is not str or not 1 <= len(value) <= _CONSTANT_HEADER_VALUE_MAX
+                or _SSRF_FORBIDDEN_HEADER_CHARS.search(value)):
+            raise ValueError(f"constant header {name!r} needs a short single-line value")
+        if _CONSTANT_HEADER_SECRET_RUN.search(value):
+            raise ValueError(
+                f"constant header {name!r} looks like a credential; constant headers are "
+                "readable metadata, so put a secret in the connection's auth instead"
+            )
+        headers[name] = value
+    return ConstantHeadersCapability(
+        _required("connection_id", connection_id), "constant_headers",
+        tuple(sorted(headers.items())),
+    )
+
+
+def merge_constant_headers(request: Any, capability: Any) -> Any:
+    """Return ``request`` with the connection's constant headers applied.
+
+    The connection's declaration wins over a same-named caller header (case
+    insensitively), so a node cannot send a different API version than the one
+    the owner configured. The auth scheme is applied later by the driver and
+    wins over both.
+    """
+    if capability is None or not isinstance(request, dict):
+        return request
+    caller = request.get("headers")
+    if caller is not None and not isinstance(caller, dict):
+        return request  # Malformed caller headers are refused by the driver as before.
+    constant = dict(capability.headers)
+    lowered = {name.lower() for name in constant}
+    merged = {
+        name: value for name, value in (caller or {}).items()
+        if str(name).lower() not in lowered
+    }
+    merged.update(constant)
+    return {**request, "headers": merged}
+
+
 @dataclass(frozen=True, slots=True)
 class _CapabilitySpec:
     value_type: type
-    validate: Callable[[str, Any], ConnectionCapability | ModelDiscoveryCapability]
+    validate: Callable[[str, Any], Any]
     verb: str
     url_fields: tuple[str, ...]
 
@@ -1971,6 +2145,14 @@ _CAPABILITY_SPECS = {
     "model_discovery": _CapabilitySpec(
         ModelDiscoveryCapability, _validate_model_discovery_capability, "GET",
         ("catalogue_url", "benchmark_url"),
+    ),
+    # A model use sends inference as POST to the connection's own endpoint.
+    "model_use": _CapabilitySpec(
+        ModelUseCapability, _validate_model_use_capability, "POST", (),
+    ),
+    # Headers ride every verb the connection already allows; they add none.
+    "constant_headers": _CapabilitySpec(
+        ConstantHeadersCapability, _validate_constant_headers_capability, "", (),
     ),
 }
 
@@ -3793,7 +3975,8 @@ class ConnectionLedger:
             # existing GET/full-channel scope semantics used by its transport.
             verb_allowed = (
                 spec.verb in resource.scopes if kind == "realtime_voice"
-                else _verb_within_scopes(spec.verb, resource.scopes, resource.access_mode)
+                else not spec.verb
+                or _verb_within_scopes(spec.verb, resource.scopes, resource.access_mode)
             )
             if resource.connection_type != "http" or not verb_allowed:
                 raise PermissionError(f"connection does not authorize capability {spec.verb}")

@@ -21,6 +21,12 @@ Two actions exist, and the difference is where the answer goes:
   straight to the vault through :func:`~tinyassets.api.http_connection.connect_http`
   under the endpoint policy stored ON THE REQUEST, so what the user was shown is
   exactly what gets granted. Nothing secret is recorded here.
+* ``{"type": "connect", ...}`` — ``connect_http`` plus what the connection is
+  USED for (``uses.call`` / ``uses.model{wire, models, billing}``) and its
+  non-secret ``constant_headers``. One answer deposits the key, creates the
+  connection and grant, records the uses, and - when the universe has no model
+  yet and this one serves models - makes it the universe's model. An LLM is
+  just another connection (founder, 2026-09-24).
 * ``{"type": "answer"}`` — the answer is ordinary data the agent reads back.
 
 Nothing is inferred anywhere in this flow. For a credential the agent already
@@ -31,8 +37,8 @@ against a paste steering it.
 
 The boundary that makes "however he likes" safe
 -----------------------------------------------
-A ``secret`` field is accepted ONLY on a ``connect_http`` request, and a secret
-value is never stored. Without that, an agent — including one steered by
+A ``secret`` field is accepted ONLY on a deposit request (``connect_http`` or
+``connect``), and a secret value is never stored. Without that, an agent — including one steered by
 injected content — could compose a friendly-looking request that asks for a
 password and lands it in readable storage. Generality is the feature; this is
 what keeps it from being a harvesting primitive.
@@ -89,6 +95,10 @@ _MULTI_VALUE_FIELD_NAMES = {
     "basic": ("username", "password"),
 }
 _MULTI_VALUE_AUTH_SCHEMES = frozenset(_MULTI_VALUE_FIELD_NAMES)
+
+#: The asks whose answer is a credential for the vault. ``connect`` is
+#: ``connect_http`` with the connection's uses declared on it.
+_DEPOSIT_TYPES = frozenset({"connect_http", "connect"})
 
 #: A plain https link, no userinfo (`https://user:pw@host`), bounded.
 _MAX_URL_CHARS = 300
@@ -234,9 +244,11 @@ def _validated_action(raw: Any) -> dict[str, Any]:
                 "alphanumeric"
             )
         return {"type": "remove_http", "destination": destination}
+    if kind == "connect":
+        return _validated_connect(action)
     if kind != "connect_http":
         raise ValueError(
-            "action type must be answer, connect_http, extend_http, "
+            "action type must be answer, connect, connect_http, extend_http, "
             "remove_http, grant_workspace_consent or bind_model_access"
         )
 
@@ -288,6 +300,33 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         "scopes": _validated_git_scopes(action, endpoints),
         "access": "exact",
     }
+
+
+def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
+    """``connect`` = the ``connect_http`` deposit + ``uses`` + ``constant_headers``.
+
+    The deposit half is validated by the very same code as ``connect_http``, so
+    the two cannot drift. A model use needs somewhere to POST inference.
+    """
+    from tinyassets.api.connection_uses import (
+        ConnectionUseError,
+        validate_constant_headers,
+        validate_uses,
+    )
+
+    deposit = _validated_action({**action, "type": "connect_http"})
+    try:
+        uses = validate_uses(action.get("uses"))
+        headers = validate_constant_headers(action.get("constant_headers"))
+    except ConnectionUseError as exc:
+        raise ValueError(str(exc)) from None
+    if "model" in uses and deposit["access"] == "exact" and not any(
+        "POST" in (endpoint.get("methods") or []) for endpoint in deposit["endpoints"]
+    ):
+        raise ValueError(
+            "a model use needs a POST endpoint for inference (the model URL path)"
+        )
+    return {**deposit, "type": "connect", "uses": uses, "constant_headers": headers}
 
 
 #: A channel is 1-4 hosts. More than that is not one channel; it is a request
@@ -531,7 +570,7 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
         #
         # The agent knows what the service needs; if it does not, that is the
         # thing to fix, not paper over with a box the owner has to interpret.
-        if action["type"] == "connect_http":
+        if action["type"] in _DEPOSIT_TYPES:
             raise ValueError(
                 "a credential request needs one field per value the service "
                 "asks for, each with the label THAT SERVICE uses (and ideally "
@@ -563,12 +602,13 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
         ftype = str(field.get("type") or "text").strip().lower()
         if ftype not in FIELD_TYPES:
             raise ValueError("field type must be one of " + ", ".join(sorted(FIELD_TYPES)))
-        if ftype == "secret" and action["type"] != "connect_http":
+        if ftype == "secret" and action["type"] not in _DEPOSIT_TYPES:
             # THE boundary. Without it, "compose requests however you like"
             # becomes a way to ask for a password and store it in the clear.
             raise ValueError(
-                "a secret field is only allowed on a connect_http request, so the "
-                "value goes to the vault instead of being recorded as an answer"
+                "a secret field is only allowed on a connect_http request (or "
+                "connect), so the value goes to the vault instead of being "
+                "recorded as an answer"
             )
         entry = {
             "name": name,
@@ -613,7 +653,7 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                 raise ValueError("a choice field needs options")
             entry["options"] = options[:8]
         out.append(entry)
-    if action["type"] == "connect_http":
+    if action["type"] in _DEPOSIT_TYPES:
         if not any(f["type"] == "secret" for f in out):
             raise ValueError("a connect_http request needs a secret field for the key")
         # EVERY field on a credential ask is a secret. A non-secret field's
@@ -727,7 +767,7 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
             # stored for the audit trail say the same thing.
             action = {**action, **_full_channel_reach(_uid, action)}
 
-    if action.get("type") in {"connect_http", "extend_http"} and any(
+    if action.get("type") in {"connect_http", "connect", "extend_http"} and any(
         e.get("redirect_mode") == "public_https_get" for e in action.get("endpoints", [])
     ):
         # This server version generated the redirect disclosure. Older pending
@@ -937,7 +977,7 @@ def _full_channel_sentence(action: dict[str, Any]) -> str:
             if isinstance(e, dict) and str(e.get("host") or "").strip()
         })
     where = ", ".join(hosts) if hosts else "the hosts it already reaches"
-    deposit = action.get("type") == "connect_http"
+    deposit = action.get("type") in _DEPOSIT_TYPES
     opening = (
         f'Full access to the {destination} key you are about to paste'
         if deposit
@@ -1015,6 +1055,9 @@ def _grant_sentence(row: dict[str, Any]) -> str:
             f"{host}/{action.get('repo')} with the key you already "
             "gave. Nothing to paste; this is the yes."
         )
+    if action.get("type") == "connect":
+        base = _grant_sentence({**row, "action": {**action, "type": "connect_http"}})
+        return (base + _uses_sentence(action)) if base else ""
     if action.get("type") in ("extend_http", "connect_http") and action.get("access") == "full":
         return _full_channel_sentence(action)
     if action.get("type") == "extend_http":
@@ -1054,6 +1097,29 @@ def _grant_sentence(row: dict[str, Any]) -> str:
         f"This key{where} will be able to {verb} exactly these, and nothing "
         "else: " + "; ".join(lines) + "."
     )
+
+
+def _uses_sentence(action: dict[str, Any]) -> str:
+    """What a ``connect`` ask adds beyond reach: model use and constant headers."""
+    parts = []
+    model = (action.get("uses") or {}).get("model")
+    if isinstance(model, dict):
+        names = ", ".join(str(m.get("id")) for m in model.get("models") or [])
+        billing = model.get("billing")
+        cost = ("they are free, so nothing is spent" if billing == "free"
+                else "they are on a flat plan you already pay for, so nothing is metered")
+        parts.append(
+            f" Your universe may also run its model on it ({model.get('wire')} wire): "
+            f"{names}; {cost}. If nothing powers your universe yet, this becomes its model."
+        )
+    headers = action.get("constant_headers") or {}
+    if headers:
+        parts.append(
+            " Every call on it also sends "
+            + ", ".join(f"{name}: {value}" for name, value in sorted(headers.items()))
+            + "."
+        )
+    return "".join(parts)
 
 
 #: The one ask the platform raises itself. Everything else comes from the agent —
@@ -1397,7 +1463,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "this request no longer matches what it was created as, so what "
             "you were shown is not what would happen; ask again"
         )
-    if action.get("type") in {"connect_http", "extend_http"} and any(
+    if action.get("type") in {"connect_http", "connect", "extend_http"} and any(
         e.get("redirect_mode") == "public_https_get" for e in action.get("endpoints", [])
     ):
         if type(action.get("redirect_consent_version")) is not int or (
@@ -1526,7 +1592,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 "'removed_scopes' rather than asking what they were."
             ),
         }
-    if action.get("type") == "connect_http":
+    if action.get("type") in _DEPOSIT_TYPES:
         # ONE secret field -> its value. SEVERAL -> a JSON object keyed by field
         # name, which is the encoding a multi-value scheme's vault string uses.
         #
@@ -1585,6 +1651,14 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             # Leave it PENDING: the answer did not land, and closing the tab
             # here would lose the ask with nothing deposited.
             return deposited
+        extra: dict[str, Any] = {}
+        if action.get("type") == "connect":
+            extra = _complete_connect(_uid, action, deposited)
+            if extra.get("error"):
+                # The key is in the vault, but the uses did not land. Leave the
+                # ask PENDING: answering again re-deposits idempotently and
+                # retries the uses, so nothing is half-granted for long.
+                return {**extra, "request_pending": True}
         resolve_request(udir, request_id, status="answered", answer=answer,
                         feedback=feedback, dont_ask_again=dont_ask_again,
                         decision="allowed")
@@ -1595,6 +1669,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "destination": action["destination"],
             "receipt": _grant_sentence(row).replace("will be able to", "may"),
             "connection_id": deposited.get("connection_id"),
+            **extra,
         }
 
     # For a plain answer the user's own words decide it: an explicit decline
@@ -1618,6 +1693,47 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         "feedback": feedback,
         "suppressed": dont_ask_again,
     }
+
+
+def _complete_connect(
+    uid: str, action: dict[str, Any], deposited: dict[str, Any],
+) -> dict[str, Any]:
+    """The rest of one ``connect`` answer, after the deposit landed.
+
+    Records the uses and constant headers on the new connection, registers its
+    model source, and serves the universe on it if nothing powers it yet.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.api.connection_uses import (
+        apply_connection_uses,
+        select_model_if_unpowered,
+    )
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    base = _base_path()
+    applied = apply_connection_uses(
+        base=base, uid=uid, actor=actor, grant_id=str(deposited.get("grant_id") or ""),
+        uses=action.get("uses") or {"call": {}},
+        constant_headers=action.get("constant_headers") or {},
+    )
+    if applied.get("error"):
+        return applied
+    out: dict[str, Any] = {
+        "grant_id": applied["grant_id"],
+        "uses": applied["uses"],
+    }
+    if "constant_headers" in applied:
+        out["constant_headers"] = applied["constant_headers"]
+    if "provider" in applied:
+        out["provider"] = applied["provider"]
+        out["definition_id"] = applied["definition_id"]
+        out["serving"] = select_model_if_unpowered(
+            base=base, uid=uid, actor=actor, definition_id=applied["definition_id"],
+            model=applied["model"],
+        )
+    return out
 
 
 __all__ = [

@@ -245,7 +245,9 @@ def _validate_snapshot(definition, snapshot, provider, model_id, access, *, need
     ):
         raise PermissionError("discovery snapshot does not match selected provider")
     contract = snapshot.contract()
-    if definition.protocol != contract.inference_protocol:
+    from tinyassets.providers.wire_dialects import same_dialect
+
+    if not same_dialect(definition.protocol, contract.inference_protocol):
         raise PermissionError("discovery and inference protocols do not match")
     components = contract.price_components
     caps = (

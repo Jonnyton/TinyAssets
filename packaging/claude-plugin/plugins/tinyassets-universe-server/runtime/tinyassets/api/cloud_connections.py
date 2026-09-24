@@ -248,10 +248,16 @@ def cloud_connections(
         # owner's grants for THIS universe.
         ledger = _ledger(actor)
         rows = []
+        from tinyassets.api.connection_uses import connection_uses_view
+
         for grant in ledger.list_grants(owner_user_id=actor, universe_id=uid):
             resource = ledger.get_connection(grant.connection_id)
             if resource is not None:
-                rows.append(_project(resource, grant))
+                # What the connection is used for (call / model) and its
+                # constant headers: the same connector reads the same way
+                # whether it reaches a platform or a model.
+                rows.append({**_project(resource, grant),
+                             **connection_uses_view(ledger, resource.connection_id)})
         return {
             "universe_id": uid,
             "connections": rows,

@@ -23,9 +23,11 @@ from tinyassets.providers.protocol_encoders import agent_codec_for
 
 
 def document():
+    # The envelope moved into the chat_messages dialect document
+    # (unify-connection-uses); the frozen differential below still pins it.
     return json.loads(Path(__file__).parents[1].joinpath(
-        "tinyassets/providers/agent_wire_shape.json",
-    ).read_text("utf-8"))
+        "tinyassets/providers/dialects/chat_messages.json",
+    ).read_text("utf-8"))["envelope"]
 
 
 def context():

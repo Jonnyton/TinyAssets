@@ -1,0 +1,262 @@
+"""What a connection is USED for: one connector for platforms and for models.
+
+A universe connection is one object whatever it reaches. ``uses.call`` means
+workflow nodes may call it (``authenticated_external_call``); ``uses.model``
+means the universe may run its model on it, and says how:
+
+    uses.model = {"wire": "<bundled dialect>", "models": [{"id", "tools", "context"}],
+                  "billing": "free" | "flat"}
+
+``constant_headers`` are non-secret headers the broker adds to every call on the
+connection, so a node never retypes a service's version header.
+
+Nothing here names a vendor. A provider nobody has written code for connects by
+naming the wire structure it speaks and the models it serves. The secret is
+never here either: it reaches the vault only through the request rail
+(``connect`` / ``connect_http``), and these functions read and write non-secret
+metadata on a connection the caller already owns.
+
+Two entry points share one writer:
+
+* :func:`apply_connection_uses` - called when the owner answers a ``connect``
+  request, right after the deposit, so connection + grant + model use land in
+  one answer;
+* :func:`configure_connection` - ``write_graph target=connection
+  operation=configure``, for the owner's agent to edit those fields later.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+_NOT_FOUND: dict[str, Any] = {"error": "not_found", "resource": "connection"}
+_USE_KINDS = frozenset({"call", "model"})
+
+
+class ConnectionUseError(ValueError):
+    """A ``uses`` / ``constant_headers`` declaration the platform cannot honour."""
+
+
+def validate_uses(raw: Any) -> dict[str, Any]:
+    """Normalize ``uses``. Absent means ``{"call": {}}``: a plain platform connection."""
+    from tinyassets.storage.outbound_connections import _validate_model_use_capability
+
+    if raw is None:
+        return {"call": {}}
+    if not isinstance(raw, dict) or not raw or set(raw) - _USE_KINDS:
+        raise ConnectionUseError('uses must be an object with "call" and/or "model"')
+    uses: dict[str, Any] = {}
+    if "call" in raw:
+        if raw["call"] not in ({}, None, True):
+            raise ConnectionUseError('uses.call takes no settings; send {"call": {}}')
+        uses["call"] = {}
+    if "model" in raw:
+        try:
+            capability = _validate_model_use_capability("request", raw["model"])
+        except ValueError as exc:
+            raise ConnectionUseError(f"uses.model: {exc}") from None
+        uses["model"] = capability.descriptor()
+    return uses
+
+
+def validate_constant_headers(raw: Any) -> dict[str, str]:
+    from tinyassets.storage.outbound_connections import _validate_constant_headers_capability
+
+    if raw in (None, {}):
+        return {}
+    try:
+        return dict(_validate_constant_headers_capability("request", {"headers": raw}).headers)
+    except ValueError as exc:
+        raise ConnectionUseError(f"constant_headers: {exc}") from None
+
+
+def _definition_for(uid: str, actor: str, grant_id: str, wire: str, first_model: str):
+    """Reuse this grant's registered model source in the same wire, else register one.
+
+    Registration creates a candidate only. The model on the definition is an
+    inert seed; which models may serve comes from the model use and the
+    owner's accepted access, never from this field.
+    """
+    from tinyassets.providers import definition as pd
+    from tinyassets.providers.wire_dialects import same_dialect
+
+    existing = sorted(
+        (d for d in pd.list_definitions(uid)
+         if d.ref == grant_id and d.owner_user_id == actor
+         and d.access_method == "api_key_http" and same_dialect(d.protocol, wire)),
+        key=lambda d: (d.created_at, d.id),
+    )
+    if existing:
+        return existing[0]
+    return pd.register_definition(
+        universe_id=uid, owner_user_id=actor, access_method="api_key_http",
+        protocol=wire, model=first_model, ref=grant_id,
+    )
+
+
+def apply_connection_uses(
+    *, base: Path, uid: str, actor: str, grant_id: str,
+    uses: dict[str, Any], constant_headers: dict[str, str],
+) -> dict[str, Any]:
+    """Write a connection's uses and constant headers. Idempotent.
+
+    The grant must be a live http grant bound to ``uid`` and owned by
+    ``actor``; anything else is the uniform not-found. Returns the projection
+    the caller shows, including ``provider`` when a model use exists.
+    """
+    from tinyassets.api.compute_connection import _validate_http_grant
+    from tinyassets.providers.definition import ProviderDefinitionError
+    from tinyassets.storage.outbound_connections import ConnectionLedger, SsrfValidationError
+
+    gate = _validate_http_grant(base=base, universe_id=uid, actor=actor, grant_id=grant_id)
+    if gate is not None:
+        return gate
+    ledger = ConnectionLedger(base / "outbound.db")
+    grant = ledger.get_grant(grant_id)
+    connection_id = grant.connection_id
+    result: dict[str, Any] = {"connection_id": connection_id, "grant_id": grant_id,
+                              "uses": sorted(uses)}
+    try:
+        if constant_headers:
+            ledger.configure_capability(
+                connection_id=connection_id, capability_kind="constant_headers",
+                descriptor={"headers": constant_headers}, enabled=True,
+            )
+            result["constant_headers"] = dict(constant_headers)
+        model = uses.get("model")
+        if model is not None:
+            definition = _definition_for(
+                uid, actor, grant_id, model["wire"], model["models"][0]["id"],
+            )
+            ledger.configure_capability(
+                connection_id=connection_id, capability_kind="model_use",
+                descriptor=model, enabled=True,
+            )
+            result.update({
+                "definition_id": definition.id,
+                "provider": f"api_key_http:{definition.id}",
+                "model": model,
+            })
+    except (LookupError, PermissionError):
+        return dict(_NOT_FOUND)
+    except (ProviderDefinitionError, SsrfValidationError, ValueError) as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    return result
+
+
+def select_model_if_unpowered(
+    *, base: Path, uid: str, actor: str, definition_id: str, model: dict[str, Any],
+) -> dict[str, Any]:
+    """If nothing powers this universe, serve it on this connection's models.
+
+    Deterministic: the owner's universe is unpowered, and they just confirmed
+    this exact model list on the request, so this connection becomes the
+    serving source with explicit access to those models and no spending
+    (free-only caps). A powered universe is left exactly as it is.
+    """
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.api.pending_requests import _serving_llm_bound
+    from tinyassets.onboarding.serving import ensure_founder_serving
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    if _serving_llm_bound(base, uid, actor):
+        return {"status": "unchanged", "reason": "already_powered"}
+    access = ModelAccess(
+        "explicit", tuple(entry["id"] for entry in model["models"]), None,
+    )
+    return ensure_founder_serving(
+        base_path=base, universe_dir=_universe_dir(uid), owner_user_id=actor,
+        universe_id=uid, service=definition_id, model_access={definition_id: access},
+    )
+
+
+def configure_connection(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """``write_graph target=connection operation=configure``: edit non-secret fields.
+
+    Payload: ``{"destination": "<the connection's name>" | "connection_id": "...",
+    "uses": {...}, "constant_headers": {...}}``. The connection must already be
+    granted to this universe by its owner (deposited through the request rail).
+    This never adds endpoints, never touches the secret, and never selects
+    serving: making a model serve a powered universe stays the owner's
+    confirmation (``bind_model_access``).
+    """
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path, _request_universe
+    from tinyassets.daemon_server import list_universe_acl
+    from tinyassets.principals import named_principal
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
+        return {"error": "authentication_required", "resource": "connection"}
+    uid = _request_universe(universe_id)
+    base = _base_path()
+    if not any(row.get("actor_id") == actor and row.get("permission") == "admin"
+               for row in list_universe_acl(base, universe_id=uid)):
+        return dict(_NOT_FOUND)
+    try:
+        document = json.loads(payload) if isinstance(payload, str) else payload
+        if not isinstance(document, dict):
+            raise ConnectionUseError("payload_json must be a JSON object")
+        if set(document) - {"destination", "connection_id", "uses", "constant_headers"}:
+            raise ConnectionUseError(
+                "configure takes destination or connection_id, uses and constant_headers"
+            )
+        if "uses" not in document and "constant_headers" not in document:
+            raise ConnectionUseError("send uses and/or constant_headers to configure")
+        uses = validate_uses(document.get("uses")) if "uses" in document else {}
+        headers = validate_constant_headers(document.get("constant_headers"))
+    except (ConnectionUseError, ValueError) as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+
+    connection_id = str(document.get("connection_id") or "").strip()
+    destination = str(document.get("destination") or "").strip().lower()
+    if not connection_id and destination:
+        from tinyassets.api.http_connection import _ids
+
+        connection_id, _ = _ids(universe_id=uid, destination=destination)
+    if not connection_id:
+        return {"error": "connection_setup_invalid",
+                "detail": "name the connection by destination or connection_id"}
+    ledger = ConnectionLedger(base / "outbound.db")
+    grants = [g for g in ledger.list_grants(owner_user_id=actor, universe_id=uid, limit=1000)
+              if g.connection_id == connection_id and g.revoked_at is None]
+    if len(grants) != 1:
+        return dict(_NOT_FOUND)
+    applied = apply_connection_uses(
+        base=Path(base), uid=uid, actor=actor, grant_id=grants[0].grant_id,
+        uses=uses, constant_headers=headers,
+    )
+    if applied.get("error"):
+        return applied
+    return {"status": "configured", **applied}
+
+
+def connection_uses_view(ledger: Any, connection_id: str) -> dict[str, Any]:
+    """The uses and constant headers a connection declares, for read surfaces."""
+    view: dict[str, Any] = {"uses": {"call": {}}}
+    try:
+        model = ledger.get_connection_capability(connection_id, "model_use")
+        headers = ledger.get_connection_capability(connection_id, "constant_headers")
+    except (LookupError, ValueError):
+        return {**view, "uses_unreadable": True}
+    if model is not None:
+        view["uses"]["model"] = model.descriptor()
+    if headers is not None:
+        view["constant_headers"] = dict(headers.headers)
+    return view
+
+
+__all__ = [
+    "ConnectionUseError",
+    "apply_connection_uses",
+    "configure_connection",
+    "connection_uses_view",
+    "select_model_if_unpowered",
+    "validate_constant_headers",
+    "validate_uses",
+]

@@ -1014,6 +1014,10 @@ class ProviderInvocationSelection:
             from tinyassets.providers.discovery_contract import SourceContract
 
             compiled = SourceContract.compile(contract["value"])
+        elif contract["kind"] == "declared":
+            from tinyassets.providers.declared_models import contract_from_evidence
+
+            compiled = contract_from_evidence(contract["value"])
         else:
             raise ValueError("unsupported selected execution contract")
         if compiled.inference_protocol != self.executor_id:
