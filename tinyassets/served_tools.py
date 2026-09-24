@@ -118,6 +118,13 @@ from __future__ import annotations
 #:   connection-grant-bound-to-this-universe + per-destination consent (granted via
 #:   source_channel) + TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED + SSRF per dispatch.
 #:
+#: read, write, edit, bash (universe-harness S1, 2026-09-24) — the agent's four
+#:   tools over its OWN universe folder, executed by the platform in the tool
+#:   jail (``tinyassets.universe_tools``): the universe at ``/u`` only,
+#:   ``.runtime``/``.claude``/``.codex`` masked, no network, no credential,
+#:   rlimits + wall clock + output and process-tree caps. Pinned like every
+#:   handle here; no parameter names a universe.
+#:
 #: Deliberately EXCLUDED pending their own review (tracked by the
 #: ``served-agent-build-run`` OpenSpec change):
 #:   remix_shape   — cross-author commons remix
@@ -135,6 +142,10 @@ SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "write_brain",
     "connect_compute",
     "source_channel",
+    "read",
+    "write",
+    "edit",
+    "bash",
 )
 
 # Explicit reviewed authority boundary. A future connector write action must not

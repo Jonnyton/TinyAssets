@@ -16,8 +16,7 @@ tool list. The CLIs' own `Read`/`Bash`/... stay denied on every turn.
 ### D2. One jail builder, narrower view
 
 `tool_jail_argv` calls `provider_jail.jail_argv` with a `UniverseView` binding
-the universe at `/u`, `tmpfs` masks over `.runtime`, `.claude`, `.codex`, and
-new keyword arguments `share_net=False`, `clearenv=True`, `seccomp_fd=`.
+the universe at `/u`, a `tmpfs` mask over `.runtime`, and new keyword arguments `share_net=False`, `clearenv=True`, `seccomp_fd=`.
 Provider launches keep the defaults. Path policy is the jail's: a path outside
 `/u` is passed through unchanged and simply does not exist inside.
 
@@ -70,13 +69,16 @@ creates symlinks fails for those entries. Residual below.
 
 ### D5. Vendor-native harness dirs (design risk 8)
 
-Decision: masked everywhere. `provider_jail.default_view` puts an empty tmpfs
-over an existing `.claude/`/`.codex/` (and refuses a symlink or file there);
-the tool jail pre-creates both as real directories and masks them, so the
-agent can never write a `.claude/settings.json` hook that the next
-`claude -p` launch (cwd = universe, `--setting-sources project`) would run
-next to the owner's subscription credential. The harness is vendor-neutral
-files the platform assembles.
+Decision: masked at every provider launch, by a rule that names no vendor.
+`provider_jail.default_view` puts an empty tmpfs over every hidden directory
+at the universe root except `.runtime` (`hidden_dir_masks`), and refuses the
+launch if a hidden root entry is a symlink. The agent may write `.claude/`,
+`.git/` or anything else in its own folder; the next `claude -p` launch
+(cwd = universe, `--setting-sources project`) still sees an empty directory,
+so a hook the agent wrote never runs next to the owner's subscription
+credential. A first draft masked `.claude`/`.codex` by name in both jails;
+`check_channel_agnostic.py` refused the vendor names in the shared jail, and
+the rule without names is also the one that covers the next CLI.
 
 ### D6. The skill index
 

@@ -22,10 +22,9 @@ universe) and it changes the served tool surface.
   OpenAI-compatible HTTP loop all see the same four definitions (~330 tokens).
 - A tool jail built by the same `provider_jail.jail_argv` as a provider
   launch, narrower: the universe at `/u` and nothing else of `/data`;
-  `.runtime/`, `.claude/` and `.codex/` masked; no network (no
-  `--share-net`); empty environment; no credential snapshot; a seccomp filter
-  refusing `symlink`/`mknod`, because the daemon reads the folder from outside
-  the jail and follows links.
+  `.runtime/` masked; no network (no `--share-net`); empty environment; no
+  credential snapshot; a seccomp filter refusing `symlink`/`mknod`, because
+  the daemon reads the folder from outside the jail and follows links.
 - Per-call, per-universe resource limits, fail-closed: `prlimit` inside the
   jail (address space, processes, cpu, file size, open files, core), a wall
   clock, an output cap, a process-tree count and memory watch, a free-space
@@ -34,8 +33,10 @@ universe) and it changes the served tool surface.
   system prompt: the four tools, the folder map, and the skill index (name and
   one-line description of each `skills/<name>/SKILL.md`, read fresh each turn;
   the body is read on demand).
-- Vendor-native `.claude/`/`.codex/` are masked in every provider launch view,
-  not only the tool jail (design risk 8, decided here).
+- Every hidden directory at the universe root except `.runtime/` is masked in
+  every provider launch view, so a CLI's own project settings dir (`.claude/`,
+  or any future CLI's) is never a loading mechanism (design risk 8, decided
+  here without naming a vendor).
 - The claude engine-route config (it carries the route bearer) moves from the
   universe root into `.runtime/`.
 
@@ -51,8 +52,8 @@ top-level handle is added to the public connector.
 
 ### Modified Capabilities
 
-None. The provider-launch jail change (vendor dirs masked) is recorded in the
-new capability because it exists for the harness.
+None. The provider-launch jail change (hidden root dirs masked) is recorded
+in the new capability because it exists for the harness.
 
 ## Impact
 

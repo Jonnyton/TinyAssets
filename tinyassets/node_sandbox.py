@@ -2219,15 +2219,25 @@ WORKSPACE_LAUNCHER_FACTORY: Callable[[WorkspaceMount], Launcher] = (
 def _read_process_tree_rss(pid: int) -> int:
     """Resident bytes summed over the process tree rooted at *pid*.
 
-    Reads ``/proc``: ``stat`` for the parent of every process (so the tree can
-    be walked without ``CONFIG_PROC_CHILDREN``) and ``statm`` for resident
-    pages. Returns ``-1`` where the tree cannot be measured -- no ``/proc``,
-    or a race that emptied it -- which the watchdog treats as 'stop watching',
+    Returns ``-1`` where the tree cannot be measured -- no ``/proc``, or a
+    race that emptied it -- which the watchdog treats as 'stop watching',
     never as 'over the cap': killing a node because a measurement failed would
     be worse than not measuring.
     """
+    return read_process_tree(pid)[1]
+
+
+def read_process_tree(pid: int) -> tuple[int, int]:
+    """``(process count, resident bytes)`` over the tree rooted at *pid*.
+
+    Reads ``/proc``: ``stat`` for the parent of every process (so the tree can
+    be walked without ``CONFIG_PROC_CHILDREN``) and ``statm`` for resident
+    pages. ``(-1, -1)`` where the tree cannot be measured. Shared by the
+    workspace RSS watchdog and the universe tool jail
+    (:mod:`tinyassets.universe_tools`), so there is one tree walk.
+    """
     if not os.path.isdir("/proc"):
-        return -1
+        return -1, -1
     page = 4096
     try:
         page = os.sysconf("SC_PAGE_SIZE")
@@ -2237,7 +2247,7 @@ def _read_process_tree_rss(pid: int) -> int:
     try:
         entries = [name for name in os.listdir("/proc") if name.isdigit()]
     except OSError:
-        return -1
+        return -1, -1
     for name in entries:
         try:
             with open(f"/proc/{name}/stat", "rb") as handle:
@@ -2274,7 +2284,7 @@ def _read_process_tree_rss(pid: int) -> int:
         except (OSError, ValueError):
             pass
         stack.extend(children.get(current, ()))
-    return total
+    return len(seen), total
 
 
 #: Injected so a test can present a tree without starting one.

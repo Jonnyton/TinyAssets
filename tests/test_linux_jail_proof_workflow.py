@@ -45,6 +45,7 @@ _FILES = (
     "tests/test_delivery_node_rpc.py",
     "tests/test_native_refresh_jail.py",
     "tests/test_provider_universe_jail.py",
+    "tests/test_universe_tools_jail.py",
 )
 _NODEIDS = (
     _NODEID,
@@ -53,6 +54,16 @@ _NODEIDS = (
     "tests/test_provider_universe_jail.py::test_claude_node_call_reads_only_its_own_universe",
     "tests/test_provider_universe_jail.py::test_codex_node_call_reads_only_its_own_universe",
     "tests/test_provider_universe_jail.py::test_router_jails_a_new_command_adapter_with_no_jail_code",
+    "tests/test_universe_tools_jail.py::test_tools_reach_their_own_universe_and_nothing_else",
+    "tests/test_universe_tools_jail.py::test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch",
+    "tests/test_universe_tools_jail.py::test_an_engine_pinned_to_another_universe_cannot_reach_it",
+    "tests/test_universe_tools_jail.py::test_bash_has_no_network",
+    "tests/test_universe_tools_jail.py::test_the_limits_are_applied_inside_the_jail",
+    "tests/test_universe_tools_jail.py::test_memory_limit_stops_a_runaway_allocation",
+    "tests/test_universe_tools_jail.py::test_process_limit_holds_and_a_fork_bomb_is_contained",
+    "tests/test_universe_tools_jail.py::test_cpu_output_and_wall_clock_limits_kill",
+    "tests/test_universe_tools_jail.py::test_a_jail_that_fills_the_shared_disk_is_killed",
+    "tests/test_universe_tools_jail.py::test_a_skill_the_agent_writes_changes_its_next_turn",
 )
 _RUN_STEP = "Run the jail proof modules"
 _JOB = "linux-jail-proof"
@@ -125,6 +136,9 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
         "tinyassets/providers/owned_process.py",
         "tinyassets/providers/router.py",
         "tinyassets/providers/claude_provider.py",
+        "tests/test_universe_tools_jail.py",
+        "tinyassets/universe_tools.py",
+        "tinyassets/engine_mcp_server.py",
     ):
         assert required in paths, f"{required} must retrigger the proof"
 

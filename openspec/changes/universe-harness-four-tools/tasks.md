@@ -8,7 +8,7 @@
 - [x] 1.3 Serve the four as engine-MCP handles and add them to
       `SERVED_ENGINE_MCP_TOOLS`; no public connector handle.
 - [x] 1.4 Skill index + harness section in the founder turn that has tools.
-- [x] 1.5 Mask vendor-native `.claude/`/`.codex/` in provider launch views;
+- [x] 1.5 Mask every hidden root dir but `.runtime` in provider launch views;
       move the claude engine-route config under `.runtime/`.
 
 ## 2. Verify

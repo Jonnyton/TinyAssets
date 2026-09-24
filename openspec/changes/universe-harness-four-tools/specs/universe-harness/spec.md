@@ -24,9 +24,8 @@ name a universe: the folder is the engine's pinned universe.
 ### Requirement: The tools run in a tool jail that holds only the universe
 Every tool call SHALL run as a process inside an OS jail in which the owning
 universe is mounted read-write at `/u` and no other universe, no data root,
-no platform source and no credential snapshot is reachable. `.runtime/` and
-the vendor-native `.claude/` and `.codex/` SHALL be masked so they are
-neither readable nor writable to disk. The jail SHALL have no network
+no platform source and no credential snapshot is reachable. `.runtime/` SHALL
+be masked so it is neither readable nor writable to disk. The jail SHALL have no network
 namespace shared with the host, SHALL start from an empty environment, and
 SHALL refuse creating symbolic links and special files. A host with no jail
 SHALL refuse the call; there SHALL be no unjailed fallback.
@@ -42,10 +41,21 @@ SHALL refuse the call; there SHALL be no unjailed fallback.
   the host itself can reach
 - **THEN** the connection fails and the jail has only a loopback interface
 
-#### Scenario: platform-owned and vendor-native dirs are masked
-- **WHEN** the agent reads `.runtime/` or writes into `.runtime/` or `.claude/`
+#### Scenario: the platform-owned dir is masked
+- **WHEN** the agent reads `.runtime/` or writes into it
 - **THEN** it sees no credential or route bearer, and nothing it wrote exists
   on disk after the call
+
+### Requirement: A CLI's own project settings are never a loading mechanism
+Every provider launch SHALL mask every hidden directory at the universe root
+other than `.runtime/`, by a rule that names no vendor, and SHALL refuse the
+launch when a hidden root entry is a symbolic link.
+
+#### Scenario: a settings dir the agent wrote is invisible to the next launch
+- **WHEN** the agent writes `.claude/settings.json` (or any hidden dir) into
+  its folder
+- **THEN** the file is kept on disk, and a provider launched for the universe
+  sees an empty directory there
 
 ### Requirement: Tool jails run under per-universe resource limits that fail closed
 Every tool call SHALL run under limits on address space, process count, cpu
