@@ -173,7 +173,9 @@ class _FakeProc:
         return 4242
 
 
-def _run_main(monkeypatch, tmp_path, proc, *, provider="claude", extra=(), out_file_text=None):
+def _run_main(
+    monkeypatch, tmp_path, proc, *, provider="claude", extra=(), out_file_text=None, seen=None
+):
     """Invoke peer_agent.main() with a scripted subprocess.
 
     Returns (rc, out_text, argv). `out_file_text` simulates the codex CLI's
@@ -182,11 +184,12 @@ def _run_main(monkeypatch, tmp_path, proc, *, provider="claude", extra=(), out_f
     genuinely different code and both need covering.
     """
     out = tmp_path / "verdict.txt"
-    seen = {}
+    seen = {} if seen is None else seen
 
     def _popen(cmd, *a, **k):
         argv = list(cmd)
         seen["argv"] = argv
+        seen["env"] = k.get("env")
         if out_file_text is not None:
             # Write where the IMPLEMENTATION told codex to write, not where the
             # test wishes it would. Writing to `out` directly would keep passing
@@ -521,6 +524,56 @@ def test_codex_empty_out_file_is_a_failure(monkeypatch, tmp_path):
     )
     assert rc == 2
     assert "[peer_agent] ERROR" in out
+
+
+# --- bounded-peer marker -------------------------------------------------------
+# The Stop hook blocked dispatched peers on ledger rows they do not own (their
+# own parent's, even). The fix is one env marker on the CHILD. These pin that it
+# reaches the child, only the child, and that the hook reads the same name.
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_peer_task_marker_reaches_only_the_child_environment(
+    monkeypatch, tmp_path, provider
+):
+    monkeypatch.delenv(peer_agent.PEER_TASK_ENV, raising=False)
+    monkeypatch.setattr(peer_agent, "resolve_codex", lambda: "codex.exe")
+    monkeypatch.setattr(peer_agent, "resolve_claude", lambda: "claude.exe")
+    before = dict(os.environ)
+    seen = {}
+    _run_main(
+        monkeypatch,
+        tmp_path,
+        _FakeProc(returncode=0, stdout=b"ok" + b"\n"),
+        provider=provider,
+        out_file_text="VERDICT: APPROVE" + chr(10),
+        seen=seen,
+    )
+    assert seen["env"] is not None, "Popen was not handed an explicit env"
+    assert seen["env"][peer_agent.PEER_TASK_ENV] == "1"
+    # The marker is coordination context in the child, not state in the parent.
+    assert peer_agent.PEER_TASK_ENV not in os.environ
+    assert dict(os.environ) == before
+    # And it is never an argv value: nothing downstream can parse it as a flag.
+    assert all(peer_agent.PEER_TASK_ENV not in a for a in seen["argv"])
+
+
+def test_peer_task_env_returns_a_new_mapping_and_never_mutates_its_input():
+    base = {"PATH": "x", "HOME": "y"}
+    marked = peer_agent.peer_task_env(base)
+    assert marked is not base
+    assert marked == {"PATH": "x", "HOME": "y", peer_agent.PEER_TASK_ENV: "1"}
+    assert base == {"PATH": "x", "HOME": "y"}
+
+
+def test_the_stop_hook_reads_the_same_marker_name_the_wrapper_sets():
+    """Two definitions of one fact: the hook cannot import the wrapper, so pin them."""
+    hook_path = SCRIPT.parents[1] / ".claude" / "hooks" / "keep_working_while_waiting.py"
+    spec = importlib.util.spec_from_file_location("keep_working_hook_for_marker", hook_path)
+    assert spec is not None and spec.loader is not None
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    assert hook.PEER_TASK_ENV == peer_agent.PEER_TASK_ENV == "TINYASSETS_PEER_TASK"
 
 
 def test_the_dispatch_ledger_stays_silent_under_pytest(tmp_path, monkeypatch):

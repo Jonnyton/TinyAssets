@@ -28,8 +28,14 @@ watches the trajectory and refuses to gate, because a supervisor that can stop
 a session is a new ratchet. This is the opposite operation: it does not stop
 work, it declines to stop *early*.
 
-Three limits keep it from becoming that ratchet:
+Four limits keep it from becoming that ratchet:
 
+* **A bounded peer skips it entirely.** `scripts/peer_agent.py` marks its
+  child's environment with `TINYASSETS_PEER_TASK`; a peer owns none of the
+  ledger rows -- not even its parent's still-running one -- and the peer-agents
+  rule says it must not dispatch. Blocking it told it to do exactly that, and
+  peers timed out after delivering. The marker is coordination context, not
+  authority: nothing else reads it.
 * **`stop_hook_active` short-circuits it**, so it can never chain on its own
   continuation.
 * **A hard per-session cap** (`_MAX_BLOCKS`), then silence for the session.
@@ -40,11 +46,16 @@ Three limits keep it from becoming that ratchet:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 _MAX_BLOCKS = 3
+
+# Must match scripts/peer_agent.py:PEER_TASK_ENV (pinned by tests/test_peer_agent.py).
+# Not imported: a fail-open hook must not pull the provider stack in to decide.
+PEER_TASK_ENV = "TINYASSETS_PEER_TASK"
 
 # A dispatch still "running" after this long is almost certainly gone: the
 # longest --timeout used here is 1800s, and peer_agent closes its row in a
@@ -167,6 +178,9 @@ _ADVICE = {
 
 
 def main() -> int:
+    # A dispatched peer owns no ledger row. Touch neither ledger nor state.
+    if os.environ.get(PEER_TASK_ENV):
+        return 0
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except (json.JSONDecodeError, ValueError):
