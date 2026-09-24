@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P2** | [Scoped reset cannot erase delivery custody](2026-09-23-scoped-reset-cannot-erase-delivery-custody.md) — operator scoped reset fail-closes on any root that ever opened the delivery surface; allowlisting the tables would report success while retaining custody | 2026-09-23 |
 | **note** | [History expansion followups](2026-09-22-history-expansion-followups.md) — retained long reply accepted live; organic owner use and peripheral expansion cases remain unverified | 2026-09-22 |
 | **note** | [Owned run activity clean-use watch](2026-09-22-owned-run-activity-clean-use.md) — deployed diagnostics passed scoped rendered acceptance; organic owner use and historical intermittent causes remain open | 2026-09-22 |
 | **note** | [Served node editable-field parity](2026-09-21-served-node-editable-field-parity.md) — effects/workspace edits work; ordinary output-key and timeout edits remain refused | 2026-09-21 |
