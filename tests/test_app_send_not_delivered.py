@@ -208,10 +208,21 @@ def test_the_real_renewal_separates_unavailable_from_ended(tmp_path, html):
 # UI: the page's own sendTurn / offerResend / sessionExpired / checkForNewBuild.
 # ---------------------------------------------------------------------------
 
+def _real_converse(html: str) -> str:
+    """The page's own ``MCP.converse`` method, as a plain function.
+
+    Installed as ``MCP.converse`` so a failure scripted at ``MCP.callTool`` (the
+    layer the transport tags) travels through the real converse wrapper, the
+    real ``sendConversationRequest`` and the real ``sendTurn``.
+    """
+    at = html.index("    converse(message,inputMethod")
+    return _js_function("function " + html[at:].lstrip(), "converse")
+
+
 def _ui(tmp_path, html, body, extra_funcs=()):
     funcs = list(live._FUNCS) + list(extra_funcs)
     decls = [m.group(0) for m in (re.search(p, html) for p in live._DECLS) if m]
-    srcs = [_js_function(html, f) for f in funcs]
+    srcs = [_js_function(html, f) for f in funcs] + [_real_converse(html)]
     for name in live._OPTIONAL_FUNCS:
         if re.search(r"function\s+" + name + r"\s*\(", html):
             srcs.append(_js_function(html, name))
@@ -228,7 +239,8 @@ def _ui(tmp_path, html, body, extra_funcs=()):
 
 
 _FAIL_SEND = r"""
-MCP.converse=async()=>{ const e=new Error(__MESSAGE__); e.transport=__CODE__;
+MCP.converse=converse;
+MCP.callTool=async()=>{ const e=new Error(__MESSAGE__); e.transport=__CODE__;
   if(__NOT_SENT__) e.notSent=true; throw e; };
 await sendTurn("Retest your workflow checklist",undefined,{inputMethod:"typed"});
 await settle();
@@ -253,7 +265,7 @@ def test_a_send_that_never_left_says_not_sent_and_keeps_the_text(tmp_path, html)
         "a turn that provably never ran needs no progress check, only a resend"
     assert out["inflight"]["message"] == "Retest your workflow checklist", \
         "the unsent text must survive a reload"
-    assert out["sendDisabled"] is False and out["converseCalls"] == []
+    assert out["sendDisabled"] is False
 
 
 def test_an_unconfirmed_send_keeps_its_cautious_notice(tmp_path, html):
@@ -299,3 +311,46 @@ def test_a_build_reload_cleared_before_a_send_does_not_fire_during_it(tmp_path, 
     console.log(JSON.stringify({reloaded}));
     """, extra_funcs=("checkForNewBuild",))
     assert out["reloaded"] is False, "a new-build reload wiped a turn in flight"
+
+
+def test_a_failed_poll_after_an_accepted_conversation_turn_is_not_called_unsent(tmp_path, html):
+    """Review finding on #3948: once a chosen-conversation `converse` has been
+    ACCEPTED (a pending turn came back), a later poll whose handshake fails is
+    not proof of anything about the turn. It is running. The page must keep
+    "Check this conversation" and hold what is queued behind it."""
+    out = _ui(tmp_path, html, r"""
+    MCP.converse=converse;
+    const calls=[];
+    MCP.callTool=async(name,args)=>{
+      calls.push({name, target:args.target||null, consumer:!!args.consumer_request,
+        message:args.message||null});
+      if(name==="converse"&&!args.consumer_request) return {error:"consumer_request_required",
+        consumer_selection:{version:1,binding_id:"binding-1",binding_revision:3}};
+      if(name==="converse") return {consumer_turn:{turn_id:"turn-1",state:"pending"}};
+      // The poll: its session is gone and the rebuild fails, exactly as the
+      // transport reports a handshake that never completed.
+      const e=new Error("the connection to your universe failed (HTTP 503)");
+      e.transport="unavailable"; e.notSent=true; throw e;
+    };
+    const turn=sendTurn("Retest your workflow checklist",undefined,{inputMethod:"typed"});
+    await settle();
+    sendTurn("and then the next item",undefined,{inputMethod:"typed"});   // queued behind it
+    await turn; await settle();
+    const snap=snapshot();
+    console.log(JSON.stringify({snap, calls, queued:sendQueue.length, held:sendQueueHeld}));
+    """)
+    snap = out["snap"]
+    assert [c["name"] for c in out["calls"][:3]] == ["converse", "converse", "read_graph"]
+    notes = [n for n in snap["notes"] if n["cls"] == "msg msg--system"]
+    assert notes, "the failure was not reported at all"
+    note = notes[0]
+    assert "nothing ran" not in note["text"] and not note["text"].startswith("Not sent"), \
+        "an accepted, running turn was reported as never sent"
+    assert "Send again" not in note["buttons"]
+    assert note["buttons"][0] == "Check this conversation"
+    assert out["queued"] == 1 and out["held"] is True, \
+        "a line queued behind a still-running turn was released"
+    assert len(notes) == 2 and "being held, not sent" in notes[1]["text"], \
+        "the held queue must be announced"
+    assert not any(c["message"] == "and then the next item" for c in out["calls"])
+    assert len(out["calls"]) == 3

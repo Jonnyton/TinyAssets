@@ -2919,6 +2919,15 @@
     const epoch=MCP._loginEpoch;
     const checkLogin=()=>{if(epoch!==MCP._loginEpoch)throw new Error("Conversation account changed.");};
     let payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest||null);
+    // From here on the server has ANSWERED a converse for this message, and a
+    // chosen-conversation turn may be accepted and running. A later failure (a
+    // poll whose handshake fails, a 401 whose renewal is down) is not sent for
+    // THAT request only - it proves nothing about the turn. So `notSent` never
+    // leaves this function: the page keeps "Check this conversation" and holds
+    // whatever is queued behind a turn that may still be working.
+    try{ return await continueConversationRequest(payload); }
+    catch(err){ if(err&&typeof err==="object"&&err.notSent) err.notSent=false; throw err; }
+    async function continueConversationRequest(payload){
     checkLogin();
     if(payload&&payload.error==="consumer_request_required"&&!opts.consumerRequest){
       const s=payload.consumer_selection;
@@ -2953,6 +2962,7 @@
     if(payload&&payload.consumer_turn&&["pending","held","expired"].includes(payload.consumer_turn.state))
       throw new Error(payload.notice||"This conversation is held; it will not be run again.");
     return payload;
+    }
   }
 
   // Messages that arrive while a turn is in flight (a relayed rail answer, an
