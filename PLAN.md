@@ -549,6 +549,7 @@ _Last audited: 2026-05-19_
 **Out of scope:** What a provider is asked to do (the requesting module); evaluation of provider output (Evolution & Evaluation).
 
 **Principles:**
+- *The platform has no LLM* (founder hard rule, 2026-09-24; AGENTS Hard Rule 15). There is no concept of "the platform's LLM". Only a powered universe makes LLM calls, using the credentials its owner connected, for that universe alone. The platform never makes, needs or brokers an LLM call for its own operation: onboarding, selection, moderation, ranking, investigation, maintenance and monitoring all run without one. No platform, host, maintainer or shared credential ever serves a universe, including as a fallback. The founder's subscription belongs to the founder's own universe, like any user's.
 - *The platform is vendor-neutral: any compute source through standard connections, with no vendor code* (founder directive, 2026-09-24). Users connect ANY LLM or compute source to their universe, including ones that do not exist yet, with no patch from TinyAssets. The platform offers only standard, vendor-neutral connection primitives:
   - generic OAuth (with token refresh);
   - API key, bearer or custom-header auth;
