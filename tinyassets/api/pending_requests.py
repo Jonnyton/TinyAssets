@@ -1114,6 +1114,10 @@ def _grant_sentence(row: dict[str, Any]) -> str:
             f"{host}/{action.get('repo')} with the key you already "
             "gave. Nothing to paste; this is the yes."
         )
+    if action.get("type") == "connect" and "setup" in action:
+        # The synthesized setup entry grants nothing itself; each shape it
+        # completes raises (or answers) its own exact request.
+        return ""
     if action.get("type") == "connect":
         base = _grant_sentence({**row, "action": {**action, "type": "connect_http"}})
         return (base + _uses_sentence(action) + _sign_in_sentence(row)) if base else ""
@@ -1235,19 +1239,65 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
         return False
 
 
+#: The shapes the rail can complete itself for a model connection, in the order
+#: it offers them. Each is answered through the ONE ``connect`` action with
+#: explicit fields; nothing is inferred by an LLM, because an unpowered universe
+#: has none. A ``command`` runner joins this list when one exists to run it.
+_MODEL_CONNECT_SHAPES = ("api_key", "local")
+
+
+def _first_power_preset() -> dict[str, object] | None:
+    """The bundled guided sign-in the setup request offers first, as display data.
+
+    It is installed data (``acquisition_presets.json``), not code: the app shows
+    whatever preset is installed and names no provider itself. An unreadable
+    preset drops the button rather than offering one that cannot work.
+    """
+    import json as _json
+    from pathlib import Path
+
+    from tinyassets.onboarding.hosted_model_auth import HostedAuthError, load_preset
+
+    try:
+        path = Path(__file__).parent.parent / "providers" / "acquisition_presets.json"
+        docs = _json.loads(path.read_text(encoding="utf-8"))
+        preset_id = next(iter(docs))
+        preset = load_preset(preset_id)
+        manual = docs[preset_id].get("manual_key_entry") is True
+    except (OSError, ValueError, StopIteration, HostedAuthError, KeyError, TypeError):
+        return None
+    return {
+        "preset_id": preset.id,
+        "name": preset.display_name,
+        "label": f"Continue with {preset.display_name}",
+        "manage_url": preset.manage_url,
+        "manual_key": manual,
+    }
+
+
 def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
-    """A blocking setup entry, or an optional additional-source entry when ready."""
+    """A blocking setup entry, or an optional additional-source entry when ready.
+
+    It is the whole model setup (founder, 2026-09-24): the app completes every
+    shape inside this one request, through the one ``connect`` action.
+    """
+    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES)}
+    primary = None if connected else _first_power_preset()
+    if primary is not None:
+        setup["primary"] = primary
     return {
         "request_id": _LLM_REQUEST_ID,
         "kind": "LLM",
         "title": ("Connect another LLM" if connected
                   else "Connect the model your universe runs on"),
         "body": (
-            "Connect a model you control: a subscription, an API, or your own "
-            "model endpoint. Your universe uses only connections you authorize."
+            "Add another model source. Your universe keeps running on the one it has."
+            if connected else
+            "Your universe needs a model to think with. It only ever uses "
+            "connections you authorize."
         ),
         "fields": [],
-        "action": {"type": "connect_llm"},
+        "action": {"type": "connect", "use": "model", "setup": setup},
         "status": "pending",
         "sticky": not connected,
         "created_at": 0.0,

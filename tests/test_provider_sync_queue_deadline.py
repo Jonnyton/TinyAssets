@@ -38,11 +38,19 @@ from __future__ import annotations
 import concurrent.futures
 import threading
 import time
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tinyassets.graph_compiler import NodeTimeoutError, _run_with_timeout
-from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+from tinyassets.provider_work_authority import ProviderInvocationCarrier
+from tinyassets.providers.base import (
+    BaseProvider,
+    ModelConfig,
+    ProviderResponse,
+    UniverseContext,
+)
 from tinyassets.providers.router import ProviderRouter
 
 # The node's remaining budget at the moment the router wrapper is entered.
@@ -127,8 +135,41 @@ class _SubmitSignallingPool(concurrent.futures.ThreadPoolExecutor):
             return self._cond.wait_for(lambda: self.submits >= n, timeout=timeout)
 
 
+def _owner_carrier() -> MagicMock:
+    carrier = MagicMock(spec=ProviderInvocationCarrier)
+    carrier.provider = "claude-code"
+    carrier.role = "writer"
+    carrier.operation = "run_graph"
+    carrier.max_tokens = 1000
+    carrier.max_cost_microunits = 1000
+    carrier.selected_model = None
+    carrier.native_selection = None
+    carrier.settlement_owner = None
+    carrier.validate_for_call.return_value = "claude-code"
+    return carrier
+
+
+_CARRIER = _owner_carrier()
+# Hard Rule 15: every router call carries one universe owner's authority.
+_BOUND = {
+    "operation": "run_graph",
+    "universe_context": UniverseContext(
+        universe_dir=Path("u-sync-queue"), provider_invocation=_CARRIER,
+    ),
+}
+
+
 @pytest.fixture(scope="module", autouse=True)
-def _warm_the_router_once():
+def _owner_authority():
+    with patch(
+        "tinyassets.providers.router._provider_invocation_carrier",
+        return_value=_CARRIER,
+    ):
+        yield
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _warm_the_router_once(_owner_authority):
     """Pay the router's one-time cold start before anything is timed.
 
     The FIRST ``call_sync`` in a process spends ~0.7s inside ``call`` on
@@ -141,7 +182,7 @@ def _warm_the_router_once():
     router and the PRODUCTION pool, before any test installs its own.
     """
     ProviderRouter(providers={"claude-code": _RecordingProvider()}).call_sync(
-        "writer", "warmup", "", config=ModelConfig(timeout=30),
+        "writer", "warmup", "", config=ModelConfig(timeout=30), **_BOUND,
     )
 
 
@@ -207,7 +248,9 @@ def _drive_node(router: ProviderRouter, budget_s: float, node_id: str) -> dict:
 
     def _node_work():
         try:
-            result = router.call_sync("writer", "p", "s", config=_node_cfg(budget_s))
+            result = router.call_sync(
+                "writer", "p", "s", config=_node_cfg(budget_s), **_BOUND,
+            )
         except BaseException as exc:  # noqa: BLE001 - recorded, then re-raised
             outcome["error"] = exc
             raise
@@ -282,7 +325,9 @@ def test_partial_provider_sync_queue_wait_is_deducted_before_launch(sync_pool):
     def _node_work():
         entered_at.append(time.monotonic())
         try:
-            result = router.call_sync("writer", "p", "s", config=_node_cfg(budget_s))
+            result = router.call_sync(
+                "writer", "p", "s", config=_node_cfg(budget_s), **_BOUND,
+            )
         except BaseException as exc:  # noqa: BLE001 - recorded, then re-raised
             outcome["error"] = exc
             raise
@@ -382,7 +427,7 @@ def test_expired_work_does_not_launch_from_call_with_policy_sync_either(sync_poo
     def _node_work():
         try:
             result = router.call_with_policy_sync(
-                "writer", "p", "s", None, config=_node_cfg(NODE_BUDGET_S),
+                "writer", "p", "s", None, config=_node_cfg(NODE_BUDGET_S), **_BOUND,
             )
         except BaseException as exc:  # noqa: BLE001 - recorded, then re-raised
             outcome["error"] = exc
@@ -424,7 +469,7 @@ def test_an_unqueued_call_keeps_the_callers_own_config(sync_pool):
     router = ProviderRouter(providers={provider.name: provider})
     cfg = _node_cfg(NODE_BUDGET_S * 4)
 
-    result = router.call_sync("writer", "p", "s", config=cfg)
+    result = router.call_sync("writer", "p", "s", config=cfg, **_BOUND)
 
     assert result.text == "ok"
     assert len(provider.launches) == 1
@@ -453,7 +498,9 @@ def test_a_caller_without_a_deadline_is_never_refused(sync_pool):
     done: dict = {}
     worker = threading.Thread(
         target=lambda: done.setdefault(
-            "result", router.call_sync("writer", "p", "s", config=ModelConfig()),
+            "result", router.call_sync(
+                "writer", "p", "s", config=ModelConfig(), **_BOUND,
+            ),
         ),
         daemon=True,
     )

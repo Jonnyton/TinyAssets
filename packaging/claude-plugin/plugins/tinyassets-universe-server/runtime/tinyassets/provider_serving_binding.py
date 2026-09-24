@@ -1132,6 +1132,13 @@ def resolve_serving_agent_binding(
     matches = serving_binding_candidates(
         base_path, universe_id=universe_id, owner_user_id=owner_user_id,
     )
+    if not matches:
+        # Nothing serves this universe, so nothing ran: a setup state, not a
+        # failure. Typed so the turn can say so instead of "actions may already
+        # have occurred" (live 2026-09-24, an unpowered free-only account).
+        raise NoServingProvider(
+            "connect your provider: no founder serving binding exists yet"
+        )
     if len(matches) != 1:
         raise PermissionError(
             "connect your provider: exactly one founder serving binding is required"

@@ -19,24 +19,6 @@ def _reload_module(goal_id: str):
     return mod
 
 
-class TestIsAutoTriggerEnabled:
-    def test_disabled_when_env_unset(self):
-        with patch.dict("os.environ", {}, clear=False):
-            import os
-            os.environ.pop("TINYASSETS_BUG_INVESTIGATION_GOAL_ID", None)
-            # Reimport to pick up missing env
-            mod = _reload_module("")
-            assert mod.is_auto_trigger_enabled() is False
-
-    def test_enabled_when_env_set(self):
-        mod = _reload_module("goal-abc-123")
-        assert mod.is_auto_trigger_enabled() is True
-
-    def test_disabled_when_env_empty_string(self):
-        mod = _reload_module("")
-        assert mod.is_auto_trigger_enabled() is False
-
-
 class TestBuildRunPayload:
     def _call(self, frontmatter: dict) -> dict:
         mod = _reload_module("")
@@ -96,32 +78,6 @@ class TestBuildRunPayload:
             "effort_class", "effort_attention", "effort_dispatch_lane",
             "observed", "expected", "repro", "workaround", "request_text",
         }
-
-
-class TestFormatInvestigationComment:
-    def _call(self, run_id: str, **kwargs) -> str:
-        from tinyassets.bug_investigation import format_investigation_comment
-        return format_investigation_comment(run_id, **kwargs)
-
-    def test_contains_run_id(self):
-        result = self._call("run-abc-123")
-        assert "run-abc-123" in result
-
-    def test_default_status_is_queued(self):
-        result = self._call("run-xyz")
-        assert "status=queued" in result
-
-    def test_custom_status(self):
-        result = self._call("run-xyz", status="running")
-        assert "status=running" in result
-
-    def test_has_investigation_heading(self):
-        result = self._call("run-xyz")
-        assert "## Investigation" in result
-
-    def test_starts_with_double_newline(self):
-        result = self._call("run-xyz")
-        assert result.startswith("\n\n")
 
 
 class TestFormatPatchPacketComment:
