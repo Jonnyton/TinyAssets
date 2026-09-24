@@ -66,3 +66,15 @@ Split the candidate if the patch is over the cap. The oracle never accepts
 oversized input.
 
 Contract test: `tests/test_cloud_prepush_oracle.py`.
+
+## Trust boundary
+
+Only an operator-reviewed source/test diff belongs in this workflow. The candidate
+runs Python on a disposable hosted runner; path checks are not a sandbox against
+hostile Python, and the candidate can write its own test results. A green report
+is evidence for the reviewed candidate and selected tests, not a security
+attestation or proof of all platform behavior. No production credentials,
+production service dependencies, or personal-desktop execution are involved.
+
+The workflow must first land on the default branch before dispatch. Removing
+this manual-only workflow is the rollback; it does not change production.
