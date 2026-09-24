@@ -783,7 +783,8 @@ assistant response unless a terminal provider result was produced.
   that what it finished stands, states that sending again repeats the whole
   request (the turn may already have acted) and that asking it to continue is
   usually better, and never contains "exhausted", "fallback", "capacity" or
-  "quota"; every other failure keeps the exception text verbatim
+  "quota"; every other failure keeps the source's own text as its scrubbed,
+  bounded `provider_detail` (never the router's synthetic "exhausted" wrapper)
 - **AND** the web app keeps the message resendable (the in-flight record is not
   forgotten on a served `error`), shows the server's sentence, and does not
   reload for a new build while a send is in flight (bounded at 3 hours — past
@@ -796,6 +797,59 @@ assistant response unless a terminal provider result was produced.
 - **WHEN** a turn ends with `provider_idle_timeout` or `interactive_deadline`
 - **THEN** the user notice states the model stopped making progress / the reply
   exceeded the interactive window — not that the model is at capacity
+
+### Requirement: A failed served turn is a structured record and its notice is composed from it
+
+A failed served turn SHALL be recorded as a `turn_failed` value carrying `code`
+(a closed class set), `stage` (one of `before_send`, `connection`,
+`model_request`, `model_reply`, `tool`, `platform`, or absent when unknown),
+`effects` (`none`, `some`, `unknown`), a scrubbed and bounded `provider_detail`,
+and a `ref` (the agent turn id, or a fresh id the served-failure log line also
+carries). `effects` SHALL come from the agent turn journal when one exists, and
+SHALL be `none` otherwise only when no model attempt was invoked. The live
+notice and the retained history row SHALL be composed from this one record by
+`conversation_failure.failure_notice`; "actions may already have occurred" and
+the check-progress caution SHALL appear only when `effects` is not `none`. The
+record is returned on `converse` as `turn_failure` and read back through the
+existing conversation read paths.
+
+#### Scenario: A reply the codec cannot read names that, not an unknown cause
+
+- **WHEN** the connected model's reply fails agent-chat decoding before any tool
+  is dispatched
+- **THEN** the record is `code=provider_protocol_error`, `stage=model_reply`,
+  `effects=none`, and the notice says the model replied in a format the
+  universe could not read, to try again or choose another model, and that
+  nothing ran
+
+#### Scenario: A universe with no model connected is told to connect one
+
+- **WHEN** the router refuses the turn because no provider is connected
+- **THEN** the record is `code=setup_required`, `stage=before_send`,
+  `effects=none`, and neither the live notice nor history claims actions may
+  have occurred
+
+### Requirement: The agent-chat codec accepts the standard chat-completions tool-call spellings
+
+The `chat_messages` agent codec SHALL accept, without per-vendor or per-model
+branches: `function.arguments` as a JSON-object string, as an object, blank,
+`null`, or absent (no arguments); a missing or blank tool-call `id` (a stable id
+is synthesized from position, name and arguments); a missing `type` (defaulting
+to `function`); an `index` or other extra per-call key (dropped); `tool_calls`
+beside non-empty `content`; `finish_reason` of `tool_calls`, `stop`,
+`function_call` or null beside a complete batch; a legacy single
+`function_call` object; and a server-sent-event body, folded by tool-call
+`index` into the one response it describes. The stored continuation is the
+canonical `{id, type, function: {name, arguments}}` form. A still-unsupported
+call SHALL fail with `unsupported tool call shape: tool_calls[N]=<structure>`,
+where the structure lists key names and JSON types only, never values.
+
+#### Scenario: A router-normalized free model's tool call runs
+
+- **WHEN** a connected OpenAI-compatible model returns a tool call carrying an
+  `index`, no `type`, object `arguments`, or a null `finish_reason`
+- **THEN** the tool runs once and the continuation replays one canonical call
+  whose `id` the tool result answers
 
 ### Requirement: Realtime voice transport cannot alter primary-writer routing
 Enabling Realtime voice SHALL NOT enroll, select, replace, or fall back to any provider as the universe's primary writer; capability discovery SHALL inspect only the provider already selected by the existing routing equation, every spoken turn SHALL continue to use that writer through `converse`, and the voice bridge SHALL remain auxiliary transport on that provider's existing user-owned connection.

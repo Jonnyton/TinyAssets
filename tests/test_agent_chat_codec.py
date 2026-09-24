@@ -93,18 +93,22 @@ def test_round_trip_preserves_reasoning_call_strings_and_exact_results():
     assert "private continuation" not in repr(reply)
 
 
+# Blank, "null" and object arguments are standard spellings now accepted
+# (tests/test_agent_chat_tool_call_shapes.py); these remain unrunnable.
 @pytest.mark.parametrize("bad_arguments", [
-    "", " ", "null", "[]", "true", "12", '{"a":1,"a":2}',
+    "[]", "true", "12", '{"a":1,"a":2}',
     '{"nested":{"a":1,"a":2}}', '{"a":NaN}', '{"a":Infinity}',
-    '{"a":-Infinity}', '{"a":1e9999}', '{"a":', {"a": 1},
+    '{"a":-Infinity}', '{"a":1e9999}', '{"a":', ["a"], 7,
 ])
 def test_bad_arguments_refuse_the_whole_batch(bad_arguments):
     with pytest.raises(ProtocolDecodeError, match="agent chat"):
         decode(response([call(), call("two"), call("three", arguments=bad_arguments)]))
 
 
-@pytest.mark.parametrize("bad_id", [None, "", " ", "\n", "x" * 257, 123])
-def test_missing_or_unusable_ids_are_not_synthesized(bad_id):
+# A missing or blank id is synthesized (test_agent_chat_tool_call_shapes.py);
+# a present id that is not a usable identity is still refused.
+@pytest.mark.parametrize("bad_id", ["x" * 257, 123, "a\x00b"])
+def test_unusable_ids_are_not_synthesized(bad_id):
     with pytest.raises(ProtocolDecodeError):
         decode(response([call(bad_id)]))
 
@@ -112,7 +116,6 @@ def test_missing_or_unusable_ids_are_not_synthesized(bad_id):
 @pytest.mark.parametrize("calls", [
     [call(), call()], [call(name="not_enabled")], [call(name="invalid.name")],
     [{"id": "one", "type": "custom", "function": {"name": "read_graph", "arguments": "{}"}}],
-    [{"type": "function", "function": {"name": "read_graph", "arguments": "{}"}}],
     [{"id": "one", "type": "function", "function": None}], "not a list",
 ])
 def test_invalid_tool_batches_raise_without_partial_record(calls):
@@ -129,7 +132,7 @@ def test_invalid_tool_batches_raise_without_partial_record(calls):
     ("content_filter", [call()], None, "content_filter"),
     ("future_reason", [], "unfinished", "unknown"),
     ("future_reason", [call()], None, "unknown"),
-    (None, [call()], None, "unknown"),
+    (None, [call()], None, "tool_requests"),
     ("stop", [], " ", "unknown"),
 ])
 def test_finish_matrix_never_calls_a_semantic_hold_completed(finish, calls, text, expected):
@@ -165,15 +168,15 @@ def test_refusal_is_separate_from_text_and_cannot_expose_tools():
         build((codec.ToolRound(reply, ()),))
 
 
-@pytest.mark.parametrize("extra", [{"function_call": {"name": "old_tool"}},
-                                  {"audio": {"id": "clip"}}, {"new_field": "meaningful"}])
+# A legacy ``function_call`` object is a tool request now, not an unknown field.
+@pytest.mark.parametrize("extra", [{"audio": {"id": "clip"}}, {"new_field": "meaningful"}])
 def test_nonempty_unknown_continuation_fields_hold_without_dispatch(extra):
     reply = decode(response(**extra))
     assert reply.stop == "unknown" and not reply.tool_requests
     assert set(reply.dropped_fields) == set(extra)
     # Actual unsupported tool/audio content is not merely terminal metadata.
     terminal = decode(response([], content="answer", finish="stop", **extra))
-    expected = "unknown" if {"function_call", "audio"} & extra.keys() else "completed"
+    expected = "unknown" if "audio" in extra else "completed"
     assert terminal.stop == expected and terminal.text == "answer"
 
 

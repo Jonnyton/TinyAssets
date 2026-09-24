@@ -330,9 +330,19 @@ class ApiKeyHttpProvider(BaseProvider):
             raise ProviderProtocolError("compute response had an empty body")
         try:
             if agent_request is not None:
-                from tinyassets.providers.agent_chat_codec import _object
+                from tinyassets.providers.agent_chat_codec import (
+                    _object,
+                    fold_chat_stream,
+                    is_event_stream,
+                )
 
-                parsed = _object(body_str)
+                # A server may stream even when not asked to; the events fold
+                # into the single response they describe, then decode as one.
+                if is_event_stream(body_str):
+                    parsed = fold_chat_stream(body_str)
+                    body_str = json.dumps(parsed, ensure_ascii=False)
+                else:
+                    parsed = _object(body_str)
             else:
                 parsed = json.loads(body_str)
         except (TypeError, ValueError) as exc:
