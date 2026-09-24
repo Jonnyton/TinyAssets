@@ -6,7 +6,7 @@ Scope: the bounded prerequisite documented in
 **Committed on this branch only — nothing pushed, no PR, nothing deployed from
 this lane.**
 
-## Verdict: Linux oracle green on the exact head; root owns push and final review
+## Verdict: pre-merge Linux oracle green; root owns push and exact-head review
 
 | Evidence | Result |
 |---|---|
@@ -114,8 +114,10 @@ resume requirement (line 444) and #3940's execution-choice requirements (lines
   pre-commit hook also passed).
 
 A Windows run is not an oracle. The Linux proof is cloud run `35960544895`, which
-predates the merge; the merge added no code this slice executes, but a post-merge
-oracle run has **not** been performed.
+predates the merge; a post-merge oracle run has **not** been performed.
+Root subsequently merged reviewed main6b8b7226 (PR3941) non-destructively,
+without conflicts. The final integration needs its own Linux result; older
+proof is not relabelled as a test of this combined head.
 
 ## Remaining tasks
 
