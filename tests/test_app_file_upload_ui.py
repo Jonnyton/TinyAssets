@@ -1579,7 +1579,8 @@ let activeTurn = null;
 let queueScope = "uni-A";
 let queueOwner = "owner-A";
 const MCP = {_loginEpoch: 1};
-const Voice = {conversationSettled:(d)=>log.push({voice:!!d})};
+const Voice = {conversationSettled:(d)=>log.push({voice:!!d}),
+  turnStarted:(owner,scope)=>log.push({turnStarted:{owner,scope}})};
 function captureTurnOptions(o){ return Object.assign({modelChoice:null}, o||{}); }
 function queueTurn(){ log.push({queued:true}); }
 function appendMessage(role,text){ log.push({append:role, text:text}); return {remove(){}}; }
