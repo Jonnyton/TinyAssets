@@ -327,8 +327,11 @@ async def test_call_with_policy_returns_meta_triple():
     router._providers = {"fake": _Prov()}
     router._role_chains = {"writer": ["fake"]}
 
-    text, name, meta = await router.call_with_policy(
-        "writer", "p", "s", {"preferred": {"provider": "fake"}},
+    from tests.support.owner_bound import owner_bound_call
+
+    # Hard Rule 15: served only under the owner's authority for "fake".
+    text, name, meta = await owner_bound_call(
+        router, "fake", prompt="p", system="s", policy={"preferred": {"provider": "fake"}},
     )
     assert text == "out"
     assert name == "fake"

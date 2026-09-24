@@ -2,18 +2,31 @@
 
 Spec: docs/design-notes/2026-04-27-q63-third-party-provider-privacy.md §5
 Dispositions: .claude/agent-memory/navigator/q63_section4_dispositions.md
+
+Hard Rule 15 (the platform has no LLM) removed the platform fallback chain,
+the judge fan-out and the host writer pin this allowlist used to filter. The
+allowlist now bounds the ONE provider an owner's authority names: a carrier
+whose provider the universe does not allow is refused before launch.
 """
 from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tinyassets import runtime_singletons as runtime
 from tinyassets.config import UniverseConfig
 from tinyassets.exceptions import AllProvidersExhaustedError
-from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
+from tinyassets.provider_work_authority import ProviderInvocationCarrier
+from tinyassets.providers.base import (
+    BaseProvider,
+    ModelConfig,
+    ProviderResponse,
+    UniverseContext,
+)
 from tinyassets.providers.quota import QuotaTracker
 from tinyassets.providers.router import ProviderRouter
 
@@ -63,7 +76,6 @@ def isolated_universe_config():
 def _router_with_all_providers() -> tuple[
     ProviderRouter, dict[str, _FakeProvider],
 ]:
-    """Build a router with one provider per name in the writer chain."""
     names = [
         "claude-code", "codex", "gemini-free", "groq-free",
         "grok-free", "ollama-local",
@@ -73,176 +85,60 @@ def _router_with_all_providers() -> tuple[
     return router, providers
 
 
-# ---------------------------------------------------------------------------
-# 1. Backwards-compat: allowed_providers=None -> full chain unchanged
-# ---------------------------------------------------------------------------
+def _bound_call(router, *, provider: str, allowed_providers):
+    carrier = MagicMock(spec=ProviderInvocationCarrier)
+    carrier.provider = provider
+    carrier.role = "writer"
+    carrier.operation = "run_graph"
+    carrier.max_tokens = 10
+    carrier.max_cost_microunits = 5
+    carrier.selected_model = None
+    carrier.native_selection = None
+    carrier.settlement_owner = None
+    carrier.validate_for_call.return_value = provider
 
+    def resolve(_context, *, role, operation):
+        carrier.validate_for_call(role=role, operation=operation)
+        return carrier
 
-def test_allowlist_none_preserves_full_chain(isolated_universe_config):
-    runtime.universe_config = UniverseConfig(allowed_providers=None)
-    router, providers = _router_with_all_providers()
-
-    resp = _run(router.call("writer", "p", "s"))
-
-    # First in chain (claude-code) wins; no other provider attempted.
-    assert resp.provider == "claude-code"
-    assert providers["claude-code"].call_count == 1
-    for n, p in providers.items():
-        if n != "claude-code":
-            assert p.call_count == 0
-
-
-# ---------------------------------------------------------------------------
-# 2. Allowlist blocks third-party providers from running
-# ---------------------------------------------------------------------------
-
-
-def test_allowlist_blocks_third_party_in_writer_chain(isolated_universe_config):
-    """allowed_providers=['ollama-local'] must skip claude-code, gemini, etc."""
-    runtime.universe_config = UniverseConfig(allowed_providers=["ollama-local"])
-    router, providers = _router_with_all_providers()
-
-    resp = _run(router.call("writer", "p", "s"))
-
-    assert resp.provider == "ollama-local"
-    assert providers["ollama-local"].call_count == 1
-    for n in ("claude-code", "codex", "gemini-free", "groq-free", "grok-free"):
-        assert providers[n].call_count == 0, (
-            f"{n} should not have been called under "
-            f"allowed_providers=['ollama-local']"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 3. Empty filter -> AllProvidersExhaustedError (hard fail, no leak)
-# ---------------------------------------------------------------------------
-
-
-def test_empty_filter_raises_all_providers_exhausted(isolated_universe_config):
-    """Allowlist that excludes every chain entry must hard-fail."""
-    runtime.universe_config = UniverseConfig(
-        allowed_providers=["does-not-exist"],
+    context = UniverseContext(
+        universe_dir=Path("u-allowlist"),
+        config=UniverseConfig(allowed_providers=allowed_providers),
+        provider_invocation=carrier,
     )
+    with patch("tinyassets.providers.router._provider_invocation_carrier",
+               side_effect=resolve):
+        return _run(router.call(
+            "writer", "p", "s", ModelConfig(max_tokens=10),
+            operation="run_graph", universe_context=context,
+        ))
+
+
+def test_allowlist_none_serves_only_the_owner_named_provider(isolated_universe_config):
+    router, providers = _router_with_all_providers()
+
+    resp = _bound_call(router, provider="codex", allowed_providers=None)
+
+    assert resp.provider == "codex"
+    assert {n: p.call_count for n, p in providers.items() if p.call_count} == {"codex": 1}
+
+
+def test_allowlist_containing_the_owner_provider_serves_it(isolated_universe_config):
+    router, providers = _router_with_all_providers()
+
+    resp = _bound_call(router, provider="codex", allowed_providers=["codex"])
+
+    assert resp.provider == "codex"
+    assert providers["codex"].call_count == 1
+
+
+def test_allowlist_excluding_the_owner_provider_hard_fails(isolated_universe_config):
     router, providers = _router_with_all_providers()
 
     with pytest.raises(AllProvidersExhaustedError) as exc_info:
-        _run(router.call("writer", "p", "s"))
+        _bound_call(router, provider="codex", allowed_providers=["does-not-exist"])
 
     msg = str(exc_info.value)
     assert "allowed_providers" in msg
     assert "does-not-exist" in msg
-    # No provider should have been called.
-    for p in providers.values():
-        assert p.call_count == 0
-
-
-# ---------------------------------------------------------------------------
-# 4. call_judge_ensemble filters by allowlist; empty -> []
-# ---------------------------------------------------------------------------
-
-
-def test_judge_ensemble_filtered_by_allowlist(isolated_universe_config):
-    """call_judge_ensemble must skip judges not in allowed_providers."""
-    runtime.universe_config = UniverseConfig(
-        allowed_providers=["codex", "ollama-local"],
-    )
-    router, providers = _router_with_all_providers()
-
-    results = _run(router.call_judge_ensemble("p", "s"))
-
-    # Only 2 judges in allowlist intersected with _JUDGE_PROVIDERS.
-    assert len(results) == 2
-    used = {r.provider for r in results}
-    assert used == {"codex", "ollama-local"}
-    for n in ("gemini-free", "groq-free", "grok-free"):
-        assert providers[n].call_count == 0
-
-
-def test_judge_ensemble_empty_allowlist_returns_empty_list(
-    isolated_universe_config,
-):
-    """Filtered-to-empty judge ensemble returns [] (existing contract)."""
-    runtime.universe_config = UniverseConfig(
-        allowed_providers=["claude-code"],  # not in _JUDGE_PROVIDERS
-    )
-    router, _ = _router_with_all_providers()
-
-    results = _run(router.call_judge_ensemble("p", "s"))
-
-    assert results == []
-
-
-# ---------------------------------------------------------------------------
-# 5. call_with_policy intersects policy attempt order with allowlist
-# ---------------------------------------------------------------------------
-
-
-def test_call_with_policy_filters_policy_attempt_order_by_allowlist(
-    isolated_universe_config,
-):
-    """Policy providers outside allowed_providers must not be attempted."""
-    runtime.universe_config = UniverseConfig(
-        allowed_providers=["ollama-local"],
-    )
-    router, providers = _router_with_all_providers()
-    policy = {
-        "preferred": {"provider": "gemini-free"},
-        "fallback_chain": [
-            {"provider": "groq-free"},
-            {"provider": "ollama-local"},
-        ],
-    }
-
-    text, provider, _meta = _run(router.call_with_policy("writer", "p", "s", policy))
-
-    assert text == "content"
-    assert provider == "ollama-local"
-    assert providers["ollama-local"].call_count == 1
-    for n in ("gemini-free", "groq-free"):
-        assert providers[n].call_count == 0
-
-
-# ---------------------------------------------------------------------------
-# 6. TINYASSETS_PIN_WRITER × allowlist: pin in allowlist -> works
-# ---------------------------------------------------------------------------
-
-
-def test_pin_writer_in_allowlist_succeeds(isolated_universe_config):
-    """Pin and allowlist compatible: pin runs, no fallback."""
-    runtime.universe_config = UniverseConfig(
-        allowed_providers=["ollama-local"],
-    )
-    os.environ["TINYASSETS_PIN_WRITER"] = "ollama-local"
-    router, providers = _router_with_all_providers()
-
-    resp = _run(router.call("writer", "p", "s"))
-
-    assert resp.provider == "ollama-local"
-    assert providers["ollama-local"].call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# 7. TINYASSETS_PIN_WRITER × allowlist: pin NOT in allowlist -> hard-fail
-# ---------------------------------------------------------------------------
-
-
-def test_pin_writer_disjoint_from_allowlist_hard_fails(
-    isolated_universe_config,
-):
-    """Pin not in allowlist: hard-fail with explanatory message; no call."""
-    runtime.universe_config = UniverseConfig(
-        allowed_providers=["ollama-local"],
-    )
-    os.environ["TINYASSETS_PIN_WRITER"] = "claude-code"
-    router, providers = _router_with_all_providers()
-
-    with pytest.raises(AllProvidersExhaustedError) as exc_info:
-        _run(router.call("writer", "p", "s"))
-
-    msg = str(exc_info.value)
-    assert "claude-code" in msg
-    assert "allowed_providers" in msg
-    # No fallback to ollama-local — pin × allowlist disjoint must NOT
-    # silently route to a different provider.
-    for p in providers.values():
-        assert p.call_count == 0
+    assert all(p.call_count == 0 for p in providers.values())
