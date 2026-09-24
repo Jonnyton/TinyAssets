@@ -1030,6 +1030,19 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     )
     if preview.get("error"):
         return preview
+    if "expected_git_host" in document and preview.get("status") == "extends":
+        # The owner approved a git scope beside a NAMED git host. If the
+        # connection now resolves somewhere else, that is not their yes.
+        expected_git_host = str(document.get("expected_git_host") or "").strip().lower()
+        if not expected_git_host or expected_git_host != preview.get("git_host"):
+            return {
+                "error": "connection_conflict",
+                "resource": "connection",
+                "detail": (
+                    "this connection's git host is not the one the request "
+                    "named; ask again and the tab will name it"
+                ),
+            }
 
     redirect_extension = _redirect_permission_requested(added)
     expected_redirect = None

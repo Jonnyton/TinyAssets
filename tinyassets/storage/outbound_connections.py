@@ -3751,11 +3751,15 @@ class ConnectionLedger:
                 UPDATE outbound_connections
                 SET allowed_endpoints_json = ?, scopes_json = ?
                 WHERE connection_id = ? AND allowed_endpoints_json = ?
-                  AND scopes_json = ?
+                  AND scopes_json = ? AND git_host = ?
         """
+        # The git host the scopes were validated against is part of the CAS:
+        # a remove-and-reconnect under a different git_host with identical
+        # endpoints and scopes must not receive this widening.
         params: list[Any] = [
             json.dumps([ep.as_dict() for ep in parsed]), json.dumps(list(new_scopes)),
             connection_id, expected_endpoints_json, expected_scopes_json,
+            normalize_git_host(git_host),
         ]
         if expected_access_mode is not None or expected_incarnation is not None:
             if not expected_access_mode or not expected_incarnation:

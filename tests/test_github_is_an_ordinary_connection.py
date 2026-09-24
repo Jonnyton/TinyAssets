@@ -376,3 +376,130 @@ def test_without_a_declaration_git_uses_the_connections_own_host(data):
     assert resource.git_host == ""
     assert transport_host_for(resource) == "api.forge.example"
     assert git_host_for_endpoints(["api.github.com"]) == "api.github.com"
+
+
+# --------------------------------------------------------------------------- #
+# Tier 2 round 1: a declared git host is seen and approved wherever it matters.
+# The reproduced chain: (1) a git_host on an exact ask with no git scope was
+# stored without the owner seeing it; (2) a scope-only extension then passed on
+# it, naming no host; (3) the workspace consent said "the connection's host";
+# (4) the push sent the key there. Each step now names the host or refuses.
+# --------------------------------------------------------------------------- #
+
+EVIL = "evil.example.com"
+_FORGE_ENDPOINT = {"host": "api.forge.example",
+                   "path_template": "/repos/o/r/pulls", "methods": ["POST"]}
+
+
+def _raise(action, *, kind="API", fields=_PAT_FIELD):
+    from tinyassets.api.pending_requests import request_from_user
+
+    return request_from_user(universe_id=ALICE_UID, payload=json.dumps({
+        "kind": kind, "title": "t", "body": "", "action": action, "fields": fields,
+    }))
+
+
+def _answer_ok(asked, values):
+    from tinyassets.api.pending_requests import answer_request
+
+    return answer_request(universe_id=ALICE_UID, payload=json.dumps(
+        {"request_id": asked["request_id"], "values": values}))
+
+
+def _deposit_with_git_host(git_host, scopes=("git_write:o/a",)):
+    asked = _raise({"type": "connect_http", "destination": "forge",
+                    "auth_scheme": "bearer", "endpoints": [_FORGE_ENDPOINT],
+                    "scopes": list(scopes), "git_host": git_host})
+    assert asked["status"] == "pending", asked
+    answered = _answer_ok(asked, {"token": ALICE_PAT})
+    assert answered["status"] == "answered", answered
+    return asked, answered
+
+
+def test_step1_a_git_host_on_an_exact_ask_with_no_git_scope_is_refused(data):
+    _login(ALICE)
+    asked = _raise({"type": "connect_http", "destination": "forge",
+                    "auth_scheme": "bearer", "endpoints": [_FORGE_ENDPOINT],
+                    "git_host": EVIL})
+    assert asked.get("status") != "pending", asked
+    assert "git_host" in json.dumps(asked)
+
+
+def test_step1_every_deposit_that_declares_a_git_host_names_it(data):
+    _login(ALICE)
+    asked, _ = _deposit_with_git_host(EVIL)
+    assert f"Git operations with this key go to {EVIL}." in asked["grant_sentence"]
+    assert f"o/a on {EVIL}" in asked["grant_sentence"]
+
+    full = _raise({"type": "connect_http", "destination": "forge2",
+                   "auth_scheme": "bearer", "access": "full",
+                   "hosts": ["api.forge.example"], "git_host": EVIL})
+    assert full["status"] == "pending", full
+    assert EVIL in full["grant_sentence"]
+
+
+def test_step2_a_scope_only_extension_names_the_stored_git_host(data):
+    _login(ALICE)
+    _deposit_with_git_host(EVIL)
+    ext = _raise({"type": "extend_http", "destination": "forge",
+                  "scopes": ["git_write:o/r"]}, fields=[])
+    assert ext["status"] == "pending", ext
+    assert f"use git to WRITE to o/r on {EVIL}" in ext["grant_sentence"]
+
+
+def test_step2_without_a_declaration_the_extension_names_the_endpoint_host(data):
+    _login(ALICE)
+    asked = _raise({"type": "connect_http", "destination": "forge",
+                    "auth_scheme": "bearer", "endpoints": [_FORGE_ENDPOINT]})
+    assert _answer_ok(asked, {"token": ALICE_PAT})["status"] == "answered"
+    ext = _raise({"type": "extend_http", "destination": "forge",
+                  "scopes": ["git_write:o/r"]}, fields=[])
+    assert ext["status"] == "pending", ext
+    assert "use git to WRITE to o/r on api.forge.example" in ext["grant_sentence"]
+
+
+def test_step3_the_workspace_consent_names_the_resolved_host(data):
+    _login(ALICE)
+    _, deposited = _deposit_with_git_host(EVIL, scopes=("git_write:o/r",))
+    consent = _raise({"type": "grant_workspace_consent",
+                      "connection_id": deposited["connection_id"],
+                      "repo": "o/r", "consents": ["workspace_push"]},
+                     kind="Approval", fields=[])
+    assert consent["status"] == "pending", consent
+    assert f"o/r on {EVIL}" in consent["grant_sentence"]
+    assert "the connection's host" not in consent["grant_sentence"]
+
+
+def test_step3_a_consent_row_that_names_no_host_cannot_be_granted(data):
+    from tinyassets.api.pending_requests import _grant_sentence
+
+    sentence = _grant_sentence({"action": {
+        "type": "grant_workspace_consent", "connection_id": "c", "repo": "o/r",
+        "consents": ["workspace_push"]}})
+    assert "cannot be granted" in sentence
+    assert "the connection's host" not in sentence
+
+
+def test_step4_a_yes_does_not_follow_the_key_to_a_new_host(data):
+    """The owner read one host; the connection is reconnected elsewhere before
+    they answer. Neither the consent nor the extension lands."""
+    from tinyassets.api.http_connection import remove_http
+
+    _login(ALICE)
+    _, deposited = _deposit_with_git_host("git.forge.example", scopes=("git_write:o/r",))
+    consent = _raise({"type": "grant_workspace_consent",
+                      "connection_id": deposited["connection_id"],
+                      "repo": "o/r", "consents": ["workspace_push"]},
+                     kind="Approval", fields=[])
+    ext = _raise({"type": "extend_http", "destination": "forge",
+                  "scopes": ["git_write:o/s"]}, fields=[])
+    assert consent["status"] == ext["status"] == "pending"
+
+    assert "error" not in remove_http(universe_id=ALICE_UID,
+                                      payload=json.dumps({"destination": "forge"}))
+    _deposit_with_git_host(EVIL, scopes=("git_write:o/r",))
+
+    for ask in (consent, ext):
+        out = _answer_ok(ask, {})
+        assert out.get("status") != "answered", out
+        assert out.get("error") == "connection_conflict", out

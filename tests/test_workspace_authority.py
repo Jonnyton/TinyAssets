@@ -837,16 +837,11 @@ def test_a_consent_ask_names_a_connection_this_owner_holds(base) -> None:
     _login("alice")
     deposited = _deposit("u-1")
     asked = _consent_ask("u-1", deposited, connection_id="conn-somebody-elses")
-    assert asked["status"] == "pending", asked
-
-    answered = _answer("u-1", request_id=asked["request_id"], values={})
-    assert answered["error"] == "not_found"
+    # Refused when RAISED now: the tab must name the host the key would be used
+    # against, and a connection this owner does not hold has none to name
+    # (Tier 2 review round 1). Same uniform envelope as the answer path.
+    assert asked == {"error": "not_found", "resource": "connection"}, asked
     assert list_consents(udir, sink="workspace") == []
-    # The tab stays open: the answer did not land, and closing it would lose
-    # the ask with nothing written.
-    from tinyassets.storage.pending_requests import get_request
-
-    assert get_request(udir, asked["request_id"])["status"] == "pending"
 
 
 @pytest.mark.parametrize(
