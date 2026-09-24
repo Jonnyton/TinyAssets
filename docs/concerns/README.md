@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P2** | [Durable workspace waiting follow-ups](2026-09-24-durable-workspace-wait-followups.md) — exactly-once start is in-process only (latent double-run with two daemons), an unreadable waiter DB strands queued runs, and a double dispatch/settle failure wedges a queue | 2026-09-24 |
 | **P2** | [Scoped reset cannot erase delivery custody](2026-09-23-scoped-reset-cannot-erase-delivery-custody.md) — operator scoped reset fail-closes on any root that ever opened the delivery surface; allowlisting the tables would report success while retaining custody | 2026-09-23 |
 | **P2** | [Node-timeout test wait margin](2026-09-23-node-timeout-runner-test-sits-on-its-own-deadline.md) — a five-second test wait straddles measured runner overhead; no runtime regression established | 2026-09-23 |
 | **note** | [History expansion followups](2026-09-22-history-expansion-followups.md) — retained long reply accepted live; organic owner use and peripheral expansion cases remain unverified | 2026-09-22 |
