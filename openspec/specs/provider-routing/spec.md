@@ -813,6 +813,44 @@ authority, implement remote cancellation, or promise a total broker IPC deadline
 - **WHEN** an HTTP provider uses an explicitly supplied proxy override
 - **THEN** completion does not close that borrowed proxy
 
+### Requirement: A queued synchronous provider call is measured from submit, not from pickup
+
+The synchronous provider-call wrappers (`ProviderRouter.call_sync`,
+`ProviderRouter.call_with_policy_sync`) queue on a bounded thread pool of their
+own, one hop after the compiler's own bounded pool. Each SHALL anchor the
+caller's remaining budget at submit time rather than at worker pickup, so the
+wait in that second queue is deducted from the budget instead of silently
+re-granted. Only an EXPLICIT caller cap (`ModelConfig.absolute_cap_s`) counts as
+a handed-over deadline; the legacy integer `timeout` scalar SHALL NOT be read as
+one, and the default backstop is not a deadline. On reaching the worker, a call
+whose explicit budget has already elapsed SHALL be refused before any provider
+is launched; otherwise the elapsed wait SHALL be subtracted from the cap handed
+to the provider, on a new config object, never raising a call above the budget
+it arrived with. A wait below the scheduling-jitter threshold SHALL hand over
+the caller's own config unchanged. This check sits strictly ahead of the
+provider call: it SHALL NOT cancel, kill or replay work that is already past it,
+and the existing reader-drain margin is preserved (now measured from submit).
+
+#### Scenario: An expired queued call launches nothing
+
+- **WHEN** a call carrying an explicit absolute cap reaches the worker after waiting past that cap in the provider-sync queue
+- **THEN** it is refused as a provider timeout before any provider launch, from either synchronous wrapper
+
+#### Scenario: A partial queue wait is deducted before launch
+
+- **WHEN** a call carrying an explicit absolute cap waits part of that budget in the queue
+- **THEN** the provider is launched with the wait already subtracted from its cap, and the caller's own config object is left untouched
+
+#### Scenario: The queue guard does not replay or cancel started work
+
+- **WHEN** the budget elapses while a call is already running in the pool worker
+- **THEN** the queue-entry guard does not cancel or replay it; existing provider watchdogs, caller cancellation and the sync-wrapper timeout remain effective
+
+#### Scenario: A caller without an explicit deadline is never refused
+
+- **WHEN** a call arrives with no explicit absolute cap
+- **THEN** no queue-wait refusal or deduction applies to it
+
 ### Requirement: Automatic interactive-agent selection respects owner priorities
 Automatic interactive-agent routing SHALL prefer eligible owner-connected subscription or local sources over OpenRouter, then order suitable OpenRouter models using fresh ranking evidence; explicit owner choices and accepted fallback order SHALL override automatic ranking.
 
