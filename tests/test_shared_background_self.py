@@ -1,5 +1,6 @@
 """Focused shared-self checks; runnable with stdlib unittest in the workspace."""
 import contextlib
+import dataclasses
 import tinyassets
 import json
 import importlib.util
@@ -221,7 +222,11 @@ class ProviderSeamTests(unittest.TestCase):
             plain = ModelConfig()
             session._call("writer", "plain", "", plain, None, {})
             assemble.assert_not_called()
-            self.assertEqual(received[-1], ("plain", "", plain))
+            # Unchanged except the provider-agnostic workflow-node mark every
+            # node call carries (2026-09-24 provider latency root cause).
+            self.assertEqual(
+                received[-1], ("plain", "", dataclasses.replace(plain, workflow_node=True)),
+            )
             session._branch_snapshot["node_defs"][0]["tools_allowed"] = ["universe_self"]
             shared = ModelConfig(engine_mcp_enabled=True)
             def build(*args):

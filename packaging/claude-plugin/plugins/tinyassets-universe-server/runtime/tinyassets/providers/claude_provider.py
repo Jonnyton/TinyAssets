@@ -495,6 +495,33 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     return ["--mcp-config", str(config_path), "--strict-mcp-config"]
 
 
+def _confine_workflow_node(config: ModelConfig) -> ModelConfig:
+    """Pin a workflow node's call to its owner's universe, host tools denied.
+
+    A workflow node reached this CLI with a bare ``ModelConfig``: no cwd pin,
+    so the CLI started in the daemon's working directory (``/app``, the
+    platform's own source tree) with its default builtins. Production
+    transcripts (2026-09-24) show about half of a probe's "one short prompt"
+    nodes turning into explorations of that tree -- dozens of
+    ``find``/``grep``/``Read`` calls over ``/app/tinyassets`` and ``PLAN.md``,
+    ``Explore`` subagents, ``ls /data`` -- at 5-16K output tokens and 100-300s,
+    against 0.3-1.4K tokens and 10-25s when the model used no tools. The same
+    builtins reach every universe under the data root, so this is the
+    cross-user floor, not an owner preference.
+
+    The served universe turn already runs this way (``sandbox_workspace``);
+    this applies the existing rule to workflow nodes. Web tools, subagents and
+    every other owner-level capability are untouched: only
+    :data:`HOST_REACH_TOOLS` are denied. No timeout, cap or retry changes.
+    """
+    from dataclasses import replace
+
+    from tinyassets.providers.base import HOST_REACH_TOOLS
+
+    denied = tuple(dict.fromkeys((*(config.disallowed_tools or ()), *HOST_REACH_TOOLS)))
+    return replace(config, sandbox_workspace=True, disallowed_tools=denied)
+
+
 def _sandbox_cli_args(
     config: ModelConfig, universe_dir: Path | None
 ) -> tuple[list[str], str | None]:
@@ -510,6 +537,8 @@ def _sandbox_cli_args(
     that leave the config fields at their defaults.
     """
     flags: list[str] = []
+    if config.workflow_node:
+        config = _confine_workflow_node(config)
     if config.sandbox_workspace:
         # Load ONLY project-tier settings. A universe dir is bare, so this loads
         # NOTHING — critically it excludes the USER's global settings, which carry
@@ -732,6 +761,20 @@ class ClaudeProvider(BaseProvider):
         # by the explicit ``status: null`` / ``compact_boundary`` frame or by
         # any real progress; unknown frames never open it.
         declared_busy: str | None = None
+        # Silence evidence for SUCCESSFUL turns (2026-09-24). A failure already
+        # reports its fatal gap (``last_progress_age_ms`` + ``tool_phase``); a
+        # turn that came within seconds of the idle bound and then recovered
+        # left no trace, so an intermittent post-tool silence could only be
+        # studied after it killed a turn. Records the longest gap between
+        # progress events and the event kind that preceded it -- ``tool_result``
+        # there means the wait for the model's next response after a tool.
+        max_silence_s = 0.0
+        max_silence_after: str | None = None
+        last_progress_kind = "launch"
+        # Native tool calls this turn made, by provider identity (the full
+        # assistant frame and the partial start frame name the same call).
+        tool_use_ids: set[str] = set()
+        unidentified_tool_uses = 0
 
         def _attach(exc: ProviderError) -> ProviderError:
             """Attach the current attempt-telemetry snapshot to a raised error."""
@@ -837,11 +880,13 @@ class ClaudeProvider(BaseProvider):
                         "claude -p emitted a malformed (non-JSON) stream line"
                     ))
                 progressed = False
+                line_kind = last_progress_kind
                 for kind, payload in events:
                     if kind == "answer_evidence":
                         answer_model.observe(payload["obj"])
                         continue  # Optional metadata must not reset the watchdog.
                     progressed = True
+                    line_kind = kind
                     if kind == "init":
                         seen_init = True
                     elif kind == "heartbeat":
@@ -880,6 +925,9 @@ class ClaudeProvider(BaseProvider):
                         identity = _tool_identity(payload.get("id"))
                         if identity is not None:
                             tools_in_flight.add(identity)
+                            tool_use_ids.add(identity)
+                        else:
+                            unidentified_tool_uses += 1
                         if side_effect_state == "none":
                             side_effect_state = "possible"
                     elif kind == "tool_result":
@@ -919,7 +967,12 @@ class ClaudeProvider(BaseProvider):
                         tools_in_flight.clear()
                         declared_busy = None
                 if progressed:
-                    last_progress = time.monotonic()
+                    progress_at = time.monotonic()
+                    if progress_at - last_progress > max_silence_s:
+                        max_silence_s = progress_at - last_progress
+                        max_silence_after = last_progress_kind
+                    last_progress = progress_at
+                    last_progress_kind = line_kind
                 if terminal is not None:
                     break
 
@@ -944,6 +997,15 @@ class ClaudeProvider(BaseProvider):
                     ))
                 usage = terminal.get("usage")
                 usage = usage if isinstance(usage, dict) else {}
+                tool_uses = len(tool_use_ids) + unidentified_tool_uses
+                if max_silence_s * 2 >= profile.idle_s:
+                    # Allowlisted scalars only: never prompt, tool input or text.
+                    logger.info(
+                        "%s stream near-idle: max_silence_ms=%.0f after=%s "
+                        "idle_s=%.0f tool_uses=%d elapsed_ms=%.0f",
+                        self.name, max_silence_s * 1000, max_silence_after, profile.idle_s,
+                        tool_uses, elapsed_ms,
+                    )
                 cost = terminal.get("total_cost_usd")
                 cost_micro = (
                     round(float(cost) * 1_000_000)
@@ -965,6 +1027,9 @@ class ClaudeProvider(BaseProvider):
                     tool_phase=tool_phase,
                     exit_code=_coerce_int(returncode),
                     side_effect_state=side_effect_state,
+                    tool_uses=tool_uses,
+                    max_silence_ms=max_silence_s * 1000,
+                    max_silence_after=max_silence_after,
                     native_evidence=NativeCompletionEvidence(
                         self.name, False, type(returncode) is int, side_effect_state,
                     ),

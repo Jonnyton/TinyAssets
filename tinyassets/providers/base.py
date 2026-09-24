@@ -145,6 +145,22 @@ class UniverseContext:
     """Captured advisory owner policy; never a grant or a tool-replay instruction."""
 
 
+#: Claude CLI builtins that reach the SHARED host through its filesystem or a
+#: shell. The claude CLI has no OS jail on this platform, so these read or run
+#: whatever the daemon process can: the platform's own source tree, every
+#: universe under the data root and the credential snapshots beside them.
+#: That makes them a cross-user matter, not an owner preference. The ONE
+#: definition: the universe engine's denylist starts from it and a workflow
+#: node call denies it (``ModelConfig.workflow_node``).
+HOST_REACH_TOOLS: tuple[str, ...] = (
+    # shell / process execution (Monitor also runs shell commands)
+    "Bash", "BashOutput", "KillShell", "Monitor",
+    # filesystem
+    "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead",
+    "Glob", "Grep", "LS",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
     """Configuration passed to every provider call."""
@@ -196,6 +212,15 @@ class ModelConfig:
     its own real setting — e.g. Codex ``-c model_reasoning_effort=<v>`` — so a
     branch can run a light node (localize) cheap+fast and a hard node
     (propose_changes) deep. Not a prompt hint; a real subprocess setting."""
+
+    # Not every provider acts on this yet: see the 2026-09-24 concern on
+    # workflow nodes running in the host cwd (docs/concerns/).
+    workflow_node: bool = False
+    """Set by the run providers for a user universe's workflow node call.
+
+    Provider-agnostic marker; each provider applies its own confinement. A
+    CLI with no OS jail pins cwd to the universe and denies
+    :data:`HOST_REACH_TOOLS`."""
 
     sandbox_workspace: bool = False
     # A chat turn (converse): still OS-isolated, but NOT handed the universe as a
@@ -317,6 +342,12 @@ class ProviderResponse:
     """The subprocess exit code, when the stream came from a subprocess."""
     side_effect_state: str | None = None
     """``none`` | ``possible`` | ``committed`` — whether a tool may have run."""
+    tool_uses: int | None = None
+    """Distinct native tool calls the provider made during this turn."""
+    max_silence_ms: float | None = None
+    """Longest gap between protocol events in a turn that still completed."""
+    max_silence_after: str | None = None
+    """Normalized event kind that preceded ``max_silence_ms`` (e.g. ``tool_result``)."""
     reported_model: str = ""
     """Validated answering-model evidence; empty when the adapter cannot report it.
 
