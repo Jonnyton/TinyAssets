@@ -1,6 +1,6 @@
 # A node-timeout runner test sits on its own wait deadline
 
-September 23, 2026, measured on Windows at `1f121719` + the queued-deadline lane.
+**Filed:** 2026-09-23. Measured on Windows at `1f121719` + the queued-deadline lane.
 
 `tests/test_node_timeout.py::test_runner_emits_node_timeout_event_and_marks_run_failed`
 calls `wait_for(outcome.run_id, timeout=5.0)` on a run that takes **4.4–5.5s**,
