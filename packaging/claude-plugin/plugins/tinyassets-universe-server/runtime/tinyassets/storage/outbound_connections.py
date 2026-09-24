@@ -28,7 +28,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from tinyassets.storage.workspace_authority import is_git_scope, validate_git_scopes
+from tinyassets.storage.workspace_authority import (
+    is_git_scope,
+    normalize_git_host,
+    validate_git_scopes,
+)
 
 AuthenticatedPrincipalVerifier = Callable[[], str]
 
@@ -137,6 +141,10 @@ class ConnectionResource:
     #: allowlist, the git-scope check and the workspace consents; never by the
     #: SSRF safety checks, which run for both modes.
     access_mode: str = ACCESS_EXACT
+    #: The host git operations use, when the owner declared one at connect time
+    #: (a forge whose git transport is not its API host). Empty: the connection's
+    #: own endpoint host. Never defaulted per service.
+    git_host: str = ""
 
     def __repr__(self) -> str:
         return (
@@ -152,7 +160,8 @@ class ConnectionResource:
             f"connection_type={self.connection_type!r}, "
             f"auth_scheme={self.auth_scheme!r}, "
             f"allowed_endpoints={self.allowed_endpoints!r}, "
-            f"access_mode={self.access_mode!r})"
+            f"access_mode={self.access_mode!r}, "
+            f"git_host={self.git_host!r})"
         )
 
     def to_view(self) -> ConnectionView:
@@ -173,6 +182,7 @@ class ConnectionResource:
             destination=self.destination,
             revoked_at=self.revoked_at,
             access_mode=self.access_mode,
+            git_host=self.git_host,
         )
 
 
@@ -200,6 +210,8 @@ class ConnectionView:
     #: the ONE sentence that says what a full grant means; never as a wildcard
     #: endpoint row, because none is stored.
     access_mode: str = ACCESS_EXACT
+    #: The declared git host, or empty (see :class:`ConnectionResource`).
+    git_host: str = ""
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -214,6 +226,7 @@ class ConnectionView:
             "destination": self.destination,
             "revoked_at": self.revoked_at,
             "access_mode": self.access_mode,
+            "git_host": self.git_host,
         }
 
 
@@ -3358,6 +3371,8 @@ CREATE TABLE IF NOT EXISTS outbound_connections (
     auth_scheme     TEXT NOT NULL DEFAULT '',
     allowed_endpoints_json TEXT NOT NULL DEFAULT '[]',
     access_mode     TEXT NOT NULL DEFAULT 'exact',
+    -- The owner-declared git host; '' means "the connection's endpoint host".
+    git_host        TEXT NOT NULL DEFAULT '',
     -- Minted fresh on every deposit. The connection id and the credential_ref
     -- are both deterministic per (universe, destination), so without this a
     -- key removed and REPLACED under the same destination with an identical
@@ -3441,6 +3456,7 @@ def _resource_from_row(row: sqlite3.Row) -> ConnectionResource:
         access_mode=normalize_access_mode(
             row["access_mode"] if "access_mode" in columns else ""
         ),
+        git_host=(row["git_host"] if "git_host" in columns else "") or "",
     )
 
 
@@ -3514,6 +3530,9 @@ class ConnectionLedger:
                 # migration must never widen an existing grant.
                 ("access_mode", "TEXT NOT NULL DEFAULT 'exact'"),
                 ("incarnation", "TEXT NOT NULL DEFAULT ''"),
+                # Empty for every existing row: a migration never names a host
+                # the owner did not.
+                ("git_host", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if column not in connection_columns:
                     connection.execute(
@@ -3579,8 +3598,10 @@ class ConnectionLedger:
         auth_scheme: str = "",
         allowed_endpoints: Any = (),
         access_mode: str = ACCESS_EXACT,
+        git_host: str = "",
     ) -> ConnectionView:
         endpoints = _parse_allowed_endpoints(allowed_endpoints)
+        declared_git_host = normalize_git_host(git_host)
         normalized_access = normalize_access_mode(access_mode)
         normalized_type = (connection_type or "").strip().lower()
         normalized_scheme = (auth_scheme or "").strip().lower()
@@ -3602,13 +3623,13 @@ class ConnectionLedger:
             if normalized_scheme not in _SUPPORTED_HTTP_AUTH_SCHEMES:
                 raise SsrfValidationError("auth scheme is not supported")
         # A git scope binds one repository on one host, so it may only ride on a
-        # connection provably pointed at github.com. Checked HERE, at the storage
+        # connection that names exactly one git host. Checked HERE, at the storage
         # boundary: every issuer assembles its own scope tuple, and a rule that
         # lives in one of them is a rule the next one forgets.
         validate_git_scopes(
             scopes,
             hosts=[endpoint.host for endpoint in endpoints],
-            provider=provider,
+            git_host=declared_git_host,
         )
         resource = ConnectionResource(
             connection_id=_required("connection_id", connection_id),
@@ -3623,6 +3644,7 @@ class ConnectionLedger:
             auth_scheme=normalized_scheme,
             allowed_endpoints=endpoints,
             access_mode=normalized_access,
+            git_host=declared_git_host,
         )
         with self._connect() as connection:
             connection.execute(
@@ -3631,8 +3653,8 @@ class ConnectionLedger:
                     connection_id, owner_user_id, connection_class, scopes_json,
                     provider, destination, credential_ref, revoked_at,
                     connection_type, auth_scheme, allowed_endpoints_json,
-                    access_mode, incarnation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+                    access_mode, incarnation, git_host
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     resource.connection_id,
@@ -3647,6 +3669,7 @@ class ConnectionLedger:
                     json.dumps([ep.as_dict() for ep in resource.allowed_endpoints]),
                     resource.access_mode,
                     uuid.uuid4().hex,
+                    resource.git_host,
                 ),
             )
         # Return the REDACTED view — no caller (not even the creator) gets
@@ -3688,6 +3711,7 @@ class ConnectionLedger:
         expected_access_mode: str | None = None,
         expected_incarnation: str | None = None,
         expected_grant_id: str | None = None,
+        git_host: str = "",
     ) -> bool:
         """ADD endpoints to an existing http connection. Never remove or replace.
 
@@ -3718,7 +3742,11 @@ class ConnectionLedger:
                 "an http connection requires at least one allowed endpoint"
             )
         new_scopes = tuple(_required("scope", scope) for scope in scopes)
-        validate_git_scopes(new_scopes, hosts=[endpoint.host for endpoint in parsed])
+        # ``git_host`` is the STORED connection's declared host (the caller read
+        # it); an extension never changes it.
+        validate_git_scopes(
+            new_scopes, hosts=[endpoint.host for endpoint in parsed], git_host=git_host
+        )
         sql = """
                 UPDATE outbound_connections
                 SET allowed_endpoints_json = ?, scopes_json = ?

@@ -25,7 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
-| **P2** | [GitHub-shaped leftovers](2026-09-24-github-shaped-leftovers.md) — after GitHub became an ordinary connection: the repository-spec automation still needs a GitHub pipe no surface creates, 4 stranded pipe rows in prod, and the workspace git host still comes from a GitHub table | 2026-09-24 |
+| **P2** | [GitHub-shaped leftovers](2026-09-24-github-shaped-leftovers.md) — after GitHub became an ordinary connection: the repository-spec automation still needs a GitHub pipe no surface creates, 4 stranded pipe rows in prod, and a declared `git_host` can only be set by remove + reconnect | 2026-09-24 |
 | **P1** | [App `POST /mcp` 503s the origin never served](2026-09-24-app-503-authored-in-front-of-origin.md) — founder's resumed tab got 503s that never reached the droplet (no 5xx logged, no token renewal until reload); edge challenge/rate rule vs. a stray tunnel connector, one header set decides | 2026-09-24 |
 | **P2** | [P0 disk-full repair uses broad prune](2026-09-24-p0-disk-full-repair-uses-broad-prune.md) — `p0-outage-triage.yml` still runs `docker system prune -af`, which deletes the rollback images that bounded retention keeps; its comment misdescribes the prune timer | 2026-09-24 |
 | **P2** | [Scoped reset cannot erase delivery custody](2026-09-23-scoped-reset-cannot-erase-delivery-custody.md) — operator scoped reset fail-closes on any root that ever opened the delivery surface; allowlisting the tables would report success while retaining custody | 2026-09-23 |

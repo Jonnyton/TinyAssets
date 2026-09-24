@@ -68,6 +68,8 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
         # agent can SEE which repositories this connection may clone or push
         # without having to know the scope grammar. A universe that can read
         # what it holds stops asking for what it already has.
+        # Where git goes when the owner declared it ("" = the endpoint host).
+        "git_host": getattr(resource, "git_host", "") or "",
         "git_scopes": [
             {"kind": kind, "repo": repo, "host": connection_git_host(resource)}
             for kind, repo in sorted(connection_git_scopes(resource))

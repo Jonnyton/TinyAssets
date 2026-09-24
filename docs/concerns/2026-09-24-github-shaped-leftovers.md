@@ -23,6 +23,11 @@ their own workflows call it through the generic authenticated external call."*
   reference, so every connection it created could never dispatch.
 - `TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION` from `apply-daemon-env.yml`: no code has read it
   since `outbound_channel_adapter.py` was deleted.
+- `FORGE_GIT_HOSTS` and `PROVIDER_PIPE_HOSTS`. A connection now carries an optional,
+  owner-declared `git_host` (set on the connect ask); git uses it, else the connection's own
+  endpoint host. **Consequence:** the founder's existing GitHub connection (endpoints on
+  `api.github.com` only, no `git_host`) now clones from `api.github.com` and gets a 403 until the
+  founder removes it and reconnects with `git_host: "github.com"`.
 
 ## What is left, and what would close it
 
@@ -39,12 +44,10 @@ their own workflows call it through the generic authenticated external call."*
    2026-09-24, no values read). `read_graph target=connections` still lists them as `connected`,
    but they cannot dispatch. **Close:** a host-run revoke, or a list projection that marks a
    connection with no resolvable credential.
-3. **The workspace git host comes from a GitHub table.** `storage/workspace_authority.py`
-   `FORGE_GIT_HOSTS = {"api.github.com": "github.com"}` and `PROVIDER_PIPE_HOSTS = {"github":
-   "github.com"}`. The general gap: a connection cannot declare a git host that differs from its
-   API host. **Close:** let the connection declare its git host, which is a storage change, then
-   delete both tables. Deleting only the first table would break the founder's live workspace
-   push, whose connection declares only `api.github.com` endpoints.
+3. **`git_host` cannot be changed in place.** Setting it on an existing connection is a remove and
+   reconnect (a re-deposit with a different `git_host` is refused as a conflict), because it
+   moves where the owner's key is sent. **Close,** if the friction proves real: an owner-answered
+   `extend_http` that sets `git_host` under the same compare-and-swap as other extensions.
 4. **Platform token still in the daemon.** `GH_TOKEN`, `TINYASSETS_GITHUB_PUSH_CAPABILITIES` and
    `TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION` are still in `/etc/tinyassets/env`, and
    `auth/provider.py` `vend_github_destination_secret` has no callers. The platform-token removal

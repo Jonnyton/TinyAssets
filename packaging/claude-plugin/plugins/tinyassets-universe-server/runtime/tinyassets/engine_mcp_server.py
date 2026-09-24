@@ -1585,10 +1585,14 @@ def write_graph(
     be asked to do twice.
 
     **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
-    ``git_read:owner/name`` / ``git_write:owner/name``, on a github connection
-    (every endpoint of the same ask must be on github.com). That is what lets the
+    ``git_read:owner/name`` / ``git_write:owner/name``. That is what lets the
     workspace sink clone or push that ONE repository; the HTTP methods still come
-    from the endpoints, never from this list.
+    from the endpoints, never from this list. A git scope binds ONE git host: the
+    connection's endpoint host, or — when the service serves git somewhere other
+    than its API — the ``"git_host"`` the connect ask declares (a bare hostname).
+    Nothing is defaulted per service: if git lives on a different host from the
+    API endpoints you listed, say so with ``git_host`` or the clone goes to the
+    API host.
 
     **A path_template can be a PATTERN, so ask for the JOB, not one file.** Any
     segment may be a ``{name}`` placeholder, and the FINAL segment may be a

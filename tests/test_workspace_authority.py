@@ -97,9 +97,10 @@ def _make_universe(base, uid, *, admin=""):
 
 
 ENDPOINT_HOST = "api.github.com"
-#: Where git actually lives for that connection. GitHub serves its API on
-#: api.github.com and its git on github.com, so the consent key and the clone
-#: URL both use THIS one -- cloning from the API host returns 403.
+#: Where git actually lives for that connection. The service serves its API on
+#: one host and its git on another, so the fixture connection DECLARES
+#: `git_host` (there is no per-service table); the consent key and the clone URL
+#: both use it -- cloning from the API host returns 403.
 GIT_HOST = "github.com"
 GITHUB_ENDPOINT = {
     "host": ENDPOINT_HOST,
@@ -117,6 +118,7 @@ def _deposit(uid, *, scopes=None, endpoints=None, destination="github"):
         "secret": "ghp_" + "x" * 30,
         "auth_scheme": "bearer",
         "allowed_endpoints": endpoints if endpoints is not None else [GITHUB_ENDPOINT],
+        "git_host": GIT_HOST if endpoints is None else "",
     }
     if scopes is not None:
         document["scopes"] = scopes
@@ -231,8 +233,11 @@ def test_a_git_scope_needs_a_connection_that_reaches_exactly_one_host() -> None:
     wa.validate_git_scopes(["git_read:o/n"], hosts=["git.internal"])
     # The same host twice is still one host.
     wa.validate_git_scopes(["git_read:o/n"], hosts=["git.internal", "git.internal"])
-    # A pipe declares no endpoints; its provider is what supplies the host.
-    wa.validate_git_scopes(["git_read:o/n"], hosts=[], provider="github")
+    # A declared git host supplies the host whatever the endpoints are.
+    wa.validate_git_scopes(["git_read:o/n"], hosts=[], git_host="git.example.com")
+    wa.validate_git_scopes(
+        ["git_read:o/n"], hosts=["a.example", "b.example"], git_host="git.example.com"
+    )
     with pytest.raises(wa.GitScopeError, match="ONE host"):
         # Two hosts: the same credential could be spent on whichever the
         # caller preferred, which is what the scope exists to stop.
@@ -240,8 +245,8 @@ def test_a_git_scope_needs_a_connection_that_reaches_exactly_one_host() -> None:
     with pytest.raises(wa.GitScopeError, match="ONE host"):
         wa.validate_git_scopes(["git_read:o/n"], hosts=["gitlab.example.com", "evil.com"])
     with pytest.raises(wa.GitScopeError, match="ONE host"):
-        # No endpoints and no pipe provider: nothing says what the host is.
-        wa.validate_git_scopes(["git_read:o/n"], hosts=[], provider="http")
+        # No endpoints and no declared git_host: nothing says what the host is.
+        wa.validate_git_scopes(["git_read:o/n"], hosts=[])
     # An HTTP-only scope tuple is not this rule's business.
     wa.validate_git_scopes(["POST", "GET"], hosts=["api.example.com"])
 

@@ -306,3 +306,73 @@ def test_another_users_connection_is_never_used(data, broker):
                     grant_id=alice["grant_id"])["delivered"] is True
     keys = [w["headers"]["Authorization"] for w in broker.recorded]
     assert keys == [f"Bearer {BOB_PAT}", f"Bearer {ALICE_PAT}"]
+
+
+# --------------------------------------------------------------------------- #
+# Where git goes is the connection's declared field, never a service table.
+# --------------------------------------------------------------------------- #
+
+
+def _connect_forge(base, *, git_host=None):
+    """An owner connects a forge whose git is NOT on its API host."""
+    from tinyassets.api.pending_requests import answer_request, request_from_user
+
+    _login(ALICE)
+    action = {
+        "type": "connect", "destination": "forge", "auth_scheme": "bearer",
+        "endpoints": [{"host": "api.forge.example",
+                       "path_template": "/repos/octo/hello/pulls",
+                       "methods": ["POST"]}],
+        "scopes": ["git_write:octo/hello"],
+        "uses": {"call": {}},
+    }
+    if git_host is not None:
+        action["git_host"] = git_host
+    asked = request_from_user(universe_id=ALICE_UID, payload=json.dumps({
+        "kind": "API", "title": "Connect the forge", "body": "",
+        "action": action, "fields": _PAT_FIELD,
+    }))
+    assert asked["status"] == "pending", asked
+    answered = answer_request(universe_id=ALICE_UID, payload=json.dumps(
+        {"request_id": asked["request_id"], "values": {"token": ALICE_PAT}}))
+    assert answered["status"] == "answered", answered
+    return asked, answered
+
+
+def _stored(base, connection_id):
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    return ConnectionLedger(base / "outbound.db")._get_connection_resource(connection_id)
+
+
+def test_the_per_service_git_host_table_is_gone():
+    from tinyassets.storage import workspace_authority
+
+    assert not hasattr(workspace_authority, "FORGE_GIT_HOSTS")
+    assert not hasattr(workspace_authority, "PROVIDER_PIPE_HOSTS")
+
+
+def test_a_declared_git_host_is_where_git_goes(data):
+    from tinyassets.effectors.workspace import transport_host_for
+
+    asked, answered = _connect_forge(data, git_host="git.forge.example")
+
+    # The owner read where the key goes before pasting it.
+    assert "on git.forge.example" in asked["grant_sentence"], asked["grant_sentence"]
+    resource = _stored(data, answered["connection_id"])
+    assert resource.git_host == "git.forge.example"
+    assert transport_host_for(resource) == "git.forge.example"
+
+
+def test_without_a_declaration_git_uses_the_connections_own_host(data):
+    """No per-service default: api.github.com is not quietly turned into
+    github.com, and api.forge.example is not turned into anything."""
+    from tinyassets.effectors.workspace import transport_host_for
+    from tinyassets.storage.workspace_authority import git_host_for_endpoints
+
+    _, answered = _connect_forge(data)
+
+    resource = _stored(data, answered["connection_id"])
+    assert resource.git_host == ""
+    assert transport_host_for(resource) == "api.forge.example"
+    assert git_host_for_endpoints(["api.github.com"]) == "api.github.com"

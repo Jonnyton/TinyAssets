@@ -68,6 +68,7 @@ from tinyassets.storage.workspace_authority import (
     connection_git_scopes,
     format_git_scope,
     is_git_scope,
+    normalize_git_host,
     require_git_scope,
 )
 
@@ -288,6 +289,8 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
         "connection_class": resource.connection_class,
         "auth_scheme": resource.auth_scheme,
         "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+        # The owner-declared git host, or "" (git then uses the endpoint host).
+        "git_host": getattr(resource, "git_host", "") or "",
         "action_cap": (
             grant.unprompted_action_cap.as_dict()
             if grant.unprompted_action_cap is not None
@@ -527,6 +530,12 @@ def _connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, An
     except GitScopeError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
     http_scopes = tuple(sorted(set(http_scopes) | requested_git_scopes))
+    # Where git operations on this key go, when the owner said so. Optional and
+    # never defaulted per service: an empty value means the endpoint host.
+    try:
+        git_host = normalize_git_host(document.get("git_host"))
+    except GitScopeError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
 
     credential_ref = f"vault://http/{destination}"
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
@@ -573,6 +582,9 @@ def _connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, An
             or resource.destination != destination
             or resource.credential_ref != credential_ref
             or resource.revoked_at is not None
+            # A different git host is a different place the key goes: never a
+            # silent rotation. Remove and reconnect to change it.
+            or resource.git_host != git_host
             or _canonical_policy([e.as_dict() for e in resource.allowed_endpoints])
             != _canonical_policy(requested_endpoints)
         )
@@ -602,6 +614,7 @@ def _connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, An
             and resource.destination == destination
             and resource.credential_ref == credential_ref
             and resource.revoked_at is None
+            and resource.git_host == git_host
         )
         scopes_match = tuple(resource.scopes) == http_scopes
         # A connection provisioned BEFORE the scope fix carries the legacy ("http",)
@@ -684,6 +697,7 @@ def _connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, An
                 # The mode the owner accepted. Defaulting it here stored an
                 # exact connection for a full yes (Codex code review round 1).
                 access_mode=asked_access,
+                git_host=git_host,
             )
         except SsrfValidationError as exc:
             return {"error": "endpoint_not_permitted", "detail": str(exc)}
@@ -748,6 +762,7 @@ def _connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, An
                 scopes=http_scopes,
                 expected_endpoints_json=raw_policy[0],
                 expected_scopes_json=raw_policy[1],
+                git_host=resource.git_host,
             )
         except GitScopeError as exc:
             return {"error": "connection_setup_invalid", "detail": str(exc)}
@@ -1087,6 +1102,7 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             scopes=preview["scopes"],
             expected_endpoints_json=preview["stored_json"],
             expected_scopes_json=preview["stored_scopes_json"],
+            git_host=preview.get("declared_git_host") or "",
             **({
                 "expected_access_mode": expected_redirect["access_mode"],
                 "expected_incarnation": expected_redirect["incarnation"],
@@ -1253,7 +1269,8 @@ def _extend_preview(
             "stored_json": stored_json,
             "stored_scopes_json": stored_scopes_json,
             "stored_incarnation": ledger.incarnation(connection_id) or "",
-            "git_host": git_host_for_endpoints(stored_hosts, resource.provider),
+            "git_host": git_host_for_endpoints(stored_hosts, resource.git_host),
+            "declared_git_host": resource.git_host,
             "hosts": stored_hosts,
             "allowed_endpoints": stored,
             "scopes": stored_scope_list,
@@ -1303,7 +1320,9 @@ def _extend_preview(
     # The ledger's own rule, run here so an ask that would fail at the write
     # fails at the RAISE, with the reason going to the agent that can act on it.
     try:
-        validate_git_scopes(scopes, hosts=[e.host for e in merged])
+        validate_git_scopes(
+            scopes, hosts=[e.host for e in merged], git_host=resource.git_host
+        )
     except GitScopeError as exc:
         asked_hosts = sorted({
             str(e.get("host") or "").strip().lower()
@@ -1314,8 +1333,9 @@ def _extend_preview(
             "error": "connection_setup_invalid",
             "detail": str(exc),
             "git_host": git_host_for_endpoints(
-                [str(e.get("host") or "") for e in stored], resource.provider
+                [str(e.get("host") or "") for e in stored], resource.git_host
             ),
+            "declared_git_host": resource.git_host,
             "asked_hosts": asked_hosts,
         }
     # "Nothing new" has to account for a scope-only widening: adding
@@ -1343,8 +1363,9 @@ def _extend_preview(
         "scopes": scopes,
         "allowed_endpoints": merged_dicts,
         "git_host": git_host_for_endpoints(
-            [str(e.get("host") or "") for e in stored], resource.provider
+            [str(e.get("host") or "") for e in stored], resource.git_host
         ),
+        "declared_git_host": resource.git_host,
         **snapshot_fields,
     }
 

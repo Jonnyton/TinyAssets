@@ -57,9 +57,10 @@ def test_an_ask_the_answer_would_refuse_is_refused_when_raised(base):  # noqa: F
 
     assert out["error"] == "ask_cannot_be_granted", out
     assert "ONE host" in out["detail"]
-    # ...and the part the agent can act on: it already had what it asked for.
-    assert "already reaches github.com for git" in out["detail"]
-    assert "needs no HTTP endpoint on that host" in out["detail"]
+    # ...and the part the agent can act on: an HTTP endpoint never moves git;
+    # the connection declares where git lives (there is no per-service table).
+    assert "does not change where git goes" in out["detail"]
+    assert '"git_host"' in out["detail"]
     assert "no tab was raised" in out["note"]
     assert _rail("u-1")["count"] == 0, "the owner never sees a tab that cannot be honoured"
 
