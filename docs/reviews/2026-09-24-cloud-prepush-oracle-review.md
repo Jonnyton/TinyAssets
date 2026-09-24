@@ -33,3 +33,11 @@ remains byte-identical to40bad5af. Required CI and actual hosted use remain gate
 No public capability is closed by developer tooling. Removing the manual-only
 workflow rolls back this slice without affecting production. Required CI must
 pass unchanged; neither the local test nor this review bypasses it.
+
+CI correction02:58UTC: required35947739119 found one new failure, the live-doc
+reference gate rejecting the example's nonexistent test filename. Root replaced
+that placeholder with an existing collected provider regression; helper/workflow
+and test implementation are unchanged. This is documentation-only, not a gate
+waiver. Focused live-doc and oracle checks must pass before the new head is ready;
+exact updated approval is recorded in the PR body. All other observed failures
+were baseline, not newly introduced, per required comparator.

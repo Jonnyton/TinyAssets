@@ -17,7 +17,7 @@ git diff <base_sha> -- tinyassets/ tests/ scripts/ > candidate.patch
 
 # 2. validate locally and build the dispatch inputs (exit 2 = rejected)
 python scripts/cloud_prepush_oracle.py prepare --base <base_sha> \
-    --patch candidate.patch --out inputs.json -- tests/test_x.py::test_y
+    --patch candidate.patch --out inputs.json -- tests/test_provider_stream_and_classify.py::test_init_and_aggregate_model_are_not_answer_evidence
 
 # 3. dispatch by hand; nothing in the helper dispatches for you
 gh workflow run cloud-prepush-oracle.yml --json < inputs.json
