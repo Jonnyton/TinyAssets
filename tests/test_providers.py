@@ -813,17 +813,32 @@ class _FakeClaudeStdin:
 
 
 class _FakeClaudeProc:
+    """Stand-in for ``asyncio.subprocess.Process``.
+
+    ``returncode`` starts as ``None`` and only becomes the exit status once the
+    handle is reaped, matching the real class in the direction that teardown
+    depends on. This fake used to expose the status from construction, i.e. to
+    claim it had already been reaped while still streaming; ``kill_owned_tree``
+    then correctly declined to signal a handle it no longer owned, and every
+    ``killed`` assertion here passed only because the pre-anchor teardown
+    signalled unconditionally. Same trap documented on ``FakeStreamProcess`` in
+    ``tests/test_provider_stream_and_classify.py``.
+    """
+
     def __init__(self, stdout_items, *, stderr=b"", returncode=0):
         self.stdout = _FakeClaudeStdout(stdout_items)
         self.stderr = _FakeClaudeStderr(stderr)
         self.stdin = _FakeClaudeStdin()
-        self.returncode = returncode
+        self._exit_status = returncode
+        self.returncode = None
         self.killed = False
 
     def kill(self):
         self.killed = True
 
     async def wait(self):
+        if self.returncode is None:
+            self.returncode = self._exit_status
         return self.returncode
 
 
