@@ -32,6 +32,7 @@ import copy
 import dataclasses as _dataclasses
 import json
 import logging
+import math
 import operator
 import os
 import re
@@ -524,6 +525,40 @@ def _is_cancel_exception(exc: BaseException) -> bool:
     catch-all; everything else is logged and swallowed.
     """
     return type(exc).__name__ == "RunCancelledError"
+
+
+#: Normalized stream-event kinds a provider may name as ``max_silence_after``.
+_SILENCE_AFTER_KINDS = frozenset({
+    "launch", "init", "heartbeat", "declared_busy", "declared_clear",
+    "text_delta", "tool_use", "tool_result", "api_retry", "assistant_error",
+    "result",
+})
+
+
+def _provider_timing(resp: Any) -> dict[str, Any]:
+    """Allowlisted per-call timing scalars for a node's ``ran`` event.
+
+    Before 2026-09-24 a node's receipt carried no provider timing at all
+    (``provider_calls`` recorded ``latency_ms: null``), so a node that took
+    200s instead of 10s could not say whether the time went to tool calls,
+    output length or a silent wait. Numbers and one allowlisted label only:
+    never prompt, tool input or response text.
+    """
+    out: dict[str, Any] = {}
+    for key in ("latency_ms", "ttft_ms", "max_silence_ms"):
+        value = getattr(resp, key, None)
+        finite = (isinstance(value, (int, float)) and not isinstance(value, bool)
+                  and math.isfinite(value))
+        if finite and value >= 0:
+            out[key] = round(float(value), 1)
+    for key in ("input_tokens", "output_tokens", "tool_uses"):
+        value = getattr(resp, key, None)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            out[key] = value
+    after = getattr(resp, "max_silence_after", None)
+    if isinstance(after, str) and after in _SILENCE_AFTER_KINDS:
+        out["max_silence_after"] = after
+    return out
 
 
 def _emit_failed_event(
@@ -1453,6 +1488,12 @@ def _build_prompt_template_node(
             execution_receipt = WriterExecutionReceipt()
             provider_served: str = "unknown"
             provider_meta: dict[str, Any] = {}
+            provider_timing: dict[str, Any] = {}
+
+            def _observe_response(resp: Any) -> None:
+                execution_receipt.observe(resp)
+                provider_timing.clear()
+                provider_timing.update(_provider_timing(resp))
 
             # _run_with_timeout counts timeout_s from submit(), so a call that
             # waited in the pool queue must not then be handed the node's FULL
@@ -1499,11 +1540,11 @@ def _build_prompt_template_node(
             elif effective_policy:
                 # Policy-aware path: route through ProviderRouter.call_with_policy_sync
                 try:
-                    _policy_router = (
-                        _injected_policy_caller
-                        if _injected_policy_caller is not None
-                        else _get_shared_router()
-                    )
+                    # Only the run's own injected, universe-bound caller may
+                    # honour a policy. There is no shared-router fallback
+                    # (Hard Rule 15): without one, the policy node goes
+                    # through the same bound bridge as any other node.
+                    _policy_router = _injected_policy_caller
                     router_providers = getattr(
                         _policy_router, "available_providers", None,
                     )
@@ -1520,7 +1561,7 @@ def _build_prompt_template_node(
                                 policy=effective_policy,
                                 config=_deadline_cfg(),
                                 universe_context=universe_context,
-                                response_observer=execution_receipt.observe,
+                                response_observer=_observe_response,
                             )
                         text_and_name = _run_with_timeout(
                             _policy_call,
@@ -1533,7 +1574,7 @@ def _build_prompt_template_node(
                         # run_branch-injected provider bridge.
                         response = _run_with_timeout(
                             lambda: _bridge(
-                                prompt, "", execution_receipt.observe, _deadline_cfg(),
+                                prompt, "", _observe_response, _deadline_cfg(),
                             ),
                             timeout_s=timeout_s,
                             node_id=node.node_id,
@@ -1550,7 +1591,7 @@ def _build_prompt_template_node(
                 try:
                     response = _run_with_timeout(
                         lambda: _bridge(
-                                prompt, "", execution_receipt.observe, _deadline_cfg(),
+                                prompt, "", _observe_response, _deadline_cfg(),
                             ),
                         timeout_s=timeout_s,
                         node_id=node.node_id,
@@ -1595,6 +1636,8 @@ def _build_prompt_template_node(
                         "provider_attempts": provider_meta.get("attempts"),
                         "provider_degraded": provider_meta.get("degraded", False),
                     }
+                if provider_timing:
+                    _meta_detail["provider_timing"] = dict(provider_timing)
                 event_sink(
                     node_id=node.node_id,
                     phase="ran",

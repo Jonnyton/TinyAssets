@@ -2449,8 +2449,7 @@ def _action_goal_run_canonical(kwargs: dict[str, Any]) -> str:
     )
     if not resolution.get("ok"):
         # Surface the failure verbatim so the caller's branching logic
-        # (e.g. _maybe_enqueue_investigation's env-fallback) can read
-        # error_kind directly.
+        # can read error_kind directly.
         return json.dumps({
             "status": "rejected",
             "error": resolution.get("error", ""),

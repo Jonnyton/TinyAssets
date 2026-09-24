@@ -324,63 +324,6 @@ def _clear_pin(monkeypatch):
     yield
 
 
-def test_router_pins_to_env_var_provider(monkeypatch, _clear_pin) -> None:
-    from tinyassets.providers.router import ProviderRouter
-
-    pinned = _RecordingProvider("codex")
-    other = _RecordingProvider("claude-code")
-    router = ProviderRouter(providers={"codex": pinned, "claude-code": other})
-    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
-
-    import asyncio
-    resp = asyncio.run(router.call("writer", "p", "s"))
-
-    assert resp.provider == "codex"
-    assert pinned.calls == 1
-    assert other.calls == 0
-
-
-def test_router_pinned_writer_raises_on_exhaustion_no_fallback(
-    monkeypatch, _clear_pin,
-) -> None:
-    from tinyassets.exceptions import AllProvidersExhaustedError
-    from tinyassets.providers.router import ProviderRouter
-
-    pinned = _RecordingProvider("codex", fail=True)
-    would_succeed = _RecordingProvider("ollama-local")
-    router = ProviderRouter(
-        providers={"codex": pinned, "ollama-local": would_succeed},
-    )
-    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
-
-    import asyncio
-    with pytest.raises(AllProvidersExhaustedError) as ei:
-        asyncio.run(router.call("writer", "p", "s"))
-
-    # Loud failure identifies the pin explicitly and does NOT touch the
-    # would-succeed provider.
-    assert "codex" in str(ei.value).lower()
-    assert would_succeed.calls == 0
-
-
-def test_router_pin_does_not_affect_non_writer_roles(
-    monkeypatch, _clear_pin,
-) -> None:
-    """Judge ensemble / extract should ignore TINYASSETS_PIN_WRITER."""
-    from tinyassets.providers.router import ProviderRouter
-
-    p1 = _RecordingProvider("codex")
-    p2 = _RecordingProvider("claude-code")
-    router = ProviderRouter(providers={"codex": p1, "claude-code": p2})
-    monkeypatch.setenv("TINYASSETS_PIN_WRITER", "codex")
-
-    import asyncio
-    # 'extract' chain starts with codex so it still resolves to codex here,
-    # but the mechanism must be the normal chain (no loud-fail behavior).
-    asyncio.run(router.call("extract", "p", "s"))
-    assert p1.calls == 1
-
-
 def test_cli_pin_known_providers_covers_all_chains() -> None:
     """Every name in FALLBACK_CHAINS must pass the --provider validator."""
     from fantasy_daemon.providers import router as router_mod

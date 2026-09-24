@@ -1,4 +1,10 @@
-"""Execute the shipped browser controller; synthetic DOM/transport, not live proof."""
+"""Execute the shipped guided-sign-in controller; synthetic DOM/transport, not live proof.
+
+Vendor-neutral slice 6 (founder 2026-09-24): the guided sign-in lives INSIDE the
+unpowered universe's connect request. Its preset arrives as data on that request,
+the owner taps once, approves at the provider, and the page finishes the
+free-model request it gets back - no second approval screen.
+"""
 
 import json
 import shutil
@@ -9,6 +15,9 @@ import pytest
 from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
 
+PRESET = {"preset_id": "guided_models_v1", "name": "Example", "label": "Continue with Example",
+          "manage_url": "https://provider.example/keys", "manual_key": True}
+
 
 def run_browser(steps):
     html, _ = render_app_html()
@@ -16,19 +25,18 @@ def run_browser(steps):
                       html.index("  // End hosted model connection controller.")]
     program = r"""
 const elements=new Map(),storage=new Map(),requests=[],navigations=[],answers=[];
-const $=id=>{if(!elements.has(id)) elements.set(id,{textContent:'',hidden:false,
- disabled:false,focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;},
+const system=[],opened=[];
+const $=id=>{if(!elements.has(id)) elements.set(id,{textContent:'',hidden:false,value:'',
+ disabled:false,attrs:{},focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;},
+ setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},
  addEventListener(event,handler){this.listeners=this.listeners||{};this.listeners[event]=handler;}
  });return elements.get(id);};
 const sessionStorage={getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),
  removeItem:k=>storage.delete(k)};
 let NATIVE=false,me={setup:'empty'},auth='owner-token',viewGeneration=0;
-// The owner/home pair the real setters keep, declared here because the page
-// declares them outside either function. Uploads is absent on this slice, and
-// the setters already guard on it.
 let queueScope='',queueOwner='',uploadsRestored=false;const Uploads=null;
-let exchangeResult=null,answerResult={status:'answered'};
-let signedInNow=false,workosCalls=0,chatCount=0,refreshes=0;
+let exchangeResult=null,answerResult={status:'answered'},answerThrows=null;
+let signedInNow=false,workosCalls=0,chatCount=0,refreshes=0,engineConnected=null;
 const window={location:{pathname:'/mcp/app',search:'',assign:url=>navigations.push(url)}};
 const history={replaceState:(a,b,url)=>{window.location.pathname=url;window.location.search='';}};
 const token=()=>auth,authHeaders=()=>({Authorization:auth});
@@ -40,35 +48,38 @@ let fetch=async(url,options)=>{
   authorize_url:'https://provider.example/auth',expires_in:600} : exchangeResult;
  return {ok:!!result&&!result.error,json:async()=>result||{error:'incomplete'}};
 };
-const fetchMe=async()=>me,ModelPicker={reset(){}},Voice={refreshCapability(){}};
-let engineConnected=null;
-const showConnect=()=>HostedModelConnect.paint(),showView=v=>{if(v==='chat')chatCount++;};
+const fetchMe=async()=>me,ModelPicker={reset(){}},Voice={refreshCapability(){},stop(){}};
+const showView=v=>{if(v==='chat')chatCount++;};
+const openConnectRequest=g=>{opened.push(g||'');if(g)HostedModelConnect.status(g);};
+const refreshRail=()=>{},appendMessage=(who,text)=>system.push(text);
 const startHeartbeat=()=>{},warmSession=()=>{},loadPlan=()=>{},loadHistory=()=>{};
-const wire=()=>{},wireNativeReturn=()=>{},loadOpenAIPending=()=>{},startSessionKeepAlive=()=>{};
+const wire=()=>{},wireNativeReturn=()=>{},startSessionKeepAlive=()=>{};
+const localStorage={removeItem(){}};
 const completeSignInIfCallback=async()=>{workosCalls++;return signedInNow;};
 const refreshAccessToken=async()=>{refreshes++;};
 const enterSignedOut=()=>{HostedModelConnect.reset();};
-const MCP={answerRequest:async p=>{answers.push(p);return answerResult;}};
+const MCP={_loginEpoch:0,answerRequest:async p=>{answers.push(p);if(answerThrows)throw answerThrows;
+ const r=typeof answerResult==='function'?answerResult():answerResult;return r;}};
 __SOURCE__
 (async()=>{
+ HostedModelConnect.configure(__PRESET__);
  __STEPS__
- console.log(JSON.stringify({requests,navigations,answers,workosCalls,chatCount,refreshes,
+ console.log(JSON.stringify({requests,navigations,answers,workosCalls,chatCount,refreshes,system,opened,
    path:window.location.pathname,search:window.location.search,stored:[...storage.values()],
    setup:HostedModelConnect.setup,request:HostedModelConnect.request,busy:HostedModelConnect.busy,
-   status:$('hosted-model-status').textContent,connectStatus:$('connect-status').textContent,
-   confirmationHidden:$('hosted-model-confirmation').hidden,callback:globalThis.callback}));
+   preset:HostedModelConnect.preset,status:$('hosted-model-status').textContent,
+   primaryHidden:$('connect-primary').hidden,finishHidden:$('btn-hosted-resume').hidden,
+   primaryLabel:$('btn-hosted-model').textContent,keyHidden:$('connect-key').hidden,
+   grant:$('hosted-model-grant').textContent,engineConnected}));
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """
-    # enterSignedIn seeds the owner/home pair BEFORE the connect gate can
-    # return, so its two real setters come along: stubbing them here would
-    # test a page whose fence does not exist. Same extraction list shape as
-    # tests/test_onboarding_app.py.
     source = (controller + _js_function(html, "setQueueScope")
               + _js_function(html, "setQueueOwner")
               + _js_function(html, "enterSignedIn") + _js_function(html, "boot"))
     node = shutil.which("node")
     assert node, "Node is required to execute browser tests"
     result = subprocess.run([node, "-e", program.replace("__SOURCE__", source)
+                             .replace("__PRESET__", json.dumps(PRESET))
                              .replace("__STEPS__", steps)],
                             capture_output=True, text=True, encoding="utf-8", timeout=20)
     assert result.returncode == 0, result.stderr
@@ -78,10 +89,41 @@ __SOURCE__
 def saved_callback(query="?code=synthetic-code"):
     return """
 sessionStorage.setItem(HostedModelConnect.storageKey,JSON.stringify({flow:'f'.repeat(43),
- verifier:'v'.repeat(43),preset:HostedModelConnect.preset,expires:Date.now()+60000}));
+ verifier:'v'.repeat(43),preset:'guided_models_v1',expires:Date.now()+60000}));
 window.location.pathname='/mcp/app/model-callback/'+'f'.repeat(43);
 window.location.search=__QUERY__;
     """.replace("__QUERY__", json.dumps(query))
+
+
+_GRANT = "Your universe will think with the models this connection offers, free models only."
+
+
+def confirmation(grant=_GRANT):
+    return """
+exchangeResult={status:'confirmation_required',request_id:'request-a',request:{
+ request_id:'request-a',title:'Power free models',body:'Free only',grant_sentence:%s,
+ action:{type:'bind_model_access'}}};
+""" % json.dumps(grant)
+
+
+# --- the button comes from the request, and names what the SERVER said ------
+
+
+def test_the_primary_button_is_the_requests_preset_not_page_code():
+    result = run_browser("HostedModelConnect.setup='empty';HostedModelConnect.paint();")
+    assert result["primaryLabel"] == "Continue with Example"
+    assert result["primaryHidden"] is False and result["finishHidden"] is True
+    assert result["preset"] == "guided_models_v1"
+    html, _ = render_app_html()
+    assert "openrouter" not in html.lower(), "the page names a provider itself"
+
+
+@pytest.mark.parametrize("bad", ["null", "{preset_id:'../x',label:'x'}", "{preset_id:'ok'}"])
+def test_a_malformed_preset_offers_no_button_and_cannot_start(bad):
+    result = run_browser("HostedModelConnect.preset='';HostedModelConnect.configure(" + bad + ");"
+                         "HostedModelConnect.setup='empty';await HostedModelConnect.begin();")
+    assert result["primaryHidden"] is True
+    assert not result["requests"] and not result["navigations"]
 
 
 def test_deliberate_disconnect_allows_explicit_guided_reconnect():
@@ -89,231 +131,113 @@ def test_deliberate_disconnect_allows_explicit_guided_reconnect():
         "HostedModelConnect.setup='disconnected'; await HostedModelConnect.begin();")
     assert len(result["requests"]) == 1
     assert result["requests"][0]["url"].endswith("/begin")
+    assert result["requests"][0]["body"] == {"preset_id": "guided_models_v1",
+                                             "code_challenge": "c" * 43}
     assert result["navigations"] == ["https://provider.example/auth"]
 
 
-def test_existing_key_shortcut_focuses_original_box_without_credentials_or_authority():
-    result = run_browser(r"""
-const assert=require('node:assert/strict');
-$('paste-blob').value='synthetic-private-key';
-$('paste-intent').value='Keep my existing intent';
-$('api-key-connection').hidden=true;$('paste-key-guidance').hidden=true;
-HostedModelConnect.wire();
-HostedModelConnect.setup='empty';
-$('btn-hosted-key').listeners.click();
-assert.equal($('api-key-connection').hidden,false);
-assert.equal($('paste-key-guidance').hidden,false);
-assert.equal($('api-key-connection').scrolled,true);
-assert.equal($('paste-blob').focused,true);
-assert.equal($('paste-blob').value,'');
-assert.equal($('paste-intent').value,'');
-assert.equal($('btn-paste-connect').hidden,true);
-assert.equal($('btn-hosted-deposit').hidden,false);
-// Navigation must not even inspect a credential value.
-Object.defineProperty($('paste-blob'),'value',{get(){throw Error('credential read');},set(){}});
-$('btn-hosted-key').listeners.click();
-""")
-    assert result["requests"] == result["navigations"] == result["answers"] == []
-    assert result["stored"] == []
-    assert result["path"] == "/mcp/app" and result["search"] == ""
-    assert "synthetic-private-key" not in json.dumps(result)
+def test_a_powered_universe_sees_no_guided_sign_in():
+    result = run_browser("HostedModelConnect.setup='connected';HostedModelConnect.paint();")
+    assert result["primaryHidden"] is True and result["finishHidden"] is True
+    assert result["keyHidden"] is True
 
 
-def test_signup_handoff_and_key_shortcut_use_one_existing_secure_form():
-    from html.parser import HTMLParser
-
-    class IDs(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.ids = []
-
-        def handle_starttag(self, tag, attrs):
-            self.ids.extend(value for key, value in attrs if key == "id")
-
-    html, _ = render_app_html()
-    parser = IDs()
-    parser.feed(html)
-    assert len(parser.ids) == len(set(parser.ids))
-    assert parser.ids.count("paste-blob") == 1
-    assert html.index('id="btn-hosted-key"') < html.index('id="btn-openai-connect"')
-    assert "Your workspace is ready" in html and "TinyAssets authorization" in html
-    assert "No key needs to be copied or pasted" in html
-    assert "Signed up, but landed on your OpenRouter workspace?" in html
-    assert "You will return here automatically" not in html
-    assert "Saving it does not" in html and "approve model access" in html
-    assert 'aria-controls="api-key-connection"' in html
-    assert 'aria-describedby="paste-key-guidance"' in html
+# --- sign-in lands in chat with the request; nothing starts on its own -------
 
 
-def test_manual_key_posts_once_after_clearing_then_reuses_pending_approval():
-    result = run_browser(confirmation() + r"""
-const assert=require('node:assert/strict');
-HostedModelConnect.setup='empty';HostedModelConnect.showKeyEntry();
-$('paste-blob').value='synthetic-private-key';
-const realFetch=fetch;fetch=async(...args)=>{
- assert.equal($('paste-blob').value,'');return realFetch(...args);
-};
-await HostedModelConnect.depositKey();await HostedModelConnect.depositKey();
-assert.equal($('paste-blob').value,'');
-assert.equal($('btn-hosted-accept').focused,true);
-""")
-    assert len(result["requests"]) == 1
-    call = result["requests"][0]
-    assert call["url"] == "/mcp/app/model-connect/deposit_key"
-    assert call["body"] == {"preset_id": "openrouter_user_models_v1",
-                            "key": "synthetic-private-key"}
-    assert "synthetic-private-key" not in call["url"]
-    assert not result["answers"] and not result["navigations"] and not result["stored"]
-    assert result["request"]["request_id"] == "request-a"
-    assert result["confirmationHidden"] is False
-
-
-@pytest.mark.parametrize("key", ["", "key with space", "key\n", "é", "x" * 2049])
-def test_manual_key_validation_clears_without_request(key):
-    result = run_browser("HostedModelConnect.setup='empty';HostedModelConnect.showKeyEntry();"
-                         "$('paste-blob').value=" + json.dumps(key) + ";"
-                         "await HostedModelConnect.depositKey();"
-                         "if($('paste-blob').value!=='')throw Error('not cleared');")
-    assert not result["requests"] and not result["stored"]
-    assert result["setup"] == "empty"
-
-
-def test_manual_key_login_change_during_refresh_never_sends_under_new_login():
-    result = run_browser(r"""
-HostedModelConnect.setup='empty';HostedModelConnect.showKeyEntry();
-$('paste-blob').value='synthetic-private-key';
-ensureFreshToken=async()=>{HostedModelConnect.reset();auth='new-login';};
-await HostedModelConnect.depositKey();
-""")
-    assert not result["requests"] and not result["answers"] and not result["stored"]
-    assert "synthetic-private-key" not in json.dumps(result)
-
-
-@pytest.mark.parametrize("change", ["HostedModelConnect.reset();", "viewGeneration++;"])
-def test_manual_late_response_does_not_render_approval_in_changed_login_or_view(change):
-    result = run_browser(confirmation() + r"""
-HostedModelConnect.setup='empty';HostedModelConnect.showKeyEntry();
-$('paste-blob').value='synthetic-private-key';
-const original=fetch;
-fetch=async(...args)=>{const result=await original(...args);__CHANGE__return result;};
-await HostedModelConnect.depositKey();
-""".replace("__CHANGE__", change))
-    assert len(result["requests"]) == 1
-    assert not result["request"] and not result["answers"] and not result["stored"]
-
-
-def test_manual_timeout_stays_guarded_and_requires_secret_free_resume():
-    result = run_browser(confirmation() + r"""
-const assert=require('node:assert/strict');
-let expire,settle;
-globalThis.setTimeout=callback=>{expire=callback;return 1;};
-globalThis.clearTimeout=()=>{};
-HostedModelConnect.setup='empty';HostedModelConnect.showKeyEntry();
-$('paste-blob').value='synthetic-private-key';
-const original=fetch;
-fetch=async(...args)=>{
- const response=await original(...args);
- return new Promise(resolve=>{settle=()=>resolve(response);});
-};
-const pending=HostedModelConnect.depositKey();
-await Promise.resolve();await Promise.resolve();await Promise.resolve();
-expire();assert.equal(HostedModelConnect.busy,true);
-await HostedModelConnect.depositKey();settle();await pending;
-assert.equal(HostedModelConnect.request,null);
-assert.match($('hosted-model-status').textContent,/Resume saved connection/);
-fetch=original;await HostedModelConnect.complete();
-""")
-    assert len(result["requests"]) == 2
-    assert result["requests"][1]["url"].endswith("/resume")
-    assert result["requests"][1]["body"] == {"preset_id": "openrouter_user_models_v1"}
-    assert not result["answers"] and not result["stored"]
-
-
-def test_manual_unknown_failure_is_redacted_and_not_replayed():
-    result = run_browser(r"""
-HostedModelConnect.setup='empty';HostedModelConnect.showKeyEntry();
-$('paste-blob').value='synthetic-private-key';
-exchangeResult={error:'synthetic-private-key'};
-await HostedModelConnect.depositKey();await HostedModelConnect.depositKey();
-""")
-    assert len(result["requests"]) == 1
-    assert "synthetic-private-key" not in result["status"]
-    assert not result["answers"] and not result["stored"]
-
-
-def test_manual_approval_keeps_portable_layout_current_owner_hooks():
-    result = run_browser(confirmation() + r"""
-const assert=require('node:assert/strict'),layoutCalls=[];
-globalThis.AppLayout={init(){layoutCalls.push(['init']);},
- reset(){layoutCalls.push(['reset']);},
- enable(home,principal){layoutCalls.push(['enable',home,principal]);}};
-await boot();
-assert(layoutCalls.some(call=>call[0]==='init'));
-assert(layoutCalls.some(call=>call[0]==='reset'));
-HostedModelConnect.showKeyEntry();$('paste-blob').value='synthetic-private-key';
-await HostedModelConnect.depositKey();
-assert(!layoutCalls.some(call=>call[0]==='enable'));
-me={setup:'connected',universe_id:'u-owner',principal_id:'owner'};
-await HostedModelConnect.answer(true);
-assert.deepEqual(layoutCalls.filter(call=>call[0]==='enable'),[['enable','u-owner','owner']]);
-""")
-    assert len(result["answers"]) == 1
-    assert result["setup"] == "connected"
-
-
-def confirmation():
-    return """
-exchangeResult={status:'confirmation_required',request_id:'request-a',request:{
- request_id:'request-a',title:'Power free models',body:'Free only',
- action:{type:'bind_model_access'}}};
-"""
-
-
-def test_explicit_signin_empty_starts_same_tab_once_not_on_refresh():
-    result = run_browser("signedInNow=true;await boot();signedInNow=false;await boot();")
-    assert len(result["navigations"]) == 1
-    assert len(result["requests"]) == 1
-    assert result["requests"][0]["body"] == {
-        "preset_id": "openrouter_user_models_v1", "code_challenge": "c" * 43}
-    assert json.loads(result["stored"][0])["verifier"] == "v" * 43
-    assert not result["answers"]
-
-
-@pytest.mark.parametrize("state", ["recovery", "connected", "unavailable", None])
-def test_nonempty_or_unavailable_cannot_auto_start_even_if_legacy_boolean_disagrees(state):
+@pytest.mark.parametrize("state", ["empty", "disconnected", "recovery", "unavailable", None])
+def test_sign_in_lands_in_chat_with_the_request_and_never_auto_starts(state):
     result = run_browser("signedInNow=true;me={setup:" + json.dumps(state)
                          + ",engine_connected:false};await boot();")
-    assert not result["requests"]
-    assert result["chatCount"] == (1 if state == "connected" else 0)
+    assert not result["requests"] and not result["navigations"]
+    assert result["chatCount"] == 1, "an unpowered universe did not land in its chat"
+    assert len(result["opened"]) == 1, "the connect request was not opened"
+
+
+def test_a_powered_sign_in_opens_no_setup():
+    result = run_browser("signedInNow=true;me={setup:'connected'};await boot();")
+    assert result["chatCount"] == 1 and result["opened"] == []
+    assert result["engineConnected"] is True
 
 
 def test_native_does_not_start_web_callback_flow():
-    assert not run_browser("NATIVE=true;signedInNow=true;await boot();")["requests"]
+    result = run_browser("NATIVE=true;HostedModelConnect.setup='empty';"
+                         "await HostedModelConnect.begin();")
+    assert not result["requests"]
 
 
-def test_hosted_return_is_stripped_before_workos_and_requires_explicit_model_approval():
-    result = run_browser(saved_callback() + confirmation() + "await boot();")
+# --- the return from the provider finishes by itself: 2 taps, not 3 ----------
+
+
+def test_return_from_the_provider_finishes_the_free_model_request_itself():
+    result = run_browser(saved_callback() + confirmation() + """
+answerResult=()=>{me={setup:'connected',universe_id:'u',principal_id:'p'};
+ return {status:'answered'};};
+await boot();""")
     assert result["workosCalls"] == 0
     assert result["path"] == "/mcp/app" and not result["search"]
-    assert not result["stored"]
-    assert not result["answers"] and not result["navigations"]
+    assert not result["stored"] and not result["navigations"]
     assert len(result["requests"]) == 1
     assert result["requests"][0]["url"].endswith("/exchange")
     assert result["requests"][0]["options"]["referrerPolicy"] == "no-referrer"
-    assert result["request"]["request_id"] == "request-a"
-    assert result["confirmationHidden"] is False
+    assert result["answers"] == [{"request_id": "request-a", "values": {}}], \
+        "the owner had to approve twice"
+    assert result["request"] is None and result["setup"] == "connected"
+    assert any("connected" in line for line in result["system"])
+    assert result["chatCount"] >= 1
+
+
+@pytest.mark.parametrize("lost", [
+    "answerResult={};",                                     # empty tool result
+    "answerResult={reply:'Error executing tool'};",         # non-JSON tool text
+    "answerThrows=new Error('the connection to your universe failed (HTTP 503)');",
+    "answerResult={error:'provider_authority_denied',request_pending:true};",
+])
+def test_an_unconfirmed_answer_is_not_success_and_stays_one_tap_away(lost):
+    """Live 2026-09-24: a deploy restarted the daemon mid-approval, the page read
+    the non-answer as done, and the universe stayed unpowered."""
+    result = run_browser(saved_callback() + confirmation() + lost + "await boot();")
+    assert len(result["answers"]) == 1
+    assert result["request"]["request_id"] == "request-a", "the request was dropped"
+    assert result["finishHidden"] is False, "no one-tap way to finish"
+    assert "nothing was lost" in result["status"]
+    assert "already has connection setup" not in result["status"]
+    assert result["busy"] is False and result["system"] == []
+
+
+def test_an_answer_whose_reply_was_lost_but_landed_reads_as_connected():
+    result = run_browser(saved_callback() + confirmation() + """
+answerResult=()=>{me={setup:'connected',universe_id:'u',principal_id:'p'};return {};};
+await boot();""")
+    assert result["setup"] == "connected" and result["request"] is None
+    assert any("connected" in line for line in result["system"])
+
+
+def test_finish_connecting_retries_the_same_request_once_per_tap():
+    result = run_browser(saved_callback() + confirmation() + """
+answerResult={};await boot();
+answerResult=()=>{me={setup:'connected'};return {status:'answered'};};
+await HostedModelConnect.finish();""")
+    assert result["answers"] == [{"request_id": "request-a", "values": {}}] * 2
+    assert result["setup"] == "connected"
+    assert len(result["requests"]) == 1, "finishing re-ran the exchange"
+
+
+def test_the_grant_shown_is_the_servers_words():
+    result = run_browser(saved_callback() + confirmation() + "answerResult={};await boot();")
+    assert result["grant"].startswith("Your universe will think with")
 
 
 @pytest.mark.parametrize("query", ["?error=access_denied", "", "?code=one&code=two"])
 def test_cancelled_or_invalid_return_never_exchanges_or_restarts(query):
     result = run_browser(saved_callback(query) + "await boot();await boot();")
-    assert not result["requests"] and not result["navigations"]
+    assert not result["requests"] and not result["navigations"] and not result["answers"]
     assert not result["stored"]
     assert "cancelled or expired" in result["status"]
 
 
 def test_foreign_or_expired_browser_flow_cannot_redeem():
-    for mutation in ["saved.flow='x'.repeat(43);", "saved.expires=1;"]:
+    for mutation in ["saved.flow='x'.repeat(43);", "saved.expires=1;", "saved.preset='../x';"]:
         result = run_browser(saved_callback() + """
 let saved=JSON.parse(sessionStorage.getItem(HostedModelConnect.storageKey));
 """ + mutation + """
@@ -322,23 +246,23 @@ sessionStorage.setItem(HostedModelConnect.storageKey,JSON.stringify(saved));awai
         assert not result["requests"]
 
 
-def test_uncertain_exchange_is_not_retried_and_exposes_explicit_resume():
+def test_uncertain_exchange_is_not_retried_and_offers_finish():
     result = run_browser(saved_callback() + "await boot();await boot();")
     assert len(result["requests"]) == 1
-    assert "key may already exist" in result["status"]
-    assert not result["stored"] and not result["navigations"]
+    assert "Finish connecting" in result["status"]
+    assert not result["stored"] and not result["navigations"] and not result["answers"]
 
 
 @pytest.mark.parametrize("code,expected", [
-    ("no_eligible_free_agent_model", "no eligible free model"),
-    ("model_authorization_required", "Choose Continue with OpenRouter"),
-    ("model_connection_expired", "Choose Continue with OpenRouter"),
-    ("unknown_model_connection", "Choose Continue with OpenRouter"),
-    ("model_setup_changed", "existing setup needs review"),
-    ("current_home_changed", "existing setup needs review"),
-    ("model_confirmation_requires_review", "existing setup needs review"),
-    ("model_connection_incomplete", "saved connection is not ready yet"),
-    ("raw upstream error must not be shown", "saved connection is not ready yet"),
+    ("no_eligible_free_agent_model", "no free model"),
+    ("model_authorization_required", "start again"),
+    ("model_connection_expired", "start again"),
+    ("unknown_model_connection", "start again"),
+    ("model_setup_changed", "needs a look"),
+    ("current_home_changed", "needs a look"),
+    ("model_confirmation_requires_review", "needs a look"),
+    ("model_connection_incomplete", "not ready yet"),
+    ("raw upstream error must not be shown", "not ready yet"),
 ])
 def test_recovery_message_matches_safe_error_without_automatic_retry(code, expected):
     result = run_browser("exchangeResult={error:" + json.dumps(code) + "};await boot();"
@@ -350,47 +274,140 @@ def test_recovery_message_matches_safe_error_without_automatic_retry(code, expec
     assert "raw upstream error" not in result["status"]
 
 
-def test_missing_authorization_does_not_offer_disabled_restart_for_existing_setup():
+def test_missing_authorization_on_existing_setup_keeps_it():
     result = run_browser("me={setup:'recovery'};"
                          "exchangeResult={error:'model_authorization_required'};await boot();"
                          "await HostedModelConnect.complete();")
-    assert "Existing setup was preserved" in result["status"]
-    assert "Choose Continue with OpenRouter" not in result["status"]
+    assert "existing setup was kept" in result["status"]
     assert result["setup"] == "recovery"
     assert not result["answers"] and not result["navigations"]
 
 
-def test_key_management_link_uses_readable_existing_link_style():
-    html, _ = render_app_html()
-    assert ('class="legal-link" data-external href="https://openrouter.ai/settings/keys"'
-            in html)
-
-
-def test_resume_fetches_pending_request_without_any_authorization_or_approval():
+def test_resume_reads_the_saved_setup_then_finishes_it_in_the_same_tap():
     result = run_browser(confirmation() + "me={setup:'recovery'};await boot();"
-                         "await HostedModelConnect.complete();")
+                         "answerResult=()=>{me={setup:'connected'};return {status:'answered'};};"
+                         "await HostedModelConnect.finish();")
     assert len(result["requests"]) == 1
     assert result["requests"][0]["url"].endswith("/resume")
-    assert not result["answers"] and not result["navigations"]
+    assert result["requests"][0]["body"] == {"preset_id": "guided_models_v1"}
+    assert result["answers"] == [{"request_id": "request-a", "values": {}}]
+    assert not result["navigations"]
 
 
-@pytest.mark.parametrize("accepted", [True, False])
-def test_only_owner_click_submits_existing_request_and_rereads_serving(accepted):
-    result = run_browser(saved_callback() + confirmation() + "await boot();"
-                         + ("me={setup:'connected'};" if accepted else "me={setup:'recovery'};")
-                         + f"await HostedModelConnect.answer({str(accepted).lower()});")
-    expected = {"request_id": "request-a", **({"values": {}} if accepted
-                                             else {"decision": "declined"})}
-    assert result["answers"] == [expected]
-    assert result["request"] is None
-    assert result["chatCount"] == (1 if accepted else 0)
+# --- the pending free-model request folds into the setup it finishes ---------
 
 
-def test_failed_approval_preserves_actionable_request_not_false_success():
+def test_an_adopted_rail_request_is_finished_by_one_tap_not_a_second_card():
+    result = run_browser("""
+me={setup:'recovery'};await boot();
+HostedModelConnect.adopt({request_id:'request-r',grant_sentence:'Your universe will think with x.',
+ action:{type:'bind_model_access'}});HostedModelConnect.paint();
+answerResult=()=>{me={setup:'connected'};return {status:'answered'};};
+await HostedModelConnect.finish();""")
+    assert result["answers"] == [{"request_id": "request-r", "values": {}}]
+    assert not result["requests"], "an adopted request re-ran setup"
+    assert result["setup"] == "connected"
+
+
+def test_a_rail_refresh_without_the_request_clears_only_an_adopted_one():
     result = run_browser(saved_callback() + confirmation() + """
-await boot();answerResult={error:'authority_unavailable',request_pending:true};
-await HostedModelConnect.answer(true);
+answerResult={};await boot();HostedModelConnect.adopt(null);""")
+    assert result["request"]["request_id"] == "request-a", \
+        "a stale rail read dropped the request this tab is finishing"
+
+
+# --- the key shortcut: in the same request, one paste + one tap ---------------
+
+
+def test_key_shortcut_posts_once_after_clearing_then_finishes():
+    result = run_browser(confirmation() + r"""
+const assert=require('node:assert/strict');
+answerResult=()=>{me={setup:'connected'};return {status:'answered'};};
+HostedModelConnect.setup='empty';HostedModelConnect.toggleKey();
+$('hosted-key-input').value='synthetic-private-key';
+const realFetch=fetch;fetch=async(...args)=>{
+ assert.equal($('hosted-key-input').value,'');return realFetch(...args);
+};
+await HostedModelConnect.depositKey();await HostedModelConnect.depositKey();
+assert.equal($('hosted-key-input').value,'');
 """)
-    assert result["request"]["request_id"] == "request-a"
-    assert "request remains open" in result["status"]
-    assert result["chatCount"] == 0 and result["busy"] is False
+    assert len(result["requests"]) == 1
+    call = result["requests"][0]
+    assert call["url"] == "/mcp/app/model-connect/deposit_key"
+    assert call["body"] == {"preset_id": "guided_models_v1", "key": "synthetic-private-key"}
+    assert result["answers"] == [{"request_id": "request-a", "values": {}}]
+    assert not result["navigations"] and not result["stored"]
+    assert "synthetic-private-key" not in json.dumps(
+        {k: v for k, v in result.items() if k != "requests"})
+
+
+def test_key_toggle_never_reads_a_credential():
+    result = run_browser(r"""
+HostedModelConnect.setup='empty';
+Object.defineProperty($('hosted-key-input'),'value',
+ {get(){throw Error('credential read');},set(){}});
+HostedModelConnect.toggleKey();HostedModelConnect.toggleKey();""")
+    assert not result["requests"] and not result["answers"]
+
+
+@pytest.mark.parametrize("key", ["", "key with space", "key\n", "é", "x" * 2049])
+def test_manual_key_validation_clears_without_request(key):
+    result = run_browser("HostedModelConnect.setup='empty';HostedModelConnect.toggleKey();"
+                         "$('hosted-key-input').value=" + json.dumps(key) + ";"
+                         "await HostedModelConnect.depositKey();"
+                         "if($('hosted-key-input').value!=='')throw Error('not cleared');")
+    assert not result["requests"] and not result["stored"]
+    assert result["setup"] == "empty"
+
+
+def test_manual_key_login_change_during_refresh_never_sends_under_new_login():
+    result = run_browser(r"""
+HostedModelConnect.setup='empty';HostedModelConnect.toggleKey();
+$('hosted-key-input').value='synthetic-private-key';
+ensureFreshToken=async()=>{HostedModelConnect.reset();auth='new-login';};
+await HostedModelConnect.depositKey();
+""")
+    assert not result["requests"] and not result["answers"] and not result["stored"]
+    assert "synthetic-private-key" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("change", ["HostedModelConnect.reset();", "viewGeneration++;"])
+def test_manual_late_response_does_not_finish_in_changed_login_or_view(change):
+    result = run_browser(confirmation() + r"""
+HostedModelConnect.setup='empty';HostedModelConnect.toggleKey();
+$('hosted-key-input').value='synthetic-private-key';
+const original=fetch;
+fetch=async(...args)=>{const result=await original(...args);__CHANGE__return result;};
+await HostedModelConnect.depositKey();
+""".replace("__CHANGE__", change))
+    assert len(result["requests"]) == 1
+    assert not result["request"] and not result["answers"] and not result["stored"]
+
+
+def test_manual_unknown_failure_is_redacted_and_not_replayed():
+    result = run_browser(r"""
+HostedModelConnect.setup='empty';HostedModelConnect.toggleKey();
+$('hosted-key-input').value='synthetic-private-key';
+exchangeResult={error:'synthetic-private-key'};
+await HostedModelConnect.depositKey();await HostedModelConnect.depositKey();
+""")
+    assert len(result["requests"]) == 1
+    assert "synthetic-private-key" not in result["status"]
+    assert not result["answers"] and not result["stored"]
+
+
+def test_finishing_keeps_portable_layout_current_owner_hooks():
+    result = run_browser(saved_callback() + confirmation() + r"""
+const assert=require('node:assert/strict'),layoutCalls=[];
+globalThis.AppLayout={init(){layoutCalls.push(['init']);},
+ reset(){layoutCalls.push(['reset']);},
+ enable(home,principal){layoutCalls.push(['enable',home,principal]);}};
+answerResult=()=>{me={setup:'connected',universe_id:'u-owner',principal_id:'owner'};
+ return {status:'answered'};};
+await boot();
+assert(layoutCalls.some(call=>call[0]==='init'));
+assert(layoutCalls.some(call=>call[0]==='reset'));
+assert.deepEqual(layoutCalls.filter(call=>call[0]==='enable'),[['enable','u-owner','owner']]);
+""")
+    assert len(result["answers"]) == 1
+    assert result["setup"] == "connected"

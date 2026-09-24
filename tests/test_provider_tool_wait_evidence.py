@@ -274,10 +274,37 @@ async def test_real_router_held_compiler_and_run_read_keep_only_valid_evidence(
                 prompt="private-prompt", credential="private-credential",
             )
 
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    import tinyassets.providers.router as router_mod
+    from tinyassets.provider_work_authority import ProviderInvocationCarrier
+    from tinyassets.providers.base import ModelConfig, UniverseContext
+
+    # Hard Rule 15: a real router call carries one universe owner's authority.
+    carrier = MagicMock(spec=ProviderInvocationCarrier)
+    carrier.provider = "codex"
+    carrier.role = "writer"
+    carrier.operation = "run_graph"
+    carrier.max_tokens = 10
+    carrier.max_cost_microunits = 5
+    carrier.selected_model = None
+    carrier.native_selection = None
+    carrier.settlement_owner = None
+    carrier.validate_for_call.return_value = "codex"
+    monkeypatch.setattr(router_mod, "_provider_invocation_carrier",
+                        lambda _ctx, *, role, operation: carrier)
+
     monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
     router = ProviderRouter(providers={"codex": TimeoutProvider()})
     with pytest.raises(AllProvidersExhaustedError) as caught:
-        await router.call("writer", "prompt", "system")
+        await router.call(
+            "writer", "prompt", "system", ModelConfig(max_tokens=10),
+            operation="run_graph",
+            universe_context=UniverseContext(
+                universe_dir=Path("u-tool-wait"), provider_invocation=carrier,
+            ),
+        )
     held = _held_attempt_error("writer", ModelRef("codex", "default"), caught.value)
     stored = str(_wrap_provider_failure("node", held))
     events = []

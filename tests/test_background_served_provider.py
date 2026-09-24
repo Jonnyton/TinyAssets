@@ -130,6 +130,7 @@ def _authority_fixture(
     attempt_lease_expires_at: str | None = "2099-01-01T02:00:00+00:00",
     fabricated: bool = False,
     missing_owner: bool = False,
+    provider: str = "codex",
 ):
     binding_expires_at = binding_expires_at.replace("+00:00", "Z")
     if attempt_lease_expires_at is not None:
@@ -220,7 +221,7 @@ def _authority_fixture(
     assignment = SimpleNamespace(
         state="ready",
         owner_user_id="acct_owner_a",
-        provider="codex",
+        provider=provider,
         generation=4,
         assignment_digest="sha256:" + "f" * 64,
         manifest_digest="",
@@ -868,3 +869,37 @@ def test_scavenge_orphaned_launch_credentials(tmp_path: Path) -> None:
     assert other.exists()        # not a codex- snapshot dir
     # idempotent: a second sweep with nothing stale removes nothing.
     assert scavenge_orphaned_launch_credentials(tmp_path, max_age_seconds=3600) == 0
+
+
+@pytest.mark.parametrize("provider", ["claude-code", "codex"])
+def test_background_node_call_is_marked_as_a_workflow_node(
+    tmp_path: Path, monkeypatch, provider: str,
+) -> None:
+    """The background lane marks node calls exactly as the foreground does.
+
+    The provider applies its own confinement from the mark; the node's own
+    settings pass through unchanged.
+    """
+    from tinyassets.providers.base import ModelConfig
+
+    task, _conn, _assignment, _current, _events = _authority_fixture(
+        tmp_path, monkeypatch, provider=provider,
+    )
+    seen: list[ModelConfig] = []
+
+    def raw_provider(*_args, **kwargs):
+        carrier = kwargs["universe_context"].provider_invocation
+        assert carrier.validate_for_call(
+            role="writer", operation=background_provider.BACKGROUND_BRANCH_RUN_OPERATION
+        ) == provider
+        seen.append(kwargs["config"])
+        return "ok"
+
+    session = background_provider._BackgroundAssignedProviderSession(
+        tmp_path, task, _lease(), raw_provider
+    )
+    assert session("prompt", config=ModelConfig(timeout=42)) == "ok"
+    [config] = seen
+    assert config.timeout == 42
+    assert config.workflow_node is True
+    assert config.sandbox_workspace is False and config.disallowed_tools is None

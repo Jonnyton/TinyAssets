@@ -1,15 +1,12 @@
 """Open-provider routing building blocks (compute-agnostic task 3.1c).
 
-Covers the ADDITIVE, safe pieces:
-- `_apply_open_preference` prepends a registered-but-not-in-chain preferred provider
-  (so an open provider selected as preferred_writer becomes head of the chain),
-  while preserving the exact prior behavior for in-chain and unregistered names.
+Covers:
 - the set_engine `open_provider` mode writes preferred_writer = the definition's
   resolved executor name (no credential), and validates the definition exists.
 
-NOTE: these route the bare/non-authority path. The universe served/automation paths
-carry the provider via served_authority / invocation_carrier (an authority grant),
-whose generalization to open providers is the deeper authority-owned change.
+The preference reordering over a platform fallback chain (``_apply_open_preference``)
+was deleted under Hard Rule 15: the router serves only the provider an owner's
+authority names, so there is no chain to reorder.
 """
 
 from __future__ import annotations
@@ -31,37 +28,6 @@ class _Fake(BaseProvider):
                        *, universe_dir: Path | None = None) -> ProviderResponse:
         return ProviderResponse(text="x", provider=self.name, model="m",
                                 family=self.family, latency_ms=0.0)
-
-
-def test_apply_open_preference_prepends_registered_open_provider() -> None:
-    from tinyassets.providers.router import ProviderRouter
-
-    router = ProviderRouter()
-    router.register(_Fake("api_key_http:def1"))
-    chain = ["codex", "claude-code"]
-
-    # Registered but not in the static chain -> prepended (routable), chain kept as tail.
-    assert router._apply_open_preference(chain, "api_key_http:def1") == [
-        "api_key_http:def1", "codex", "claude-code",
-    ]
-
-
-def test_apply_open_preference_noop_for_unregistered() -> None:
-    from tinyassets.providers.router import ProviderRouter
-
-    router = ProviderRouter()
-    chain = ["codex", "claude-code"]
-    # Not registered -> no phantom entry (exact prior behavior).
-    assert router._apply_open_preference(chain, "kimi-unregistered") == chain
-
-
-def test_apply_open_preference_reorders_in_chain_like_before() -> None:
-    from tinyassets.providers.router import ProviderRouter
-
-    router = ProviderRouter()
-    chain = ["codex", "claude-code"]
-    # In chain -> reorder, identical to _apply_preference (no behavior change).
-    assert router._apply_open_preference(chain, "claude-code") == ["claude-code", "codex"]
 
 
 # --------------------------------------------------------------------------- #

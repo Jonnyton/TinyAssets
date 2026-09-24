@@ -459,7 +459,8 @@ def test_the_same_account_moving_home_is_offered_the_new_homes_attachments(html)
 
 
 # ---------------------------------------------------------------------------
-# First session: the connect gate is on the way IN, not a dead end.
+# First session: an unpowered universe lands in its own chat with the connect
+# request first (vendor-neutral slice 6, founder 2026-09-24). No separate gate.
 # ---------------------------------------------------------------------------
 
 _GATE_HARNESS = r"""
@@ -475,77 +476,63 @@ const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; } };
 const Uploads={ aborted:0, abort(){ this.aborted++; } };
 const Voice={ refreshCapability(){} };
 const ModelPicker={ reset(){} };
-const AppLayout={ reset(){}, enable(u,p){ LOG.push(["layout",u,p]); } };
-const HostedModelConnect={ setup:"empty", async begin(){ LOG.push(["begin"]); } };
+const AppLayout={ reset(){ LOG.push(["layoutReset"]); }, enable(u,p){ LOG.push(["layout",u,p]); } };
+const HostedModelConnect={ setup:"empty", busy:false, request:null,
+  async begin(){ LOG.push(["begin"]); }, paint(){}, status(t){ LOG.push(["status",t]); } };
 function token(){ return "t1"; }
 function showView(v){ LOG.push(["view",v]); }
-function showConnect(gate){ LOG.push(["connect",!!gate]); }
+function openConnectRequest(){ LOG.push(["connect"]); }
+function refreshRail(){ LOG.push(["rail"]); }
 function startHeartbeat(){ LOG.push(["heartbeat"]); }
 function warmSession(){}
 function loadPlan(){ LOG.push(["loadPlan"]); }
 function loadHistory(){ LOG.push(["loadHistory",queueOwner,queueScope]); }
-function restoreUploadRecords(){
-  LOG.push(["restoreUploads",queueOwner,queueScope,uploadsRestored]); }
 function sessionExpired(){ LOG.push(["expired"]); }
-function setTimeoutRun(fn){ fn(); }
 """
 
 
 def _gate_script(html: str, body: str) -> str:
     lifted = [_function_source(html, "setQueueScope"),
               _function_source(html, "setQueueOwner"),
-              _function_source(html, "enterSignedIn"),
-              _function_source(html, "onEngineConnected")]
-    # The gate's hand-off to chat is on a timer in the page; run it inline so
-    # the test asserts the WIRING and not node's scheduler.
-    src = "\n".join(lifted).replace("setTimeout(", "setTimeoutRun(")
-    return _GATE_HARNESS + "\n" + src + "\n" + body
+              _function_source(html, "enterSignedIn")]
+    return _GATE_HARNESS + "\n" + "\n".join(lifted) + "\n" + body
 
 
-def test_the_connect_gate_still_learns_the_verified_owner_and_home(html):
-    """Landing on Connect is the FIRST session's normal path. The account and
-    home come from the verified /mcp/app/me BEFORE that gate returns, or
-    everything the next screen could restore stays unreadable."""
+def test_an_unpowered_first_session_lands_in_chat_with_the_request_first(html):
+    """The first session's normal path is its own chat, with the account and
+    home learned from the verified /mcp/app/me before anything is restored,
+    and the connect request opened - never a separate full-page screen."""
     out = _run_node(_gate_script(html, r"""
     (async()=>{
-      async function fetchMe(){ return {setup:"empty",
-        universe_id:"universe-a", principal_id:"principal-a"}; }
-      globalThis.fetchMe=fetchMe;
-      await enterSignedIn(false);
-      console.log(JSON.stringify({queueOwner, queueScope,
-        sawConnectGate:LOG.some(l=>l[0]==="connect"&&l[1]===true),
-        wentToChat:LOG.some(l=>l[0]==="view"&&l[1]==="chat")}));
+      globalThis.fetchMe=async()=>({setup:"empty",
+        universe_id:"universe-a", principal_id:"principal-a"});
+      await enterSignedIn();
+      console.log(JSON.stringify({queueOwner, queueScope, engineConnected, log:LOG}));
     })();
     """))
-    assert out["sawConnectGate"] is True, "the gate no longer gates"
-    assert out["queueOwner"] == "principal-a", \
-        "the connect gate returned before the page learned its account"
-    assert out["queueScope"] == "universe-a", \
-        "the connect gate returned before the page learned its home"
-    assert out["wentToChat"] is False, "the gate let an unpowered universe through"
-
-
-def test_connecting_at_the_gate_reaches_chat_with_its_own_state_restorable(html):
-    """Connect -> chat is the same arrival as a direct sign-in: the pair is
-    already known, so history and saved attachments are actually asked for."""
-    out = _run_node(_gate_script(html, r"""
-    (async()=>{
-      async function fetchMe(){ return {setup:"empty",
-        universe_id:"universe-a", principal_id:"principal-a"}; }
-      globalThis.fetchMe=fetchMe;
-      await enterSignedIn(false);
-      onEngineConnected();                       // the founder connects a model
-      const history=LOG.filter(l=>l[0]==="loadHistory").pop();
-      const uploads=LOG.filter(l=>l[0]==="restoreUploads").pop();
-      console.log(JSON.stringify({wentToChat:LOG.some(l=>l[0]==="view"&&l[1]==="chat"),
-        heartbeat:LOG.some(l=>l[0]==="heartbeat"), history, uploads}));
-    })();
-    """))
-    assert out["wentToChat"] is True and out["heartbeat"] is True
-    assert out["history"] == ["loadHistory", "principal-a", "universe-a"], \
+    log = out["log"]
+    assert ["view", "chat"] in log, "an unpowered universe did not land in its chat"
+    assert ["connect"] in log, "the connect request was not opened"
+    assert out["queueOwner"] == "principal-a" and out["queueScope"] == "universe-a"
+    assert ["loadHistory", "principal-a", "universe-a"] in log, \
         "the first session reached chat without asking for its own history"
-    assert out["uploads"] == ["restoreUploads", "principal-a", "universe-a", False], \
-        "the first session reached chat with its saved attachments unreadable"
+    assert out["engineConnected"] is False
+    assert not any(entry[0] == "layout" for entry in log), \
+        "an unpowered universe enabled the powered layout"
+
+
+def test_a_powered_session_lands_in_chat_without_opening_setup(html):
+    out = _run_node(_gate_script(html, r"""
+    (async()=>{
+      globalThis.fetchMe=async()=>({setup:"connected",
+        universe_id:"universe-a", principal_id:"principal-a"});
+      await enterSignedIn();
+      console.log(JSON.stringify({engineConnected, log:LOG}));
+    })();
+    """))
+    assert ["view", "chat"] in out["log"] and ["connect"] not in out["log"]
+    assert ["layout", "universe-a", "principal-a"] in out["log"]
+    assert out["engineConnected"] is True
 
 
 def test_a_me_that_lands_after_the_login_changed_stamps_no_identity(html):
@@ -558,7 +545,7 @@ def test_a_me_that_lands_after_the_login_changed_stamps_no_identity(html):
         await new Promise(r=>{release=r;});
         return {setup:"connected", universe_id:"universe-a", principal_id:"principal-a"};
       };
-      const pending=enterSignedIn(false);
+      const pending=enterSignedIn();
       MCP.endLogin();                            // signed out mid-flight
       setQueueScope("universe-b"); setQueueOwner("principal-b");
       release();

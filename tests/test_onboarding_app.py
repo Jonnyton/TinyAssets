@@ -294,7 +294,9 @@ def test_the_deposit_form_names_protocols_not_companies():
                  "api.x.com", "twitter.com", "hooks.slack.com",
                  "switched to the four-key form below"):
         assert gone not in html, f"service-specific UI survived: {gone!r}"
-    assert 'href="https://openrouter.ai/settings/keys"' in html
+    # Vendor-neutral slice 6: the guided sign-in's name and key page arrive
+    # as data on the setup request; the page itself names no provider.
+    assert "openrouter" not in html.lower()
 
     # The scheme select describes protocols, and names nobody.
     assert 'value="oauth1a"' in html
@@ -696,7 +698,7 @@ let voiceTurnImpl=async()=>"Exact universe reply.";
 async function sendVoiceTurn(message){turns.push(message);return await voiceTurnImpl(message);}
 async function ensureFreshToken(){} async function refreshAccessToken(){return false;}
 function authHeaders(){return {Authorization:"Bearer app"};} async function sleep(){}
-let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({asGate,guidance});}
+let connectCalls=[]; function openConnectRequest(guidance){connectCalls.push({guidance});}
 """
     scenario = r"""
 (async()=>{
@@ -1168,7 +1170,6 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert "provider connection" in out["unpowered"]["status"]
     assert out["unpowered"]["connectCalls"] == [
         {
-            "asGate": True,
             "guidance": (
                 "Voice needs a realtime-capable provider connection that you authorize "
                 "for this universe. Connect the provider your universe should use; "
@@ -1225,7 +1226,6 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "mediaRequests": 0,
         "connectCalls": [
             {
-                "asGate": True,
                 "guidance": (
                     "Voice needs a realtime-capable provider connection that you "
                     "authorize for this universe. Connect the provider your universe "
@@ -2277,10 +2277,11 @@ def test_a_sticky_ask_renders_expanded_and_offers_no_dismiss():
 
     html, _csp = render_app_html()
     assert "req.sticky ?" in html
-    assert 'req.action.type === "connect_llm"' in html
-    # It hands off to the provider cards that already work, rather than
-    # reinventing the OAuth and token flows inside a tab.
-    assert "no fields, no feedback, no dismiss" in html
+    # Slice 6 (founder 2026-09-24): the setup is finished INSIDE the request,
+    # not handed off to a full-page screen. Executed in
+    # tests/test_notification_is_the_setup.py.
+    assert "isSetupRequest(req)" in html and "connectBody(req)" in html
+    assert 'id="view-connect"' not in html
 
 
 
@@ -2769,16 +2770,6 @@ def test_native_store_shells_keep_review_declared_voice_dark():
     assert "if(!NATIVE) Voice.refreshCapability();" in html
 
 
-def test_android_openai_browser_dismissal_stops_the_foreground_service():
-    """Closing the Custom Tab must immediately end its listener and notification."""
-    from pathlib import Path
-
-    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
-    assert 'B.addListener("browserFinished"' in html
-    assert 'finishOpenAI(false, "OpenAI sign-in was closed.' in html
-    assert "pend&&pend.browserHandle" in html
-
-
 def test_the_app_itself_links_a_privacy_policy():
     """Google Play's User Data policy: a privacy policy link must be "within the
     app itself", not only in the store listing or on a website, and reachable in
@@ -2791,7 +2782,8 @@ def test_the_app_itself_links_a_privacy_policy():
     signin = html[html.index('id="view-signin"'):html.index('id="view-chat"')]
     assert "https://tinyassets.io/legal#privacy" in signin
     # And for someone already signed in, on the Account view.
-    account = html[html.index('id="view-account"'):html.index('id="view-connect"')]
+    start = html.index('id="view-account"')
+    account = html[start:html.index("</section>", start)]
     assert "https://tinyassets.io/legal#privacy" in account
     assert "https://tinyassets.io/account" in account
     # Opened externally: a plain navigation would strand a Capacitor user with no
