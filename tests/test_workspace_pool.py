@@ -1669,8 +1669,11 @@ def test_a_quota_refusal_never_sleeps_and_is_never_a_cancellation(
 
 
 def test_today_a_busy_admission_persists_no_waiting_intent(db: Path, roots: Roots) -> None:
-    """Contention is counted in memory and forgotten. Nothing in the pool DB
-    records that a run wanted this lock, so a park dies with the process.
+    """The bounded in-node wait is counted in memory and forgotten. Nothing in
+    the pool DB records that THIS wait wanted the lock, so a park dies with the
+    process. Durable waiting is a separate, earlier step: a root run takes a
+    ``workspace_waiters`` ticket at admission, before it starts
+    (change durable-workspace-wait), never from inside a node's wait.
     """
     admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
 
@@ -1700,7 +1703,6 @@ def test_today_a_busy_admission_persists_no_waiting_intent(db: Path, roots: Root
         for (name,) in rows(db, "SELECT name FROM sqlite_master WHERE type = 'table'")
         if name.startswith("workspace_")
     ]
-    assert "workspace_waiters" not in tables, tables
     for table in tables:
         columns = [c[1] for c in rows(db, f"PRAGMA table_info({table})")]
         if "run_id" not in columns:
