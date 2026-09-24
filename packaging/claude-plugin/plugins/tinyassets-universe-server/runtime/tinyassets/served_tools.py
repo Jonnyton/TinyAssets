@@ -86,6 +86,16 @@ from __future__ import annotations
 #:       not require available execution budget. No provider rebind or secret
 #:       deposit, and stopping a trigger does not attest a running job stopped.
 #:
+#:   write_graph / read_graph webhook — give the owner an inbound webhook URL for
+#:       one of THEIR OWN branches (C16, 2026-09-24). Same owner-scoped
+#:       ``mint_webhook``/``revoke_webhook``/``list_webhooks`` handlers as the
+#:       connector's ``run_graph webhook_op``: universe and owner come from the
+#:       server's pins, the branch must be the owner's, and every delivery runs
+#:       as ``universe:<id>`` for that owner. The URL is shown once at create and
+#:       goes to the owner's own agent, exactly as the connector already hands it
+#:       to the owner's chatbot. Revoke takes the non-secret ``token_prefix`` the
+#:       list shows. Source nodes (event-bus triggers) stay off this surface.
+#:
 #:   source_channel — APPROVE an outbound channel for your own universe (the consent
 #:       half of "add a channel via the channel-agnostic node"). Owner-gated
 #:       (source_channel's impl requires an admin ACL row for the bound founder;
@@ -130,3 +140,7 @@ SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
 # Explicit reviewed authority boundary. A future connector write action must not
 # become agent-callable merely because it is added to the canonical adapter.
 SERVED_AUTOMATION_WRITE_OPERATIONS = frozenset({"create", "pause", "resume", "delete"})
+
+# The inbound-webhook operations the served agent may perform. Listing is a read
+# (``read_graph target="webhooks"``); Source create/revoke stays connector-only.
+SERVED_WEBHOOK_WRITE_OPERATIONS = frozenset({"create", "revoke"})

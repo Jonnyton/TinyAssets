@@ -966,6 +966,62 @@ def _due_instant(automation: Automation, now: datetime) -> str:
     return ""
 
 
+#: How far ahead ``next_due_at`` looks for a cron match before reporting none.
+NEXT_DUE_HORIZON = timedelta(days=366)
+
+
+def next_due_at(automation: Automation, now: datetime) -> str:
+    """When the pump will next fire this automation, or '' if it will not.
+
+    Computed from the same trigger rules as ``_due_instant``, so the owner reads
+    the time the run will actually be owed rather than a second estimate. An
+    instant at or before ``now`` means the run is owed and starts on the next
+    poll. Paused and retired rows never fire and report ''.
+    """
+    if automation.desired_state != STATE_ACTIVE or automation.retired_at:
+        return ""
+    owed = _due_instant(automation, now)
+    if owed:
+        return owed
+    moment = _as_utc(now)
+    if automation.trigger_kind == TRIGGER_INTERVAL:
+        # Not owed means less than one period has elapsed since the anchor.
+        anchor = _parse(automation.last_due_at) or _parse(automation.created_at)
+        if anchor is None or automation.interval_seconds <= 0:
+            return ""
+        return _iso(anchor + timedelta(seconds=automation.interval_seconds))
+    if automation.trigger_kind == TRIGGER_CRON:
+        from tinyassets.scheduler import CronParseError, CronSchedule
+
+        try:
+            schedule = CronSchedule.parse(automation.cron_expr)
+        except CronParseError:
+            return ""
+        # The current minute is either not a match or already fired.
+        bucket = moment.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        limit = moment + NEXT_DUE_HORIZON
+        while bucket <= limit:
+            local = time.localtime(bucket.timestamp())
+            dow = (local.tm_wday + 1) % 7
+            if not (
+                local.tm_mday in schedule.days_of_month
+                and local.tm_mon in schedule.months
+                and dow in schedule.days_of_week
+            ):
+                # Skip to the next local midnight.
+                bucket += timedelta(
+                    minutes=(23 - local.tm_hour) * 60 + (60 - local.tm_min)
+                )
+                continue
+            if local.tm_hour not in schedule.hours:
+                bucket += timedelta(minutes=60 - local.tm_min)
+                continue
+            if local.tm_min in schedule.minutes:
+                return _iso(bucket)
+            bucket += timedelta(minutes=1)
+    return ""
+
+
 def due_automations(
     base_path: str | Path,
     *,

@@ -147,9 +147,9 @@ def test_the_new_reason_says_the_universe_IS_serving_in_words_a_user_can_use():
     assert "is serving" in lowered
     assert "automations and schedules fire" in lowered
     assert "subscription" not in lowered, (
-        "subscriptions fire on the event thread without the owner's identity; "
-        "do not claim them (docs/concerns/2026-09-02-event-subscriptions-fire-"
-        "without-the-owners-identity.md)"
+        "non-Source subscriptions are stored but never fire; do not claim "
+        "them (docs/concerns/2026-09-02-non-source-event-subscriptions-"
+        "never-fire.md)"
     )
     assert "no serving provider selected" not in lowered
     assert "choose one" not in lowered

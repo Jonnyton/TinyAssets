@@ -369,9 +369,11 @@ def read_graph(
             all history is evidence, never new consent),
             ``automations`` (list recurring triggers,
             their desired state, revision and latest run) and ``automation``
-            (inspect one by automation_id). A paused or retired trigger is not
-            evidence that an already-running job has stopped. Any other target
-            is refused.
+            (inspect one by automation_id; ``next_due_at`` is when it fires
+            next). A paused or retired trigger is not evidence that an
+            already-running job has stopped. ``webhooks`` lists your active
+            inbound webhooks (branch_def_id + token_prefix; the URL itself is
+            shown only when created). Any other target is refused.
     Model setup: target="model_options" reads the current home's complete model
     inventory, accepted access, binding revision and saved preferences. It may
     refresh approved discovery and is admission-limited. Model names and remote
@@ -408,11 +410,15 @@ def read_graph(
             ))
         finally:
             _current_identity.reset(token)
+    if normalized == "webhooks":
+        # Listing is gated on universe WRITE by the handler, because the
+        # connector's version once disclosed live tokens; it now shows prefixes.
+        return _webhook_call("list_webhooks")
     if normalized not in _PINNED_READ_TARGETS:
         return json.dumps({
             "error": (
                 f"target {normalized!r} is not available here; "
-                f"use one of: {sorted(_PINNED_READ_TARGETS)}."
+                f"use one of: {sorted(_PINNED_READ_TARGETS | {'webhooks'})}."
             ),
         })
 
@@ -1251,6 +1257,88 @@ def _write_served_automation(
         _current_identity.reset(token)
 
 
+#: Capabilities for the owner's inbound-webhook ops: the same set the delivery
+#: targets bind. Least privilege for a universe-state write; no submit_request,
+#: because minting a hook runs nothing now.
+_WEBHOOK_CAPABILITIES = (*_REMIX_CAPABILITIES, "tinyassets.extensions.write")
+
+
+def _webhook_call(action: str, **selectors: str) -> str:
+    """Call the connector's owner-scoped webhook handler for the PINNED universe."""
+    from tinyassets.api.extensions import _extensions_impl
+    from tinyassets.auth.middleware import _current_identity
+
+    token = _bind_founder_identity(_WEBHOOK_CAPABILITIES)
+    try:
+        return _extensions_impl(action=action, universe_id=_GRAPH_ID, **selectors)
+    finally:
+        _current_identity.reset(token)
+
+
+def _write_served_webhook(*, operation: str, branch_id: str, payload_json: str) -> str:
+    """Create or revoke an inbound webhook for one of the owner's own branches.
+
+    Delegates to the SAME handlers the connector reaches through
+    ``run_graph webhook_op``: the universe-write gate, the author gate and the
+    owner recorded on the hook all stay theirs. Universe and owner come from
+    this server's pins, never from the agent.
+    """
+    import json
+
+    from tinyassets.served_tools import SERVED_WEBHOOK_WRITE_OPERATIONS
+
+    op = (operation or "").strip().lower()
+    if op not in SERVED_WEBHOOK_WRITE_OPERATIONS:
+        return json.dumps({
+            "error": "unknown_webhook_action",
+            "allowed_operations": sorted(SERVED_WEBHOOK_WRITE_OPERATIONS),
+        })
+    if op == "create":
+        bid = (branch_id or "").strip()
+        if not bid:
+            return json.dumps({"error": "branch_id is required to create a webhook"})
+        if (payload_json or "").strip():
+            return json.dumps({
+                "error": "webhook create takes branch_id only; the universe and owner are yours",
+            })
+        ticket, refused = _admission_parts(
+            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
+        )
+        if ticket is None:
+            return _engine_refusal("webhook create", refused)
+        raw = _webhook_call("mint_webhook", branch_def_id=bid)
+        try:
+            result = json.loads(raw)
+        except (TypeError, ValueError):
+            return raw
+        if isinstance(result, dict) and result.get("token") and not result.get("error"):
+            result["token_prefix"] = str(result["token"])[:12]
+            result["text"] = (
+                f"{result.get('text', '')}\nGive this URL to your user now: it is shown "
+                "only once. Runs it triggers appear in read_graph target=runs with "
+                "run_name 'webhook'; revoke it with its token_prefix."
+            ).strip()
+        return json.dumps(result)
+    if (branch_id or "").strip():
+        return json.dumps({"error": "webhook revoke takes payload_json, not branch_id"})
+    try:
+        document = json.loads(payload_json or "{}")
+    except (ValueError, RecursionError):
+        return json.dumps({"error": "payload_json must be a JSON object"})
+    if not isinstance(document, dict):
+        return json.dumps({"error": "payload_json must be a JSON object"})
+    token = str(document.get("token") or "").strip()
+    prefix = str(document.get("token_prefix") or "").strip()
+    if not (token or prefix) or set(document) - {"token", "token_prefix"}:
+        return json.dumps({
+            "error": (
+                "webhook revoke takes payload_json {\"token_prefix\": ...} from "
+                "read_graph target=webhooks (or the full {\"token\": ...})"
+            ),
+        })
+    return _webhook_call("revoke_webhook", token=token, token_prefix=prefix)
+
+
 @mcp.tool
 def write_graph(
     target: str = "",
@@ -1304,6 +1392,16 @@ def write_graph(
     implemented. All management stays pinned to your universe and ownership.
 
     The build half of build+run parity (run it afterward with run_graph).
+
+    **Inbound webhooks:** ``target="webhook"`` supports ``operation="create"``
+    and ``operation="revoke"``. Create takes ``branch_id`` (one of YOUR OWN
+    branches) and returns a URL any service can POST to (GitHub, Stripe, a form,
+    another workflow); each POST runs that branch in your universe on your own
+    provider, with the body under ``webhook.payload`` and the raw bytes under
+    ``webhook.raw_base64``. The URL is shown ONCE: give it to your user right
+    away. ``read_graph target="webhooks"`` lists active hooks by token_prefix;
+    revoke takes ``payload_json`` ``{"token_prefix": "..."}``. Triggered runs
+    appear in ``read_graph target="runs"`` with run_name ``webhook``.
 
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
@@ -1805,8 +1903,8 @@ def write_graph(
     branch you authored. Bounded by current owner admission and the run_graph rate limit.
 
     Args:
-        target: ``branch``, ``automation``, ``pending_request``, ``model_preferences``
-            or ``connection``. model_preferences/save takes the existing
+        target: ``branch``, ``automation``, ``webhook``, ``pending_request``,
+            ``model_preferences`` or ``connection``. model_preferences/save takes the existing
             {expected_generation, policy} document: save a default and complete
             fallback order from model_options. This grants no model access.
             connection/configure_provider_capability accepts model_discovery
@@ -1814,6 +1912,7 @@ def write_graph(
             Metadata never adds endpoints or grants inference/spending. Read your
             existing connections/compute before asking for new credentials.
         operation: branch create/patch/delete; automation create/pause/resume/delete;
+            webhook create/revoke;
             pending_request ask. For model access, ask with action type
             bind_model_access, agent_binding_id, expected_revision, provider
             and complete model_access. No fields: the owner sees the exact
@@ -1821,7 +1920,8 @@ def write_graph(
             Other accepted sources and spending ceilings must be preserved.
         payload_json: for create, a complete Branch spec (JSON object); for patch, a
             JSON array of edit ops.
-        branch_id: for patch, the id of YOUR branch to edit (required for patch).
+        branch_id: for patch, the id of YOUR branch to edit (required for patch);
+            for webhook create, the branch each POST runs.
         automation_id: for automation pause/resume/delete, the trigger identifier.
         expected_revision: current automation revision from a fresh read; required
             for pause/resume/delete to avoid overwriting a concurrent change.
@@ -1863,6 +1963,10 @@ def write_graph(
             ))
         finally:
             _current_identity.reset(token)
+    if t == "webhook":
+        return _write_served_webhook(
+            operation=operation, branch_id=branch_id, payload_json=payload_json,
+        )
     if t == "automation":
         return _write_served_automation(
             operation=operation,
@@ -1941,7 +2045,7 @@ def write_graph(
         return json.dumps({
             "error": (
                 "write_graph on the served surface supports scoped setup and workflows: "
-                "target must be 'branch', 'automation', 'pending_request', "
+                "target must be 'branch', 'automation', 'webhook', 'pending_request', "
                 "'model_preferences' or discovery-only 'connection' "
                 f"(got '{target or '(empty)'}'). "
                 "Credential deposit, broad connection changes, agent-binding "

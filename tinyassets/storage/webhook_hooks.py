@@ -416,7 +416,11 @@ def list_active_for_branch(base_path: str | Path, *, branch_def_id: str) -> list
     finally:
         conn.close()
     return [
-        {"token_prefix": r["token_prefix"], "universe_id": r["universe_id"], "source_id": r["source_id"]}
+        {
+            "token_prefix": r["token_prefix"],
+            "universe_id": r["universe_id"],
+            "source_id": r["source_id"],
+        }
         for r in rows
     ]
 
@@ -432,6 +436,43 @@ def revoke(base_path: str | Path, *, token: str, now: float | None = None) -> bo
             "UPDATE webhook_hooks SET revoked_at = ? "
             "WHERE token_hash = ? AND revoked_at IS NULL",
             (ts, _hash_token(token)),
+        )
+        conn.commit()
+        return bool(cur.rowcount)
+    finally:
+        conn.close()
+
+
+def revoke_by_prefix(
+    base_path: str | Path, *, universe_id: str, token_prefix: str, now: float | None = None,
+) -> bool:
+    """Revoke one plain (non-Source) hook of ``universe_id`` by its listed prefix.
+
+    The raw token is shown once and never stored, so an owner who has lost it can
+    only name a hook by the non-secret prefix ``list_for_universe`` returns. The
+    match is confined to the owning universe and must be EXACTLY one active row:
+    an ambiguous prefix revokes nothing rather than guessing which hook was meant.
+    """
+    prefix = (token_prefix or "").strip()
+    if not universe_id or len(prefix) != _PREFIX_LEN:
+        return False
+    ts = time.time() if now is None else now
+    conn = _connect(base_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        where = (
+            "universe_id = ? AND token_prefix = ? AND revoked_at IS NULL "
+            "AND (source_id IS NULL OR source_id = '')"
+        )
+        matches = conn.execute(
+            f"SELECT COUNT(*) FROM webhook_hooks WHERE {where}", (universe_id, prefix),
+        ).fetchone()[0]
+        if matches != 1:
+            conn.rollback()
+            return False
+        cur = conn.execute(
+            f"UPDATE webhook_hooks SET revoked_at = ? WHERE {where}",
+            (ts, universe_id, prefix),
         )
         conn.commit()
         return bool(cur.rowcount)

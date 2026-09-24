@@ -141,8 +141,21 @@ def _action_revoke_webhook(kwargs: dict[str, Any]) -> str:
 
     uid = _uid(kwargs)
     token = str(kwargs.get("token", "")).strip()
+    token_prefix = str(kwargs.get("token_prefix", "") or "").strip()
+    if uid and not token and token_prefix:
+        # The list shows only the prefix; the raw token was shown once at mint.
+        # Scoped to THIS universe's plain hooks and to exactly one match.
+        revoked = webhook_hooks.revoke_by_prefix(
+            _base_path(), universe_id=uid, token_prefix=token_prefix,
+        )
+        return json.dumps({
+            "text": "Webhook revoked." if revoked else "No matching webhook to revoke.",
+            "revoked": bool(revoked),
+        })
     if not uid or not token:
-        return json.dumps({"error": "revoke_webhook requires a universe_id and a token."})
+        return json.dumps({
+            "error": "revoke_webhook requires a universe_id and a token or token_prefix.",
+        })
     base = _base_path()
     # Only revoke a token that belongs to THIS universe (never another's).
     binding = webhook_hooks.resolve(base, token=token)
