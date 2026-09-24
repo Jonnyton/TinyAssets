@@ -12,7 +12,7 @@ fresh saver and a freshly compiled graph? Counters are incremented at the very
 top of each node body -- BEFORE the park -- so a replayed body is observable
 even when it parks again and writes no state.
 
-What the cases below actually pin (measured, not assumed):
+MEASURED LIBRARY SEMANTICS (cases 1-4, synthetic graphs, real saver):
 
 * A completed predecessor does not re-execute; its channel writes survive.
 * A completed parallel sibling does not re-execute either, even though the run
@@ -23,17 +23,26 @@ What the cases below actually pin (measured, not assumed):
   (``state.next``) and the same replay behaviour; only ``task.interrupts`` vs
   ``task.error`` distinguishes them.
 
-Two further tests pin the TinyAssets side of the premise: the engine defines no
-park primitive at all, and its resume path is a plain ``invoke(None, ...)``
-against the same checkpoint file -- i.e. the LangGraph semantics measured above
-are the semantics TinyAssets inherits, unmediated by any effect guard.
+MEASURED TINYASSETS BEHAVIOUR (case 5): when a replayed node body reaches its
+effects, the run-scoped ``already_fired`` ledger that ``_invoke_graph_resume``
+seeds from the prior run's output REFUSES the second dispatch instead of
+re-firing it. So the node-body replay above does not imply effect replay.
+
+NOT ESTABLISHED HERE, and deliberately not asserted:
+
+* Whether ``resume_run``'s full lifecycle -- status gates, authority
+  derivation, worker dispatch -- preserves these semantics end to end. That
+  needs a real resumed run, not a synthetic graph, and no test in this module
+  drives one.
+* Whether the engine can reach the *parked* frontier at all, as opposed to
+  only the failure frontier. Nothing here measures that either way.
+* That durable waiting is implemented. It is not; these are the semantics any
+  such feature would have to build on.
 """
 
 from __future__ import annotations
 
 import operator
-import re
-from pathlib import Path
 from typing import Annotated, TypedDict
 
 import pytest
@@ -41,8 +50,6 @@ from langgraph.errors import NodeInterrupt
 from langgraph.graph import END, START, StateGraph
 
 from tinyassets.checkpointing import create_checkpointer
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _State(TypedDict):
@@ -260,103 +267,59 @@ def test_pre_park_body_replays_once_per_resume_attempt(tmp_path):
     assert counters["pred"] == 1, "the predecessor never replays, however many resumes"
 
 
-# ---------------------------------------------------------------------------
-# TinyAssets side of the premise
-# ---------------------------------------------------------------------------
-
-_PARK_PRIMITIVES = (
-    r"\bNodeInterrupt\b",
-    r"\binterrupt_before\b",
-    r"\binterrupt_after\b",
-    r"from\s+langgraph\.types\s+import\s+[^\n]*\binterrupt\b",
-    r"\bCommand\(\s*resume\s*=",
-)
-
-
-def test_tinyassets_runtime_defines_no_park_primitive():
-    """No branch node can park: the engine never uses a LangGraph interrupt.
-
-    Consequence: the only frontier TinyAssets can actually reach is the
-    *failure* frontier of Case 3 -- reached by an exception escaping a node --
-    never the parked frontier of Case 1. The replay-safety question is
-    therefore live today, not deferred to a future waiting feature.
-    """
-    hits = []
-    for path in sorted((REPO_ROOT / "tinyassets").rglob("*.py")):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for pattern in _PARK_PRIMITIVES:
-            if re.search(pattern, text):
-                hits.append(f"{path.relative_to(REPO_ROOT)}: {pattern}")
-
-    assert hits == [], (
-        "A park primitive appeared in the runtime. This characterization "
-        "module describes a runtime with none; re-measure the frontier and "
-        "update the cases above. Hits: " + "; ".join(hits)
-    )
-
-
-def test_resume_replays_the_same_checkpoint_with_no_effect_guard():
-    """The resume path is a bare ``invoke(None, ...)`` on the same DB file.
-
-    Pins that TinyAssets adds *no* node-level replay guard between the
-    checkpoint and the node bodies -- so the counters measured above are the
-    behaviour a real resumed run gets. Authority is checked once, before the
-    worker starts, not per replayed node.
-    """
-    runs_src = (REPO_ROOT / "tinyassets" / "runs.py").read_text(
-        encoding="utf-8", errors="replace",
-    )
-    marker = "def _invoke_graph_resume("
-    assert marker in runs_src, "resume entry point moved; re-verify this test"
-    body = runs_src[runs_src.index(marker):]
-    body = body[: body.index("\ndef ", 1)] if "\ndef " in body[1:] else body
-
-    assert ".langgraph_runs.db" in body, "resume must reopen the run checkpoint file"
-    assert "compile(checkpointer=checkpointer)" in body
-    assert re.search(r"app\.invoke\(\s*None\s*,", body), (
-        "resume must be a bare invoke(None, ...) -- if this changed, the "
-        "replay counters in this module no longer describe production"
-    )
-    # No per-node once-only / dedupe guard sits between checkpoint and bodies.
-    for token in ("already_ran", "replay_guard", "once_only", "idempotency_key"):
-        assert token not in body, f"unexpected replay guard {token!r}; re-measure"
-
-
-def test_resume_authority_is_checked_before_the_worker_starts():
-    """Authority admission happens once, ahead of ``executor.submit``.
-
-    This is the ordering that matters for the premise: nothing re-checks
-    authority for the node bodies that replay. A token written before
-    ``executor.submit`` proves the submit happened, never that a worker ran --
-    so this test asserts source ordering only, and claims nothing about
-    worker start.
-    """
-    runs_src = (REPO_ROOT / "tinyassets" / "runs.py").read_text(
-        encoding="utf-8", errors="replace",
-    )
-    start = runs_src.index("def resume_run(")
-    body = runs_src[start: runs_src.index("def _invoke_graph_resume(")]
-
-    admission = body.index("prepare_foreground_run_provider")
-    submit = body.index("executor.submit(")
-    assert admission < submit, "authority admission must precede dispatch"
-    assert body.index("status=RUN_STATUS_RESUMED") < submit, (
-        "status flips to RESUMED before the worker is submitted -- RESUMED "
-        "means 'dispatched', not 'running'"
-    )
-    # Only INTERRUPTED runs are admitted, and that status is only reachable
-    # via the child-receipt timeout path (see the park-primitive test).
-    assert "allowed_statuses={RUN_STATUS_INTERRUPTED}" in body
-
-
-@pytest.mark.parametrize("thread_id", ["absent-thread"])
-def test_missing_checkpoint_is_distinguishable_from_an_empty_one(tmp_path, thread_id):
+def test_missing_checkpoint_is_distinguishable_from_an_empty_one(tmp_path):
     """A thread with no checkpoint yields no state -- the no_checkpoint gate."""
     db = str(tmp_path / "cp.db")
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": "absent-thread"}}
     with create_checkpointer(db) as saver:
         app = _sequential_graph({}, _park).compile(checkpointer=saver)
         state = app.get_state(config)
         assert state.next == ()
         assert state.values == {}
         assert list(saver.list(config)) == []
+
+
+# ---------------------------------------------------------------------------
+# Case 5 -- the one TinyAssets behaviour this module actually measures
+# ---------------------------------------------------------------------------
+
+
+def test_replayed_node_effects_refuse_instead_of_firing_again(monkeypatch):
+    """A replayed body's effects are REFUSED, not re-fired.
+
+    Cases 1-4 measure LangGraph: a parked/failed node body re-runs from its
+    first statement. This measures the TinyAssets consequence, by driving the
+    real ``dispatch_node_effects`` against a chain seeded exactly the way
+    ``runs._invoke_graph_resume`` seeds one -- ``seed_from_output`` over the
+    prior run's ``external_write_results``. The second dispatch raises
+    ``effect_already_fired`` and the sink adapter is never reached.
+
+    Scope: this is the effect ledger only. It says nothing about whether a
+    full ``resume_run`` lifecycle reaches this code path, and nothing about
+    non-effect side effects inside a replayed body.
+    """
+    from tinyassets import effectors
+    from tinyassets.branches import NodeDefinition
+    from tinyassets.effectors import EffectChain, EffectFailedError, dispatch_node_effects
+
+    sink = "authenticated_external_call"
+    calls: list[dict] = []
+    monkeypatch.setitem(
+        effectors._EFFECTORS, sink, lambda **kw: calls.append(kw) or {"ok": True},
+    )
+
+    node = NodeDefinition(
+        node_id="n1", display_name="n1", prompt_template="packet:n1",
+        output_keys=["n1_packet"], effects=[sink],
+    )
+
+    chain = EffectChain(run_id="resume-characterization")
+    # The shape runs.py hands to seed_from_output: the interrupted segment's
+    # own output row, keyed by graph node id.
+    chain.seed_from_output({"external_write_results": {"n1": {"status": "ok"}}})
+
+    with pytest.raises(EffectFailedError) as excinfo:
+        dispatch_node_effects(chain, node, {"n1_packet": "{}"})
+
+    assert excinfo.value.error_kind == "effect_already_fired"
+    assert calls == [], "a replayed node must not reach the sink adapter"
