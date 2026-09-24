@@ -907,6 +907,20 @@ The production in-node enqueue primitive SHALL emit only the epoch-1 file-backed
 - **WHEN** a future change routes in-node enqueue through transactional v2 storage
 - **THEN** that change must prove every stable-origin, run-budget, scope-binding, shared-cap, and integrity invariant before enabling the route
 
+### Requirement: Immutable snapshots preserve branch execution choices
+
+New immutable branch snapshots SHALL retain non-null branch-level default_llm_policy and concurrency_budget and include them in content identity. Previously stored snapshots MUST remain unchanged; unset fields MUST retain the prior absent-key snapshot form.
+
+#### Scenario: Chosen execution settings survive publication
+
+- **WHEN** an owner freezes a branch with a default model policy and concurrency budget
+- **THEN** loading that version preserves both choices and changing either choice produces a distinct content identity
+
+#### Scenario: Legacy snapshots remain immutable
+
+- **WHEN** an old snapshot lacks these settings or a new branch leaves them unset
+- **THEN** the old row is not rewritten, no choice is inferred from the current mutable branch, and new unset snapshots preserve the previous absent-key hash form
+
 ### Requirement: Direct runs accept immutable Branch version targets
 The runner SHALL accept a published `branch_version_id` as a first-class run target, reconstruct the Branch definition from that immutable snapshot, execute it through the shared run executor, and persist the version ID on the run record. It MUST NOT redirect a version-targeted run through the current live `branch_def_id` definition.
 The advertised `run_graph` handle SHALL accept `goal_id` as an alternative to `branch_def_id`, route that request through the Goal canonical dispatcher, and forward inputs, run name, and recursion-limit options to the selected immutable version. Supplying both target identifiers SHALL fail loudly as ambiguous.

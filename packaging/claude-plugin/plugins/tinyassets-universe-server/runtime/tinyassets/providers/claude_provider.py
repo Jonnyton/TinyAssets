@@ -94,6 +94,24 @@ _RETRY_GRACE_MARGIN_S = 5.0
 #: No provider tool-heartbeat cadence is assumed — none is documented.
 _TOOL_WAIT_S = 900.0
 
+#: ``system/status`` values the CLI DOCUMENTS as "busy until cleared"
+#: (``@anthropic-ai/claude-agent-sdk`` ``SDKStatus = 'compacting' |
+#: 'requesting' | null``). Only a value in this set opens a declared-busy
+#: allowance; every other status string, an unknown frame type, or free text
+#: that merely mentions compaction is ordinary liveness (one watchdog reset, no
+#: window). ``requesting`` is deliberately absent: a request normally produces
+#: stream framing within seconds and nothing documents a long silent window
+#: for it — add it only on separate evidence.
+_DECLARED_BUSY_STATES: frozenset[str] = frozenset({"compacting"})
+
+#: How long a DECLARED busy window (``status: "compacting"``) may stay silent
+#: before that silence counts as idle. Nothing documents a heartbeat cadence
+#: during compaction, so the reader honours the declaration instead of the
+#: ordinary idle interval — the same bound shape as ``_TOOL_WAIT_S`` for the
+#: same reason, and always taken as ``min(absolute cap, _BUSY_WAIT_S)``: the
+#: absolute cap is never relaxed, so a compaction that never clears still ends.
+_BUSY_WAIT_S = _TOOL_WAIT_S
+
 
 def _tool_identity(value: object) -> str | None:
     """The provider's own tool identity, or ``None`` when it is unusable.
@@ -263,9 +281,25 @@ def _normalize_stream_obj(obj: dict) -> list[tuple[str, dict]]:
             events.append(("init", {}))
         elif subtype == "api_retry":
             events.append(("api_retry", _extract_api_retry(obj)))
+        elif subtype == "status":
+            # Published ``SDKStatusMessage``: ``status`` is a documented busy
+            # value, or ``null`` when the CLI is done. Only the documented
+            # value opens a typed declared-busy lifecycle; an explicit null
+            # closes it. A missing key, an undocumented string, or free
+            # ``text`` is plain liveness — never a window (fail closed).
+            status = obj.get("status")
+            if type(status) is str and status in _DECLARED_BUSY_STATES:
+                events.append(("declared_busy", {"state": status}))
+            elif status is None and "status" in obj:
+                events.append(("declared_clear", {}))
+            else:
+                events.append(("heartbeat", {}))
+        elif subtype == "compact_boundary":
+            # Published ``SDKCompactBoundaryMessage``: compaction has ended.
+            events.append(("declared_clear", {}))
         else:
-            # thinking_tokens / status / notification / hook_started /
-            # hook_response / tool_heartbeat / ... — recognized activity.
+            # thinking_tokens / notification / hook_started / hook_response /
+            # tool_heartbeat / ... — recognized activity.
             events.append(("heartbeat", {}))
     elif kind == "assistant":
         events.append(("answer_evidence", {"obj": obj}))
@@ -698,6 +732,12 @@ class ClaudeProvider(BaseProvider):
         # flight the idle budget is extended to cover it so a real retry wait is
         # NOT relabeled a hang (blocker B). Cleared on the next real progress.
         pending_retry_delay: float | None = None
+        # The CLI's own DECLARED busy state (a documented ``system/status``
+        # value, today only ``compacting``), or ``None``. While set, silence is
+        # provider work — bounded like a tool wait, never past the cap. Cleared
+        # by the explicit ``status: null`` / ``compact_boundary`` frame or by
+        # any real progress; unknown frames never open it.
+        declared_busy: str | None = None
 
         def _attach(exc: ProviderError) -> ProviderError:
             """Attach the current attempt-telemetry snapshot to a raised error."""
@@ -764,6 +804,11 @@ class ClaudeProvider(BaseProvider):
                 # retry grace. The absolute cap below still bounds the turn.
                 if tools_in_flight:
                     allow = max(allow, min(profile.absolute_cap_s, _TOOL_WAIT_S))
+                # The CLI declared itself busy (compacting): silence until the
+                # matching clear is its work, bounded exactly like a tool wait.
+                # The absolute cap below still bounds the turn.
+                if declared_busy is not None:
+                    allow = max(allow, min(profile.absolute_cap_s, _BUSY_WAIT_S))
                 idle_deadline = last_progress + allow
                 abs_deadline = start + profile.absolute_cap_s
                 budget = min(idle_deadline, abs_deadline) - now
@@ -811,11 +856,20 @@ class ClaudeProvider(BaseProvider):
                         # rate_limit_event): liveness only. Reset the watchdog
                         # (progressed=True above), never relay, never change phase.
                         pass
+                    elif kind == "declared_busy":
+                        # A documented busy status: liveness AND the start of a
+                        # declared window. NOT seen_progress and no phase change.
+                        declared_busy = payload["state"]
+                    elif kind == "declared_clear":
+                        # ``status: null`` / ``compact_boundary``: the window is
+                        # over; ordinary idle applies from here.
+                        declared_busy = None
                     elif kind == "text_delta":
                         seen_init = True
                         seen_progress = True
                         pending_retry_delay = None
                         last_assistant_error = None
+                        declared_busy = None
                         if ttft_ms is None:
                             ttft_ms = (time.monotonic() - start) * 1000
                         if payload.get("partial"):
@@ -827,6 +881,7 @@ class ClaudeProvider(BaseProvider):
                         seen_progress = True
                         pending_retry_delay = None
                         last_assistant_error = None
+                        declared_busy = None
                         tool_phase = "tool_use"
                         identity = _tool_identity(payload.get("id"))
                         if identity is not None:
@@ -838,6 +893,7 @@ class ClaudeProvider(BaseProvider):
                         seen_progress = True
                         pending_retry_delay = None
                         last_assistant_error = None
+                        declared_busy = None
                         tool_phase = "tool_result"
                         # Only the tool this result NAMES is closed. An unknown
                         # or malformed ``tool_use_id`` closes nothing, so it can
@@ -867,6 +923,7 @@ class ClaudeProvider(BaseProvider):
                         # The turn is over; nothing it started is still coming
                         # back. Clearing keeps the tool_phase evidence honest.
                         tools_in_flight.clear()
+                        declared_busy = None
                 if progressed:
                     last_progress = time.monotonic()
                 if terminal is not None:

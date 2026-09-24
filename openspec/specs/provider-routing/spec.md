@@ -650,6 +650,23 @@ interactive-deadline outcome, not as provider unavailability.
 - **THEN** missing identity does not earn a tool-work allowance and the absolute deadline still ends execution
 - **AND** cancellation still terminates/reaps the process without automatic replay
 
+#### Scenario: A documented declared-busy status is provider work, not model-idle silence
+
+- **WHEN** a Claude stream emits a published `system/status` frame whose `status`
+  is a documented busy value (as-built allowlist: `compacting`) after the last
+  identified tool has closed
+- **THEN** silence until the matching clear receives the same bounded allowance
+  as an identified tool wait (`min(absolute cap, 900s)`); the absolute cap,
+  workflow-node timeouts and cancellation/cleanup are unchanged, and nothing is
+  replayed
+- **AND** the window closes on an explicit `status: null`, a
+  `system/compact_boundary` frame, or any real progress (`text_delta`,
+  `tool_use`, `tool_result`, `result`); silence after the close is ordinary
+  model-idle silence
+- **AND** an unknown frame type, an undocumented or non-string status value
+  (`requesting` is not in the allowlist), a missing `status` key, or free text
+  that merely mentions compaction is one liveness reset and never opens a window
+
 ### Requirement: Persisted provider failures retain safe tool-wait evidence
 
 Attempt diagnostics SHALL retain known finite nonnegative last-progress age and
