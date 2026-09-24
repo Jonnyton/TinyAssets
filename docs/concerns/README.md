@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P1** | [App `POST /mcp` 503s the origin never served](2026-09-24-app-503-authored-in-front-of-origin.md) — founder's resumed tab got 503s that never reached the droplet (no 5xx logged, no token renewal until reload); edge challenge/rate rule vs. a stray tunnel connector, one header set decides | 2026-09-24 |
 | **P2** | [Scoped reset cannot erase delivery custody](2026-09-23-scoped-reset-cannot-erase-delivery-custody.md) — operator scoped reset fail-closes on any root that ever opened the delivery surface; allowlisting the tables would report success while retaining custody | 2026-09-23 |
 | **P2** | [Node-timeout test wait margin](2026-09-23-node-timeout-runner-test-sits-on-its-own-deadline.md) — a five-second test wait straddles measured runner overhead; no runtime regression established | 2026-09-23 |
 | **note** | [History expansion followups](2026-09-22-history-expansion-followups.md) — retained long reply accepted live; organic owner use and peripheral expansion cases remain unverified | 2026-09-22 |
