@@ -7,6 +7,7 @@ Legacy text codecs and full-agent eligibility deliberately remain unchanged.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -26,6 +27,13 @@ StopReason = Literal[
 ]
 _NAME = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 _CONTINUATION = frozenset({"role", "content", "tool_calls", "reasoning", "reasoning_details"})
+#: Finish reasons under which a present tool batch is a tool request. ``""`` is
+#: an absent or null ``finish_reason``: OpenAI-compatible servers (and routers
+#: normalizing many upstreams) send null beside a complete batch, and
+#: ``function_call`` is the legacy spelling of ``tool_calls``.
+_TOOL_FINISHES = frozenset({"stop", "tool_calls", "function_call", ""})
+_KEY = re.compile(r"[A-Za-z0-9_.-]{1,40}\Z")
+_STRUCTURE_LIMIT = 140
 
 
 def _bad(detail: str) -> ProtocolDecodeError:
@@ -131,24 +139,104 @@ class CapturedToolRound:
         object.__setattr__(self, "tools_json", _dump({"tools": _definitions(tools)}))
 
 
-def _calls(raw: Any, names: frozenset[str]) -> tuple[ToolRequest, ...]:
+def _structure(value: Any, depth: int = 0) -> str:
+    """Key names and JSON types only -- never a value, argument or content.
+
+    This is what an unsupported shape reports, so the next failure is
+    diagnosable from the served-turn log without copying model output into it.
+    """
+    if isinstance(value, dict):
+        if depth >= 2:
+            return "{...}"
+        labels = [
+            (key if isinstance(key, str) and _KEY.fullmatch(key) else "?")
+            + ":" + _structure(item, depth + 1)
+            for key, item in list(value.items())[:6]
+        ]
+        return "{" + ",".join(labels + (["..."] if len(value) > 6 else [])) + "}"
+    if isinstance(value, list):
+        return f"list[{len(value)}]"
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return "str" if value else "empty_str"
+    return {bool: "bool", int: "int", float: "float"}.get(type(value), "other")
+
+
+def _unsupported(position: int, item: Any) -> ProtocolDecodeError:
+    shape = _structure(item)
+    if len(shape) > _STRUCTURE_LIMIT:
+        shape = shape[: _STRUCTURE_LIMIT - 3] + "..."
+    return _bad(f"unsupported tool call shape: tool_calls[{position}]={shape}")
+
+
+def _arguments(value: Any, position: int, item: Any) -> str:
+    """The standard argument spellings, canonicalized to one JSON object string.
+
+    A string is kept byte-exact once it parses as an object; an object (sent by
+    some OpenAI-compatible servers) is serialized; absent, null or blank means
+    a call with no arguments. Anything else is not a tool call we can run.
+    """
+    if value is None:
+        return "{}"
+    if isinstance(value, dict):
+        return _dump(_object(_dump(value)))
+    if not isinstance(value, str):
+        raise _unsupported(position, item)
+    if not value.strip() or value.strip() == "null":
+        return "{}"
+    _object(value)
+    return value
+
+
+def _synthetic_id(position: int, name: str, arguments: str) -> str:
+    """Stable for one reply: the same batch always yields the same identity."""
+    material = "\x00".join((str(position), name, arguments))
+    return "call_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _normalize_calls(raw: Any) -> list[dict[str, Any]]:
+    """Canonical ``{id, type, function: {name, arguments}}`` tool calls.
+
+    One vendor-neutral tolerance of the OpenAI chat-completions wire, not a
+    per-model branch: ``index`` and other extra keys are dropped, a missing
+    ``type`` is ``function``, a missing or blank ``id`` is synthesized, and
+    ``arguments`` may be a string, an object, or absent. Idempotent, so a
+    stored continuation re-validates to itself.
+    """
     if raw is None:
-        return ()
+        return []
     if not isinstance(raw, list):
         raise _bad("tool calls must be a list")
+    result = []
+    for position, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise _unsupported(position, item)
+        fn = item.get("function")
+        if not isinstance(fn, dict) or not isinstance(fn.get("name"), str):
+            raise _unsupported(position, item)
+        if item.get("type") not in (None, "function"):
+            raise _unsupported(position, item)
+        name = fn["name"]
+        arguments = _arguments(fn.get("arguments"), position, item)
+        call_id = item.get("id")
+        if call_id is None or (isinstance(call_id, str) and not call_id.strip()):
+            call_id = _synthetic_id(position, name, arguments)
+        result.append({"id": call_id, "type": "function", "function": {
+            "name": name, "arguments": arguments,
+        }})
+    return result
+
+
+def _calls(raw: Any, names: frozenset[str]) -> tuple[ToolRequest, ...]:
     calls: list[ToolRequest] = []
     seen: set[str] = set()
-    for item in raw:
-        if not isinstance(item, dict) or set(item) != {"id", "type", "function"}:
-            raise _bad("unsupported tool call shape")
+    for item in _normalize_calls(raw):
         call_id = item["id"]
-        fn = item["function"]
-        if not _identifier(call_id) or call_id in seen or item["type"] != "function":
+        if not _identifier(call_id) or call_id in seen:
             raise _bad("invalid or duplicate tool call identity")
-        if not isinstance(fn, dict) or set(fn) != {"name", "arguments"}:
-            raise _bad("unsupported tool function shape")
-        name, arguments = fn["name"], fn["arguments"]
-        if not isinstance(name, str) or not _NAME.fullmatch(name) or name not in names:
+        name, arguments = item["function"]["name"], item["function"]["arguments"]
+        if not _NAME.fullmatch(name) or name not in names:
             raise _bad("tool name is not enabled")
         _object(arguments)
         calls.append(ToolRequest(call_id, name, arguments))
@@ -163,8 +251,15 @@ def _assistant(message: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, ...]
     if content is not None and not isinstance(content, str):
         raise _bad("non-text assistant content is unsupported")
     result = {"role": "assistant", "content": content}
-    if message.get("tool_calls"):
-        result["tool_calls"] = message["tool_calls"]
+    raw_calls = message.get("tool_calls")
+    legacy = message.get("function_call")
+    # The legacy single ``function_call`` is the same request in its older
+    # spelling; it becomes one standard tool call and leaves the dropped set.
+    converted = not raw_calls and isinstance(legacy, dict) and bool(legacy)
+    if converted:
+        raw_calls = [{"type": "function", "function": legacy}]
+    if raw_calls:
+        result["tool_calls"] = _normalize_calls(raw_calls)
     for name in ("reasoning", "reasoning_details"):
         value = message.get(name)
         if value is None:
@@ -176,7 +271,10 @@ def _assistant(message: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, ...]
         ):
             raise _bad("invalid reasoning continuation")
         result[name] = value
-    dropped = tuple(key for key in message if key not in _CONTINUATION)
+    dropped = tuple(
+        key for key in message
+        if key not in _CONTINUATION and not (converted and key == "function_call")
+    )
     incompatible = any(message[key] not in (None, "", [], {}) for key in dropped)
     _dump(result)
     return result, dropped, incompatible
@@ -221,13 +319,13 @@ def reply_state(
         stop = "content_filter"
     elif finish == "length":
         stop = "truncated"
-    elif calls and finish in {"stop", "tool_calls"} and not incompatible:
+    elif calls and finish in _TOOL_FINISHES and not incompatible:
         stop = "tool_requests"
     elif not calls and finish == "stop" and text is not None and not any(
         message.get(key) not in (None, "", [], {}) for key in ("function_call", "audio")
     ):
         stop = "completed"
-    elif not calls and finish == "tool_calls":
+    elif not calls and finish in {"tool_calls", "function_call"}:
         raise _bad("tool finish without tool requests")
     return stop, text, refusal
 
@@ -243,7 +341,7 @@ def decode_agent_message(
     if not isinstance(message, dict):
         raise _bad("assistant message required")
     projection, dropped, incompatible = _assistant(message)
-    calls = _calls(message.get("tool_calls"), tool_names)
+    calls = _calls(projection.get("tool_calls"), tool_names)
     finish = finish if isinstance(finish, str) else ""
     stop, text, refusal = reply_state(
         message, finish=finish, calls=calls, incompatible=incompatible,
@@ -256,6 +354,121 @@ def decode_agent_message(
         _dump(projection), dropped, source_ref, requested_model, model_receipt(receipt),
         finish, tokens(input_tokens), tokens(output_tokens),
     )
+
+
+def is_event_stream(body: Any) -> bool:
+    """Whether a response body is server-sent events rather than one JSON object."""
+    if not isinstance(body, str):
+        return False
+    head = body.lstrip()[:512]
+    return head.startswith(("data:", ":", "event:")) and "data:" in body
+
+
+def fold_chat_stream(body: str) -> dict[str, Any]:
+    """Fold a streamed chat completion into the one-object response it describes.
+
+    Standard ``chat.completion.chunk`` semantics: text deltas concatenate, and
+    tool-call deltas accumulate by their ``index`` (a delta without one extends
+    the call in progress unless it names a new ``id``). The last non-null
+    ``finish_reason`` wins. The result is then decoded like any other reply, so
+    folding grants nothing a non-streamed response would not.
+    """
+    if not is_event_stream(body):
+        raise _bad("response is not an event stream")
+    message: dict[str, Any] = {"role": "assistant"}
+    text: dict[str, list[str]] = {}
+    calls: dict[int, dict[str, Any]] = {}
+    order: list[int] = []
+    legacy: dict[str, str] = {}
+    folded: dict[str, Any] = {}
+    finish = None
+    chunks = 0
+    for line in body.splitlines():
+        if not line.startswith("data:"):
+            continue  # comments, event names, ids and retry hints carry no content
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        chunk = _object(data)
+        chunks += 1
+        if chunk.get("error") is not None:
+            return {"error": chunk["error"]}
+        for key in ("model", "usage"):
+            if chunk.get(key) is not None:
+                folded[key] = chunk[key]
+        choices = chunk.get("choices") or []
+        if not isinstance(choices, list) or len(choices) > 1:
+            raise _bad("exactly one streamed choice required")
+        for choice in choices:
+            if not isinstance(choice, dict):
+                raise _bad("exactly one streamed choice required")
+            if choice.get("finish_reason") is not None:
+                finish = choice["finish_reason"]
+            delta = choice.get("delta") or {}
+            if not isinstance(delta, dict):
+                raise _bad("streamed delta must be an object")
+            for key in ("content", "reasoning", "refusal"):
+                piece = delta.get(key)
+                if piece is None:
+                    continue
+                if not isinstance(piece, str):
+                    raise _bad("streamed text delta must be text")
+                text.setdefault(key, []).append(piece)
+            for key in ("name", "arguments"):
+                piece = (delta.get("function_call") or {}).get(key)
+                if isinstance(piece, str):
+                    legacy[key] = legacy.get(key, "") + piece
+            _fold_tool_deltas(delta.get("tool_calls"), calls, order)
+    if not chunks:
+        raise _bad("event stream carried no chunks")
+    for key, pieces in text.items():
+        message[key] = "".join(pieces)
+    message.setdefault("content", None)
+    if order:
+        message["tool_calls"] = [calls[index] for index in order]
+    elif legacy:
+        message["function_call"] = legacy
+    folded["choices"] = [{"message": message, "finish_reason": finish}]
+    return folded
+
+
+def _fold_tool_deltas(
+    deltas: Any, calls: dict[int, dict[str, Any]], order: list[int],
+) -> None:
+    if deltas is None:
+        return
+    if not isinstance(deltas, list):
+        raise _bad("streamed tool calls must be a list")
+    for delta in deltas:
+        if not isinstance(delta, dict):
+            raise _unsupported(len(order), delta)
+        index = delta.get("index")
+        if type(index) is not int or index < 0:
+            new_id = delta.get("id")
+            current = calls[order[-1]] if order else None
+            starts_new = current is None or (
+                isinstance(new_id, str) and new_id and new_id != current.get("id")
+            )
+            index = (max(order) + 1 if order else 0) if starts_new else order[-1]
+        if index not in calls:
+            calls[index] = {"type": "function", "function": {"name": "", "arguments": ""}}
+            order.append(index)
+        call = calls[index]
+        if isinstance(delta.get("id"), str) and delta["id"]:
+            call["id"] = delta["id"]
+        if isinstance(delta.get("type"), str) and delta["type"]:
+            call["type"] = delta["type"]
+        fn = delta.get("function") or {}
+        if not isinstance(fn, dict):
+            raise _unsupported(len(order) - 1, delta)
+        name = fn.get("name")
+        if isinstance(name, str) and name and name != call["function"]["name"]:
+            call["function"]["name"] += name
+        arguments = fn.get("arguments")
+        if isinstance(arguments, str):
+            call["function"]["arguments"] += arguments
+        elif isinstance(arguments, dict):
+            call["function"]["arguments"] = _dump(arguments)
 
 
 def _definitions(definitions: Any) -> tuple[dict[str, Any], ...]:

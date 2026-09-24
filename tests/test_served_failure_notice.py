@@ -71,11 +71,10 @@ def test_a_real_outage_is_named_more_precisely_than_the_raw_text():
         assert mislabel not in notice.lower()
 
 
-def test_an_exception_without_a_failure_class_is_unchanged():
-    exc = RuntimeError("engine binding unreadable")
-    assert _served_failure_notice(exc) == (
-        "Your universe couldn't be reached right now: engine binding unreadable"
-    )
+def test_an_exception_without_a_failure_class_keeps_its_own_words():
+    notice = _served_failure_notice(RuntimeError("engine binding unreadable"))
+    assert 'Detail: "engine binding unreadable"' in notice
+    assert "Ref: " in notice
 
 
 def test_unknown_failure_does_not_rule_out_billing_without_evidence():

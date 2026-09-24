@@ -2418,7 +2418,9 @@
     // Live recovery can be richer than the safe fixed sentence retained by
     // the server. Never copy this live-only text back into stored history.
     const live=[payload.note,payload.error].find(value=>typeof value==="string"&&value.trim());
+    // The record says what ran: no caution when its ledger proved nothing did.
     const caution=recorded&&live&&failure.code!=="setup_required"&&
+      failure.effects!=="none"&&
       !live.includes("Check progress before sending again")
       ? " Actions may already have occurred. Check progress before sending again; sending again repeats the whole request."
       : "";

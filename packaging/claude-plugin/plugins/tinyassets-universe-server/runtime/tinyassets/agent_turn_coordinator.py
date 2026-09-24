@@ -161,10 +161,41 @@ class AgentTurnCoordinator:
             terminal=terminal,
         ))
 
+    def effects_evidence(self):
+        """What this turn's own ledger proves ran: ``(effects, stage, ref)``.
+
+        ``none`` only when no tool started and no native agent launched;
+        ``some`` once any tool completed; ``unknown`` for anything in flight or
+        indeterminate. ``stage`` is ``tool`` only when the last recorded step
+        was a tool that did not complete. Read from the journal, never guessed.
+        """
+        if self.turn is None:
+            return "none", None, None
+        effects, stage = "none", None
+        for position, previous in enumerate(self.turn.rounds):
+            last = position == len(self.turn.rounds) - 1
+            if type(previous.candidate) is NativeInput:
+                if not (type(previous.reply) is NativeTerminal
+                        and previous.reply.status == "capacity_no_effects"):
+                    effects = "some" if effects == "some" else "unknown"
+                continue
+            for tool in previous.tools:
+                if tool.state == "completed":
+                    effects = "some"
+                elif tool.state in {"started", "unknown"} and effects == "none":
+                    effects = "unknown"
+                if last and tool.state in {"started", "unknown", "not_sent"}:
+                    stage = "tool"
+        return effects, stage, self.turn.turn_id
+
     async def run(self):
         try:
             return await self._run()
-        except BaseException:
+        except BaseException as exc:
+            try:
+                exc.turn_effects, exc.turn_stage, exc.turn_ref = self.effects_evidence()
+            except Exception:  # noqa: BLE001 - evidence never replaces the failure
+                _LOG.warning("agent turn effects evidence unavailable")
             # A later pre-intent failure has no uncertain action to preserve.
             # Keep zero-round roots ready for the writer's one all-skipped retry.
             if self.turn is not None and self.turn.state == "ready" and self.turn.rounds:

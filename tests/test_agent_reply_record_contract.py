@@ -48,7 +48,19 @@ def test_wire_and_persisted_semantics_match_frozen_original(finish):
         }}], "usage": {"prompt_tokens": 0, "completion_tokens": 3},
             "model": "reported:future"}
         expected = observe(decode, legacy_decode, body)
-        assert observe(decode, codec.decode_openai_chat_agent, body) == expected, body
+        actual = observe(decode, codec.decode_openai_chat_agent, body)
+        if (finish is None or finish == 3) and batch == [call()] and (
+            expected[0] == "ok" and expected[1].stop == "unknown"
+            and actual[0] == "ok" and actual[1].stop == "tool_requests"
+        ):
+            # The one intended divergence (2026-09-24): a complete batch beside
+            # an absent/null finish is a tool request, as OpenAI-compatible
+            # servers send it. The frozen record still loads, still held.
+            assert actual[1].tool_requests and not expected[1].tool_requests, body
+            raw = records.dump({"version": 1, **asdict(expected[1])})
+            assert records.load_reply(raw, candidate()).stop == "unknown"
+            continue
+        assert actual == expected, body
         if expected[0] != "ok":
             continue
         reply = expected[1]
