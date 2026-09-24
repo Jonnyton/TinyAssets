@@ -14,7 +14,7 @@
 
 ## 3. Verification and delivery
 
-- [ ] 3.1 Tests red on the unfixed tree, then green: overlap, FIFO, restart while waiting, cancellation, no replay; neighbouring workspace/lease/admission suites
-- [ ] 3.2 Plugin mirror, ruff, cloud pre-push Linux oracle
+- [x] 3.1 Tests red on the unfixed tree, then green: overlap, FIFO, restart while waiting, cancellation, no replay; neighbouring workspace/lease/admission suites
+- [x] 3.2 Plugin mirror, ruff, cloud pre-push Linux oracle
 - [ ] 3.3 Cross-family (Codex) review, owed while ChatGPT is rate-limited
 - [ ] 3.4 Deploy, live app acceptance, spec sync and archive
