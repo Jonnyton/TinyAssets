@@ -35,6 +35,48 @@ floor or gate-defining files) gets one blocking review. Every tier stops at two
 rounds or one day. Round 2 only verifies the round-1 floor fixes. A floor
 finding still open after round 2 triggers a primitive redesign, not round 3.
 
+**Risk-tiered review policy (full text; adopted 2026-09-24).** `AGENTS.md`
+carries the summary. Evidence: `docs/reviews/2026-09-24-review-deploy-practice.md`.
+
+- **Ship to learn.** Done = deployed, used through the real app (`ui-test` /
+  app-agent checklist), regressions green, spec synced. Unknowns about users
+  are answered by deploying, not by reviewing. Compare a change against what
+  production does today, never against an ideal design.
+- **Risk tier sets review depth** (by what the change can do, not its size):
+  - *Tier 0 - no review:* docs, tests, UI/copy, refactors under unchanged
+    tests, anything dark or default-off, anything one revert fully undoes.
+  - *Tier 1 - one review, never blocking:* new user-visible behaviour or a new
+    primitive. One shape review before code; findings off the floor go to
+    `docs/concerns/`, not into the PR.
+  - *Tier 2 - one blocking review:* the floor below, or gate-defining files.
+    Other family by default; same family if it is rate-limited (the
+    cross-family check is then owed, not waived).
+- **The floor, and only the floor, blocks a deploy:** cross-user read/effect;
+  auth or credential exposure; unrecoverable loss of user data; wrong money;
+  an irreversible external act without consent; public connector down.
+  Durability at the margins, concurrency the founder's usage cannot reach,
+  and "a future X could break" are tracked, and re-judged after live use.
+- **Hard stop: two rounds, one day.** Round 2 only verifies round-1 floor
+  fixes; anything new that is off the floor becomes a concern. Autonomous - no
+  founder escalation, and no third round. A floor finding still open after
+  round 2 means the shape is wrong: apply the primitive rule.
+- **A finding must cite the PR head** (file:line). A finding against a
+  retired architecture, an unbuilt capability or an unread file is dropped
+  without a round. Ask for `AGREE` / `DISAGREE_EVIDENCE` / `DISAGREE_CONCERN`.
+- **Recurring findings = missing primitive.** Trigger: a floor finding in
+  two consecutive rounds, 3+ follow-up PRs in one area within 7 days, or a
+  concern open 7+ days with built-but-unwired components. Stop patching;
+  write half a page naming the primitive that deletes the class (one writer
+  per fact; user-composable instead of platform policy) and build that as
+  the next slice.
+- **Small, live slices.** A PR deploys and is testable on its own; over 1,500
+  added non-test lines needs a stated reason. New capability ships dark on
+  the founder's universe first, then to users.
+- **Live failures become evals.** Every failure seen in the real app becomes
+  a regression test or checklist row before the fix lands. A rendered
+  conversation is the proof; scripts and canaries support it.
+- **A dispatched review gates landing, not progress.** Take the next lane.
+
 **Verification is structural.** A substantive change needs test or check
 evidence, plus live use through the real app, before it counts as landed.
 Self-review alone never suffices for a Tier 2 change. If the other model family
