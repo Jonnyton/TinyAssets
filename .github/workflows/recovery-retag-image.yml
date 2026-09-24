@@ -79,7 +79,7 @@ jobs:
           docker buildx imagetools create --prefer-index=false --tag "${image}:${revision:0:12}" "${image}@${digest}"
           retagged_digest="$(
             docker buildx imagetools inspect "${image}:${revision:0:12}" |
-              awk '/^Digest:/ {print $2; exit}'
+              awk '/^Digest:/ && !seen {print $2; seen=1}'
           )"
           [[ "${retagged_digest}" == "${digest}" ]] || {
             echo "::error::retagged digest disagrees with immutable source"
