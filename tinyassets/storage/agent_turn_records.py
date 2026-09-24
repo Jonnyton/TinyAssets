@@ -219,7 +219,12 @@ def load_reply(raw: str, candidate: RoundInput) -> codec.AgentReply:
     )
     # Unknown non-empty dropped fields were intentionally not retained by the codec.
     # Their absence may improve a re-decode, but must never promote the held snapshot.
-    held_unknown = value["stop"] == "unknown" and bool(value["dropped_fields"])
+    # A batch beside a null finish was held as "unknown" before the codec
+    # accepted that standard shape. It stays held: tolerance is not promotion.
+    held_unknown = value["stop"] == "unknown" and (
+        bool(value["dropped_fields"])
+        or (stop == "tool_requests" and value["raw_finish_reason"] in {"", "function_call"})
+    )
     if (stop != value["stop"] and not held_unknown) or (
         text != value["text"] or refusal != value["refusal"]
     ):

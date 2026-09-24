@@ -48,7 +48,19 @@ def test_wire_and_persisted_semantics_match_frozen_original(finish):
         }}], "usage": {"prompt_tokens": 0, "completion_tokens": 3},
             "model": "reported:future"}
         expected = observe(decode, legacy_decode, body)
-        assert observe(decode, codec.decode_openai_chat_agent, body) == expected, body
+        actual = observe(decode, codec.decode_openai_chat_agent, body)
+        if (finish is None or finish == 3) and batch == [call()] and (
+            expected[0] == "ok" and expected[1].stop == "unknown"
+            and actual[0] == "ok" and actual[1].stop == "tool_requests"
+        ):
+            # The one intended divergence (2026-09-24): a complete batch beside
+            # an absent/null finish is a tool request, as OpenAI-compatible
+            # servers send it. The frozen record still loads, still held.
+            assert actual[1].tool_requests and not expected[1].tool_requests, body
+            raw = records.dump({"version": 1, **asdict(expected[1])})
+            assert records.load_reply(raw, candidate()).stop == "unknown"
+            continue
+        assert actual == expected, body
         if expected[0] != "ok":
             continue
         reply = expected[1]
@@ -97,6 +109,34 @@ def test_corrupted_records_keep_original_acceptance_and_rejection(reply):
         assert observe(records.load_reply, raw, candidate()) == observe(
             legacy_load_reply, raw, candidate(),
         ), change
+
+
+def _stored_legacy_row(**overrides):
+    """A journal row exactly as origin/main (before 2026-09-24) persisted a
+    legacy ``function_call`` reply: the call dropped from the saved message,
+    the raw finish kept, the turn held as ``unknown``. Literal on purpose --
+    the legacy oracle imports today's projection helpers."""
+    return records.dump({
+        "version": 1, "stop": "unknown", "text": None, "refusal": None,
+        "tool_requests": [],
+        "continuation_json": '{"role":"assistant","content":null}',
+        "dropped_fields": ["function_call"], "source_ref": "owned:future",
+        "requested_model": "opaque-llm", "reported_model": "",
+        "raw_finish_reason": "function_call", "input_tokens": None,
+        "output_tokens": None, **overrides,
+    })
+
+
+@pytest.mark.parametrize("row", [
+    _stored_legacy_row(),
+    _stored_legacy_row(dropped_fields=["refusal", "function_call"]),
+    _stored_legacy_row(continuation_json='{"role":"assistant","content":"answer"}',
+                       raw_finish_reason="stop", text="answer"),
+])
+def test_review_probe_old_held_function_call_rows_still_load_held(row):
+    reply = records.load_reply(row, candidate())
+    assert (reply.stop, reply.tool_requests) == ("unknown", ())
+    assert records.reply_json(reply, candidate()) == row
 
 
 def test_record_loader_does_not_call_a_wire_decoder(monkeypatch):
