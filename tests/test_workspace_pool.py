@@ -19,6 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -1485,3 +1486,224 @@ def test_two_processes_cannot_oversubscribe_the_pool(db: Path, roots: Roots) -> 
     assert refusal == wp.REFUSED_POOL_BUSY, results
     assert wp.pool_usage(db).reserved_bytes == 4 * GIB
     assert len(rows(db, "SELECT lease_id FROM workspace_leases")) == 1
+
+
+# --------------------------------------------------------------------------
+# cancelling a bounded wait
+#
+# The wait parks on ANOTHER run's lock. Whatever else waiting grows into, a
+# run its owner has stopped must not stay parked there and must not come out
+# of the park holding a lease: cancellation is the caller's, and the pool's
+# job is only to consult it and leave nothing behind.
+# --------------------------------------------------------------------------
+
+
+def _cancelled_after(n: int) -> tuple[Callable[[], bool], list[int]]:
+    """A predicate that reports "cancelled" from its ``n``-th consultation on,
+    and the log of how many times it was asked."""
+    asked: list[int] = []
+
+    def should_cancel() -> bool:
+        asked.append(len(asked) + 1)
+        return len(asked) > n
+
+    return should_cancel, asked
+
+
+def test_a_cancel_during_the_wait_stops_it_and_admits_nothing(
+    db: Path, roots: Roots
+) -> None:
+    """The contended case. A run cancelled while parked on another run's lock
+    wakes, sees the cancel, and unwinds as a CANCELLATION -- not a refusal, and
+    not a lease. Nothing it touched is left behind and the holder is untouched.
+    """
+    from tinyassets.runs import RunCancelledError
+
+    admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
+    before_leases = rows(db, "SELECT lease_id FROM workspace_leases")
+    before_ledger = rows(db, "SELECT universe_id, kind, amount FROM workspace_ledger")
+
+    clock = [1000.0]
+    slept: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock[0] += seconds
+
+    # Not cancelled at the first check (so the wait really starts), cancelled
+    # by the time the first sleep returns.
+    should_cancel, asked = _cancelled_after(1)
+
+    with pytest.raises(RunCancelledError):
+        admit_scratch(
+            db,
+            roots,
+            run_id="run-2",
+            lease_id_factory=_ids("lease2"),
+            wait_s=60.0,
+            now=lambda: clock[0],
+            monotonic=lambda: clock[0],
+            sleep=fake_sleep,
+            should_cancel=should_cancel,
+        )
+
+    # It stopped at the first wake, not at the 60-second deadline.
+    assert slept == [wp.LOCK_POLL_S], slept
+    assert len(asked) == 2, asked
+    # No lease, no reservation, no generation, no lock of its own.
+    assert rows(db, "SELECT lease_id FROM workspace_leases") == before_leases
+    assert rows(db, "SELECT universe_id, kind, amount FROM workspace_ledger") == before_ledger
+    assert rows(db, "SELECT generation FROM workspace_generations") == []
+    # The legitimate holder still holds exactly what it held.
+    assert lock_rows(db) == [("host", "slot-0", "run-1"), ("universe", "u1", "run-1")]
+
+
+def test_an_already_cancelled_admission_takes_nothing_even_with_a_free_lock(
+    db: Path, roots: Roots
+) -> None:
+    """Nothing is contended here: the pool is empty and the admission would
+    succeed. It still must not, because a lease a cancelled run will never
+    populate or release is a leak only the outbox can reclaim."""
+    from tinyassets.runs import RunCancelledError
+
+    slept: list[float] = []
+
+    with pytest.raises(RunCancelledError):
+        admit_scratch(
+            db,
+            roots,
+            lease_id_factory=_ids("lease1"),
+            sleep=lambda s: slept.append(s),
+            should_cancel=lambda: True,
+        )
+
+    assert slept == []
+    # It stopped before the pool database was even opened: not one workspace
+    # table exists, so there is no lease, no lock, no reservation to find.
+    assert not db.exists() or rows(
+        db,
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'workspace_%'",
+    ) == []
+    assert not (roots.pool / wp.WORKSPACES_DIR).exists()
+
+
+def test_a_run_that_is_not_cancelled_still_admits_when_the_holder_releases(
+    db: Path, roots: Roots
+) -> None:
+    """The predicate must not become a second refusal. A waiter that is NOT
+    cancelled still gets the lock the moment the holder gives it up -- exactly
+    once, and with the contention it actually saw recorded."""
+    admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
+
+    clock = [1000.0]
+    observation = wp.AdmissionObservation()
+    asked: list[bool] = []
+
+    def release_on_first_sleep(seconds: float) -> None:
+        clock[0] += seconds
+        conn = sqlite3.connect(str(db), timeout=30)
+        try:
+            conn.execute("DELETE FROM workspace_locks")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def should_cancel() -> bool:
+        asked.append(False)
+        return False
+
+    lease = admit_scratch(
+        db,
+        roots,
+        run_id="run-2",
+        lease_id_factory=_ids("lease2"),
+        wait_s=60.0,
+        observation=observation,
+        now=lambda: clock[0],
+        monotonic=lambda: clock[0],
+        sleep=release_on_first_sleep,
+        should_cancel=should_cancel,
+    )
+
+    assert lease.lease_id == "lease2"
+    assert asked, "the predicate was never consulted"
+    assert observation.attempts == 2 and observation.lock_conflicts == 1
+    assert lock_rows(db) == [("host", "slot-0", "run-2"), ("universe", "u1", "run-2")]
+    assert rows(db, "SELECT lease_id FROM workspace_leases ORDER BY lease_id") == [
+        ("lease1",),
+        ("lease2",),
+    ]
+
+
+def test_a_quota_refusal_never_sleeps_and_is_never_a_cancellation(
+    db: Path, roots: Roots
+) -> None:
+    """A cancel predicate does not turn the one refusal that must stay
+    immediate into a wait, and an uncancelled run still gets its quota refusal
+    rather than a cancellation."""
+    admit_scratch(
+        db, roots, bytes_per_hour=GIB, max_bytes=GIB, lease_id_factory=_ids("lease1")
+    )
+    with pytest.raises(wp.WorkspacePoolRefused) as exc:
+        admit_scratch(
+            db,
+            roots,
+            run_id="run-2",
+            universe_id="u1",
+            bytes_per_hour=GIB,
+            max_bytes=GIB,
+            lease_id_factory=_ids("lease2"),
+            wait_s=600.0,
+            sleep=lambda s: pytest.fail("quota refusal must not enter the wait loop"),
+            should_cancel=lambda: False,
+        )
+    assert exc.value.code == wp.REFUSED_QUOTA
+
+
+# --------------------------------------------------------------------------
+# characterization: what the bounded wait still does NOT do
+#
+# Bounded in-process waiting does not persist a resumable waiting intent.
+# Cancellation support must not be mistaken for durable restart support.
+# --------------------------------------------------------------------------
+
+
+def test_today_a_busy_admission_persists_no_waiting_intent(db: Path, roots: Roots) -> None:
+    """Contention is counted in memory and forgotten. Nothing in the pool DB
+    records that a run wanted this lock, so a park dies with the process.
+    """
+    admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
+
+    clock = [1000.0]
+    observation = wp.AdmissionObservation()
+    with pytest.raises(wp.WorkspacePoolRefused):
+        admit_scratch(
+            db,
+            roots,
+            run_id="run-2",
+            lease_id_factory=_ids("lease2"),
+            wait_s=1.0,
+            observation=observation,
+            now=lambda: clock[0],
+            monotonic=lambda: clock[0],
+            sleep=lambda s: clock.__setitem__(0, clock[0] + s),
+        )
+
+    # The waiting really happened...
+    assert observation.lock_conflicts >= 2
+    assert observation.retry_sleep_seconds >= 0.0
+    # ...and left no durable trace: the lock names only its HOLDER, and no table
+    # in this database mentions run-2.
+    assert lock_rows(db) == [("host", "slot-0", "run-1"), ("universe", "u1", "run-1")]
+    tables = [
+        name
+        for (name,) in rows(db, "SELECT name FROM sqlite_master WHERE type = 'table'")
+        if name.startswith("workspace_")
+    ]
+    assert "workspace_waiters" not in tables, tables
+    for table in tables:
+        columns = [c[1] for c in rows(db, f"PRAGMA table_info({table})")]
+        if "run_id" not in columns:
+            continue
+        mentions = rows(db, f"SELECT COUNT(*) FROM {table} WHERE run_id = ?", ("run-2",))
+        assert mentions == [(0,)], (table, mentions)

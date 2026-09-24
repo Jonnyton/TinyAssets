@@ -42,6 +42,7 @@ from tinyassets.effectors.wiki_write_back import (
 from tinyassets.effectors.workspace import (
     EXTERNAL_WRITE_SINK_WORKSPACE,
     WORKSPACE_READ_EFFECTS,
+    is_cancellation,
     packet_op,
     run_workspace_effector,
 )
@@ -867,8 +868,8 @@ def _fire_node_effects(
 ) -> dict:
     """Run every sink one node declares and return its bounded evidence
     ({sink: result}); full authenticated-call results and fired verbs land on
-    ``chain`` under ``node_key``. Never raises: every failure is a structured
-    row (the D1 rule is applied by the caller)."""
+    ``chain`` under ``node_key``. Failures are structured rows (the caller applies
+    D1); owner cancellation propagates without dispatching later sinks."""
     node_id = node_key or getattr(node, "node_id", "")
     output_keys = list(getattr(node, "output_keys", None) or [])
     # A packet may read ONLY the node's declared input_keys plus the
@@ -931,6 +932,11 @@ def _fire_node_effects(
                 )
             result = adapter(**adapter_kwargs)
         except Exception as exc:  # defensive: never raise from an adapter
+            if is_cancellation(exc):
+                # The owner stopped the run. Recording it as one node's crash
+                # would leave the run reported as broken rather than cancelled,
+                # and would let the remaining effects fire behind the stop.
+                raise
             result = {
                 "error": f"effector crashed: {exc}",
                 "error_kind": "effector_crashed",

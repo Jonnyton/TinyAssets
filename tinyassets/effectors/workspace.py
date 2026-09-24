@@ -878,12 +878,18 @@ def _checkout(
             universe_root=universe_workspace_root(base_path),
             wait_s=wait_s,
             observation=admission,
+            # The bounded wait is the one place this node parks on another
+            # run's lock. A cancel arriving there must end the wait, not be
+            # discovered after the deadline has already bought a lease.
+            should_cancel=should_cancel,
             **_universe_quota_kwargs(storage, base_path),
         )
 
     try:
         lease = _admit()
     except Exception as exc:
+        if is_cancellation(exc):
+            raise
         kind = _pool_error_kind(exc)
         if kind not in _SWEEPABLE_REFUSALS:
             raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
@@ -901,6 +907,8 @@ def _checkout(
         try:
             lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
         except Exception as retry_exc:
+            if is_cancellation(retry_exc):
+                raise
             raise _Refused(
                 _pool_error_kind(retry_exc),
                 f"workspace not admitted: {_pool_detail(retry_exc)}",
@@ -1116,6 +1124,7 @@ def _create(
     chain: Any,
     timeout_seconds: float,
     admission: AdmissionObservation,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """An EMPTY workspace, born from nothing but the universe's own storage.
 
@@ -1200,12 +1209,17 @@ def _create(
             universe_root=universe_workspace_root(base_path),
             wait_s=wait_s,
             observation=admission,
+            # Same contended lock, same pool, same wait: a created workspace is
+            # not a lesser admission and must stop for a cancel too.
+            should_cancel=should_cancel,
             **_universe_quota_kwargs(storage, base_path),
         )
 
     try:
         lease = _admit()
     except Exception as exc:
+        if is_cancellation(exc):
+            raise
         kind = _pool_error_kind(exc)
         if kind not in _SWEEPABLE_REFUSALS:
             raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
@@ -1219,6 +1233,8 @@ def _create(
         try:
             lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
         except Exception as retry_exc:
+            if is_cancellation(retry_exc):
+                raise
             raise _Refused(
                 _pool_error_kind(retry_exc),
                 f"workspace not admitted: {_pool_detail(retry_exc)}",
@@ -1627,6 +1643,27 @@ _POOL_KINDS = frozenset(
 _SWEEPABLE_REFUSALS = frozenset({"workspace_busy", "workspace_pool_busy"})
 
 
+def is_cancellation(exc: BaseException) -> bool:
+    """The owner stopped this run, so it is not a workspace failure.
+
+    Name-matched, the same duck-typing `runs._is_cancel_exception` and
+    `graph_compiler._is_cancel_exception` already use in both directions, so
+    this module needs no import of either. Every broad catch between the pool
+    and the run must consult it: a cancellation reclassified as
+    ``effector_crashed`` or ``workspace_checkout_failed`` tells the owner their
+    workflow broke when in fact they stopped it -- and hides the stop from the
+    run's own terminal status.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if type(cur).__name__ in ("RunCancelledError", "NodeCancelledError"):
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _pool_error_kind(exc: Exception) -> str:
     code = str(getattr(exc, "code", "") or "").strip()
     if code in _POOL_KINDS:
@@ -1669,7 +1706,12 @@ def run_workspace_effector(
     timeout_seconds: float = 0.0,
     should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Dispatch one ``workspace`` packet. NEVER raises.
+    """Dispatch one ``workspace`` packet. Raises only a CANCELLATION.
+
+    Every failure comes back as an ``error``/``error_kind`` result, including a
+    crash. The single exception is the owner stopping the run: that is not a
+    result this node can carry, because a cancelled run has no node outcome to
+    report - it unwinds to ``status=cancelled``. See `is_cancellation`.
 
     ``chain`` and ``execute`` are injected by tests; in production the chain is
     the run's active :class:`EffectChain` and ``execute`` spawns the worker.
@@ -1694,6 +1736,8 @@ def run_workspace_effector(
     except _Refused as refused:
         result = {"error": refused.error, "error_kind": refused.kind, **refused.extra}
     except Exception as exc:  # noqa: BLE001 - never raise from the completion path
+        if is_cancellation(exc):
+            raise
         logger.exception("workspace effector crashed for node %s", node_id)
         result = {"error": f"effector crashed: {exc}", "error_kind": "effector_crashed"}
     # Include observations even when population fails after a contended admission.
@@ -1771,6 +1815,7 @@ def _run(
             chain=chain,
             timeout_seconds=timeout_seconds,
             admission=admission,
+            should_cancel=should_cancel,
         )
         evidence["matched_output_key"] = matched_key
         return evidence
