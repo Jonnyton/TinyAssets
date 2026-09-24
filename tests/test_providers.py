@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.support.owned_spawn import fake_owned_spawn
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ProviderError,
@@ -863,7 +864,7 @@ class TestClaudeProvider:
         with (
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=proc),
+            fake_owned_spawn("tinyassets.providers.claude_provider", return_value=proc),
         ):
             provider = ClaudeProvider()
             resp = await provider.complete("prompt", "system", ModelConfig())
@@ -881,7 +882,7 @@ class TestClaudeProvider:
         with (
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=proc),
+            fake_owned_spawn("tinyassets.providers.claude_provider", return_value=proc),
         ):
             provider = ClaudeProvider()
             with pytest.raises(ProviderUnavailableError):
@@ -905,7 +906,7 @@ class TestClaudeProvider:
         with (
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=proc),
+            fake_owned_spawn("tinyassets.providers.claude_provider", return_value=proc),
         ):
             provider = ClaudeProvider()
             with pytest.raises(ProviderTimeoutError):
@@ -932,7 +933,9 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=mock_proc,
+            ),
         ):
             provider = CodexProvider()
             resp = await provider.complete("prompt", "system", ModelConfig())
@@ -954,7 +957,9 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=mock_proc,
+            ),
         ):
             provider = CodexProvider()
             with pytest.raises(ProviderError):
@@ -974,7 +979,9 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=mock_proc,
+            ),
         ):
             provider = CodexProvider()
             with pytest.raises(ProviderError, match="empty response"):
@@ -997,7 +1004,9 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=mock_proc,
+            ),
         ):
             provider = CodexProvider()
             with pytest.raises(ProviderError, match="auth-error"):
@@ -1014,27 +1023,25 @@ class TestCodexProvider:
         else:
             monkeypatch.setenv("TINYASSETS_CODEX_MODEL", override)
 
-        captured_cmd = []
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
         mock_proc.returncode = 0
         mock_proc.kill = AsyncMock()
         mock_proc.wait = AsyncMock()
 
-        async def _fake_exec(*args, **kwargs):
-            captured_cmd.extend(args)
-            return mock_proc
-
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
             patch("tinyassets.providers.codex_provider.get_sandbox_status",
                   return_value={"bwrap_available": False, "reason": "test"}),
-            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+            fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=mock_proc,
+            ) as spawn,
         ):
             provider = CodexProvider()
             response = await provider.complete("prompt", "system", ModelConfig())
 
+        captured_cmd = list(spawn.call_args.args)
         assert "--skip-git-repo-check" in captured_cmd, (
             f"Expected --skip-git-repo-check in command: {captured_cmd}"
         )
@@ -1054,27 +1061,25 @@ class TestCodexProvider:
         import tinyassets.providers.codex_provider as codex_provider
         from tinyassets.providers.codex_provider import CodexProvider
 
-        captured_cmd = []
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
         mock_proc.returncode = 0
         mock_proc.kill = AsyncMock()
         mock_proc.wait = AsyncMock()
 
-        async def _fake_exec(*args, **kwargs):
-            captured_cmd.extend(args)
-            return mock_proc
-
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
             patch("tinyassets.providers.codex_provider.get_sandbox_status",
                   return_value={"bwrap_available": False, "reason": "test"}),
-            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+            fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=mock_proc,
+            ) as spawn,
         ):
             provider = CodexProvider()
             await provider.complete("prompt", "system", ModelConfig())
 
+        captured_cmd = list(spawn.call_args.args)
         repo_root = Path(codex_provider.__file__).resolve().parents[2]
         assert "-C" in captured_cmd
         assert captured_cmd[captured_cmd.index("-C") + 1] == str(repo_root)
@@ -1084,16 +1089,11 @@ class TestCodexProvider:
         """Operators can move the provider forward after the deployed CLI supports it."""
         from tinyassets.providers.codex_provider import CodexProvider
 
-        captured_cmd = []
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
         mock_proc.returncode = 0
         mock_proc.kill = AsyncMock()
         mock_proc.wait = AsyncMock()
-
-        async def _fake_exec(*args, **kwargs):
-            captured_cmd.extend(args)
-            return mock_proc
 
         monkeypatch.setenv("TINYASSETS_CODEX_MODEL", "future-model-2030")
         with (
@@ -1101,11 +1101,14 @@ class TestCodexProvider:
                   return_value=(["codex"], False)),
             patch("tinyassets.providers.codex_provider.get_sandbox_status",
                   return_value={"bwrap_available": True, "reason": None}),
-            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+            fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=mock_proc,
+            ) as spawn,
         ):
             provider = CodexProvider()
             await provider.complete("prompt", "system", ModelConfig())
 
+        captured_cmd = list(spawn.call_args.args)
         assert captured_cmd[captured_cmd.index("-m") + 1] == "future-model-2030"
 
     @pytest.mark.asyncio
@@ -1113,27 +1116,25 @@ class TestCodexProvider:
         """Healthy bwrap hosts should keep Codex's sandboxed auto mode."""
         from tinyassets.providers.codex_provider import CodexProvider
 
-        captured_cmd = []
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
         mock_proc.returncode = 0
         mock_proc.kill = AsyncMock()
         mock_proc.wait = AsyncMock()
 
-        async def _fake_exec(*args, **kwargs):
-            captured_cmd.extend(args)
-            return mock_proc
-
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
             patch("tinyassets.providers.codex_provider.get_sandbox_status",
                   return_value={"bwrap_available": True, "reason": None}),
-            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+            fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=mock_proc,
+            ) as spawn,
         ):
             provider = CodexProvider()
             await provider.complete("prompt", "system", ModelConfig())
 
+        captured_cmd = list(spawn.call_args.args)
         assert ("--sandbox", "workspace-write") in zip(captured_cmd, captured_cmd[1:])
         assert "--full-auto" not in captured_cmd
         for name in ("apps", "plugins", "remote_plugin"):

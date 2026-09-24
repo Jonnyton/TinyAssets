@@ -17,6 +17,7 @@ import json
 
 import pytest
 
+from tests.support.owned_spawn import fake_owned_spawn
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     InteractiveDeadlineError,
@@ -1234,7 +1235,9 @@ class TestBackwardSafeNonStreaming:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=mock_proc,
+            ),
         ):
             resp = await CodexProvider().complete("prompt", "system", ModelConfig())
 
@@ -1256,7 +1259,9 @@ class TestBackwardSafeNonStreaming:
         with (
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            fake_owned_spawn(
+                "tinyassets.providers.claude_provider", return_value=mock_proc,
+            ),
         ):
             resp = await ClaudeProvider().complete_json(
                 "prompt", "system", ModelConfig(),
@@ -1549,7 +1554,7 @@ class TestSyncWrapperTimeout:
         with (
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
-            patch("asyncio.create_subprocess_exec", return_value=proc),
+            fake_owned_spawn("tinyassets.providers.claude_provider", return_value=proc),
         ):
             with pytest.raises(_PTE):
                 router.call_sync("writer", "prompt", "system", ModelConfig())
