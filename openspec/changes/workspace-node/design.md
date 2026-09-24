@@ -330,6 +330,50 @@ universe or hourly bound), `workspace_command_timeout`,
 A non-zero `ws.run` exit is data; `code_node_failed` for exceptions in
 `run()`.
 
+### D7. A resumed run's receipts accumulate at `prior_external_write_results`
+
+Effects fire at node time, so a run can fire an external write and then be
+interrupted. A terminal status write that persists output REPLACES `output_json`;
+without preservation, only that segment's receipts survive on the row. A
+completed resume was erasing the interrupted segment's proof that a real
+external write had landed. A status-only write without output or chain evidence
+does not replace the row's output.
+
+The fix adds one system-owned output key. Before a terminal write persists,
+the runtime reads the row's existing `prior_external_write_results` and
+`external_write_results` and re-persists, under `prior_external_write_results`,
+every node the outgoing segment's own evidence does not mention. Reading both
+keys is what makes it accumulate rather than stay one deep, so a run resumed
+twice still carries its first segment.
+
+**Bounded evidence, not rehydrated state.** The value is exactly the receipts
+already persisted, in the shape they were persisted in. It is never seeded
+into the resumed run's `EffectChain`: an effect that fired before an interrupt
+stays unreadable to a later node (D1's node-time firing is unchanged), and
+at-most-once stays the run-scoped `already_fired` ledger's job — this key
+neither feeds it nor relaxes it. The known limit is node granularity: a node
+re-recorded by the outgoing segment is not carried, so its prior sink-level
+detail is dropped in favour of the fresher receipt.
+
+Other known evidence limits: an exception reading prior output is logged and
+treated as an empty prior record so a terminal status can still settle; malformed
+non-dict receipt entries are ignored. The prior read occurs before, not inside,
+the conditional status-write transaction. Corrupt storage, an unreadable row or
+a concurrent same-run output update can therefore lose prior forensic evidence.
+These are recorded follow-ups, not guarantees of crash/concurrency-safe receipt
+retention; they do not change the separate at-most-once effect ledger.
+
+**Server-owned.** The key is in the `_branch_authored_*` quarantine set, and
+the status write drops whatever value arrives on the output it is handed
+before recomputing from the row — two layers, because the carry reads its own
+key back and a single layer would let a forged value launder into a
+server-owned one on the next segment.
+
+This closes receipt preservation across resume only. It is not evidence that a
+production park/wait frontier is reachable, nor about provider-authorized
+public resume, nor about concurrency between a live worker and a resume of the
+same run; those stay open.
+
 ## Alternatives rejected
 
 - Shallow clones over the bundle bridge: bundles cannot carry the boundary

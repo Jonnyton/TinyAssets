@@ -45,6 +45,27 @@ Before adapter dispatch the runtime SHALL move any Branch-authored `external_wri
 - **WHEN** a completed run persisted adapter evidence
 - **THEN** the run snapshot includes its `external_write_results` and any `external_write_errors`
 
+### Requirement: A resumed run preserves earlier segments' receipts at a system-owned prior key
+A terminal status write that persists output replaces the run row's output, so a resumed run's own segment would otherwise be the only external-write evidence left on it. Before persisting, the runtime SHALL read the row's existing `prior_external_write_results` and `external_write_results`, and SHALL re-persist, at `prior_external_write_results`, every node the outgoing segment's canonical evidence does not itself mention. The key is system-owned exactly as the canonical keys are: it is in the `_branch_authored_*` quarantine set, and the status write SHALL drop any value carried on the output it is handed before recomputing the key from the row. It SHALL apply on every terminal exit that persists output — completion, failure, cancellation, interrupt, and a resume that fails to compile and therefore persists an empty ledger. A status-only write without output or chain evidence does not replace the stored output.
+
+The preserved value is a bounded RECORD, not rehydrated state: it is exactly the receipts already persisted, it SHALL NOT be seeded into the resumed run's effect chain, and it SHALL NOT make a prior segment's effect readable by a later node. At-most-once remains owned by the run-scoped `already_fired` ledger, which this key neither feeds nor relaxes.
+
+#### Scenario: A completed resume keeps the interrupted segment's receipt
+- **WHEN** a run fires a node's external write, is interrupted, and a resume completes it
+- **THEN** the resumed segment's receipts are at `external_write_results` and the interrupted segment's receipt is at `prior_external_write_results`, unchanged
+
+#### Scenario: Two resumes accumulate rather than overwrite
+- **WHEN** a run is interrupted and resumed twice, each segment firing a different node
+- **THEN** the final row carries the last segment at the canonical key and BOTH earlier segments at `prior_external_write_results`
+
+#### Scenario: A resume that never compiled erases nothing
+- **WHEN** a resume fails with a compiler error, persisting an empty effect ledger
+- **THEN** the earlier segment's receipts remain on the row at `prior_external_write_results`
+
+#### Scenario: A branch cannot author the prior key
+- **WHEN** Branch output contains `prior_external_write_results`
+- **THEN** it is quarantined to `_branch_authored_prior_external_write_results` before dispatch, and any value still riding on the persisted output is dropped and recomputed from the row
+
 ### Requirement: GitHub pull-request effects apply destination gates and optional-hint receipts
 The `github_pull_request` adapter SHALL parse only a matching packet from declared output keys. A packet without a destination SHALL remain on the Phase-1 dry-run compatibility path. For a destination-bearing packet, a soul-authority resolver result of denied — from a declared non-match or a soul-read failure — SHALL dry-run, while undeclared authority SHALL fall through to the legacy gates owned by `external-effect-receipts`. A real write SHALL require an exact destination capability and consent; a bound vault credential SHALL outrank environment-vended credentials and SHALL never be returned in Branch-visible evidence. A non-empty caller hint SHALL use the shared atomic receipt lifecycle, but an omitted hint SHALL proceed unreceipted. The adapter SHALL materialize blobs, tree, commit, and head ref before opening the PR, so a later failure can leave partial remote branch state. A successful external write whose receipt finalization fails SHALL still return success evidence marked `receipt_finalize_failed`.
 
