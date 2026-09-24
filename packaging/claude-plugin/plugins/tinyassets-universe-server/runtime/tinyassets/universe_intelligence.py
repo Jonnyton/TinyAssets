@@ -163,14 +163,7 @@ _ENGINE_DISALLOWED_TOOLS = (
 # no #2475 raw-folder RCE. This is the founder's "editable brain / project folder
 # injected into the next turn."
 #
-# remix_shape is intentionally NOT listed yet: it is cross-author (fork a foreign
-# public shape) and gets its own review slice in the served-agent-build-run
-# OpenSpec change. run_graph + write_graph ARE enabled (2026-08-23): the
-# invoke_branch closure is now sanitized (#2498 — delegated child-authority,
-# fail-closed actor, mapping/await confidentiality), so a run reaching a public
-# branch is safe. run_graph is NOT author-only (its resolver admits founder-owned
-# or public; foreign-private is refused) — the sanitization, not an author gate,
-# is what keeps that safe.
+# remix_shape is included with its existing universe and admission gates.
 # Served engine-MCP allowlist — the SINGLE canonical list from served_tools.py,
 # shared verbatim with the codex surface (codex_provider._ENGINE_MCP_ENABLED_TOOLS)
 # so the two provider surfaces CANNOT drift (founder rule: all surfaces do the same

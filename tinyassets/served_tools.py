@@ -26,6 +26,8 @@ from __future__ import annotations
 #: ``engine_mcp_server``) AND present here.
 #:
 #: Included:
+#:   remix_shape — copy a commons shape into an owned private branch; the
+#:       existing binding, capability, visibility and admission gates apply.
 #:   read_graph, get_status, browse_commons, read_commons_shape  — read surfaces
 #:       Model options and private agent bindings are pinned to this universe.
 #:       Catalogue refresh uses admission; remote model text is untrusted.
@@ -108,9 +110,7 @@ from __future__ import annotations
 #:   connection-grant-bound-to-this-universe + per-destination consent (granted via
 #:   source_channel) + TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED + SSRF per dispatch.
 #:
-#: Deliberately EXCLUDED pending their own review (tracked by the
-#: ``served-agent-build-run`` OpenSpec change):
-#:   remix_shape   — cross-author commons remix
+#: Remaining surfaces outside the engine tool catalog:
 #:   connect_http  — deposits a RAW SECRET; stays on the browser deposit form
 #:   a proper per-root-run effect-dispatch cap (all surfaces) — the served build cap on
 #:       effect-node count is the interim structural bound
@@ -121,6 +121,7 @@ SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "write_graph",
     "browse_commons",
     "read_commons_shape",
+    "remix_shape",
     "read_brain",
     "write_brain",
     "connect_compute",

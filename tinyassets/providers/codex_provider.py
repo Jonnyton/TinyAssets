@@ -251,7 +251,7 @@ _ENGINE_MCP_BEARER_ENV = "TINYASSETS_ENGINE_MCP_BEARER"
 #: deliberately absent (deferred to the consent-gated slice — Codex ADAPT #5).
 # run_graph + write_graph ARE included (2026-08-23): the invoke_branch closure is
 # now sanitized (#2498), so a run/build reaching a public branch is safe.
-# remix_shape (cross-author fork) stays EXCLUDED pending its own review slice.
+# remix_shape uses the same canonical catalog and its existing handler gates.
 # Served engine-MCP allowlist — the SINGLE canonical list from served_tools.py,
 # shared verbatim with the claude surface (universe_intelligence._ENGINE_MCP_TOOLS)
 # so the two provider surfaces CANNOT drift (founder rule: all surfaces do the same
