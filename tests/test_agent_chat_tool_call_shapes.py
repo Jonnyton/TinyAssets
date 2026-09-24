@@ -151,6 +151,60 @@ def test_streamed_calls_without_index_split_on_a_new_id():
     ]
 
 
+def _cut(*chunks):
+    """A stream that ends at EOF: no finish_reason and no ``[DONE]``."""
+    return "\n".join("data: " + json.dumps(chunk) + "\n" for chunk in chunks)
+
+
+NAME_ONLY_THEN_EOF = _cut(
+    _delta({"tool_calls": [{"index": 0, "id": "cut-1", "type": "function",
+                            "function": {"name": "write_page"}}]}),
+)
+
+
+def test_review_probe_a_cut_off_name_only_stream_never_becomes_a_tool_request():
+    """Round-1 probe, exactly: one chunk carrying only a name, then EOF."""
+    with pytest.raises(ProtocolDecodeError, match="incomplete"):
+        codec.decode_openai_chat_agent(
+            codec.fold_chat_stream(NAME_ONLY_THEN_EOF), source_ref="s", requested_model="m",
+            tool_names=frozenset({"write_page"}),
+        )
+
+
+@pytest.mark.parametrize("ending", ["finish", "done"])
+def test_streamed_blank_arguments_are_not_defaulted_even_when_complete(ending):
+    """A fold that produced no argument text did not receive a call's arguments;
+    only the non-streamed documented spellings may default to ``{}``."""
+    chunks = [_delta({"tool_calls": [{"index": 0, "id": "a", "type": "function",
+                                      "function": {"name": "write_page"}}]},
+                     finish="tool_calls" if ending == "finish" else None)]
+    body = _sse(*chunks) if ending == "done" else _cut(*chunks)
+    with pytest.raises(ProtocolDecodeError, match="incomplete"):
+        codec.fold_chat_stream(body)
+
+
+def test_a_cut_off_stream_runs_no_tool_through_the_real_path(agent, monkeypatch):
+    _wire(agent, monkeypatch, _cut(
+        _delta({"tool_calls": [{"index": 0, "id": "cut-1", "type": "function",
+                                "function": {"name": "write_graph"}}]}),
+    ))
+    with pytest.raises(Exception) as caught:
+        run(agent)
+    assert agent.tools == []  # engine.call never ran
+    details = " ".join(str(a.detail) for a in caught.value.attempts)
+    assert "event stream incomplete" in details
+
+
+def test_a_complete_stream_ending_at_done_without_finish_still_runs():
+    reply = codec.decode_openai_chat_agent(
+        codec.fold_chat_stream(_sse(_delta({"tool_calls": [{
+            "index": 0, "id": "a", "type": "function",
+            "function": {"name": "read_graph", "arguments": "{}"}}]}))),
+        source_ref="s", requested_model="m", tool_names=NAMES,
+    )
+    assert [(r.call_id, r.arguments()) for r in reply.tool_requests] == [("a", {})]
+
+
 def test_streamed_error_chunk_is_a_response_error_not_an_answer():
     body = _sse({"error": {"message": "upstream private detail"}})
     with pytest.raises(ProtocolDecodeError, match="response unavailable"):
@@ -246,6 +300,18 @@ def test_actions_caution_appears_only_when_the_ledger_says_something_ran(agent, 
     record = us._served_failure_record(caught.value)
     assert (record.stage, record.effects) == ("tool", "unknown")
     assert "may already have occurred" in us._served_failure_notice(caught.value, record)
+
+
+@pytest.mark.parametrize("root", ["/Users/", "/Volumes/", "/private/", "C:\\Users\\"])
+def test_paths_are_redacted_before_the_detail_is_clipped(root):
+    import tinyassets.universe_server as us
+
+    # The clip keeps the head and the last ~95 characters: a long path at the
+    # end loses its root to the clip, so clipping first would let
+    # ".../owner-name/..." through unrecognized.
+    detail = "x" * 150 + " " + root + "a" * 120 + "/owner-name/secret.txt"
+    shown = us._served_failure_record(RuntimeError(detail)).provider_detail
+    assert "owner-name" not in shown and "<path>" in shown
 
 
 def test_history_re_renders_the_same_composed_notice(tmp_path):

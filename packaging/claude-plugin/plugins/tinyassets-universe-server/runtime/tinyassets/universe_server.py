@@ -2406,7 +2406,8 @@ def _served_failure_code(exc: BaseException) -> str:
 
 
 _FS_PATH = re.compile(
-    r"(?:(?<![A-Za-z])[A-Za-z]:[\\/]|/(?:data|home|root|tmp|opt|var|app|usr|etc|srv|mnt)/)"
+    r"(?:(?<![A-Za-z])[A-Za-z]:[\\/]"
+    r"|/(?:data|home|root|tmp|opt|var|app|usr|etc|srv|mnt|Users|Volumes|private)/)"
     r"[^\s'\"]*"
 )
 
@@ -2457,7 +2458,9 @@ def _provider_detail(exc: BaseException) -> str:
         text = str(exc)
         if not any(lie in text.lower() for lie in _MISLEADING_ROUTER_TELLS):
             detail = text
-    return _FS_PATH.sub("<path>", redacted_failure_detail(detail))
+    # Paths first: clipping first can cut a path's root off and let its tail
+    # through unrecognized.
+    return redacted_failure_detail(_FS_PATH.sub("<path>", detail))
 
 
 def _served_failure_record(exc: BaseException, *, held: bool = False):

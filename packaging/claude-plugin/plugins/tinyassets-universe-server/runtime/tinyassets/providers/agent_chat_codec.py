@@ -325,7 +325,7 @@ def reply_state(
         message.get(key) not in (None, "", [], {}) for key in ("function_call", "audio")
     ):
         stop = "completed"
-    elif not calls and finish in {"tool_calls", "function_call"}:
+    elif not calls and finish == "tool_calls":
         raise _bad("tool finish without tool requests")
     return stop, text, refusal
 
@@ -382,12 +382,16 @@ def fold_chat_stream(body: str) -> dict[str, Any]:
     legacy: dict[str, str] = {}
     folded: dict[str, Any] = {}
     finish = None
+    done = False
     chunks = 0
     for line in body.splitlines():
         if not line.startswith("data:"):
             continue  # comments, event names, ids and retry hints carry no content
         data = line[5:].strip()
-        if not data or data == "[DONE]":
+        if data == "[DONE]":
+            done = True
+            continue
+        if not data:
             continue
         chunk = _object(data)
         chunks += 1
@@ -421,6 +425,17 @@ def fold_chat_stream(body: str) -> dict[str, Any]:
             _fold_tool_deltas(delta.get("tool_calls"), calls, order)
     if not chunks:
         raise _bad("event stream carried no chunks")
+    # A stream cut off at EOF (no finish reason, no [DONE]) is not a reply: a
+    # partially received tool call must never be completed by defaulting.
+    if finish is None and not done:
+        raise _bad("event stream incomplete: no finish reason or [DONE]")
+    # Absent arguments default to {} only in the documented non-streamed
+    # spellings; a fold that received no argument text never received them.
+    folded_arguments = [calls[index]["function"]["arguments"] for index in order]
+    if legacy:
+        folded_arguments.append(legacy.get("arguments", ""))
+    if any(not arguments.strip() for arguments in folded_arguments):
+        raise _bad("streamed tool call incomplete: no arguments received")
     for key, pieces in text.items():
         message[key] = "".join(pieces)
     message.setdefault("content", None)

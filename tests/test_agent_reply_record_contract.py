@@ -111,6 +111,34 @@ def test_corrupted_records_keep_original_acceptance_and_rejection(reply):
         ), change
 
 
+def _stored_legacy_row(**overrides):
+    """A journal row exactly as origin/main (before 2026-09-24) persisted a
+    legacy ``function_call`` reply: the call dropped from the saved message,
+    the raw finish kept, the turn held as ``unknown``. Literal on purpose --
+    the legacy oracle imports today's projection helpers."""
+    return records.dump({
+        "version": 1, "stop": "unknown", "text": None, "refusal": None,
+        "tool_requests": [],
+        "continuation_json": '{"role":"assistant","content":null}',
+        "dropped_fields": ["function_call"], "source_ref": "owned:future",
+        "requested_model": "opaque-llm", "reported_model": "",
+        "raw_finish_reason": "function_call", "input_tokens": None,
+        "output_tokens": None, **overrides,
+    })
+
+
+@pytest.mark.parametrize("row", [
+    _stored_legacy_row(),
+    _stored_legacy_row(dropped_fields=["refusal", "function_call"]),
+    _stored_legacy_row(continuation_json='{"role":"assistant","content":"answer"}',
+                       raw_finish_reason="stop", text="answer"),
+])
+def test_review_probe_old_held_function_call_rows_still_load_held(row):
+    reply = records.load_reply(row, candidate())
+    assert (reply.stop, reply.tool_requests) == ("unknown", ())
+    assert records.reply_json(reply, candidate()) == row
+
+
 def test_record_loader_does_not_call_a_wire_decoder(monkeypatch):
     reply = seed_reply(tools=True)
     raw = records.dump({"version": 1, **asdict(reply)})
