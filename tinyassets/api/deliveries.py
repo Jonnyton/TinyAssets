@@ -141,6 +141,22 @@ def _declared_file_limits(branch, values, file_fields):
     return resolved
 
 
+def _reject_undeclared_references(values, file_fields):
+    """Mapped positions outside a receiver-declared file input stay fail-closed.
+
+    The receiver's own declaration is the only consent there is, so a custody
+    reference may occupy exactly the positions it declares -- never an ordinary
+    contract field, and never nested inside one, however valid the envelope. A
+    declared file position that is present but refused by ``_file_fields`` never
+    reaches here. This is the same default dispatch already applies to every
+    non-provenance position; applied here it runs before any reservation,
+    allocation, byte copy or acceptance, where a later refusal is too late.
+    """
+    delivery_runtime.reject_file_references(
+        {name: value for name, value in values.items() if name not in file_fields}
+    )
+
+
 def _structured_inputs(receiver, link, outputs, *, allow_files=False):
     if not isinstance(outputs, dict):
         raise ValueError("outputs must be an object")
@@ -156,6 +172,7 @@ def _structured_inputs(receiver, link, outputs, *, allow_files=False):
     file_fields = _file_fields(receiver, values, branch)
     if file_fields and not allow_files:
         raise ValueError("delivery_file_transfer_not_implemented")
+    _reject_undeclared_references(values, file_fields)
     for field in json.loads(receiver["contract_json"]):
         kind = field["type"]
         if kind in FILE_KINDS or field["name"] in file_fields:
@@ -255,6 +272,7 @@ def _transfer_files(base, *, principal, universe_id, link_id, occurrence_id, out
         values = {target: outputs[field] for field, target in mapping.items()}
         branch = BranchDefinition.from_dict(json.loads(receiver["snapshot_json"]))
         file_fields = _file_fields(receiver, values, branch)
+        _reject_undeclared_references(values, file_fields)
         if not file_fields:
             return None
         _declared_file_limits(branch, values, file_fields)

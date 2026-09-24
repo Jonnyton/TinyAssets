@@ -48,6 +48,17 @@ without granting foreign session, path, credential or unrelated run access.
 - **THEN** count and byte limits resolve from that receiver branch's own input declarations
 - **AND** a field whose branch carries no matching declaration is refused at acceptance
 
+#### Scenario: Ordinary input positions cannot carry a custody reference
+- **WHEN** a mapped input the receiver branch does not declare as `file` or
+  `file_bundle` carries a custody reference, whether as the whole value or
+  nested inside ordinary JSON
+- **THEN** the occurrence is refused before any reservation, byte copy or
+  acceptance, including when another mapped field IS a valid declared file
+- **AND** a contract type that merely admits the value, such as `dict`, grants
+  nothing: the receiver's own declaration is the only consent
+- **AND** ordinary structured data in an undeclared position, including fields
+  named `key` or `token`, stays exact and deliverable
+
 #### Scenario: Receiving deployment has no custody capacity configured
 - **WHEN** a file delivery is attempted where receiver custody capacity is unconfigured
 - **THEN** it refuses explicitly rather than accepting bytes it cannot durably own

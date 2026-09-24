@@ -114,13 +114,15 @@ def test_sourced_delivery_refuses_ad_hoc_reference_envelopes(node_env):
 def test_file_reference_needs_a_receiver_branch_declaration(node_env):
     """The receiver's branch, not the sender and not the contract, grants this.
 
-    An undeclared field refuses the reference as an ordinary contract type
-    mismatch -- measured, not assumed -- and accepts nothing.
+    An undeclared field refuses on the DECLARATION, not on its contract type --
+    measured, not assumed. ``topic`` is a ``str`` here, so a type mismatch was
+    only ever the incidental second line; it says nothing about a field whose
+    type admits a dict, which is what ``test_delivery_file_positions`` pins.
     """
     base, _, _, link, branch, _ = node_env
     with pytest.raises(ValueError) as caught:
         _send(base, branch, link, {"result": REFERENCE})
-    assert "receiver input type mismatch" in str(caught.value)
+    assert "delivery_file_transfer_not_implemented" in str(caught.value)
     with deliveries.transaction(base) as conn:
         assert conn.execute("SELECT COUNT(*) FROM graph_deliveries").fetchone()[0] == 0
         assert conn.execute(
