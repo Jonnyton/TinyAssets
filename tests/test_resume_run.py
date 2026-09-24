@@ -263,10 +263,18 @@ class TestResumeRunFunction:
             )
         assert exc_info.value.reason == "no_checkpoint"
 
-    def test_branch_version_mismatch_raises(self, tmp_path):
+    def test_run_without_an_admission_envelope_refuses(self, tmp_path):
+        """Replaces the retired ``branch_version_mismatch`` case.
+
+        The definition no longer comes from ``branch_lookup``, so a lookup that
+        returns None is no longer the failure mode. What refuses now is a run
+        with no durable record of what it was admitted with -- which is exactly
+        what ``_setup_interrupted_run``'s raw ``create_run`` produces.
+        """
         from tinyassets.runs import ResumeError, resume_run
 
         rid = _setup_interrupted_run(tmp_path)
+        consulted = []
 
         with (
             patch("tinyassets.runs._has_checkpoint", return_value=True),
@@ -276,24 +284,55 @@ class TestResumeRunFunction:
                 tmp_path,
                 run_id=rid,
                 actor="tester",
-                branch_lookup=lambda bid, v: None,  # always returns None = version missing
+                branch_lookup=lambda bid, v: consulted.append((bid, v)),
             )
-        assert exc_info.value.reason == "branch_version_mismatch"
+        assert exc_info.value.reason == "admission_not_reconstructable"
+        assert consulted == [], "branch_lookup must no longer decide what runs"
 
     def test_happy_path_dispatches_background_worker(self, tmp_path):
+        """The definition now comes from the run's own admission envelope.
+
+        The run is admitted through the real ``_prepare_run`` seam so it
+        carries one; the injected ``branch_lookup`` is deliberately poisoned to
+        prove it has no authority over what resumes.
+        """
         from tinyassets.branches import BranchDefinition, NodeDefinition
-        from tinyassets.runs import RUN_STATUS_RESUMED, resume_run
+        from tinyassets.run_admission_envelope import encode_admission_envelope
+        from tinyassets.runs import (
+            RUN_STATUS_INTERRUPTED,
+            RUN_STATUS_RESUMED,
+            _prepare_run,
+            initialize_runs_db,
+            resume_run,
+            update_run_status,
+        )
 
-        rid = _setup_interrupted_run(tmp_path)
-
-        dummy_branch = BranchDefinition(
+        admitted_branch = BranchDefinition(
             branch_def_id="branch-1",
             name="test",
             domain_id="d",
             state_schema={},
             node_defs=[NodeDefinition(node_id="n1", display_name="n1", prompt_template="hi")],
         )
+        initialize_runs_db(tmp_path)
+        rid = _prepare_run(
+            tmp_path,
+            branch=admitted_branch, inputs={}, run_name="", actor="tester",
+            admission_envelope=encode_admission_envelope(
+                admitted_branch,
+                recursion_limit=100,
+                concurrency_budget_override=None,
+                run_name="",
+                branch_version_id=None,
+            ),
+        )
+        update_run_status(tmp_path, rid, status=RUN_STATUS_INTERRUPTED)
 
+        poisoned = BranchDefinition(
+            branch_def_id="branch-1", name="edited", domain_id="d", state_schema={},
+            node_defs=[NodeDefinition(node_id="injected", display_name="x",
+                                      prompt_template="x")],
+        )
         with (
             patch("tinyassets.runs._has_checkpoint", return_value=True),
             patch("tinyassets.runs._invoke_graph_resume") as mock_invoke,
@@ -305,7 +344,7 @@ class TestResumeRunFunction:
                 tmp_path,
                 run_id=rid,
                 actor="tester",
-                branch_lookup=lambda bid, v: dummy_branch,
+                branch_lookup=lambda bid, v: poisoned,
             )
 
         assert outcome.run_id == rid

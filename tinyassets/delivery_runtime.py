@@ -17,6 +17,7 @@ from tinyassets.api.receiver_links import _owned_branch
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
 from tinyassets.branches import BranchDefinition
+from tinyassets.run_admission_envelope import encode_admission_envelope
 from tinyassets.storage import _connect as author_connection
 from tinyassets.storage import deliveries
 from tinyassets.storage.delivery_lock import try_attempt_lock
@@ -210,7 +211,24 @@ def _work(base, delivery_id, attempt):
             # automatically replayed, even if it happened before first execution.
             with identity_context(identity):
                 actor = f"universe:{delivery['receiver_universe_id']}"
-                runs._initialize_prepared_run(base, run_id=run_id, branch=branch, actor=actor)
+                # This seam EXECUTES the reserved run, so it admits it: capture
+                # the envelope from the exact receiver snapshot and execution
+                # choices dispatched below, plus the run row's own identity.
+                # Without it the run would execute and then refuse to resume.
+                # Capture is guarded IS NULL — a re-prepared attempt re-supplies
+                # the identical envelope; it never replays anything.
+                run_name, version_id = runs._reserved_run_admission_identity(base, run_id)
+                envelope = encode_admission_envelope(
+                    branch,
+                    recursion_limit=runs.DEFAULT_RECURSION_LIMIT,
+                    concurrency_budget_override=None,
+                    run_name=run_name,
+                    branch_version_id=version_id,
+                )
+                runs._initialize_prepared_run(
+                    base, run_id=run_id, branch=branch, actor=actor,
+                    admission_envelope=envelope,
+                )
                 provider = _receiver_provider(base, delivery, branch, run_id)
                 runs._invoke_prepared_branch(
                     base, run_id=run_id, branch=branch, inputs=inputs, actor=actor,

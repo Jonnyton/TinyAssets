@@ -448,8 +448,13 @@ def test_resume_translator_records_observed_terminal_before_cancel(
         ))
 
     monkeypatch.setattr(runs, "compile_branch", compile_events)
+    # recursion_limit / concurrency_budget_override are REQUIRED since the
+    # exact-admission slice: a resume must state the choices it was admitted
+    # with rather than silently inheriting a default.
     outcome = runs._invoke_graph_resume(tmp_path, run_id=rid, branch=branch,
-                                        thread_id="resume-cancel", provider_call=None)
+                                        thread_id="resume-cancel", provider_call=None,
+                                        recursion_limit=runs.DEFAULT_RECURSION_LIMIT,
+                                        concurrency_budget_override=None)
     assert outcome.status == "cancelled", outcome.error
     statuses = build_node_status_map(list_events(tmp_path, rid, since_step=-1), ["step1"])
     assert statuses == [{"node_id": "step1", "status": terminal_phase}]

@@ -65,6 +65,14 @@ def test_accepted_occurrence_executes_once_in_fresh_receiver_context(reserved, p
     runs.wait_for(run_id, timeout=10)
     assert _attempt(base, receipt)["state"] == "completed"
     assert len(provider_probe) == 1
+    from tinyassets.run_admission_envelope import resolve_admitted_execution
+
+    admitted = resolve_admitted_execution(base, runs.get_run(base, run_id))
+    assert admitted.recursion_limit == runs.DEFAULT_RECURSION_LIMIT
+    assert admitted.concurrency_budget_override is None
+    assert any(node.prompt_template and provider_probe[0].startswith(
+        node.prompt_template.split("{")[0]
+    ) for node in admitted.branch.node_defs)
     assert provider_probe[0].startswith("private prompt exact input 🍉")
     assert current_identity_or_none() is sender
     runtime.dispatch_accepted_delivery(base, delivery_id=receipt["delivery_id"])
