@@ -303,9 +303,18 @@ def test_node_that_already_fired_can_never_be_resumed_past(base, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_resume_admits_the_lineage_version_number_without_a_graph_identity_check(
+def test_resume_admits_the_envelope_definition_not_a_patched_lookup(
     base, monkeypatch,
 ):
+    """INVERTED 2026-09-23 by the exact-admission slice.
+
+    This case previously ASSERTED the defect: the injected lookup's patched
+    graph ran over a checkpoint a different graph wrote, and the added node
+    executed and fired an external effect. That was substitution, and the
+    admission-envelope change closes it. The measurement is unchanged -- the
+    same patched definition, the same lookup, the same checkpoint -- only the
+    expected outcome is inverted.
+    """
     from tinyassets import runs
 
     provider = _Provider(die_on={("n2", 1)})
@@ -338,13 +347,15 @@ def test_resume_admits_the_lineage_version_number_without_a_graph_identity_check
     runs.wait_for(first.run_id, timeout=120)
     final = runs.get_run(base, first.run_id)
 
-    # Admission is the lineage's (branch_def_id, version) pair, asked once.
-    assert seen == [(runs.get_run(base, first.run_id)["branch_def_id"], 1)]
-    # ...and whatever that pair resolves to is what runs, over a checkpoint
-    # written by a different graph. The added node executes and fires.
+    # The lookup is not consulted at all: the definition comes from the run's
+    # own admission envelope, which the lineage version number cannot identify.
+    assert seen == [], "branch_lookup must have no authority over what resumes"
+    # The ADMITTED graph completes; the node the author added after admission
+    # never executes and never fires its external effect.
     assert final["status"] == runs.RUN_STATUS_COMPLETED
-    assert provider.calls["n4"] == 1
-    assert adapter.calls[-1] == "n4"
+    assert "n4" not in provider.calls, "a post-admission node executed on resume"
+    assert "n4" not in adapter.calls, "a post-admission node fired an effect"
+    assert adapter.calls[-1] == "n3"
 
 
 # ---------------------------------------------------------------------------

@@ -936,6 +936,13 @@ def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
             ("workspace_budget_root_run_id", "TEXT"),
             ("workspace_budget_epoch", "INTEGER"),
             ("workspace_budget_closing_reason", "TEXT"),
+            # PRIVATE admission envelope: the frozen definition + effective
+            # execution choices a run was admitted with. Nullable and additive
+            # — existing rows stay NULL ("unknown"), are never backfilled, and
+            # refuse resume honestly. Deliberately absent from _row_to_run and
+            # every public projection; read only via
+            # tinyassets.run_admission_envelope after an ownership gate.
+            ("admission_envelope_json", "TEXT"),
         ):
             if col not in existing_runs:
                 _alter(col, ddl)
@@ -3561,6 +3568,81 @@ def _graph_node_order(branch: BranchDefinition) -> list[str]:
     return [gn.id for gn in branch.graph_nodes]
 
 
+def _reserved_run_admission_identity(
+    base_path: str | Path, run_id: str,
+) -> tuple[str, str | None]:
+    """The reserved run's own ``(run_name, branch_version_id)``.
+
+    Internal seam for the two executing paths that dispatch a run reserved by
+    an earlier durable intent (receiver delivery, admitted run input). They do
+    not hold the values the original reservation wrote, and the envelope's
+    binding check compares against this row — so the envelope must carry the
+    row's own identity, not a freshly invented one.
+    """
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT run_name, branch_version_id FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+    if row is None:
+        raise RunExecutionAuthorityLost(
+            f"Reserved run {run_id!r} vanished before admission capture."
+        )
+    return str(row[0] or ""), (str(row[1]) if row[1] else None)
+
+
+def _settle_failed_admission_envelope(
+    base_path: str | Path, exc: Exception,
+) -> "RunOutcome | None":
+    """Settle a run reserved before its admission envelope failed to persist.
+
+    Returns a terminal FAILED :class:`RunOutcome` when the exception names a
+    reserved run, and ``None`` when it does not -- an encoding failure is
+    raised BEFORE any row exists, so there is nothing to terminalize and the
+    caller re-raises. Shared by every admission seam so a capture failure can
+    never leave a queued row whose graph nobody will run.
+    """
+    reserved = str(getattr(exc, "run_id", "") or "")
+    message = f"Admission envelope capture failed: {exc}"
+    if not reserved:
+        return None
+    with _managed_execution_scope(base_path, reserved) as guard:
+        if guard is not None:
+            settled = terminalize_unstarted_run(
+                base_path, run_id=reserved, execution_guard=guard,
+                status=RUN_STATUS_FAILED, error=message,
+            )
+        else:
+            # No execution guard is available, so this write is pinned to the
+            # QUEUED row it reserved. A run cancelled (or otherwise settled)
+            # between reservation and this failure keeps its terminal status:
+            # a failed envelope capture is not evidence about a row somebody
+            # else already finished.
+            settled = _settle_unguarded_reserved_run(base_path, reserved, message)
+    return RunOutcome(run_id=reserved, status=settled, output={}, error=message)
+
+
+def _settle_unguarded_reserved_run(
+    base_path: str | Path, run_id: str, message: str,
+) -> str:
+    """Fail a still-QUEUED reserved run; return whatever status actually holds."""
+    try:
+        update_run_status(
+            base_path, run_id, status=RUN_STATUS_FAILED, error=message,
+            finished_at=_now(), _expected_statuses={RUN_STATUS_QUEUED},
+        )
+    except Exception:
+        logger.exception(
+            "Reserved run %s was no longer queued when its admission envelope "
+            "failed; its existing status stands.", run_id,
+        )
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT status FROM runs WHERE run_id = ?", (run_id,),
+        ).fetchone()
+    return str(row[0]) if row is not None else RUN_STATUS_FAILED
+
+
 def _prepare_run(
     base_path: str | Path,
     *,
@@ -3575,6 +3657,7 @@ def _prepare_run(
     worker_id: str | None = None,
     branch_task_id: str | None = None,
     queue_universe_id: str | None = None,
+    admission_envelope: str | None = None,
     _workspace_parent=None,
 ) -> str:
     """Write the run row + pending-node events + lineage synchronously.
@@ -3583,7 +3666,16 @@ def _prepare_run(
     handler before handing off to a background executor.
 
     ``branch_version_id`` is populated only for version-based runs
-    (Phase A item 6, Task #65). Def-based runs leave it as None.
+    (Phase A item 6, Task #65). Def-based runs leave it as None — its meaning
+    ("the user selected this published version") and everything derived from it
+    (contribution attribution, delete dependencies) are unchanged.
+
+    ``admission_envelope`` is the private durable record of what was admitted
+    (see :mod:`tinyassets.run_admission_envelope`). Supply it and the run is
+    resumable on the exact admitted graph; omit it and a later resume refuses
+    ``admission_not_reconstructable`` rather than substituting the current
+    editable definition. A capture failure raises ``AdmissionEnvelopeError``
+    carrying the reserved ``run_id`` so the caller can refuse to dispatch.
     """
     initialize_runs_db(base_path)
     run_id = create_run(
@@ -3602,25 +3694,77 @@ def _prepare_run(
         queue_universe_id=queue_universe_id,
         _workspace_parent=_workspace_parent,
     )
-    _initialize_prepared_run(base_path, run_id=run_id, branch=branch, actor=actor)
+    _initialize_prepared_run(
+        base_path, run_id=run_id, branch=branch, actor=actor,
+        admission_envelope=admission_envelope,
+    )
     return run_id
 
 
 def _initialize_prepared_run(
     base_path: str | Path, *, run_id: str, branch: BranchDefinition, actor: str,
+    admission_envelope: str | None = None,
 ) -> None:
     """Initialize events/lineage for a newly reserved, never-executed run.
 
     Internal seam for durable intents. The caller must prove execution has not
     started before invoking this helper; it does not authorize retry/resume.
     Ordinary _prepare_run calls it exactly once after creating its new run.
+
+    ``admission_envelope`` is captured here, in the same transaction that
+    claims the thread_id and therefore strictly before any executable
+    submission. The write is guarded on ``IS NULL``, so a durable intent that
+    re-prepares a run may re-supply the identical envelope but can never
+    replace the original admitted payload. A capture failure propagates as
+    ``AdmissionEnvelopeError`` — there is no fail-open path that would leave a
+    dispatched run with an unprovable definition.
+
+    **Excluded seam, stated honestly.** The parameter is optional because this
+    helper serves two callers: ``_prepare_run`` (every ordinary admission,
+    which always supplies one) and a durable intent re-initializing an
+    ALREADY-RESERVED run. A durable intent that itself admits a run must pass
+    the envelope its own freeze produced; one that only re-prepares an
+    already-admitted run passes nothing and the original envelope stands. A
+    run reserved through this seam with no envelope is not resumable — it
+    refuses ``admission_not_reconstructable`` rather than executing a
+    definition nobody can prove was admitted.
     """
+    from tinyassets.run_admission_envelope import (
+        AdmissionEnvelopeError,
+        capture_admission_envelope,
+    )
+
     thread_id = run_id
-    with _connect(base_path) as conn:
-        conn.execute(
-            "UPDATE runs SET thread_id = ? WHERE run_id = ?",
-            (thread_id, run_id),
-        )
+    # The whole claim transaction is wrapped, not just the capture call:
+    # ``BEGIN IMMEDIATE`` (a locked database), the thread_id UPDATE and
+    # ``commit()`` all raise bare ``sqlite3.Error``, which would escape every
+    # admission seam's ``except AdmissionEnvelopeError`` and leave a reserved
+    # QUEUED row that no worker will ever dispatch. The run is already
+    # reserved here, so the failure carries its run_id and the caller settles
+    # it. Nothing is dispatched on any of these paths.
+    try:
+        with _connect(base_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE runs SET thread_id = ? WHERE run_id = ?",
+                (thread_id, run_id),
+            )
+            if admission_envelope:
+                try:
+                    capture_admission_envelope(
+                        conn, run_id=run_id, envelope=admission_envelope,
+                    )
+                except Exception:
+                    conn.rollback()
+                    raise
+            conn.commit()
+    except AdmissionEnvelopeError:
+        raise
+    except sqlite3.Error as exc:
+        raise AdmissionEnvelopeError(
+            f"prepared run {run_id!r} could not claim its thread durably: {exc}",
+            run_id=run_id,
+        ) from exc
     for step, node_id in enumerate(_graph_node_order(branch)):
         record_event(base_path, RunStepEvent(
             run_id=run_id,
@@ -4846,16 +4990,39 @@ def execute_branch(
     """
     branch = BranchDefinition.from_dict(branch.to_dict())
     preflight_required_inputs(branch, inputs)
-    run_id = _prepare_run(
-        base_path,
-        branch=branch, inputs=inputs,
-        run_name=run_name, actor=actor,
-        owner_user_id=owner_user_id, queue_universe_id=_enqueue_universe_id or None,
-        _workspace_parent=_workspace_parent,
-        daemon_id=daemon_id,
-        runtime_instance_id=runtime_instance_id,
-        worker_id=worker_id,
+    # Same admission contract as the async path: the envelope records THIS
+    # freeze and the exact effective choices handed to _invoke_graph below,
+    # so a later resume runs what was admitted rather than the current draft.
+    from tinyassets.run_admission_envelope import (
+        AdmissionEnvelopeError,
+        encode_admission_envelope,
     )
+
+    effective_limit = recursion_limit_override or DEFAULT_RECURSION_LIMIT
+    admission_envelope = encode_admission_envelope(
+        branch,
+        recursion_limit=effective_limit,
+        concurrency_budget_override=concurrency_budget_override,
+        run_name=run_name,
+        branch_version_id=None,
+    )
+    try:
+        run_id = _prepare_run(
+            base_path,
+            branch=branch, inputs=inputs,
+            run_name=run_name, actor=actor,
+            owner_user_id=owner_user_id, queue_universe_id=_enqueue_universe_id or None,
+            _workspace_parent=_workspace_parent,
+            daemon_id=daemon_id,
+            runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id,
+            admission_envelope=admission_envelope,
+        )
+    except AdmissionEnvelopeError as exc:
+        settled = _settle_failed_admission_envelope(base_path, exc)
+        if settled is None:
+            raise
+        return settled
     enqueue_origin = (
         str(_origin_branch_task_id or "").strip()
         or str(_parent_branch_task_id or "").strip()
@@ -4875,7 +5042,7 @@ def execute_branch(
         base_path,
         run_id=run_id, branch=branch, inputs=inputs,
         provider_call=provider_call,
-        recursion_limit=recursion_limit_override or DEFAULT_RECURSION_LIMIT,
+        recursion_limit=effective_limit,
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
         invocation_depth=_invocation_depth,
@@ -5138,18 +5305,44 @@ def _execute_branch_core(
     # change the admitted subject underneath an asynchronous execution.
     branch = BranchDefinition.from_dict(branch.to_dict())
     preflight_required_inputs(branch, inputs)
-    run_id = _prepare_run(
-        base_path,
-        branch=branch, inputs=inputs,
-        run_name=run_name, actor=actor,
-        owner_user_id=owner_user_id,
-        _workspace_parent=_workspace_parent,
-        branch_version_id=branch_version_id,
-        daemon_id=daemon_id,
-        runtime_instance_id=runtime_instance_id,
-        worker_id=worker_id,
-        queue_universe_id=_enqueue_universe_id or None,
+    # Resolve the effective execution choices BEFORE the run row exists, so the
+    # envelope records the same numbers the worker below is handed — not a
+    # re-derivation that could drift from them.
+    effective_limit = recursion_limit_override or DEFAULT_RECURSION_LIMIT
+    from tinyassets.run_admission_envelope import (
+        AdmissionEnvelopeError,
+        encode_admission_envelope,
     )
+
+    admission_envelope = encode_admission_envelope(
+        branch,
+        recursion_limit=effective_limit,
+        concurrency_budget_override=concurrency_budget_override,
+        run_name=run_name,
+        branch_version_id=branch_version_id,
+    )
+    try:
+        run_id = _prepare_run(
+            base_path,
+            branch=branch, inputs=inputs,
+            run_name=run_name, actor=actor,
+            owner_user_id=owner_user_id,
+            _workspace_parent=_workspace_parent,
+            branch_version_id=branch_version_id,
+            daemon_id=daemon_id,
+            runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id,
+            queue_universe_id=_enqueue_universe_id or None,
+            admission_envelope=admission_envelope,
+        )
+    except AdmissionEnvelopeError as exc:
+        # The admitted definition is not durable, so this run must not run.
+        # Failing closed here is the whole point: dispatching would promise a
+        # resumability we cannot honour.
+        settled = _settle_failed_admission_envelope(base_path, exc)
+        if settled is None:
+            raise
+        return settled
 
     try:
         from tinyassets.foreground_run_provider import prepare_foreground_run_provider
@@ -5181,7 +5374,6 @@ def _execute_branch_core(
         )
 
     executor = _get_executor(invocation_depth=_invocation_depth)
-    effective_limit = recursion_limit_override or DEFAULT_RECURSION_LIMIT
 
     def _worker() -> RunOutcome:
         return _invoke_prepared_branch(
@@ -5330,21 +5522,45 @@ def execute_branch_version(
     """Execute an immutable published Branch version and block to completion."""
     branch = _load_branch_version(base_path, branch_version_id)
     preflight_required_inputs(branch, inputs)
-    run_id = _prepare_run(
-        base_path,
-        branch=branch,
-        inputs=inputs,
-        run_name=run_name,
-        actor=actor,
-        branch_version_id=branch_version_id,
-        daemon_id=daemon_id,
-        runtime_instance_id=runtime_instance_id,
-        worker_id=worker_id,
-        branch_task_id=_queue_branch_task_id or None,
-        owner_user_id=owner_user_id,
-        _workspace_parent=_workspace_parent,
-        queue_universe_id=_enqueue_universe_id or None,
+    from tinyassets.run_admission_envelope import (
+        AdmissionEnvelopeError,
+        encode_admission_envelope,
     )
+
+    effective_limit = recursion_limit_override or DEFAULT_RECURSION_LIMIT
+    # branch_version_id is recorded in the envelope AND left on the run row
+    # untouched -- its attribution meaning ("the user selected this published
+    # version") is unchanged; the envelope adds the execution choices the
+    # immutable snapshot cannot carry.
+    admission_envelope = encode_admission_envelope(
+        branch,
+        recursion_limit=effective_limit,
+        concurrency_budget_override=concurrency_budget_override,
+        run_name=run_name,
+        branch_version_id=branch_version_id,
+    )
+    try:
+        run_id = _prepare_run(
+            base_path,
+            branch=branch,
+            inputs=inputs,
+            run_name=run_name,
+            actor=actor,
+            branch_version_id=branch_version_id,
+            daemon_id=daemon_id,
+            runtime_instance_id=runtime_instance_id,
+            worker_id=worker_id,
+            branch_task_id=_queue_branch_task_id or None,
+            owner_user_id=owner_user_id,
+            _workspace_parent=_workspace_parent,
+            queue_universe_id=_enqueue_universe_id or None,
+            admission_envelope=admission_envelope,
+        )
+    except AdmissionEnvelopeError as exc:
+        settled = _settle_failed_admission_envelope(base_path, exc)
+        if settled is None:
+            raise
+        return settled
     enqueue_origin = (
         str(_origin_branch_task_id or "").strip()
         or str(_parent_branch_task_id or "").strip()
@@ -5363,7 +5579,7 @@ def execute_branch_version(
         branch=branch,
         inputs=inputs,
         provider_call=provider_call,
-        recursion_limit=recursion_limit_override or DEFAULT_RECURSION_LIMIT,
+        recursion_limit=effective_limit,
         concurrency_budget_override=concurrency_budget_override,
         on_node_status=on_node_status,
         invocation_depth=_invocation_depth,
@@ -5444,7 +5660,16 @@ class ResumeError(Exception):
     - ``not_found``: run_id does not exist.
     - ``auth_failed``: caller does not own the run.
     - ``no_checkpoint``: SqliteSaver has no checkpoint for this thread_id.
-    - ``branch_version_mismatch``: branch was patched since the run was created.
+    - ``admission_not_reconstructable``: nothing durable proves what this run
+      was admitted with — a pre-envelope run (with or without a
+      ``branch_version_id``, which records the user's version SELECTION and
+      never the per-run execution choices), a corrupt or unknown-schema
+      envelope, or one whose bindings disagree with the run row. Never
+      substituted with the current editable definition and never with guessed
+      execution defaults.
+
+    ``branch_version_mismatch`` is retired: the definition no longer comes from
+    a version lookup that could miss, so there is no mismatch left to report.
     """
 
     def __init__(self, message: str, *, reason: str = "", current_status: str = "") -> None:
@@ -5487,8 +5712,11 @@ def resume_run(
     actor
         The caller's identity. Must match the run's ``actor`` field.
     branch_lookup
-        Callable ``(branch_def_id, branch_version) -> BranchDefinition | None``.
-        Used to re-compile the exact branch version used in the original run.
+        **Retained for signature compatibility and deliberately not consulted.**
+        It resolved the CURRENT editable definition, so an author edit between
+        interruption and resume substituted a different graph under a run's
+        checkpoint. The definition now comes from the run's own durable
+        admission envelope; an injected lookup has no authority over what runs.
     provider_call
         Optional provider callable; same semantics as ``execute_branch``.
 
@@ -5540,21 +5768,25 @@ def resume_run(
             reason="no_checkpoint",
         )
 
-    # Branch version gate: re-compile the exact version used in the original run.
-    lineage = get_lineage(base_path, run_id)
-    branch_version = int(
-        (lineage or {}).get("branch_version") or getattr(branch_lookup, "_fallback_version", 1)
+    # Admitted-definition gate. The authority is the run's own durable
+    # admission envelope and nothing else — NOT ``branch_lookup``, which
+    # resolves the CURRENT editable definition and would silently substitute
+    # an edited graph, and NOT the run's ``branch_version_id``, which records
+    # what the user selected rather than the execution choices admission
+    # resolved. There is no legacy reconstruction path: a run with no envelope
+    # refuses ``admission_not_reconstructable``. Resolved before provider
+    # admission and before any effect can fire.
+    from tinyassets.run_admission_envelope import (
+        AdmissionNotReconstructable,
+        resolve_admitted_execution,
     )
-    branch_def_id = run["branch_def_id"]
-    branch = branch_lookup(branch_def_id, branch_version)
-    if branch is None:
-        raise ResumeError(
-            f"Branch '{branch_def_id}' version {branch_version} no longer exists. "
-            "Cannot resume — the branch was patched and that version was removed.",
-            reason="branch_version_mismatch",
-        )
 
-    branch = BranchDefinition.from_dict(branch.to_dict())
+    try:
+        admitted = resolve_admitted_execution(base_path, run)
+    except AdmissionNotReconstructable as exc:
+        raise ResumeError(str(exc), reason=exc.reason) from exc
+
+    branch = BranchDefinition.from_dict(admitted.branch.to_dict())
     try:
         from tinyassets.foreground_run_provider import prepare_foreground_run_provider
 
@@ -5598,6 +5830,8 @@ def resume_run(
             branch=branch,
             thread_id=thread_id,
             provider_call=provider_call,
+            recursion_limit=admitted.recursion_limit,
+            concurrency_budget_override=admitted.concurrency_budget_override,
         )
         try:
             from tinyassets.foreground_run_provider import close_foreground_run_provider
@@ -5646,8 +5880,19 @@ def _invoke_graph_resume(
     branch: BranchDefinition,
     thread_id: str,
     provider_call: Callable[..., str] | None,
+    recursion_limit: int,
+    concurrency_budget_override: int | None,
 ) -> RunOutcome:
-    """Compile branch + invoke with None inputs to resume from checkpoint."""
+    """Compile branch + invoke with None inputs to resume from checkpoint.
+
+    ``recursion_limit`` and ``concurrency_budget_override`` are the run's
+    ADMITTED effective choices, read from its admission envelope. They are
+    required, not defaulted: a resumed segment that silently fell back to the
+    platform default ran a different execution than the one admitted, which is
+    the bug this slice exists to close. They reach exactly the two seams the
+    non-resume :func:`_invoke_graph` uses -- ``compile_branch`` for the
+    concurrency budget, ``app.invoke``'s config for the recursion limit.
+    """
     _require_managed_start_status(base_path, run_id, RUN_STATUS_RESUMED)
     execution_cursor = {"step": 1000}  # offset so resume events don't collide
     provider_tracker: dict[str, Any] = {"last": None, "model": None, "calls": []}
@@ -5766,6 +6011,7 @@ def _invoke_graph_resume(
             branch,
             provider_call=provider_call,
             event_sink=_on_node,
+            concurrency_budget_override=concurrency_budget_override,
             effect_chain=effect_chain,
             execution_context=resume_context,
             should_cancel=lambda: is_cancel_requested(base_path, run_id),
@@ -5790,10 +6036,15 @@ def _invoke_graph_resume(
         saver_path = str(Path(base_path) / ".langgraph_runs.db")
         with SqliteSaver.from_conn_string(saver_path) as checkpointer:
             app = compiled.graph.compile(checkpointer=checkpointer)
-            # None inputs triggers resume from last checkpoint.
+            # None inputs triggers resume from last checkpoint. The admitted
+            # recursion limit rides the same config key _invoke_graph uses, so
+            # the resumed segment gets the cap the run was admitted with.
             result = app.invoke(
                 None,
-                config={"configurable": {"thread_id": thread_id}},
+                config={
+                    "configurable": {"thread_id": thread_id},
+                    "recursion_limit": recursion_limit,
+                },
             )
     except RunCancelledError as exc:
         update_run_status(

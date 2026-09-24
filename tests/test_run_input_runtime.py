@@ -131,6 +131,34 @@ def test_trusted_direct_options_and_post_unwind_observation(admitted, monkeypatc
     assert observed.wait(5) and calls == ["completed"]
 
 
+def test_prepared_worker_captures_exact_choices_before_real_dispatch_seam(admitted, monkeypatch):
+    from tinyassets.run_admission_envelope import resolve_admitted_execution
+
+    base, run_id = admitted
+    captured = []
+
+    def options(base, envelope, **transactions):
+        return runtime.PreparedRunExecution(
+            identity=prepared(base, envelope).identity, actor="universe:u",
+            recursion_limit=123, concurrency_budget_override=3,
+        )
+
+    def invoke(base, **kwargs):
+        # Do not stub _initialize_prepared_run: this reads its committed SQLite
+        # record at the actual worker dispatch boundary, not a codec-only test.
+        actual = resolve_admitted_execution(base, runs.get_run(base, run_id))
+        assert actual.branch.to_dict() == kwargs["branch"].to_dict()
+        assert actual.recursion_limit == kwargs["recursion_limit"] == 123
+        assert actual.concurrency_budget_override == kwargs["concurrency_budget_override"] == 3
+        captured.append(actual)
+        runs.update_run_status(base, run_id, status="completed")
+
+    monkeypatch.setattr(runs, "_invoke_prepared_branch", invoke)
+    assert runtime.dispatch_admitted_run(base, run_id=run_id, prepare=options)
+    runs.wait_for(run_id, timeout=10)
+    assert len(captured) == 1
+
+
 def test_observation_failure_never_rewrites_execution_and_is_logged(admitted, monkeypatch, caplog):
     base, run_id = admitted
     observed = threading.Event()

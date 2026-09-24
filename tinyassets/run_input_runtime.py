@@ -21,6 +21,7 @@ from tinyassets import runs
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
 from tinyassets.branches import BranchDefinition
+from tinyassets.run_admission_envelope import encode_admission_envelope
 from tinyassets.run_input_origin import OriginHeld
 from tinyassets.scoped_reset import (
     _assert_recovery_state_is_clean,
@@ -198,8 +199,26 @@ def _work_under_maintenance_barrier(base, run_id, prepare):
                 )
                 return
             with identity_context(prepared.identity):
+                # This seam EXECUTES the reserved run, so it admits it. The
+                # envelope is encoded from the branch materialized out of the
+                # RELOADED authoritative admission envelope above -- not the
+                # preparer's return value, which chooses execution bindings
+                # only -- together with the execution choices actually passed
+                # to _invoke_prepared_branch below and the run row's own
+                # identity. Captured strictly before dispatch; guarded IS NULL,
+                # so a re-prepared attempt re-supplies an identical envelope
+                # and nothing is replayed.
+                run_name, version_id = runs._reserved_run_admission_identity(base, run_id)
+                admission_envelope = encode_admission_envelope(
+                    branch,
+                    recursion_limit=prepared.recursion_limit,
+                    concurrency_budget_override=prepared.concurrency_budget_override,
+                    run_name=run_name,
+                    branch_version_id=version_id,
+                )
                 runs._initialize_prepared_run(
-                    base, run_id=run_id, branch=branch, actor=prepared.actor
+                    base, run_id=run_id, branch=branch, actor=prepared.actor,
+                    admission_envelope=admission_envelope,
                 )
                 provider = (
                     prepared.bind_provider(base, envelope, branch)
