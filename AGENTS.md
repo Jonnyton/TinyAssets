@@ -186,30 +186,53 @@ as peers via `peer-agents`. Neither runs a standing team.
 Procedure: **[`docs/reference/quality-gates.md`](docs/reference/quality-gates.md)**.
 Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/executable-gates.md)**.
 
-- **Shape before hardening** (founder, 2026-08-20). One pre-build review for
-  shape, approach, and single-user safety holes -> ship the MVP live and test as
-  a real user -> *then* deep hardening. Gating a first draft behind a hardening
-  gauntlet hardens a shape live users may change.
-- **Verification is independent and cross-family.** Test evidence plus a
-  reviewer who is not the author: a subprocess peer of the *other* model family
-  (`peer-agents`), on its own budget. Self-review never suffices for
-  public-surface, storage, auth, migration, concurrency, or data-loss changes.
-- **A dispatched review gates landing, not your progress.** It re-invokes you;
-  take the next lane and fold the verdict in. Never idle on one.
-- **When the other family is unavailable, cross-family review is postponed,
-  not waived** (founder, 2026-09-24). If a rate limit takes the peer family
-  out, keep shipping with an independent same-family reviewer. Record each
-  landing that still owes a cross-family check in its review/concern file, and
-  run those checks when the family returns.
-- **Reviews are autonomous, not an endless gate** (founder, 2026-09-15;
-  replaces the former three-round cap). Run as many bounded reviews as a
-  release genuinely needs without asking per round. Each extra round must
-  answer a concrete open release question or verify a material change. It
-  must not reopen settled design or chase zero observations. Defect counts
-  across repeated rounds are non-monotonic, and fixing round N often creates
-  round N+1 (PR #2561 ran six rounds). Fix basic-safety blockers before
-  release, and track the rest for after real-user feedback. Never relabel an
-  old review as a new one.
+- **Ship to learn** (founder, 2026-09-24; evidence in
+  `docs/reviews/2026-09-24-review-deploy-practice.md`). Done means deployed,
+  used through the real app, regressions green and spec synced. Answer unknowns
+  about users by deploying, not by reviewing. Compare a change against what
+  production does today, never against an ideal design.
+- **Risk tier sets review depth**, judged by what the change can do, not its
+  size:
+  - *Tier 0, no review:* docs, tests, UI/copy, refactors under unchanged
+    tests, anything dark or default-off, anything one revert fully undoes.
+  - *Tier 1, one review that never blocks:* new user-visible behaviour or a
+    new primitive. Do one shape review before code. Findings that are not on
+    the floor go to `docs/concerns/`, not into the PR.
+  - *Tier 2, one blocking review:* the floor below, or files that define the
+    CI gates. Use the other model family by default. If it is rate-limited,
+    use the same family; the cross-family check is then owed, not waived, and
+    is recorded in the review file.
+- **The floor, and only the floor, blocks a deploy:** cross-user read or
+  effect; exposure of auth or credentials; unrecoverable loss of user data;
+  wrong money; an irreversible external act without consent; the public
+  connector going down. Durability at the margins, concurrency that the
+  founder's usage cannot reach, and "a future X could break" are tracked and
+  re-judged after live use.
+- **Hard stop: two rounds, one day.** Round 2 only verifies the round-1 floor
+  fixes. Anything new in round 2 that is off the floor becomes a concern.
+  This is autonomous: no founder escalation and no third round. A floor finding
+  still open after round 2 means the shape is wrong, so apply the primitive
+  rule.
+- **A finding must cite the PR head** (file:line). Drop, without another round,
+  any finding made against a retired architecture, an unbuilt capability or an
+  unread file. Ask for `AGREE` / `DISAGREE_EVIDENCE` / `DISAGREE_CONCERN`.
+- **Recurring findings mean a missing primitive.** The trigger is any of: a
+  floor finding in two consecutive rounds; 3+ follow-up PRs in one area within
+  7 days; or a concern open 7+ days whose components are built but unwired.
+  Stop patching. Write half a page naming the primitive that removes the whole
+  class (one writer per fact; user-composable rather than platform policy),
+  and build it as the next slice.
+- **Small, live slices.** A PR deploys and is testable on its own. More than
+  1,500 added non-test lines needs a stated reason. A new capability ships dark
+  on the founder's universe first, then to users. Split a gate-file edit out of
+  a big PR (#2561 spent five rounds on two lines inside a 72k-line deletion).
+- **Live failures become evals.** Every failure seen in the real app becomes a
+  regression test or checklist row before its fix lands. A rendered
+  conversation through the live connector (`ui-test`) is the proof; scripts
+  and canaries only support it. Then look for clean real-user use since the
+  fix, with a timestamp; if none is visible, say so.
+- **A dispatched review gates landing, not progress.** Take the next lane and
+  fold the verdict in when it arrives. Never idle on a review.
 - **Carry each item to verified completion, and work in parallel** (founder,
   2026-09-24; corrects a misreading of 2026-09-15 as "one patch at a time").
   A capability is finished when it is deployed, succeeds through the real app,
@@ -226,14 +249,6 @@ Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/e
   real decisions: new spending, irreversible or outward-facing acts outside
   the agreed work, and PLAN.md changes. Keep an externally blocked item open
   with its exact dependency and move to the next one.
-- **Ask the reviewer to disagree in a structured way** -- `AGREE` /
-  `DISAGREE_EVIDENCE` with a code citation / `DISAGREE_CONCERN`. Structured
-  disagreement measurably beat adding more reviewers, and it makes a finding you
-  should act on separable from one you should note.
-- **Final chatbot-surface proof is a rendered conversation** through the live
-  connector (`ui-test`). Scripts and canaries are supporting evidence, never
-  proof. Then look for real-user clean use since the fix, freshness-stamped; if
-  none is visible, say so.
 - **Test through the app agent as a user would** (founder, 2026-09-24). You
   may send the app agent any message. "Retest your workflow checklist" returns
   its whole known-issues list. Otherwise, write the way a casual, naive user
