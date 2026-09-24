@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import array
+import contextlib
+import gc
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -12,6 +15,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from tinyassets import workspace_registry as registry
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def budget(**overrides):
@@ -246,6 +251,90 @@ class TransferBudgetTests(unittest.TestCase):
                 budget(**overrides)
 
 
+_FD_PROBE_FLAG = "--fd-probe"
+_PROBE_OK = "fd-probe-equal"
+_PROBE_CHANGED = "fd-probe-changed"
+_LEAK_SUFFIX = "+leak"
+
+
+def _probe_injection(scenario, endpoint, stack):
+    """Payload plus descriptor list for one refusal scenario, inside the probe."""
+    if scenario == "bad-control":
+        return b"wrong", [endpoint.fileno()]
+    if scenario == "truncated":
+        return registry._RELAY_MESSAGE + b"extra", [endpoint.fileno()]
+    if scenario.startswith("descriptors-"):
+        return registry._RELAY_MESSAGE, [endpoint.fileno()] * int(scenario.split("-")[1])
+    if scenario == "regular-file":
+        fixture = stack.enter_context(tempfile.TemporaryFile())
+        return registry._RELAY_MESSAGE, [fixture.fileno()]
+    if scenario == "missing":
+        return registry._RELAY_MESSAGE, []
+    family, kind = {
+        "inet-stream": (socket.AF_INET, socket.SOCK_STREAM),
+        "unix-stream": (socket.AF_UNIX, socket.SOCK_STREAM),
+        "unix-dgram": (socket.AF_UNIX, socket.SOCK_DGRAM),
+    }[scenario]
+    wrong = stack.enter_context(socket.socket(family, kind))
+    return registry._RELAY_MESSAGE, [wrong.fileno()]
+
+
+def _run_fd_probe(scenario):
+    """Census every descriptor the refusal path duplicates, in a clean process.
+
+    Run as ``python tests/test_workspace_registry.py --fd-probe <scenario>``.
+    ``/proc/self/fd`` is process-wide, so an in-suite census is falsified by any
+    unrelated close in the same window -- notably the GC-timed
+    ``weakref.finalize(proc, family.end)`` of ``providers/owned_process.py``,
+    whose ``os.close`` of an anchor control fd removes a descriptor the registry
+    never touched. A child process carries none of those pending finalizers, and
+    GC stays off across the window, so equality stays the assertion: a receive
+    path that duplicates *any* descriptor and fails to close it is still caught.
+
+    A ``+leak`` suffix is the negative control: it suppresses ``os.close`` for
+    the refusal call, so the real cleanup leaks the received fd and the census
+    must report it.
+    """
+    leaking = scenario.endswith(_LEAK_SUFFIX)
+    scenario = scenario[: -len(_LEAK_SUFFIX)] if leaking else scenario
+    with contextlib.ExitStack() as stack:
+        child, parent = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        local, endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        for stream in (child, parent, local, endpoint):
+            stream.settimeout(2)
+            stack.enter_context(stream)
+        payload, fds = _probe_injection(scenario, endpoint, stack)
+        if fds:
+            child.sendmsg(
+                [payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))]
+            )
+        else:
+            child.send(payload)
+        suppress_close = patch.object(registry.os, "close", lambda fd: None)
+        gc.collect()
+        gc.disable()
+        try:
+            before = set(os.listdir("/proc/self/fd"))
+            with suppress_close if leaking else contextlib.nullcontext():
+                try:
+                    registry.receive_relay(parent)
+                except registry.RegistryRefused as refused:
+                    if str(refused) != "bad_connect":
+                        print(f"fd-probe-wrong-refusal {refused!s}")
+                        return 3
+                else:
+                    print("fd-probe-no-refusal")
+                    return 4
+            after = set(os.listdir("/proc/self/fd"))
+        finally:
+            gc.enable()
+    if after != before:
+        print(f"{_PROBE_CHANGED} added={sorted(after - before)} removed={sorted(before - after)}")
+        return 5
+    print(f"{_PROBE_OK} {scenario}")
+    return 0
+
+
 @unittest.skipUnless(sys.platform == "linux", "Linux descriptor handoff")
 class RegistryDescriptorTests(unittest.TestCase):
     def setUp(self):
@@ -255,16 +344,17 @@ class RegistryDescriptorTests(unittest.TestCase):
             stream.settimeout(2)
             self.addCleanup(stream.close)
 
-    def inject(self, payload, fds):
-        self.child.sendmsg(
-            [payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))]
+    def run_fd_probe(self, scenario):
+        return subprocess.run(
+            [sys.executable, os.path.abspath(__file__), _FD_PROBE_FLAG, scenario],
+            capture_output=True, text=True, timeout=120,
+            env=dict(os.environ, PYTHONPATH=_REPO_ROOT),
         )
 
-    def assert_refused_without_leak(self):
-        before = set(os.listdir("/proc/self/fd"))
-        with self.assertRaisesRegex(registry.RegistryRefused, "^bad_connect$"):
-            registry.receive_relay(self.parent)
-        self.assertEqual(set(os.listdir("/proc/self/fd")), before)
+    def assert_refused_without_leak(self, scenario):
+        probe = self.run_fd_probe(scenario)
+        self.assertEqual(probe.returncode, 0, f"{probe.stdout}\n{probe.stderr}")
+        self.assertIn(_PROBE_OK, probe.stdout)
 
     def test_connected_unix_relay_is_copied_noninheritable_and_bidirectional(self):
         registry.send_relay(self.child, self.endpoint)
@@ -282,40 +372,40 @@ class RegistryDescriptorTests(unittest.TestCase):
         self.assertIsNone(registry.receive_relay(self.parent))
 
     def test_bad_control_message_closes_received_descriptor(self):
-        self.inject(b"wrong", [self.endpoint.fileno()])
-        self.assert_refused_without_leak()
+        self.assert_refused_without_leak("bad-control")
 
     def test_truncated_message_closes_received_descriptor(self):
-        self.inject(registry._RELAY_MESSAGE + b"extra", [self.endpoint.fileno()])
-        self.assert_refused_without_leak()
+        self.assert_refused_without_leak("truncated")
 
     def test_multiple_or_truncated_descriptors_all_close(self):
         for count in (2, 20):
             with self.subTest(count=count):
-                self.inject(registry._RELAY_MESSAGE, [self.endpoint.fileno()] * count)
-                self.assert_refused_without_leak()
+                self.assert_refused_without_leak(f"descriptors-{count}")
 
     def test_regular_file_descriptor_refuses_without_leak(self):
-        with tempfile.TemporaryFile() as fixture:
-            self.inject(registry._RELAY_MESSAGE, [fixture.fileno()])
-            self.assert_refused_without_leak()
+        self.assert_refused_without_leak("regular-file")
 
     def test_network_and_unconnected_sockets_refuse_without_leak(self):
-        for family, kind in ((socket.AF_INET, socket.SOCK_STREAM),
-                             (socket.AF_UNIX, socket.SOCK_STREAM),
-                             (socket.AF_UNIX, socket.SOCK_DGRAM)):
-            with self.subTest(family=family, kind=kind), socket.socket(family, kind) as wrong:
-                self.inject(registry._RELAY_MESSAGE, [wrong.fileno()])
-                self.assert_refused_without_leak()
+        for scenario in ("inet-stream", "unix-stream", "unix-dgram"):
+            with self.subTest(scenario=scenario):
+                self.assert_refused_without_leak(scenario)
+
+    def test_leaked_descriptor_fails_the_census(self):
+        """The census is not decor: suppress the refusal path's own close, get red."""
+        probe = self.run_fd_probe("descriptors-2" + _LEAK_SUFFIX)
+        self.assertEqual(probe.returncode, 5, f"{probe.stdout}\n{probe.stderr}")
+        self.assertIn(_PROBE_CHANGED, probe.stdout)
+        self.assertNotIn("added=[]", probe.stdout)
 
     def test_sender_rejects_wrong_control_type(self):
         with self.assertRaisesRegex(ValueError, "private Unix packet"):
             registry.send_relay(self.local, self.endpoint)
 
     def test_missing_descriptor_refuses(self):
-        self.child.send(registry._RELAY_MESSAGE)
-        self.assert_refused_without_leak()
+        self.assert_refused_without_leak("missing")
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == _FD_PROBE_FLAG:
+        sys.exit(_run_fd_probe(sys.argv[2]))
     unittest.main()

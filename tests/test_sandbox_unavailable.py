@@ -32,6 +32,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.support.owned_spawn import fake_owned_spawn
 from tinyassets.branches import BranchDefinition, NodeDefinition
 from tinyassets.providers.base import (
     SandboxUnavailableError,
@@ -286,7 +287,12 @@ class TestExtBranchValidateSandboxWarnings:
     def test_missing_branch_returns_error(self):
         from tinyassets.api.branches import _ext_branch_validate
 
-        with patch("tinyassets.daemon_server.get_branch_definition", side_effect=KeyError("b1")):
+        # An absent ID also falls back to the caller-visible name catalogue.
+        # Model both not-found reads; never rely on a prepopulated global DB.
+        with (
+            patch("tinyassets.daemon_server.get_branch_definition", side_effect=KeyError("b1")),
+            patch("tinyassets.daemon_server.list_branch_definitions", return_value=[]),
+        ):
             result = json.loads(_ext_branch_validate({"branch_def_id": "b1"}))
         assert "error" in result
 
@@ -471,16 +477,14 @@ class TestClaudeProviderBwrapDetection:
         # stdout EOF immediately; stderr carries the bwrap failure signature.
         proc = _make_stream_proc(returncode=0, stdout_lines=[], stderr=bwrap_stderr)
 
-        async def fake_exec(*args, **kwargs):
-            return proc
-
         provider = ClaudeProvider()
 
         with patch.object(sys, "platform", "linux"):
-            with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
-                with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
-                    with pytest.raises(SandboxUnavailableError):
-                        asyncio.run(provider.complete("hello", "", ModelConfig()))
+            with fake_owned_spawn(
+                "tinyassets.providers.claude_provider", return_value=proc,
+            ):
+                with pytest.raises(SandboxUnavailableError):
+                    asyncio.run(provider.complete("hello", "", ModelConfig()))
 
     def test_normal_stderr_does_not_raise(self):
         from tinyassets.providers.base import ModelConfig
@@ -496,15 +500,13 @@ class TestClaudeProviderBwrapDetection:
             stderr=b"normal warning",
         )
 
-        async def fake_exec(*args, **kwargs):
-            return proc
-
         provider = ClaudeProvider()
 
         with patch.object(sys, "platform", "linux"):
-            with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
-                with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
-                    result = asyncio.run(provider.complete("hello", "", ModelConfig()))
+            with fake_owned_spawn(
+                "tinyassets.providers.claude_provider", return_value=proc,
+            ):
+                result = asyncio.run(provider.complete("hello", "", ModelConfig()))
         assert result.text == "response text"
 
 
@@ -516,16 +518,14 @@ class TestCodexProviderBwrapDetection:
         bwrap_stderr = b"bwrap: No permissions to create a new namespace\n"
         proc = _make_proc_mock(returncode=0, stdout=b"some output", stderr=bwrap_stderr)
 
-        async def fake_exec(*args, **kwargs):
-            return proc
-
         provider = CodexProvider()
 
         with patch.object(sys, "platform", "linux"):
-            with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
-                with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
-                    with pytest.raises(SandboxUnavailableError):
-                        asyncio.run(provider.complete("hello", "", ModelConfig()))
+            with fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=proc,
+            ):
+                with pytest.raises(SandboxUnavailableError):
+                    asyncio.run(provider.complete("hello", "", ModelConfig()))
 
     def test_normal_stderr_does_not_raise(self):
         from tinyassets.providers.base import ModelConfig
@@ -533,13 +533,11 @@ class TestCodexProviderBwrapDetection:
 
         proc = _make_proc_mock(returncode=0, stdout=b"codex output", stderr=b"info log")
 
-        async def fake_exec(*args, **kwargs):
-            return proc
-
         provider = CodexProvider()
 
         with patch.object(sys, "platform", "linux"):
-            with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
-                with patch("asyncio.create_subprocess_shell", side_effect=fake_exec):
-                    result = asyncio.run(provider.complete("hello", "", ModelConfig()))
+            with fake_owned_spawn(
+                "tinyassets.providers.codex_provider", return_value=proc,
+            ):
+                result = asyncio.run(provider.complete("hello", "", ModelConfig()))
         assert result.text == "codex output"

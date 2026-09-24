@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from scripts.check_drop_first_exec import load_modes
+from tests.support.owned_spawn import install_fake_owned_spawn
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.base import ModelConfig
 from tinyassets.providers.codex_provider import _structured_failure_excerpt
@@ -60,7 +61,9 @@ async def test_real_provider_nonzero_paths_keep_json_reason_and_confinement(
     auth_dir.mkdir()
     proc = AsyncMock()
     proc.returncode = returncode
-    launch = AsyncMock(return_value=proc)
+    # Spawns go through the owned-process seam; a stand-in cannot answer the
+    # POSIX anchor handshake, so record the argv at the seam itself.
+    launch = install_fake_owned_spawn(monkeypatch, provider.__name__, return_value=proc)
     monkeypatch.setattr(provider, "_resolve_codex_cmd", lambda: (["codex"], False))
     monkeypatch.setattr(provider, "get_sandbox_status", lambda: {
         "bwrap_available": True, "bwrap_path": "fake-bwrap",
@@ -70,7 +73,6 @@ async def test_real_provider_nonzero_paths_keep_json_reason_and_confinement(
     })
     monkeypatch.setattr(provider, "_codex_sandbox_mounts", lambda command: [])
     monkeypatch.setattr(provider, "_codex_home_file_mounts", lambda path: [])
-    monkeypatch.setattr(provider.asyncio, "create_subprocess_exec", launch)
     monkeypatch.setattr(provider, "_stream_codex_exec", AsyncMock(return_value=(
         _event("turn.failed", error={"message": "model rejected sk-secretsensitive123"}),
         b"tracing catalogue " + b"x" * 5000,
@@ -136,7 +138,9 @@ async def test_served_model_selection_is_native_unless_explicit(monkeypatch, tmp
     auth_dir.mkdir()
     proc = AsyncMock()
     proc.returncode = 0
-    launch = AsyncMock(return_value=proc)
+    # Spawns go through the owned-process seam; a stand-in cannot answer the
+    # POSIX anchor handshake, so record the argv at the seam itself.
+    launch = install_fake_owned_spawn(monkeypatch, provider.__name__, return_value=proc)
     monkeypatch.setattr(provider, "_resolve_codex_cmd", lambda: (["codex"], False))
     monkeypatch.setattr(provider, "get_sandbox_status", lambda: {
         "bwrap_available": True, "bwrap_path": "fake-bwrap",
@@ -146,7 +150,6 @@ async def test_served_model_selection_is_native_unless_explicit(monkeypatch, tmp
     })
     monkeypatch.setattr(provider, "_codex_sandbox_mounts", lambda command: [])
     monkeypatch.setattr(provider, "_codex_home_file_mounts", lambda path: [])
-    monkeypatch.setattr(provider.asyncio, "create_subprocess_exec", launch)
     monkeypatch.setattr(provider, "_stream_codex_exec", AsyncMock(return_value=(
         _event("item.completed", item={"type": "agent_message", "text": "result"})
         + _event("turn.completed", usage={"input_tokens": 3, "output_tokens": 2}),
@@ -169,4 +172,4 @@ async def test_served_model_selection_is_native_unless_explicit(monkeypatch, tmp
     assert ("--sandbox", "workspace-write") in zip(inner, inner[1:])
     for name in ("shell_tool", "apps", "plugins", "remote_plugin"):
         assert ("--disable", name) in zip(inner, inner[1:])
-    assert launch.await_count == 1
+    assert launch.call_count == 1

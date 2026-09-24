@@ -12,9 +12,7 @@ import json
 import logging
 import os
 import re
-import shlex
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -35,6 +33,11 @@ from tinyassets.providers.base import (
     get_sandbox_status,
     subprocess_env_for_provider,
 )
+from tinyassets.providers.owned_process import (
+    aspawn_owned,
+    kill_owned_tree,
+    no_window_kwargs,
+)
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -42,9 +45,7 @@ logger = logging.getLogger(__name__)
 
 def _no_window_kwargs() -> dict:
     """Return subprocess kwargs to suppress console windows on Windows."""
-    if sys.platform == "win32":
-        return {"creationflags": subprocess.CREATE_NO_WINDOW}
-    return {}
+    return no_window_kwargs()
 
 
 def _resolve_codex_cmd() -> tuple[list[str], bool]:
@@ -330,14 +331,20 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
 
 
 def _terminate(proc) -> None:
-    """Kill a provider subprocess, tolerating one that has already exited.
+    """Kill a provider subprocess tree, tolerating one that has already exited.
 
-    `proc.kill()` on a finished process raises ProcessLookupError on POSIX, which would
-    replace the real exception (often CancelledError) with a confusing one.
+    Signals only the group recorded for this process at spawn, so a descendant
+    the CLI started (the Windows shim's real binary, the engine-MCP server) dies
+    with the turn instead of outliving it unowned. A process this adapter did
+    not spawn -- a test double, an externally supplied handle -- is unmarked and
+    is killed individually exactly as before, never by group.
+
+    Killing a finished process raises ProcessLookupError on POSIX, which would
+    replace the real exception (often CancelledError) with a confusing one; the
+    helper suppresses that on every path.
     """
     with contextlib.suppress(ProcessLookupError, OSError):
-        if proc.returncode is None:
-            proc.kill()
+        kill_owned_tree(proc)
 
 
 # --- streamed reader (parity with claude_provider._read_stream) --------------
@@ -823,7 +830,6 @@ class CodexProvider(BaseProvider):
             "--ephemeral",
         ]
 
-        win_kw = _no_window_kwargs()
         if config.sandbox_workspace:
             inner_cmd = [*cmd, "-C", "/workspace"]
             # A converse/chat turn is NOT a coding task: give codex an EMPTY
@@ -895,176 +901,175 @@ class CodexProvider(BaseProvider):
             proc_env["HOME"] = "/tmp"
         else:
             cmd_with_cwd = [*cmd, "-C", _codex_workdir()]
-        if use_shell:
-            proc = await asyncio.create_subprocess_shell(
-                shlex.join(cmd_with_cwd),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=_STDOUT_READER_LIMIT,
-                env=proc_env,
-                **win_kw,
-            )
-        else:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd_with_cwd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=_STDOUT_READER_LIMIT,
-                env=proc_env,
-                **win_kw,
-            )
+        # Spawn as an owned FAMILY: on POSIX a live anchor holds the group id
+        # so teardown reaches what the CLI starts without ever naming a group
+        # integer that could have been recycled. Fails closed if it cannot.
+        proc = await aspawn_owned(
+            cmd_with_cwd,
+            shell=use_shell,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=_STDOUT_READER_LIMIT,
+            env=proc_env,
+        )
 
-        start = time.monotonic()
-
+        # EVERY exit -- success, classified raise, cancellation -- ends the
+        # owned family. The clean-exit path never reaped anything before, so
+        # a descendant the CLI left behind outlived each successful turn,
+        # along with the anchor and its control descriptor.
         try:
-            if machine_accounting:
-                # `--json` is on this path only, so ONLY this path has protocol
-                # events to watch. Streamed under the idle-watchdog profile,
-                # like claude: a progressing turn is never killed by a wall
-                # clock, a hung one ends in ~30s. See _stream_codex_exec.
-                stdout, stderr = await _stream_codex_exec(
-                    proc, full_input.encode("utf-8"), config, start=start,
-                )
-            else:
-                # Plain-text stdout, no events to reset a watchdog on: the
-                # legacy total timeout stays exactly as it was. Streaming this
-                # path killed every long non-served call on the 10s init
-                # budget (Codex round 2, P0 - reproduced against the real CLI).
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(input=full_input.encode("utf-8")),
-                    timeout=config.timeout,
-                )
-        except asyncio.TimeoutError:
-            _terminate(proc)
-            await proc.wait()
-            raise ProviderTimeoutError(
-                f"codex exec exceeded {config.timeout}s timeout"
-            )
-        except BaseException:
-            # Every OTHER way out — cancellation, shutdown, an unexpected error in
-            # communicate() — used to leave the subprocess running. Cross-family review
-            # reproduced it: cancelling an in-flight call gave
-            # `{'slot_live': 0, 'subprocess_killed': False}`. The admission slot was
-            # returned while the ~189 MB process it was accounting for was still alive,
-            # so the bound would drift further from reality with every cancellation
-            # until the box ran out of memory it believed was free.
-            #
-            # BaseException, not Exception: `asyncio.CancelledError` derives from
-            # BaseException, and cancellation is the case that actually happens.
-            _terminate(proc)
-            with contextlib.suppress(Exception):
+            start = time.monotonic()
+
+            try:
+                if machine_accounting:
+                    # `--json` is on this path only, so ONLY this path has protocol
+                    # events to watch. Streamed under the idle-watchdog profile,
+                    # like claude: a progressing turn is never killed by a wall
+                    # clock, a hung one ends in ~30s. See _stream_codex_exec.
+                    stdout, stderr = await _stream_codex_exec(
+                        proc, full_input.encode("utf-8"), config, start=start,
+                    )
+                else:
+                    # Plain-text stdout, no events to reset a watchdog on: the
+                    # legacy total timeout stays exactly as it was. Streaming this
+                    # path killed every long non-served call on the 10s init
+                    # budget (Codex round 2, P0 - reproduced against the real CLI).
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(input=full_input.encode("utf-8")),
+                        timeout=config.timeout,
+                    )
+            except asyncio.TimeoutError:
+                _terminate(proc)
                 await proc.wait()
-            raise
-
-        elapsed_ms = (time.monotonic() - start) * 1000
-
-        stderr_text = stderr.decode("utf-8", errors="replace")
-        failure_excerpt = _structured_failure_excerpt(
-            stdout, stderr_text, machine=machine_accounting,
-        )
-        # Sandbox failures are classified FIRST: they are a host defect, not a
-        # provider outage, and must surface as such instead of being folded
-        # into a "likely unavailable" cooldown (how the 2026-08-21 outage hid).
-        check_bwrap_failure(stderr_text)
-        # The protocol's word beats the exit code: a stream that carries
-        # ``turn.completed`` is a finished turn whatever the process did in its
-        # teardown (see _codex_turn_completed). Only the --json path has it.
-        if machine_accounting and proc.returncode != 0 and _codex_turn_completed(stdout):
-            logger.warning(
-                "codex exec exit %s after turn.completed; keeping the finished turn",
-                proc.returncode,
-            )
-        # Quick exit-code-1 => provider unavailable (same heuristic as claude).
-        # Carry a REDACTED excerpt of codex's own words so the real cause is
-        # visible; never raw stderr (it can carry token material).
-        elif proc.returncode == 1 and elapsed_ms < 5000:
-            raise ProviderUnavailableError(
-                "codex exec returned exit code 1 quickly -- likely unavailable: "
-                + failure_excerpt
-            )
-        elif proc.returncode != 0:
-            raise ProviderError(
-                f"codex exec exit {proc.returncode}: {failure_excerpt}"
-            )
-
-        stdout_text = stdout.decode("utf-8", errors="replace").strip()
-        input_tokens = None
-        output_tokens = None
-        cost_microunits = None
-        if machine_accounting:
-            messages: list[str] = []
-            usage: dict[str, object] | None = None
-            try:
-                events = [json.loads(line) for line in stdout_text.splitlines() if line.strip()]
-            except (json.JSONDecodeError, TypeError) as exc:
-                raise ProviderError("codex returned invalid accounting output") from exc
-            for event in events:
-                if not isinstance(event, dict):
-                    raise ProviderError("codex returned invalid accounting output")
-                item = event.get("item")
-                if (
-                    event.get("type") == "item.completed"
-                    and isinstance(item, dict)
-                    and item.get("type") == "agent_message"
-                    and isinstance(item.get("text"), str)
-                ):
-                    messages.append(item["text"])
-                if event.get("type") == "turn.completed" and isinstance(
-                    event.get("usage"), dict
-                ):
-                    usage = event["usage"]
-            if not messages or usage is None:
-                raise ProviderError("codex accounting output omitted result or usage")
-            try:
-                input_tokens = int(usage["input_tokens"])
-                output_tokens = int(usage["output_tokens"]) + int(
-                    usage.get("reasoning_output_tokens", 0)
+                raise ProviderTimeoutError(
+                    f"codex exec exceeded {config.timeout}s timeout"
                 )
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ProviderError("codex accounting output contained invalid usage") from exc
-            if input_tokens < 0 or output_tokens < 0:
-                raise ProviderError("codex accounting output contained invalid usage")
-            cost_microunits = (input_tokens + output_tokens) * 100
-            text = messages[-1].strip()
-        else:
-            text = stdout_text
+            except BaseException:
+                # Every OTHER way out — cancellation, shutdown, an unexpected error in
+                # communicate() — used to leave the subprocess running. Cross-family review
+                # reproduced it: cancelling an in-flight call gave
+                # `{'slot_live': 0, 'subprocess_killed': False}`. The admission slot was
+                # returned while the ~189 MB process it was accounting for was still alive,
+                # so the bound would drift further from reality with every cancellation
+                # until the box ran out of memory it believed was free.
+                #
+                # BaseException, not Exception: `asyncio.CancelledError` derives from
+                # BaseException, and cancellation is the case that actually happens.
+                _terminate(proc)
+                with contextlib.suppress(Exception):
+                    await proc.wait()
+                raise
 
-        if not text:
-            # codex v0.122+ exits 0 on auth failure (401) but emits nothing to
-            # stdout. Detect the silent-auth-failure pattern and surface it as a
-            # hard error rather than returning an empty response that cascades
-            # silently through downstream nodes.
-            _auth_patterns = ("401", "Unauthorized", "Reconnecting", "auth")
-            stderr_lower = stderr_text.lower()
-            if any(p.lower() in stderr_lower for p in _auth_patterns):
-                excerpt = stderr_text[:300].strip()
+            elapsed_ms = (time.monotonic() - start) * 1000
+
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            failure_excerpt = _structured_failure_excerpt(
+                stdout, stderr_text, machine=machine_accounting,
+            )
+            # Sandbox failures are classified FIRST: they are a host defect, not a
+            # provider outage, and must surface as such instead of being folded
+            # into a "likely unavailable" cooldown (how the 2026-08-21 outage hid).
+            check_bwrap_failure(stderr_text)
+            # The protocol's word beats the exit code: a stream that carries
+            # ``turn.completed`` is a finished turn whatever the process did in its
+            # teardown (see _codex_turn_completed). Only the --json path has it.
+            if machine_accounting and proc.returncode != 0 and _codex_turn_completed(stdout):
+                logger.warning(
+                    "codex exec exit %s after turn.completed; keeping the finished turn",
+                    proc.returncode,
+                )
+            # Quick exit-code-1 => provider unavailable (same heuristic as claude).
+            # Carry a REDACTED excerpt of codex's own words so the real cause is
+            # visible; never raw stderr (it can carry token material).
+            elif proc.returncode == 1 and elapsed_ms < 5000:
+                raise ProviderUnavailableError(
+                    "codex exec returned exit code 1 quickly -- likely unavailable: "
+                    + failure_excerpt
+                )
+            elif proc.returncode != 0:
                 raise ProviderError(
-                    f"codex returned empty stdout with auth-error signal in stderr "
-                    f"(exit={proc.returncode}): {excerpt}"
+                    f"codex exec exit {proc.returncode}: {failure_excerpt}"
                 )
-            raise ProviderError(
-                f"codex returned empty response (exit={proc.returncode}); "
-                f"stderr: {stderr_text[:200].strip() or '(empty)'}"
+
+            stdout_text = stdout.decode("utf-8", errors="replace").strip()
+            input_tokens = None
+            output_tokens = None
+            cost_microunits = None
+            if machine_accounting:
+                messages: list[str] = []
+                usage: dict[str, object] | None = None
+                try:
+                    events = [json.loads(line) for line in stdout_text.splitlines() if line.strip()]
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise ProviderError("codex returned invalid accounting output") from exc
+                for event in events:
+                    if not isinstance(event, dict):
+                        raise ProviderError("codex returned invalid accounting output")
+                    item = event.get("item")
+                    if (
+                        event.get("type") == "item.completed"
+                        and isinstance(item, dict)
+                        and item.get("type") == "agent_message"
+                        and isinstance(item.get("text"), str)
+                    ):
+                        messages.append(item["text"])
+                    if event.get("type") == "turn.completed" and isinstance(
+                        event.get("usage"), dict
+                    ):
+                        usage = event["usage"]
+                if not messages or usage is None:
+                    raise ProviderError("codex accounting output omitted result or usage")
+                try:
+                    input_tokens = int(usage["input_tokens"])
+                    output_tokens = int(usage["output_tokens"]) + int(
+                        usage.get("reasoning_output_tokens", 0)
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ProviderError("codex accounting output contained invalid usage") from exc
+                if input_tokens < 0 or output_tokens < 0:
+                    raise ProviderError("codex accounting output contained invalid usage")
+                cost_microunits = (input_tokens + output_tokens) * 100
+                text = messages[-1].strip()
+            else:
+                text = stdout_text
+
+            if not text:
+                # codex v0.122+ exits 0 on auth failure (401) but emits nothing to
+                # stdout. Detect the silent-auth-failure pattern and surface it as a
+                # hard error rather than returning an empty response that cascades
+                # silently through downstream nodes.
+                _auth_patterns = ("401", "Unauthorized", "Reconnecting", "auth")
+                stderr_lower = stderr_text.lower()
+                if any(p.lower() in stderr_lower for p in _auth_patterns):
+                    excerpt = stderr_text[:300].strip()
+                    raise ProviderError(
+                        f"codex returned empty stdout with auth-error signal in stderr "
+                        f"(exit={proc.returncode}): {excerpt}"
+                    )
+                raise ProviderError(
+                    f"codex returned empty response (exit={proc.returncode}); "
+                    f"stderr: {stderr_text[:200].strip() or '(empty)'}"
+                )
+
+            from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
+            return ProviderResponse(
+                text=text,
+                provider=self.name,
+                # JSONL does not report the resolved model. Do not invent an exact
+                # model name or scrape unstructured stderr to fill this field.
+                model=model or "provider-default",
+                family=self.family,
+                latency_ms=elapsed_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_microunits=cost_microunits,
+                # JSONL intermediate tool events are best-effort. Even a recognized
+                # successful terminal proves no absence of earlier internal effects.
+                native_evidence=NativeCompletionEvidence(
+                    self.name, False, type(proc.returncode) is int, "unknown",
+                ) if machine_accounting else None,
             )
-
-        from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
-
-        return ProviderResponse(
-            text=text,
-            provider=self.name,
-            # JSONL does not report the resolved model. Do not invent an exact
-            # model name or scrape unstructured stderr to fill this field.
-            model=model or "provider-default",
-            family=self.family,
-            latency_ms=elapsed_ms,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_microunits=cost_microunits,
-            # JSONL intermediate tool events are best-effort. Even a recognized
-            # successful terminal proves no absence of earlier internal effects.
-            native_evidence=NativeCompletionEvidence(
-                self.name, False, type(proc.returncode) is int, "unknown",
-            ) if machine_accounting else None,
-        )
+        finally:
+            kill_owned_tree(proc)
