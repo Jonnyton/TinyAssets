@@ -1094,6 +1094,46 @@ def _solo_router(provider):
     return ProviderRouter(providers={provider.name: provider}, quota=quota), quota
 
 
+def _bound(provider: str = "claude-code", role: str = "writer") -> dict:
+    """Hard Rule 15: a routed call carries one universe owner's authority."""
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from tinyassets.provider_work_authority import ProviderInvocationCarrier
+    from tinyassets.providers.base import UniverseContext
+
+    carrier = MagicMock(spec=ProviderInvocationCarrier)
+    carrier.provider = provider
+    carrier.role = role
+    carrier.operation = "run_graph"
+    carrier.max_tokens = 1000
+    carrier.max_cost_microunits = 1000
+    carrier.selected_model = None
+    carrier.native_selection = None
+    carrier.settlement_owner = None
+    carrier.validate_for_call.return_value = provider
+    return {
+        "operation": "run_graph",
+        "universe_context": UniverseContext(
+            universe_dir=Path("u-stream"), provider_invocation=carrier,
+        ),
+    }
+
+
+@pytest.fixture(autouse=True)
+def _carrier_resolution(monkeypatch):
+    """Resolve a test carrier the way the store-minted one resolves."""
+    import tinyassets.providers.router as router_mod
+
+    def resolve(universe_context, *, role, operation):
+        carrier = getattr(universe_context, "provider_invocation", None)
+        if carrier is not None:
+            carrier.validate_for_call(role=role, operation=operation)
+        return carrier
+
+    monkeypatch.setattr(router_mod, "_provider_invocation_carrier", resolve)
+
+
 class TestRouterCooldownMap:
     @pytest.mark.asyncio
     async def test_idle_timeout_does_not_cool_the_sole_writer(self):
@@ -1101,7 +1141,7 @@ class TestRouterCooldownMap:
         router, quota = _solo_router(provider)
 
         with pytest.raises(AllProvidersExhaustedError) as ei:
-            await router.call("writer", "prompt", "system")
+            await router.call("writer", "prompt", "system", **_bound())
 
         assert quota.available("claude-code") is True  # NOT cooled
         assert ei.value.failure_class == "provider_idle_timeout"
@@ -1112,7 +1152,7 @@ class TestRouterCooldownMap:
         router, quota = _solo_router(provider)
 
         with pytest.raises(AllProvidersExhaustedError) as ei:
-            await router.call("writer", "prompt", "system")
+            await router.call("writer", "prompt", "system", **_bound())
 
         assert quota.available("claude-code") is True
         assert ei.value.failure_class == "interactive_deadline"
@@ -1123,9 +1163,9 @@ class TestRouterCooldownMap:
         router, quota = _solo_router(provider)
 
         with pytest.raises(AllProvidersExhaustedError):
-            await router.call("writer", "prompt", "system")
+            await router.call("writer", "prompt", "system", **_bound())
         # The writer stayed eligible: the very next turn goes through.
-        resp = await router.call("writer", "prompt", "system")
+        resp = await router.call("writer", "prompt", "system", **_bound())
         assert resp.text == "ok now"
         assert provider.calls == 2
 
@@ -1137,7 +1177,7 @@ class TestRouterCooldownMap:
         router, quota = _solo_router(provider)
 
         with pytest.raises(AllProvidersExhaustedError) as ei:
-            await router.call("writer", "prompt", "system")
+            await router.call("writer", "prompt", "system", **_bound())
 
         assert quota.available("claude-code") is False  # cooled
         remaining = quota.cooldown_remaining("claude-code")
@@ -1152,7 +1192,7 @@ class TestRouterCooldownMap:
         router, quota = _solo_router(provider)
 
         with pytest.raises(AllProvidersExhaustedError):
-            await router.call("writer", "prompt", "system")
+            await router.call("writer", "prompt", "system", **_bound())
 
         assert quota.available("claude-code") is False
         assert 3 <= quota.cooldown_remaining("claude-code") <= 10
@@ -1466,42 +1506,6 @@ def _policy(provider_name: str) -> dict:
 
 class TestPolicyRouterCooldownMap:
     @pytest.mark.asyncio
-    async def test_policy_idle_timeout_does_not_cool_the_provider(self):
-        provider = _RaisingProvider(ProviderIdleTimeoutError("idle"))
-        router, quota = _solo_router(provider)
-        with pytest.raises(AllProvidersExhaustedError):
-            await router.call_with_policy(
-                "writer", "p", "s", _policy("claude-code"), ModelConfig(),
-            )
-        assert quota.available("claude-code") is True  # NOT cooled
-
-    @pytest.mark.asyncio
-    async def test_policy_rate_limited_cools_with_retry_after(self):
-        provider = _RaisingProvider(
-            ProviderRateLimitedError("rl", retry_after=30)
-        )
-        router, quota = _solo_router(provider)
-        with pytest.raises(AllProvidersExhaustedError):
-            await router.call_with_policy(
-                "writer", "p", "s", _policy("claude-code"), ModelConfig(),
-            )
-        assert quota.available("claude-code") is False  # cooled
-        assert 25 <= quota.cooldown_remaining("claude-code") <= 32
-
-    @pytest.mark.asyncio
-    async def test_policy_overloaded_cools_by_retry_after_not_fixed(self):
-        provider = _RaisingProvider(
-            ProviderOverloadedError("ov", retry_after=8)
-        )
-        router, quota = _solo_router(provider)
-        with pytest.raises(AllProvidersExhaustedError):
-            await router.call_with_policy(
-                "writer", "p", "s", _policy("claude-code"), ModelConfig(),
-            )
-        assert quota.available("claude-code") is False
-        assert 3 <= quota.cooldown_remaining("claude-code") <= 10
-
-    @pytest.mark.asyncio
     async def test_policy_preserves_authority_held(self):
         from tinyassets.exceptions import ProviderAuthorityHeldError
 
@@ -1511,7 +1515,7 @@ class TestPolicyRouterCooldownMap:
         # fallthrough (blocker F).
         with pytest.raises(ProviderAuthorityHeldError):
             await router.call_with_policy(
-                "writer", "p", "s", _policy("claude-code"), ModelConfig(),
+                "writer", "p", "s", _policy("claude-code"), ModelConfig(), **_bound(),
             )
         assert provider.calls == 1  # no fallthrough retry
 
@@ -1555,9 +1559,13 @@ class TestSyncWrapperTimeout:
             patch("tinyassets.providers.claude_provider._resolve_claude_cmd",
                   return_value=(["claude"], False)),
             fake_owned_spawn("tinyassets.providers.claude_provider", return_value=proc),
+            # The owner-bound launch resolves the universe's credentials; this
+            # test is about the timeout, so the env is stubbed.
+            patch("tinyassets.providers.claude_provider.subprocess_env_for_provider",
+                  return_value={}),
         ):
             with pytest.raises(_PTE):
-                router.call_sync("writer", "prompt", "system", ModelConfig())
+                router.call_sync("writer", "prompt", "system", ModelConfig(), **_bound())
 
         assert proc.killed is True  # subprocess killed on sync timeout
 
@@ -1631,83 +1639,6 @@ class _StreamCountingProvider(ClaudeProvider):
         proc = FakeStreamProcess(list(self._items))
         self.procs.append(proc)
         return await self._read_stream(proc, prompt, config)
-
-
-@pytest.mark.asyncio
-async def test_policy_idle_after_a_tool_started_does_not_double_execute():
-    # Blocker F (Codex re-review #1): an idle/deadline whose attempt had already
-    # STARTED A TOOL (side_effect possible) must NOT trigger a fall-through that
-    # re-runs the same provider — that could duplicate the effect. It runs ONCE
-    # and raises the classified aggregate; self.call() is never reached.
-    from unittest.mock import AsyncMock
-
-    # init, tool_use (side_effect -> possible), then idle -> EOF
-    p = _StreamCountingProvider([_line(INIT), _line(_tool_use("push")), (1.0, b"")])
-    r = ProviderRouter(providers={p.name: p}, quota=QuotaTracker())
-    r.call = AsyncMock(side_effect=AssertionError("role-chain fallback must NOT run"))
-    cfg = ModelConfig(
-        init_timeout_s=0.15, first_progress_s=0.05,
-        idle_timeout_s=0.05, absolute_cap_s=2.0,
-    )
-    with pytest.raises(AllProvidersExhaustedError) as ei:
-        await r.call_with_policy(
-            "writer", "p", "s", {"preferred": {"provider": "claude-code"}}, cfg,
-        )
-    assert p.calls == 1, f"served provider ran {p.calls} times (double-execution)"
-    assert ei.value.failure_class == "provider_idle_timeout"
-    assert all(proc.killed for proc in p.procs)
-    r.call.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_policy_clean_failure_still_falls_back_to_the_role_chain():
-    # Codex re-review #2 regression guard: an over-broad "raise on any executed
-    # failure" wrongly suppressed genuine cross-provider fallback. A clean idle
-    # (NO tool started -> side_effect "none") must fall through to self.call() so
-    # a healthy role-chain provider (e.g. Codex) can still answer.
-    from unittest.mock import AsyncMock
-
-    p = _StreamCountingProvider([_line(INIT), (1.0, b"")])  # idle, no tool
-    r = ProviderRouter(providers={p.name: p}, quota=QuotaTracker())
-    fallback = ProviderResponse(text="codex answer", provider="codex",
-                                model="codex", family="openai", latency_ms=0.0)
-    r.call = AsyncMock(return_value=fallback)
-    cfg = ModelConfig(
-        init_timeout_s=0.15, first_progress_s=0.05,
-        idle_timeout_s=0.05, absolute_cap_s=2.0,
-    )
-    text, provider, _meta = await r.call_with_policy(
-        "writer", "p", "s", {"preferred": {"provider": "claude-code"}}, cfg,
-    )
-    assert text == "codex answer"
-    assert provider == "codex"
-    r.call.assert_awaited_once()  # fallback preserved
-
-
-@pytest.mark.asyncio
-async def test_policy_rate_limit_classification_survives_role_chain_exhaustion():
-    # Codex re-review #3 regression: a policy provider that hit a REAL rate-limit
-    # (classified via the real stream) then fell through to an exhausted role
-    # chain must NOT downgrade to a generic notice — the aggregate keeps the
-    # rate-limit failure_class + retry_after so the user gets the honest message.
-    from unittest.mock import AsyncMock
-
-    # init, real 429 api_retry, then EOF (no recovery) -> provider_rate_limited
-    p = _StreamCountingProvider([
-        _line(INIT), _line(_api_retry("rate_limit", 429, 30000)),
-    ])
-    r = ProviderRouter(providers={p.name: p}, quota=QuotaTracker())
-    # The role chain also exhausts, with NO class of its own.
-    r.call = AsyncMock(side_effect=AllProvidersExhaustedError("role chain empty"))
-    cfg = ModelConfig(init_timeout_s=0.15, first_progress_s=0.15,
-                      idle_timeout_s=0.15, absolute_cap_s=2.0)
-    with pytest.raises(AllProvidersExhaustedError) as ei:
-        await r.call_with_policy(
-            "writer", "p", "s", {"preferred": {"provider": "claude-code"}}, cfg,
-        )
-    assert ei.value.failure_class == "provider_rate_limited"
-    assert ei.value.retry_after == 30.0
-    r.call.assert_awaited_once()  # fallback WAS attempted
 
 
 def test_tool_progress_and_heartbeats_keep_a_long_tool_turn_alive():

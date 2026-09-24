@@ -23,14 +23,13 @@ cleared, and add one line to the completion record.
 | C6 | Connect ANY compute source through vendor-neutral primitives, with no vendor code (PR #3949 directive) | The user's agent connects a provider the platform has never seen (OAuth or API key plus a standard protocol, or a command adapter) and it answers a turn with tools, with no platform patch |
 | C2 | Same account, same universe from any client (Claude, ChatGPT, app, phone) | The same user reaches the same universe from ChatGPT and Claude, and sees the same history |
 | C29a | A send never vanishes silently (idle-tab 503 dropped two sends, 2026-09-24) | A send that fails leaves the text visible with "not sent, send again"; no silent drop |
-| C13 | Parallel and sequential runs are reliable | 20 consecutive checklist runs with no timeout and no replay |
+| C13 | Parallel and sequential runs are reliable | 20 consecutive checklist runs with no timeout and no replay. Progress 2026-09-24: cause found and fixed (PR3953: workflow nodes ran the CLI in /app with tools, and the model explored the source); since then 21/23 clean including 5 simultaneous (56-108s), sequential 18 clean in a row. Close after a few more ordinary retests with 0 timeouts |
 | C9 | Connections stay alive: generic OAuth token refresh for any connection | An OAuth-connected compute source or channel keeps working past token expiry across concurrent turns, with no reconnect and no vendor code |
 | C7 | Choose, see and switch models; defaults, fallback, failover | The actual source and model are shown; the selection, default and order are honored; failover on limit |
 | C8 | Connection progress; disconnect and reconnect | Saving, binding and result are visible, with bounded waits; access is preserved on refusal |
 | C5/C1 | First power with no LLM call: OpenRouter free or the user's own OpenRouter account at sign-in | A new free user signs in, authorizes OpenRouter, returns automatically, and gets a free-model answer with tools; no key paste |
 | C15 | Resume an interrupted run on its admitted version | Interrupt a run, resume it, and it runs the admitted version, not the edited draft |
 | C22 | Get outputs back: download run files, and a notice when background work finishes | Download a file a run produced; a notice arrives when a background run ends |
-| C23 | Workspaces, including durable concurrent waiting | Two runs contend; the second waits durably across a restart and proceeds; cancel still works |
 | C20 | Publish and remix any shape (workflow, agent, design) across users | User B remixes User A's published workflow into B's own universe; B's data is kept and nothing is inherited |
 | C28 | Deliver work between different owners' nodes | Two owners send and process, inspect both receipts, and verify rejection, duplicates and revocation |
 | C17 | Concurrent edits do not silently overwrite | A stale-read patch is refused with the current version |
@@ -51,4 +50,5 @@ cleared, and add one line to the completion record.
 - C14 Cancel, including a workspace wait (PR3927)
 - C19 Delete a workflow
 - C21 Upload files for runs (PR3896/3897)
+- C23 Durable workspace waiting (PR3950 + nomination fix PR3969). Live 2026-09-24 15:38 PDT: two contending runs both completed and the queue handed off in 0.13s. Restart survival is Linux-oracle proven, not live-induced
 - C29 Converse; replies survive refresh and long replies (PR3907/3916/3891). Partly reopened as C29a.

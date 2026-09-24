@@ -1037,7 +1037,12 @@ def _app_html() -> str:
 
 def test_the_app_page_carries_the_deletion_path():
     html = _app_html()
-    assert 'id="btn-account"' in html and 'id="btn-connect-account"' in html
+    # Every signed-in user, powered or not, lands in the chat (vendor-neutral
+    # slice 6 removed the full-page connect screen and its own Account
+    # button), so the chat header's Account button is the one entry point.
+    chat = html[html.index('id="view-chat"'):html.index("</header>", html.index('id="view-chat"'))]
+    assert 'id="btn-account"' in chat
+    assert '$("btn-account").addEventListener("click", showAccount);' in html
     assert 'id="btn-delete-account"' in html
     assert '"/mcp/app/account/delete"' in html
     assert 'confirm:"DELETE"' in html

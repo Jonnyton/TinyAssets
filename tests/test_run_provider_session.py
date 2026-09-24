@@ -1380,3 +1380,46 @@ def test_the_real_wrapper_still_rebinds_and_keeps_its_binding() -> None:
     # The whole point: swapping the session must not swap the binding.
     assert rebound.universe_context is sentinel
     assert rebound.operation == "run_graph"
+
+
+def test_foreground_claude_node_runs_in_its_universe_without_host_tools(
+    tmp_path, monkeypatch, authenticate_request,
+):
+    """A workflow node's claude call is pinned to its owner's universe.
+
+    Production 2026-09-24: prompt nodes launched `claude -p` in the daemon's
+    cwd (`/app`) with the CLI's default builtins, and about half of a parallel
+    probe's short nodes explored the platform source for 100-300s. Driven
+    through the real foreground run path; the codex node shows the scope.
+    """
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.providers.base import HOST_REACH_TOOLS
+    from tinyassets.providers.claude_provider import _sandbox_cli_args
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
+    branch = _branch(node_count=2)
+    branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
+    response, _provider, captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, branch,
+        model_access={name: ModelAccess("explicit", ("",)) for name in ("codex", "claude-code")},
+        services=("codex", "claude"),
+    )
+    assert response["terminal_status"] == "completed", response["terminal_error"]
+
+    [claude_config] = captured["providers"]["claude-code"].calls
+    [codex_config] = captured["providers"]["codex"].calls
+    # Both node calls are marked; each provider confines in its own way.
+    assert claude_config.workflow_node is True
+    assert codex_config.workflow_node is True
+
+    universe_dir = tmp_path / "universe_alice"
+    flags, run_cwd = _sandbox_cli_args(claude_config, universe_dir)
+    assert run_cwd == str(universe_dir)
+    assert flags[flags.index("--setting-sources") + 1] == "project"
+    denied = flags[flags.index("--disallowedTools") + 1:]
+    assert set(HOST_REACH_TOOLS) <= set(denied)
+    for tool in ("Bash", "Read", "Glob", "Grep"):
+        assert tool in denied
+    # Only host reach is removed: web tools and subagents are not the host's.
+    for kept in ("WebSearch", "WebFetch", "Agent"):
+        assert kept not in denied

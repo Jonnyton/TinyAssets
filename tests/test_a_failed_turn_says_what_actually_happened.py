@@ -277,6 +277,7 @@ def test_recording_keeps_provider_terminal_cause_after_shortening(caplog):
 async def test_router_failure_terminal_cause_reaches_served_log(caplog):
     import logging
 
+    from tests.support.owner_bound import owner_bound_call
     from tinyassets.exceptions import ProviderUnavailableError
     from tinyassets.providers.base import BaseProvider
     from tinyassets.providers.router import ProviderRouter
@@ -299,7 +300,7 @@ async def test_router_failure_terminal_cause_reaches_served_log(caplog):
 
     router = ProviderRouter(providers={"codex": FailingProvider()})
     with pytest.raises(AllProvidersExhaustedError) as caught:
-        await router.call("writer", "test prompt", "test system")
+        await owner_bound_call(router, "codex", prompt="test prompt", system="test system")
     with caplog.at_level(logging.WARNING):
         _record_served_failure("u-test", caught.value)
     attempt = next(a for a in caught.value.attempts if a.status == "failed")
@@ -324,6 +325,7 @@ async def test_idle_timeout_evidence_survives_to_the_served_log_and_nothing_else
     """
     import logging
 
+    from tests.support.owner_bound import owner_bound_call
     from tinyassets.exceptions import ProviderIdleTimeoutError
     from tinyassets.providers.base import BaseProvider
     from tinyassets.providers.router import ProviderRouter
@@ -359,7 +361,9 @@ async def test_idle_timeout_evidence_survives_to_the_served_log_and_nothing_else
 
     router = ProviderRouter(providers={"claude-code": IdleProvider()})
     with pytest.raises(AllProvidersExhaustedError) as caught:
-        await router.call("writer", "test prompt", "test system")
+        await owner_bound_call(
+            router, "claude-code", prompt="test prompt", system="test system",
+        )
     with caplog.at_level(logging.WARNING, logger="universe_server"):
         _record_served_failure("u-test", caught.value)
 

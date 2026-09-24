@@ -878,6 +878,10 @@ class _BackgroundAssignedProviderSession:
                         call_config,
                         credential_snapshot_dir=snapshot_dir,
                     )
+                if isinstance(call_config, ModelConfig):
+                    # A workflow node call: each provider confines it to the
+                    # owner's universe in its own way (ModelConfig.workflow_node).
+                    call_config = replace(call_config, workflow_node=True)
                 call_kwargs.update(
                     operation=BACKGROUND_BRANCH_RUN_OPERATION,
                     universe_context=UniverseContext(

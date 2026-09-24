@@ -112,11 +112,11 @@ tinyassets/providers/quota.py:grok:1
 tinyassets/providers/quota.py:groq:1
 tinyassets/providers/quota.py:ollama:1
 tinyassets/providers/router.py:claude:1
-tinyassets/providers/router.py:codex:4
-tinyassets/providers/router.py:gemini:5
-tinyassets/providers/router.py:grok:4
-tinyassets/providers/router.py:groq:5
-tinyassets/providers/router.py:ollama:7
+tinyassets/providers/router.py:codex:3
+tinyassets/providers/router.py:gemini:4
+tinyassets/providers/router.py:grok:3
+tinyassets/providers/router.py:groq:4
+tinyassets/providers/router.py:ollama:4
 tinyassets/runtime/assigned_queue_consumer.py:claude:5
 tinyassets/runtime/assigned_queue_consumer.py:codex:4
 tinyassets/storage/outbound_connections.py:codex:1

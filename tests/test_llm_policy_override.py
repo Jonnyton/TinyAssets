@@ -15,7 +15,7 @@ Coverage:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest  # noqa: F401 — used by pytest.raises
 
@@ -30,6 +30,27 @@ from tinyassets.exceptions import AllProvidersExhaustedError
 from tinyassets.graph_compiler import compile_branch
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
+
+
+class _PolicyBridge:
+    """The run's own injected, universe-bound provider bridge with a policy door.
+
+    Hard Rule 15 removed ``graph_compiler``'s shared-router fallback: a policy
+    node is honoured only by the run's injected caller (in production the
+    carrier-bound ``foreground_run_provider`` / cloud continuation callers).
+    """
+
+    def __init__(self, router, plain):
+        self._router = router
+        self._plain = plain
+        self.available_providers = getattr(router, "available_providers", None)
+
+    def __call__(self, prompt, system, *, role="writer", **_kwargs):
+        return self._plain(prompt, system, role=role)
+
+    def call_with_policy_sync(self, *args, **kwargs):
+        return self._router.call_with_policy_sync(*args, **kwargs)
+
 
 
 def _make_branch(
@@ -150,21 +171,21 @@ def test_pinned_preferred_used_when_available():
         preferred_response="groq says hi", preferred_provider="groq-free",
     )
 
-    with patch(
-        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
-    ):
-        def _provider(prompt, system, *, role="writer"):
-            return "[plain-provider]"
+    _router = mock_router
+    def _provider(prompt, system, *, role="writer"):
+        return "[plain-provider]"
 
-        def _sink(**kw):
-            events.append(dict(kw))
+    def _sink(**kw):
+        events.append(dict(kw))
 
-        compiled = compile_branch(branch, provider_call=_provider, event_sink=_sink)
-        app = compiled.graph.compile()
-        app.invoke(
-            {"topic": "cosmos"},
-            config={"configurable": {"thread_id": "t-pref"}},
-        )
+    compiled = compile_branch(
+        branch, provider_call=_PolicyBridge(_router, _provider), event_sink=_sink,
+    )
+    app = compiled.graph.compile()
+    app.invoke(
+        {"topic": "cosmos"},
+        config={"configurable": {"thread_id": "t-pref"}},
+    )
 
     mock_router.call_with_policy_sync.assert_called_once()
     ran = [e for e in events if e.get("phase") == "ran"]
@@ -194,15 +215,15 @@ def test_policy_router_empty_registry_falls_back_to_injected_provider_call():
     def _sink(**kw):
         events.append(dict(kw))
 
-    with patch(
-        "tinyassets.graph_compiler._get_shared_router", return_value=_EmptyRouter(),
-    ):
-        compiled = compile_branch(branch, provider_call=_provider, event_sink=_sink)
-        app = compiled.graph.compile()
-        result = app.invoke(
-            {"topic": "install planning"},
-            config={"configurable": {"thread_id": "t-empty-router"}},
-        )
+    _router = _EmptyRouter()
+    compiled = compile_branch(
+        branch, provider_call=_PolicyBridge(_router, _provider), event_sink=_sink,
+    )
+    app = compiled.graph.compile()
+    result = app.invoke(
+        {"topic": "install planning"},
+        config={"configurable": {"thread_id": "t-empty-router"}},
+    )
 
     assert prompts == ["Write about install planning"]
     assert result["out"] == "served by injected provider"
@@ -221,21 +242,21 @@ def test_branch_default_policy_applies_when_node_unset():
         preferred_response="gemini says hi", preferred_provider="gemini-free",
     )
 
-    with patch(
-        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
-    ):
-        def _provider(prompt, system, *, role="writer"):
-            return "[plain]"
+    _router = mock_router
+    def _provider(prompt, system, *, role="writer"):
+        return "[plain]"
 
-        def _sink(**kw):
-            events.append(dict(kw))
+    def _sink(**kw):
+        events.append(dict(kw))
 
-        compiled = compile_branch(branch, provider_call=_provider, event_sink=_sink)
-        app = compiled.graph.compile()
-        app.invoke(
-            {"topic": "stars"},
-            config={"configurable": {"thread_id": "t-bdefault"}},
-        )
+    compiled = compile_branch(
+        branch, provider_call=_PolicyBridge(_router, _provider), event_sink=_sink,
+    )
+    app = compiled.graph.compile()
+    app.invoke(
+        {"topic": "stars"},
+        config={"configurable": {"thread_id": "t-bdefault"}},
+    )
 
     mock_router.call_with_policy_sync.assert_called_once()
     ran = [e for e in events if e.get("phase") == "ran"]
@@ -259,18 +280,16 @@ def test_node_policy_overrides_branch_default():
     mock_router = MagicMock()
     mock_router.call_with_policy_sync.side_effect = _mock_policy_call
 
-    with patch(
-        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
-    ):
-        compiled = compile_branch(
-            branch,
-            provider_call=lambda p, s, *, role="writer": "[plain]",
-        )
-        app = compiled.graph.compile()
-        app.invoke(
-            {"topic": "tests"},
-            config={"configurable": {"thread_id": "t-node-beats-branch"}},
-        )
+    _router = mock_router
+    compiled = compile_branch(
+        branch,
+        provider_call=_PolicyBridge(_router, lambda p, s, *, role="writer": "[plain]"),
+    )
+    app = compiled.graph.compile()
+    app.invoke(
+        {"topic": "tests"},
+        config={"configurable": {"thread_id": "t-node-beats-branch"}},
+    )
 
     assert calls
     # The policy passed to the router should be the node-level one
@@ -299,19 +318,17 @@ def test_graph_propagates_exhaustion_when_all_providers_fail():
         "all exhausted"
     )
 
-    with patch(
-        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
-    ):
-        compiled = compile_branch(
-            branch,
-            provider_call=lambda p, s, *, role="writer": "[plain]",
+    _router = mock_router
+    compiled = compile_branch(
+        branch,
+        provider_call=_PolicyBridge(_router, lambda p, s, *, role="writer": "[plain]"),
+    )
+    app = compiled.graph.compile()
+    with pytest.raises(Exception):
+        app.invoke(
+            {"topic": "x"},
+            config={"configurable": {"thread_id": "t-fallback"}},
         )
-        app = compiled.graph.compile()
-        with pytest.raises(Exception):
-            app.invoke(
-                {"topic": "x"},
-                config={"configurable": {"thread_id": "t-fallback"}},
-            )
 
 
 def test_policy_dispatch_retries_transient_provider_exhaustion(monkeypatch):
@@ -333,18 +350,16 @@ def test_policy_dispatch_retries_transient_provider_exhaustion(monkeypatch):
     monkeypatch.setattr(
         graph_compiler, "_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS", (0.0, 0.0),
     )
-    with patch(
-        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
-    ):
-        compiled = compile_branch(
-            branch,
-            provider_call=lambda p, s, *, role="writer": "[plain]",
-        )
-        app = compiled.graph.compile()
-        out = app.invoke(
-            {"topic": "x"},
-            config={"configurable": {"thread_id": "t-policy-retry"}},
-        )
+    _router = mock_router
+    compiled = compile_branch(
+        branch,
+        provider_call=_PolicyBridge(_router, lambda p, s, *, role="writer": "[plain]"),
+    )
+    app = compiled.graph.compile()
+    out = app.invoke(
+        {"topic": "x"},
+        config={"configurable": {"thread_id": "t-policy-retry"}},
+    )
 
     assert out["out"] == "success after retry"
     assert mock_router.call_with_policy_sync.call_count == 2
@@ -371,18 +386,16 @@ def test_difficulty_override_passed_through():
     mock_router = MagicMock()
     mock_router.call_with_policy_sync.side_effect = _mock_call
 
-    with patch(
-        "tinyassets.graph_compiler._get_shared_router", return_value=mock_router,
-    ):
-        compiled = compile_branch(
-            branch,
-            provider_call=lambda p, s, *, role="writer": "[plain]",
-        )
-        app = compiled.graph.compile()
-        app.invoke(
-            {"topic": "hard topic"},
-            config={"configurable": {"thread_id": "t-difficulty"}},
-        )
+    _router = mock_router
+    compiled = compile_branch(
+        branch,
+        provider_call=_PolicyBridge(_router, lambda p, s, *, role="writer": "[plain]"),
+    )
+    app = compiled.graph.compile()
+    app.invoke(
+        {"topic": "hard topic"},
+        config={"configurable": {"thread_id": "t-difficulty"}},
+    )
 
     # Default difficulty is empty string since we don't thread it yet —
     # test confirms the interface compiles and routes without error.
