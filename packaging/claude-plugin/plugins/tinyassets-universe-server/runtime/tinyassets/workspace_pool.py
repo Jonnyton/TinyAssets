@@ -323,6 +323,23 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS workspace_ledger_operation "
         "ON workspace_ledger(operation_id, kind) WHERE operation_id IS NOT NULL"
     )
+    # Durable arrival order for runs that wait for the universe's workspace
+    # BEFORE they start (change durable-workspace-wait). Lives beside the
+    # locks so acquisition can consume a ticket in its own transaction.
+    # AUTOINCREMENT: a ticket number is never reused, so order survives
+    # deletions and restarts.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS workspace_waiters ("
+        "ticket INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL UNIQUE, "
+        "universe_id TEXT NOT NULL, created_at REAL NOT NULL, dispatched_at REAL)"
+    )
+    waiter_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_waiters)")}
+    if "dispatched_at" not in waiter_columns:
+        conn.execute("ALTER TABLE workspace_waiters ADD COLUMN dispatched_at REAL")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS workspace_waiters_universe "
+        "ON workspace_waiters(universe_id, ticket)"
+    )
 
 
 def _connect(db: Path) -> sqlite3.Connection:
@@ -504,8 +521,13 @@ def _acquire_lock(
     lease_id: str,
     ts: float,
     budget_epoch: int | None = None,
+    also_run_ids: tuple[str, ...] = (),
 ) -> None:
     """Reentrant for the run that holds it, ``workspace_busy`` for anyone else.
+
+    A free universe lock is refused too while another run's wait ticket is
+    first in line (``also_run_ids`` names the acquiring run when the lock is
+    taken under its family root).
 
     The lock belongs to the RUN, not to the lease: a run's later workspace nodes
     and its push reuse it, and only the run's terminal outbox entry releases it.
@@ -522,11 +544,235 @@ def _acquire_lock(
         raise WorkspacePoolRefused(
             REFUSED_BUSY, f"{scope} lock {key!r} is held by run {row[0]!r}"
         )
+    if scope == SCOPE_UNIVERSE:
+        # A free lock is still reserved for the run first in line until that
+        # run has been started. Serving whoever polls first is what made the
+        # old wait unordered. Once the head is started, nothing else queued
+        # can start before it takes the lock or ends, so the reservation has
+        # done its job; a run it launches (a child that uses the workspace
+        # first) must not be locked out by its own parent's ticket.
+        head = conn.execute(
+            "SELECT run_id FROM workspace_waiters WHERE universe_id = ? "
+            "AND dispatched_at IS NULL AND ticket = ("
+            "SELECT MIN(ticket) FROM workspace_waiters WHERE universe_id = ?)",
+            (key, key),
+        ).fetchone()
+        if head is not None and head[0] not in {run_id, *also_run_ids}:
+            raise WorkspacePoolRefused(
+                REFUSED_BUSY,
+                f"{scope} lock {key!r} is reserved for an earlier waiting run",
+            )
     conn.execute(
         'INSERT INTO workspace_locks (scope, "key", run_id, lease_id, acquired_at,budget_epoch) '
         "VALUES (?, ?, ?, ?, ?, ?)",
         (scope, key, run_id, lease_id, ts, budget_epoch),
     )
+
+
+# --------------------------------------------------------------------------
+# durable waiting (change durable-workspace-wait)
+# --------------------------------------------------------------------------
+
+WAIT_STATE_WAITING = "waiting"
+
+
+@dataclass(frozen=True)
+class WaitTicket:
+    """One run's place in its universe's workspace queue.
+
+    ``position`` is 1-based among that universe's waiters and counts runs, not
+    who they are: no holder or waiter identity leaves this module through it.
+    """
+
+    ticket: int
+    run_id: str
+    universe_id: str
+    position: int
+    created_at: float
+
+    def public(self) -> dict[str, object]:
+        return {
+            "state": WAIT_STATE_WAITING,
+            "position": self.position,
+            "waiting_since": self.created_at,
+        }
+
+
+def _head_waiter(conn: sqlite3.Connection, universe_id: str) -> tuple[int, str] | None:
+    row = conn.execute(
+        "SELECT ticket, run_id FROM workspace_waiters WHERE universe_id = ? "
+        "ORDER BY ticket LIMIT 1",
+        (universe_id,),
+    ).fetchone()
+    return None if row is None else (int(row[0]), str(row[1]))
+
+
+def mark_waiter_dispatched(
+    db: Path, run_id: str, *, now: Callable[[], float] = time.time,
+) -> bool:
+    """Record that ``run_id``'s turn came and it was handed to a worker."""
+    conn = _connect(db)
+    try:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            ensure_schema(conn)
+            changed = conn.execute(
+                "UPDATE workspace_waiters SET dispatched_at = ? WHERE run_id = ?",
+                (float(now()), run_id),
+            ).rowcount
+            conn.commit()
+            return changed == 1
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+
+
+def remove_waiter_in_transaction(conn: sqlite3.Connection, run_id: str) -> int:
+    """Drop ``run_id``'s ticket inside the caller's transaction."""
+    return conn.execute(
+        "DELETE FROM workspace_waiters WHERE run_id = ?", (run_id,)
+    ).rowcount
+
+
+def enqueue_waiter(
+    db: Path, *, run_id: str, universe_id: str, now: Callable[[], float] = time.time,
+) -> WaitTicket:
+    """Take (or keep) ``run_id``'s place at the back of its universe's queue.
+
+    Idempotent: a run that already holds a ticket keeps its original place,
+    which is what lets a restarted process resume the same order.
+    """
+    if not run_id or not universe_id:
+        raise ValueError("run_id and universe_id are required")
+    conn = _connect(db)
+    try:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            ensure_schema(conn)
+            conn.execute(
+                "INSERT OR IGNORE INTO workspace_waiters (run_id, universe_id, created_at) "
+                "VALUES (?, ?, ?)",
+                (run_id, universe_id, float(now())),
+            )
+            ticket = _ticket_in_transaction(conn, run_id)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+    if ticket is None:  # pragma: no cover - inserted or kept above
+        raise RuntimeError(f"wait ticket for {run_id!r} vanished inside its own transaction")
+    return ticket
+
+
+def _ticket_in_transaction(conn: sqlite3.Connection, run_id: str) -> WaitTicket | None:
+    row = conn.execute(
+        "SELECT ticket, universe_id, created_at FROM workspace_waiters WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    ahead = conn.execute(
+        "SELECT COUNT(*) FROM workspace_waiters WHERE universe_id = ? AND ticket < ?",
+        (row[1], row[0]),
+    ).fetchone()[0]
+    return WaitTicket(
+        ticket=int(row[0]), run_id=run_id, universe_id=str(row[1]),
+        position=int(ahead) + 1, created_at=float(row[2]),
+    )
+
+
+def _has_waiters_table(conn: sqlite3.Connection) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_waiters'"
+    ).fetchone() is not None
+
+
+def wait_ticket(db: Path, run_id: str) -> WaitTicket | None:
+    """``run_id``'s ticket, or None. Read-only: never creates the database."""
+    if not Path(db).is_file():
+        return None
+    conn = sqlite3.connect(f"file:{Path(db).as_posix()}?mode=ro", uri=True, timeout=30)
+    try:
+        if not _has_waiters_table(conn):
+            return None
+        return _ticket_in_transaction(conn, run_id)
+    finally:
+        conn.close()
+
+
+def _workspace_free_in_transaction(
+    conn: sqlite3.Connection, universe_id: str, run_id: str, host_slot: str,
+) -> bool:
+    rows = conn.execute(
+        'SELECT run_id FROM workspace_locks WHERE (scope = ? AND "key" = ?) '
+        'OR (scope = ? AND "key" = ?)',
+        (SCOPE_UNIVERSE, universe_id, SCOPE_HOST, host_slot),
+    ).fetchall()
+    return all(row[0] == run_id for row in rows)
+
+
+def head_waiter(db: Path, universe_id: str, *, host_slot: str = HOST_SLOT):
+    """``(ticket, workspace_free)`` for the first waiter, or None.
+
+    ``workspace_free`` is True when neither the universe lock nor the host slot
+    is held by any run other than the ticket's own.
+    """
+    conn = _connect(db)
+    try:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            ensure_schema(conn)
+            head = _head_waiter(conn, universe_id)
+            if head is None:
+                conn.commit()
+                return None
+            ticket = _ticket_in_transaction(conn, head[1])
+            free = _workspace_free_in_transaction(conn, universe_id, head[1], host_slot)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+    return ticket, free
+
+
+def waiting_universes(db: Path) -> list[str]:
+    """Every universe with at least one waiter in this database."""
+    if not Path(db).is_file():
+        return []
+    conn = sqlite3.connect(f"file:{Path(db).as_posix()}?mode=ro", uri=True, timeout=30)
+    try:
+        if not _has_waiters_table(conn):
+            return []
+        return [row[0] for row in conn.execute(
+            "SELECT DISTINCT universe_id FROM workspace_waiters ORDER BY universe_id"
+        )]
+    finally:
+        conn.close()
+
+
+def remove_waiter(db: Path, run_id: str) -> int:
+    """Drop ``run_id``'s ticket in its own transaction."""
+    if not Path(db).is_file():
+        return 0
+    conn = _connect(db)
+    try:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            ensure_schema(conn)
+            removed = remove_waiter_in_transaction(conn, run_id)
+            conn.commit()
+            return removed
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
 
 
 def _no_universe_bytes(_universe_id: str) -> int:
@@ -714,11 +960,17 @@ def admit(
                     lease_id=lease_id,
                     ts=ts,
                     budget_epoch=budget_epoch,
+                    also_run_ids=(run_id,),
                 )
                 _acquire_lock(
                     conn, scope=SCOPE_HOST, key=host_slot, run_id=budget_root or run_id,
                     lease_id=lease_id, ts=ts, budget_epoch=budget_epoch,
                 )
+                # The reservation has become the lock: same transaction, so a
+                # rollback below leaves the run still first in line.
+                remove_waiter_in_transaction(conn, run_id)
+                if budget_root and budget_root != run_id:
+                    remove_waiter_in_transaction(conn, budget_root)
 
                 # (d) reserve the maximum charge BEFORE any bytes move.
                 conn.execute(

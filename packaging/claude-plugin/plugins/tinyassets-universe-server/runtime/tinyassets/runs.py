@@ -339,6 +339,9 @@ def _enqueue_workspace_terminal(
         "WHERE run_id = ? AND state = 'ACTIVE'",
         (run_id,),
     ).fetchall()
+    # A finished run leaves the workspace queue in its terminal transaction.
+    # Counted as owed so the caller's kick nominates the next waiter.
+    dequeued = workspace_pool.remove_waiter_in_transaction(conn, run_id)
     written = 0
     for row in rows:
         lease = workspace_pool._lease_from_row(row)
@@ -348,7 +351,7 @@ def _enqueue_workspace_terminal(
         )
         written += 1
     if written:
-        return written
+        return written + dequeued
     locks = conn.execute(
         "SELECT key FROM workspace_locks WHERE scope = 'universe' AND run_id = ?",
         (run_id,),
@@ -358,7 +361,7 @@ def _enqueue_workspace_terminal(
             conn, run_id=run_id, universe_id=row[0], lease=None,
         )
         written += 1
-    return written
+    return written + dequeued
 
 
 def _workspace_terminal_base(
@@ -451,6 +454,439 @@ def _finish_terminal_workspace_release(
         return
     if workspace_owed:
         _kick_workspace_sweep(workspace_base)
+
+
+# ---------------------------------------------------------------------------
+# Durable workspace waiting (OpenSpec change durable-workspace-wait).
+#
+# A root run that needs its universe's workspace takes a ticket at admission
+# and does not START until the ticket is first in line and nobody else holds
+# the workspace. A run that has executed no node cannot have produced an
+# effect, so a restart that finds it still waiting can let it keep waiting and
+# start it later without replaying anything. Waiting runs hold no executor
+# worker: they are dispatched by nomination, from their durable admission.
+# ---------------------------------------------------------------------------
+
+_WORKSPACE_EFFECT = "workspace"
+_WAITER_DISPATCH_LOCK = threading.Lock()
+#: ``(resolved root runs db, run_id)`` claimed for dispatch in THIS process.
+#: A run is dispatched once per process; a restart starts with none claimed,
+#: which is exactly when a never-started waiter must be dispatched again.
+_WAITER_DISPATCHED: set[tuple[str, str]] = set()
+
+
+def _reset_waiter_dispatch_after_fork() -> None:
+    global _WAITER_DISPATCH_LOCK
+    _WAITER_DISPATCH_LOCK = threading.Lock()
+    _WAITER_DISPATCHED.clear()
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX only
+    os.register_at_fork(after_in_child=_reset_waiter_dispatch_after_fork)
+
+
+def _branch_needs_workspace(branch: BranchDefinition) -> bool:
+    return any(
+        _WORKSPACE_EFFECT in (getattr(node, "effects", None) or [])
+        for node in (getattr(branch, "node_defs", None) or [])
+    )
+
+
+def _workspace_wait_base(base_path: str | Path, universe_id: str) -> Path | None:
+    """The universe directory whose workspace database queues this run.
+
+    Only a canonical universe id: the same rule the terminal release path
+    uses, so every ticket written here is one a terminal transition removes.
+    """
+    from tinyassets.ids import is_universe_serial
+
+    uid = (universe_id or "").strip()
+    if not is_universe_serial(uid):
+        return None
+    universe_base = Path(base_path) / uid
+    if not universe_base.is_dir():
+        return None
+    return universe_base
+
+
+def _waiter_root(universe_base: str | Path) -> Path | None:
+    """The data root whose runs database records a universe's runs."""
+    from tinyassets.ids import is_universe_serial
+
+    universe_base = Path(universe_base)
+    if not is_universe_serial(universe_base.name):
+        return None
+    root = universe_base.parent
+    return root if runs_db_path(root).is_file() else None
+
+
+def _queues_for_workspace(
+    branch: BranchDefinition,
+    *,
+    owner_user_id: str | None,
+    universe_id: str,
+    invocation_depth: int,
+    workspace_parent,
+) -> bool:
+    """Root runs of an authenticated owner in a universe, needing a workspace.
+
+    Children share their parent's lock, so queueing one behind its own
+    parent's reservation would deadlock it.
+    """
+    return bool(
+        owner_user_id and universe_id and invocation_depth == 0
+        and workspace_parent is None and _branch_needs_workspace(branch)
+    )
+
+
+def _waiter_key(base_path: str | Path, run_id: str) -> tuple[str, str]:
+    return (str(runs_db_path(base_path).resolve()), run_id)
+
+
+def _run_start_state(base_path: str | Path, run_id: str) -> tuple[str | None, bool]:
+    """``(status, cancel_requested)`` straight off the run row, no side effects."""
+    with _connect(base_path) as conn:
+        row = conn.execute("SELECT status FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        cancelled = conn.execute(
+            "SELECT 1 FROM run_cancels WHERE run_id = ?", (run_id,),
+        ).fetchone() is not None
+    return (None if row is None else str(row[0])), cancelled
+
+
+def _claim_waiter_dispatch(base_path: str | Path, run_id: str) -> bool:
+    """Claim the one dispatch a queued, uncancelled waiter gets in this process.
+
+    Shared by the admitting request and every nomination, so the two can race
+    without starting the run twice. A cancel recorded before the claim wins;
+    one recorded after it is observed by the worker at start.
+    """
+    key = _waiter_key(base_path, run_id)
+    with _WAITER_DISPATCH_LOCK:
+        if key in _WAITER_DISPATCHED:
+            return False
+        status, cancelled = _run_start_state(base_path, run_id)
+        if status != RUN_STATUS_QUEUED or cancelled:
+            return False
+        _WAITER_DISPATCHED.add(key)
+        return True
+
+
+def _waiter_dispatch_claimed(base_path: str | Path, run_id: str) -> bool:
+    with _WAITER_DISPATCH_LOCK:
+        return _waiter_key(base_path, run_id) in _WAITER_DISPATCHED
+
+
+def _settle_waiting_run(base_path: str | Path, run_id: str, *, status: str, error: str) -> str:
+    """Settle a run that never started. Only a still-``queued`` row changes."""
+    try:
+        update_run_status(
+            base_path, run_id, status=status, error=error, finished_at=_now(),
+            _expected_statuses={RUN_STATUS_QUEUED},
+        )
+    except RunExecutionAuthorityLost:
+        current, _ = _run_start_state(base_path, run_id)
+        return current or status
+    return status
+
+
+def workspace_wait_state(base_path: str | Path, run: dict[str, Any]) -> dict[str, Any] | None:
+    """The visible wait of a queued run, or None when it is not waiting."""
+    from tinyassets import workspace_pool
+
+    if run.get("status") != RUN_STATUS_QUEUED:
+        return None
+    universe_base = _workspace_wait_base(base_path, str(run.get("queue_universe_id") or ""))
+    if universe_base is None:
+        return None
+    try:
+        ticket = workspace_pool.wait_ticket(runs_db_path(universe_base), str(run["run_id"]))
+    except sqlite3.Error:
+        logger.exception("workspace wait read failed for run %s", run.get("run_id"))
+        return None
+    return None if ticket is None else ticket.public()
+
+
+def _never_started_waiters(base_path: str | Path, rows) -> dict[str, Path]:
+    """``{run_id: universe_base}`` for queued rows holding a wait ticket.
+
+    Such a run has executed no node, so recovery must leave it waiting rather
+    than interrupt it. A row that ever reached ``running`` is not in here.
+    """
+    from tinyassets import workspace_pool
+
+    waiting: dict[str, Path] = {}
+    for row in rows:
+        if row["status"] != RUN_STATUS_QUEUED:
+            continue
+        universe_base = _workspace_wait_base(base_path, str(row["queue_universe_id"] or ""))
+        if universe_base is None:
+            continue
+        try:
+            ticket = workspace_pool.wait_ticket(runs_db_path(universe_base), row["run_id"])
+        except sqlite3.Error:
+            # Unreadable is not "not waiting": leaving the row alone is the
+            # recoverable choice; interrupting it would lose it.
+            logger.exception("workspace wait read failed for run %s", row["run_id"])
+            waiting[row["run_id"]] = universe_base
+            continue
+        if ticket is not None:
+            waiting[row["run_id"]] = universe_base
+    return waiting
+
+
+def _is_workspace_waiter(
+    conn: sqlite3.Connection, base_path: str | Path, run_id: str, status: str,
+) -> bool:
+    """A queued run waiting its turn owns no worker BY DESIGN and makes no
+    progress until then: that is waiting, not being orphaned."""
+    if status != RUN_STATUS_QUEUED:
+        return False
+    row = conn.execute(
+        "SELECT run_id, status, queue_universe_id FROM runs WHERE run_id = ?", (run_id,),
+    ).fetchone()
+    return row is not None and bool(_never_started_waiters(base_path, [row]))
+
+
+def _kick_workspace_waiters(universe_base: str | Path) -> threading.Thread:
+    """Start the universe's sweeper (the periodic backstop) and nominate now."""
+
+    def body() -> None:
+        try:
+            ensure_workspace_reconciled(universe_base)
+        except Exception:  # noqa: BLE001 - nomination below still runs
+            logger.exception("workspace reconciliation before nomination failed")
+        try:
+            nominate_workspace_waiter(universe_base)
+        except Exception:  # noqa: BLE001 - the periodic sweep retries
+            logger.exception("workspace waiter nomination failed")
+
+    thread = threading.Thread(target=body, name="workspace-waiters-kick", daemon=True)
+    thread.start()
+    return thread
+
+
+def nominate_workspace_waiter(universe_base: str | Path) -> str | None:
+    """Dispatch the first waiting run when the workspace is free for it.
+
+    Returns the dispatched run id, or None. A head whose run is gone or
+    terminal is removed (a dead head must never wedge the queue); a head that
+    already started keeps its reservation until it checks out or ends.
+    """
+    from tinyassets import workspace_pool
+
+    root = _waiter_root(universe_base)
+    if root is None:
+        return None
+    db = runs_db_path(universe_base)
+    for universe_id in workspace_pool.waiting_universes(db):
+        while True:
+            head = workspace_pool.head_waiter(db, universe_id)
+            if head is None:
+                break
+            ticket, free = head
+            status, cancelled = _run_start_state(root, ticket.run_id)
+            if status is None or status in _TERMINAL_STATUSES:
+                workspace_pool.remove_waiter(db, ticket.run_id)
+                continue
+            if status != RUN_STATUS_QUEUED:
+                break
+            if cancelled and not _waiter_dispatch_claimed(root, ticket.run_id):
+                _settle_waiting_run(
+                    root, ticket.run_id, status=RUN_STATUS_CANCELLED,
+                    error="Cancelled while waiting for the universe workspace.",
+                )
+                workspace_pool.remove_waiter(db, ticket.run_id)
+                continue
+            if not free or not _claim_waiter_dispatch(root, ticket.run_id):
+                break
+            try:
+                workspace_pool.mark_waiter_dispatched(db, ticket.run_id)
+            except Exception:  # noqa: BLE001 - an unmarked head only stays reserved longer
+                logger.exception("could not mark waiting run %s dispatched", ticket.run_id)
+            _dispatch_waiting_run(root, ticket.run_id)
+            return ticket.run_id
+    return None
+
+
+def _bind_waiting_run_provider(
+    base_path: str | Path,
+    *,
+    run_id: str,
+    universe_id: str,
+    owner_id: str,
+    branch: BranchDefinition,
+    branch_version_id: str | None,
+):
+    """Fresh foreground provider authority for the owner, bound at START.
+
+    The same binding the admitted-input path uses: the owner must still exist,
+    and the session's own admission checks the run is still ``queued``.
+    """
+    from tinyassets.config import load_universe_config
+    from tinyassets.foreground_run_provider import new_foreground_run_provider_session
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.call import bind_universe_provider_call, call_provider
+    from tinyassets.storage import _connect as author_connect
+    from tinyassets.storage.current_home import check_principal_not_deleted
+
+    with author_connect(base_path) as authority:
+        check_principal_not_deleted(authority, owner_id)
+    session = new_foreground_run_provider_session(
+        base_path, universe_id=universe_id, principal_id=owner_id,
+        provider_call=call_provider,
+    )
+    session.prepare(run_id=run_id, branch=branch, branch_version_id=branch_version_id,
+                    allowed_statuses={RUN_STATUS_QUEUED})
+    universe_dir = Path(base_path) / universe_id
+    return bind_universe_provider_call(
+        session,
+        UniverseContext(universe_dir=universe_dir, config=load_universe_config(universe_dir)),
+        operation="run_graph",
+    )
+
+
+def _dispatch_waiting_run(base_path: str | Path, run_id: str) -> None:
+    """Start a claimed waiter exactly as it was admitted. Never raises.
+
+    Everything comes from durable state: the admission envelope (definition and
+    execution choices), the stored inputs, the owner. Any failure settles the
+    run ``failed`` with the reason, which also removes it from the queue.
+    """
+    from tinyassets.run_admission_envelope import (
+        AdmissionNotReconstructable,
+        resolve_admitted_execution,
+    )
+
+    try:
+        with _connect(base_path) as conn:
+            row = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            return
+        run = _row_to_run(row)
+        owner = str(run.get("owner_user_id") or "")
+        universe_id = str(run.get("queue_universe_id") or "")
+        try:
+            admitted = resolve_admitted_execution(base_path, run)
+        except AdmissionNotReconstructable as exc:
+            _settle_waiting_run(base_path, run_id, status=RUN_STATUS_FAILED,
+                                error=f"Could not start after waiting for the workspace: {exc}")
+            return
+        branch = BranchDefinition.from_dict(admitted.branch.to_dict())
+        try:
+            provider_call = _bind_waiting_run_provider(
+                base_path, run_id=run_id, universe_id=universe_id, owner_id=owner,
+                branch=branch, branch_version_id=run.get("branch_version_id") or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - settled with the reason, never retried silently
+            _settle_waiting_run(base_path, run_id, status=RUN_STATUS_FAILED,
+                                error=f"Provider authority admission failed: {exc}")
+            return
+        inputs = run.get("inputs") or {}
+        actor = str(run.get("actor") or "")
+
+        def _worker() -> RunOutcome:
+            from tinyassets.auth.middleware import identity_context
+            from tinyassets.auth.provider import Identity
+
+            with identity_context(Identity(owner, owner)):
+                return _invoke_prepared_branch(
+                    base_path, run_id=run_id, branch=branch, inputs=inputs,
+                    actor=actor, provider_call=provider_call,
+                    recursion_limit=admitted.recursion_limit,
+                    concurrency_budget_override=admitted.concurrency_budget_override,
+                    enqueue_universe_id=universe_id,
+                )
+
+        future = _get_executor(invocation_depth=0).submit(
+            contextvars.Context().run, _worker,
+        )
+        _track_future(run_id, future)
+    except Exception as exc:  # noqa: BLE001 - a nomination must never fail its caller
+        logger.exception("dispatch of waiting run %s failed", run_id)
+        _settle_waiting_run(base_path, run_id, status=RUN_STATUS_FAILED,
+                            error=f"Could not start after waiting for the workspace: {exc}")
+
+
+def _admit_workspace_waiter(
+    base_path: str | Path, *, run_id: str, universe_id: str, provider_call,
+) -> RunOutcome | None:
+    """Queue a freshly admitted run for its universe's workspace.
+
+    Returns None when it is this run's turn now (the caller dispatches it as
+    usual, holding the reservation), or the ``queued`` outcome of a run that
+    must wait. A waiting run gives back the provider authority it was admitted
+    with; its turn binds fresh authority. Failing to queue fails the run
+    loudly instead of running it outside the order.
+    """
+    from tinyassets import workspace_pool
+
+    universe_base = _workspace_wait_base(base_path, universe_id)
+    if universe_base is None:
+        return None
+    db = runs_db_path(universe_base)
+    try:
+        # The universe database the sweep (and so every hand-off) reads; a
+        # first-ever workspace run may be queued before anything created it.
+        initialize_runs_db(universe_base)
+        workspace_pool.enqueue_waiter(db, run_id=run_id, universe_id=universe_id)
+        head = workspace_pool.head_waiter(db, universe_id)
+    except Exception as exc:  # noqa: BLE001 - settled with the reason below
+        logger.exception("could not queue run %s for its workspace", run_id)
+        head = None
+        queue_error = f"Could not queue for the universe workspace: {exc}"
+    else:
+        queue_error = ""
+    my_turn = (
+        head is not None and head[0].run_id == run_id and head[1]
+        and _claim_waiter_dispatch(base_path, run_id)
+    )
+    if my_turn:
+        try:
+            workspace_pool.mark_waiter_dispatched(db, run_id)
+        except Exception:  # noqa: BLE001 - an unmarked head only stays reserved longer
+            logger.exception("could not mark waiting run %s dispatched", run_id)
+        return None
+    try:
+        from tinyassets.foreground_run_provider import close_foreground_run_provider
+
+        close_foreground_run_provider(provider_call)
+    except Exception:  # noqa: BLE001 - the claim expires with its lease
+        logger.exception("provider claim release failed for waiting run %s", run_id)
+    if queue_error:
+        settled = _settle_waiting_run(
+            base_path, run_id, status=RUN_STATUS_FAILED, error=queue_error,
+        )
+        return RunOutcome(run_id=run_id, status=settled, output={}, error=queue_error)
+    return RunOutcome(run_id=run_id, status=RUN_STATUS_QUEUED, output={}, error="")
+
+
+def _settle_cancelled_waiter(base_path: str | Path, run_id: str) -> None:
+    """A cancel of a run that is only waiting settles it now.
+
+    Nothing else would: a waiting run has no worker to observe the cancel. A
+    run already claimed for dispatch is left to its worker, which checks the
+    cancel before its first node. The holder is never touched.
+    """
+    status, cancelled = _run_start_state(base_path, run_id)
+    if status != RUN_STATUS_QUEUED or not cancelled:
+        return
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT queue_universe_id FROM runs WHERE run_id = ?", (run_id,),
+        ).fetchone()
+    universe_base = _workspace_wait_base(base_path, str(row[0] or "") if row else "")
+    if universe_base is None:
+        return
+    from tinyassets import workspace_pool
+
+    if workspace_pool.wait_ticket(runs_db_path(universe_base), run_id) is None:
+        return
+    if _waiter_dispatch_claimed(base_path, run_id):
+        return
+    _settle_waiting_run(
+        base_path, run_id, status=RUN_STATUS_CANCELLED,
+        error="Cancelled while waiting for the universe workspace.",
+    )
 
 
 #: How old a lock whose run is unknown to this database must be before the
@@ -593,7 +1029,14 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
         orphaned_locks = list(orphaned_locks) + [(r,) for r in releasable]
         for run_id in {r[0] for r in orphaned_leases} | {r[0] for r in orphaned_locks}:
             _enqueue_workspace_terminal(conn, base_path, run_id)
-    return workspace_pool.periodic_sweep(db, fs=RealPoolFilesystem(), claimant=claimant)
+    done = workspace_pool.periodic_sweep(db, fs=RealPoolFilesystem(), claimant=claimant)
+    # A pass that released a lock is exactly when the next waiter's turn comes;
+    # a pass that released nothing is the backstop for a missed nomination.
+    try:
+        nominate_workspace_waiter(base_path)
+    except Exception:  # noqa: BLE001 - the next pass retries
+        logger.exception("workspace waiter nomination failed")
+    return done
 
 
 def _reconcile_push_intents(base_path: str | Path, *, when: str) -> int:
@@ -861,6 +1304,8 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
             (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
         ).fetchall()
         for row in rows:
+            if _is_workspace_waiter(conn, base_path, row["run_id"], row["status"]):
+                continue
             if _mark_orphaned_run_if_needed(
                 conn,
                 run_id=row["run_id"],
@@ -2067,7 +2512,9 @@ def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
         ).fetchone()
         if row is None:
             return None
-        if _mark_orphaned_run_if_needed(
+        if not _is_workspace_waiter(
+            conn, base_path, row["run_id"], row["status"],
+        ) and _mark_orphaned_run_if_needed(
             conn,
             run_id=row["run_id"],
             status=row["status"],
@@ -2106,6 +2553,9 @@ def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
             result["concurrency"] = None
     else:
         result["concurrency"] = None
+    wait = workspace_wait_state(base_path, result)
+    if wait is not None:
+        result["workspace_wait"] = wait
     return result
 
 
@@ -3156,9 +3606,16 @@ def request_cancel(base_path: str | Path, run_id: str) -> bool:
             "AND status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')",
             (_now(), run_id),
         )
-        return cursor.rowcount > 0 or conn.execute(
+        accepted = cursor.rowcount > 0 or conn.execute(
             "SELECT 1 FROM run_cancels WHERE run_id = ?", (run_id,),
         ).fetchone() is not None
+    if accepted:
+        # A run waiting for the workspace has no worker to see the cancel.
+        try:
+            _settle_cancelled_waiter(base_path, run_id)
+        except Exception:  # noqa: BLE001 - the intent is recorded; nomination settles it
+            logger.exception("settling cancelled waiting run %s failed", run_id)
+    return accepted
 
 
 def is_cancel_requested(base_path: str | Path, run_id: str) -> bool:
@@ -5373,6 +5830,17 @@ def _execute_branch_core(
             error=message,
         )
 
+    if _queues_for_workspace(
+        branch, owner_user_id=owner_user_id, universe_id=_enqueue_universe_id,
+        invocation_depth=_invocation_depth, workspace_parent=_workspace_parent,
+    ):
+        waiting = _admit_workspace_waiter(
+            base_path, run_id=run_id, universe_id=_enqueue_universe_id,
+            provider_call=provider_call,
+        )
+        if waiting is not None:
+            return waiting
+
     executor = _get_executor(invocation_depth=_invocation_depth)
 
     def _worker() -> RunOutcome:
@@ -6136,30 +6604,29 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
     with _connect(base_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         prepared_exclusion = _prepared_run_recovery_exclusion(conn)
-        in_flight = [
-            row[0] for row in conn.execute(
-                "SELECT run_id FROM runs WHERE status IN (?, ?) "
-                "AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL "
-                "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion,
-                (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
-            ).fetchall()
-        ]
-        cursor = conn.execute(
-            """
-            UPDATE runs
-            SET status = ?, error = ?, finished_at = ?
-            WHERE status IN (?, ?)
-              AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL
-              AND workspace_budget_closing_reason IS NULL
-            """ + prepared_exclusion,
-            (
-                RUN_STATUS_INTERRUPTED,
-                "Server restarted while this run was in flight.",
-                now,
-                RUN_STATUS_QUEUED, RUN_STATUS_RUNNING,
-            ),
-        )
-        count = cursor.rowcount
+        candidates = conn.execute(
+            "SELECT run_id, status, queue_universe_id FROM runs WHERE status IN (?, ?) "
+            "AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL "
+            "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion,
+            (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
+        ).fetchall()
+        # A run still waiting for the workspace never executed a node: it keeps
+        # its place instead of being interrupted, and is nominated below.
+        waiting = _never_started_waiters(base_path, candidates)
+        in_flight = [row["run_id"] for row in candidates if row["run_id"] not in waiting]
+        count = 0
+        for run_id in in_flight:
+            count += conn.execute(
+                "UPDATE runs SET status = ?, error = ?, finished_at = ? "
+                "WHERE run_id = ? AND status IN (?, ?)",
+                (
+                    RUN_STATUS_INTERRUPTED,
+                    "Server restarted while this run was in flight.",
+                    now,
+                    run_id,
+                    RUN_STATUS_QUEUED, RUN_STATUS_RUNNING,
+                ),
+            ).rowcount
         for run_id in in_flight:
             # Same-database work is atomic with the rewrite.  A separate
             # universe WAL is finished after this transaction commits.
@@ -6171,6 +6638,10 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_base, local_owed=owed
         )
+    for universe_base in sorted(set(waiting.values())):
+        _kick_workspace_waiters(universe_base)
+    if waiting:
+        logger.info("Kept %d never-started workspace waiters queued", len(waiting))
     if count:
         logger.info("Recovered %d in-flight runs as 'interrupted'", count)
     return count

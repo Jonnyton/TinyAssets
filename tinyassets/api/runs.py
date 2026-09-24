@@ -1420,6 +1420,19 @@ def _compose_run_snapshot(
         "summary": summary,
         "recursion_limit": recursion_limit,
     }
+    wait = run_record.get("workspace_wait")
+    if isinstance(wait, dict):
+        # A queued run that is waiting its turn for the universe's workspace.
+        # Say so plainly: "queued" alone reads as stuck.
+        snapshot["workspace_wait"] = dict(wait)
+        wait_line = (
+            "Waiting for the universe workspace (position "
+            f"{wait.get('position')} in line). It starts by itself when the "
+            "workspace is free, keeps its place across a restart, and can "
+            "still be cancelled."
+        )
+        snapshot["text"] = f"{summary}\n\n{wait_line}"
+        snapshot["summary"] = snapshot["text"]
     output = run_record.get("output")
     from tinyassets.api.run_outputs import output_catalog
 
