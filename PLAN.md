@@ -32,6 +32,13 @@ These five rules govern what features, primitives, and architecture get built �
 
 **Irreducibility finding — the only door a new top-level primitive comes through (host-approved 2026-07-25).** The primitive set is minimal and irreducible, like a low-level coding language: small, orthogonal, and composed rather than extended. A new top-level primitive (a new MCP handle, a new substrate concept) ships ONLY on an explicit *irreducibility finding* — a recorded finding that the behavior has essentially **one working useful shape**, so there is nothing for the commons to disagree about. Everything else ships as actions and parameters under the existing canonical handles, or not at all. The corollary is the important half: a behavior with **many plausible custom shapes is user-buildable by definition** — including sandbox behaviors — and belongs to the commons, so the standard emerges from what users actually build and remix rather than from a shape the platform froze first. This is the rule that governs how architecture-note tool names become real: a design note naming a standalone tool is naming a *behavior target*, and that target lands as an action under a canonical handle unless someone records the irreducibility finding.
 
+**The universe is the harness** (founder, 2026-09-24; reference shape: pi.dev, whose agent gets exactly four tools, `read` / `write` / `edit` / `bash`, and everything else comes from user-built or shared extensions, skills, prompt templates and packages). A user's universe IS their agent harness, project folder and workspace. It exposes a small set of powerful primitives with which the user and their agent build whatever they want, in the pi style. The universe ships no pre-built features. New universes start from a seed harness: the founder's main account harness for now, then the most popular starting harness in the commons. The whole system has exactly three components:
+1. **The universe (harness + primitives)**, which the user owns and customizes.
+2. **Platform things**: identity, connections, compute routing, storage, scheduling, isolation and moderation, which let universes run with no host online.
+3. **The community commons**: shared libraries of everything users publish, and nodes opened to cross-user interaction.
+
+Isolation makes this safe. The floor is cross-user only, and every provider process is OS-jailed to its owner's universe, so powerful primitives (shell and file work included) are safe inside a universe. The platform never trades a universe's power for a shared-host safety it can get from the jail.
+
 Depth: lead memory `project_minimal_primitives_principle.md`.
 
 ### 2. Community-build over platform-build

@@ -9,6 +9,25 @@ from starlette.responses import JSONResponse, PlainTextResponse
 _HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
 
+def connection_label(row: dict) -> str:
+    """A name the owner recognizes; never the storage destination alone.
+
+    The guided sign-in stores its key under ``model:<preset id>`` - a handle, not
+    a name (live 2026-09-24 the Account page listed "model:openrouter_user_models_v1").
+    Its label is the installed preset's own display name. Every other
+    destination is the name the owner or their agent chose, shown as is.
+    """
+    destination = str(row.get("destination") or "")
+    if destination.startswith("model:"):
+        from tinyassets.onboarding.hosted_model_auth import HostedAuthError, load_preset
+
+        try:
+            return f"{load_preset(destination[len('model:'):]).display_name} (free models)"
+        except (HostedAuthError, OSError, ValueError, KeyError):
+            return destination[len("model:"):] or destination
+    return destination
+
+
 async def handle_connections(request):
     from tinyassets import onboarding
     from tinyassets.auth.middleware import current_identity, identity_context
@@ -91,7 +110,8 @@ async def handle_connections(request):
                 for row in unfinished_disconnections(base, owner=identity.user_id, uid=uid)
                 if row["connection_id"] not in known
             )
-            return {"universe_id": uid, "connections": rows}, 200
+            return {"universe_id": uid,
+                    "connections": [{**row, "label": connection_label(row)} for row in rows]}, 200
 
     try:
         result, status = await run_in_threadpool(run)

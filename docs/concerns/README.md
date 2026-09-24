@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P1** | [Review follow-ups batch 2026-09-24](2026-09-24-review-followups-batch.md) — docs-only merges restart prod and kill turns; plus non-floor follow-ups from #3954/3956/3958/3960/3963/3964/3967/3968 and cancelled required-tests never re-triggering | 2026-09-24 |
 | **P1** | [App `POST /mcp` 503s the origin never served](2026-09-24-app-503-authored-in-front-of-origin.md) — founder's resumed tab got 503s that never reached the droplet (no 5xx logged, no token renewal until reload); edge challenge/rate rule vs. a stray tunnel connector, one header set decides | 2026-09-24 |
 | **P2** | [P0 disk-full repair uses broad prune](2026-09-24-p0-disk-full-repair-uses-broad-prune.md) — `p0-outage-triage.yml` still runs `docker system prune -af`, which deletes the rollback images that bounded retention keeps; its comment misdescribes the prune timer | 2026-09-24 |
 | **P1** | [Codex workflow nodes run in the host checkout](2026-09-24-codex-workflow-nodes-run-in-host-cwd.md) — ordinary Codex node calls use `-C /app` with a write-only sandbox, so reads reach every universe; the claude path is confined, Codex needs its OS jail proven for run_graph first | 2026-09-24 |
