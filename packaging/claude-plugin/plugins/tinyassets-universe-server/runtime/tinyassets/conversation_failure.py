@@ -79,8 +79,8 @@ _CLASS_WORDS = {
         "confirmed that was the only cause"
     ),
     "setup_required": (
-        "this universe has no model connected yet; connect one, then send your "
-        "request again"
+        "this universe has no model connected yet; connect one from the request "
+        "under “Waiting on you”, then send your request again"
     ),
     "provider_protocol_error": (
         "the connected model replied in a format this universe could not read; "
@@ -157,7 +157,9 @@ def turn_failure(
     return TurnFailure(
         version=1, kind="turn_failed", code=failure_code(code),
         stage=stage if stage in STAGES else None,
-        effects=effects if effects in EFFECTS else "unknown",
+        # A universe with no model connected cannot have acted.
+        effects="none" if failure_code(code) == "setup_required"
+        else effects if effects in EFFECTS else "unknown",
         provider_detail=clean_detail(provider_detail),
         ref=ref if isinstance(ref, str) and _REF.fullmatch(ref) else "",
     )

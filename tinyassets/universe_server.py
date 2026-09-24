@@ -2510,6 +2510,58 @@ def _served_failure_notice(exc: BaseException, record=None) -> str:
     return failure_notice(record if record is not None else _served_failure_record(exc))
 
 
+def _unpowered_setup_payload(universe_id: str, exc: BaseException) -> dict | None:
+    """The setup envelope for a turn refused because nothing serves the universe.
+
+    Live 2026-09-24: an unpowered free-only account read "Your universe couldn't
+    be reached right now: connect your provider: exactly one founder serving
+    binding is required. Actions may already have occurred." Nothing had run -
+    no binding serves the universe, so no model was called - and the notice
+    named a storage concept and warned about effects that cannot exist. The
+    refusal is typed, so the turn says what is true and points at the one place
+    that fixes it: the connect request.
+
+    Two refusals mean "nothing to think with": no serving binding
+    (``NoServingProvider``) and a held authority that invoked nothing (a
+    ``ProviderAuthorityHeldError`` with no attempts). Either counts only when
+    the owner's universe really has no current serving connection, so a
+    powered universe's own failure is never retold as "connect a model".
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.api.pending_requests import _serving_llm_bound
+    from tinyassets.api.permissions import current_actor_id
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_serving_binding import NoServingProvider
+
+    def refused_before_any_call(error: BaseException) -> bool:
+        if isinstance(error, NoServingProvider):
+            return True
+        return (isinstance(error, ProviderAuthorityHeldError)
+                and getattr(error, "attempts", None) is None
+                and getattr(error, "chain_state", None) is None)
+
+    seen: set[int] = set()
+    cause: BaseException | None = exc
+    while cause is not None and id(cause) not in seen:
+        if refused_before_any_call(cause):
+            if _serving_llm_bound(_base_path(), universe_id, current_actor_id()):
+                return None
+            return {
+                "status": "held",
+                "reason": "setup_required",
+                "universe_id": universe_id,
+                "missing": ["model_connection"],
+                "note": (
+                    "Your universe has no model connected yet, so nothing ran and "
+                    "nothing was sent anywhere. Connect one from the request under "
+                    "“Waiting on you”, then send your message again."
+                ),
+            }
+        seen.add(id(cause))
+        cause = cause.__cause__ or cause.__context__
+    return None
+
+
 def converse(
     message: str = "",
     graph_id: str = "",
@@ -2692,7 +2744,7 @@ def converse(
         # outage and still surfaces verbatim.
         from tinyassets.api.universe import engine_setup_required_payload
 
-        held = engine_setup_required_payload(uid, exc)
+        held = engine_setup_required_payload(uid, exc) or _unpowered_setup_payload(uid, exc)
         from tinyassets.conversation_failure import failure_notice, normalize_turn_failure
         from tinyassets.conversation_store import record_failure
 

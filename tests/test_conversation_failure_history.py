@@ -150,7 +150,10 @@ def test_exception_to_code_and_fixed_notice_never_copy_diagnostics():
         assert actual == code
         notice = failure_notice(actual)
         assert SECRET not in notice
-        assert "Check progress before sending again" in notice
+        if code == "setup_required":  # no model connected: nothing can have run
+            assert "Nothing ran." in notice and "Check progress" not in notice
+        else:
+            assert "Check progress before sending again" in notice
         assert "did not run" not in notice and "could not run" not in notice
     exc.failure_class = [SECRET]  # malformed diagnostics must not break failure storage
     assert us._served_failure_code(exc) == "unknown"
