@@ -579,7 +579,21 @@ _Last audited: 2026-05-19_
   use their own compute/provider authority before TinyAssets offers that user
   market-supplied compute. Market compute is an optional later extension or
   fallback, never the prerequisite path, and maintainer quota is never an
-  implicit substitute for either.
+  implicit substitute for either. **The compute market is not built yet and
+  should emerge, not be designed ahead** (founder, 2026-09-24). Its shape:
+  users let their universe's spare connected compute fulfil other users'
+  workflow requests, for money or any other reason they choose. It becomes
+  buildable once vendor-neutral connectors, cross-owner delivery and model
+  selection work the way the founder wants. It must never encode any
+  provider's terms-of-service policy: those vary across countless providers
+  and change daily, and it is the lending user's responsibility. Locally run
+  models fit it most naturally. Until then, market code makes no LLM calls
+  and adds no behaviour.
+- *Old bespoke request machinery gives way to user-built workflows* (founder,
+  2026-09-24). The old bug-report and patch-request system is superseded by
+  general cross-owner node inputs and outputs: a user, including the
+  founder's own account, builds a bug-report workflow others submit to. Remove
+  the old machinery rather than maintain it.
 - *Universe authority is the capability boundary.* A universe may use only the
   provider capabilities its user has explicitly bound to it. Every Voice turn
   uses the universe's **current serving provider** through canonical
