@@ -54,6 +54,22 @@ _SCHEMA = (
         created_at REAL NOT NULL,
         PRIMARY KEY(delivery_id, attempt)
     )""",
+    # Sender->receiver custody provenance. inputs_json stays the sender envelope so
+    # the replay digest is byte-identical, leaving this the only durable home for
+    # the mapping. Receiver projections never read it; the receiver resolves its
+    # own copy through its run bindings, which survive sender erasure.
+    """CREATE TABLE IF NOT EXISTS graph_delivery_files (
+        delivery_id TEXT NOT NULL REFERENCES graph_deliveries(delivery_id),
+        field_name TEXT NOT NULL,
+        ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+        sender_file_id TEXT NOT NULL,
+        receiver_file_id TEXT NOT NULL UNIQUE,
+        sha256 TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+        PRIMARY KEY(delivery_id, field_name, ordinal)
+    )""",
+    "CREATE INDEX IF NOT EXISTS graph_delivery_files_delivery "
+    "ON graph_delivery_files(delivery_id)",
     "CREATE INDEX IF NOT EXISTS graph_deliveries_sender "
     "ON graph_deliveries(sender_id, sender_universe_id)",
     "CREATE INDEX IF NOT EXISTS graph_deliveries_receiver "
@@ -136,6 +152,79 @@ def _receipt(conn, row, *, receiver_view=False):
     return result
 
 
+_FILE_RECORD = ("field_name", "ordinal", "sender_file_id", "receiver_file_id",
+                "sha256", "size_bytes")
+
+
+def _file_records(transfer):
+    records = transfer.get("records") if isinstance(transfer, dict) else None
+    if not isinstance(records, list) or not records:
+        raise ValueError("delivery file transfer plan is empty")
+    ordered = sorted(records, key=lambda item: (item["field_name"], item["ordinal"]))
+    for field in {item["field_name"] for item in ordered}:
+        positions = [item["ordinal"] for item in ordered if item["field_name"] == field]
+        if positions != list(range(len(positions))):
+            raise ValueError("delivery file bundle order is not contiguous")
+    if len({item["receiver_file_id"] for item in ordered}) != len(ordered):
+        raise ValueError("delivery file plan repeats a receiver file")
+    return ordered
+
+
+def _run_inputs(validated_inputs, transfer):
+    """The receiver's own run row never carries a sender identifier.
+
+    ``inputs_json`` on the delivery keeps the sender envelope so the replay digest
+    stays byte-identical; the run the receiver owns and reads gets its own
+    references, which is also why it survives sender erasure.
+    """
+    if transfer is None:
+        return validated_inputs
+    result = dict(validated_inputs)
+    for field in {item["field_name"] for item in _file_records(transfer)}:
+        references = [item["reference"] for item in _file_records(transfer)
+                      if item["field_name"] == field]
+        bundle = transfer.get("kinds", {}).get(field) == "file_bundle"
+        result[field] = references if bundle else references[0]
+    return result
+
+
+def _bind_delivery_files(conn, *, delivery_id, run_id, owner_id, universe_id, transfer):
+    """Bind the RECEIVER copies inside the acceptance transaction.
+
+    Binding here, not at worker start, is what makes an accepted copy immune to
+    the unbound custody lease by construction: there is no window between "the
+    receiver was told yes" and the binding that protects the bytes.
+    """
+    from tinyassets.storage import run_files
+
+    records = _file_records(transfer)
+    for field in sorted({item["field_name"] for item in records}):
+        run_files.bind_in_transaction(
+            conn, run_id=run_id, owner_id=owner_id, universe_id=universe_id,
+            field_name=field,
+            file_ids=[item["receiver_file_id"] for item in records
+                      if item["field_name"] == field],
+        )
+    conn.executemany(
+        "INSERT INTO graph_delivery_files (delivery_id, field_name, ordinal, sender_file_id, "
+        "receiver_file_id, sha256, size_bytes) VALUES (?,?,?,?,?,?,?)",
+        [(delivery_id, *(item[key] for key in _FILE_RECORD)) for item in records],
+    )
+
+
+def _verify_delivery_files(conn, delivery_id, transfer):
+    expected = [tuple(item[key] for key in _FILE_RECORD) for item in _file_records(transfer)]
+    stored = [
+        tuple(row[key] for key in _FILE_RECORD)
+        for row in conn.execute(
+            "SELECT * FROM graph_delivery_files WHERE delivery_id=? ORDER BY field_name, ordinal",
+            (delivery_id,),
+        )
+    ]
+    if stored != expected:
+        raise OccurrenceConflict()
+
+
 def accept_in_transaction(
     conn: sqlite3.Connection,
     *,
@@ -146,6 +235,7 @@ def accept_in_transaction(
     request_payload,
     validated_inputs,
     source_run_id=None,
+    file_transfer=None,
 ):
     """Persist validated intent and its first receiver run atomically.
 
@@ -176,6 +266,10 @@ def accept_in_transaction(
     if prior is not None:
         if prior["request_sha256"] != digest:
             raise OccurrenceConflict()
+        if file_transfer is not None:
+            # An accepted occurrence keeps its original custody rows. A replay may
+            # not re-bind, re-copy or repoint provenance.
+            _verify_delivery_files(conn, prior["delivery_id"], file_transfer)
         return _receipt(conn, prior)
 
     link, receiver = links.resolve_link_in_transaction(
@@ -221,12 +315,18 @@ def accept_in_transaction(
         run_id=run_id,
         thread_id=run_id,
         branch_def_id=receiver["branch_def_id"],
-        inputs=validated_inputs,
+        inputs=_run_inputs(validated_inputs, file_transfer),
         run_name="received deliverable",
         actor=f"universe:{receiver['universe_id']}",
         owner_user_id=receiver["owner_id"],
         queue_universe_id=receiver["universe_id"],
     )
+    if file_transfer is not None:
+        _bind_delivery_files(
+            conn, delivery_id=delivery_id, run_id=run_id,
+            owner_id=receiver["owner_id"], universe_id=receiver["universe_id"],
+            transfer=file_transfer,
+        )
     conn.execute(
         "INSERT INTO graph_delivery_attempts (delivery_id, attempt, run_id, state, created_at) "
         "VALUES (?,1,?,'pending',?)",

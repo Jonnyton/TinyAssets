@@ -174,12 +174,24 @@ satellite-store transaction. Affected rows SHALL be counted once. Surviving
 receiver allowlists SHALL remove only the deleted sender. Unrelated peer records
 and peer-owned runs SHALL remain intact; preserving a run row SHALL NOT imply
 that erased delivery inputs remain available for later execution.
+File-provenance children SHALL be deleted before their delivery parent. An
+accepted receiver-owned custody copy SHALL remain independent of sender erasure;
+its own custody and run binding, not sender provenance, SHALL authorize reads.
 
 #### Scenario: Either delivery party deletes its account
 - **WHEN** a sender or receiver deletes its account after delivery acceptance
 - **THEN** scoped foreign-key children are removed without a foreign-key failure
 - **AND** no delivery receipt or permitted-sender reference to that principal remains
 - **AND** independent peer runs and unrelated connections survive
+
+#### Scenario: Sender erasure preserves the receiver's independent copy
+- **WHEN** a sender deletes its account after a file delivery was accepted
+- **THEN** its custody bytes and scoped delivery provenance are removed without foreign-key failure
+- **AND** the receiver can still read its own accepted copy through its own run binding
+
+#### Scenario: Operator scoped reset has no root-custody cleanup adapter
+- **WHEN** that reset encounters unclassified cross-owner file provenance in root run history
+- **THEN** it refuses with a named blocker and changes no delivery rows or custody bytes, rather than claiming successful cleanup
 
 #### Scenario: A satellite store refuses deletion
 - **WHEN** an integrity failure interrupts the transaction

@@ -206,6 +206,13 @@ The shared app SHALL render Voice transport state independently from canonical c
 - **THEN** conversation progress clears normally and the canonical text reply remains rendered
 - **AND** Voice status says whether the reply arrived or failed
 
+#### Scenario: A new turn retires the previous turn's retry notice
+- **GIVEN** Voice status says a pending reply did not arrive and that message is available to retry
+- **WHEN** the founder starts any new conversation turn in the same account and home, without resending that message
+- **THEN** Voice status stops describing the earlier turn and describes the current Voice state instead
+- **AND** the earlier turn's failure, its retry offer, and the rendered conversation history remain unchanged
+- **AND** the notice is left in place when the new turn belongs to another account or home, or when a later Voice error or other status has already replaced that sentence
+
 ### Requirement: The shared app reports each turn's input method
 The shared app SHALL derive the input method of each canonical founder turn from the path that submitted that specific message and SHALL pass `typed`, `spoken`, or `app_action` with the `converse` call without modifying the founder's authoritative message text.
 
