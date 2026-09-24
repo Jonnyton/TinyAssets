@@ -711,6 +711,12 @@ def read_graph(
         from tinyassets.api.pending_requests import list_requests
 
         return json.dumps(list_requests(universe_id=graph_id, limit=limit))
+    if normalized == "access":
+        # Everything the owner's agent holds in this universe, owner-only and
+        # secret-free (change agent-access-controls).
+        from tinyassets.api.agent_access import read_access
+
+        return json.dumps(read_access(universe_id=graph_id), default=str)
     if normalized == "agents":
         return json.dumps(
             _custom_agents_impl(
@@ -773,6 +779,7 @@ def read_graph(
             "automation",
             "connections",
             "pending_requests",
+            "access",
             "conversation",
             "compute",
             "model_options",
@@ -1378,6 +1385,7 @@ def write_graph(
             )
         if connection_operation in (
             "request_from_user", "answer_request", "unmute_request",
+            "withdraw_request",
         ):
             # ONE general primitive: the agent asks its user something and waits,
             # rendered as a tab in the app's left rail (founder 2026-08-27). The

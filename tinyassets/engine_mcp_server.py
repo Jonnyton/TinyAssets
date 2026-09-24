@@ -252,6 +252,9 @@ _PINNED_READ_TARGETS = frozenset({
     # carries no credential material — the answer to a credential ask goes to
     # the vault, never into this read.
     "pending_requests",
+    # Everything the agent holds here in one owner-only, secret-free read
+    # (channels + access mode, consents, spend allowances, waiting asks).
+    "access",
 })
 
 
@@ -370,10 +373,16 @@ def read_graph(
             ``automations`` (list recurring triggers,
             their desired state, revision and latest run) and ``automation``
             (inspect one by automation_id; ``next_due_at`` is when it fires
-            next). A paused or retired trigger is not evidence that an
-            already-running job has stopped. ``webhooks`` lists your active
-            inbound webhooks (branch_def_id + token_prefix; the URL itself is
-            shown only when created). Any other target is refused.
+            next), and ``access`` (EVERYTHING you hold in this universe:
+            channels with ``access`` exact/full, every channel consent,
+            workspace consents, spend allowances with their ceilings, the asks
+            you are waiting on and which you may withdraw, and the owner's
+            standing decisions; read it when asked "what can you access?" and
+            after any grant, revoke or withdraw). A paused or retired trigger
+            is not evidence that an already-running job has stopped.
+            ``webhooks`` lists your active inbound webhooks (branch_def_id +
+            token_prefix; the URL itself is shown only when created). Any
+            other target is refused.
     Model setup: target="model_options" reads the current home's complete model
     inventory, accepted access, binding revision and saved preferences. It may
     refresh approved discovery and is admission-limited. Model names and remote
@@ -455,6 +464,10 @@ def read_graph(
             except Exception:
                 return json.dumps({"error": "conversation_read_failed"})
             return _untrusted("conversation", json.dumps(payload, ensure_ascii=False))
+        if normalized == "access":
+            from tinyassets.api.agent_access import read_access
+
+            return json.dumps(read_access(universe_id=_GRAPH_ID), default=str)
         if normalized in {"automations", "automation"}:
             from tinyassets.api.automations import automations
 
@@ -1922,10 +1935,13 @@ def write_graph(
             "constant_headers". An LLM is just a connection with uses.model.
         operation: branch create/patch/delete; automation create/pause/resume/delete;
             webhook create/revoke;
-            pending_request ask. For model access, ask with action type
-            bind_model_access, agent_binding_id, expected_revision, provider
-            and complete model_access. No fields: the owner sees the exact
-            change and reconnect warning, and must confirm in their app.
+            pending_request ask, or withdraw (payload_json {"request_id",
+            "reason"}) to take down YOUR OWN still-pending ask once you know it
+            is stale - never leave a wrong tab on the owner's rail. For model
+            access, ask with action type bind_model_access, agent_binding_id,
+            expected_revision, provider and complete model_access. No fields:
+            the owner sees the exact change and reconnect warning, and must
+            confirm in their app.
             Other accepted sources and spending ceilings must be preserved.
         payload_json: for create, a complete Branch spec (JSON object); for patch, a
             JSON array of edit ops.
@@ -1995,20 +2011,28 @@ def write_graph(
         # own principal, so an exposed answer_request would let it satisfy its
         # own ask, and an exposed unmute_request would let it lift a mute the
         # user set. Those stay on the surface a person drives.
+        #
+        # WITHDRAW is the author's half of the lifecycle, not the person's: it
+        # takes down only a still-pending ask YOU raised (a platform ask and an
+        # answered one are refused), records the reason, and grants nothing.
         op = (operation or "ask").strip().lower()
-        if op not in {"ask", "request_from_user"}:
+        if op not in {"ask", "request_from_user", "withdraw"}:
             return json.dumps({
                 "error": (
-                    "target='pending_request' supports operation='ask' only. "
-                    "Answering a request, and lifting a mute, belong to the "
-                    "person you asked - not to you."
+                    "target='pending_request' supports operation='ask' or "
+                    "'withdraw' (your own stale ask). Answering a request, and "
+                    "lifting a mute, belong to the person you asked - not to you."
                 ),
             })
-        from tinyassets.api.pending_requests import request_from_user
+        from tinyassets.api.pending_requests import request_from_user, withdraw_request
         from tinyassets.auth.middleware import _current_identity
 
         token = _bind_founder_identity()
         try:
+            if op == "withdraw":
+                return json.dumps(
+                    withdraw_request(universe_id=_GRAPH_ID, payload=payload_json)
+                )
             return json.dumps(
                 request_from_user(universe_id=_GRAPH_ID, payload=payload_json)
             )
@@ -2998,7 +3022,8 @@ def connect_compute(
 #    `sandboxed-code-node` approval is provenance, not an execution gate (code runs in
 #    the OS sandbox, only in the universe that authored it), so there is nothing to
 #    approve on this surface; the verb stays about outbound sinks.
-#  * Only action=="approve" is served (set_policy/get_policy are not exposed yet).
+#  * action=="approve" and action=="revoke" are served. set_policy/get_policy are
+#    not: the policy store has no reader (change agent-access-controls D3).
 #  * owner-gated (source_channel's impl requires an admin ACL row for the bound founder;
 #    unbound / read-write collaborators get auth_failed), graph-PINNED (universe_id is
 #    never caller-supplied — the agent cannot approve for another universe), secret-free
@@ -3026,8 +3051,13 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     credential. Executable ``source_code`` needs no approval (it runs in the OS sandbox,
     in the universe that authored it); this approves outbound-channel sinks only.
 
+    ``revoke`` takes a consent back (any sink, including a workspace consent you
+    cannot grant yourself); the reply's ``active`` is read back from the store the
+    effector checks. See everything you hold with ``read_graph target="access"``.
+
     Args:
-        action: ``approve`` — grant effector consent for an outbound sink. Required.
+        action: ``approve`` — grant effector consent for an outbound sink; ``revoke``
+            — take one back. Required.
         branch_id: Optional branch context (unused for a pure sink consent).
         payload: JSON object ``{"channel_type": "<sink, e.g. authenticated_external_call>",
             "destination": "<the connection's configured destination>"}``.
@@ -3038,11 +3068,11 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     if err is not None:
         return err
     act = (action or "").strip().lower()
-    if act != "approve":
+    if act not in {"approve", "revoke"}:
         return json.dumps({
             "error": (
-                "source_channel supports action=approve (outbound sink consent) on "
-                "the served surface."
+                "source_channel supports action=approve (grant an outbound sink "
+                "consent) or action=revoke (take one back) on the served surface."
             ),
         })
     raw = (payload or "").strip()
@@ -3069,7 +3099,7 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     # `sink` is checked too because `_approve_sink` reads `fields["sink"]` FIRST
     # and only falls back to `channel_type` -- refusing one spelling and not the
     # other would be a refusal with a documented way around it.
-    if EXTERNAL_WRITE_SINK_WORKSPACE in {
+    if act == "approve" and EXTERNAL_WRITE_SINK_WORKSPACE in {
         channel_type,
         (payload_obj.get("sink") or "").strip(),
     }:
@@ -3093,7 +3123,7 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
                 "verb approves outbound channel sinks only."
             ),
         })
-    if channel_type == "source_code":
+    if act == "approve" and channel_type == "source_code":
         # Approval is provenance only (change `sandboxed-code-node`); execution is
         # gated by the sandbox and authorship. This verb approves sinks, not code.
         return json.dumps({
@@ -3110,8 +3140,10 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     # graph_id is PINNED — the agent cannot approve a channel for another universe.
     token = _bind_founder_identity(_SOURCE_CHANNEL_CAPABILITIES)
     try:
+        # Revoke narrows: it may take back any sink, including a workspace
+        # consent this verb cannot grant. The impl refuses source_code.
         result = _impl(
-            action="approve",
+            action=act,
             universe_id=_GRAPH_ID,
             branch_id=(branch_id or "").strip(),
             payload=payload_obj,

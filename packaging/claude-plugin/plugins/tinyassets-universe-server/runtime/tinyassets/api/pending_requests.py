@@ -700,8 +700,14 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
-    """The agent raises a tab. Writes no credential."""
+def request_from_user(
+    *, universe_id: str = "", payload: Any = None, origin: str = "agent",
+) -> dict[str, Any]:
+    """The agent raises a tab. Writes no credential.
+
+    ``origin`` is server-set (keyword only, never read from ``payload``): the
+    platform's own asks pass ``"platform"`` so the agent cannot withdraw them.
+    """
     from tinyassets.storage.pending_requests import create_request
 
     _uid, udir, denied = _owner_gate(universe_id)
@@ -788,7 +794,7 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
     )
     row = create_request(
         udir, kind=kind, title=title, body=body, fields=fields,
-        action=action, dedupe_key=dedupe,
+        action=action, dedupe_key=dedupe, origin=origin,
     )
     if row is None:
         return {"error": "request_storage_unavailable"}
@@ -1245,6 +1251,50 @@ def unmute_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         # it so the lift is visible in the rail rather than silent.
         record_unmute(udir, key)
     return {"status": "unmuted" if lifted else "not_muted"}
+
+
+def withdraw_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """The agent takes down an ask of its own that it knows is stale.
+
+    Owner-gated like every rail operation. Only a still-pending ask the agent
+    raised moves; an answered one, a platform ask, and the synthesized model
+    entry are refused with the reason. Records the withdrawal (status
+    ``withdrawn`` with the reason) rather than deleting, and writes no standing
+    decision.
+    """
+    from tinyassets.storage.pending_requests import list_pending
+    from tinyassets.storage.pending_requests import withdraw_request as _withdraw
+
+    _uid, udir, denied = _owner_gate(universe_id)
+    if denied is not None:
+        return denied
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return _bad(str(exc))
+    request_id = str(document.get("request_id") or "").strip()
+    if not request_id:
+        return _bad("request_id is required; read it from target=pending_requests")
+    if request_id == _LLM_REQUEST_ID:
+        return {
+            "error": "not_withdrawable",
+            "detail": (
+                "this entry is derived from whether a model is connected; it "
+                "clears itself when one is, and nobody raised it"
+            ),
+        }
+    reason = str(document.get("reason") or "").strip()[:_MAX_ANSWER_CHARS]
+    if reason and _ENTROPY_RUN_RE.search(reason):
+        return _bad(
+            "that reason looks like it contains a credential; it is stored in "
+            "the clear, so say it in words instead"
+        )
+    row = _withdraw(udir, request_id, reason=reason)
+    if row.get("error"):
+        return row
+    on_rail = any(r["request_id"] == request_id for r in list_pending(udir, limit=500))
+    return {**{k: v for k, v in row.items() if k != "action"},
+            "still_on_rail": on_rail}
 
 
 def _grant_workspace_consent(
@@ -1769,4 +1819,5 @@ __all__ = [
     "list_requests",
     "request_from_user",
     "unmute_request",
+    "withdraw_request",
 ]

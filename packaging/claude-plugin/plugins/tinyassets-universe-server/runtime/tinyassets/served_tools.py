@@ -105,9 +105,12 @@ from __future__ import annotations
 #:       form / connect_http, which is deliberately NOT here). SINK CONSENT ONLY:
 #:       channel_type=="source_code" is refused (that approval sets approved_source_hash,
 #:       the provenance the create-only write_graph strips — keeping it off this
-#:       surface keeps a served build from attesting its own code). action=approve only;
-#:       set_policy/get_policy
-#:       and the raw-secret connect_http stay off-surface. Gated to the same u-tiny run
+#:       surface keeps a served build from attesting its own code). action=approve or
+#:       revoke (change agent-access-controls: revoke narrows, so it may take back any
+#:       sink, including a workspace consent the agent cannot grant). set_policy/
+#:       get_policy stay off-surface (the policy store has no reader), as does the
+#:       raw-secret connect_http. What the agent holds reads back through
+#:       read_graph target=access. Gated to the same u-tiny run
 #:       allowlist; the outbound call also needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED.
 #:
 #: write_graph (BUILD half of the channel slice, 2026-08-25): the ONE channel-agnostic
