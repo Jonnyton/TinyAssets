@@ -13,6 +13,46 @@ from pathlib import Path
 
 import pytest
 
+import tinyassets.platform_runtime_provenance as platform_runtime_provenance
+from tinyassets.platform_runtime_provenance import (
+    CLOUD,
+    ProcessProvenanceObservation,
+    RuntimeProvenance,
+)
+
+#: One admitted verdict for this module, built from the production dataclass.
+_ADMITTED_PROVENANCE = RuntimeProvenance(
+    verdict=CLOUD,
+    reason="instance_match",
+    metadata_reachable=True,
+    expected_identity_prepared=True,
+)
+
+
+@pytest.fixture(autouse=True)
+def _module_local_cloud_admission(monkeypatch):
+    """Admit this module's process through the real observation seam.
+
+    These tests execute branches whose nodes make foreground provider calls,
+    and those calls now require an admitted cloud runtime
+    (`cloud-only-runtime-admission`). An unobserved process is refused, so
+    without this `get_node_output` / `compare_runs` would be asserting the
+    admission gate (`platform_not_cloud ... reason=metadata_http_error` on a
+    CI runner) instead of the evaluation hooks they were written for.
+
+    Module-local on purpose, matching `tests/test_run_provider_session.py`:
+    a suite-wide admission would silently admit the negative regressions in
+    `tests/test_cloud_only_*admission_regressions.py`. No metadata socket is
+    opened and a green run establishes no cloud fact.
+    """
+    observation = ProcessProvenanceObservation(resolver=lambda: _ADMITTED_PROVENANCE)
+    observation.observe()
+    monkeypatch.setattr(
+        platform_runtime_provenance, "_PROCESS_OBSERVATION", observation
+    )
+    return observation
+
+
 # The universe these tests run branches through. Branches are executed BY a
 # universe, so every run in this module routes via this one.
 P4_UNIVERSE = "p4-universe"
