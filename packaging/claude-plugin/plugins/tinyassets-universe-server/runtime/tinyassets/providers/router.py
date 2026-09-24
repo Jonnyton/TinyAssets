@@ -876,9 +876,11 @@ class ProviderRouter:
             # Hard Rule 15, at the launch site: only the provider the owner's
             # authority names, resolving the universe's credentials, never a
             # host-credential built-in. Settled as never launched on refusal.
+            provider = self._providers.get(provider_name)
             try:
                 require_owner_bound_dispatch(
                     provider_name,
+                    provider=provider,
                     universe_dir=universe_dir,
                     served_authority=served_authority,
                     invocation_carrier=invocation_carrier,
@@ -890,7 +892,6 @@ class ProviderRouter:
                         input_tokens=0, output_tokens=0, cost_microunits=0,
                     )
                 raise
-            provider = self._providers.get(provider_name)
             if (
                 (
                     served_authority is not None

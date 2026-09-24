@@ -19,11 +19,11 @@ else needs to remember it.
 * :func:`require_owner_bound_dispatch` runs immediately before a provider is
   launched. The launched provider must be the one the owner's authority names,
   it must resolve credentials from the universe (never the host), and it must
-  not be one of the built-in providers whose only credential source is the host
-  process: ``gemini-free`` / ``groq-free`` / ``grok-free`` read the host's
-  ``*_API_KEY`` environment, and ``ollama-local`` is the host's own model server.
-  An owner who wants Gemini, Groq, xAI or their own Ollama connects it as an open
-  provider (``api_key_http:<definition>``), which carries their own credential.
+  not be an executor whose only credential source is the host process (a host
+  environment API key, or the host's own local model server). Such executors
+  declare ``credential_source = HOST_PROCESS_CREDENTIALS``. An owner who wants
+  one of those sources connects it as their own open provider
+  (``api_key_http:<definition>``), which carries their own credential.
 
 A refusal raises :class:`~tinyassets.exceptions.PlatformLLMCallRefusedError`, a
 ``ProviderAuthorityHeldError``: every caller already propagates that class
@@ -38,14 +38,16 @@ from typing import Any
 
 from tinyassets.exceptions import PlatformLLMCallRefusedError
 
-#: Built-in providers whose only credential source is the host process. None of
-#: them can carry an owner's connection, so none may ever serve a universe.
-HOST_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset({
-    "gemini-free",
-    "groq-free",
-    "grok-free",
-    "ollama-local",
-})
+#: ``credential_source`` value declared by an executor whose only credential
+#: source is the host process. It can never carry an owner's connection, so it
+#: may never serve a universe.
+HOST_PROCESS_CREDENTIALS = "host_process"
+
+
+def is_host_credential_provider(provider: Any) -> bool:
+    """Whether *provider* can only authenticate with the host's own credentials."""
+    return getattr(provider, "credential_source", None) == HOST_PROCESS_CREDENTIALS
+
 
 _NO_UNIVERSE = (
     "The platform has no LLM: a model call must come from a powered universe "
@@ -109,6 +111,7 @@ def require_owner_bound_context(universe_context: Any, *, operation: str | None)
 def require_owner_bound_dispatch(
     provider_name: str,
     *,
+    provider: Any = None,
     universe_dir: Path | None,
     served_authority: Any = None,
     invocation_carrier: Any = None,
@@ -124,7 +127,7 @@ def require_owner_bound_dispatch(
             f"The platform has no LLM: provider {provider_name!r} is not the "
             "provider the owner's binding names, so it may not serve this call."
         )
-    if provider_name in HOST_CREDENTIAL_PROVIDERS:
+    if is_host_credential_provider(provider):
         raise PlatformLLMCallRefusedError(
             f"The platform has no LLM: {provider_name!r} can only use the host's "
             "credentials or the host's own model server, never the owner's. "
@@ -134,7 +137,8 @@ def require_owner_bound_dispatch(
 
 __all__ = [
     "CONNECT_PROVIDER_MESSAGE",
-    "HOST_CREDENTIAL_PROVIDERS",
+    "HOST_PROCESS_CREDENTIALS",
+    "is_host_credential_provider",
     "require_owner_bound_context",
     "require_owner_bound_dispatch",
 ]

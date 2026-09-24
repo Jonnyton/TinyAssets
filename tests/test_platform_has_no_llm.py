@@ -32,11 +32,29 @@ from tinyassets.providers.router import FALLBACK_CHAINS, ProviderRouter
 _ALL_BUILTIN = sorted({name for chain in FALLBACK_CHAINS.values() for name in chain})
 
 
+def _builtin_executor_classes() -> dict[str, type]:
+    from tinyassets.providers.claude_provider import ClaudeProvider
+    from tinyassets.providers.codex_provider import CodexProvider
+    from tinyassets.providers.gemini_provider import GeminiProvider
+    from tinyassets.providers.grok_provider import GrokProvider
+    from tinyassets.providers.groq_provider import GroqProvider
+    from tinyassets.providers.ollama_provider import OllamaProvider
+
+    classes = (ClaudeProvider, CodexProvider, GeminiProvider, GrokProvider,
+               GroqProvider, OllamaProvider)
+    return {cls.name: cls for cls in classes}
+
+
 class _SpyProvider(BaseProvider):
+    """Records calls; carries the REAL executor's declared credential source."""
+
     def __init__(self, name: str) -> None:
         self.name = name
         self.family = name
         self.calls: list[str] = []
+        real = _builtin_executor_classes().get(name)
+        if real is not None and hasattr(real, "credential_source"):
+            self.credential_source = real.credential_source
 
     async def complete(self, prompt, system, config, *, universe_dir=None):
         self.calls.append(prompt)
@@ -165,6 +183,16 @@ def test_owner_authority_cannot_launch_a_host_credential_provider(
                 ),
             ))
     assert _calls(spies) == {}
+
+
+def test_exactly_the_host_credential_executors_declare_it():
+    from tinyassets.providers.owner_binding import is_host_credential_provider
+
+    host_only = sorted(
+        name for name, cls in _builtin_executor_classes().items()
+        if is_host_credential_provider(cls)
+    )
+    assert host_only == ["gemini-free", "grok-free", "groq-free", "ollama-local"]
 
 
 def test_owner_authority_without_a_universe_dir_cannot_fall_to_host_env():

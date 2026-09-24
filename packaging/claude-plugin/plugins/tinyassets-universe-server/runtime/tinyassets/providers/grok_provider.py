@@ -27,6 +27,8 @@ class GrokProvider(BaseProvider):
 
     name = "grok-free"
     family = "xai"
+    # Hard Rule 15: authenticates only from the host process, never an owner.
+    credential_source = "host_process"
 
     def __init__(self) -> None:
         require_api_key_provider_opt_in(self.name)
