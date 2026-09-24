@@ -197,20 +197,8 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     ),
     CallSite(
         "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/api/selector_dispatch.py",
-        "dispatch_selector",
-        "_execute_branch_core",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
         "runtime/tinyassets/api/universe.py",
         "_action_submit_request",
-        "append_task",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/bug_investigation.py",
-        "enqueue_investigation_request",
         "append_task",
     ),
     CallSite(
@@ -295,17 +283,7 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "_ensure_runs_recovery",
         "recover_in_flight_runs",
     ),
-    CallSite(
-        "tinyassets/api/selector_dispatch.py",
-        "dispatch_selector",
-        "_execute_branch_core",
-    ),
     CallSite("tinyassets/api/universe.py", "_action_submit_request", "append_task"),
-    CallSite(
-        "tinyassets/bug_investigation.py",
-        "enqueue_investigation_request",
-        "append_task",
-    ),
     CallSite(
         "tinyassets/dispatcher.py",
         "run_branch_task_producers_into_queue",
@@ -424,9 +402,11 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
         SourceReference("tinyassets/api/market.py", "def _action_goal_run_canonical("),
     ),
     "retired_wiki_forwarding": (
+        # Hard Rule 15 (2026-09-24) deleted the enqueue helper; only the
+        # legacy request-type constant for already-queued tasks remains.
         SourceReference(
             "tinyassets/bug_investigation.py",
-            "def enqueue_investigation_request(",
+            'REQUEST_TYPE_BUG_INVESTIGATION = "bug_investigation"',
             state="retirement-only",
         ),
         SourceReference(

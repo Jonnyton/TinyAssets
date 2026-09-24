@@ -28,6 +28,8 @@ class OllamaProvider(BaseProvider):
 
     name = "ollama-local"
     family = "local"
+    # Hard Rule 15: authenticates only from the host process, never an owner.
+    credential_source = "host_process"
 
     def __init__(
         self,

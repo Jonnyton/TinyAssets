@@ -655,15 +655,12 @@ def subprocess_env_for_provider(
         else Path(bound_universe) if bound_universe else None
     )
     if resolved_universe is None:
-        # No-universe (host-local / standalone-daemon) calls keep the host's own
-        # subscription environment. The founder's fail-closed guarantee applies
-        # to USER universes, which always carry a universe_dir and are enforced
-        # by the router-level provider ceiling (ProviderAuthorityHeldError) in
-        # tinyassets/providers/router.py — they never reach this branch.
-        # Fail-closing host-local no-universe completions is deliberately
-        # deferred to the TINYASSETS_PROVIDER_AUTHORITY_V2-gated successor per
-        # constrain-set-engine Decision 5 (host/operator maintenance receipt),
-        # so shipped host-local behavior is preserved while V2 is dark.
+        # The host's own environment. The platform never reaches this branch:
+        # the provider router is the only caller of ``complete`` and it refuses
+        # any launch without a universe directory and the owner's authority
+        # (Hard Rule 15, ``tinyassets/providers/owner_binding.py``). What is
+        # left is developer tooling on a developer's own machine
+        # (``scripts/peer_agent.py``), which is not the platform.
         return subprocess_env_without_api_keys() or os.environ.copy()
 
     credential_resolution_failed = False

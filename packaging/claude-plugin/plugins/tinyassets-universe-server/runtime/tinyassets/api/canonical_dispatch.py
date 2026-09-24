@@ -18,17 +18,19 @@ with leaderboard-driven canonical selection. Every Goal can opt into
   3. The (possibly updated) canonical is then dispatched.
 
 This module owns the resolution logic. The MCP dispatch wrapper
-(``_action_goal_run_canonical`` in ``tinyassets/api/market.py``) and the
-bug-investigation enqueue path (``_maybe_enqueue_investigation`` in
-``tinyassets/bug_investigation.py``) both call into this module so the
-leaderboard semantics + threshold + in-flight gating + history audit
-have a single source of truth.
+(``_action_goal_run_canonical`` in ``tinyassets/api/market.py``) calls into
+it. (The bug-investigation enqueue path that also did was deleted under
+Hard Rule 15.)
+
+**Hard Rule 15 (the platform has no LLM, 2026-09-24):** the leaderboard's
+selector was a platform model call and now fails closed
+(``selector_retired``), so an auto-refresh finds no entries and the stored
+canonical, if any, is used. ``auto_canonical_via_leaderboard`` is inert until
+the follow-up deletion in ``docs/reviews/2026-09-24-platform-llm-call-audit.md``.
 
 No new substrate primitives — pure orchestration over existing
 ``goals`` / ``branch_versions`` / ``quality_leaderboard`` / ``runs``
-storage. The env-var fallback path (read by
-``_maybe_enqueue_investigation``) stays in place until the observation
-window closes; cutover plan Step 5/6 removes the env in a follow-on PR.
+storage.
 
 **Auth-boundary contract (PR-127 round 2 — Codex P1 findings):**
 

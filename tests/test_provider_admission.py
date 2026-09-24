@@ -438,10 +438,36 @@ class TestTheBoundBindsBehaviourally:
                 seen["live"] = pa.admission_snapshot()["live"]
                 return ProviderResponse(
                     text="ok", provider="codex", model="fake", family="openai",
+                    latency_ms=0.0,
                 )
 
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from tinyassets.provider_work_authority import ProviderInvocationCarrier
+        from tinyassets.providers.base import UniverseContext
+
+        # Hard Rule 15: a real dispatch needs an owner's authority.
+        carrier = MagicMock(spec=ProviderInvocationCarrier)
+        carrier.provider = "codex"
+        carrier.role = "judge"
+        carrier.operation = "run_graph"
+        carrier.max_tokens = 10
+        carrier.max_cost_microunits = 5
+        carrier.selected_model = None
+        carrier.native_selection = None
+        carrier.settlement_owner = None
+        carrier.validate_for_call.return_value = "codex"
+
         router = ProviderRouter(providers={"codex": _Observing()})
-        asyncio.run(router.call_judge_ensemble("p", "s", ModelConfig()))
+        with patch("tinyassets.providers.router._provider_invocation_carrier",
+                   return_value=carrier):
+            asyncio.run(router.call_judge_ensemble(
+                "p", "s", ModelConfig(max_tokens=10), operation="run_graph",
+                universe_context=UniverseContext(
+                    universe_dir=Path("u-admission"), provider_invocation=carrier,
+                ),
+            ))
 
         # Deliberately NOT a skip on failure: a test that opts out when it cannot reach
         # the provider is the same decorative failure in a new costume.

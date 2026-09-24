@@ -1,181 +1,32 @@
-"""Historical helper tests plus the filing-only retirement contract.
+"""The file_bug -> investigation auto-trigger is gone, and filing stays ordinary.
 
-The former forward-trigger plan is retired at
-``docs/exec-plans/completed/2026-04-25-file-bug-wiring.md``. Helper-level tests
-remain until the locked migration removes the compatibility module; integration
-tests below now prove ``file_bug`` does not invoke it.
+The forward-trigger plan was retired at
+``docs/exec-plans/completed/2026-04-25-file-bug-wiring.md``; Hard Rule 15 (the
+platform has no LLM, 2026-09-24) deleted the compatibility helpers
+themselves. These tests prove the helpers are absent and ``file_bug`` touches
+no queue or trigger state.
 """
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from tinyassets.branch_tasks import read_queue
-from tinyassets.bug_investigation import (
-    REQUEST_TYPE_BUG_INVESTIGATION,
-    _maybe_enqueue_investigation,
+import tinyassets.bug_investigation as bug_investigation
+
+_DELETED_HELPERS = (
+    "_maybe_enqueue_investigation",
+    "_resolve_investigation_handler",
+    "enqueue_investigation_request",
+    "format_investigation_comment",
+    "is_auto_trigger_enabled",
+    "BUG_INVESTIGATION_GOAL_ID",
+    "BUG_INVESTIGATION_BRANCH_DEF_ID",
 )
 
-# ── _maybe_enqueue_investigation: env-gate ────────────────────────────────────
 
-
-class TestEnvGate:
-    def test_returns_none_when_env_unset(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", raising=False)
-        result = _maybe_enqueue_investigation(
-            bug_id="BUG-100",
-            frontmatter={"title": "x"},
-            base_path=tmp_path,
-        )
-        assert result is None
-        assert read_queue(tmp_path) == []
-
-    def test_returns_none_when_env_empty_string(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "")
-        result = _maybe_enqueue_investigation(
-            bug_id="BUG-101",
-            frontmatter={"title": "x"},
-            base_path=tmp_path,
-        )
-        assert result is None
-        assert read_queue(tmp_path) == []
-
-    def test_returns_none_when_env_whitespace(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "   ")
-        result = _maybe_enqueue_investigation(
-            bug_id="BUG-102",
-            frontmatter={"title": "x"},
-            base_path=tmp_path,
-        )
-        assert result is None
-        assert read_queue(tmp_path) == []
-
-
-# ── _maybe_enqueue_investigation: happy path ──────────────────────────────────
-
-
-class TestEnqueuesWhenBound:
-    def test_enqueues_when_canonical_bound(self, tmp_path, monkeypatch):
-        monkeypatch.setenv(
-            "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
-        )
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        request_id = _maybe_enqueue_investigation(
-            bug_id="BUG-200",
-            frontmatter={
-                "title": "crash on load",
-                "severity": "high",
-                "component": "engine",
-            },
-            base_path=tmp_path,
-        )
-        assert request_id is not None
-        assert len(request_id) == 36
-
-        queue = read_queue(tmp_path)
-        assert len(queue) == 1
-        task = queue[0]
-        assert task.branch_task_id == request_id
-        assert task.request_type == REQUEST_TYPE_BUG_INVESTIGATION
-        assert task.branch_def_id == "branch-canonical-abc"
-        assert task.inputs["bug_id"] == "BUG-200"
-        assert task.inputs["title"] == "crash on load"
-        assert task.inputs["severity"] == "high"
-
-    def test_passes_universe_id_through(self, tmp_path, monkeypatch):
-        monkeypatch.setenv(
-            "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
-        )
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        _maybe_enqueue_investigation(
-            bug_id="BUG-201",
-            frontmatter={"title": "x"},
-            base_path=tmp_path,
-            universe_id="custom-universe",
-        )
-        queue = read_queue(tmp_path)
-        assert queue[0].universe_id == "custom-universe"
-
-    def test_frontmatter_bug_id_overridden_by_arg(self, tmp_path, monkeypatch):
-        """Even if frontmatter has a stale bug_id, the explicit arg wins."""
-        monkeypatch.setenv(
-            "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
-        )
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        _maybe_enqueue_investigation(
-            bug_id="BUG-202",
-            frontmatter={"bug_id": "BUG-WRONG", "title": "x"},
-            base_path=tmp_path,
-        )
-        queue = read_queue(tmp_path)
-        assert queue[0].inputs["bug_id"] == "BUG-202"
-
-
-# ── _maybe_enqueue_investigation: graceful failure ────────────────────────────
-
-
-class TestGracefulFailure:
-    def test_returns_none_on_dispatcher_rejection(self, tmp_path, monkeypatch):
-        """When `TINYASSETS_REQUEST_TYPE_PRIORITIES` excludes bug_investigation,
-        enqueue raises RuntimeError. Filing must NOT break — caller gets None."""
-        monkeypatch.setenv(
-            "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
-        )
-        monkeypatch.setenv(
-            "TINYASSETS_REQUEST_TYPE_PRIORITIES", "paid_market,branch_run"
-        )
-        result = _maybe_enqueue_investigation(
-            bug_id="BUG-300",
-            frontmatter={"title": "x"},
-            base_path=tmp_path,
-        )
-        assert result is None
-        assert read_queue(tmp_path) == []
-
-    def test_returns_none_on_missing_bug_id(self, tmp_path, monkeypatch):
-        """Empty bug_id is a malformed input — log and return None, do not crash."""
-        monkeypatch.setenv(
-            "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
-        )
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        result = _maybe_enqueue_investigation(
-            bug_id="",
-            frontmatter={"title": "x"},
-            base_path=tmp_path,
-        )
-        assert result is None
-        assert read_queue(tmp_path) == []
-
-    def test_returns_none_on_value_error_from_enqueue(self, tmp_path, monkeypatch):
-        """If `enqueue_investigation_request` raises ValueError, we recover."""
-        monkeypatch.setenv(
-            "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
-        )
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        with patch(
-            "tinyassets.bug_investigation.enqueue_investigation_request",
-            side_effect=ValueError("boom"),
-        ):
-            result = _maybe_enqueue_investigation(
-                bug_id="BUG-301",
-                frontmatter={"title": "x"},
-                base_path=tmp_path,
-            )
-        assert result is None
-
-    def test_none_frontmatter_does_not_crash(self, tmp_path, monkeypatch):
-        monkeypatch.setenv(
-            "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
-        )
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        request_id = _maybe_enqueue_investigation(
-            bug_id="BUG-302",
-            frontmatter=None,  # type: ignore[arg-type]
-            base_path=tmp_path,
-        )
-        assert request_id is not None
-        queue = read_queue(tmp_path)
-        assert queue[0].inputs["bug_id"] == "BUG-302"
+def test_investigation_auto_trigger_helpers_are_deleted():
+    present = [name for name in _DELETED_HELPERS if hasattr(bug_investigation, name)]
+    assert present == []
 
 
 # ── Integration: _wiki_file_bug call site ─────────────────────────────────────
@@ -202,12 +53,6 @@ def test_wiki_file_bug_never_invokes_retired_investigation_helpers(
     monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
 
     with patch(
-        "tinyassets.bug_investigation._maybe_enqueue_investigation",
-        side_effect=AssertionError("file_bug must not enqueue"),
-    ) as enqueue, patch(
-        "tinyassets.bug_investigation.format_investigation_comment",
-        side_effect=AssertionError("file_bug must not format an investigation"),
-    ) as formatter, patch(
         "tinyassets.branch_tasks.read_queue",
         side_effect=AssertionError("file_bug must not read task state"),
     ) as queue_reader:
@@ -227,8 +72,6 @@ def test_wiki_file_bug_never_invokes_retired_investigation_helpers(
     page = (wiki_root / result["path"]).read_text(encoding="utf-8")
     assert "## Investigation" not in page
     assert "## Patch Packet" not in page
-    enqueue.assert_not_called()
-    formatter.assert_not_called()
     queue_reader.assert_not_called()
     assert not (data_root / "wiki_trigger_attempts.db").exists()
 
@@ -275,10 +118,7 @@ def test_wiki_file_bug_preserves_historical_receipt_without_writing(
     ) as mark_failed, patch(
         "tinyassets.wiki.trigger_receipts.mark_skipped",
         side_effect=AssertionError("file_bug must not update a receipt"),
-    ) as mark_skipped, patch(
-        "tinyassets.bug_investigation._maybe_enqueue_investigation",
-        side_effect=AssertionError("file_bug must not enqueue"),
-    ):
+    ) as mark_skipped:
         result_json = wiki_api._wiki_file_bug(
             component="engine",
             severity="minor",
