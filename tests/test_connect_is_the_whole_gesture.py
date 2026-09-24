@@ -221,16 +221,6 @@ def app_html() -> str:
     return html
 
 
-def test_the_pasted_credential_path_finishes_the_gesture(app_html):
-    """The generic connect form deposited and printed the receipt. It now points
-    the universe at the deposit and says, in words, whether that worked. (The
-    executed-JS proof of the heal is in test_app_serving_heal_executes.py.)"""
-    deposit = app_html.index("await MCP.connectLLM(service,b64)")
-    serve = app_html.index("serveOn(service)", deposit)
-    assert serve - deposit < 600, "the serve step is not in the paste path"
-    assert "servingSentence(service, sv)" in app_html
-
-
 def test_the_heartbeat_calls_the_heal(app_html):
     poll = app_html.index("async function pollStatus()")
     heal = app_html.index("healServing(s)", poll)

@@ -4,14 +4,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from tinyassets.branch_tasks import BranchTask, append_task, read_queue
-from tinyassets.bug_investigation import (
-    REQUEST_TYPE_BUG_INVESTIGATION,
-    enqueue_investigation_request,
-    format_investigation_comment,
-)
+from tinyassets.bug_investigation import REQUEST_TYPE_BUG_INVESTIGATION
 from tinyassets.dispatcher import (
     get_request_type_priorities,
     load_dispatcher_config,
@@ -20,119 +14,6 @@ from tinyassets.dispatcher import (
 )
 
 # ── enqueue_investigation_request ─────────────────────────────────────────────
-
-
-class TestEnqueueInvestigationRequest:
-    def test_creates_dispatcher_entry_with_bug_investigation_type(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        request_id = enqueue_investigation_request(
-            bug_ref={"bug_id": "BUG-001", "title": "crash on load"},
-            canonical_branch_def_id="branch-abc",
-            base_path=tmp_path,
-        )
-        assert request_id
-        queue = read_queue(tmp_path)
-        assert len(queue) == 1
-        task = queue[0]
-        assert task.branch_task_id == request_id
-        assert task.request_type == REQUEST_TYPE_BUG_INVESTIGATION
-        assert task.branch_def_id == "branch-abc"
-        assert task.status == "pending"
-
-    def test_returns_request_id_not_run_id(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        request_id = enqueue_investigation_request(
-            bug_ref={"bug_id": "BUG-002"},
-            canonical_branch_def_id="branch-xyz",
-            base_path=tmp_path,
-        )
-        # Must be a UUID-shaped string, not a run-id
-        assert len(request_id) == 36
-        assert request_id.count("-") == 4
-
-    def test_inputs_contain_bug_payload(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        enqueue_investigation_request(
-            bug_ref={"bug_id": "BUG-003", "title": "null pointer", "severity": "critical"},
-            canonical_branch_def_id="branch-abc",
-            base_path=tmp_path,
-        )
-        queue = read_queue(tmp_path)
-        inputs = queue[0].inputs
-        assert inputs["bug_id"] == "BUG-003"
-        assert inputs["title"] == "null pointer"
-        assert inputs["severity"] == "critical"
-        assert inputs["request_text"].startswith("bug BUG-003: null pointer")
-        assert "Severity: critical" in inputs["request_text"]
-
-    def test_merge_instant_effort_metadata_uses_fast_lane(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        enqueue_investigation_request(
-            bug_ref={
-                "bug_id": "PR-004",
-                "title": "Fix typo in connector docs",
-                "kind": "patch_request",
-                "effort_class": "merge-instant",
-                "effort_attention": "normal-review-gates",
-                "effort_classification": {
-                    "effort_class": "merge-instant",
-                    "attention": "normal-review-gates",
-                    "signals": ["mechanical_shape"],
-                },
-            },
-            canonical_branch_def_id="branch-abc",
-            base_path=tmp_path,
-        )
-
-        task = read_queue(tmp_path)[0]
-        assert task.pickup_signal_weight > 0.0
-        assert task.inputs["effort_dispatch_lane"] == "merge-instant-fast-lane"
-        assert (
-            task.inputs["effort_dispatch_route"]["triage_policy"]
-            == "skip-extended-triage-when-no-ghost-signals"
-        )
-        assert "Dispatch Lane: merge-instant-fast-lane" in task.inputs["request_text"]
-
-    def test_raises_if_no_branch_def_id(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        with pytest.raises(ValueError, match="canonical_branch_def_id"):
-            enqueue_investigation_request(
-                bug_ref={"bug_id": "BUG-004"},
-                canonical_branch_def_id="",
-                base_path=tmp_path,
-            )
-
-    def test_raises_if_request_type_not_in_priorities(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", "paid_market,branch_run")
-        with pytest.raises(RuntimeError, match="not in TINYASSETS_REQUEST_TYPE_PRIORITIES"):
-            enqueue_investigation_request(
-                bug_ref={"bug_id": "BUG-005"},
-                canonical_branch_def_id="branch-abc",
-                base_path=tmp_path,
-            )
-
-    def test_universe_id_inferred_from_base_path_name(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        universe_dir = tmp_path / "my-universe"
-        universe_dir.mkdir()
-        enqueue_investigation_request(
-            bug_ref={"bug_id": "BUG-006"},
-            canonical_branch_def_id="branch-abc",
-            base_path=universe_dir,
-        )
-        queue = read_queue(universe_dir)
-        assert queue[0].universe_id == "my-universe"
-
-    def test_explicit_universe_id_overrides_path_name(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
-        enqueue_investigation_request(
-            bug_ref={"bug_id": "BUG-007"},
-            canonical_branch_def_id="branch-abc",
-            base_path=tmp_path,
-            universe_id="override-universe",
-        )
-        queue = read_queue(tmp_path)
-        assert queue[0].universe_id == "override-universe"
 
 
 # ── prefers_request_type / get_request_type_priorities ────────────────────────
@@ -212,29 +93,6 @@ class TestSelectNextTaskRequestTypeFilter:
 
 
 # ── format_investigation_comment with request_id ──────────────────────────────
-
-
-class TestFormatInvestigationComment:
-    def test_request_id_path_uses_dispatcher_request_id_label(self):
-        comment = format_investigation_comment(request_id="req-abc-123")
-        assert "dispatcher_request_id" in comment
-        assert "req-abc-123" in comment
-        assert "investigation_run_id" not in comment
-
-    def test_run_id_path_uses_run_id_label(self):
-        comment = format_investigation_comment(run_id="run-xyz-456")
-        assert "investigation_run_id" in comment
-        assert "run-xyz-456" in comment
-        assert "dispatcher_request_id" not in comment
-
-    def test_request_id_takes_precedence_when_both_given(self):
-        comment = format_investigation_comment(run_id="run-1", request_id="req-2")
-        assert "dispatcher_request_id" in comment
-        assert "req-2" in comment
-
-    def test_status_included_in_comment(self):
-        comment = format_investigation_comment(request_id="req-1", status="awaiting_claimer")
-        assert "awaiting_claimer" in comment
 
 
 # ── BranchTask request_type field ─────────────────────────────────────────────

@@ -18,7 +18,6 @@ import pytest
 
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
-    ProviderError,
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
@@ -179,57 +178,72 @@ class TestAllProvidersExhaustedError:
 
 
 class TestProviderRouterDiagnostics:
+    # Hard Rule 15: the router serves only the provider an owner's authority
+    # names, so diagnostics describe that one provider's attempt. The old
+    # multi-provider chain walk (not_in_registry / fallback to ollama-local)
+    # no longer exists.
+
+    @staticmethod
+    async def _bound_call(router, provider: str, role: str = "writer"):
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from tinyassets.provider_work_authority import ProviderInvocationCarrier
+        from tinyassets.providers.base import UniverseContext
+
+        carrier = MagicMock(spec=ProviderInvocationCarrier)
+        carrier.provider = provider
+        carrier.role = role
+        carrier.operation = "run_graph"
+        carrier.max_tokens = 10
+        carrier.max_cost_microunits = 5
+        carrier.selected_model = None
+        carrier.native_selection = None
+        carrier.settlement_owner = None
+        carrier.validate_for_call.return_value = provider
+
+        def resolve(_context, *, role, operation):
+            carrier.validate_for_call(role=role, operation=operation)
+            return carrier
+
+        with patch("tinyassets.providers.router._provider_invocation_carrier",
+                   side_effect=resolve):
+            return await router.call(
+                role, "prompt", "system", ModelConfig(max_tokens=10),
+                operation="run_graph",
+                universe_context=UniverseContext(
+                    universe_dir=Path("u-diag"), provider_invocation=carrier,
+                ),
+            )
+
     @pytest.mark.asyncio
     async def test_router_attaches_attempts_and_chain_state(self, monkeypatch):
         monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
-        router = ProviderRouter(
-            providers={
-                "codex": FailingProvider(
-                    "codex",
-                    "openai",
-                    ProviderUnavailableError("401 Unauthorized"),
-                ),
-                "ollama-local": FailingProvider(
-                    "ollama-local",
-                    "local",
-                    ProviderError("local model unavailable"),
-                ),
-            },
-        )
+        router = ProviderRouter(providers={
+            "codex": FailingProvider(
+                "codex", "openai", ProviderUnavailableError("401 Unauthorized"),
+            ),
+        })
 
         with pytest.raises(AllProvidersExhaustedError) as exc_info:
-            await router.call("writer", "prompt", "system")
+            await self._bound_call(router, "codex")
 
         err = exc_info.value
-        assert err.attempts is not None
         assert err.chain_state is not None
         assert err.chain_state["role"] == "writer"
         assert err.chain_state["api_key_providers_enabled"] is False
-        assert err.chain_state["chain"] == ["codex", "ollama-local"]
-        attempts = {attempt.provider: attempt for attempt in err.attempts}
-        assert attempts["claude-code"].skip_class == "not_in_registry"
-        assert attempts["codex"].skip_class == "auth_invalid"
-        assert attempts["ollama-local"].skip_class == "provider_error"
+        assert err.chain_state["chain"] == ["codex"]
+        assert [attempt.provider for attempt in err.attempts] == ["codex"]
+        assert err.attempts[0].skip_class == "auth_invalid"
 
     @pytest.mark.asyncio
     async def test_router_marks_timeouts(self):
-        router = ProviderRouter(
-            providers={
-                "codex": FailingProvider(
-                    "codex",
-                    "openai",
-                    ProviderTimeoutError("codex hung"),
-                ),
-                "ollama-local": FailingProvider(
-                    "ollama-local",
-                    "local",
-                    ProviderError("local unavailable"),
-                ),
-            },
-        )
+        router = ProviderRouter(providers={
+            "codex": FailingProvider("codex", "openai", ProviderTimeoutError("codex hung")),
+        })
 
         with pytest.raises(AllProvidersExhaustedError) as exc_info:
-            await router.call("extract", "prompt", "system")
+            await self._bound_call(router, "codex", role="extract")
 
         attempts = {attempt.provider: attempt for attempt in exc_info.value.attempts}
         assert attempts["codex"].skip_class == "timed_out"

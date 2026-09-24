@@ -730,6 +730,11 @@ def _bind_waiting_run_provider(
     from tinyassets.storage.current_home import check_principal_not_deleted
 
     with author_connect(base_path) as authority:
+        # The deletion fence is transaction-local by contract; the admitted-input
+        # path reads it under BEGIN IMMEDIATE, and so must this one. Without it
+        # every nominated waiter failed ``provider_unavailable`` (live
+        # 2026-09-24, founder universe, the second of two contending runs).
+        authority.execute("BEGIN IMMEDIATE")
         check_principal_not_deleted(authority, owner_id)
     session = new_foreground_run_provider_session(
         base_path, universe_id=universe_id, principal_id=owner_id,

@@ -10,9 +10,14 @@ inside the fantasy domain; the relocation is the de-fantasy audit's Tier A:
 
 The router is injectable: a long-running host (e.g. a daemon) builds its own
 fully-configured :class:`ProviderRouter` and installs it via
-:func:`set_provider_router`. A bare import builds a best-effort fallback router
-from whatever provider binaries/keys are present, so scripts and tests work
-without a daemon.
+:func:`set_provider_router`. A bare import builds a router that REGISTERS the
+provider executors present on this machine. Registration is not permission:
+the router serves a call only with one universe's owner authority and that
+universe's own credentials, and refuses every other call before any provider
+is touched (AGENTS.md Hard Rule 15, ``tinyassets/providers/owner_binding.py``).
+A call with no ``universe_context`` is therefore refused loudly, never served
+from the host's CLI login or environment and never degraded to
+``fallback_response``.
 
 Use the accessors (:func:`get_last_provider`, :func:`is_force_mock`) rather than
 ``from ... import last_provider`` / ``_FORCE_MOCK``: the import-the-name pattern
@@ -206,11 +211,13 @@ def bind_universe_provider_call(
 
 
 def _build_fallback_router() -> "Optional[ProviderRouter]":
-    """Best-effort router registering whatever providers are available.
+    """Router registering whatever provider executors are installed.
 
-    A daemon overwrites this via :func:`set_provider_router`, so these
-    registrations only serve standalone/script/test usage. Each provider import
-    is independently guarded so a missing optional dependency never breaks the
+    Registration only makes an executor addressable by name. Whether it may
+    run is decided per call by the owner's authority (Hard Rule 15); the
+    host-credential built-ins registered here (Ollama, Gemini, Groq, Grok) are
+    refused at dispatch for every universe. Each provider import is
+    independently guarded so a missing optional dependency never breaks the
     bridge.
     """
     try:

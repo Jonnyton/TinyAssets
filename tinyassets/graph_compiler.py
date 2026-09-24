@@ -1540,11 +1540,11 @@ def _build_prompt_template_node(
             elif effective_policy:
                 # Policy-aware path: route through ProviderRouter.call_with_policy_sync
                 try:
-                    _policy_router = (
-                        _injected_policy_caller
-                        if _injected_policy_caller is not None
-                        else _get_shared_router()
-                    )
+                    # Only the run's own injected, universe-bound caller may
+                    # honour a policy. There is no shared-router fallback
+                    # (Hard Rule 15): without one, the policy node goes
+                    # through the same bound bridge as any other node.
+                    _policy_router = _injected_policy_caller
                     router_providers = getattr(
                         _policy_router, "available_providers", None,
                     )

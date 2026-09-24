@@ -12,6 +12,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -211,39 +212,44 @@ class _SpawningProvider(BaseProvider):
 
 
 def test_router_binds_the_owning_universe_around_the_provider_call(tmp_path):
-    from tinyassets.config import UniverseConfig
+    from tests.support.owner_bound import owner_carrier
     from tinyassets.providers.router import ProviderRouter
 
     universe = _universe(tmp_path)
     recorder = _ScopeRecorder("codex")
     router = ProviderRouter(providers={"codex": recorder})
-    context = UniverseContext(
-        universe_dir=universe, config=UniverseConfig(allowed_providers=["codex"]),
-    )
-    asyncio.run(router.call_judge_ensemble("p", "", universe_context=context))
+    # Hard Rule 15 refuses an unbound call before the jail is reached. The
+    # universe must be the real one on disk for the scope assertion below, so
+    # the carrier is bound by hand rather than through ``owner_bound_call``.
+    carrier = owner_carrier("codex")
+    context = UniverseContext(universe_dir=universe, provider_invocation=carrier)
+
+    with patch("tinyassets.providers.router._provider_invocation_carrier",
+               return_value=carrier):
+        asyncio.run(router.call(
+            "writer", "p", "", ModelConfig(max_tokens=10),
+            operation="run_graph", universe_context=context,
+        ))
 
     assert len(recorder.scopes) == 1
     assert recorder.scopes[0].universe_dir == universe
     assert provider_jail._SCOPE.get() is None, "the binding leaked past the call"
 
 
-def test_router_binds_no_universe_for_a_host_call():
-    from tinyassets.providers.router import ProviderRouter
-
-    recorder = _ScopeRecorder("claude-code")
-    router = ProviderRouter(providers={"claude-code": recorder})
-    asyncio.run(router.call("writer", "p", "", ModelConfig()))
-
-    assert len(recorder.scopes) == 1
-    assert recorder.scopes[0] is not None and recorder.scopes[0].universe_dir is None
-
-
 def test_router_refuses_a_host_authority_launch_without_cooling_the_provider(no_spawn):
-    """The selector/leaderboard shape: a router call with no universe context."""
+    """The selector/leaderboard shape: a router call with no universe context.
+
+    Hard Rule 15 (#3961) now refuses this one step earlier than the jail does,
+    with the sibling ``PlatformLLMCallRefusedError``. Both are the same
+    ``ProviderAuthorityHeldError`` contract the jail was built to honour, and
+    the claims that matter here are unchanged: nothing spawns, and a refusal
+    that is about the host rather than the credential never cools the provider.
+    """
+    from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers.router import ProviderRouter
 
     router = ProviderRouter(providers={"claude-code": _SpawningProvider("claude-code")})
-    with pytest.raises(ProviderConfinementError):
+    with pytest.raises(ProviderAuthorityHeldError):
         asyncio.run(router.call("writer", "p", "", ModelConfig()))
     assert no_spawn == []
     assert router._quota.available("claude-code"), "a host refusal cooled the provider"

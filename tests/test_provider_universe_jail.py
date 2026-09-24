@@ -232,7 +232,9 @@ def test_router_jails_a_new_command_adapter_with_no_jail_code(world: _World) -> 
     universe view, no mount and no sandbox flag. The ROUTER binds the owning
     universe and the spawn point jails it.
     """
-    from tinyassets.config import UniverseConfig
+    from unittest.mock import patch
+
+    from tests.support.owner_bound import owner_carrier
     from tinyassets.providers.base import (
         BaseProvider,
         ProviderResponse,
@@ -265,12 +267,19 @@ def test_router_jails_a_new_command_adapter_with_no_jail_code(world: _World) -> 
             )
 
     router = ProviderRouter(providers={"codex": FutureCommandAdapter()})
+    # The owner authority every router call now carries (Hard Rule 15). It
+    # names the provider and nothing else; the jail under test is unrelated to
+    # it, and without it the call is refused before anything launches. The
+    # universe here must be the real one on disk, so the carrier is bound by
+    # hand rather than through ``owner_bound_call``'s placeholder directory.
+    carrier = owner_carrier("codex", role="judge")
     context = UniverseContext(
-        universe_dir=world.universe_a,
-        config=UniverseConfig(allowed_providers=["codex"]),
+        universe_dir=world.universe_a, provider_invocation=carrier,
     )
-    results = asyncio.run(
-        router.call_judge_ensemble("prompt", "", universe_context=context),
-    )
+    with patch("tinyassets.providers.router._provider_invocation_carrier",
+               return_value=carrier):
+        results = asyncio.run(router.call_judge_ensemble(
+            "prompt", "", operation="run_graph", universe_context=context,
+        ))
     assert len(results) == 1, "the router dropped the only judge"
     _assert_confined(results[0].text, world, own_credential=False)
