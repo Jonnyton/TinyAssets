@@ -2316,6 +2316,47 @@ def _served_failure_diagnosis(exc: BaseException) -> dict[str, Any]:
     return out
 
 
+#: The side-effect states the stream readers produce (none|possible|committed).
+#: An ADMITTED set, because the rendered value lands in the server log: an
+#: arbitrary provider string must not travel under this key.
+_ADMITTED_SIDE_EFFECT_STATES: frozenset[str] = frozenset({"none", "possible", "committed"})
+
+
+def _attempt_evidence_tokens(attempt: Any) -> list[str]:
+    """The validated timing / tool-phase scalars of one failed attempt, rendered.
+
+    Exactly three allowlisted fields, each re-validated through the shared
+    gates in ``diagnostics`` even though the router already admitted them: an
+    enumerated ``tool_phase``, a finite ``last_progress_age_ms`` (rounded to a
+    whole millisecond) and an enumerated ``side_effect_state``. The reader's
+    raw ``attempt_telemetry`` is never consulted here, so a prompt, a tool
+    argument, a tool name, a token or any key this function does not name
+    cannot reach the log along this path. Absent or malformed stays absent.
+
+    Why: the 2026-09-24 00:46Z idle-timeout log line carried the class and the
+    detail but neither the tool phase nor the observed progress age, so the
+    incident could not distinguish genuine silence from an active tool wait
+    from a watchdog check that ran late. The scalars were on the exception the
+    whole time and were dropped at this hop.
+    """
+    from tinyassets.providers.diagnostics import (
+        admitted_tool_phase,
+        finite_progress_age_ms,
+    )
+
+    tokens: list[str] = []
+    phase = admitted_tool_phase(getattr(attempt, "tool_phase", None))
+    if phase is not None:
+        tokens.append(f"tool_phase={phase}")
+    age = finite_progress_age_ms(getattr(attempt, "last_progress_age_ms", None))
+    if age is not None:
+        tokens.append(f"last_progress_age_ms={int(round(age))}")
+    state = getattr(attempt, "side_effect_state", None)
+    if type(state) is str and state in _ADMITTED_SIDE_EFFECT_STATES:
+        tokens.append(f"side_effect_state={state}")
+    return tokens
+
+
 def _record_served_failure(universe_id: str, exc: BaseException) -> None:
     """Write the per-provider diagnosis to the server log. Never raises.
 
@@ -2342,6 +2383,7 @@ def _record_served_failure(universe_id: str, exc: BaseException) -> None:
                     getattr(a, "skip_class", ""),
                     getattr(a, "failure_class", "") or "",
                     redacted_failure_detail(str(getattr(a, "detail", "") or "")),
+                    *_attempt_evidence_tokens(a),
                 ) if str(part)
             )
             for a in attempts
