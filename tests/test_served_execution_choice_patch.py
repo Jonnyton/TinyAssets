@@ -55,12 +55,21 @@ def test_invalid_batch_leaves_owned_definition_unchanged(tmp_path, monkeypatch, 
 
 
 def test_choices_never_grant_foreign_branch_access(tmp_path, monkeypatch):
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
+
     server, branch_id = _owned_pinned_branch(tmp_path, monkeypatch)
-    monkeypatch.setattr(server, "_ACTOR_ID", "other-owner")
+    foreign = get_branch_definition(tmp_path, branch_def_id=branch_id)
+    foreign.update(author="other-owner", visibility="public")
+    save_branch_definition(tmp_path, branch_def=foreign)
+    # Keep this caller's valid serving admission. A readable foreign public
+    # definition must reach and fail the canonical AUTHOR gate, not the earlier
+    # serving gate that changing _ACTOR_ID without rebinding would hit.
+    before = json.loads(server.read_graph(target="branch", branch_id=branch_id))
     result = _patch(server, [
         {"op": "set_concurrency_budget", "concurrency_budget": 2},
     ], branch_id=branch_id)
-    assert "error" in result, result
+    assert result["error"] == "Authenticated branch author required.", result
+    assert json.loads(server.read_graph(target="branch", branch_id=branch_id)) == before
 
 
 def test_field_form_guidance_names_reachable_setters(tmp_path, monkeypatch):
