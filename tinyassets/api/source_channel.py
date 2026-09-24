@@ -364,7 +364,7 @@ def _approve_sink(
 ) -> str:
     """Approve a sink/effector channel via the shared effector-consent store.
 
-    ``channel_type`` is the sink name (e.g. ``github_pull_request``), or the
+    ``channel_type`` is the sink name (e.g. ``authenticated_external_call``), or the
     caller may pass ``sink`` explicitly. ``granted_by`` is the authenticated
     owner — stronger than the legacy ``grant_effector_consent`` which derived it
     from the ambient ``UNIVERSE_SERVER_USER`` env.

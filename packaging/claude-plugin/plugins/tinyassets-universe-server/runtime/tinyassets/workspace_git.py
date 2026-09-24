@@ -776,7 +776,7 @@ class GitTransport:
         repo: str,
         *,
         curl_version_text: str,
-        host: str = "github.com",
+        host: str,
         resolver: Callable[[str, int], list[str]] | None = None,
         classifier: Callable[[str], str] | None = None,
         port: int = 443,

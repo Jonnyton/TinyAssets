@@ -55,7 +55,7 @@ The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`
 
 ### Requirement: Legacy Fat Tools Registered But Hidden
 
-The server SHALL keep the six legacy fat tools (`universe`, `community_change_context`,
+The server SHALL keep the five legacy fat tools (`universe`,
 `extensions`, `goals`, `gates`, `wiki`) registered and
 dispatchable for one migration release while being hidden from `tools/list`
 by the `_DeprecatedToolVisibility` middleware. Every call to a hidden legacy
@@ -200,7 +200,6 @@ The system SHALL attach the following title, tag set, and four MCP behavior hint
 | `write_page` | `Write Page` | `page`, `tinyassets`, `wiki`, `write` | F | F | F | T |
 | `converse` | `Talk With Your Universe` | `relay`, `tinyassets`, `universe` | F | F | F | F |
 | `universe` | `Universe Operations` | `agent-workflow`, `ai-builder`, `collaboration`, `custom-ai`, `daemon`, `general-purpose`, `tinyassets`, `universe`, `universe-builder`, `workflow-builder` | F | F | F | T |
-| `community_change_context` | `Community Change Context` | `change-loop`, `community`, `github`, `plan`, `pull-request`, `review`, `tinyassets` | T | F | T | T |
 | `extensions` | `Graph Extensions` | `customization`, `extensions`, `nodes`, `plugins` | F | F | F | T |
 | `goals` | `Goals` | `community`, `discovery`, `goals`, `intent` | F | F | F | T |
 | `gates` | `Outcome Gates` | `community`, `gates`, `impact`, `leaderboard`, `outcomes` | F | F | F | T |

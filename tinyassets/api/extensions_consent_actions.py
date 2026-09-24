@@ -53,8 +53,9 @@ def _action_grant_effector_consent(kwargs: dict[str, Any]) -> str:
     """Insert / refresh an active consent grant.
 
     Required kwargs:
-      - ``sink``: sink name, e.g. ``"github_pull_request"``.
-      - ``destination``: per-sink destination, e.g. ``"Jonnyton/TinyAssets"``.
+      - ``sink``: sink name, e.g. ``"authenticated_external_call"``.
+      - ``destination``: per-sink destination, e.g. the connection's own
+        destination label.
 
     Optional:
       - ``granted_by``: actor recording the grant. Defaults to the

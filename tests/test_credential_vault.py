@@ -23,9 +23,26 @@ from tinyassets.credential_vault import (
     resolve_claude_config_dir,
     resolve_claude_oauth_token,
     resolve_codex_home,
-    resolve_github_token,
     write_credential_vault,
 )
+
+
+def _vcs_slot(universe_dir, destination: str, purpose: str) -> str:
+    """The token a ``vcs`` record holds for one exact destination + purpose slot.
+
+    Reads the stored records directly: these tests pin how the vault MERGES
+    purpose slots on write. There is no GitHub-specific resolver any more -- a
+    universe reaches a forge through its owner's connection.
+    """
+    for record in load_credential_vault(universe_dir):
+        if record.get("credential_type") != "vcs":
+            continue
+        if record.get("destination") != destination:
+            continue
+        purposes = record.get("purposes") or [record.get("purpose")]
+        if purpose in purposes:
+            return str(record.get("token") or "")
+    return ""
 
 
 def _make_directory_link(link: Path, target: Path) -> None:
@@ -244,7 +261,7 @@ def test_single_record_write_rotates_matching_multi_purpose_vcs_token(tmp_path):
         "token": "ghs-NEW-ROTATED",
     }])
 
-    assert resolve_github_token(
+    assert _vcs_slot(
         tmp_path, "Jonnyton/TinyAssets", purpose="write"
     ) == "ghs-NEW-ROTATED"
     assert summary["credential_count"] == 1
@@ -277,10 +294,10 @@ def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
     }]
     assert "ghs-BOTH" not in str(summary)
     assert "ghs-READONLY" not in str(summary)
-    assert resolve_github_token(
+    assert _vcs_slot(
         tmp_path, "Jonnyton/TinyAssets", purpose="read"
     ) == "ghs-READONLY"
-    assert resolve_github_token(
+    assert _vcs_slot(
         tmp_path, "Jonnyton/TinyAssets", purpose="write"
     ) == ""
 
@@ -417,36 +434,6 @@ def test_empty_write_clears_existing_vault(tmp_path):
 
     assert load_credential_vault(tmp_path) == []
     assert summary["credential_count"] == 0
-
-
-def test_resolve_github_token_uses_exact_destination_and_purpose(tmp_path):
-    write_credential_vault(
-        tmp_path,
-        [
-            {
-                "credential_type": "vcs",
-                "service": "github",
-                "destination": "Jonnyton/TinyAssets",
-                "purpose": "read",
-                "token": "read-token",
-            },
-            {
-                "credential_type": "vcs",
-                "service": "github",
-                "destination": "Jonnyton/TinyAssets",
-                "purpose": "write",
-                "token": "write-token",
-            },
-        ],
-    )
-
-    assert resolve_github_token(
-        tmp_path, "Jonnyton/TinyAssets", purpose="write"
-    ) == "write-token"
-    assert resolve_github_token(
-        tmp_path, "Jonnyton/TinyAssets", purpose="read"
-    ) == "read-token"
-    assert resolve_github_token(tmp_path, "jonnyton/workflow", purpose="write") == ""
 
 
 def test_codex_subscription_auth_can_materialize_from_vault(tmp_path):

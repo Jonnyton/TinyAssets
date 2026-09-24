@@ -129,7 +129,7 @@ def test_module_exposes_expected_public_names() -> None:
         "_action_set_tier_config", "_action_queue_cancel",
         "_action_subscribe_goal", "_action_unsubscribe_goal",
         "_action_list_subscriptions", "_action_post_to_goal_pool",
-        "_action_submit_node_bid", "_action_community_change_context",
+        "_action_submit_node_bid",
         "_action_give_direction",
         "_action_query_world", "_action_read_premise",
         "_action_set_premise", "_action_add_canon",
@@ -201,31 +201,6 @@ def test_pattern_a2_wrapper_delegates_to_api_universe() -> None:
     assert result == direct, "Pattern A2 wrapper drift: us.universe != _universe_impl"
 
 
-def test_community_change_context_tool_delegates_to_api_universe(monkeypatch) -> None:
-    """Top-level review-context alias stays a thin Pattern A2 wrapper."""
-    from tinyassets import universe_server as us
-
-    seen = {}
-
-    def fake_universe_impl(**kwargs):
-        seen.update(kwargs)
-        return "ok"
-
-    monkeypatch.setattr(us, "_universe_impl", fake_universe_impl)
-
-    result = us.community_change_context(
-        filter_text="pr:107", limit=2, repo="other/project"
-    )
-
-    assert result == "ok"
-    assert seen == {
-        "action": "community_change_context",
-        "filter_text": "pr:107",
-        "limit": 2,
-        "repo": "other/project",
-    }
-
-
 # ── Ledger dispatcher contract ───────────────────────────────────────────────
 
 
@@ -295,7 +270,7 @@ def test_universe_impl_dispatch_table_has_known_actions() -> None:
     "daemon_memory_review", "daemon_memory_promote", "daemon_memory_status",
     "set_tier_config", "queue_cancel",
     "subscribe_goal", "unsubscribe_goal", "list_subscriptions",
-    "post_to_goal_pool", "submit_node_bid", "community_change_context",
+    "post_to_goal_pool", "submit_node_bid",
     "give_direction",
     "query_world", "read_premise", "set_premise", "add_canon",
     "add_canon_from_path", "list_canon", "read_canon",
@@ -314,189 +289,11 @@ def test_every_universe_action_dispatches(action: str, monkeypatch) -> None:
     universe() dispatch table" — caught by the exact-string `"Unknown action
     '<action>'"` sentinel.
     """
-    if action == "community_change_context":
-        monkeypatch.setattr(univ_mod, "_github_read", lambda *a, **k: ([], None))
-        monkeypatch.setattr(univ_mod, "_change_loop_plan_context", lambda: {})
     out = univ_mod._universe_impl(action=action)
     sentinel = f"Unknown action '{action}'"
     assert sentinel not in out, (
         f"action {action!r} dropped from _universe_impl dispatch table"
     )
-
-
-def test_community_change_context_overview(monkeypatch) -> None:
-    """Queue view exposes PRs, change requests, and PLAN without retired loop runs."""
-    monkeypatch.setattr(
-        univ_mod,
-        "_change_loop_plan_context",
-        lambda: {"Scoping Rules": "## Scoping Rules\nPrefer minimal primitives."},
-    )
-
-    def fake_github_read(path: str, *, params=None):
-        if path == "/repos/owner/repo/pulls":
-            return ([{
-                "number": 100,
-                "title": "[auto-change] BUG-001: fix request flow",
-                "state": "open",
-                "html_url": "https://example.test/pull/100",
-                "head": {"ref": "auto-change/issue-1-codex"},
-                "base": {"ref": "main"},
-                "labels": [{"name": "daemon-request"}],
-            }, {
-                "number": 101,
-                "title": "manual maintenance",
-                "state": "open",
-                "head": {"ref": "codex/manual"},
-                "base": {"ref": "main"},
-            }], None)
-        if path == "/repos/owner/repo/issues":
-            return ([{
-                "number": 57,
-                "title": "BUG-027: startup probe missing",
-                "state": "open",
-                "html_url": "https://example.test/issues/57",
-                "labels": [{"name": "daemon-request"}],
-            }, {
-                "number": 100,
-                "title": "PR issue wrapper",
-                "pull_request": {"url": "https://example.test/pulls/100"},
-            }], None)
-        retired_workflow = "auto-" + "fix-bug.yml"
-        assert retired_workflow not in path
-        raise AssertionError(path)
-
-    monkeypatch.setattr(univ_mod, "_github_read", fake_github_read)
-
-    data = json.loads(univ_mod._action_community_change_context(
-        limit=5,
-        repo="owner/repo",
-    ))
-
-    assert data["repo"] == "owner/repo"
-    assert data["selector"] == "queue"
-    assert data["plan_sections"]["Scoping Rules"].startswith("## Scoping Rules")
-    assert [pr["number"] for pr in data["open_prs"]] == [100, 101]
-    assert [pr["number"] for pr in data["open_auto_change_prs"]] == [100]
-    assert [issue["number"] for issue in data["open_change_requests"]] == [57]
-    assert [issue["number"] for issue in data["open_daemon_request_issues"]] == [57]
-    retired_key = "latest_auto_" + "fix_runs"
-    assert retired_key not in data
-    assert data["errors"] == []
-
-
-def test_community_change_context_never_invents_a_repository(monkeypatch) -> None:
-    """No caller input and no deployment default produce an honest refusal."""
-    monkeypatch.delenv("TINYASSETS_GITHUB_REPO", raising=False)
-
-    data = json.loads(univ_mod._action_community_change_context())
-
-    assert data["error"] == "no repository named"
-    assert "repo=\"owner/name\"" in data["detail"]
-
-
-def test_community_change_context_refuses_malformed_repo_before_read(monkeypatch) -> None:
-    """Arbitrary JSON cannot crash or alter the authenticated GitHub path."""
-    monkeypatch.setenv("TINYASSETS_GITHUB_REPO", "fallback/repository")
-
-    def should_not_read(*_args, **_kwargs):
-        raise AssertionError("invalid repo reached the GitHub reader")
-
-    monkeypatch.setattr(univ_mod, "_github_read", should_not_read)
-
-    for invalid in (123, ["owner", "repo"], "owner/repo/extra", "../repo"):
-        data = json.loads(univ_mod._action_community_change_context(repo=invalid))
-        assert data["error"] == "invalid repository"
-
-
-def test_community_change_context_pr_detail(monkeypatch) -> None:
-    """PR selector returns reviewable code context, not just metadata."""
-    monkeypatch.setattr(univ_mod, "_github_repo", lambda _repo="": "owner/repo")
-    monkeypatch.setattr(univ_mod, "_change_loop_plan_context", lambda: {})
-
-    def fake_github_read(path: str, *, params=None):
-        if path == "/repos/owner/repo/pulls/57":
-            return ({
-                "number": 57,
-                "title": "[auto-change] BUG-027",
-                "state": "open",
-                "draft": False,
-                "html_url": "https://example.test/pull/57",
-                "head": {"ref": "auto-change/issue-57-codex", "sha": "abc123"},
-                "base": {"ref": "main"},
-                "body": "Fixes the startup probe.",
-            }, None)
-        if path == "/repos/owner/repo/pulls/57/files":
-            return ([{
-                "filename": "tinyassets/startup.py",
-                "status": "modified",
-                "additions": 4,
-                "deletions": 1,
-                "changes": 5,
-                "patch": "@@ -1 +1 @@\n-old\n+new",
-            }], None)
-        if path == "/repos/owner/repo/issues/57/comments":
-            return ([{
-                "user": {"login": "reviewer"},
-                "created_at": "2026-05-01T00:00:00Z",
-                "body": "Please explain why this is not patch-on-patch.",
-            }], None)
-        if path == "/repos/owner/repo/pulls/57/reviews":
-            return ([{
-                "user": {"login": "checker"},
-                "state": "COMMENTED",
-                "submitted_at": "2026-05-01T00:01:00Z",
-                "body": "Needs design context.",
-            }], None)
-        raise AssertionError(path)
-
-    monkeypatch.setattr(univ_mod, "_github_read", fake_github_read)
-
-    data = json.loads(univ_mod._action_community_change_context(
-        filter_text="pr:57",
-        limit=2,
-    ))
-
-    assert data["target"] == "pr:57"
-    assert data["pr"]["head"] == "auto-change/issue-57-codex"
-    assert data["files"][0]["filename"] == "tinyassets/startup.py"
-    assert data["files"][0]["patch_excerpt"].startswith("@@")
-    assert data["comments"][0]["author"] == "reviewer"
-    assert data["reviews"][0]["state"] == "COMMENTED"
-
-
-def test_community_change_context_issue_detail(monkeypatch) -> None:
-    """Issue selector returns the request thread the loop should satisfy."""
-    monkeypatch.setattr(univ_mod, "_github_repo", lambda _repo="": "owner/repo")
-    monkeypatch.setattr(univ_mod, "_change_loop_plan_context", lambda: {})
-
-    def fake_github_read(path: str, *, params=None):
-        if path == "/repos/owner/repo/issues/39":
-            return ({
-                "number": 39,
-                "title": "BUG-013: missing feature request verb",
-                "state": "open",
-                "html_url": "https://example.test/issues/39",
-                "labels": [{"name": "daemon-request"}],
-                "body": "The live connector needs a file_feature_request verb.",
-            }, None)
-        if path == "/repos/owner/repo/issues/39/comments":
-            return ([{
-                "user": {"login": "daemon"},
-                "created_at": "2026-05-01T00:02:00Z",
-                "body": "I am preparing a branch.",
-            }], None)
-        raise AssertionError(path)
-
-    monkeypatch.setattr(univ_mod, "_github_read", fake_github_read)
-
-    data = json.loads(univ_mod._action_community_change_context(
-        filter_text="issue:39",
-        limit=1,
-    ))
-
-    assert data["target"] == "issue:39"
-    assert data["issue"]["number"] == 39
-    assert data["comments"][0]["author"] == "daemon"
 
 
 def test_daemon_actions_create_summon_and_banish(tmp_path, monkeypatch) -> None:
@@ -677,112 +474,3 @@ def test_daemon_control_actions_accept_top_level_daemon_id(
     assert control_status["daemon_count"] == 1
     assert control_status["runtime_count"] == 1
     assert control_status["runtimes"][0]["daemon_id"] == daemon_id
-
-
-# ---------------------------------------------------------------------------
-# Bundled-asset root vs the community-pool storage variable
-#
-# `TINYASSETS_REPO_ROOT` names the git checkout used for `producers.goal_pool`
-# and catalog writes. In the deployed container `deploy/compose.yml` sets it to
-# `/data/community-pool` (a data volume, NOT a source checkout) so that
-# `repo_root_path()` resolves at all — the container has no `.git` for the
-# git-detect fallback to find.
-#
-# `_bundled_source_root()` answers a *different* question: where the shipped
-# `PLAN.md` asset lives. The Dockerfile stages it at `/app/PLAN.md`. Wiring the
-# asset lookup to that storage variable made the deployed reader look on the
-# data volume and silently return zero architecture sections.
-# ---------------------------------------------------------------------------
-
-
-def test_bundled_source_root_ignores_pool_volume_override(
-    monkeypatch, tmp_path,
-) -> None:
-    """The pool storage variable must not steer the PLAN.md asset lookup."""
-    pool = tmp_path / "community-pool"
-    pool.mkdir()
-    monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(pool))
-
-    root = univ_mod._bundled_source_root()
-
-    assert (root / "PLAN.md").is_file(), (
-        "_bundled_source_root() must resolve to a root that ships PLAN.md; "
-        f"got {root} while TINYASSETS_REPO_ROOT pointed at the pool volume"
-    )
-
-
-def test_bundled_source_root_ignores_even_a_checkout_shaped_override(
-    monkeypatch, tmp_path,
-) -> None:
-    """Full decoupling, not a 'does the override happen to hold PLAN.md?' sniff.
-
-    A heuristic that honored overrides containing PLAN.md would still couple an
-    immutable package asset to a mutable storage variable. Pin the stronger
-    contract: the variable is never consulted here.
-    """
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    (checkout / "PLAN.md").write_text(
-        "## Scoping Rules\nDecoy checkout.\n", encoding="utf-8",
-    )
-    monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(checkout))
-
-    assert univ_mod._bundled_source_root() != checkout
-
-
-def test_change_loop_plan_context_survives_pool_volume_override(
-    monkeypatch, tmp_path,
-) -> None:
-    """Every configured review heading must resolve from the bundled PLAN.md."""
-    pool = tmp_path / "community-pool"
-    pool.mkdir()
-    monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(pool))
-
-    sections = univ_mod._change_loop_plan_context()
-
-    assert set(sections) == set(univ_mod._CHANGE_LOOP_PLAN_HEADINGS)
-    assert len(univ_mod._CHANGE_LOOP_PLAN_HEADINGS) == 4
-    for heading in univ_mod._CHANGE_LOOP_PLAN_HEADINGS:
-        assert sections[heading].startswith(f"## {heading}")
-
-
-def test_change_loop_plan_context_marks_unresolved_heading(
-    monkeypatch, tmp_path,
-) -> None:
-    """A stale configured heading must remain visible in review context."""
-    (tmp_path / "PLAN.md").write_text(
-        "## Present Section\nReview guidance.\n", encoding="utf-8",
-    )
-    monkeypatch.setattr(univ_mod, "_bundled_source_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        univ_mod,
-        "_CHANGE_LOOP_PLAN_HEADINGS",
-        ("Present Section", "Missing Section"),
-    )
-
-    sections = univ_mod._change_loop_plan_context()
-
-    assert sections == {
-        "Present Section": "## Present Section\nReview guidance.",
-        "Missing Section": (
-            "[ERROR: unable to resolve bundled PLAN.md section: "
-            "## Missing Section]"
-        ),
-    }
-
-
-def test_change_loop_plan_context_marks_all_headings_when_plan_is_unreadable(
-    monkeypatch, tmp_path,
-) -> None:
-    """A missing bundled PLAN.md must degrade loudly without crashing."""
-    monkeypatch.setattr(univ_mod, "_bundled_source_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        univ_mod,
-        "_CHANGE_LOOP_PLAN_HEADINGS",
-        ("First Section", "Second Section"),
-    )
-
-    sections = univ_mod._change_loop_plan_context()
-
-    assert set(sections) == {"First Section", "Second Section"}
-    assert all(value.startswith("[ERROR:") for value in sections.values())

@@ -4988,8 +4988,8 @@ def _invoke_graph(
 
     # PR-122 Phase 1 — external-write effectors.
     # After a successful run, walk node_defs that declared an ``effects``
-    # list and route their outputs to the matching effector (today only
-    # github_pull_request via ``gh pr create``). Errors are surfaced into
+    # list and route their outputs to the matching sink (the generic
+    # authenticated call, the workspace, the wiki). Errors are surfaced into
     # the run output's ``external_write_errors`` metadata; they never
     # raise into the user-facing run status. Hard-rule #8 (fail loudly)
     # is satisfied by the structured error fields on each evidence entry.
@@ -5124,7 +5124,7 @@ def _run_external_write_effectors(
     gates (consent + idempotency) have a universe to bind to. When
     omitted (legacy or test invocations), the effector falls back to
     dry-run for any Phase-2-shaped packet — see
-    ``tinyassets.effectors.github_pr.run_effects_for_branch``.
+    ``tinyassets.effectors.run_effects_for_branch``.
 
     Never raises — all errors are folded into the returned evidence map.
     Returns ``{}`` when no node declares any ``effects``.

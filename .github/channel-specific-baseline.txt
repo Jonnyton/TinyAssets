@@ -5,15 +5,13 @@
 # TODAY, so the number can only go down. Regenerate with:
 #     python scripts/check_channel_agnostic.py --update
 #
-# Total: 674 across 54 files.
+# Total: 638 across 53 files.
 
 tinyassets/account_deletion.py:stripe:3
 tinyassets/action_result_delivery.py:github:1
 tinyassets/api/automations.py:claude:1
 tinyassets/api/cloud_automations.py:claude:2
 tinyassets/api/cloud_automations.py:codex:1
-tinyassets/api/cloud_automations.py:github:2
-tinyassets/api/cloud_connections.py:github:11
 tinyassets/api/compute_connection.py:claude:1
 tinyassets/api/compute_connection.py:codex:2
 tinyassets/api/llm_deposit.py:claude:4
@@ -32,9 +30,8 @@ tinyassets/api/status.py:groq:2
 tinyassets/api/status.py:ollama:2
 tinyassets/api/status.py:openai:1
 tinyassets/api/universe.py:anthropic:3
-tinyassets/api/universe.py:claude:5
+tinyassets/api/universe.py:claude:4
 tinyassets/api/universe.py:codex:1
-tinyassets/api/universe.py:github:19
 tinyassets/api/universe.py:openai:1
 tinyassets/api/webhook_ops.py:github:1
 tinyassets/api/wiki.py:claude:1
@@ -54,7 +51,6 @@ tinyassets/credential_vault.py:anthropic:6
 tinyassets/credential_vault.py:claude:41
 tinyassets/credential_vault.py:codex:36
 tinyassets/credential_vault.py:gemini:3
-tinyassets/credential_vault.py:github:1
 tinyassets/credential_vault.py:grok:1
 tinyassets/credential_vault.py:groq:2
 tinyassets/credential_vault.py:openai:5
@@ -129,14 +125,14 @@ tinyassets/storage/workspace_authority.py:github:4
 tinyassets/universe_bundle.py:github:2
 tinyassets/universe_server.py:claude:1
 tinyassets/universe_server.py:codex:1
-tinyassets/universe_server.py:github:5
+tinyassets/universe_server.py:github:4
 tinyassets/user_owned_cloud_automation.py:github:3
 tinyassets/webhook_inbound.py:github:3
 tinyassets/webhook_inbound.py:gitlab:2
 tinyassets/webhook_inbound.py:shopify:2
 tinyassets/webhook_inbound.py:slack:2
 tinyassets/webhook_inbound.py:stripe:2
-tinyassets/workspace_git.py:github:2
+tinyassets/workspace_git.py:github:1
 tinyassets/workspace_provision.py:bitbucket:2
 tinyassets/workspace_provision.py:github:2
 tinyassets/workspace_provision.py:gitlab:2
