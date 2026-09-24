@@ -105,7 +105,7 @@ jobs:
           if ! docker manifest inspect "${image}:${tag}" >/dev/null 2>&1; then
             echo "::error::${image}:${tag} not found in GHCR; refusing mutable fallback"; exit 1
           fi
-          digest="$(docker buildx imagetools inspect "${image}:${tag}" | awk '/^Digest:/ {print $2; exit}')"
+          digest="$(docker buildx imagetools inspect "${image}:${tag}" | awk '/^Digest:/ && !seen {print $2; seen=1}')"
           if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::non-canonical image digest for ${image}:${tag}"; exit 1
           fi
