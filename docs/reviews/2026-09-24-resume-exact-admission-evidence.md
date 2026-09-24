@@ -97,6 +97,26 @@ sweep paragraph and all four pre-existing scenarios are kept alongside the five
 new ones. The change directory's unrelated legacy delta (workspace storage
 observation) was **not** copied.
 
+## Post-merge re-verification (Windows host, supporting evidence only)
+
+Slice committed as `1a4096ca`; `origin/main` `d98d1ae7` (#3940 + #3938) merged
+non-destructively as merge commit `64216e78` — **no conflicts**, the main spec's
+resume requirement (line 444) and #3940's execution-choice requirements (lines
+976, 990) both survive intact. On that head:
+
+- the same nine oracle-targeted files → **122 passed, 0 failed, 0 skipped** in
+  15.85s (external basetemp, `-p no:randomly`) — the same 122 the cloud collected;
+- `ruff check` on every file this slice touches → **All checks passed!** (the 28
+  repo-wide `E501`s are in untouched files: `daemon_server.py`, `api/market.py`,
+  `rollback.py`, `api/branches.py`);
+- `packaging/claude-plugin/build_plugin.py` → 501 runtime files staged,
+  `probe-ok`, **no mirror diff** (mirror already byte-parity; `mirror-parity`
+  pre-commit hook also passed).
+
+A Windows run is not an oracle. The Linux proof is cloud run `35960544895`, which
+predates the merge; the merge added no code this slice executes, but a post-merge
+oracle run has **not** been performed.
+
 ## Remaining tasks
 
 - [x] T1 Diagnose the three Linux-only failures on the exact head — fixture dispatch race, no runtime guess.
