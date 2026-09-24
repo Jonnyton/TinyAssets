@@ -834,7 +834,12 @@ def test_a_full_deposit_moves_an_existing_connection(tmp_path):
     # existing-connection mode transition these assertions protect.
     wrapper = inspect.getsource(hc.connect_http)
     assert "_gesture_lock(" in wrapper
-    assert "return _connect_http(universe_id=universe_id, payload=payload)" in wrapper
+    # The owner's universe and payload reach the implementation. Asserted by
+    # argument rather than by the whole call's literal text, so a new
+    # pass-through parameter is not a false failure.
+    assert "return _connect_http(" in wrapper
+    assert "universe_id=universe_id" in wrapper
+    assert "payload=payload" in wrapper
     body = inspect.getsource(hc._connect_http)
     assert "set_access_mode(" in body
     assert body.index("set_access_mode(") < body.index("Idempotent grant bound")
