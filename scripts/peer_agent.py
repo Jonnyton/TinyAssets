@@ -64,6 +64,23 @@ _AUTH_PATTERNS = ("401", "unauthorized", "reconnecting", "auth", "login")
 # list2cmdline quoting does NOT protect these, so reject them loudly instead.
 _CMD_METACHARS = frozenset('&|%<>^"')
 
+# Set in the CHILD's environment only. The Stop hook
+# (.claude/hooks/keep_working_while_waiting.py) reads the shared dispatch
+# ledger for EVERY session, and inside a dispatched peer it refused to let the
+# peer finish until it "acted on" dispatches it does not own -- including the
+# still-running row of its own parent wrapper. That contradicts the peer-agents
+# rule that a dispatched peer must not dispatch (2026-08-27: four recursive
+# children, 34 minutes, zero bytes of verdict). The marker is workflow
+# coordination context, never authority: nothing reads it for permissions,
+# credentials, sandboxing, or review gates, and the hook keeps every other
+# behaviour for unmarked (root) sessions.
+PEER_TASK_ENV = "TINYASSETS_PEER_TASK"
+
+
+def peer_task_env(env: dict[str, str]) -> dict[str, str]:
+    """A NEW mapping carrying the bounded-peer marker; never mutates `env`."""
+    return {**env, PEER_TASK_ENV: "1"}
+
 
 # --- absorbed from scripts/codex_review.py (deleted 2026-08-26) ---------------
 # Two tools for one job -- dispatching to Codex -- is the overlapping-tool
@@ -410,6 +427,9 @@ def _main() -> int:
             out_path,
             git_common_dir=git_common_dir,
         )
+
+    # The child is a bounded peer task; only its own process tree sees this.
+    env = peer_task_env(env)
 
     bad_arg = unsafe_cmd_argv(cmd)
     if bad_arg is not None:
