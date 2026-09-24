@@ -20,14 +20,14 @@ cleared, and add one line to the completion record.
 | C27 | Give, see and revoke what your agent may do (channel consent, full-channel access, withdraw stale asks) | The app agent reads what it holds, changes one channel policy and withdraws its own stale request; readback matches |
 | C16 | Scheduled and event-triggered runs fire as the owner with no host online | A scheduled run and an inbound-webhook run each complete as the owner while no host is online |
 | C26 | Connect any external service (OAuth2 refresh, form bodies, inbound signature verification) | A Google-OAuth channel still works after 1 h of token expiry; a form-encoded call succeeds; a signed webhook is verified |
-| C6 | Connect any LLM (API key, compatible endpoint, named-header auth, unanticipated CLI) | A compatible endpoint using a named-header key answers a turn with tools |
+| C6 | Connect ANY compute source through vendor-neutral primitives, with no vendor code (PR #3949 directive) | The user's agent connects a provider the platform has never seen (OAuth or API key plus a standard protocol, or a command adapter) and it answers a turn with tools, with no platform patch |
 | C2 | Same account, same universe from any client (Claude, ChatGPT, app, phone) | The same user reaches the same universe from ChatGPT and Claude, and sees the same history |
 | C29a | A send never vanishes silently (idle-tab 503 dropped two sends, 2026-09-24) | A send that fails leaves the text visible with "not sent, send again"; no silent drop |
 | C13 | Parallel and sequential runs are reliable | 20 consecutive checklist runs with no timeout and no replay |
-| C9 | Credentials stay alive through refresh | A subscription credential survives rotation across concurrent turns without a reconnect (primitive decision pending; see the refresh hold) |
+| C9 | Connections stay alive: generic OAuth token refresh for any connection | An OAuth-connected compute source or channel keeps working past token expiry across concurrent turns, with no reconnect and no vendor code |
 | C7 | Choose, see and switch models; defaults, fallback, failover | The actual source and model are shown; the selection, default and order are honored; failover on limit |
 | C8 | Connection progress; disconnect and reconnect | Saving, binding and result are visible, with bounded waits; access is preserved on refusal |
-| C5/C1 | Free-only onboarding, pristine first contact | A new free user signs in, authorizes OpenRouter, returns automatically, and gets a free-model answer with tools; no key paste |
+| C5/C1 | First power with no LLM call: OpenRouter free or the user's own OpenRouter account at sign-in | A new free user signs in, authorizes OpenRouter, returns automatically, and gets a free-model answer with tools; no key paste |
 | C15 | Resume an interrupted run on its admitted version | Interrupt a run, resume it, and it runs the admitted version, not the edited draft |
 | C22 | Get outputs back: download run files, and a notice when background work finishes | Download a file a run produced; a notice arrives when a background run ends |
 | C23 | Workspaces, including durable concurrent waiting | Two runs contend; the second waits durably across a restart and proceeds; cancel still works |
