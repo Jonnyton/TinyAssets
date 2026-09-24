@@ -137,22 +137,41 @@ def _connection_incarnations(base, owner, uid, membership):
 
 
 def grant_sentence(action: dict) -> str:
-    def describe(members):
-        return "; ".join(
-            f'{name}: {value["model_scope"]}, models={json.dumps(value["model_ids"])}, '
-            + ("free models only" if value["cost_caps"] is None
-               else "existing spending ceilings=" + json.dumps(value["cost_caps"], sort_keys=True))
-            for name, value in sorted(members.items())
-        ) or "none"
+    """What the owner is agreeing to, in their words: no internal ids.
 
+    Agent binding ids, provider definition ids and grant refs are storage
+    handles. Live 2026-09-24 the free-model approval read "Update model access
+    for agent agent_binding_01m2..., root source api_key_http:provdef_ed01...".
+    The exact ids stay on the stored action, which is what the answer checks.
+    """
+    def one(value):
+        if value["model_scope"] == "explicit" and value["model_ids"]:
+            models = "the models " + ", ".join(
+                str(m) if m else "its default model" for m in value["model_ids"])
+        else:
+            models = "the models this connection offers"
+        return models + (
+            ", free models only" if value["cost_caps"] is None
+            else ", within spending limits you already set "
+            + json.dumps(value["cost_caps"], sort_keys=True)
+        )
+
+    def describe(members):
+        values = [value for _, value in sorted(members.items())]
+        if not values:
+            return "nothing yet"
+        if len(values) == 1:
+            return one(values[0])
+        return "; ".join(f"source {n}: {one(v)}" for n, v in enumerate(values, 1))
+
+    before = action["previous_membership"]
+    after = describe(action["proposed_membership"])
     return (
-        f'Update model access for agent {action["agent_binding_id"]}, '
-        f'root source {action["root_provider"]}. '
-        f'Before: {describe(action["previous_membership"])}. '
-        f'After: {describe(action["proposed_membership"])}. '
-        "This disconnects and reconnects this agent with that access. Reconnection may take time; "
-        "if it fails, the agent stays off until you retry this request or fix the reported reason. "
-        "Other accepted sources, spending ceilings and saved choices stay unchanged."
+        f"Your universe will think with {after}. "
+        + (f"Until now it could use {describe(before)}. " if before else "")
+        + "No paid-model spending or credit purchase is approved beyond that. "
+        "If it is running, it reconnects with this access; if that fails it stays "
+        "off until you try again. Your other sources and saved choices stay as they are."
     )
 
 

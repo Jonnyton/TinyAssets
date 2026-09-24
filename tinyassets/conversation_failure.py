@@ -23,7 +23,10 @@ _NOTICES = {
         "The turn did not complete. The model provider reported a sign-in problem, "
         "but we have not confirmed that was the only cause."
     ),
-    "setup_required": "The turn needs this universe's model connection to be set up or recovered.",
+    "setup_required": (
+        "The turn needs this universe's model connection to be set up or recovered. "
+        "Nothing ran; connect a model from the request under “Waiting on you”."
+    ),
     "unknown": "The turn did not complete, and its cause has not been established.",
 }
 FAILURE_CODES = frozenset(_NOTICES)
@@ -44,9 +47,15 @@ def failure_code(value: object) -> str:
     return value if isinstance(value, str) and value in FAILURE_CODES else "unknown"
 
 
+#: Failures that ran nothing. "Actions may already have occurred" would be false:
+#: a universe with no model connected cannot have acted.
+_NOTHING_RAN = frozenset({"setup_required"})
+
+
 def failure_notice(code: object) -> str:
     """Render a fixed sentence, never interpolate diagnostic data."""
-    return _NOTICES[failure_code(code)] + _RETRY_CAUTION
+    code = failure_code(code)
+    return _NOTICES[code] + ("" if code in _NOTHING_RAN else _RETRY_CAUTION)
 
 
 def turn_failure(code: object) -> TurnFailure:

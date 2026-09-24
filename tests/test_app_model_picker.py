@@ -152,7 +152,7 @@ const confirm=text=>{confirmations.push(text);return confirmed;};
 const setTimeout=fn=>{globalThis.expire=fn;return 1;},clearTimeout=()=>{};
 const ensureFreshToken=async()=>{refreshed++;},authHeaders=()=>({Authorization:"test fixture"});
 const sessionExpired=()=>{expired=true;ModelPicker.reset();};
-const showConnect=()=>{connects++;};
+const openConnectRequest=()=>{connects++;};
 let doc=__DOC__,response=__RESPONSE__;
 const MCP={getModelOptions:async()=>JSON.parse(JSON.stringify(doc))};
 MCP.callTool=async(name,args)=>{

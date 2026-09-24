@@ -98,9 +98,23 @@
                color:var(--muted);margin-top:.5rem}
     .rtab-mute input{width:auto;margin:0}
     .rtab-note{font-size:.76rem;color:var(--muted);margin-top:.4rem;min-height:1rem}
+    /* Model setup inside the connect request. While the universe is unpowered
+       the request is the first thing to do, so the rail widens to hold it. */
+    .rail--setup{width:22rem}
+    .connect-go{width:100%;margin:.6rem 0 .25rem}
+    .connect-other{margin-top:.6rem}
+    .connect-other summary{cursor:pointer;font-size:.8rem;color:var(--ink-dim)}
+    .connect-shapes{display:flex;flex-wrap:wrap;gap:.35rem;margin:.5rem 0}
+    .connect-shapes .btn{padding:.3rem .6rem;font-size:.8rem}
+    .connect-shapes .btn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+    #hosted-key-entry{margin:.3rem 0}
+    #hosted-key-entry .btn{margin-top:.4rem}
+    .add-key-card{font-size:.85rem}
+    .connect-panel .rtab-link{color:var(--accent)}
     @media (max-width:760px){
       .chat-body{flex-direction:column}
       .rail{width:auto;max-height:45vh;border-left:0;border-top:1px solid var(--line)}
+      .rail--setup{width:auto;max-height:none;order:-1}
     }
     .thread{flex:1;min-height:0;overflow-y:auto;padding:1.1rem;display:flex;flex-direction:column;gap:.9rem}
     .thread-empty{margin:auto;text-align:center;color:var(--ink-dim)}
@@ -149,13 +163,8 @@
     .status-line--voice{padding-top:0}
     /* connect */
     .connect-body{padding:1.25rem;overflow-y:auto;max-width:46rem;margin:0 auto;width:100%}
-    .connect-status{margin:1rem 0;padding:.9rem 1rem;border-radius:10px;background:var(--surface-2);
-      border:1px solid var(--line);color:var(--ink-dim);font-size:.9rem}
-    .provider-card{border:1px solid var(--line);border-radius:12px;padding:1rem;margin:1rem 0;background:var(--surface-2)}
     .provider-head{display:flex;align-items:baseline;gap:.5rem;margin-bottom:.35rem}
     .muted{color:var(--ink-dim);font-size:.9em}
-    .bigcode{display:inline-block;font-size:1.5rem;letter-spacing:.12em;padding:.3rem .6rem;border-radius:8px;background:var(--surface);border:1px solid var(--line)}
-    .provider-card textarea{width:100%;box-sizing:border-box;margin:.5rem 0}
     .preset-row{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:.25rem 0 .75rem}
     .preset-row .btn--link{padding:.15rem .4rem}
     .connect-advanced{margin-top:1.25rem;border-top:1px solid var(--line);padding-top:1rem}
@@ -237,7 +246,113 @@
         <aside id="request-rail" class="rail" hidden>
           <div class="rail-head">Waiting on you</div>
           <div id="rail-items"></div>
-          <button id="btn-rail-add" class="btn btn--link">Add a key yourself</button>
+          <button id="btn-rail-add" class="btn btn--link" type="button"
+            aria-expanded="false" aria-controls="rail-add-panel">Add a key yourself</button>
+          <div id="rail-add-panel" class="rtab rtab-body" hidden>
+          <div id="api-key-connection" class="add-key-card">
+            <div class="provider-head"><strong id="api-key-title">Any API service</strong></div>
+            <p id="api-key-description">Paste whatever the service gave you &mdash; a key, a page of values, all
+            four OAuth values, extra things it doesn't need. Your universe works out
+            what the service is and what it may call. The key goes straight to the
+            secure vault over TLS, <strong>never through chat</strong>.</p>
+            <div id="paste-anything">
+            <label class="field"><span>Paste it here</span>
+              <textarea id="paste-blob" rows="4" autocomplete="off" spellcheck="false"
+                placeholder="Paste keys, tokens, or the whole credentials page"></textarea></label>
+            <label id="paste-intent-field" class="field"><span>What should it do?
+                <span class="muted">(optional &mdash; helps when the key alone doesn't say)</span></span>
+              <input id="paste-intent" type="text" placeholder="e.g. open pull requests on my repo" /></label>
+            <button id="btn-paste-connect" class="btn btn--primary">Add it</button>
+            <div id="paste-result" class="notice" role="status"></div>
+            </div>
+
+            <details class="connect-advanced" id="http-manual"><summary>Fill it in myself</summary>
+            <label class="field"><span>Name (a label you'll recognize)
+                <span class="muted">(letters, numbers and . _ : - &mdash; no spaces)</span></span>
+              <input id="http-destination" type="text" placeholder="a short name you will recognise later" /></label>
+            <label class="field"><span>API host</span>
+              <input id="http-host" type="text" placeholder="the API hostname, e.g. api.example.com" /></label>
+            <label class="field"><span>Path it may call
+                <span class="muted">(required; one exact path starting with /)</span></span>
+              <input id="http-path" type="text" placeholder="e.g. /api/v1/chat/completions or /2/tweets" /></label>
+            <label class="field"><span>Methods <span class="muted">(comma-separated)</span></span>
+              <input id="http-methods" type="text" placeholder="POST, GET" value="POST" /></label>
+            <label class="field"><span>How it authenticates
+                <span class="muted">(most APIs use a bearer token; OAuth 1.0a needs four values &mdash; the service you are connecting tells you which)</span></span>
+              <select id="http-auth-scheme">
+                <option value="bearer" selected>API key / bearer token (most APIs, webhooks)</option>
+                <option value="basic">Username &amp; password (basic auth)</option>
+                <option value="oauth1a">OAuth 1.0a — 4 keys</option>
+              </select></label>
+            <label class="field" id="http-secret-field"><span id="http-secret-label">API key / token</span>
+              <textarea id="http-secret" rows="2" placeholder="Your API key or bearer token"></textarea></label>
+            <div id="http-oauth1a" hidden>
+              <p class="muted">The four values your provider's developer portal shows for your
+                app, each in its own box. Your provider names them &mdash; some say
+                &ldquo;Consumer Key&rdquo; where others say &ldquo;API Key&rdquo; &mdash; and it may
+                also need the app itself to have write permission. If your agent asked you for
+                these, its request says exactly where each one lives.</p>
+              <label class="field"><span>API Key <span class="muted">(also called Consumer Key)</span></span>
+                <input id="http-oauth1a-api-key" type="password" autocomplete="off" /></label>
+              <label class="field"><span>API Key Secret <span class="muted">(Consumer Secret)</span></span>
+                <input id="http-oauth1a-api-secret" type="password" autocomplete="off" /></label>
+              <label class="field"><span>Access Token</span>
+                <input id="http-oauth1a-access-token" type="password" autocomplete="off" /></label>
+              <label class="field"><span>Access Token Secret</span>
+                <input id="http-oauth1a-access-token-secret" type="password" autocomplete="off" /></label>
+            </div>
+            <button id="btn-connect-http" class="btn btn--primary">Deposit API connection</button>
+            <div id="http-result" class="notice" role="status"></div>
+            </details>
+          </div>
+          </div>
+          <!-- The model setup, finished IN the connect request (founder
+               2026-09-24: "the connect model flow should all be happening within
+               the notification request"). ONE node: renderRail moves it into the
+               request's tab, so what the user typed survives the rail refresh. -->
+          <div id="connect-panel" class="connect-panel" hidden>
+            <div id="connect-primary">
+              <button id="btn-hosted-model" class="btn btn--primary connect-go" type="button"></button>
+              <span id="connect-primary-note" class="rtab-help">Free models only; nothing is bought.
+                Sign in there and approve. If sign-up leaves you on their site, come back to
+                this tab and tap it again.</span>
+            </div>
+            <button id="btn-hosted-resume" class="btn btn--primary connect-go" type="button" hidden>Finish connecting</button>
+            <p id="hosted-model-grant" class="rtab-grant" hidden></p>
+            <div id="hosted-model-status" class="rtab-note" role="status" aria-live="polite"></div>
+            <div id="connect-key" hidden>
+              <button id="btn-hosted-key" class="btn btn--link" type="button"
+                aria-expanded="false" aria-controls="hosted-key-entry"></button>
+              <div id="hosted-key-entry" hidden>
+                <input id="hosted-key-input" type="password" autocomplete="off" spellcheck="false"
+                  aria-label="API key" placeholder="Paste only the key" />
+                <button id="btn-hosted-deposit" class="btn btn--primary" type="button">Connect</button>
+              </div>
+            </div>
+            <a id="hosted-manage-link" class="rtab-link" data-external target="_blank"
+              rel="noreferrer noopener" hidden>Manage your keys there</a>
+            <details id="connect-other" class="connect-other">
+              <summary>Other ways to connect</summary>
+              <div id="connect-shapes" class="connect-shapes" role="group" aria-label="How to connect"></div>
+              <div id="connect-endpoint" hidden>
+                <span id="endpoint-help" class="rtab-help"></span>
+                <label class="rtab-label">Model URL
+                  <input id="endpoint-url" type="url" autocomplete="off" spellcheck="false" /></label>
+                <label class="rtab-label">API key
+                  <input id="endpoint-key" type="password" autocomplete="off" spellcheck="false" /></label>
+                <label class="rtab-label">Model id
+                  <input id="endpoint-model" type="text" autocomplete="off" spellcheck="false"
+                    placeholder="the model id your provider lists" /></label>
+                <label class="rtab-label">Request shape
+                  <select id="endpoint-wire">
+                    <option value="chat_messages" selected>Chat messages (most APIs and servers)</option>
+                    <option value="content_blocks">Content blocks</option>
+                  </select></label>
+                <button id="btn-endpoint-connect" class="btn btn--primary" type="button">Connect</button>
+                <div id="endpoint-result" class="rtab-note" role="status" aria-live="polite"></div>
+              </div>
+            </details>
+          </div>
         </aside>
       </div>
       <div id="attachments" class="attachments" hidden></div>
@@ -384,216 +499,6 @@
       </div>
     </section>
 
-    <section id="view-connect" class="view view--connect" hidden>
-      <header class="chat-header">
-        <div class="chat-title">Connect a model</div>
-        <nav class="chat-actions">
-          <button id="btn-connect-account" class="btn btn--link">Account</button>
-          <button id="btn-connect-back" class="btn btn--link">Back to chat</button>
-        </nav>
-      </header>
-      <div class="connect-body">
-        <p>Your universe uses <strong>your own</strong> authorized model connections:
-        a subscription, a model API, or your own endpoint. It never borrows another user's account.</p>
-        <div id="connect-status" class="connect-status" role="status"></div>
-
-        <div id="hosted-model-setup" class="provider-card" hidden>
-          <strong>Start with free models</strong>
-          <p>Continue to OpenRouter to create an account or connect your existing one.
-          On return, approve eligible free models for this universe. Provider privacy settings
-          and free limits apply; this does not authorize paid models or buying credits.</p>
-          <p id="hosted-model-handoff"><strong>Signing up for the first time?</strong>
-          OpenRouter may show &ldquo;Your workspace is ready&rdquo; and offer a starter API key.
-          Choose <strong>Continue</strong>, then review the <strong>TinyAssets authorization</strong>
-          screen and choose <strong>Authorize</strong> if you want to connect.
-          If OpenRouter sends you back here, review free-model access next.
-          <strong>No key needs to be copied or pasted for this guided connection.</strong>
-          Keep using the tab where you started.</p>
-          <p><strong>Signed up, but landed on your OpenRouter workspace?</strong>
-          Return to this TinyAssets tab and choose <strong>Continue with OpenRouter</strong>
-          below to finish linking your account. Creating an OpenRouter account alone does not
-          connect a model here. If you return here with an error, setup is still incomplete;
-          do not repeat authorization or create more keys without checking the message.</p>
-          <div id="hosted-model-status" role="status" aria-live="polite"></div>
-          <button id="btn-hosted-model" class="btn btn--primary">Continue with OpenRouter</button>
-          <button id="btn-hosted-resume" class="btn btn--ghost">Resume saved connection</button>
-          <p><button id="btn-hosted-key" class="btn btn--ghost" type="button"
-            aria-controls="api-key-connection">Already have an OpenRouter API key?</button></p>
-          <div id="hosted-model-confirmation" hidden>
-            <h3 id="hosted-model-title"></h3>
-            <p id="hosted-model-body"></p>
-            <p id="hosted-model-grant"></p>
-            <button id="btn-hosted-accept" class="btn btn--primary">Approve free models</button>
-            <button id="btn-hosted-decline" class="btn btn--ghost">Not now</button>
-          </div>
-          <p><a class="legal-link" data-external href="https://openrouter.ai/settings/keys" rel="noreferrer noopener"
-            target="_blank">Manage your OpenRouter keys</a></p>
-          <p class="muted">You can skip for now or connect another source below.</p>
-        </div>
-
-        <div class="provider-card">
-          <div class="provider-head"><strong>OpenAI</strong> <span class="muted">ChatGPT Plus / Pro / Team</span></div>
-          <p id="openai-lede">Tap Connect, sign in to ChatGPT on the page that opens, and you're back here
-          linked. Nothing to generate, copy, or paste.</p>
-          <button id="btn-openai-connect" class="btn btn--primary">Connect OpenAI</button>
-          <button id="btn-openai-code" class="btn btn--link">Having trouble? Use a code instead</button>
-
-          <!-- Guided device-code path (OpenAI's own fallback for when the
-               browser hand-off can't reach the app). OpenAI keeps device
-               codes OFF per account; step 1 is that switch, with the exact
-               page opened for the user. -->
-          <div id="openai-setup" hidden>
-            <p><strong>Step 1 of 2 &mdash; turn on the switch in ChatGPT.</strong><br>
-            On the page that opens, sign in with the same account, then under
-            <strong>Security</strong> turn on <strong>&ldquo;Enable device code authorization for Codex&rdquo;</strong>.
-            It's off by default; you only do this once.</p>
-            <button id="btn-openai-settings" class="btn btn--ghost">Open ChatGPT security settings</button>
-            <p class="muted">Already on? Go straight to step 2.</p>
-            <button id="btn-openai-setup-done" class="btn btn--primary">Step 2 &mdash; get my code</button>
-          </div>
-          <div id="openai-flow" hidden>
-            <p><strong>Step 2 of 2 &mdash; approve with this code.</strong></p>
-            <p>Your code: <code id="openai-code" class="bigcode"></code> <span class="muted">(copied)</span></p>
-            <p class="muted">On the OpenAI page that opened, enter the code above, sign in if asked, and tap
-            Approve. This screen finishes by itself. If OpenAI says device code authorization is off, go
-            back to step 1.</p>
-            <button id="btn-openai-open" class="btn btn--ghost">Open the OpenAI code page again</button>
-          </div>
-          <div id="openai-result" class="notice" role="status"></div>
-        </div>
-
-        <div class="provider-card">
-          <div class="provider-head"><strong>Claude</strong> <span class="muted">Pro / Max</span></div>
-          <ol>
-            <li>In a terminal, run <code>claude setup-token</code>.</li>
-            <li>Sign in on the page it opens. If the browser gives you a code, paste it back into the terminal, not here.</li>
-            <li>Copy the final token printed by the terminal (starting with <code>sk-ant-</code>) and paste it below.</li>
-          </ol>
-          <textarea id="claude-material" rows="3" aria-label="Claude setup token" placeholder="Final token from the terminal — not the browser code"></textarea>
-          <button id="btn-claude-connect" class="btn btn--primary">Connect Claude</button>
-          <div id="claude-result" class="notice" role="status"></div>
-        </div>
-
-        <div id="api-key-connection" class="provider-card">
-          <div class="provider-head"><strong id="api-key-title">Any API service</strong>
-            <span id="api-key-examples" class="muted">OpenRouter, Slack, X, any HTTPS API</span></div>
-          <p id="api-key-description">Paste whatever the service gave you &mdash; a key, a page of values, all
-          four OAuth values, extra things it doesn't need. Your universe works out
-          what the service is and what it may call. The key goes straight to the
-          secure vault over TLS, <strong>never through chat</strong>.</p>
-          <p id="paste-key-guidance" role="status" hidden>Connect free models with your own
-          OpenRouter API key. Paste only the key below, then choose Review free-model access.
-          Your key goes to your private connection, never into chat. Saving it does not
-          approve model access: you will review that separately. No paid models or credit
-          purchase will be approved.</p>
-          <label class="field"><span>Paste it here</span>
-            <textarea id="paste-blob" rows="4" autocomplete="off" spellcheck="false"
-              aria-describedby="paste-key-guidance" placeholder="Paste keys, tokens, or the whole credentials page"></textarea></label>
-          <label id="paste-intent-field" class="field"><span>What should it do?
-              <span class="muted">(optional &mdash; helps when the key alone doesn't say)</span></span>
-            <input id="paste-intent" type="text" placeholder="e.g. open pull requests on my repo" /></label>
-          <button id="btn-paste-connect" class="btn btn--primary">Add it</button>
-          <button id="btn-hosted-deposit" class="btn btn--primary" hidden>Review free-model access</button>
-          <button id="btn-hosted-key-cancel" class="btn btn--ghost" hidden>Use this box for another API service</button>
-          <div id="paste-result" class="notice" role="status"></div>
-
-          <details class="connect-advanced" id="http-manual"><summary>Fill it in myself</summary>
-          <label class="field"><span>Name (a label you'll recognize)
-              <span class="muted">(letters, numbers and . _ : - &mdash; no spaces)</span></span>
-            <input id="http-destination" type="text" placeholder="a short name you will recognise later" /></label>
-          <label class="field"><span>API host</span>
-            <input id="http-host" type="text" placeholder="the API hostname, e.g. api.example.com" /></label>
-          <label class="field"><span>Path it may call
-              <span class="muted">(required; one exact path starting with /)</span></span>
-            <input id="http-path" type="text" placeholder="e.g. /api/v1/chat/completions or /2/tweets" /></label>
-          <label class="field"><span>Methods <span class="muted">(comma-separated)</span></span>
-            <input id="http-methods" type="text" placeholder="POST, GET" value="POST" /></label>
-          <label class="field"><span>How it authenticates
-              <span class="muted">(most APIs use a bearer token; OAuth 1.0a needs four values &mdash; the service you are connecting tells you which)</span></span>
-            <select id="http-auth-scheme">
-              <option value="bearer" selected>API key / bearer token (most APIs, webhooks)</option>
-              <option value="basic">Username &amp; password (basic auth)</option>
-              <option value="oauth1a">OAuth 1.0a — 4 keys</option>
-            </select></label>
-          <label class="field" id="http-secret-field"><span id="http-secret-label">API key / token</span>
-            <textarea id="http-secret" rows="2" placeholder="Your API key or bearer token"></textarea></label>
-          <div id="http-oauth1a" hidden>
-            <p class="muted">The four values your provider's developer portal shows for your
-              app, each in its own box. Your provider names them &mdash; some say
-              &ldquo;Consumer Key&rdquo; where others say &ldquo;API Key&rdquo; &mdash; and it may
-              also need the app itself to have write permission. If your agent asked you for
-              these, its request says exactly where each one lives.</p>
-            <label class="field"><span>API Key <span class="muted">(also called Consumer Key)</span></span>
-              <input id="http-oauth1a-api-key" type="password" autocomplete="off" /></label>
-            <label class="field"><span>API Key Secret <span class="muted">(Consumer Secret)</span></span>
-              <input id="http-oauth1a-api-secret" type="password" autocomplete="off" /></label>
-            <label class="field"><span>Access Token</span>
-              <input id="http-oauth1a-access-token" type="password" autocomplete="off" /></label>
-            <label class="field"><span>Access Token Secret</span>
-              <input id="http-oauth1a-access-token-secret" type="password" autocomplete="off" /></label>
-          </div>
-          <button id="btn-connect-http" class="btn btn--primary">Deposit API connection</button>
-          <div id="http-result" class="notice" role="status"></div>
-          </details>
-        </div>
-
-        <details class="connect-advanced">
-          <summary>Advanced: raw credential deposit</summary>
-          <p class="dev-note">The secure deposit sends your subscription credential straight to the
-          connector over TLS &mdash; never through chat, never logged. This calls
-          <code>write_graph connect_llm</code>. If the deposit backend isn't live yet, you'll see the
-          connector's honest response below.</p>
-          <label class="field"><span>Service</span>
-            <select id="connect-service">
-              <option value="claude">Claude subscription</option>
-              <option value="codex">OpenAI subscription</option>
-              <option value="__endpoint__">Any other LLM &mdash; your own endpoint</option>
-            </select>
-          </label>
-
-          <!-- The subscription path: one credential, because a Max/Pro plan is
-               a different gesture from an API key. -->
-          <div id="connect-subscription">
-            <label class="field"><span>Subscription credential</span>
-              <textarea id="connect-material" rows="3" placeholder="OAuth token / credential material"></textarea>
-            </label>
-          </div>
-
-          <!-- Any endpoint. The platform has no list of vendors: it needs a
-               URL, a wire protocol and a model name, which is exactly what
-               connect_compute takes. -->
-          <div id="connect-endpoint" hidden>
-            <label class="field"><span>Name it</span>
-              <input id="endpoint-name" type="text" placeholder="my-llm" autocomplete="off">
-            </label>
-            <label class="field"><span>Endpoint URL</span>
-              <input id="endpoint-url" type="url" placeholder="https://api.example.com/v1/chat/completions" autocomplete="off">
-            </label>
-            <label class="field"><span>Wire protocol</span>
-              <select id="endpoint-protocol">
-                <option value="openai_chat">Chat completions &mdash; messages[] in, choices[] out (most APIs)</option>
-                <option value="anthropic_messages">Messages &mdash; system sent separately, content blocks out</option>
-              </select>
-              <small class="dev-note">Two request shapes, not two companies: nearly every
-              hosted API, gateway and local server speaks the first one, and your
-              provider's own docs will show you which it is. If yours speaks neither, the
-              endpoint is refused rather than half-working &mdash; tell us the shape and
-              we add the encoder.</small>
-            </label>
-            <label class="field"><span>Model</span>
-              <input id="endpoint-model" type="text" placeholder="the model id your provider documents" autocomplete="off">
-            </label>
-            <label class="field"><span>API key</span>
-              <input id="endpoint-key" type="password" autocomplete="off" spellcheck="false"
-                     placeholder="Your API key for that endpoint">
-            </label>
-          </div>
-
-          <button id="btn-deposit" class="btn btn--primary">Deposit securely</button>
-          <pre id="connect-result" class="result" hidden></pre>
-        </details>
-      </div>
-    </section>
   </main>
 
   <script nonce="__TA_NONCE__">
@@ -717,13 +622,9 @@
   async function handleAppReturn(url){
     let u; try{ u = new URL(url); }catch(_e){ return false; }
     if(!(u.protocol === "tinyassets:" && (u.host === "auth" || u.pathname.replace(/^\/+/,"") === "auth"))) return false;
-    // The OpenAI callback page can hand the code in through this deep link
-    // too (tap "Open TinyAssets"), so the link works even when the loopback
-    // event did not reach the web layer or the app was not brought forward.
-    if(u.searchParams.get("provider")==="openai"){
-      trace("openai.deeplink", u.searchParams.get("code") ? "code" : (u.searchParams.get("error")||"none"));
-      return completeOpenAI(u.searchParams);
-    }
+    // A provider-tagged link belonged to a vendor sign-in card that no longer
+    // exists (vendor-neutral slice 6). It is never an app sign-in.
+    if(u.searchParams.get("provider")) return false;
     const code = u.searchParams.get("code"), state = u.searchParams.get("state") || "";
     if(!code) return false;
     await closeExternal();
@@ -1523,13 +1424,9 @@
         {target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset},
         {idempotent:true});
     },
-    connectLLM(service,materialB64){
-      return this.callTool("write_graph",{target:"connection",operation:"connect_llm",
-        payload_json:JSON.stringify({service,auth_material_b64:materialB64})});
-    },
     // Deposit a generic outbound HTTP connection (an API key + the endpoints it
     // may call) DIRECTLY over /mcp — the secret rides the tool payload, never a
-    // converse/chat turn — so the universe can then register an OpenRouter/OpenAI
+    // converse/chat turn — so the universe can then register a model
     // compute provider on it, or build a channel (Slack/X/...) via the
     // authenticated_external_call effect. The channel-agnostic way to add any API.
     connectHTTP(destination,secret,allowedEndpoints,authScheme){
@@ -1547,6 +1444,12 @@
     // The agent's pending asks. Same read from every surface, which is what
     // makes them answerable from the phone with no second mechanism.
     listRequests(){ return this.callTool("read_graph",{target:"pending_requests"}); },
+    // The owner raising their own request: the rail's "other ways to connect"
+    // composes the SAME connect ask an agent would, then answers it.
+    requestFromUser(payload){
+      return this.callTool("write_graph",{target:"connection",operation:"request_from_user",
+        payload_json:JSON.stringify(payload)});
+    },
     answerRequest(payload){
       return this.callTool("write_graph",{target:"connection",operation:"answer_request",
         payload_json:JSON.stringify(payload)});
@@ -1559,7 +1462,7 @@
 
   // ---- UI ----
   const $=(id)=>document.getElementById(id);
-  const views={signin:$("view-signin"),chat:$("view-chat"),connect:$("view-connect"),account:$("view-account")};
+  const views={signin:$("view-signin"),chat:$("view-chat"),account:$("view-account")};
   let viewGeneration=0;
   function showView(n){ viewGeneration++; for(const k in views) views[k].hidden=(k!==n); }
   let hasMessages=false, statusTimer=null;
@@ -1866,8 +1769,7 @@
           return this._render("Voice capability could not be confirmed. Typed chat still works.");
         if(this.capability&&this.capability.state==="unpowered"&&
           this.capability.remediation==="existing_connection_surface")
-          return showConnect(this.capability.state==="unpowered",
-            voiceConnectionGuidance(this.capability.reason));
+          return openConnectRequest(voiceConnectionGuidance(this.capability.reason));
         const reason=this.capability&&this.capability.state!=="unpowered"
           ?"browser_speech_unsupported":(this.capability&&this.capability.reason);
         return this._render(voiceFriendlyError(reason));
@@ -2448,8 +2350,8 @@
     const note=instant===undefined?appendMessage("platform",text,again):appendMessage("platform",text,again,instant);
     if(failureCode==="setup_required"){
       const connect=document.createElement("button");
-      connect.className="btn btn--link"; connect.textContent="Connect a source";
-      connect.addEventListener("click",()=>showConnect(true));
+      connect.className="btn btn--link"; connect.textContent="Connect a model";
+      connect.addEventListener("click",()=>openConnectRequest());
       note.appendChild(connect);
     }
     return note;
@@ -2470,7 +2372,7 @@
     if(payload&&payload.status==="held"&&payload.reason==="setup_required"){
       const cta=document.createElement("div"); cta.className="setup-cta";
       const b=document.createElement("button"); b.className="btn btn--ghost";
-      b.textContent="Connect your subscription"; b.addEventListener("click",()=>showConnect(true));
+      b.textContent="Connect a model"; b.addEventListener("click",()=>openConnectRequest());
       cta.appendChild(b);
       appendMessage("universe", payload.note||"This universe has no engine yet.", cta); return;
     }
@@ -2653,7 +2555,7 @@
           const note=document.createElement("span");note.textContent=" — "+(this.stale?"refresh required":source.accepted?"existing access retained":"connect or enable model access on your current source first");li.appendChild(note);
           if(!source.accepted){
             const connect=document.createElement("button");connect.type="button";connect.className="btn btn--link";connect.textContent="Connection setup";
-            connect.addEventListener("click",()=>{$("model-dialog").close();showConnect(true);});li.appendChild(connect);
+            connect.addEventListener("click",()=>{$("model-dialog").close();openConnectRequest();});li.appendChild(connect);
           }
         }
         accessList.appendChild(li);
@@ -2873,7 +2775,7 @@
       $("btn-model-save").addEventListener("click",()=>this.save());
       $("btn-model-saved").addEventListener("click",()=>this.useSaved());
       $("btn-model-restore").addEventListener("click",()=>this.restoreAccess());
-      $("btn-model-connect").addEventListener("click",()=>{$("model-dialog").close();showConnect(false);});
+      $("btn-model-connect").addEventListener("click",()=>{$("model-dialog").close();openConnectRequest();});
     }
   };
   function captureTurnOptions(opts){
@@ -3637,9 +3539,10 @@
     }
   }
 
-  // Connecting a mind is part of signing in (founder 2026-08-21): until the
-  // user's universe has an engine, landing goes to Connect, not to a chat that
-  // can only answer "connect your subscription".
+  // Connecting a mind is part of signing in (founder 2026-08-21), and it
+  // happens IN the connect request (founder 2026-09-24): an unpowered universe
+  // lands in its normal chat with that request first in the rail, never on a
+  // separate full-page screen.
   let engineConnected = null;   // null = unknown yet
   async function fetchMe(){
     try{
@@ -3651,7 +3554,7 @@
       return await r.json();
     }catch(_e){ return null; }
   }
-  async function enterSignedIn(autoBootstrap=false){
+  async function enterSignedIn(){
     ModelPicker.reset();
     // The login this answer is FOR. A /mcp/app/me that lands after a sign-out
     // or another account signed in describes somebody else: it must not be
@@ -3661,34 +3564,33 @@
     if(epoch!==MCP._loginEpoch) return;          // a stale answer names no one
     if(me===null && !token()) return;            // fetchMe signed us out
     // Both halves of "is this mine?", taken from the VERIFIED account the
-    // connector just described - never from a caller or a provider. They are
-    // seeded HERE, before the connect gate can return, because everything this
-    // page may restore (held lines, the in-flight record, saved attachments)
-    // is readable only once the owner and home are known. Landing on Connect
-    // first is the FIRST session's normal path; leaving the pair blank through
-    // it disabled that session's recovery entirely.
+    // connector just described - never from a caller or a provider. Seeded
+    // before anything this page may restore (held lines, the in-flight record,
+    // saved attachments), which is readable only once owner and home are known.
     if(me&&me.universe_id) setQueueScope(me.universe_id);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
     HostedModelConnect.setup=me&&me.setup||"unavailable";
-    if(HostedModelConnect.setup!=="connected"){
-      if(typeof AppLayout!=="undefined") AppLayout.reset();
-      engineConnected = HostedModelConnect.setup==="unavailable" ? null : false;
-      showConnect(true);
-      if(HostedModelConnect.setup==="unavailable") $("connect-status").textContent="Could not confirm your universe's connections. Retry when available; no new connection has been started.";
-      else if(HostedModelConnect.setup==="recovery") $("connect-status").textContent="Your universe already has connection setup. Resume it or repair that connection; your existing settings are preserved.";
-      if(autoBootstrap && !NATIVE && HostedModelConnect.setup==="empty") await HostedModelConnect.begin();
-      return;
+    const connected=HostedModelConnect.setup==="connected";
+    engineConnected = connected ? true : HostedModelConnect.setup==="unavailable" ? null : false;
+    if(typeof AppLayout!=="undefined"){
+      if(connected) AppLayout.enable(me.universe_id,me.principal_id); else AppLayout.reset();
     }
-    engineConnected = true;
-    if(typeof AppLayout!=="undefined") AppLayout.enable(me.universe_id,me.principal_id);
-    // The owner and home were taken above, from the same verified `me`.
-    showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
+    // Powered or not, this is the universe's own chat. The owner and home were
+    // taken above, from the same verified `me`.
+    showView("chat"); startHeartbeat(); warmSession();
     // Build 3's App Review Notes and submitted product surface are voice-dark.
     // The hosted web app may expose Voice, but a Capacitor shell must not make it
     // reachable until a later store submission declares and verifies that surface.
     if(!NATIVE) Voice.refreshCapability();
     loadPlan();
     loadHistory();
+    HostedModelConnect.paint();
+    if(connected){ $("composer-input").focus(); refreshRail(); return; }
+    if(HostedModelConnect.setup==="unavailable")
+      HostedModelConnect.status("Could not confirm your universe's connections. Nothing new was started; try again in a moment.");
+    else if(HostedModelConnect.setup==="recovery"&&!HostedModelConnect.busy&&!HostedModelConnect.request)
+      HostedModelConnect.status("A connection was started earlier. Tap Finish connecting to complete it; your settings are kept.");
+    openConnectRequest();
   }
   // ---- plan / subscription -------------------------------------------
   // Reflects server-side tier and starts the two transitions. Cancellation does
@@ -3825,16 +3727,6 @@
   // the very first message fail with "no JSON or SSE frame" and then self-recover on the
   // 2nd message. Fire-and-forget: a real error still surfaces on the first actual turn.
   function warmSession(){ try{ MCP.ensureInit().catch(()=>{}); }catch(_e){} }
-  function onEngineConnected(stillCurrent=()=>true){
-    engineConnected = true;
-    $("btn-connect-back").textContent = "Go to your universe";
-    setTimeout(()=>{ if(!stillCurrent()) return; showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan();
-      // Arriving at chat THROUGH the gate is a first session reaching its
-      // universe for the first time. It reads its own history and is offered
-      // its own held state exactly as a direct sign-in does; both are no-ops
-      // once done or while the pair is still unknown.
-      loadHistory(); restoreUploadRecords(); }, 1200);
-  }
   // Everything on this page that belongs to ONE verified account and home: what
   // is on screen, what is held in memory, and the "already done" marks that
   // would otherwise make the NEXT account's own restore a silent no-op.
@@ -3872,7 +3764,7 @@
     clearComposerState();
     clearThread();
   }
-  function enterSignedOut(){ clearInterval(statusTimer); MCP.endLogin(); resetClaudeConnection(); Voice.stop(false);
+  function enterSignedOut(){ clearInterval(statusTimer); MCP.endLogin(); Voice.stop(false);
     // Pending attachments belong to the account that picked them. They are
     // dropped, never released (release needs that same login and home) and
     // never carried into whoever signs in next.
@@ -3882,112 +3774,131 @@
     HostedModelConnect.reset();
     modelChoiceForNextTurn=null;
     ModelPicker.reset();
-    sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
-  function showConnect(asGate,guidance){ Voice.stop(false); showView("connect");
-    HostedModelConnect.paint();
-    // Web has no loopback listener: the guided device-code path IS the path.
-    if(!openaiBusy) resetOpenAIUI();
-    $("btn-connect-back").textContent = asGate ? "Skip for now" : "Back to chat";
-    $("connect-status").textContent = guidance || (asGate
-      ? "Connect a model to power your universe. Credentials go straight to the connector over TLS, never through chat, never logged."
-      : "Credentials go straight to the connector over TLS — never through chat, never logged."); }
+    sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); showView("signin"); }
+  // The one way into model setup from anywhere in the app: the chat, with the
+  // connect request open. Never a separate screen.
+  const CONNECT_REQUEST_ID="sys_connect_llm";
+  function openConnectRequest(guidance){
+    Voice.stop(false);
+    if(views.chat.hidden) showView("chat");
+    railOpen=CONNECT_REQUEST_ID;
+    if(guidance) HostedModelConnect.status(guidance);
+    renderRail(railCache);
+    refreshRail();
+    const panel=$("connect-panel");
+    if(panel&&!panel.hidden&&panel.scrollIntoView) panel.scrollIntoView({block:"nearest",behavior:"smooth"});
+  }
 
   function autoGrow(el){ el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,window.innerHeight*0.4)+"px"; }
 
   function authHeaders(){ const h={}; const tk=token(); if(tk) h["Authorization"]="Bearer "+tk; return h; }
 
-  // Hosted authorization is separate from account sign-in. Only explicit sign-in
-  // may auto-start; reload, refresh, cancellation and recovery never do.
+  // The guided sign-in the connect request offers first. Its preset (name,
+  // button label, key page) comes from the SERVER's request, so this page
+  // names no provider. Nothing here starts on its own: the owner taps.
+  // Finishing is part of that tap: the button says "free models only", the
+  // owner approves at the provider, and the page completes the free-model
+  // request it gets back, with no second screen to approve again.
   const HostedModelConnect={
-    storageKey:"ta_hosted_model_pkce_v1",preset:"openrouter_user_models_v1",
-    setup:"unavailable",busy:false,request:null,epoch:0,keyMode:false,
-    status(text){$("hosted-model-status").textContent=text;if(this.keyMode)$("paste-result").textContent=text;},
-    paint(){
-      $("hosted-model-setup").hidden=NATIVE||this.setup==="connected";
-      $("btn-hosted-model").disabled=this.busy||!["empty","disconnected"].includes(this.setup);
-      $("btn-hosted-resume").disabled=this.busy||this.setup==="unavailable";
-      $("btn-hosted-accept").disabled=this.busy;
-      $("btn-hosted-decline").disabled=this.busy;
-      $("btn-hosted-key").disabled=this.busy||!["empty","disconnected"].includes(this.setup);
-      $("btn-hosted-deposit").disabled=this.busy||!["empty","disconnected"].includes(this.setup);
-      $("btn-hosted-key-cancel").disabled=this.busy;
-      $("hosted-model-confirmation").hidden=!this.request;
-    },
-    reset(){
-      this.epoch++;this.busy=false;this.request=null;this.setup="unavailable";
-      this.setKeyMode(false);
-      sessionStorage.removeItem(this.storageKey);
-    },
-    showKeyEntry(){
-      if(this.busy||!["empty","disconnected"].includes(this.setup)) return;
-      this.setKeyMode(true);
-      const card=$("api-key-connection"), input=$("paste-blob");
-      card.hidden=false;
-      card.scrollIntoView({block:"start",behavior:"smooth"});
-      input.focus({preventScroll:true});
-    },
-    setKeyMode(enabled){
-      // Mode changes discard, never inspect or carry, a previous credential.
-      $("paste-blob").value="";$("paste-intent").value="";
-      this.keyMode=enabled;
-      $("paste-key-guidance").hidden=!enabled;
-      $("api-key-title").textContent=enabled?"OpenRouter free-model setup":"Any API service";
-      $("api-key-examples").hidden=enabled;$("api-key-description").hidden=enabled;
-      $("paste-intent-field").hidden=enabled;$("http-manual").hidden=enabled;
-      $("paste-blob").placeholder=enabled?"Paste only your OpenRouter API key":"Paste keys, tokens, or the whole credentials page";
-      $("btn-hosted-deposit").hidden=!enabled;
-      $("btn-hosted-key-cancel").hidden=!enabled;
-      $("btn-paste-connect").hidden=enabled;
-      $("paste-intent").disabled=enabled;
-      $("paste-result").textContent="";
+    storageKey:"ta_hosted_model_pkce_v1",preset:"",primary:null,
+    setup:"unavailable",busy:false,request:null,epoch:0,keyOpen:false,
+    status(text){$("hosted-model-status").textContent=text;},
+    // The request's primary preset, validated: a preset id, a label, and an
+    // https key page. Anything else hides the button rather than guessing.
+    configure(primary){
+      const ok=primary&&typeof primary.preset_id==="string"&&/^[a-z0-9_]{1,64}$/.test(primary.preset_id)&&
+        typeof primary.label==="string"&&primary.label.length>0&&primary.label.length<=80;
+      this.primary=ok?primary:null;
+      if(this.primary&&!this.busy) this.preset=this.primary.preset_id;
       this.paint();
     },
+    // The one pending free-model confirmation in the rail belongs to the setup
+    // it finishes, so it is finished HERE (one tap), not as a second card.
+    adopt(request){
+      if(this.busy) return;
+      if(request){ this.request=Object.assign({},request,{adopted:true}); }
+      else if(this.request&&this.request.adopted){ this.request=null; }
+    },
+    paint(){
+      const idle=["empty","disconnected"].includes(this.setup);
+      const primary=NATIVE?null:this.primary;
+      $("connect-primary").hidden=!(primary&&idle&&!this.request);
+      $("btn-hosted-model").textContent=primary?primary.label:"";
+      $("btn-hosted-model").disabled=this.busy||!idle;
+      const finish=!NATIVE&&this.setup!=="connected"&&
+        (!!this.request||(this.setup==="recovery"&&!!primary));
+      $("btn-hosted-resume").hidden=!finish;
+      $("btn-hosted-resume").disabled=this.busy;
+      const grant=$("hosted-model-grant");
+      grant.textContent=this.request&&this.request.grant_sentence||"";
+      grant.hidden=!grant.textContent;
+      const keyable=!!(primary&&primary.manual_key===true&&idle&&!this.request);
+      $("connect-key").hidden=!keyable;
+      $("btn-hosted-key").textContent=primary?"Already have a key? Paste it instead":"";
+      $("btn-hosted-key").setAttribute("aria-expanded",String(keyable&&this.keyOpen));
+      $("hosted-key-entry").hidden=!(keyable&&this.keyOpen);
+      $("btn-hosted-deposit").disabled=this.busy||!idle;
+      const manage=$("hosted-manage-link");
+      let href="";
+      try{ const u=new URL(primary&&primary.manage_url||""); if(u.protocol==="https:"&&!u.username&&!u.password) href=u.href; }catch(_e){}
+      manage.hidden=!(href&&(this.keyOpen||this.setup==="recovery"));
+      if(href) manage.href=href; else manage.removeAttribute("href");
+    },
+    reset(){
+      this.epoch++;this.busy=false;this.request=null;this.setup="unavailable";this.keyOpen=false;
+      const input=$("hosted-key-input"); if(input) input.value="";
+      sessionStorage.removeItem(this.storageKey);
+    },
+    toggleKey(){
+      if(this.busy) return;
+      this.keyOpen=!this.keyOpen;
+      $("hosted-key-input").value="";   // mode changes discard, never inspect, a credential
+      this.paint();
+      if(this.keyOpen) $("hosted-key-input").focus({preventScroll:true});
+    },
     async depositKey(){
-      if(!this.keyMode||this.busy||NATIVE||!["empty","disconnected"].includes(this.setup)) return;
-      let key=$("paste-blob").value;$("paste-blob").value="";
+      if(!this.keyOpen||this.busy||NATIVE||!this.preset||!["empty","disconnected"].includes(this.setup)) return;
+      let key=$("hosted-key-input").value;$("hosted-key-input").value="";
       if(typeof key!=="string"||!key.length||key.length>2048||!/^[\x21-\x7e]+$/.test(key)){
-        key="";this.status("Paste only your OpenRouter API key, without spaces or other text.");return;
+        key="";this.status("Paste only the key, without spaces or other text.");return;
       }
       const epoch=this.epoch,view=viewGeneration;
       let timedOut=false;
       const current=()=>epoch===this.epoch&&view===viewGeneration;
       this.busy=true;this.paint();
-      this.status("Saving your connection and preparing free-model access. Nothing is approved yet.");
+      this.status("Connecting your universe…");
       const timer=setTimeout(()=>{
         timedOut=true;
-        if(current())this.status("Setup is still unconfirmed. Do not paste the key again. Wait for this request to settle, then use Resume saved connection.");
+        if(current())this.status("Still not confirmed. Do not paste the key again; tap Finish connecting once this settles.");
       },30000);
+      let req=null;
       try{
         const pending=this.post("deposit_key",{preset_id:this.preset,key});key="";
         const result=await pending;
         if(epoch!==this.epoch)return;
         this.setup="recovery";
         if(!current()||timedOut){
-          if(current())this.status("Your setup response arrived late. Use Resume saved connection to review it; no model access was approved.");
+          if(current())this.status("Your setup answered late. Tap Finish connecting to complete it; nothing was approved yet.");
           return;
         }
-        const req=result.request;
+        req=result.request;
         if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
            !req.action||req.action.type!=="bind_model_access")throw new Error("invalid_connection_response");
         this.request=req;
-        $("hosted-model-title").textContent=req.title;
-        $("hosted-model-body").textContent=req.body;
-        $("hosted-model-grant").textContent=req.grant_sentence||"";
-        this.status("Connection saved. Review the free-model request above; your universe is not powered until you approve it.");
-        this.busy=false;
-        this.paint();$("hosted-model-confirmation").scrollIntoView({block:"center",behavior:"smooth"});
-        $("btn-hosted-accept").focus({preventScroll:true});
+        this.keyOpen=false;
       }catch(error){
         if(epoch!==this.epoch)return;
         const invalid=error&&error.message==="invalid_model_connection";
         if(!invalid)this.setup="recovery";
         if(current())this.status(invalid
-          ?"The key was not accepted. Paste only your OpenRouter API key to try again."
-          :"Setup is not confirmed. Do not paste the key again. Use Resume saved connection to check any saved setup; no model access was approved.");
+          ?"That key was not accepted. Paste only the key to try again."
+          :"Not confirmed. Do not paste the key again; tap Finish connecting to check what was saved.");
+        req=null;
       }finally{
         key="";clearTimeout(timer);
         if(epoch===this.epoch){this.busy=false;this.paint();}
       }
+      if(req&&current()) await this.answer(true);
     },
     takeCallback(){
       const match=window.location.pathname.match(/^\/mcp\/app\/model-callback\/([A-Za-z0-9_-]{43})$/);
@@ -3998,12 +3909,14 @@
       let saved=null;
       try{saved=JSON.parse(sessionStorage.getItem(this.storageKey)||"null");}catch(_e){}
       sessionStorage.removeItem(this.storageKey); // one browser redemption attempt
-      if(NATIVE||!saved||saved.flow!==match[1]||saved.preset!==this.preset||
+      if(NATIVE||!saved||saved.flow!==match[1]||typeof saved.preset!=="string"||
+         !/^[a-z0-9_]{1,64}$/.test(saved.preset)||
          typeof saved.verifier!=="string"||!/^[A-Za-z0-9_-]{43}$/.test(saved.verifier)||
          !Number.isFinite(saved.expires)||saved.expires<=Date.now()||query.has("error")||
          query.getAll("code").length!==1||!query.get("code")||query.get("code").length>2048){
         return {error:true};
       }
+      this.preset=saved.preset;
       return {flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier};
     },
     async post(operation,payload){
@@ -4022,101 +3935,120 @@
       return result;
     },
     async begin(){
-      if(this.busy||NATIVE||!["empty","disconnected"].includes(this.setup)) return;
-      const epoch=this.epoch;this.busy=true;this.paint();
-      this.status("Opening OpenRouter signup or sign-in. You choose whether to authorize access there.");
+      if(this.busy||NATIVE||!this.preset||!["empty","disconnected"].includes(this.setup)) return;
+      const epoch=this.epoch,preset=this.preset;this.busy=true;this.paint();
+      this.status("Opening sign-in. You choose whether to approve there.");
       try{
         const verifier=randToken(32),code_challenge=await challengeFor(verifier);
         // Verify tab storage works before starting a flow requiring that verifier.
-        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset:this.preset}));
-        const result=await this.post("begin",{preset_id:this.preset,code_challenge});
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset}));
+        const result=await this.post("begin",{preset_id:preset,code_challenge});
         if(epoch!==this.epoch) return;
         const url=new URL(result.authorize_url);
         if(url.protocol!=="https:"||url.username||url.password||
            !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||
            !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600) throw new Error("invalid_connection_response");
-        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset:this.preset,
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,preset,
           flow:result.flow,expires:Date.now()+result.expires_in*1000}));
         window.location.assign(url.href);
       }catch(_e){
         if(epoch!==this.epoch) return;
         sessionStorage.removeItem(this.storageKey);
-        this.status("Could not start the connection. Refresh its status, then explicitly continue when ready.");
+        this.status("Could not start sign-in. Nothing was connected; try again in a moment.");
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
     },
+    // The return from the provider (callback) or "Finish connecting" (resume):
+    // redeem or re-read the saved connection, then finish its free-model
+    // request in the same step.
     async complete(callback=null){
       if(this.busy||NATIVE) return;
       if(callback&&callback.error){
-        showConnect(true);this.status("Connection cancelled or expired. You can continue again, resume a saved connection, or choose another source.");return;
+        openConnectRequest("Sign-in was cancelled or expired, so nothing was connected. Continue again when you're ready.");
+        return;
       }
       const epoch=this.epoch;this.busy=true;this.paint();
-      this.status("Checking your connection. No model access is approved automatically.");
+      this.status("Connecting your universe…");
+      let req=null;
       try{
         const result=await this.post(callback?"exchange":"resume",callback||{preset_id:this.preset});
         if(epoch!==this.epoch) return;
-        if(result.status==="connected"){await enterSignedIn();return;}
-        const req=result.request;
+        if(result.status==="connected"){ this.busy=false; await enterSignedIn(); return; }
+        req=result.request;
         if(result.status!=="confirmation_required"||!req||req.request_id!==result.request_id||
            !req.action||req.action.type!=="bind_model_access") throw new Error("invalid_connection_response");
-        this.setup="recovery";this.request=req;showConnect(true);
-        $("hosted-model-title").textContent=req.title;
-        $("hosted-model-body").textContent=req.body;
-        $("hosted-model-grant").textContent=req.grant_sentence||"";
-        this.status("Review your pending free-model request below. Approval checks the connection again before powering your universe.");
+        this.setup="recovery";this.request=req;
       }catch(error){
         if(epoch!==this.epoch) return;
-        await enterSignedIn();showConnect(true);
+        req=null;this.busy=false;
+        await enterSignedIn();
         if(epoch!==this.epoch) return;
         const code=error&&error.message;
         if(code==="no_eligible_free_agent_model"){
-          this.status("OpenRouter returned no eligible free model that can run your agent. Check your OpenRouter account's model availability and privacy settings, then try Resume saved connection, or connect another source below. No paid-model access was approved.");
+          this.status("Your account there offers no free model that can run your universe right now. Check its model and privacy settings, then tap Finish connecting, or connect another way below. Nothing paid was approved.");
         }else if(["model_authorization_required","model_connection_expired","unknown_model_connection",
                   "invalid_pkce_verifier","invalid_authorization_code","model_authorization_not_completed"].includes(code)){
-          this.status(this.setup==="empty"
-            ?"Authorization is missing or no longer usable. Choose Continue with OpenRouter to start again. If a key was created during an earlier attempt, manage unused keys using the link below."
-            :"Authorization could not be resumed. Existing setup was preserved; connect or renew a source below. You can manage unused OpenRouter keys using the link below.");
+          this.status(["empty","disconnected"].includes(this.setup)
+            ?"That sign-in can't be used any more. Tap the button above to start again."
+            :"That sign-in can't be resumed. Your existing setup was kept; connect another way below, or manage unused keys with the link.");
         }else if(code==="sign_in_required"){
-          this.status("Your app sign-in expired. Sign in again, then resume your saved connection. No model access was approved.");
+          this.status("Your app sign-in expired. Sign in again, then tap Finish connecting. Nothing was approved.");
         }else if(["model_setup_changed","current_home_changed","model_connection_requires_recovery",
                   "model_candidate_requires_review","model_discovery_requires_review",
                   "model_confirmation_requires_review","model_connection_preset_changed"].includes(code)){
-          this.status("Your existing setup needs review before this connection can continue. It has not been replaced. Check your model settings or connect or renew a source below. If OpenRouter created an unused key, manage it using the link below.");
+          this.status("Your existing setup needs a look before this can continue; it was not replaced. Check Change model, or connect another way below.");
         }else{
           this.status(callback
-            ?"Setup did not finish. A key may already exist in OpenRouter. Try Resume saved connection; if authorization must restart, manage unused keys using the link below. Existing model choices have not been replaced."
-            :"Your saved connection is not ready yet. Try Resume saved connection again later, or connect another source below. Existing model choices have not been replaced.");
+            ?"Not finished yet. A key may already exist there; tap Finish connecting to complete it. Nothing was replaced."
+            :"Your saved connection is not ready yet. Tap Finish connecting again in a moment, or connect another way below.");
         }
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
+      if(req&&epoch===this.epoch) await this.answer(true);
+    },
+    async finish(){
+      if(this.busy) return;
+      if(this.request) return this.answer(true);
+      return this.complete();
     },
     async answer(accepted){
       if(this.busy||!this.request) return;
       const epoch=this.epoch;this.busy=true;this.paint();
-      this.status(accepted?"Applying your free-model approval…":"Leaving model access unapproved…");
+      this.status(accepted?"Connecting your universe…":"Leaving model access unapproved…");
+      let answered=false;
       try{
         const payload={request_id:this.request.request_id};
         if(accepted) payload.values={};else payload.decision="declined";
         const result=await MCP.answerRequest(payload);
         if(epoch!==this.epoch) return;
-        if(!result||result.error){
-          this.status("Setup is not confirmed. "+(result&&result.request_pending
-            ?"This request remains open; you can retry your approval."
-            :"Resume setup to check the current request."));return;
-        }
-        this.request=null;await enterSignedIn();
-        if(this.setup!=="connected") this.status(accepted
-          ?"Your answer was recorded, but your universe is not ready yet. Resume setup to check it."
-          :"Free-model access was not approved. You can connect another model below.");
-      }catch(_e){this.status("Could not confirm your answer. Resume setup to check it before trying again.");}
-      finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
+        // Only an explicit "answered" is an answer. Live 2026-09-24 a deploy
+        // restarted the daemon mid-approval; the page read the non-answer as
+        // done, said the universe "already has connection setup", and left it
+        // unpowered with the request still open.
+        answered=!!result&&!result.error&&result.status==="answered";
+        if(answered) this.request=null;
+      }catch(error){
+        if(epoch!==this.epoch) return;
+        if(error&&error.authRequired){ this.busy=false; enterSignedOut(); return; }
+      }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
+      if(epoch!==this.epoch) return;
+      // Either way, re-read what powers the universe: an answer whose reply was
+      // lost may still have landed, and that is the truth to show.
+      await enterSignedIn();
+      if(epoch!==this.epoch) return;
+      if(this.setup==="connected"){
+        this.request=null;this.status("");this.paint();
+        appendMessage("system","Your universe is connected. Say hello.");
+        return;
+      }
+      this.status(answered
+        ?"Your answer was recorded, but your universe is not running yet. Tap Finish connecting to check again."
+        :"Not connected yet, and nothing was lost. Tap Finish connecting to try again.");
     },
     wire(){
       $("btn-hosted-model").addEventListener("click",()=>this.begin());
-      $("btn-hosted-key").addEventListener("click",()=>this.showKeyEntry());
+      $("btn-hosted-key").addEventListener("click",()=>this.toggleKey());
       $("btn-hosted-deposit").addEventListener("click",()=>this.depositKey());
-      $("btn-hosted-key-cancel").addEventListener("click",()=>{if(!this.busy)this.setKeyMode(false);});
-      $("btn-hosted-resume").addEventListener("click",()=>this.complete());
-      $("btn-hosted-accept").addEventListener("click",()=>this.answer(true));
-      $("btn-hosted-decline").addEventListener("click",()=>this.answer(false));
+      $("hosted-key-input").addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); this.depositKey(); } });
+      $("btn-hosted-resume").addEventListener("click",()=>this.finish());
     },
   };
   // End hosted model connection controller.
@@ -4138,329 +4070,6 @@
     if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your universe thinks and works on it from the next turn.";
     const why=(sv&&(sv.detail||sv.reason))?(": "+(sv.detail||sv.reason)):"";
     return serviceLabel(service)+" credential saved, but your universe is not running on it yet"+why+".";
-  }
-
-  // ---- One-tap OpenAI link (device authorization, brokered by the daemon) ----
-  // The daemon talks to OpenAI and deposits the resulting credential as the
-  // signed-in user; this page only ever sees a status. See
-  // tinyassets/onboarding/openai_device.py.
-  let openaiBusy=false;
-  async function connectOpenAI(){
-    if(openaiBusy) return;
-    if(NATIVE && nativePlugin("LocalCallback") && CFG.openai){ return connectOpenAIBrowser(); }
-    return showOpenAISetup();
-  }
-  // Guided device-code path: step 1 is OpenAI's per-account switch (opened at
-  // its exact page), step 2 the code. Used on the web, on "Use a code instead",
-  // and automatically when the browser hand-off fails on the phone.
-  const CHATGPT_SECURITY_URL = "https://chatgpt.com/security-settings";
-  function showOpenAISetup(msg){
-    $("openai-setup").hidden=false; $("openai-flow").hidden=true;
-    $("btn-openai-connect").hidden=true; $("btn-openai-code").hidden=true;
-    if(msg) $("openai-result").textContent=msg;
-    trace("openai.complete", "setup-shown");
-  }
-
-  // Native: the SAME browser sign-in `codex login` does on a desktop. The app
-  // builds PKCE locally, opens OpenAI's authorize page in the in-app tab with
-  // redirect_uri http://localhost:1455/auth/callback, and the LocalCallback
-  // plugin (a loopback listener inside the app) catches the redirect. The
-  // daemon then exchanges code+verifier and deposits as the signed-in user.
-  // No per-account ChatGPT "device code" setting is involved.
-  // One pending browser flow at a time, persisted so a cold-started app (the
-  // callback page's "Open TinyAssets" link) can still complete it.
-  const OPENAI_FLOW_KEY="ta_openai_flow";
-  let openaiPending=null;   // {flow, verifier, state, handle, browserHandle, timer}
-  const OPENAI_FLOW_TTL_MS = 15*60*1000;   // matches the daemon's flow TTL
-  function loadOpenAIPending(){
-    try{
-      const v = JSON.parse(localStorage.getItem(OPENAI_FLOW_KEY)||"null");
-      if(v && typeof v.expires==="number" && v.expires > Date.now()) return v;
-      if(v) localStorage.removeItem(OPENAI_FLOW_KEY);   // stale: never keep a verifier around
-    }catch(_e){}
-    return null;
-  }
-  function clearOpenAIPending(){ try{ localStorage.removeItem(OPENAI_FLOW_KEY); }catch(_e){} openaiPending=null; }
-
-  // Tear down any in-flight browser flow (listener, foreground service,
-  // timers, pending record, external tab) WITHOUT reporting an outcome. Used
-  // on sign-out, when the user switches to the code method, and on auth loss.
-  async function cancelOpenAIFlow(){
-    const LC=nativePlugin("LocalCallback");
-    const pend=openaiPending; clearOpenAIPending();
-    openaiAttempt++;   // invalidate any in-flight attempt
-    try{ if(pend&&pend.hintTimer) clearTimeout(pend.hintTimer); }catch(_e){}
-    try{ if(pend&&pend.handle) pend.handle.remove(); }catch(_e){}
-    try{ if(pend&&pend.browserHandle) pend.browserHandle.remove(); }catch(_e){}
-    try{ if(pend&&pend.timer) clearTimeout(pend.timer); }catch(_e){}
-    try{ if(LC) await LC.stop(); }catch(_e){}
-    await closeExternal();
-    openaiBusy=false;
-  }
-  // Every OpenAI control back to its initial state (the Connect button and,
-  // on the phone, the "use a code" link), e.g. after a sign-out/re-sign-in.
-  function resetOpenAIUI(){
-    const b=$("btn-openai-connect"); b.hidden=false; b.disabled=false; b.textContent="Connect OpenAI";
-    $("btn-openai-code").hidden = !(NATIVE && nativePlugin("LocalCallback"));
-    $("openai-setup").hidden=true; $("openai-flow").hidden=true;
-    $("btn-openai-setup-done").disabled=false;
-    $("openai-result").textContent="";
-  }
-
-  async function finishOpenAI(ok,msg){
-    const btn=$("btn-openai-connect"), res=$("openai-result"), LC=nativePlugin("LocalCallback");
-    const pend=openaiPending; clearOpenAIPending();
-    openaiAttempt++;   // invalidate any in-flight attempt
-    try{ if(pend&&pend.hintTimer) clearTimeout(pend.hintTimer); }catch(_e){}
-    try{ if(pend&&pend.handle) pend.handle.remove(); }catch(_e){}
-    try{ if(pend&&pend.browserHandle) pend.browserHandle.remove(); }catch(_e){}
-    try{ if(pend&&pend.timer) clearTimeout(pend.timer); }catch(_e){}
-    try{ if(LC) await LC.stop(); }catch(_e){}
-    btn.disabled=false; openaiBusy=false;
-    if(ok){ btn.textContent="OpenAI connected ✓"; res.textContent="Linked. Your universe thinks on your OpenAI subscription from the next turn."; onEngineConnected(); }
-    else showOpenAISetup(msg+" The code method below always works.");
-    trace("openai.finish", ok ? "ok" : msg);
-  }
-
-  // Complete a browser flow from EITHER source: the loopback listener event
-  // or the tinyassets://auth?provider=openai deep link. Idempotent: the first
-  // completion clears the pending record; the daemon consumes the flow.
-  let openaiCompleting=false;
-  async function completeOpenAI(params){
-    const pend = openaiPending || loadOpenAIPending();
-    if(!pend){ trace("openai.complete", "no-pending"); return false; }
-    if(openaiCompleting) return false; openaiCompleting=true;
-    openaiPending = Object.assign({}, pend, openaiPending||{});
-    const res=$("openai-result");
-    const code=params.get("code"), st=params.get("state")||"", oauthErr=params.get("error");
-    try{
-      if(st!==pend.state){
-        // The deep link is exported: any app can invoke it with a made-up
-        // state. Ignore it — only a callback carrying THIS flow's state may
-        // complete or end the flow.
-        trace("openai.complete", "state-mismatch-ignored");
-        return false;
-      }
-      if(oauthErr){ await closeExternal(); await finishOpenAI(false, "OpenAI didn't complete the sign-in ("+(params.get("error_description")||oauthErr)+"). Tap Connect to try again."); return false; }
-      if(!code){ await finishOpenAI(false, "Sign-in came back without a code. Tap Connect to try again."); return false; }
-      await closeExternal();
-      showConnect(true); res.textContent="Linking your subscription…";
-      let r, doc;
-      try{
-        r=await fetch("/mcp/app/openai/exchange",{method:"POST",
-          headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-          body:JSON.stringify({flow:pend.flow, code, code_verifier:pend.verifier})});
-        doc=await r.json();
-      }catch(e){ await finishOpenAI(false, "Couldn't reach the connector: "+e.message); return false; }
-      trace("openai.exchange", r.status+" "+(doc.status||doc.error||""));
-      if(r.status===401){ await finishOpenAI(false, "Your sign-in expired."); enterSignedOut(); return false; }
-      if(doc.status==="connected"){ await finishOpenAI(true); return true; }
-      await finishOpenAI(false, "Link failed: "+(doc.error||"unknown error")+". Tap Connect to try again.");
-      return false;
-    } finally { openaiCompleting=false; }
-  }
-
-  // Native: the SAME browser sign-in `codex login` does on a desktop. The app
-  // builds PKCE locally, opens OpenAI's authorize page in the in-app tab with
-  // redirect_uri http://localhost:1455/auth/callback, and the LocalCallback
-  // plugin (a loopback listener inside the app) catches the redirect. The
-  // daemon then exchanges code+verifier and deposits as the signed-in user.
-  // No per-account ChatGPT "device code" setting is involved.
-  let openaiAttempt=0;   // cancellation token: bumped by cancel/finish; stale coroutines stop after every await
-  async function connectOpenAIBrowser(){
-    openaiBusy=true;
-    const attempt=++openaiAttempt;
-    const alive=()=>openaiAttempt===attempt;
-    const btn=$("btn-openai-connect"), res=$("openai-result"), LC=nativePlugin("LocalCallback");
-    btn.disabled=true; res.textContent="Opening OpenAI sign-in…";
-    const verifier=randToken(48), state=randToken(18);
-    const challenge=await challengeFor(verifier);
-    const port=CFG.openai.redirect_port||1455, path=CFG.openai.redirect_path||"/auth/callback";
-    const redirectUri="http://localhost:"+port+path;
-    clearOpenAIPending();
-    // 1. Register the flow with the daemon: binds THIS session, THIS
-    //    challenge, THIS redirect, and the user's own home universe.
-    let flow;
-    try{
-      const r=await fetch("/mcp/app/openai/begin",{method:"POST",
-        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify({code_challenge:challenge, redirect_uri:redirectUri})});
-      if(!alive()) return;
-      if(r.status===401){ openaiBusy=false; btn.disabled=false; return enterSignedOut(); }
-      const doc=await r.json();
-      if(!alive()) return;
-      if(!r.ok||!doc.flow){
-        const why = doc.error==="no_home_universe" ? "Your universe isn't ready yet — send it one message first, then connect." : (doc.error||"could not start");
-        res.textContent=why; btn.disabled=false; openaiBusy=false; return;
-      }
-      flow=doc.flow;
-    }catch(e){ res.textContent="Couldn't reach the connector: "+e.message; btn.disabled=false; openaiBusy=false; return; }
-    openaiPending={flow, verifier, state, handle:null, browserHandle:null, timer:null};
-    try{ localStorage.setItem(OPENAI_FLOW_KEY, JSON.stringify({flow, verifier, state, expires: Date.now()+OPENAI_FLOW_TTL_MS})); }catch(_e){}
-    // 2. Listen on loopback for OpenAI's redirect (the listener only accepts
-    //    the exact callback path carrying THIS state).
-    try{
-      openaiPending.handle = await LC.addListener("callback", (ev)=>{
-        let u; try{ u=new URL(ev.url); }catch(_e){ return; }
-        trace("openai.callback", (u.searchParams.get("code")?"code":"")+(u.searchParams.get("error")?" error":""));
-        completeOpenAI(u.searchParams);
-      });
-      if(!alive()) return;
-      const started = await LC.start({port, path, state});
-      if(!alive()){ try{ await LC.stop(); }catch(_e){} return; }
-      trace("openai.listener", "started "+JSON.stringify(started||{}));
-    }catch(e){ if(!alive()) return; trace("openai.listener", "failed "+(e.message||e)); return finishOpenAI(false, "Couldn't start the sign-in listener: "+(e.message||e)); }
-    const p=new URLSearchParams({
-      response_type:"code", client_id:CFG.openai.client_id, redirect_uri:redirectUri,
-      scope:CFG.openai.scope, code_challenge:challenge, code_challenge_method:"S256",
-      id_token_add_organizations:"true", codex_cli_simplified_flow:"true", state, originator:"codex_cli_rs",
-    });
-    if(!alive()) return;
-    try{
-      const B=nativePlugin("Browser");
-      if(B) openaiPending.browserHandle=await B.addListener("browserFinished",()=>{
-        if(openaiPending&&alive()&&!openaiCompleting){
-          trace("openai.browser", "closed");
-          finishOpenAI(false, "OpenAI sign-in was closed. Tap Connect to try again.");
-        }
-      });
-      if(!alive()) return;
-      await openExternal(CFG.openai.authorize_url+"?"+p.toString());
-    }catch(e){
-      if(!alive()) return;
-      return finishOpenAI(false, "Couldn't open the OpenAI sign-in: "+(e.message||e));
-    }
-    if(!alive()) return;
-    trace("openai.browser", "opened");
-    res.textContent="Sign in to ChatGPT on the page that opened; you'll come straight back here.";
-    // Safety net: if the phone still blocks the localhost hop, the stuck page
-    // keeps the sign-in result in its address bar — Share it to TinyAssets.
-    openaiPending.hintTimer=setTimeout(()=>{ if(openaiPending&&alive()) res.textContent="Sign in to ChatGPT on the page that opened; you'll come straight back here. If it ends on a \u201ccan\u2019t be reached\u201d page instead, tap that page\u2019s Share button (top right) and choose TinyAssets \u2014 that finishes the link."; }, 25*1000);
-    openaiPending.timer=setTimeout(()=>{ if(openaiPending&&alive()) finishOpenAI(false, "That took too long — tap Connect OpenAI to try again."); }, 10*60*1000);
-  }
-
-  async function connectOpenAIDevice(){
-    if(openaiBusy) return;
-    openaiBusy=true;
-    const btn=$("btn-openai-setup-done"), res=$("openai-result"), flow=$("openai-flow");
-    $("openai-setup").hidden=true;
-    btn.disabled=true; res.textContent="Contacting OpenAI…";
-    let started;
-    try{
-      const r=await fetch("/mcp/app/openai/device/start",{method:"POST",
-        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:"{}"});
-      if(r.status===401){ openaiBusy=false; btn.disabled=false; return enterSignedOut(); }
-      started=await r.json();
-      if(!r.ok||!started.user_code||!started.flow) throw new Error(started.error||"could not start");
-    }catch(e){ res.textContent="Couldn't reach OpenAI: "+e.message; btn.disabled=false; openaiBusy=false; $("openai-setup").hidden=false; return; }
-    $("openai-code").textContent=started.user_code; flow.hidden=false;
-    try{ await navigator.clipboard.writeText(started.user_code); }catch(_e){}
-    const url=started.verification_url+"?user_code="+encodeURIComponent(started.user_code);
-    $("btn-openai-open").onclick=()=>openExternal(url);
-    res.textContent="Approve on the OpenAI page, then come back here.";
-    await openExternal(url);
-    const deadline=Date.now()+15*60*1000, every=Math.max(2,started.interval||5)*1000;
-    const body=JSON.stringify({flow:started.flow});   // opaque handle; the device tuple never leaves the daemon
-    while(Date.now()<deadline){
-      await sleep(every);
-      let r, doc;
-      try{
-        r=await fetch("/mcp/app/openai/device/poll",{method:"POST",
-          headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body});
-        doc=await r.json();
-      }catch(_e){ continue; }
-      if(r.status===401){ openaiBusy=false; btn.disabled=false; return enterSignedOut(); }
-      if(doc.status==="pending") continue;
-      if(doc.status==="connected"){
-        await closeExternal();
-        flow.hidden=true; $("openai-setup").hidden=true; $("btn-openai-connect").hidden=false;
-        $("btn-openai-connect").textContent="OpenAI connected ✓"; btn.disabled=false; openaiBusy=false;
-        res.textContent="Linked. Your universe thinks on your OpenAI subscription from the next turn.";
-        onEngineConnected();
-        return;
-      }
-      res.textContent="Link failed: "+(doc.error||"unknown error")+". Try step 2 again.";
-      break;
-    }
-    if(Date.now()>=deadline) res.textContent="That took too long — try step 2 again.";
-    flow.hidden=true; btn.disabled=false; openaiBusy=false; $("openai-setup").hidden=false;
-  }
-
-  // ---- Subscription connection progress ----
-  let claudeConnection={pending:false,saved:false};
-  function resetClaudeConnection(){
-    claudeConnection={pending:false,saved:false};
-    $("claude-material").value="";
-    $("btn-claude-connect").disabled=false;
-    $("btn-claude-connect").textContent="Connect Claude";
-    $("claude-result").textContent="";
-  }
-  // A deadline bounds observation, not execution. The original write stays
-  // alive, and owns the submit guard until it settles. Never replay a secret.
-  function observeClaudeStage(promise,current,settled,timedOut){
-    return new Promise(resolve=>{
-      let late=false;
-      const timer=setTimeout(()=>{
-        late=true;
-        if(current()) timedOut();
-        resolve(false);
-      },30000);
-      Promise.resolve(promise).then(value=>finish(value,null),error=>finish(null,error));
-      function finish(value,error){
-        clearTimeout(timer);
-        if(!current()){ resolve(false); return; }
-        settled(value,error,late);
-        resolve(!late&&!error);
-      }
-    });
-  }
-  async function connectClaude(){
-    const state=claudeConnection;
-    if(state.pending) return;
-    const current=()=>claudeConnection===state;
-    const el=$("claude-material"), btn=$("btn-claude-connect"), res=$("claude-result");
-    const uncertain="We couldn't confirm the result. Check the model picker for an existing connection before trying again. If this stays pending, reload to start over.";
-    function unlock(){ state.pending=false; btn.disabled=false; btn.textContent=state.saved?"Enable Claude":"Connect Claude"; }
-    if(!state.saved){
-      const material=el.value.trim();
-      if(!material){ res.textContent="Paste the token from `claude setup-token` first."; return; }
-      el.value=""; // clear the secret from the DOM BEFORE any await
-      state.pending=true; btn.disabled=true; res.textContent="Saving token…";
-      const observed=await observeClaudeStage(
-        MCP.connectLLM("claude",btoa(unescape(encodeURIComponent(material)))),current,
-        (payload,error)=>{
-          unlock();
-          if(error){
-            if(error.authRequired){ enterSignedOut(); return; }
-            res.textContent=uncertain; return;
-          }
-          if(payload&&payload.error){ res.textContent="Couldn't connect: "+(payload.detail||payload.error); return; }
-          if(payload&&payload.status==="deposited"){
-            state.saved=true; btn.textContent="Enable Claude";
-            res.textContent="Token saved. Select Enable Claude to finish connecting.";
-          }else res.textContent=uncertain;
-        },()=>{res.textContent=uncertain;});
-      if(!observed||!current()||!state.saved||views.connect.hidden) return;
-    }
-    if(!current()) return;
-    state.pending=true; btn.disabled=true; res.textContent="Token saved. Enabling Claude…";
-    const binding=(async()=>{
-      const response=await fetch("/mcp/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service:"claude"})});
-      if(response.status===401){ const error=new Error("authentication_required"); error.authRequired=true; throw error; }
-      if(!response.ok) throw new Error("bind_unconfirmed");
-      return (await response.json()).serving;
-    })();
-    await observeClaudeStage(binding,current,(serving,error,late)=>{
-      unlock();
-      if(error&&error.authRequired){ enterSignedOut(); return; }
-      if(error){ res.textContent="Token saved. "+uncertain; return; }
-      if(serving&&serving.status==="serving"){
-        res.textContent="Claude credential saved and enabled. Your saved model choices are unchanged. Select Claude to test the connection.";
-        if(!late&&!views.connect.hidden) onEngineConnected(()=>current()&&!views.connect.hidden);
-      }else{
-        res.textContent="Token saved, but Claude isn't enabled yet"+(serving&&serving.detail?": "+serving.detail:". "+uncertain);
-      }
-    },()=>{res.textContent="Token saved, but enabling Claude is unconfirmed. "+uncertain;});
   }
 
   // ---- File attachments: every accepted file is uploaded ------------------
@@ -5130,11 +4739,6 @@
       else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
     });
     $("btn-plan").addEventListener("click", onPlanClick);
-    $("btn-openai-connect").addEventListener("click",connectOpenAI);
-    $("btn-openai-code").addEventListener("click",async()=>{ await cancelOpenAIFlow(); showOpenAISetup(); });
-    $("btn-openai-settings").addEventListener("click",()=>{ trace("openai.complete","settings-opened"); openExternal(CHATGPT_SECURITY_URL); });
-    $("btn-openai-setup-done").addEventListener("click",connectOpenAIDevice);
-    $("btn-claude-connect").addEventListener("click",connectClaude);
     $("btn-signin").addEventListener("click",beginSignIn);
     // ---- File attachments (paperclip). Every accepted file is uploaded
     // through POST /mcp/app/files and its server-issued reference travels in
@@ -5191,9 +4795,13 @@
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
-    $("btn-rail-add").addEventListener("click",()=>showConnect(false));
-    $("btn-connect-back").addEventListener("click",()=>{ showView("chat"); startHeartbeat(); loadPlan(); });
-    $("btn-signout").addEventListener("click",async()=>{ MCP.endLogin(); resetClaudeConnection(); sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
+    $("btn-rail-add").addEventListener("click",toggleAddKey);
+    $("connect-shapes").addEventListener("click",e=>{
+      const b=e.target&&e.target.closest?e.target.closest("button[data-shape]"):null;
+      if(b) ConnectShapes.select(b.dataset.shape);
+    });
+    $("btn-endpoint-connect").addEventListener("click",connectEndpoint);
+    $("btn-signout").addEventListener("click",async()=>{ MCP.endLogin(); sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
     // Legal links open OUTSIDE the app. In the Capacitor shell a plain <a> would
     // navigate the WebView itself to tinyassets.io and strand the user with no
     // way back to their universe; openExternal uses the in-app browser instead.
@@ -5292,18 +4900,21 @@
         cancel=document.createElement("button");
       const panelId="connection-confirm-"+generation+"-"+(++connectionPanelSeq);
       item.className="connection-row";
+      // The server's human label (a guided sign-in is stored under a handle
+      // like "model:<preset>"); the destination is only what gets removed.
+      const label=typeof row.label==="string"&&row.label?row.label:row.destination;
       // Every user-facing string here is textContent. A destination is account
       // data, and this sentence IS the thing being authorised.
-      name.textContent=row.destination+" ";
+      name.textContent=label+" ";
       reveal.type="button";reveal.className="btn btn--ghost";reveal.textContent="Disconnect";
       reveal.setAttribute("aria-expanded","false");reveal.setAttribute("aria-controls",panelId);
       panel.id=panelId;panel.className="connection-confirm";panel.hidden=true;
       panel.setAttribute("role","group");
       panel.setAttribute("tabindex","-1");
-      panel.setAttribute("aria-label","Confirm disconnecting "+row.destination);
+      panel.setAttribute("aria-label","Confirm disconnecting "+label);
       explain.id=panelId+"-detail";
       panel.setAttribute("aria-describedby",explain.id);
-      explain.textContent="Disconnect "+row.destination+" from your universe? Its saved key and its "
+      explain.textContent="Disconnect "+label+" from your universe? Its saved key and its "
         +"model access are removed from TinyAssets. Your conversation history and your designs stay. "
         +"Your provider account itself is not changed or deleted. Requests already sent may still finish.";
       approve.type="button";approve.className="btn btn--danger";approve.textContent="Confirm disconnect";
@@ -5331,7 +4942,7 @@
         if(openConfirmation&&openConfirmation!==putAway)openConfirmation(false);
         openConfirmation=putAway;
         armed=true;panel.hidden=false;reveal.setAttribute("aria-expanded","true");reveal.disabled=true;
-        status.textContent="Read what disconnecting "+row.destination+" does, then choose Confirm disconnect or Cancel. Nothing has been sent.";
+        status.textContent="Read what disconnecting "+label+" does, then choose Confirm disconnect or Cancel. Nothing has been sent.";
         // Focus the explanation, NOT the destructive button: somebody who
         // reached Disconnect with Enter must not authorise it with the same
         // key. "Confirm disconnect" is the next thing Tab reaches - never the
@@ -5345,7 +4956,7 @@
         // account, home or view. Put the panel away silently instead.
         if(!live()){putAway(false);return;}
         putAway(true);
-        status.textContent="Nothing was changed. "+row.destination+" is still connected.";
+        status.textContent="Nothing was changed. "+label+" is still connected.";
       });
       approve.addEventListener("click",async()=>{
         // The second, deliberate step. `sending` is set before the first await,
@@ -5363,7 +4974,7 @@
         const ticket=holdConnections();
         if(!ticket){status.textContent="Another connection change is still finishing. Nothing was sent; try again once it settles.";return;}
         sending=true;approve.disabled=true;cancel.disabled=true;
-        status.textContent="Disconnecting "+row.destination+"…";
+        status.textContent="Disconnecting "+label+"…";
         let removedHere=false;
         try{
           // Exactly the connection that was read and shown - never a target
@@ -5377,7 +4988,7 @@
           removedHere=true;armed=false;
           if(openConfirmation===putAway)openConfirmation=null;
           item.remove();
-          status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Return to Connect a model when you want to reconnect.";
+          status.textContent="Disconnected from TinyAssets. Your provider account is unchanged. Back in chat, the connect request is waiting whenever you want to reconnect.";
         }catch(_e){
           if(!live())return;
           // Nobody knows whether this connection is still there, so this row
@@ -5411,9 +5022,11 @@
       return item;
     }
     $("btn-refresh-connections").addEventListener("click",loadConnections);
-    function leaveAccount(){ if(engineConnected===true){ showView("chat"); startHeartbeat(); } else { showConnect(true); } }
+    // Back to the universe's chat, re-reading what powers it: after a
+    // disconnect that is chat with the connect request first, never a
+    // separate setup screen.
+    function leaveAccount(){ enterSignedIn(); }
     $("btn-account").addEventListener("click", showAccount);
-    $("btn-connect-account").addEventListener("click", showAccount);
     $("btn-account-back").addEventListener("click", leaveAccount);
     $("delete-confirm").addEventListener("input",(e)=>{ $("btn-delete-account").disabled = e.target.value.trim()!=="DELETE"; });
     $("btn-delete-account").addEventListener("click", deleteAccount);
@@ -5451,109 +5064,6 @@
         $("signin-notice").textContent=note;
       }catch(_e){ st.textContent="Couldn't reach the server. Try again in a moment."; btn.disabled=false; }
     }
-    // Which half of the form applies. An endpoint needs a URL, a protocol and
-    // a model; a subscription needs one credential.
-    function syncConnectMode(){
-      const endpoint=$("connect-service").value==="__endpoint__";
-      $("connect-endpoint").hidden=!endpoint;
-      $("connect-subscription").hidden=endpoint;
-    }
-    $("connect-service").addEventListener("change",syncConnectMode);
-    syncConnectMode();
-
-    // Deposit an API key against ONE endpoint, register the compute descriptor
-    // on top of that grant, then point the universe at it. Every call here
-    // already existed; nothing about this path names a vendor.
-    async function depositEndpoint(out){
-      const name=$("endpoint-name").value.trim();
-      const url=$("endpoint-url").value.trim();
-      const protocol=$("endpoint-protocol").value;
-      const model=$("endpoint-model").value.trim();
-      const keyEl=$("endpoint-key"), key=keyEl.value.trim();
-      // Capture and clear FIRST, before any validation can return. Clearing only
-      // on the success path left the key sitting in the DOM (and restorable from
-      // browser history) whenever the URL was malformed or not https -- the exact
-      // inputs a user retypes most.
-      keyEl.value="";
-      if(!name||!url||!model||!key){
-        out.textContent="Name, endpoint URL, model and API key are all needed.";
-        return null;
-      }
-      let parsed;
-      try{ parsed=new URL(url); }
-      catch(_e){ out.textContent="That endpoint URL is not a URL."; return null; }
-      if(parsed.protocol!=="https:"){
-        out.textContent="The endpoint must be https, so your key is never sent in the clear.";
-        return null;
-      }
-      out.textContent="Depositing securely...";
-      const deposit=await MCP.connectHTTP(name,key,[{
-        host:parsed.host,
-        path_template:parsed.pathname||"/",
-        methods:["POST"],
-      }],"bearer");
-      if(!deposit||!deposit.grant_id){
-        out.textContent=JSON.stringify(deposit,null,2);
-        return null;
-      }
-      out.textContent="Key stored. Registering the model...";
-      const compute=await MCP.connectCompute({
-        access_method:"api_key_http",
-        protocol,
-        model,
-        ref:deposit.grant_id,
-      });
-      const ref=compute&&(compute.connection_id||compute.definition_id||compute.id);
-      if(!ref){
-        out.textContent=JSON.stringify(compute,null,2);
-        return null;
-      }
-      return ref;
-    }
-
-    // Deposit -> register -> point the universe at it. A NAMED function, not an
-    // inline branch of the click handler, so the chain can be executed in a test:
-    // deleting the inline version left every source-text pin green.
-    async function connectEndpointFlow(out,btn){
-      btn.disabled=true;
-      try{
-        const ref=await depositEndpoint(out);
-        if(ref){
-          out.textContent="Registered. Pointing your universe at it...";
-          const sv=await serveOn(ref);
-          out.textContent=servingSentence($("endpoint-name").value.trim()||ref, sv);
-          if(sv&&sv.status==="serving") onEngineConnected();
-        }
-      }catch(err){
-        if(err.authRequired){ btn.disabled=false; return enterSignedOut(); }
-        out.textContent="Connect failed: "+err.message;
-      }finally{ btn.disabled=false; }
-    }
-
-    $("btn-deposit").addEventListener("click",async()=>{
-      const service=$("connect-service").value, out=$("connect-result");
-      const materialEl=$("connect-material"), material=materialEl.value.trim(), btn=$("btn-deposit");
-      out.hidden=false;
-
-      if(service==="__endpoint__"){ await connectEndpointFlow(out,btn); return; }
-
-      if(!material){ out.textContent="Enter your subscription credential first."; return; }
-      materialEl.value="";  // clear the secret from the DOM BEFORE any await, on every path
-      btn.disabled=true; out.textContent="Depositing securely...";
-      try{
-        const b64=btoa(unescape(encodeURIComponent(material)));
-        const payload=await MCP.connectLLM(service,b64);
-        if(payload&&payload.status==="deposited"){
-          out.textContent="Deposited. Pointing your universe at it...";
-          const sv=await serveOn(service);
-          out.textContent=servingSentence(service, sv);
-          if(sv&&sv.status==="serving") onEngineConnected();
-        } else {
-          out.textContent=JSON.stringify(payload,null,2);
-        }
-      }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } out.textContent="Deposit failed: "+err.message; }
-      finally{ btn.disabled=false; }
-    });
     // The credential box follows the chosen scheme so the user knows exactly what to
     // paste — no scheme-specific pages, just a generic form that explains itself.
     const secretHints={
@@ -5568,7 +5078,7 @@
     // connect_http for every service.
     // NOTE: no host sniffing here, and no per-service presets above.
     //
-    // There were three named buttons (X, OpenRouter, Slack) and a rule that
+    // There were three named service buttons and a rule that
     // switched the form to OAuth 1.0a when it recognised an x.com host. Both
     // were conveniences over the generic form and both were service knowledge
     // living in the platform -- and worse for the thing this is now measured
@@ -5659,7 +5169,6 @@
       return (values.slice().sort((a,b)=>b.value.length-a.value.length)[0]||{}).value||"";
     }
     $("btn-paste-connect").addEventListener("click",async()=>{
-      if(HostedModelConnect.keyMode)return;
       const blobEl=$("paste-blob"), blob=blobEl.value;
       const intentEl=$("paste-intent"), intent=intentEl.value.trim();
       const out=$("paste-result"), btn=$("btn-paste-connect");
@@ -5751,9 +5260,9 @@
         // bare `error` code left a real deposit dead with no way to self-correct:
         // the founder typed a name with a space, saw only "connection_setup_invalid",
         // and reported "i think i deposited it" twice while the connection did not
-        // exist (2026-08-27). The Claude-connect path above already does this.
+        // exist (2026-08-27). The model setup does this too.
         if(r&&r.error){ out.textContent="Couldn't add it: "+(r.detail||r.error); }
-        else{ out.textContent="Added — your universe can now use "+host+". Ask it to register this as compute (e.g. OpenRouter) or wire a channel with it.";
+        else{ out.textContent="Added — your universe can now use "+host+". Ask it to use this in a workflow or wire a channel with it.";
               $("http-destination").value=""; $("http-host").value=""; $("http-path").value=""; }
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } out.textContent="Couldn't add it: "+err.message; }
       finally{ btn.disabled=false; }
@@ -5785,16 +5294,40 @@
     return el;
   }
 
+  // The platform's own model-setup entry: the one `connect` action with the
+  // shapes the rail completes itself. An older page's "connect_llm" is the same
+  // entry without them.
+  function isSetupRequest(req){
+    const a=req&&req.action;
+    return !!a&&req.request_id===CONNECT_REQUEST_ID&&(a.type==="connect_llm"||(a.type==="connect"&&!!a.setup));
+  }
+  // While unpowered, exactly one pending free-model confirmation is the second
+  // half of the setup in progress, so it is finished inside the setup request.
+  function foldedModelAccess(rows){
+    const setup=rows.find(isSetupRequest);
+    if(!setup||!setup.sticky) return null;
+    const access=rows.filter(r=>r&&r.action&&r.action.type==="bind_model_access");
+    return access.length===1?access[0]:null;
+  }
+
   function renderRail(items){
     railCache = items || [];
     const rail = $("request-rail"), host = $("rail-items");
     if(!rail || !host) return;
+    // Park the setup panel before the tabs are rebuilt, so the node (and what
+    // the user typed into it) survives every refresh.
+    const panel = $("connect-panel");
+    if(panel){ panel.hidden = true; if(panel.parentNode !== rail) rail.appendChild(panel); }
     host.textContent = "";
+    const folded = foldedModelAccess(railCache);
+    HostedModelConnect.adopt(folded);
+    let setupOpen = false;
     // Keep the rail present even with nothing waiting: with the nav button gone
     // it is the only route to adding a key yourself, and a surface that vanishes
     // is a surface a user cannot find.
     rail.hidden = false;
     railCache.forEach(req=>{
+      if(folded && req.request_id === folded.request_id) return;
       const tab = document.createElement("div"); tab.className = "rtab";
       const btn = document.createElement("button");
       btn.type = "button"; btn.className = "rtab-btn";
@@ -5813,9 +5346,138 @@
       // having no model.
       const open = req.sticky ? (railOpen !== "closed:" + req.request_id)
                               : (railOpen === req.request_id);
-      if(open) tab.appendChild(railBody(req));
+      if(open && isSetupRequest(req)){ tab.appendChild(connectBody(req)); setupOpen = !!req.sticky; }
+      else if(open) tab.appendChild(railBody(req));
       host.appendChild(tab);
     });
+    rail.classList.toggle("rail--setup", setupOpen);
+  }
+
+  // The setup request's body: the panel node, configured from the request.
+  function connectBody(req){
+    const box = document.createElement("div"); box.className = "rtab-body";
+    if(req.body){
+      const why = document.createElement("p");
+      why.className = "rtab-why"; why.textContent = req.body; box.appendChild(why);
+    }
+    const setup = (req.action && req.action.setup) || {};
+    HostedModelConnect.configure(req.sticky ? (setup.primary || null) : null);
+    ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
+    const panel = $("connect-panel");
+    panel.hidden = false;
+    box.appendChild(panel);
+    return box;
+  }
+
+  // "Other ways to connect": each shape is explicit fields completed through
+  // the same connect request an agent would raise. Nothing is inferred - an
+  // unpowered universe has no model to infer with - and no provider is named.
+  const ConnectShapes={
+    shape:"",
+    labels:{api_key:"API key", local:"Your own server"},
+    help:{
+      api_key:"From your provider's API page: the chat URL, a key, and the model id.",
+      local:"A model server you run must be reachable over HTTPS, for example through a tunnel. TinyAssets can't reach localhost.",
+    },
+    placeholders:{
+      api_key:"https://api.example.com/v1/chat/completions",
+      local:"https://your-tunnel.example.com/v1/chat/completions",
+    },
+    render(shapes,open){
+      const host=$("connect-shapes");
+      host.replaceChildren();
+      const known=shapes.filter(s=>Object.prototype.hasOwnProperty.call(this.labels,s));
+      known.forEach(shape=>{
+        const b=document.createElement("button");
+        b.type="button"; b.className="btn btn--ghost"; b.dataset.shape=shape;
+        b.textContent=this.labels[shape];
+        host.appendChild(b);
+      });
+      $("connect-other").hidden=!known.length;
+      if(open) $("connect-other").open=true;
+      this.select(known.includes(this.shape)?this.shape:(known[0]||""));
+    },
+    select(shape){
+      this.shape=shape;
+      Array.from($("connect-shapes").children||[]).forEach(b=>
+        b.setAttribute("aria-pressed",String(b.dataset.shape===shape)));
+      $("connect-endpoint").hidden=!shape;
+      $("endpoint-help").textContent=this.help[shape]||"";
+      $("endpoint-url").placeholder=this.placeholders[shape]||"";
+    },
+  };
+
+  // A declared model list needs a context size; the field is a bound for the
+  // model use, not a claim about the provider. Most current chat models exceed it.
+  const ENDPOINT_CONTEXT=32768;
+  let endpointBusy=false;
+  async function connectEndpoint(){
+    if(endpointBusy) return;
+    const out=$("endpoint-result"), keyEl=$("endpoint-key"), btn=$("btn-endpoint-connect");
+    // The key leaves the DOM before any validation or await, on every path.
+    let key=keyEl.value; keyEl.value="";
+    const raw=$("endpoint-url").value.trim(), model=$("endpoint-model").value.trim();
+    const wire=$("endpoint-wire").value==="content_blocks"?"content_blocks":"chat_messages";
+    let url=null; try{ url=new URL(raw); }catch(_e){ url=null; }
+    if(!url||url.protocol!=="https:"||url.username||url.password||url.search||url.hash){
+      key=""; out.textContent="Paste the full https:// address your model answers on, like the example."; return; }
+    if(!model||model.length>200){ key=""; out.textContent="Add the model id your provider lists (then paste the key again)."; return; }
+    if(!key||key.length>4096||!/^[!-~]+$/.test(key)){
+      key=""; out.textContent="Paste the API key (only the key)."; return; }
+    const host=url.host.toLowerCase(), path=url.pathname||"/";
+    const destination=("model-"+host).replace(/[^a-z0-9._:-]/g,"-").slice(0,120);
+    endpointBusy=true; btn.disabled=true; out.textContent="Connecting…";
+    const epoch=MCP._loginEpoch;
+    try{
+      const asked=await MCP.requestFromUser({
+        kind:"LLM", title:"Connect "+host+" as a model",
+        body:"You asked for this under Connect a model. The key goes straight to your universe's vault.",
+        fields:[{name:"key",label:"API key",type:"secret"}],
+        action:{type:"connect",destination,auth_scheme:"bearer",host,path_template:path,methods:["POST"],
+          uses:{model:{wire,models:[{id:model,tools:true,context:ENDPOINT_CONTEXT}],billing:"flat"}}},
+      });
+      if(epoch!==MCP._loginEpoch) return;
+      if(!asked||asked.error||!asked.request_id){
+        out.textContent="Couldn't connect: "+((asked&&(asked.detail||asked.error))||"no answer")+"."; return; }
+      const answered=await MCP.answerRequest({request_id:asked.request_id,values:{key}});
+      key="";
+      if(epoch!==MCP._loginEpoch) return;
+      if(!answered||answered.error||answered.status!=="answered"){
+        out.textContent="Not connected yet"+(answered&&answered.detail?": "+answered.detail:"")
+          +". The request is waiting in this list; paste the key there to finish.";
+        refreshRail(); return;
+      }
+      const serving=answered.serving||{};
+      if(serving.status==="serving"){
+        out.textContent="";
+        $("endpoint-url").value=""; $("endpoint-model").value="";
+        await enterSignedIn();
+        appendMessage("system","Your universe now runs on "+model+". Say hello.");
+      }else if(serving.status==="unchanged"){
+        out.textContent="Connected. Your universe keeps its current model; pick "+model+" in Change model when you want it.";
+        refreshRail();
+      }else{
+        out.textContent="Saved, but your universe is not running on it yet"+(serving.detail?": "+serving.detail:"")+".";
+        refreshRail();
+      }
+    }catch(err){
+      if(err&&err.authRequired) return enterSignedOut();
+      out.textContent="Couldn't confirm the connection: "+((err&&err.message)||"unknown error")+". Check the list above before trying again.";
+    }finally{ key=""; endpointBusy=false; btn.disabled=false; }
+  }
+
+  // "Add a key yourself": a key for a platform, not a model. The paste-anything
+  // proposal needs the universe's own model, so an unpowered universe gets the
+  // explicit fields.
+  function toggleAddKey(){
+    const panel=$("rail-add-panel"), btn=$("btn-rail-add");
+    panel.hidden=!panel.hidden;
+    btn.setAttribute("aria-expanded",String(!panel.hidden));
+    if(panel.hidden) return;
+    const powered=engineConnected===true;
+    $("paste-anything").hidden=!powered;
+    if(!powered) $("http-manual").open=true;
+    if(panel.scrollIntoView) panel.scrollIntoView({block:"nearest",behavior:"smooth"});
   }
 
   function railBody(req){
@@ -5830,13 +5492,6 @@
       const g = document.createElement("p");
       g.className = "rtab-grant"; g.textContent = req.grant_sentence;
       box.appendChild(g);
-    }
-    if(req.action && req.action.type === "connect_llm"){
-      const go = document.createElement("button");
-      go.className = "btn btn--primary"; go.textContent = req.sticky ? "Connect a model" : "Connect another LLM";
-      go.addEventListener("click",()=>showConnect(false));
-      box.appendChild(go);
-      return box;   // no fields, no feedback, no dismiss — it is not a question
     }
     (req.fields||[]).forEach(f=>{
       const lab = document.createElement("label");
@@ -6284,11 +5939,12 @@
     if(typeof AppLayout!=="undefined") AppLayout.init();
     HostedModelConnect.wire();
     wireNativeReturn();
-    loadOpenAIPending();   // drops an expired pending flow (and its verifier) on start
+    // A vendor sign-in card once kept a verifier here; nothing reads it now.
+    try{ localStorage.removeItem("ta_openai_flow"); }catch(_e){}
     const signedInNow = modelCallback ? false : await completeSignInIfCallback();
     if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the stored handle / refresh cookie
     if(token() || signedInNow){
-      await enterSignedIn(signedInNow&&!modelCallback);
+      await enterSignedIn();
       if(modelCallback) await HostedModelConnect.complete(modelCallback);
     } else {
       enterSignedOut();
