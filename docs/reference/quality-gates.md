@@ -17,22 +17,71 @@ Reviews run in a fixed order, and the order is load-bearing:
    user** through Slack / the app / the chatbot connector. The live user path is
    the shape oracle: it is the only thing that proves the shape + UX flow are
    right.
-3. **THEN the deep security-hardening rounds** — concurrency, TOCTOU,
+3. **THEN harden what live use shows matters.** Concurrency, TOCTOU,
    durability/crash, timing side-channels, migrations of hypothetical prior
-   state, abuse-at-scale. These run AFTER live-MVP user testing.
-Do NOT gate a first-draft MVP behind multiple hardening rounds — that is
-"endless hardening of the wrong shape," and only live users reveal whether the
-shape is right. The split: a hole that leaks/exfils/bypasses for ONE founder =
-fix pre-live (basic-safety); an edge that only bites multi-tenant / concurrent /
-crash = defer to post-live hardening, tracked in the change's `REVIEW.md`.
+   state, abuse-at-scale: these are tracked as concerns and re-judged after live
+   use. They are not a pre-release gauntlet.
+Do NOT gate a first-draft MVP behind multiple hardening rounds. That is
+"endless hardening of the wrong shape", and only live users reveal whether the
+shape is right. The split: a hole that leaks, exfiltrates or bypasses for ONE
+founder is the floor and is fixed pre-live. An edge that only bites
+multi-tenant, concurrent or crash cases is deferred and tracked.
 
-**Verification is structural.** Substantive changes need test/check evidence
-plus an independent review path before they count as landed. The PRE-live review
-is the shape/approach pass above (one round); the multi-round adversarial
-hardening is post-live-MVP. Self-review alone is never enough for public-surface,
-storage, auth, migration, concurrency, or data-loss-risk changes — but for a
-first-draft MVP the pre-live bar is shape + basic-safety, and deep hardening
-follows live user testing.
+**Review depth is risk-tiered, with a hard stop** (2026-09-24; the tier
+definitions, the floor, and the primitive trigger are in `AGENTS.md` Quality
+Gates; the evidence is in `docs/reviews/2026-09-24-review-deploy-practice.md`).
+Tier 0 gets no review. Tier 1 gets one review that never blocks. Tier 2 (the
+floor or gate-defining files) gets one blocking review. Every tier stops at two
+rounds or one day. Round 2 only verifies the round-1 floor fixes. A floor
+finding still open after round 2 triggers a primitive redesign, not round 3.
+
+**Risk-tiered review policy (full text; adopted 2026-09-24).** `AGENTS.md`
+carries the summary. Evidence: `docs/reviews/2026-09-24-review-deploy-practice.md`.
+
+- **Ship to learn.** Done = deployed, used through the real app (`ui-test` /
+  app-agent checklist), regressions green, spec synced. Unknowns about users
+  are answered by deploying, not by reviewing. Compare a change against what
+  production does today, never against an ideal design.
+- **Risk tier sets review depth** (by what the change can do, not its size):
+  - *Tier 0 - no review:* docs, tests, UI/copy, refactors under unchanged
+    tests, anything dark or default-off, anything one revert fully undoes.
+  - *Tier 1 - one review, never blocking:* new user-visible behaviour or a new
+    primitive. One shape review before code; findings off the floor go to
+    `docs/concerns/`, not into the PR.
+  - *Tier 2 - one blocking review:* the floor below, or gate-defining files.
+    Other family by default; same family if it is rate-limited (the
+    cross-family check is then owed, not waived).
+- **The floor, and only the floor, blocks a deploy:** cross-user read/effect;
+  auth or credential exposure; unrecoverable loss of user data; wrong money;
+  an irreversible external act without consent; public connector down.
+  Durability at the margins, concurrency the founder's usage cannot reach,
+  and "a future X could break" are tracked, and re-judged after live use.
+- **Hard stop: two rounds, one day.** Round 2 only verifies round-1 floor
+  fixes; anything new that is off the floor becomes a concern. Autonomous - no
+  founder escalation, and no third round. A floor finding still open after
+  round 2 means the shape is wrong: apply the primitive rule.
+- **A finding must cite the PR head** (file:line). A finding against a
+  retired architecture, an unbuilt capability or an unread file is dropped
+  without a round. Ask for `AGREE` / `DISAGREE_EVIDENCE` / `DISAGREE_CONCERN`.
+- **Recurring findings = missing primitive.** Trigger: a floor finding in
+  two consecutive rounds, 3+ follow-up PRs in one area within 7 days, or a
+  concern open 7+ days with built-but-unwired components. Stop patching;
+  write half a page naming the primitive that deletes the class (one writer
+  per fact; user-composable instead of platform policy) and build that as
+  the next slice.
+- **Small, live slices.** A PR deploys and is testable on its own; over 1,500
+  added non-test lines needs a stated reason. New capability ships dark on
+  the founder's universe first, then to users.
+- **Live failures become evals.** Every failure seen in the real app becomes
+  a regression test or checklist row before the fix lands. A rendered
+  conversation is the proof; scripts and canaries support it.
+- **A dispatched review gates landing, not progress.** Take the next lane.
+
+**Verification is structural.** A substantive change needs test or check
+evidence, plus live use through the real app, before it counts as landed.
+Self-review alone never suffices for a Tier 2 change. If the other model family
+is rate-limited, an independent same-family review stands in, and the
+cross-family check is recorded as owed.
 
 **`main` enforces a behavioural test gate (live 2026-08-03).** Required contexts
 were originally `policy`, `Diff scope declared`, and `required-tests`, with
@@ -67,7 +116,7 @@ so auto-enrollment cannot merge them ahead of review. Ready only after an
 approval artifact names the unchanged head SHA; any head-changing update
 converts back to draft until fresh exact-head approval. For a first-draft MVP
 that approval is the SHAPE + basic-safety pass (§ Review sequencing) — not a
-completed hardening gauntlet; the deep hardening rounds re-run post-live.
+completed hardening gauntlet. Hardening is re-judged post-live, under the two-round stop.
 
 **Final chatbot-surface verification is a rendered chatbot conversation**
 through the live connector at `https://tinyassets.io/mcp` (`ui-test` skill)

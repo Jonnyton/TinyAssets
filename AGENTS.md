@@ -186,30 +186,17 @@ as peers via `peer-agents`. Neither runs a standing team.
 Procedure: **[`docs/reference/quality-gates.md`](docs/reference/quality-gates.md)**.
 Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/executable-gates.md)**.
 
-- **Shape before hardening** (founder, 2026-08-20). One pre-build review for
-  shape, approach, and single-user safety holes -> ship the MVP live and test as
-  a real user -> *then* deep hardening. Gating a first draft behind a hardening
-  gauntlet hardens a shape live users may change.
-- **Verification is independent and cross-family.** Test evidence plus a
-  reviewer who is not the author: a subprocess peer of the *other* model family
-  (`peer-agents`), on its own budget. Self-review never suffices for
-  public-surface, storage, auth, migration, concurrency, or data-loss changes.
-- **A dispatched review gates landing, not your progress.** It re-invokes you;
-  take the next lane and fold the verdict in. Never idle on one.
-- **When the other family is unavailable, cross-family review is postponed,
-  not waived** (founder, 2026-09-24). If a rate limit takes the peer family
-  out, keep shipping with an independent same-family reviewer. Record each
-  landing that still owes a cross-family check in its review/concern file, and
-  run those checks when the family returns.
-- **Reviews are autonomous, not an endless gate** (founder, 2026-09-15;
-  replaces the former three-round cap). Run as many bounded reviews as a
-  release genuinely needs without asking per round. Each extra round must
-  answer a concrete open release question or verify a material change. It
-  must not reopen settled design or chase zero observations. Defect counts
-  across repeated rounds are non-monotonic, and fixing round N often creates
-  round N+1 (PR #2561 ran six rounds). Fix basic-safety blockers before
-  release, and track the rest for after real-user feedback. Never relabel an
-  old review as a new one.
+- **Ship to learn; risk tier sets review depth** (founder, 2026-09-24; full
+  policy and evidence in `docs/reference/quality-gates.md`). Tier 0 (docs,
+  tests, UI, dark or one-revert changes): no review. Tier 1 (new behaviour or
+  primitive): one non-blocking review. Tier 2 (the floor: cross-user access,
+  credential exposure, data loss, money, irreversible acts, connector down,
+  gate files): one blocking review, other model family when available,
+  otherwise owed. **Hard stop: two rounds, one day**; round 2 only verifies
+  floor fixes. Findings must cite the PR head. **Recurring findings mean a
+  missing primitive**: redesign, do not patch. Small live slices; a failure
+  seen live becomes a regression test; the proof is a rendered conversation.
+  A dispatched review gates landing, not progress.
 - **Carry each item to verified completion, and work in parallel** (founder,
   2026-09-24; corrects a misreading of 2026-09-15 as "one patch at a time").
   A capability is finished when it is deployed, succeeds through the real app,
@@ -226,14 +213,6 @@ Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/e
   real decisions: new spending, irreversible or outward-facing acts outside
   the agreed work, and PLAN.md changes. Keep an externally blocked item open
   with its exact dependency and move to the next one.
-- **Ask the reviewer to disagree in a structured way** -- `AGREE` /
-  `DISAGREE_EVIDENCE` with a code citation / `DISAGREE_CONCERN`. Structured
-  disagreement measurably beat adding more reviewers, and it makes a finding you
-  should act on separable from one you should note.
-- **Final chatbot-surface proof is a rendered conversation** through the live
-  connector (`ui-test`). Scripts and canaries are supporting evidence, never
-  proof. Then look for real-user clean use since the fix, freshness-stamped; if
-  none is visible, say so.
 - **Test through the app agent as a user would** (founder, 2026-09-24). You
   may send the app agent any message. "Retest your workflow checklist" returns
   its whole known-issues list. Otherwise, write the way a casual, naive user
@@ -241,6 +220,12 @@ Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/e
   supposed to know or work out. That produces a false "works" signal that
   real users, who get no such help, would be blocked behind. Never build or
   edit users' workflows yourself; enable the agent to do it.
+- **Scope is the basic capability set, not the current user's needs**
+  (founder, 2026-09-24). Anticipate the minimal setup that lets a user do
+  anything a user should be able to do. A basic capability goes on the list
+  and stays there until cleared, even if no current user or app agent is
+  blocked by it. "Fine for what I'm building now" from the app agent is
+  evidence about priority, never a reason to drop the item.
 
 ## Hard Rules
 
