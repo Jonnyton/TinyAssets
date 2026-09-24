@@ -1811,10 +1811,12 @@ def write_graph(
             fallback order from model_options. This grants no model access.
             connection/configure_provider_capability accepts model_discovery
             metadata only, on an already owned registered compute definition.
-            connection/configure edits a held connection's non-secret fields:
-            {"destination", "uses": {"model": {"wire": "chat_messages"|
+            connection/configure sets constant headers on a held connection:
+            {"destination", "constant_headers": {name: value}}. It cannot add or
+            change a model use: models and billing need the owner's answer to a
+            connect ask with "uses": {"model": {"wire": "chat_messages"|
             "content_blocks", "models": [{"id", "tools", "context"}],
-            "billing": "free"|"flat"}}, "constant_headers": {name: value}}.
+            "billing": "free"|"flat"}}.
             Metadata never adds endpoints or grants inference/spending. Read your
             existing connections/compute before asking for new credentials.
             To connect ANY model or platform, ask with pending_request action

@@ -111,10 +111,17 @@ def _context(base: Path, owner: str, uid: str, definition_id: str) -> _Context:
                 or resource.connection_type != "http"
             ):
                 raise ModelDiscoveryUnavailable("source_revoked")
-            # A declared model use (uses.model with a static list) needs no
-            # catalogue fetch, so it needs no GET scope; it wins over a
-            # catalogue because it is the owner's explicit list for this source.
-            use_row = conn.execute(
+            # A priced catalogue ALWAYS wins over a declared list (money floor):
+            # a declaration's billing is the requester's word, the catalogue's
+            # prices are what spend caps enforce. A declared model use (static
+            # list, no fetch) needs POST scope only, and applies only where
+            # the connection has no catalogue at all.
+            priced = conn.execute(
+                "SELECT 1 FROM connection_capabilities WHERE connection_id = ? "
+                "AND capability_kind = 'model_discovery'",
+                (resource.connection_id,),
+            ).fetchone()
+            use_row = None if priced is not None else conn.execute(
                 "SELECT descriptor_json FROM connection_capabilities WHERE connection_id = ? "
                 "AND capability_kind = 'model_use'",
                 (resource.connection_id,),

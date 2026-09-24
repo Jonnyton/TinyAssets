@@ -62,8 +62,14 @@ and the executor already read:
 - the price components are the legacy three, with zero caps;
 - inference is validated by the installed wire.
 
-`refresh_model_discovery` prefers a `model_use` over a catalogue. It needs
-POST scope, not GET. It brackets with the same authority re-read, fetches
+**Money floor (review round 1).** A declared billing is the requester's word,
+never evidence of price. A priced `model_discovery` catalogue therefore always
+wins at read time. A `model_use` is refused, in the same storage transaction,
+on a connection that has one. It is also refused where the owner accepted
+access with cost caps for the grant's model source.
+
+`refresh_model_discovery` uses a `model_use` only when the connection has no
+catalogue. It needs POST scope, not GET. It brackets with the same authority re-read, fetches
 nothing, and returns the ordinary `DiscoverySnapshot`. Workflow evidence
 persists it as a third contract kind, `declared`, which is re-validated on
 reconstruction.
@@ -91,12 +97,22 @@ Answering does five things in order:
 5. leave a powered universe unchanged.
 
 If a step fails after the deposit, the ask stays pending. Answering again is
-idempotent.
+idempotent. The price-source check runs at ask time and again before the
+deposit. The rail sentence says the requester declared the models free or
+flat, that TinyAssets cannot check it, and that any provider charge is billed
+to the owner's key. It grants no platform spending.
+
+`configure` (the agent's own write) may not create or change a model use.
+Re-stating the owner-confirmed one is a no-op. A model or billing change is a
+new `connect` ask.
 
 ## D5. Constant headers
 
 Names are HTTP tokens that pass the broker's forbidden-header policy, so no
-`Authorization`, `Host` or framing header is allowed. Values are single-line
+`Authorization`, `Host` or framing header is allowed. Nor is any credential or
+session name (`key`, `token`, `secret`, `auth`, `passw`, `session`, `cookie`,
+`signature`, `credential`). The driver removes any request header that
+matches an auth header case-insensitively before it adds auth. Values are single-line
 and at most 256 characters. A run of 32 or more key-like characters is
 refused as a probable credential, because these headers are readable
 metadata.

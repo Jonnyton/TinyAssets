@@ -28,8 +28,11 @@ deposit answer and the broker). Cross-family review is owed before landing.
   never-seen LLM answers a turn with tools, and a never-seen platform takes
   an authenticated call with its constant header. Both go through the real
   broker to a loopback, and neither vendor name appears in `tinyassets/`.
-- [ ] 11. Cross-family (Codex) review of the custody-touching paths. Record
-  the verdict.
+- [x] 11. Tier 2 review, round 1: BLOCK on the money floor. Fixed: declared
+  lists are refused beside a priced catalogue or accepted spend caps, the
+  catalogue wins at read time, `configure` cannot create or change a model
+  use, the rail wording is honest, and header merging is case-insensitive
+  with credential names refused. Round 2 verifies these fixes only.
 - [ ] 12. Live acceptance in the founder's app (see the PR). Then deploy,
   check with `deployed_sha.py --assert-contains`, sync the spec delta and
   archive.

@@ -37,10 +37,12 @@ made every workflow node retype it.
    and serves the universe on the model when nothing powers the universe
    yet. The access is explicit and limited to the listed models, with
    free-only caps.
-2. **`write_graph target=connection operation=configure`** edits the same
-   non-secret fields on a connection the owner already holds. It is served
-   to the app agent and to the public connector. It never touches the
-   secret, endpoints or serving.
+2. **`write_graph target=connection operation=configure`** edits constant
+   headers on a connection the owner already holds. It is served to the app
+   agent and to the public connector. It never touches the secret, endpoints
+   or serving, and it never creates or changes a model use. A model list and
+   its billing are a spend claim, so they need the owner's answer to a
+   `connect` ask (money floor, review round 1).
 3. **Bundled wire dialects.** The two encoders become data documents
    (`providers/dialects/chat_messages.json`, `content_blocks.json`),
    resolved by structural name. The old names stay as read aliases, so
@@ -48,9 +50,14 @@ made every workflow node retype it.
 4. **Static model lists and `free`/`flat` billing.** A declared list feeds
    selection, reservation and execution through the existing snapshot
    shape, and needs no catalogue fetch. `metered` still goes through a
-   priced `model_discovery` source contract.
+   priced `model_discovery` source contract. A declared list is refused on
+   any connection that has a priced catalogue, or where the owner accepted
+   access with spending caps. A priced catalogue always wins at read time.
+   The rail tells the owner that the billing is the requester's claim.
 5. **Constant headers applied by the broker**, after the node's headers and
-   before auth, so they cannot replace the credential.
+   before auth. Credential-style names (`*key*`, `*token*`, `*auth*` and so
+   on) are refused, and the driver drops any header that differs from the
+   auth header only by case, so neither can shadow the credential.
 
 ## Tier and review
 

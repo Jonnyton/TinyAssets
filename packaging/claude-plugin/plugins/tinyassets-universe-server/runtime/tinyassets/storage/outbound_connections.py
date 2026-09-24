@@ -2021,6 +2021,10 @@ _MODEL_USE_MAX_CONTEXT = 100_000_000
 #: spending. ``metered`` needs prices, which the ``model_discovery`` source
 #: contract carries; it is not declared here.
 MODEL_USE_BILLING = frozenset({"free", "flat"})
+MODEL_USE_PRICED_CONFLICT = (
+    "this connection has a priced model catalogue; a declared model list cannot "
+    "describe it, because its prices, not a label, decide what may be spent"
+)
 
 
 def _validate_model_use_capability(connection_id: str, descriptor: Any) -> ModelUseCapability:
@@ -2072,6 +2076,11 @@ _HEADER_TOKEN_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
 #: A run this long is a credential, not a version string. Constant headers are
 #: readable connection metadata, so a secret belongs in the auth scheme.
 _CONSTANT_HEADER_SECRET_RUN = re.compile(r"[A-Za-z0-9_\-]{32,}")
+#: Header NAMES that carry credentials or sessions. A constant header is
+#: readable metadata, so it may never occupy one of these, whatever its value.
+_CONSTANT_HEADER_CREDENTIAL_NAME = re.compile(
+    r"key|token|secret|auth|passw|session|cookie|signature|credential", re.IGNORECASE,
+)
 
 
 def _validate_constant_headers_capability(
@@ -2090,6 +2099,11 @@ def _validate_constant_headers_capability(
             _reject_forbidden_header_name(name)
         except SsrfValidationError:
             raise ValueError(f"header {name!r} may not be set as a constant") from None
+        if _CONSTANT_HEADER_CREDENTIAL_NAME.search(name):
+            raise ValueError(
+                f"header {name!r} names a credential; put the key in the connection's "
+                "auth (auth_scheme header), never in a constant header"
+            )
         if name.lower() in {existing.lower() for existing in headers}:
             raise ValueError("constant header names must be unique")
         if (type(value) is not str or not 1 <= len(value) <= _CONSTANT_HEADER_VALUE_MAX
@@ -2971,6 +2985,14 @@ class _SsrfHardenedHttpDriver:
             method=verb,
             url=_canonical_request_url(canonical),
         )
+        # Case-insensitive: a caller or constant header spelled differently
+        # (``x-api-key`` vs ``X-Api-Key``) must neither shadow nor duplicate
+        # the credential header on the wire.
+        auth_names = {name.lower() for name in auth_headers}
+        request_headers = {
+            name: value for name, value in request_headers.items()
+            if name.lower() not in auth_names
+        }
         request_headers.update(auth_headers)
         # Everything to scrub from the response: raw bundle members AND the exact
         # auth values placed on the wire (e.g. the base64 blob of a Basic
@@ -3980,6 +4002,15 @@ class ConnectionLedger:
             )
             if resource.connection_type != "http" or not verb_allowed:
                 raise PermissionError(f"connection does not authorize capability {spec.verb}")
+            if kind == "model_use" and connection.execute(
+                "SELECT 1 FROM connection_capabilities WHERE connection_id = ? "
+                "AND capability_kind = 'model_discovery'",
+                (connection_key,),
+            ).fetchone() is not None:
+                # Money floor: a declared (unpriced) list may only describe a
+                # connection with no priced source. Otherwise an agent-written
+                # "free" label would stand in for the catalogue's real prices.
+                raise ValueError(MODEL_USE_PRICED_CONFLICT)
             if isinstance(capability, ModelDiscoveryCapability):
                 if resource.auth_scheme != capability.execution_contract().auth_scheme:
                     raise PermissionError(

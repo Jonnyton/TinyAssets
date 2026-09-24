@@ -221,7 +221,7 @@ def test_model_use_refuses_what_it_cannot_honour(model, match):
 
 @pytest.mark.parametrize("headers,match", [
     ({"Authorization": "Bearer x"}, "may not be set"),
-    ({"X-Token": "a" * 40}, "looks like a credential"),
+    ({"X-Trace": "a" * 40}, "looks like a credential"),
     ({"X-Bad": "line\r\nInjected: 1"}, "single-line"),
     ({"Bad Name": "1"}, "header token"),
 ])
@@ -450,21 +450,222 @@ def test_configure_edits_a_held_connection_and_reads_back(owner):
     assert missing == {"error": "not_found", "resource": "connection"}
 
 
-def test_configure_adds_a_model_use_that_read_graph_shows(owner):
+def test_configure_cannot_create_a_model_use_without_the_owner(owner):
+    """A model list and its billing are a spend claim: the agent's own write
+    (configure) may not make one; the owner's answer to a connect ask does."""
     from tinyassets.api.cloud_connections import cloud_connections
     from tinyassets.api.connection_uses import configure_connection
 
     plain = {k: v for k, v in QUILLMIND_ASK.items() if k != "uses"}
     assert _answer(_ask({**plain, "type": "connect_http"}, _KEY_FIELD)["request_id"],
                    {"secret": LLM_KEY})["status"] == "answered"
-    configured = configure_connection(universe_id=UID, payload=json.dumps({
+    refused = configure_connection(universe_id=UID, payload=json.dumps({
         "destination": "quillmind", "uses": QUILLMIND_ASK["uses"],
     }))
-    assert configured["status"] == "configured", configured
-    assert configured["provider"].startswith("api_key_http:")
+    assert refused["error"] == "connection_setup_invalid"
+    assert "owner's confirmation" in refused["detail"]
     rows = cloud_connections(action="list", universe_id=UID)["connections"]
     (row,) = [r for r in rows if r["destination"] == "quillmind"]
-    assert row["uses"]["model"]["models"][0]["id"] == "quill-large"
+    assert "model" not in row["uses"]
+
+
+def test_configure_cannot_change_the_billing_of_an_owner_confirmed_model_use(owner):
+    from tinyassets.api.connection_uses import configure_connection
+
+    answered = _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
+    assert answered["status"] == "answered", answered
+    flat = {**QUILLMIND_ASK["uses"]["model"], "billing": "flat"}
+    refused = configure_connection(universe_id=UID, payload=json.dumps({
+        "destination": "quillmind", "uses": {"model": flat},
+    }))
+    assert "owner's confirmation" in refused["detail"]
+    # Re-stating exactly what the owner confirmed is a harmless no-op.
+    same = configure_connection(universe_id=UID, payload=json.dumps({
+        "destination": "quillmind", "uses": QUILLMIND_ASK["uses"],
+    }))
+    assert same["status"] == "configured", same
+
+
+# --------------------------------------------------------------------------- #
+# Money floor: a declared list never stands in for a priced catalogue.
+# --------------------------------------------------------------------------- #
+
+PRICED_ASK = {
+    "type": "connect_http",
+    "destination": "priced",
+    "auth_scheme": "bearer",
+    "endpoints": [
+        {"host": "owned.example", "path_template": "/api/v1/models/user", "methods": ["GET"],
+         "allowed_query": ["output_modalities"], "required_query": ["output_modalities"],
+         "query_patterns": {"output_modalities": "^all$"}},
+        {"host": "owned.example", "path_template": "/api/v1/benchmarks", "methods": ["GET"]},
+        {"host": "owned.example", "path_template": "/api/v1/chat/completions",
+         "methods": ["POST"]},
+    ],
+}
+PAID_AS_FREE = {"model": {
+    "wire": "chat_messages",
+    "models": [{"id": "expensive/paid-model", "tools": True, "context": 200000}],
+    "billing": "free",
+}}
+
+
+def _priced_connection(base):
+    """A deposited connection with a priced model catalogue, as first power makes."""
+    from tests.test_model_discovery_capability import DESCRIPTOR
+    from tinyassets.api.http_connection import _ids
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    answered = _answer(_ask(PRICED_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
+    assert answered["status"] == "answered", answered
+    ledger = ConnectionLedger(base / "outbound.db")
+    grant = ledger.get_grant(_ids(universe_id=UID, destination="priced")[1])
+    ledger.configure_capability(
+        connection_id=grant.connection_id, capability_kind="model_discovery",
+        descriptor=DESCRIPTOR, enabled=True, expected_grant=grant,
+    )
+    return ledger, grant
+
+
+def test_agent_cannot_relabel_a_priced_connections_paid_model_as_free(owner):
+    from tinyassets.api.connection_uses import configure_connection
+
+    ledger, grant = _priced_connection(owner)
+    # The universe's own agent, through configure.
+    refused = configure_connection(universe_id=UID, payload=json.dumps({
+        "destination": "priced", "uses": PAID_AS_FREE,
+    }))
+    assert refused.get("error") == "connection_setup_invalid", refused
+    # Through a connect ask on the same connection: refused before it is shown.
+    asked = _ask({**PRICED_ASK, "type": "connect", "uses": PAID_AS_FREE}, _KEY_FIELD)
+    assert asked.get("error") == "connection_setup_invalid", asked
+    assert "priced model catalogue" in asked["detail"]
+    # And at the storage boundary, whoever calls it.
+    with pytest.raises(ValueError, match="priced model catalogue"):
+        ledger.configure_capability(
+            connection_id=grant.connection_id, capability_kind="model_use",
+            descriptor=PAID_AS_FREE["model"], enabled=True,
+        )
+    assert ledger.get_connection_capability(grant.connection_id, "model_use") is None
+
+
+def test_the_catalogues_prices_keep_deciding_spend_even_beside_a_declaration(owner):
+    """Even a declaration that reached storage (an older write, a race) never
+    replaces the catalogue: discovery reads the priced source, so the owner's
+    free-only access and spend caps are enforced against real prices."""
+    import sqlite3
+
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.providers.discovery_snapshot import _context
+    from tinyassets.storage.outbound_connections import (
+        ModelDiscoveryCapability,
+        ModelUseCapability,
+    )
+
+    _ledger, grant = _priced_connection(owner)
+    with sqlite3.connect(owner / "outbound.db") as conn:
+        conn.execute(
+            "INSERT INTO connection_capabilities VALUES (?, 'model_use', ?, 0)",
+            (grant.connection_id, json.dumps(PAID_AS_FREE["model"])),
+        )
+    definition = register_definition(
+        universe_id=UID, owner_user_id=OWNER, access_method="api_key_http",
+        protocol="openai_chat", model="seed", ref=grant.grant_id,
+    )
+    profile = _context(owner, OWNER, UID, definition.id).profile
+    assert isinstance(profile, ModelDiscoveryCapability)
+    assert not isinstance(profile, ModelUseCapability)
+
+
+def test_a_declaration_cannot_replace_accepted_spending_limits(owner, monkeypatch):
+    from types import SimpleNamespace
+
+    from tinyassets.api.connection_uses import apply_connection_uses
+    from tinyassets.api.http_connection import _ids
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.providers.definition import register_definition
+
+    answered = _answer(_ask({**PRICED_ASK, "destination": "capped"}, _KEY_FIELD)[
+        "request_id"], {"secret": LLM_KEY})
+    assert answered["status"] == "answered", answered
+    grant_id = _ids(universe_id=UID, destination="capped")[1]
+    definition = register_definition(
+        universe_id=UID, owner_user_id=OWNER, access_method="api_key_http",
+        protocol="chat_messages", model="seed", ref=grant_id,
+    )
+    paid = ModelAccess("explicit", ("expensive/paid-model",), (
+        ("input_million_tokens_usd", 5_000_000), ("output_million_tokens_usd", 5_000_000),
+        ("request_usd", 0)))
+    monkeypatch.setattr(
+        "tinyassets.provider_assignment.load_provider_assignment",
+        lambda *_a, **_k: SimpleNamespace(candidates=(SimpleNamespace(
+            provider=f"api_key_http:{definition.id}", access=paid),)),
+    )
+    refused = apply_connection_uses(
+        base=owner, uid=UID, actor=OWNER, grant_id=grant_id,
+        uses=PAID_AS_FREE, constant_headers={}, owner_confirmed=True,
+    )
+    assert refused["error"] == "connection_setup_invalid"
+    assert "accepted spending" in refused["detail"]
+
+
+def test_the_owner_is_told_the_billing_is_the_requesters_claim(owner):
+    sentence = _ask(QUILLMIND_ASK, _KEY_FIELD)["grant_sentence"]
+    assert "nothing is spent" not in sentence
+    assert "The requester declared these free of charge" in sentence
+    assert "cannot check" in sentence and "billed to your account" in sentence
+
+
+# --------------------------------------------------------------------------- #
+# A constant header can never shadow or duplicate the key header.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("name", ["X-Api-Key", "api-key", "X-Auth-Token", "X-Session"])
+def test_credential_header_names_cannot_be_constants(name):
+    from tinyassets.api.connection_uses import ConnectionUseError, validate_constant_headers
+
+    with pytest.raises(ConnectionUseError, match="names a credential"):
+        validate_constant_headers({name: "abc"})
+
+
+def test_a_differently_cased_header_cannot_shadow_or_duplicate_the_key(monkeypatch):
+    import http.server
+    import threading
+
+    from tinyassets.storage import outbound_connections as oc
+
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_a):
+            return
+
+        def do_POST(self):  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+            seen.append(self.headers.get_all("X-Api-Key"))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        _install_loopback_driver(monkeypatch, server.server_address[1])
+        driver = oc._SsrfHardenedHttpDriver()
+        driver(
+            bundle=oc._build_http_secret_bundle("header", "real-vault-key"),
+            auth_scheme="header", header_name="X-Api-Key", method="POST",
+            url="https://api.example.com/v1/x", headers={"x-api-key": "shadow"},
+            body={"a": 1},
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert seen == [["real-vault-key"]]
 
 
 # --------------------------------------------------------------------------- #

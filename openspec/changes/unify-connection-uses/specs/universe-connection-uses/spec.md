@@ -71,10 +71,17 @@ unknown wire SHALL be refused.
 ### Requirement: Declared models and billing
 
 A model use SHALL list 1-64 models as `{id, tools, context}`, and its
-billing SHALL be `free` or `flat`. Declared models SHALL be admitted as
+billing SHALL be `free` or `flat`. A declared model use SHALL be refused on a
+connection that has a priced `model_discovery` catalogue, or whose grant's
+model source has accepted access with cost caps. Where both exist, the
+catalogue SHALL decide. Declared models SHALL be admitted as
 unmetered, owner-configured evidence without a catalogue fetch. They SHALL
 grant nothing without accepted model access. `metered` billing SHALL be
 refused here and SHALL need a priced `model_discovery` source contract.
+
+#### Scenario: the agent relabels a paid model as free
+- **WHEN** a model use declaring a catalogue's paid model as `free` is written to a connection with a priced catalogue
+- **THEN** it is refused, and selection still reads the catalogue's prices and the owner's caps
 
 #### Scenario: metered without prices
 - **WHEN** a model use declares `metered` billing
@@ -87,7 +94,11 @@ single-line values of at most 256 characters. The following SHALL be refused:
 
 - any name the broker forbids (for example `Authorization`, `Host`, or a
   framing header);
+- any credential-style name (for example `X-Api-Key` or `X-Auth-Token`);
 - any value that looks like a credential.
+
+A request header that matches an auth header case-insensitively SHALL be
+dropped before auth is applied.
 
 The broker SHALL apply constant headers over a node's same-named headers,
 case-insensitively, and the auth scheme SHALL be applied after them. If the
@@ -99,10 +110,12 @@ headers cannot be read, dispatch SHALL fail.
 
 ### Requirement: The owner's agent configures non-secret fields
 
-`write_graph target=connection operation=configure` SHALL set `uses` and
+`write_graph target=connection operation=configure` SHALL set
 `constant_headers` on a connection the caller owns that is granted to the
 universe. It SHALL be available on both the served surface and the public
 connector. It SHALL never touch the secret, endpoints or serving selection.
+It SHALL never create or change a model use, because a model list and its
+billing need the owner's answer to a `connect` ask.
 A connection the caller does not hold SHALL return the uniform `not_found`.
 `read_graph target=connections` SHALL show each connection's uses and
 constant headers.

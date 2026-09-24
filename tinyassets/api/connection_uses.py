@@ -96,15 +96,78 @@ def _definition_for(uid: str, actor: str, grant_id: str, wire: str, first_model:
     )
 
 
+#: Money floor (review 2026-09-24): what a declared model use may NOT do.
+MODEL_USE_NEEDS_OWNER = (
+    "declaring or changing a model use (its models or billing) needs the owner's "
+    "confirmation: raise a connect ask with uses.model instead; configure only "
+    "edits constant headers"
+)
+NON_FREE_ACCESS_CONFLICT = (
+    "the owner accepted spending on this connection's models; a declared "
+    "free/flat model list cannot replace those spend limits"
+)
+
+
+def model_use_refusal(
+    *, base: Path, uid: str, actor: str, connection_id: str, grant_id: str,
+) -> dict[str, Any] | None:
+    """Why a declared model use may not describe this connection, or None.
+
+    A declared list's billing is the requester's word. It may only describe a
+    connection with no priced source: no ``model_discovery`` catalogue on the
+    connection, and no accepted access with spending caps on a model source
+    registered for its grant. Unreadable state refuses (fail closed).
+    """
+    from tinyassets.providers.definition import list_definitions
+    from tinyassets.storage.outbound_connections import (
+        MODEL_USE_PRICED_CONFLICT,
+        ConnectionLedger,
+    )
+
+    try:
+        ledger = ConnectionLedger(Path(base) / "outbound.db")
+        with ledger._connect() as conn:
+            priced = conn.execute(
+                "SELECT 1 FROM connection_capabilities WHERE connection_id = ? "
+                "AND capability_kind = 'model_discovery'",
+                (connection_id,),
+            ).fetchone()
+        if priced is not None:
+            return {"error": "connection_setup_invalid", "detail": MODEL_USE_PRICED_CONFLICT}
+        sources = {
+            f"api_key_http:{d.id}" for d in list_definitions(uid)
+            if d.ref == grant_id and d.owner_user_id == actor
+        }
+        if sources:
+            from tinyassets.provider_assignment import load_provider_assignment
+
+            assignment = load_provider_assignment(Path(base), universe_id=uid)
+            members = () if assignment is None else assignment.candidates
+            if any(m.provider in sources and m.access.cost_caps is not None
+                   for m in members):
+                return {"error": "connection_setup_invalid",
+                        "detail": NON_FREE_ACCESS_CONFLICT}
+    except Exception:  # noqa: BLE001 - money floor: unknown state refuses
+        return {"error": "connection_setup_invalid",
+                "detail": "could not confirm this connection has no priced source"}
+    return None
+
+
 def apply_connection_uses(
     *, base: Path, uid: str, actor: str, grant_id: str,
     uses: dict[str, Any], constant_headers: dict[str, str],
+    owner_confirmed: bool = False,
 ) -> dict[str, Any]:
     """Write a connection's uses and constant headers. Idempotent.
 
     The grant must be a live http grant bound to ``uid`` and owned by
     ``actor``; anything else is the uniform not-found. Returns the projection
     the caller shows, including ``provider`` when a model use exists.
+
+    ``owner_confirmed`` is True only on the owner's answer to a ``connect``
+    ask. Without it (``configure``, the agent's own write) a model use may not
+    be created or changed: its billing is a spend claim the owner must see.
+    A declared model use is refused on any connection with a priced source.
     """
     from tinyassets.api.compute_connection import _validate_http_grant
     from tinyassets.providers.definition import ProviderDefinitionError
@@ -116,6 +179,18 @@ def apply_connection_uses(
     ledger = ConnectionLedger(base / "outbound.db")
     grant = ledger.get_grant(grant_id)
     connection_id = grant.connection_id
+    model = uses.get("model")
+    if model is not None:
+        try:
+            current = ledger.get_connection_capability(connection_id, "model_use")
+        except (LookupError, ValueError):
+            current = None
+        if not owner_confirmed and (current is None or current.descriptor() != model):
+            return {"error": "connection_setup_invalid", "detail": MODEL_USE_NEEDS_OWNER}
+        refused = model_use_refusal(base=base, uid=uid, actor=actor,
+                                    connection_id=connection_id, grant_id=grant_id)
+        if refused is not None:
+            return refused
     result: dict[str, Any] = {"connection_id": connection_id, "grant_id": grant_id,
                               "uses": sorted(uses)}
     try:
@@ -125,7 +200,6 @@ def apply_connection_uses(
                 descriptor={"headers": constant_headers}, enabled=True,
             )
             result["constant_headers"] = dict(constant_headers)
-        model = uses.get("model")
         if model is not None:
             definition = _definition_for(
                 uid, actor, grant_id, model["wire"], model["models"][0]["id"],
@@ -179,8 +253,9 @@ def configure_connection(*, universe_id: str = "", payload: Any = None) -> dict[
     "uses": {...}, "constant_headers": {...}}``. The connection must already be
     granted to this universe by its owner (deposited through the request rail).
     This never adds endpoints, never touches the secret, and never selects
-    serving: making a model serve a powered universe stays the owner's
-    confirmation (``bind_model_access``).
+    serving. It never creates or changes a model use either: a model list and
+    its billing are a spend claim, so they go through the owner's answer to a
+    ``connect`` ask (money floor, review 2026-09-24).
     """
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path, _request_universe

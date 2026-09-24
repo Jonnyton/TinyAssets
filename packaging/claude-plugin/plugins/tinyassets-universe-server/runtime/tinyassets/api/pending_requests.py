@@ -735,6 +735,10 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
             action = capture_action(_uid, action)
         except (ValueError, LookupError, PermissionError, CurrentHomeChanged) as exc:
             return _bad(str(exc))
+    if action.get("type") == "connect" and "model" in (action.get("uses") or {}):
+        refused = _model_use_refusal(_uid, action)
+        if refused is not None:
+            return refused
     if action.get("type") == "remove_http":
         from tinyassets.api.helpers import _base_path
         from tinyassets.api.http_connection import _ids
@@ -1105,12 +1109,14 @@ def _uses_sentence(action: dict[str, Any]) -> str:
     model = (action.get("uses") or {}).get("model")
     if isinstance(model, dict):
         names = ", ".join(str(m.get("id")) for m in model.get("models") or [])
-        billing = model.get("billing")
-        cost = ("they are free, so nothing is spent" if billing == "free"
-                else "they are on a flat plan you already pay for, so nothing is metered")
+        billing = ("free of charge" if model.get("billing") == "free"
+                   else "flat-rate (a plan you already pay for)")
         parts.append(
             f" Your universe may also run its model on it ({model.get('wire')} wire): "
-            f"{names}; {cost}. If nothing powers your universe yet, this becomes its model."
+            f"{names}. The requester declared these {billing}; TinyAssets cannot "
+            "check that. Calls use your key, so anything the provider charges is "
+            "billed to your account there, and TinyAssets grants no spending on "
+            "them. If nothing powers your universe yet, this becomes its model."
         )
     headers = action.get("constant_headers") or {}
     if headers:
@@ -1592,6 +1598,12 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 "'removed_scopes' rather than asking what they were."
             ),
         }
+    if action.get("type") == "connect" and "model" in (action.get("uses") or {}):
+        # Checked again at answer time, BEFORE the deposit: a priced catalogue
+        # or non-free accepted access may have appeared since the ask.
+        refused = _model_use_refusal(_uid, action)
+        if refused is not None:
+            return {**refused, "request_pending": True}
     if action.get("type") in _DEPOSIT_TYPES:
         # ONE secret field -> its value. SEVERAL -> a JSON object keyed by field
         # name, which is the encoding a multi-value scheme's vault string uses.
@@ -1695,6 +1707,21 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     }
 
 
+def _model_use_refusal(uid: str, action: dict[str, Any]) -> dict[str, Any] | None:
+    """The money-floor refusal for a declared model use on this destination, if any."""
+    from tinyassets.api import permissions
+    from tinyassets.api.connection_uses import model_use_refusal
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.api.http_connection import _ids
+    from tinyassets.principals import named_principal
+
+    connection_id, grant_id = _ids(universe_id=uid, destination=action["destination"])
+    return model_use_refusal(
+        base=_base_path(), uid=uid, actor=named_principal(permissions.current_actor_id()),
+        connection_id=connection_id, grant_id=grant_id,
+    )
+
+
 def _complete_connect(
     uid: str, action: dict[str, Any], deposited: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1717,6 +1744,7 @@ def _complete_connect(
         base=base, uid=uid, actor=actor, grant_id=str(deposited.get("grant_id") or ""),
         uses=action.get("uses") or {"call": {}},
         constant_headers=action.get("constant_headers") or {},
+        owner_confirmed=True,
     )
     if applied.get("error"):
         return applied
