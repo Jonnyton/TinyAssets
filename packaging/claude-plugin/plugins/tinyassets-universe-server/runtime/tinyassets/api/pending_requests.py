@@ -1274,7 +1274,7 @@ def withdraw_request(*, universe_id: str = "", payload: Any = None) -> dict[str,
         return _bad(str(exc))
     request_id = str(document.get("request_id") or "").strip()
     if not request_id:
-        return _bad("request_id is required; read it from target=pending_requests")
+        return _bad("request_id is required; read_graph target=pending_requests lists it")
     if request_id == _LLM_REQUEST_ID:
         return {
             "error": "not_withdrawable",

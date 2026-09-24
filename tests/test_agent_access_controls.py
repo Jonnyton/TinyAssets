@@ -103,7 +103,7 @@ def test_the_agent_reads_what_it_holds_in_one_call(monkeypatch, base):
     assert waiting[asked["request_id"]]["withdrawable"] is True
     assert waiting[asked["request_id"]]["origin"] == "agent"
     assert "standing_decisions" in held
-    assert "revoke" in json.dumps(held["how_to_change"])
+    assert "source_channel action=\"revoke\"" in held["how_to_change"]["revoke_channel"]
 
 
 def test_the_readback_carries_no_secret(monkeypatch, base):
@@ -379,6 +379,9 @@ def test_the_connector_reads_access_and_withdraws(base):
         rid = json.loads(raw)["request_id"]
         held = json.loads(us.read_graph(target="access", graph_id="u-1"))
         assert rid in {r["request_id"] for r in held["waiting_requests"]}
+        # The connector is told the verbs IT has, not the served ones.
+        assert 'target="source_channel" operation="revoke"' in (
+            held["how_to_change"]["revoke_channel"])
 
         done = json.loads(us.write_graph(
             target="connection", operation="withdraw_request", graph_id="u-1",

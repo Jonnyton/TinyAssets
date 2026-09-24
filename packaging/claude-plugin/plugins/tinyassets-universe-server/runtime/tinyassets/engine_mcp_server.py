@@ -244,6 +244,27 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # graph-scoped, owner-gated, no secret, no cross-universe/global reach — so the
 # pin is a real confinement. It is the read sibling of connect_compute, letting
 # the served agent SEE the compute providers it can register/select.
+#: How the served agent changes what ``read_graph target=access`` shows, in the
+#: verbs THIS surface has.
+_SERVED_ACCESS_VERBS = {
+    "grant_channel": (
+        'source_channel action="approve" payload={"channel_type": "<sink>", '
+        '"destination": "<destination>"}'
+    ),
+    "revoke_channel": (
+        'source_channel action="revoke" payload={"channel_type": "<sink>", '
+        '"destination": "<destination>"}'
+    ),
+    "widen_add_or_remove_a_key": (
+        'write_graph target="pending_request" operation="ask" with an extend_http, '
+        'connect_http or remove_http action; the owner answers it'
+    ),
+    "withdraw_your_ask": (
+        'write_graph target="pending_request" operation="withdraw" '
+        'payload_json={"request_id": "...", "reason": "..."}'
+    ),
+}
+
 _PINNED_READ_TARGETS = frozenset({
     "status", "graph", "branches", "branch", "runs", "run", "run_output",
     "compute", "connections", "automations", "automation", "conversation",
@@ -467,7 +488,9 @@ def read_graph(
         if normalized == "access":
             from tinyassets.api.agent_access import read_access
 
-            return json.dumps(read_access(universe_id=_GRAPH_ID), default=str)
+            return json.dumps(read_access(
+                universe_id=_GRAPH_ID, how_to_change=_SERVED_ACCESS_VERBS,
+            ), default=str)
         if normalized in {"automations", "automation"}:
             from tinyassets.api.automations import automations
 

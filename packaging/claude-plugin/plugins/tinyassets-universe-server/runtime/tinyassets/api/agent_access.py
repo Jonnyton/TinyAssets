@@ -81,33 +81,32 @@ def _waiting(udir) -> list[dict[str, Any]]:
     ]
 
 
+#: The verbs as the CONNECTOR (the owner's chatbot) spells them. The served
+#: engine passes its own spelling (its consent verb is a separate handle), so
+#: each surface is told only verbs it actually has.
 _HOW_TO_CHANGE = {
     "grant_channel": (
-        'source_channel action="approve" payload={"channel_type": "<sink>", '
-        '"destination": "<destination>"}'
+        'write_graph target="source_channel" operation="approve" '
+        'payload_json={"channel_type": "<sink>", "destination": "<destination>"}'
     ),
     "revoke_channel": (
-        'source_channel action="revoke" payload={"channel_type": "<sink>", '
-        '"destination": "<destination>"}  (connector: write_graph '
-        'target="source_channel" operation="revoke")'
+        'write_graph target="source_channel" operation="revoke" '
+        'payload_json={"channel_type": "<sink>", "destination": "<destination>"}'
     ),
-    "widen_or_add_a_key": (
-        'write_graph target="pending_request" operation="ask" with an '
-        'extend_http / connect_http action (the owner answers it)'
-    ),
-    "remove_a_key": (
-        'write_graph target="pending_request" operation="ask" with a '
-        'remove_http action (the owner confirms it)'
-    ),
-    "withdraw_your_ask": (
-        'write_graph target="pending_request" operation="withdraw" '
+    "withdraw_an_ask": (
+        'write_graph target="connection" operation="withdraw_request" '
         'payload_json={"request_id": "...", "reason": "..."}'
     ),
 }
 
 
-def read_access(*, universe_id: str = "") -> dict[str, Any]:
-    """Everything the owner's agent holds in this universe, owner-only."""
+def read_access(
+    *, universe_id: str = "", how_to_change: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Everything the owner's agent holds in this universe, owner-only.
+
+    ``how_to_change`` lets the calling surface name its own verbs.
+    """
     from tinyassets.api import permissions
     from tinyassets.api.cloud_connections import _workspace_consents, cloud_connections
     from tinyassets.api.pending_requests import _owner_gate
@@ -140,7 +139,7 @@ def read_access(*, universe_id: str = "") -> dict[str, Any]:
         "spend_allowances": _section(lambda: _spend_allowances(uid, actor)),
         "waiting_requests": _section(lambda: _waiting(udir)),
         "standing_decisions": _section(lambda: list_suppressions(udir)),
-        "how_to_change": _HOW_TO_CHANGE,
+        "how_to_change": dict(how_to_change or _HOW_TO_CHANGE),
     }
 
 
