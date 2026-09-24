@@ -83,8 +83,10 @@ async def test_real_provider_nonzero_paths_keep_json_reason_and_confinement(
         )
     assert "model rejected [redacted]" in str(failure.value)
     assert "secretsensitive" not in str(failure.value)
-    args = launch.call_args.args
-    inner = args[args.index("--") + 1:]
+    # The adapter hands the shared spawn point codex's own argv plus its view of
+    # the universe; the jail wraps it there (provider_jail).
+    assert launch.call_args.kwargs["universe_view"] is not None
+    inner = launch.call_args.args
     pairs = list(zip(inner, inner[1:]))
     assert ("--sandbox", "workspace-write") in pairs
     assert "--full-auto" not in inner
@@ -158,7 +160,8 @@ async def test_served_model_selection_is_native_unless_explicit(monkeypatch, tmp
     result = await provider.CodexProvider().complete(
         "prompt", "system", ModelConfig(sandbox_workspace=True), universe_dir=tmp_path,
     )
-    inner = launch.call_args.args[launch.call_args.args.index("--") + 1:]
+    assert launch.call_args.kwargs["universe_view"] is not None
+    inner = launch.call_args.args
     expected = (override or "").strip()
     if expected:
         assert inner[inner.index("-m") + 1] == expected

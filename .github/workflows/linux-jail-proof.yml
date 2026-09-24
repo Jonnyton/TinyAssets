@@ -12,7 +12,12 @@ name: linux-jail-proof
 #     (tinyassets/node_sandbox.py BwrapLauncher);
 #   * tests/test_native_refresh_jail.py runs the argv the shipping codex
 #     provider builds for a coding turn (tinyassets/providers/codex_provider.py)
-#     and proves the launch-credential mask holds, with a detection control.
+#     and proves the launch-credential mask holds, with a detection control;
+#   * tests/test_provider_universe_jail.py runs the shipping claude and codex
+#     adapters, and a jail-unaware command adapter through the router, inside
+#     the shared provider jail (tinyassets/providers/provider_jail.py) and
+#     proves a launch for universe A reads A but not universe B, the platform
+#     source, another launch's credential or any outside process environment.
 #
 # This job supplies the jail on a disposable GitHub-hosted Ubuntu VM and FAILS
 # unless EVERY named case is present in JUnit with no skip, failure or error.
@@ -21,8 +26,8 @@ name: linux-jail-proof
 #
 # It is deliberately NOT a branch-protection context. `required-tests` in
 # tests.yml remains the merge gate; this is the independent Linux proof for the
-# file-delivery and codex coding-turn jail slices, read by a human before a
-# "proven live" claim.
+# file-delivery, codex coding-turn and provider-universe jail slices, read by
+# a human before a "proven live" claim.
 #
 # Hardening it does NOT do, on purpose: no `sysctl` relaxation of
 # kernel.apparmor_restrict_unprivileged_userns, no AppArmor profile edits, no
@@ -66,6 +71,15 @@ on:
       - "tests/test_native_refresh_jail.py"
       - "tinyassets/providers/codex_provider.py"
       - "tinyassets/agent_runtime_provider_execution.py"
+      # The provider universe jail, the shared spawn point that applies it, the
+      # router that binds the owning universe, the adapters it launches and the
+      # environment builder whose paths must resolve inside it.
+      - "tests/test_provider_universe_jail.py"
+      - "tinyassets/providers/provider_jail.py"
+      - "tinyassets/providers/owned_process.py"
+      - "tinyassets/providers/router.py"
+      - "tinyassets/providers/claude_provider.py"
+      - "tinyassets/providers/base.py"
   workflow_dispatch:
 
 permissions:
@@ -82,10 +96,14 @@ env:
   JAIL_TEST_FILES: >-
     tests/test_delivery_node_rpc.py
     tests/test_native_refresh_jail.py
+    tests/test_provider_universe_jail.py
   JAIL_TEST_NODEIDS: >-
     tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
     tests/test_native_refresh_jail.py::test_jail_reads_workspace_but_not_launch_credentials
     tests/test_native_refresh_jail.py::test_removing_the_launch_mask_exposes_the_snapshot
+    tests/test_provider_universe_jail.py::test_claude_node_call_reads_only_its_own_universe
+    tests/test_provider_universe_jail.py::test_codex_node_call_reads_only_its_own_universe
+    tests/test_provider_universe_jail.py::test_router_jails_a_new_command_adapter_with_no_jail_code
 
 jobs:
   linux-jail-proof:

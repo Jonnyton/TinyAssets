@@ -835,9 +835,11 @@ def test_served_budget_overrun_delivers_the_reply_and_charges_actual(tmp_path, m
 @pytest.mark.skipif(os.name == "nt", reason="bubblewrap is a POSIX sandbox")
 def test_served_turn_spawns_fake_codex_through_full_os_sandbox_command(
     tmp_path,
+    tmp_path_factory,
     monkeypatch,
 ):
     from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.providers import provider_jail
     from tinyassets.providers.codex_provider import CodexProvider
     from tinyassets.providers.router import ProviderRouter
 
@@ -845,7 +847,10 @@ def test_served_turn_spawns_fake_codex_through_full_os_sandbox_command(
         tmp_path,
         path_backed=True,
     )
-    install_root = tmp_path / "codex-install"
+    # tmp_path is the data root holding the universe; the shared jail refuses
+    # an install tree inside it, as it would /data/<anything> in production.
+    tools_root = tmp_path_factory.mktemp("codex-tools")
+    install_root = tools_root / "codex-install"
     real_codex = install_root / "node_modules" / ".bin" / "codex"
     real_codex.parent.mkdir(parents=True)
     real_codex.write_text(
@@ -867,7 +872,7 @@ print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 3, "output
         encoding="utf-8",
     )
     real_codex.chmod(0o755)
-    bin_dir = tmp_path / "bin"
+    bin_dir = tools_root / "bin"
     bin_dir.mkdir()
     wrapper = bin_dir / "codex"
     wrapper.write_text(
@@ -898,6 +903,8 @@ os.execvpe(command[0], command, env)
     )
     fake_bwrap.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    # The shared spawn point resolves bubblewrap through its injection seam.
+    monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: str(fake_bwrap))
 
     try:
         with patch(

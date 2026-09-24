@@ -145,16 +145,17 @@ class UniverseContext:
     """Captured advisory owner policy; never a grant or a tool-replay instruction."""
 
 
-#: Claude CLI builtins that reach the SHARED host through its filesystem or a
-#: shell. The claude CLI has no OS jail on this platform, so these read or run
-#: whatever the daemon process can: the platform's own source tree, every
-#: universe under the data root and the credential snapshots beside them.
-#: That makes them a cross-user matter, not an owner preference. The ONE
-#: definition: the universe engine's denylist starts from it and a workflow
-#: node call denies it (``ModelConfig.workflow_node``).
+#: Claude CLI builtins that reach the host through its filesystem or a shell.
+#: The cross-user boundary is the OS jail every provider launch made for a
+#: universe runs in (``tinyassets.providers.provider_jail``): inside it these
+#: see only the owner's own universe. The deny list stays as a second, narrower
+#: layer on the chat turn and on workflow nodes (they have no use for them).
+#: The ONE definition: the universe engine's denylist starts from it and a
+#: workflow node call denies it (``ModelConfig.workflow_node``).
 HOST_REACH_TOOLS: tuple[str, ...] = (
-    # shell / process execution (Monitor also runs shell commands)
-    "Bash", "BashOutput", "KillShell", "Monitor",
+    # shell / process execution (Monitor also runs shell commands; PowerShell
+    # is the CLI's shell tool on hosts where it replaces Bash)
+    "Bash", "BashOutput", "KillShell", "Monitor", "PowerShell",
     # filesystem
     "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead",
     "Glob", "Grep", "LS",
@@ -213,14 +214,14 @@ class ModelConfig:
     branch can run a light node (localize) cheap+fast and a hard node
     (propose_changes) deep. Not a prompt hint; a real subprocess setting."""
 
-    # Not every provider acts on this yet: see the 2026-09-24 concern on
-    # workflow nodes running in the host cwd (docs/concerns/).
     workflow_node: bool = False
     """Set by the run providers for a user universe's workflow node call.
 
-    Provider-agnostic marker; each provider applies its own confinement. A
-    CLI with no OS jail pins cwd to the universe and denies
-    :data:`HOST_REACH_TOOLS`."""
+    Provider-agnostic marker. The cross-user boundary does NOT depend on it:
+    every provider launch made for a universe is OS-jailed to that universe by
+    the shared spawn point, whatever its config (``provider_jail``). A provider
+    may use the mark to narrow further; claude pins cwd to the universe and
+    denies :data:`HOST_REACH_TOOLS`."""
 
     sandbox_workspace: bool = False
     # A chat turn (converse): still OS-isolated, but NOT handed the universe as a

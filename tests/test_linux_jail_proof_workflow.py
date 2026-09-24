@@ -41,11 +41,18 @@ _REPO = Path(__file__).resolve().parent.parent
 _WORKFLOW = _REPO / ".github" / "workflows" / "linux-jail-proof.yml"
 _SCRIPT = _REPO / "scripts" / "ci_assert_junit_case.py"
 _NODEID = "tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc"
-_FILES = ("tests/test_delivery_node_rpc.py", "tests/test_native_refresh_jail.py")
+_FILES = (
+    "tests/test_delivery_node_rpc.py",
+    "tests/test_native_refresh_jail.py",
+    "tests/test_provider_universe_jail.py",
+)
 _NODEIDS = (
     _NODEID,
     "tests/test_native_refresh_jail.py::test_jail_reads_workspace_but_not_launch_credentials",
     "tests/test_native_refresh_jail.py::test_removing_the_launch_mask_exposes_the_snapshot",
+    "tests/test_provider_universe_jail.py::test_claude_node_call_reads_only_its_own_universe",
+    "tests/test_provider_universe_jail.py::test_codex_node_call_reads_only_its_own_universe",
+    "tests/test_provider_universe_jail.py::test_router_jails_a_new_command_adapter_with_no_jail_code",
 )
 _RUN_STEP = "Run the jail proof modules"
 _JOB = "linux-jail-proof"
@@ -113,6 +120,11 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
         "tests/test_delivery_node_rpc.py",
         "tests/test_native_refresh_jail.py",
         "tinyassets/providers/codex_provider.py",
+        "tests/test_provider_universe_jail.py",
+        "tinyassets/providers/provider_jail.py",
+        "tinyassets/providers/owned_process.py",
+        "tinyassets/providers/router.py",
+        "tinyassets/providers/claude_provider.py",
     ):
         assert required in paths, f"{required} must retrigger the proof"
 

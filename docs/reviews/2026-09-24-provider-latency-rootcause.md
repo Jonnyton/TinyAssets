@@ -162,9 +162,11 @@ What is **not** changed:
 - No graph-shape limit.
 - Web tools (`WebSearch`/`WebFetch`), subagents, skills and every other
   owner-level capability stay as they were. `gather` keeps searching.
-- Codex does not act on the mark yet. Its equivalent is the OS jail, filed as
-  [a concern](../concerns/2026-09-24-codex-workflow-nodes-run-in-host-cwd.md).
-  The mark keeps the call sites vendor-neutral, as
+- Codex does not act on the mark. Its equivalent, the OS jail, was filed as a
+  concern and then built vendor-neutrally: every provider launch made for a
+  universe now runs in that universe's bubblewrap jail at the shared spawn
+  point (`tinyassets/providers/provider_jail.py`), whatever the vendor or the
+  mark. The mark keeps the call sites vendor-neutral, as
   `scripts/check_channel_agnostic.py` requires.
 
 Why this is the platform's call and not the owner's: the claude CLI has no OS

@@ -1,0 +1,276 @@
+"""A REAL bubblewrap proof that a provider launched for universe A sees only A.
+
+The exposure (2026-09-24): a workflow node's provider CLI ran in the daemon's
+working directory (``/app``, the platform source) as the daemon's user, with
+shell and file tools. It could list ``/data`` -- every universe -- and read the
+daemon's process environment. The fix is one OS jail at the shared spawn point
+(``tinyassets.providers.owned_process.aspawn_owned`` +
+``tinyassets.providers.provider_jail``), keyed on the owning universe the router
+binds, so every provider inherits it with no vendor code.
+
+Each case runs a SHIPPING launch path end to end -- the real adapter (or the
+real router), the real environment builder, the real owned-family spawn and the
+real jail -- with only the CLI binary replaced by a ``/bin/sh`` probe that
+reports what it could reach. Nothing about the jail is re-typed here.
+
+What the probe checks, from inside the provider process:
+
+* positive controls -- its own universe is readable AND writable, its own
+  launch credential is readable, its ``HOME`` exists, and it starts in its own
+  universe, so the negatives cannot pass because nothing was mounted;
+* universe B's file is unreadable, and B does not even appear in a listing of
+  the data root;
+* the platform source (this checkout's ``tinyassets/__init__.py``) is
+  unreadable;
+* another launch's credential snapshot in the SAME universe is masked;
+* no process environment outside the jail is readable: a sentinel process
+  carrying a marker in its environment stands in for the daemon.
+
+Before the change every negative reads ``READ``/``LEAK`` (the CLI ran on the
+host), so these cases are red on the unconfined tree.
+
+Linux + bwrap only; ``.github/workflows/linux-jail-proof.yml`` runs them and
+fails if any is absent or skipped. Every byte involved is synthetic.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+_BWRAP = shutil.which("bwrap") if sys.platform == "linux" else None
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux" or not _BWRAP,
+    reason="a real bubblewrap jail needs Linux + bwrap",
+)
+
+OWN_MARKER = "POSITIVE-CONTROL-OWN-UNIVERSE"
+FOREIGN_MARKER = "SYNTHETIC-UNIVERSE-B-CONTENT"
+OWN_CRED_MARKER = "SYNTHETIC-OWN-LAUNCH-CREDENTIAL"
+OTHER_CRED_MARKER = "SYNTHETIC-OTHER-LAUNCH-CREDENTIAL"
+ENV_MARKER = "TA_JAIL_SENTINEL_DAEMON_ENV_MARKER"
+
+
+@dataclass
+class _World:
+    data_root: Path
+    universe_a: Path
+    universe_b: Path
+    own_cred: Path
+    other_cred: Path
+    bin_dir: Path
+
+
+@pytest.fixture
+def world(monkeypatch: pytest.MonkeyPatch):
+    """Two universes under one data root, a fake CLI dir, a sentinel process.
+
+    Under ``/tmp`` (not ``tmp_path``) for the same reason as
+    ``tests/test_native_refresh_jail.py``: on the hosted runner's sudo fallback,
+    bwrap runs as root with only uid 0 mapped and cannot traverse the runner's
+    0750 home to reach a ``--basetemp`` under it.
+    """
+    from tinyassets.providers import base
+
+    root = Path(tempfile.mkdtemp(prefix="ta-universe-jail-", dir="/tmp"))
+    bin_dir = Path(tempfile.mkdtemp(prefix="ta-universe-jail-bin-", dir="/tmp"))
+    sentinel = None
+    try:
+        data_root = root / "data"
+        universe_a = data_root / "u-alpha"
+        universe_b = data_root / "u-bravo"
+        (universe_a / "notes").mkdir(parents=True)
+        (universe_b / "notes").mkdir(parents=True)
+        (universe_a / "notes" / "own.txt").write_text(OWN_MARKER, encoding="utf-8")
+        (universe_b / "notes" / "secret.txt").write_text(FOREIGN_MARKER, encoding="utf-8")
+        launch = universe_a / ".runtime" / "provider-launch-credentials"
+        own_cred = launch / "own-1"
+        other_cred = launch / "other-9"
+        own_cred.mkdir(parents=True)
+        other_cred.mkdir(parents=True)
+        (own_cred / "auth.json").write_text(
+            '{"note": "' + OWN_CRED_MARKER + '"}', encoding="utf-8",
+        )
+        (own_cred / "config.toml").write_text("", encoding="utf-8")
+        (other_cred / "auth.json").write_text(
+            '{"note": "' + OTHER_CRED_MARKER + '"}', encoding="utf-8",
+        )
+        # Stand-in for the daemon: a live process whose environment carries a
+        # marker that the provider's own environment never does.
+        sentinel = subprocess.Popen(  # noqa: S603 - fixed argv
+            ["/bin/sleep", "300"],
+            env={"PATH": "/usr/bin:/bin", ENV_MARKER: "1"},
+        )
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+        # The data root the platform would use is NOT this test's data root;
+        # the jail must hold regardless of where universes live.
+        base._sandbox_probe_cache = None
+        yield _World(data_root, universe_a, universe_b, own_cred, other_cred, bin_dir)
+    finally:
+        if sentinel is not None:
+            sentinel.kill()
+            sentinel.wait(timeout=10)
+        base._sandbox_probe_cache = None
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(bin_dir, ignore_errors=True)
+
+
+def _probe_body(world: _World) -> str:
+    """The shell that reports reachability as fixed tokens (no file content)."""
+    import tinyassets
+
+    source = Path(tinyassets.__file__).resolve()
+    own = world.universe_a / "notes" / "own.txt"
+    foreign = world.universe_b / "notes" / "secret.txt"
+    listing = f"ls '{world.data_root}' | grep -q '{world.universe_b.name}'"
+    environ = f"cat /proc/[0-9]*/environ | tr '\\000' '\\n' | grep -q '{ENV_MARKER}'"
+    return f"""
+r=""
+check() {{
+  name=$1; yes=$2; no=$3; shift 3
+  if "$@" >/dev/null 2>&1; then r="$r $name=$yes"; else r="$r $name=$no"; fi
+}}
+check own ok denied grep -qx '{OWN_MARKER}' '{own}'
+check write ok denied touch '{world.universe_a}/notes/.jail-write-probe'
+check foreign READ denied cat '{foreign}'
+check listing FOREIGN clean sh -c "{listing}"
+check source READ denied cat '{source}'
+check owncred ok denied grep -q '{OWN_CRED_MARKER}' '{world.own_cred}/auth.json'
+check othercred READ denied cat '{world.other_cred}/auth.json'
+check environ LEAK clean sh -c "{environ} 2>/dev/null"
+check home ok missing test -d "$HOME"
+case "$(pwd)" in '{world.universe_a}'*) r="$r cwd=own";; *) r="$r cwd=elsewhere";; esac
+"""
+
+
+def _install_cli(world: _World, name: str, emit: str) -> Path:
+    script = world.bin_dir / name
+    script.write_text("#!/bin/sh\n" + _probe_body(world) + emit, encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+_CLAUDE_EMIT = (
+    "printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\"}'\n"
+    "printf '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,"
+    "\"result\":\"%s\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\\n' \"$r\"\n"
+)
+_PLAIN_EMIT = "printf '%s\\n' \"$r\"\n"
+
+
+def _assert_confined(report: str, world: _World, *, own_credential: bool = True) -> None:
+    tokens = dict(item.split("=", 1) for item in report.split())
+    # Positive controls first: a jail that mounted nothing cannot pass.
+    assert tokens.get("own") == "ok", report
+    assert tokens.get("write") == "ok", report
+    # A launch with its own credential sees exactly that one; a launch with
+    # none sees no snapshot at all.
+    assert tokens.get("owncred") == ("ok" if own_credential else "denied"), report
+    assert tokens.get("home") == "ok", report
+    assert tokens.get("cwd") == "own", report
+    # The cross-user floor.
+    assert tokens.get("foreign") == "denied", report
+    assert tokens.get("listing") == "clean", report
+    assert tokens.get("source") == "denied", report
+    assert tokens.get("othercred") == "denied", report
+    assert tokens.get("environ") == "clean", report
+    assert FOREIGN_MARKER not in report and OTHER_CRED_MARKER not in report
+
+
+def test_claude_node_call_reads_only_its_own_universe(world: _World) -> None:
+    """The shipping claude adapter, a workflow-node call, inside the jail."""
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.claude_provider import ClaudeProvider
+    from tinyassets.providers.provider_jail import provider_launch_scope
+
+    _install_cli(world, "claude", _CLAUDE_EMIT)
+    config = ModelConfig(workflow_node=True, credential_snapshot_dir=world.own_cred)
+
+    async def drive():
+        with provider_launch_scope(world.universe_a, credential_dir=world.own_cred):
+            return await ClaudeProvider().complete(
+                "prompt", "", config, universe_dir=world.universe_a,
+            )
+
+    response = asyncio.run(drive())
+    _assert_confined(response.text, world)
+
+
+def test_codex_node_call_reads_only_its_own_universe(world: _World) -> None:
+    """The shipping codex adapter's ordinary (node) path, inside the jail."""
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.codex_provider import CodexProvider
+    from tinyassets.providers.provider_jail import provider_launch_scope
+
+    _install_cli(world, "codex", _PLAIN_EMIT)
+    config = ModelConfig(workflow_node=True, credential_snapshot_dir=world.own_cred)
+
+    async def drive():
+        with provider_launch_scope(world.universe_a, credential_dir=world.own_cred):
+            return await CodexProvider().complete(
+                "prompt", "", config, universe_dir=world.universe_a,
+            )
+
+    response = asyncio.run(drive())
+    _assert_confined(response.text, world)
+
+
+def test_router_jails_a_new_command_adapter_with_no_jail_code(world: _World) -> None:
+    """A provider that knows nothing about jails, called through the router.
+
+    The adapter below is what a future command-style provider looks like: it
+    builds an argv and spawns it through the shared helper. It names no
+    universe view, no mount and no sandbox flag. The ROUTER binds the owning
+    universe and the spawn point jails it.
+    """
+    from tinyassets.config import UniverseConfig
+    from tinyassets.providers.base import (
+        BaseProvider,
+        ProviderResponse,
+        UniverseContext,
+    )
+    from tinyassets.providers.owned_process import aspawn_owned, kill_owned_tree
+    from tinyassets.providers.router import ProviderRouter
+
+    cli = _install_cli(world, "future-cli", _PLAIN_EMIT)
+
+    class FutureCommandAdapter(BaseProvider):
+        name = "codex"  # occupies a judge slot; nothing codex-specific runs
+        family = "future"
+
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            proc = await aspawn_owned(
+                [str(cli)],
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={"PATH": "/usr/bin:/bin", "HOME": str(universe_dir)},
+            )
+            try:
+                stdout, _ = await proc.communicate()
+            finally:
+                kill_owned_tree(proc)
+            return ProviderResponse(
+                text=stdout.decode().strip(), provider=self.name, model="future",
+                family=self.family, latency_ms=1.0,
+            )
+
+    router = ProviderRouter(providers={"codex": FutureCommandAdapter()})
+    context = UniverseContext(
+        universe_dir=world.universe_a,
+        config=UniverseConfig(allowed_providers=["codex"]),
+    )
+    results = asyncio.run(
+        router.call_judge_ensemble("prompt", "", universe_context=context),
+    )
+    assert len(results) == 1, "the router dropped the only judge"
+    _assert_confined(results[0].text, world, own_credential=False)

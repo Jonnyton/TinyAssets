@@ -38,6 +38,7 @@ from tinyassets.providers.owned_process import (
     kill_owned_tree,
     no_window_kwargs,
 )
+from tinyassets.providers.provider_jail import JailMount, UniverseView
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -180,16 +181,16 @@ def _structured_failure_excerpt(stdout: bytes, stderr_text: str, *, machine: boo
     return _redacted_stderr_excerpt(stderr_text)
 
 
-def _codex_home_file_mounts(codex_home: Path) -> list[str]:
-    """``--ro-bind`` args for each regular file of the sealed snapshot."""
-    args: list[str] = []
+def _codex_home_file_mounts(codex_home: Path) -> list[JailMount]:
+    """A read-only bind for each regular file of the sealed snapshot."""
+    mounts: list[JailMount] = []
     for entry in sorted(codex_home.iterdir()):
         if entry.is_symlink() or not entry.is_file():
             continue
-        args.extend(("--ro-bind", str(entry), f"/codex-home/{entry.name}"))
-    if not args:
+        mounts.append(JailMount("ro-bind", f"/codex-home/{entry.name}", entry))
+    if not mounts:
         raise ProviderError("codex served sandbox found no credential files to mount")
-    return args
+    return mounts
 
 
 def _codex_sandbox_mounts(base_cmd: list[str]) -> tuple[Path, ...]:
@@ -749,6 +750,7 @@ class CodexProvider(BaseProvider):
             credential_snapshot_dir=config.credential_snapshot_dir,
         )
         machine_accounting = bool(config.sandbox_workspace)
+        binary_mounts: tuple[Path, ...] | None = None
         if config.sandbox_workspace:
             if universe_dir is None or use_shell or not sandbox_status.get("bwrap_available"):
                 raise ProviderError(
@@ -830,8 +832,9 @@ class CodexProvider(BaseProvider):
             "--ephemeral",
         ]
 
+        universe_view: UniverseView | None = None
         if config.sandbox_workspace:
-            inner_cmd = [*cmd, "-C", "/workspace"]
+            launch_cmd = [*cmd, "-C", "/workspace"]
             # A converse/chat turn is NOT a coding task: give codex an EMPTY
             # scratch /workspace (tmpfs) inside the same jail instead of the
             # universe, so it answers as a chat model rather than acting as a
@@ -840,78 +843,59 @@ class CodexProvider(BaseProvider):
             # codex chatted + recalled memory correctly). Coding turns
             # (run_graph etc.) keep the read-only universe workspace.
             workspace_mount = (
-                ["--tmpfs", "/workspace"]
+                JailMount("tmpfs", "/workspace")
                 if getattr(config, "sandbox_chat", False)
-                else ["--ro-bind", str(universe_root), "/workspace"]
+                else JailMount("ro-bind", "/workspace", universe_root)
             )
-            bwrap_cmd = [
-                bwrap_path,
-                "--die-with-parent",
-                "--new-session",
-                "--unshare-all",
-                "--share-net",
-                "--dev",
-                "/dev",
-                "--proc",
-                "/proc",
-                "--tmpfs",
-                "/tmp",
-                *workspace_mount,
-                "--tmpfs",
-                "/workspace/.runtime/provider-launch-credentials",
-                # CODEX_HOME is a private tmpfs with the snapshot's credential
-                # FILES bound read-only into it: codex >= 0.135's launcher
-                # takes `flock $CODEX_HOME/.lock` before starting, so a
-                # read-only home dir died instantly ("cannot open lock file
-                # /codex-home/.lock: Read-only file system", exit 73 in 56 ms
-                # -> "codex exhausted", live 2026-08-22). The credential bytes
-                # stay immutable; only scratch files can be created beside them.
-                "--tmpfs",
-                "/codex-home",
-                *_codex_home_file_mounts(codex_home),
-                "--setenv",
-                "CODEX_HOME",
-                "/codex-home",
-                "--setenv",
-                "HOME",
-                "/tmp",
-            ]
-            for system_path in (
-                "/usr",
-                "/bin",
-                "/lib",
-                "/lib64",
-                "/etc/ssl/certs",
-                "/etc/resolv.conf",
-                "/etc/hosts",
-                "/etc/nsswitch.conf",
-            ):
-                if Path(system_path).exists() or system_path == "/usr":
-                    bwrap_cmd.extend(("--ro-bind", system_path, system_path))
-            for binary_mount in binary_mounts:
-                if binary_mount == Path("/usr"):
-                    continue
-                if binary_mount.parent == Path("/opt"):
-                    bwrap_cmd.extend(("--dir", "/opt"))
-                bwrap_cmd.extend(
-                    ("--ro-bind", str(binary_mount), str(binary_mount))
-                )
-            cmd_with_cwd = [*bwrap_cmd, "--", *inner_cmd]
+            # This adapter's own view of its universe inside the shared jail
+            # (tinyassets.providers.provider_jail): narrower than the default,
+            # never wider -- every bind below comes from inside universe_root.
+            universe_view = UniverseView(
+                universe_dir=universe_root,
+                mounts=(
+                    workspace_mount,
+                    JailMount(
+                        "tmpfs", "/workspace/.runtime/provider-launch-credentials",
+                    ),
+                    # CODEX_HOME is a private tmpfs with the snapshot's credential
+                    # FILES bound read-only into it: codex >= 0.135's launcher
+                    # takes `flock $CODEX_HOME/.lock` before starting, so a
+                    # read-only home dir died instantly ("cannot open lock file
+                    # /codex-home/.lock: Read-only file system", exit 73 in 56 ms
+                    # -> "codex exhausted", live 2026-08-22). The credential bytes
+                    # stay immutable; only scratch files can be created beside them.
+                    JailMount("tmpfs", "/codex-home"),
+                    *_codex_home_file_mounts(codex_home),
+                ),
+                chdir="/workspace",
+                setenv=(("CODEX_HOME", "/codex-home"), ("HOME", "/tmp")),
+            )
             proc_env["CODEX_HOME"] = "/codex-home"
             proc_env["HOME"] = "/tmp"
         else:
-            cmd_with_cwd = [*cmd, "-C", _codex_workdir()]
+            # A universe's call runs in that universe (the shared jail binds
+            # nothing else); only a host call keeps the source checkout.
+            workdir = str(universe_dir) if universe_dir is not None else _codex_workdir()
+            launch_cmd = [*cmd, "-C", workdir]
         # Spawn as an owned FAMILY: on POSIX a live anchor holds the group id
         # so teardown reaches what the CLI starts without ever naming a group
         # integer that could have been recycled. Fails closed if it cannot.
+        # The shared spawn point jails every launch made for a universe; this
+        # adapter only names where its own install lives (the wrapper script
+        # execs a binary the generic command lookup cannot see).
         proc = await aspawn_owned(
-            cmd_with_cwd,
+            launch_cmd,
             shell=use_shell,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=_STDOUT_READER_LIMIT,
             env=proc_env,
+            universe_view=universe_view,
+            install_mounts=(
+                (lambda: binary_mounts) if binary_mounts is not None
+                else (lambda: _codex_sandbox_mounts(base_cmd))
+            ),
         )
 
         # EVERY exit -- success, classified raise, cancellation -- ends the

@@ -57,6 +57,10 @@ from tinyassets.providers.diagnostics import (
     finite_progress_age_ms,
     redacted_failure_detail,
 )
+from tinyassets.providers.provider_jail import (
+    ProviderConfinementError,
+    provider_launch_scope,
+)
 from tinyassets.providers.quota import (
     COOLDOWN_OTHER,
     COOLDOWN_TIMEOUT,
@@ -1200,9 +1204,15 @@ class ProviderRouter:
                         if _work_agent_observer is not None:
                             _work_agent_observer(invocation_carrier, None, cfg)
                         provider_started = True
-                        resp = await provider.complete(
-                            prompt, system, cfg, universe_dir=universe_dir,
-                        )
+                        # The owning universe for every process this call
+                        # launches; the shared spawn point jails to it, or
+                        # refuses a launch with none (provider_jail).
+                        with provider_launch_scope(
+                            universe_dir, credential_dir=cfg.credential_snapshot_dir,
+                        ):
+                            resp = await provider.complete(
+                                prompt, system, cfg, universe_dir=universe_dir,
+                            )
                 except _ProviderBusy:
                     # Not a provider failure: nothing launched, so the reservation is
                     # released untouched, no cooldown is applied, and the actionable
@@ -1241,7 +1251,9 @@ class ProviderRouter:
                         # as "budget exhausted" while actually having capacity.
                         # Only a failure AFTER the call began (genuinely unknown
                         # usage) is conservatively consumed.
-                        if not provider_started or isinstance(exc, ProviderUnavailableError):
+                        if not provider_started or isinstance(
+                            exc, (ProviderUnavailableError, ProviderConfinementError),
+                        ):
                             release_served_provider_budget(
                                 universe_dir.parent,
                                 budget_reservation,
@@ -1252,7 +1264,9 @@ class ProviderRouter:
                                 budget_reservation,
                             )
                     if invocation_carrier is not None:
-                        if not provider_started:
+                        # A confinement refusal is raised before any process
+                        # exists, so it launched nothing either.
+                        if not provider_started or isinstance(exc, ProviderConfinementError):
                             settle_carrier(
                                 ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
                                 input_tokens=0, output_tokens=0, cost_microunits=0,
@@ -1794,9 +1808,12 @@ class ProviderRouter:
                 # measured). ASYNC form — a blocking acquire stalls the event loop, and
                 # this method gathers admission-taking tasks onto one loop.
                 async with _provider_slot(nested=_is_nested(universe_context)):
-                    resp = await provider.complete(
-                        prompt, system, cfg, universe_dir=universe_dir,
-                    )
+                    with provider_launch_scope(
+                        universe_dir, credential_dir=cfg.credential_snapshot_dir,
+                    ):
+                        resp = await provider.complete(
+                            prompt, system, cfg, universe_dir=universe_dir,
+                        )
                 self._quota.record_success(provider_name)
                 return resp.text, provider_name, self._call_meta(resp, attempts=tried)
             except ProviderAuthorityHeldError:
@@ -2188,11 +2205,18 @@ class ProviderRouter:
                 # measured). ASYNC form — a blocking acquire stalls the event loop, and
                 # this method gathers admission-taking tasks onto one loop.
                 async with _provider_slot(nested=_is_nested(universe_context)):
-                    resp = await provider.complete(
-                        prompt, system, cfg, universe_dir=universe_dir,
-                    )
+                    with provider_launch_scope(
+                        universe_dir, credential_dir=cfg.credential_snapshot_dir,
+                    ):
+                        resp = await provider.complete(
+                            prompt, system, cfg, universe_dir=universe_dir,
+                        )
                 self._quota.record_success(name)
                 return resp
+            except ProviderConfinementError:
+                # Refused before anything launched: a host fact, not this
+                # provider's. No cooldown; surface it rather than an empty panel.
+                raise
             except _ProviderBusy:
                 # The judge fan-out had no busy guard, so saturation returned an empty
                 # ensemble AND cooled a provider that never ran: `result=[]`,
