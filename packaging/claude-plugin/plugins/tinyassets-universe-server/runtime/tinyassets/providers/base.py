@@ -12,7 +12,7 @@ import os
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, get_args
 
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 
@@ -50,6 +50,11 @@ StreamEventKind = Literal[
                        # proves the CLI is alive and working, so it resets the
                        # idle watchdog, but its content is NEVER relayed.
     "result",          # terminal result event (canonical response)
+    "declared_busy",   # a DOCUMENTED provider busy status (system/status
+                       # ``compacting``): liveness + opens a bounded declared-
+                       # busy allowance in the reader; never relayed.
+    "declared_clear",  # the explicit clear of that status (``status: null`` /
+                       # ``compact_boundary``): liveness, ends the allowance.
     "ignored",         # whitespace / unparseable-suppressed / non-liveness —
                        # do NOT reset
 ]
@@ -62,7 +67,20 @@ StreamEventKind = Literal[
 LIVENESS_EVENT_KINDS: frozenset[str] = frozenset({
     "init", "text_delta", "tool_use", "tool_result", "api_retry",
     "heartbeat", "result",
+    # A DOCUMENTED provider busy status (``system/status`` ``compacting``) and
+    # its explicit clear (``status: null`` / ``compact_boundary``). Liveness,
+    # never relayed; the busy one also opens a bounded declared-busy allowance
+    # in the reader (same bound shape as a tool wait, never past the cap).
+    "declared_busy", "declared_clear",
 })
+
+# Internal-contract guard: every liveness kind is a declared stream event kind,
+# and ``ignored`` never counts as liveness. Import-time so a drift between the
+# two definitions fails loudly instead of silently never resetting the watchdog.
+assert LIVENESS_EVENT_KINDS <= frozenset(get_args(StreamEventKind)), (
+    sorted(LIVENESS_EVENT_KINDS - frozenset(get_args(StreamEventKind)))
+)
+assert "ignored" not in LIVENESS_EVENT_KINDS
 
 #: Structured failure classes derived from the stream + process exit. These
 #: replace the substring ``"exhausted" -> capacity`` heuristic.

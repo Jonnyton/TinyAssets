@@ -1,0 +1,142 @@
+name: Cloud pre-push oracle
+
+# Why this exists
+# ---------------
+# `scripts/linux_oracle.py` proves a candidate on Linux before pushing, but it
+# needs LOCAL Docker. Some lanes may not run Docker, WSL or any local service,
+# and still must test the actual working candidate on Linux BEFORE its runtime
+# code is pushed. This is that oracle, hosted only:
+#
+#   * manually dispatched, GitHub-hosted ubuntu, `contents: read` only;
+#   * no `environment:`, no secrets, GitHub-hosted runner only, no services;
+#   * TWO checkouts, both with credentials removed:
+#       - `tooling/`   the WORKFLOW revision (github.sha). The gate helper
+#                      runs from here, so the candidate base never needs to
+#                      contain it -- older base commits work.
+#       - `candidate/` the IMMUTABLE base sha, checked out only AFTER the
+#                      trusted helper has validated the sha input as full
+#                      40-hex;
+#   * Python 3.11 + dev deps are installed in `candidate/` BEFORE the untrusted
+#     patch touches the tree;
+#   * the candidate arrives as base64 raw-or-gzip unified patch + SHA256,
+#     bounded to 60000 encoded chars and 256 KiB uncompressed,
+#     is materialized under `runner.temp`, and applied with
+#     `git apply --check` then `git apply` (never the unsafe-paths flag);
+#   * selected pytest node ids arrive as JSON and are validated by the helper
+#     (relative, under `tests/`, no option-like / absolute / traversal tokens);
+#   * the temp root lives outside both checkouts; JUnit is uploaded; the
+#     report states base sha, patch sha256 and pass/fail/skip counts.
+#
+# Inputs reach shell ONLY via `env:`; no `${{ inputs.* }}` appears in any
+# `run:` block. Every subprocess in the helper is an exact argv list.
+# A failure or a skip is NEVER relabelled as proof: the job fails unless every
+# selected test passed. This workflow never publishes, tags or deploys.
+#
+# Usage: docs/reference/cloud-prepush-oracle.md
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: 'Immutable base: full 40-hex commit sha already on GitHub'
+        required: true
+        type: string
+      patch_b64:
+        description: 'base64 raw-or-gzip patch vs base_sha (60000 chars, 256 KiB uncompressed)'
+        required: true
+        type: string
+      patch_sha256:
+        description: 'SHA256 hex of the UNCOMPRESSED patch bytes'
+        required: true
+        type: string
+      tests_json:
+        description: 'JSON array of pytest node ids under tests/ (max 64)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  oracle:
+    name: Cloud pre-push oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ORACLE_BASE_SHA: ${{ inputs.base_sha }}
+      ORACLE_PATCH_B64: ${{ inputs.patch_b64 }}
+      ORACLE_PATCH_SHA256: ${{ inputs.patch_sha256 }}
+      ORACLE_TESTS_JSON: ${{ inputs.tests_json }}
+      ORACLE_TOOLING: ${{ github.workspace }}/tooling
+      ORACLE_CANDIDATE: ${{ github.workspace }}/candidate
+      ORACLE_HELPER: ${{ github.workspace }}/tooling/scripts/cloud_prepush_oracle.py
+
+    steps:
+      - name: Checkout trusted tooling at the workflow revision (credentials not persisted)
+        uses: actions/checkout@v4
+        with:
+          path: tooling
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate base_sha input (trusted helper, before any candidate checkout)
+        run: python "$ORACLE_HELPER" validate-base
+
+      - name: Checkout immutable candidate base (credentials not persisted)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_sha }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: candidate/pyproject.toml
+
+      - name: Install candidate dev deps (before the patch touches the tree)
+        working-directory: candidate
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Validate inputs and materialize the patch under runner.temp
+        run: python "$ORACLE_HELPER" materialize --work "$RUNNER_TEMP/oracle" --repo "$ORACLE_CANDIDATE"
+
+      - name: Apply candidate (git apply --check, then git apply)
+        run: python "$ORACLE_HELPER" apply --work "$RUNNER_TEMP/oracle" --repo "$ORACLE_CANDIDATE"
+
+      - name: Run selected tests (temp root outside both checkouts)
+        env:
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/oracle/ta-data
+          TMPDIR: ${{ runner.temp }}/oracle/tmp
+        run: |
+          mkdir -p "$TINYASSETS_DATA_DIR" "$TMPDIR"
+          python "$ORACLE_HELPER" run --work "$RUNNER_TEMP/oracle" --repo "$ORACLE_CANDIDATE"
+
+      - name: Report (fails unless every selected test passed)
+        if: always()
+        run: python "$ORACLE_HELPER" report --work "$RUNNER_TEMP/oracle"
+
+      - name: Upload JUnit and result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-prepush-oracle-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/oracle/junit.xml
+            ${{ runner.temp }}/oracle/result.json
+            ${{ runner.temp }}/oracle/manifest.json
+          if-no-files-found: ignore
+
+# Reading the result
+# ------------------
+#   PROOF      every selected test passed on Linux at base+patch. The step
+#              summary carries the exact base sha and patch sha256 -- cite them.
+#   NOT-PROOF  something failed, errored, skipped or did not run. A skipped
+#              test is not a passed test; read the JUnit artifact.
+#   REJECTED   (exit 2 at validate-base or materialize) an input failed
+#              validation: bad sha, oversized or corrupt patch, hash mismatch,
+#              path outside tinyassets/ tests/ scripts/, option-like node id.
