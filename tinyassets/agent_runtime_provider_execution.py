@@ -80,6 +80,47 @@ from tinyassets.storage.provider_work_authority import (
     _reservation_record,
 )
 
+# ── native tool floor for governed agent invocations ────────────────────────
+# This path runs a native provider CLI on the universe's own host, so the model
+# tools it is handed are the whole filesystem boundary -- there is no bwrap for
+# the claude CLI. It previously denied only Bash/Write/Edit/NotebookEdit, which
+# left `Read`, `Glob`, `Grep`, `LS` and `Monitor` (which RUNS SHELL, see
+# universe_intelligence) usable, so foreign-authored remixed graph content could
+# read native credential material off disk and exfiltrate it through the
+# explicitly authorized WebFetch egress. The canonical floor is
+# `universe_intelligence._ENGINE_DISALLOWED_TOOLS`; it is REUSED rather than
+# re-listed so a tool added there can never be silently missing here.
+#
+# The one documented divergence is WebSearch: the engine turn is web-via-WebFetch
+# only, while this path is explicitly authorized for WebSearch as well, so every
+# allowed tool is subtracted from the floor instead of the floor being copied.
+# No model tool is added by this change.
+#
+# Denying `mcp__*` closes a second, real leak rather than being a no-op. This
+# path configures no MCP server of its own, but the claude CLI still loads the
+# logged-in claude.ai account's MCP connectors: `--setting-sources project` only
+# strips settings-file servers, and this path passes no `--strict-mcp-config`
+# (claude_provider adds that only for the engine-MCP turn). Without the wildcard
+# deny those account connectors would be callable from foreign graph content.
+AGENT_INVOCATION_ALLOWED_TOOLS: tuple[str, ...] = ("WebFetch", "WebSearch")
+
+
+def _agent_invocation_disallowed_tools() -> tuple[str, ...]:
+    """Canonical engine tool floor minus this path's explicitly allowed tools.
+
+    Imported at call time: ``universe_intelligence`` is a large module with its
+    own API-surface imports, and importing this module does not load it today,
+    so a module-level import would add that edge (and a cycle risk) for a tuple
+    that is only needed when a provider call is actually built.
+    """
+
+    from tinyassets.universe_intelligence import _ENGINE_DISALLOWED_TOOLS
+
+    allowed = {tool.casefold() for tool in AGENT_INVOCATION_ALLOWED_TOOLS}
+    return tuple(
+        tool for tool in _ENGINE_DISALLOWED_TOOLS if tool.casefold() not in allowed
+    )
+
 
 class AgentRuntimeProviderExecutionBlocked(PermissionError):
     """Raised when admitted work no longer has exact current authority."""
@@ -632,8 +673,8 @@ class AgentRuntimeProviderExecutionService:
             max_tokens=prepared.max_tokens,
             temperature=universe_config.temperature,
             sandbox_workspace=True,
-            allowed_tools=("WebFetch", "WebSearch"),
-            disallowed_tools=("Bash", "Write", "Edit", "NotebookEdit"),
+            allowed_tools=AGENT_INVOCATION_ALLOWED_TOOLS,
+            disallowed_tools=_agent_invocation_disallowed_tools(),
         )
         try:
             response = router.call_sync(

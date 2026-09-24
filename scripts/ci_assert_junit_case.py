@@ -1,14 +1,17 @@
-"""Require one named pytest case to be PRESENT and CLEAN in a JUnit report.
+"""Require named pytest cases to be PRESENT and CLEAN in a JUnit report.
 
-Used by `.github/workflows/linux-jail-proof.yml`. The case it guards is
+Used by `.github/workflows/linux-jail-proof.yml`. The cases it guards are
 `skipif`-gated on the presence of `bwrap`, so a green pytest exit code proves
-nothing about it: pytest exits 0 when a test skips. This script is the part of
+nothing about them: pytest exits 0 when a test skips. This script is the part of
 the job that refuses to read a skip as a pass.
 
+``--nodeid`` is repeatable. Every named case is checked on its own and the worst
+verdict is the exit code, so one clean case never covers for another.
+
 Exit codes:
-    0  the case is present at least once and every occurrence has no
+    0  every case is present at least once and every occurrence has no
        <skipped>, <failure> or <error> child.
-    1  the case is absent, or any occurrence skipped / failed / errored.
+    1  some case is absent, or any occurrence skipped / failed / errored.
     2  the JUnit file is missing or not parseable (the run never got that far).
 
 Matching is by pytest's xunit1 attributes: ``name`` is the test function name
@@ -67,18 +70,21 @@ def check(junit: Path, nodeid: str) -> tuple[int, str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--junit", required=True, type=Path)
-    parser.add_argument("--nodeid", required=True)
+    parser.add_argument("--nodeid", required=True, action="append",
+                        help="a case that must be present and clean; repeatable")
     parser.add_argument("--summary", type=Path, default=None,
-                        help="append a one-line markdown verdict here")
+                        help="append a one-line markdown verdict per case here")
     ns = parser.parse_args(argv)
-    code, message = check(ns.junit, ns.nodeid)
-    verdict = "PASS" if code == 0 else "FAIL"
-    line = f"linux-jail-proof {verdict}: {message}"
-    print(line)
-    if ns.summary is not None:
-        with ns.summary.open("a", encoding="utf-8") as handle:
-            handle.write(f"- **{verdict}** `{ns.nodeid}` — {message}\n")
-    return code
+    worst = 0
+    for nodeid in ns.nodeid:
+        code, message = check(ns.junit, nodeid)
+        worst = max(worst, code)
+        verdict = "PASS" if code == 0 else "FAIL"
+        print(f"linux-jail-proof {verdict}: {message}")
+        if ns.summary is not None:
+            with ns.summary.open("a", encoding="utf-8") as handle:
+                handle.write(f"- **{verdict}** `{nodeid}` — {message}\n")
+    return worst
 
 
 if __name__ == "__main__":

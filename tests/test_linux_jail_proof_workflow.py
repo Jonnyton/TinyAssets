@@ -1,9 +1,10 @@
 """Shape invariants for .github/workflows/linux-jail-proof.yml.
 
-The job exists because `required-tests` records
-`tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc`
-as SKIPPED (no bubblewrap on the hosted image), and a skip is invisible in a
-green run. Each assertion here pins a property whose loss would turn the job
+The job exists because `required-tests` records every bwrap-gated jail proof
+(`tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc`
+and the codex coding-turn cases in `tests/test_native_refresh_jail.py`) as
+SKIPPED (no bubblewrap on the hosted image), and a skip is invisible in a green
+run. Each assertion here pins a property whose loss would turn the job
 back into decoration or widen it past "cloud-only test infrastructure":
 
   - it fires on PRs touching the jail/delivery slice and on manual dispatch,
@@ -13,14 +14,15 @@ back into decoration or widen it past "cloud-only test infrastructure":
     no persisted credentials, no secrets, no environment, no container;
   - it never relaxes kernel/AppArmor protection and never adds a privileged
     daemon: the only escalation is `sudo -n` on the same bwrap/pytest argv;
-  - it runs ONLY the delivery RPC module, never the suite or the required gate;
-  - its verdict is the named-case JUnit assertion, run `always()`, so pytest's
-    exit 0 on a skip cannot pass the job;
+  - it runs ONLY the named jail-proof modules, never the suite or the required
+    gate;
+  - its verdict is the named-case JUnit assertion over EVERY guarded case, run
+    `always()`, so pytest's exit 0 on a skip cannot pass the job;
   - no `run:` block interpolates a `${{ }}` expression (values reach the shell
     through `env:` only).
 
 The assertion helper is exercised on synthetic xunit1 reports for every state
-it must distinguish, and the guarded nodeid is checked against the test source
+it must distinguish, and every guarded nodeid is checked against the test source
 so a rename cannot leave the workflow asserting a case that no longer exists.
 
 PyYAML is imported hard: skipping this file is how the invariants would go quiet.
@@ -38,8 +40,14 @@ import yaml
 _REPO = Path(__file__).resolve().parent.parent
 _WORKFLOW = _REPO / ".github" / "workflows" / "linux-jail-proof.yml"
 _SCRIPT = _REPO / "scripts" / "ci_assert_junit_case.py"
-_TARGET_TEST = _REPO / "tests" / "test_delivery_node_rpc.py"
 _NODEID = "tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc"
+_FILES = ("tests/test_delivery_node_rpc.py", "tests/test_native_refresh_jail.py")
+_NODEIDS = (
+    _NODEID,
+    "tests/test_native_refresh_jail.py::test_jail_reads_workspace_but_not_launch_credentials",
+    "tests/test_native_refresh_jail.py::test_removing_the_launch_mask_exposes_the_snapshot",
+)
+_RUN_STEP = "Run the jail proof modules"
 _JOB = "linux-jail-proof"
 
 _spec = importlib.util.spec_from_file_location("ci_assert_junit_case", _SCRIPT)
@@ -103,6 +111,8 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
         "scripts/ci_assert_junit_case.py",
         "tinyassets/node_sandbox.py",
         "tests/test_delivery_node_rpc.py",
+        "tests/test_native_refresh_jail.py",
+        "tinyassets/providers/codex_provider.py",
     ):
         assert required in paths, f"{required} must retrigger the proof"
 
@@ -169,18 +179,32 @@ def test_run_blocks_never_interpolate_expressions():
 
 # --- what it runs -----------------------------------------------------------
 
-def test_env_pins_the_single_test_file_and_the_named_case():
+def test_env_pins_the_test_files_and_every_named_case():
     env = _load()["env"]
-    assert env["JAIL_TEST_FILE"] == "tests/test_delivery_node_rpc.py"
-    assert env["JAIL_TEST_NODEID"] == _NODEID
+    assert "JAIL_TEST_FILE" not in env and "JAIL_TEST_NODEID" not in env
+    assert tuple(env["JAIL_TEST_FILES"].split()) == _FILES
+    assert tuple(env["JAIL_TEST_NODEIDS"].split()) == _NODEIDS
 
 
-def test_guarded_nodeid_resolves_to_a_bwrap_gated_test():
-    src = _TARGET_TEST.read_text(encoding="utf-8")
-    name = _NODEID.split("::")[-1]
-    match = re.search(rf'@pytest\.mark\.skipif\(not shutil\.which\("bwrap"\)[^\n]*\n'
-                      rf'def {re.escape(name)}\(', src)
-    assert match, f"{name} must exist and be skipif-gated on bwrap"
+def test_every_guarded_file_runs_and_retriggers_the_proof():
+    wf = _load()
+    files = set(wf["env"]["JAIL_TEST_FILES"].split())
+    paths = set(_triggers(wf)["pull_request"]["paths"])
+    for nodeid in wf["env"]["JAIL_TEST_NODEIDS"].split():
+        path = nodeid.split("::")[0]
+        assert path in files, f"{nodeid} is asserted but its file is never run"
+        assert path in paths, f"{path} must retrigger the proof"
+
+
+@pytest.mark.parametrize("nodeid", _NODEIDS)
+def test_guarded_nodeid_resolves_to_a_bwrap_gated_test(nodeid):
+    path, name = nodeid.split("::")[0], nodeid.split("::")[-1]
+    src = (_REPO / path).read_text(encoding="utf-8")
+    assert re.search(rf"^def {re.escape(name)}\(", src, re.M), f"{name} must exist"
+    decorated = re.search(rf'@pytest\.mark\.skipif\(not shutil\.which\("bwrap"\)[^\n]*\n'
+                          rf'def {re.escape(name)}\(', src)
+    module_gate = re.search(r"^pytestmark = pytest\.mark\.skipif\(\n[^)]*_BWRAP", src, re.M)
+    assert decorated or module_gate, f"{name} must be skipif-gated on bwrap"
 
 
 def test_bubblewrap_installed_and_functionally_probed_before_pytest():
@@ -195,14 +219,15 @@ def test_bubblewrap_installed_and_functionally_probed_before_pytest():
     assert 'runner=' in probe["run"]
     assert (_step_index(wf, "Install bubblewrap")
             < _step_index(wf, "Probe the jail")
-            < _step_index(wf, "Run the delivery RPC module"))
+            < _step_index(wf, _RUN_STEP))
 
 
 def test_pytest_step_is_focused_and_off_repo():
-    step = _step(_load(), "Run the delivery RPC module")
+    step = _step(_load(), _RUN_STEP)
     run = step["run"]
     env = step["env"]
-    assert '"$JAIL_TEST_FILE"' in run
+    assert 'read -r -a files <<< "$JAIL_TEST_FILES"' in run
+    assert 'args=("${files[@]}"' in run
     assert "ci_required_tests.py" not in run, "never the required gate"
     assert not re.search(r"pytest\s+tests(\s|$|/?\")", run), "never the whole suite"
     assert "--junitxml" in run and "--basetemp" in run
@@ -219,11 +244,13 @@ def test_pytest_step_is_focused_and_off_repo():
 
 def test_assertion_step_always_runs_and_names_the_case():
     wf = _load()
-    step = _step(wf, "Assert the real-jail case")
+    step = _step(wf, "Assert every real-jail case")
     assert step["if"] == "always()"
     assert "scripts/ci_assert_junit_case.py" in step["run"]
-    assert '--nodeid "$JAIL_TEST_NODEID"' in step["run"]
-    run_step = _step(wf, "Run the delivery RPC module")
+    assert 'read -r -a nodeids <<< "$JAIL_TEST_NODEIDS"' in step["run"]
+    assert 'nodeid_args+=(--nodeid "$nodeid")' in step["run"]
+    assert '"${nodeid_args[@]}"' in step["run"]
+    run_step = _step(wf, _RUN_STEP)
     assert step["env"]["JUNIT_PATH"] == run_step["env"]["JUNIT_PATH"]
 
 
@@ -303,6 +330,39 @@ def test_assertion_helper_main_writes_summary_and_exit_code(tmp_path):
     assert rc == 1
     line = summary.read_text(encoding="utf-8")
     assert line.startswith("- **FAIL**") and _NODEID in line and "no bwrap" in line
+
+
+_OTHER_NODEID = (
+    "tests/test_native_refresh_jail.py::test_removing_the_launch_mask_exposes_the_snapshot"
+)
+_OTHER_CASE = ('<testcase classname="tests.test_native_refresh_jail" '
+               'name="test_removing_the_launch_mask_exposes_the_snapshot" time="0.1">'
+               '{inner}</testcase>')
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "code"),
+    [
+        pytest.param("", "", 0, id="both-passed"),
+        pytest.param("", '<skipped message="no bwrap"/>', 1, id="one-skip-fails-the-run"),
+        pytest.param('<failure message="boom"/>', "", 1, id="first-bad-second-clean"),
+    ],
+)
+def test_assertion_helper_checks_every_repeated_nodeid(tmp_path, first, second, code):
+    summary = tmp_path / "summary.md"
+    junit = _junit(tmp_path, _CASE.format(inner=first), _OTHER_CASE.format(inner=second))
+    rc = _assert.main(["--junit", str(junit), "--nodeid", _NODEID,
+                       "--nodeid", _OTHER_NODEID, "--summary", str(summary)])
+    assert rc == code
+    lines = summary.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2, "one verdict line per guarded case"
+    assert _NODEID in lines[0] and _OTHER_NODEID in lines[1]
+
+
+def test_assertion_helper_absent_second_case_fails(tmp_path):
+    junit = _junit(tmp_path, _CASE.format(inner=""))
+    rc = _assert.main(["--junit", str(junit), "--nodeid", _NODEID, "--nodeid", _OTHER_NODEID])
+    assert rc == 1
 
 
 def test_assertion_helper_rejects_malformed_nodeid(tmp_path):
