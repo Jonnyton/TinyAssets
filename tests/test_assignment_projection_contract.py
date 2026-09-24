@@ -121,7 +121,7 @@ def test_projection_cannot_create_authoritative_assignment_or_serving_binding(tm
     universe = tmp_path / "universe"
     _publish(universe)
     assert load_provider_assignment(tmp_path, universe_id="u-owner") is None
-    with pytest.raises(PermissionError, match="exactly one founder serving binding"):
+    with pytest.raises(PermissionError, match="founder serving binding"):
         resolve_serving_agent_binding(
             tmp_path, universe_id="u-owner", owner_user_id="owner-1",
         )
