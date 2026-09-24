@@ -753,6 +753,8 @@ def _transport(repo: str = "owner/name", **over):
 
     kwargs = {
         "curl_version_text": "libcurl/8.5.0",
+        # Required: the host is the connection's, never a platform default.
+        "host": "github.com",
         "resolver": lambda h, p: ["140.82.121.4", "140.82.121.3"],
         "classifier": _classifier_stub,
     }

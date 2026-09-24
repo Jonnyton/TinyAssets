@@ -290,16 +290,46 @@ def _validated_action(raw: Any) -> dict[str, Any]:
             "scopes": [],
             "access": "full",
             "hosts": [endpoint["host"] for endpoint in endpoints],
+            **_validated_git_host(action),
         }
     endpoints = _validated_endpoint_list(action)
+    git_host = _validated_git_host(action)
+    if git_host and not action.get("scopes"):
+        # A declared git host is where the owner's key is SENT for git. On an
+        # exact ask with no git scope it authorizes nothing, so it would be a
+        # destination stored without a purpose -- and later scope-only
+        # extensions would inherit it (Tier 2 review round 1, BLOCK).
+        raise ValueError(
+            "git_host names where git sends this key; an exact ask with no git "
+            "scope has no use for it -- add the git scopes it is for, or drop it"
+        )
     return {
         "type": "connect_http",
         "destination": destination,
         "auth_scheme": scheme,
         "endpoints": endpoints,
-        "scopes": _validated_git_scopes(action, endpoints),
+        "scopes": _validated_git_scopes(
+            action, endpoints, git_host=git_host.get("git_host", "")
+        ),
         "access": "exact",
+        **git_host,
     }
+
+
+def _validated_git_host(action: dict[str, Any]) -> dict[str, str]:
+    """``{"git_host": host}`` when the ask declares where git goes, else ``{}``.
+
+    Optional on any deposit, for any service: a forge whose git transport is
+    not its API host says so here, and the owner reads it in the grant. There
+    is no per-service default.
+    """
+    from tinyassets.storage.workspace_authority import GitScopeError, normalize_git_host
+
+    try:
+        host = normalize_git_host(action.get("git_host"))
+    except GitScopeError as exc:
+        raise ValueError(str(exc)) from None
+    return {"git_host": host} if host else {}
 
 
 def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
@@ -397,6 +427,7 @@ def _validated_git_scopes(
     endpoints: list[dict[str, Any]],
     *,
     host_checked: bool = True,
+    git_host: str = "",
 ) -> list[str]:
     """The git scopes an http ask may carry, validated the way the deposit will.
 
@@ -437,12 +468,11 @@ def _validated_git_scopes(
     # DEPOSIT checks the connection's stored set instead. Skipping it here
     # cannot widen anything - the ledger refuses the write either way.
     if host_checked and scopes and not endpoints_allow_git_scopes(
-        [str(endpoint.get("host") or "") for endpoint in endpoints]
+        [str(endpoint.get("host") or "") for endpoint in endpoints], git_host
     ):
         raise ValueError(
             "a git scope needs every endpoint of the same ask to be on ONE host "
-            "(any host); ask for the git scope on the connection that reaches "
-            "the forge"
+            "(any host), or a git_host on the connect ask naming where git lives"
         )
     return sorted(set(scopes))
 
@@ -745,6 +775,12 @@ def request_from_user(
         refused = _model_use_refusal(_uid, action)
         if refused is not None:
             return refused
+    if action.get("type") == "grant_workspace_consent":
+        host = _owned_connection_git_host(action["connection_id"])
+        if not host:
+            # Uniform with the answer path: never name "the connection's host".
+            return {"error": "not_found", "resource": "connection"}
+        action = {**action, "host": host}
     if action.get("type") == "remove_http":
         from tinyassets.api.helpers import _base_path
         from tinyassets.api.http_connection import _ids
@@ -758,6 +794,18 @@ def request_from_user(
         held = _extend_ask_verdict(_uid, action, captured_preview=captured_preview)
         if held is not None:
             return held
+        if _grants_git(action):
+            # The owner must read WHERE git will send the key before saying yes
+            # to a git scope (Tier 2 review round 1, BLOCK): the stored
+            # connection's resolved git host, from the same preview that
+            # admitted the ask.
+            scope_host = str(captured_preview.get("git_host") or "").strip()
+            if not scope_host:
+                return _bad(
+                    "this connection names no git host, so a git scope on it "
+                    "cannot be granted; reconnect it with git_host"
+                )
+            action = {**action, "git_scope_host": scope_host}
         if any(e.get("redirect_mode") == "public_https_get" for e in action["endpoints"]):
             # Capture the same preview that admitted the ask. Agent-supplied
             # snapshots are never accepted by action normalization.
@@ -819,6 +867,29 @@ def request_from_user(
     return {**row, "grant_sentence": _grant_sentence(row)}
 
 
+def _owned_connection_git_host(connection_id: str) -> str:
+    """The resolved git host of the caller's own live connection, or ``""``."""
+    from pathlib import Path
+
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+    from tinyassets.storage.workspace_authority import connection_git_host
+
+    actor = permissions.current_actor_id().strip()
+    connection = ConnectionLedger(
+        Path(_base_path()) / "outbound.db",
+        verify_authenticated_principal=lambda: actor,
+    ).get_connection(connection_id)
+    if (
+        connection is None
+        or connection.owner_user_id != actor
+        or connection.revoked_at is not None
+    ):
+        return ""
+    return connection_git_host(connection)
+
+
 def _full_channel_reach(universe_id: str, action: dict[str, Any]) -> dict[str, Any]:
     """``{"hosts": [...], "git_host": "..."}`` for the connection a full
     ``extend_http`` names, or ``{}`` when it cannot be read.
@@ -854,17 +925,13 @@ def _full_channel_reach(universe_id: str, action: dict[str, Any]) -> dict[str, A
     hosts = preview.get("hosts")
     if isinstance(hosts, list) and hosts:
         reach["hosts"] = [str(h) for h in hosts]
-    # Only a RECOGNISED forge is named. `git_host_for_endpoints` passes an
-    # unknown single host straight through -- correct for the platform, which
-    # must work with any forge, and wrong to repeat to an owner: it made a full
-    # grant on a Slack key read as "clone or push on slack.com" (Codex code
-    # review round 1). An unrecognised host gets the conditional clause.
-    from tinyassets.storage.workspace_authority import FORGE_GIT_HOSTS
-
-    git_host = str(preview.get("git_host") or "").strip().lower()
-    declared = [str(h).strip().lower() for h in (reach.get("hosts") or [])]
-    if git_host and len(declared) == 1 and FORGE_GIT_HOSTS.get(declared[0]) == git_host:
-        reach["git_host"] = git_host
+    # Only a git host the OWNER declared is named. A host merely derived from
+    # the endpoints is repeated to nobody: it made a full grant on a Slack key
+    # read as "clone or push on slack.com" (Codex code review round 1). An
+    # undeclared host gets the conditional clause.
+    declared_git_host = str(preview.get("declared_git_host") or "").strip().lower()
+    if declared_git_host:
+        reach["declared_git_host"] = declared_git_host
     return reach
 
 
@@ -906,11 +973,21 @@ def _extend_ask_verdict(
     if preview.get("error"):
         detail = str(preview.get("detail") or preview["error"])
         git_host = str(preview.get("git_host") or "")
-        if git_host and git_host in (preview.get("asked_hosts") or []):
+        asked_hosts = [str(h) for h in (preview.get("asked_hosts") or [])]
+        if git_host and git_host in asked_hosts:
             detail += (
                 f" The key already reaches {git_host} for git: a clone or push "
                 "uses the connection's git scopes and needs no HTTP endpoint on "
                 "that host."
+            )
+        elif asked_hosts and not preview.get("declared_git_host"):
+            # An HTTP endpoint never moves git. Where git goes is the
+            # connection's declared git_host, set when the owner connects.
+            detail += (
+                " An HTTP endpoint does not change where git goes. If this "
+                "service serves git on another host, the connection must "
+                "declare it: remove this key and raise a connect ask with "
+                '"git_host" naming that host.'
             )
         return {
             "error": "ask_cannot_be_granted",
@@ -961,10 +1038,20 @@ def _granted_lines(action: dict[str, Any]) -> list[str]:
         if not text or ":" not in text:
             continue
         kind, _, repo = text.partition(":")
+        # The owner is told WHERE git sends the key. A deposit names the host it
+        # declares; an extension names the stored connection's resolved git
+        # host, captured when the ask was raised (never a caller-supplied value:
+        # action normalization drops both fields).
+        host = (
+            action.get("git_scope_host")
+            if action.get("type") == "extend_http"
+            else action.get("git_host")
+        )
+        on = f" on {host}" if host else ""
         if kind == "git_read":
-            lines.append(f"use git to READ {repo}")
+            lines.append(f"use git to READ {repo}{on}")
         elif kind == "git_write":
-            lines.append(f"use git to WRITE to {repo}")
+            lines.append(f"use git to WRITE to {repo}{on}")
     return lines
 
 
@@ -976,8 +1063,6 @@ def _full_channel_sentence(action: dict[str, Any]) -> str:
     exactly the grant an owner must not have to infer. It never renders a
     wildcard row: there is no wildcard, only a mode.
     """
-    from tinyassets.storage.workspace_authority import FORGE_GIT_HOSTS
-
     destination = action.get("destination")
     hosts = [str(h).strip().lower() for h in (action.get("hosts") or []) if str(h).strip()]
     if not hosts:
@@ -993,17 +1078,22 @@ def _full_channel_sentence(action: dict[str, Any]) -> str:
         if deposit
         else f'Full access to your {destination} key'
     )
-    # Only a forge we RECOGNISE gets named, because naming one is a claim: a
-    # full grant on a Slack key would otherwise read as "git clone or push on
-    # slack.com". Any other host gets the general clause below, which is true
-    # for a Gitea box and harmless for a key that serves no git at all.
-    # Derived HERE from the hosts, never taken from the action. A row persisted
-    # before the derivation was tightened carries whatever the old code put
-    # there, and "slack.com" in that field would render as a git host (Codex
-    # code review round 2). The stored value is only honoured when it agrees.
-    recognised = FORGE_GIT_HOSTS.get(hosts[0]) if len(hosts) == 1 else ""
-    declared = str(action.get("git_host") or "").strip().lower()
-    if declared and declared != recognised:
+    # Only a git host the owner DECLARED gets named, because naming one is a
+    # claim: a full grant on a Slack key would otherwise read as "git clone or
+    # push on slack.com". Any other single host gets the general clause below,
+    # which is true for a Gitea box and harmless for a key that serves no git.
+    # Re-validated here: a value that is not a hostname is not rendered.
+    from tinyassets.storage.workspace_authority import GitScopeError, normalize_git_host
+
+    # A deposit's `git_host` is the field the owner's ask declared (validated
+    # when it was raised). An extension names the STORED connection's declared
+    # host under `declared_git_host`; a legacy extension row's `git_host` was
+    # derived from the endpoints and is never rendered (Codex code review
+    # round 2).
+    field = "git_host" if deposit else "declared_git_host"
+    try:
+        recognised = normalize_git_host(action.get(field))
+    except GitScopeError:
         recognised = ""
     if recognised:
         git_clause = (
@@ -1056,13 +1146,18 @@ def _grant_sentence(row: dict[str, Any]) -> str:
             CONSENT_OPERATIONS.get(consent, consent)
             for consent in (action.get("consents") or [])
         ]
-        # The host is the CONNECTION's, so the sentence shows what was asked
-        # for rather than a host the platform assumed. An older row that
-        # predates the field says "the connection's host" rather than guessing.
-        host = str(action.get("host") or "").strip() or "the connection's host"
+        # The host is the connection's RESOLVED git host, captured when the ask
+        # was raised. A row without one (older than the field) names no host,
+        # so it cannot be granted: the owner must see where the key goes.
+        host = str(action.get("host") or "").strip()
+        if not host:
+            return (
+                "This request does not say which host the key would be used "
+                "against, so it cannot be granted. Ask again."
+            )
         return (
             "Let this universe " + ", ".join(operations) + " "
-            f"{host}/{action.get('repo')} with the key you already "
+            f"{action.get('repo')} on {host} with the key you already "
             "gave. Nothing to paste; this is the yes."
         )
     if action.get("type") == "connect" and "setup" in action:
@@ -1100,8 +1195,9 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     # so a user cannot tell the one that works from the one that fails
     # (observed live, 2026-08-28).
     where = f' as "{action.get("destination")}"' if action.get("destination") else ""
+    git_to = _git_host_clause(action.get("git_host"))
     if len(lines) == 1:
-        return f"This key{where} will be able to {lines[0]} - nothing else."
+        return f"This key{where} will be able to {lines[0]} - nothing else.{git_to}"
     # "reach" is the established wording and describes an endpoint list. It does
     # NOT describe "use git to WRITE to owner/repo", so the verb widens only
     # when a git scope is actually present -- every ask without one reads
@@ -1109,8 +1205,19 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     verb = "do" if _grants_git(action) else "reach"
     return (
         f"This key{where} will be able to {verb} exactly these, and nothing "
-        "else: " + "; ".join(lines) + "."
+        "else: " + "; ".join(lines) + "." + git_to
     )
+
+
+def _git_host_clause(value: Any) -> str:
+    """" Git operations with this key go to <host>." for a declared git host.
+
+    Rendered on EVERY deposit that declares one, not only beside a git scope:
+    it is a place the owner's key is sent, and the owner approves it here.
+    """
+    if not value:
+        return ""
+    return f" Git operations with this key go to {value}."
 
 
 def _uses_sentence(action: dict[str, Any]) -> str:
@@ -1411,6 +1518,17 @@ def _grant_workspace_consent(
     host = connection_git_host(connection)
     if not host:
         return {"error": "not_found", "resource": "connection"}
+    if host != str(action.get("host") or "").strip():
+        # The owner said yes to a named host. A row that names none, or a
+        # connection that now resolves elsewhere, is not that yes. PENDING.
+        return {
+            "error": "connection_conflict",
+            "resource": "connection",
+            "detail": (
+                "this request no longer names the host the key would be used "
+                "against; ask again and the tab will name it"
+            ),
+        }
     destinations = [
         workspace_consent_destination(
             consent, repo, connection_id=connection_id, host=host
@@ -1653,6 +1771,10 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 # ...and the policy that mode was read against, so the write
                 # cannot land on a reach that grew while the tab was open.
                 "policy_snapshot": action.get("policy_snapshot") or None,
+                # The git host the owner read beside the git scope. The write
+                # refuses if the connection now resolves somewhere else.
+                **({"expected_git_host": action.get("git_scope_host") or ""}
+                   if _grants_git(action) else {}),
             }),
         )
         if widened.get("error"):
@@ -1756,6 +1878,8 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                     # connection is created full. It was stored exact, and the
                     # first call outside the recorded endpoints was refused.
                     "access": action.get("access") or "exact",
+                    # Where git goes, as the owner read it in the grant.
+                    "git_host": action.get("git_host") or "",
                 }
             ),
         )

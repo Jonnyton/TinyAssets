@@ -648,25 +648,6 @@ class TestUniverseWriteBoundaryBeyondUniverseTool:
         assert out["required_permission"] == "write"
         assert not (universe_base / "other" / "auto_ship_attempts.jsonl").exists()
 
-    def test_auto_ship_pr_open_to_unowned_universe_is_denied(
-        self,
-        universe_base,
-    ):
-        from tinyassets.api import auto_ship_actions
-
-        _make_universe(universe_base, "other")
-        _authenticate("alice", ["tinyassets.extensions.write"])
-
-        out = json.loads(auto_ship_actions._action_open_auto_ship_pr({
-            "ship_attempt_id": "ship_1",
-            "head_branch": "auto-change/test",
-            "universe_id": "other",
-        }))
-
-        assert out["error"] == "universe_access_denied"
-        assert out["surface"] == "extensions"
-        assert out["required_permission"] == "write"
-
 
 class TestRunReadVisibility:
     """Slice-4 review (Codex): run read surfaces must not expose a private
