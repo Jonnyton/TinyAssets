@@ -222,6 +222,25 @@ def test_a_jail_that_never_proves_its_limits_is_refused(tmp_path, monkeypatch):
         universe_tools.run_jailed(universe, ["/bin/true"])
 
 
+@posix_only
+def test_a_root_run_jail_without_a_cgroup_is_refused(tmp_path, monkeypatch):
+    """Root is exempt from RLIMIT_NPROC: no cgroup to hold it, no call."""
+    universe = _universe(tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(universe_tools.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(universe_tools, "CGROUP_ROOT", tmp_path / "no-cgroup")
+    monkeypatch.setattr(universe_tools.shutil, "which",
+                        lambda name, path=None: f"/usr/bin/{name}")
+    monkeypatch.setattr(universe_tools, "TOOL_JAIL_ARGV",
+                        lambda udir, inner, **_kw: ["/bin/true"])
+    spawned = []
+    monkeypatch.setattr(universe_tools.subprocess, "Popen",
+                        lambda *a, **k: spawned.append(a))
+    with pytest.raises(UniverseToolError, match="exempts root from the process limit"):
+        universe_tools.run_jailed(universe, ["/bin/true"])
+    assert spawned == []
+
+
 # ── the launch jail masks vendor-native harness dirs ────────────────────────
 
 

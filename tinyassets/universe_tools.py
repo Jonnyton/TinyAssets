@@ -44,10 +44,12 @@ charged per user namespace, so it bounds THIS jail's processes, not the
 daemon user's (measured: with 9 daemon processes and ``--nproc=12`` the jail
 forked 10). The parent adds what an rlimit cannot: a wall clock, an output
 cap enforced while reading, and a watch on the jail's whole process tree
-(count and resident memory), which also bounds a root-run jail where the
-kernel exempts ``RLIMIT_NPROC``, and a free-space floor on the shared data
-volume. Concurrency is bounded per universe and across the host by lock-file
-slots, so the sum of jails is bounded too.
+(count and resident memory) and a free-space floor on the shared data
+volume. The kernel exempts root from ``RLIMIT_NPROC``, so a ROOT-run jail
+(a hosted CI runner's sudo fallback, a self-host running as root) runs inside
+its own cgroup v2 with ``pids.max`` and ``memory.max`` instead, or is refused.
+Concurrency is bounded per universe and across the host by lock-file slots,
+so the sum of jails is bounded too.
 
 Fail closed: no bubblewrap, no ``prlimit``, or a jail that exits before the
 marker proving the limits were applied, and the call is refused with nothing
@@ -485,12 +487,98 @@ def run_jailed(
                     "the shared disk is nearly full, so the tool jail will not start; "
                     "nothing ran"
                 )
-            return _supervise(
-                argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall, cap=cap,
-                process_cap=process_cap,
-            )
+            with _root_cgroup(limits, process_cap) as cgroup:
+                if cgroup is not None:
+                    # The shell joins the cgroup, THEN becomes bwrap: nothing of
+                    # the jail ever runs outside it. A failed join never execs.
+                    argv = ["/bin/sh", "-c", 'echo $$ > "$0" && exec "$@"',
+                            str(cgroup / "cgroup.procs"), *argv]
+                return _supervise(
+                    argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall,
+                    cap=cap, process_cap=process_cap,
+                )
     finally:
         os.close(filter_fd)
+
+
+#: Where a root-run jail creates its cgroup. Substituted by tests.
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+_CGROUP_CONTROLLERS = ("memory", "pids")
+
+
+def _refuse_root(detail: str) -> UniverseToolError:
+    return UniverseToolError(
+        "the tool jail would run as root here, where the kernel exempts root from "
+        f"the process limit, and {detail}; nothing ran"
+    )
+
+
+@contextlib.contextmanager
+def _root_cgroup(limits: ToolLimits, process_cap: int) -> Iterator[Path | None]:
+    """A fresh cgroup bounding a ROOT-run jail, or ``None`` when not root.
+
+    Unprivileged (production: uid 1001), ``RLIMIT_NPROC`` inside the jail's
+    user namespace bounds its processes and this yields ``None``. Root is
+    exempt from ``RLIMIT_NPROC``, and a root-run bwrap does not get a user
+    namespace of its own, so a runaway fork would be bounded only by the tree
+    watch -- too slow for an exponential fork bomb. A root-run jail therefore
+    runs inside its own cgroup v2 with ``pids.max`` and ``memory.max``, or is
+    refused.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() != 0:
+        yield None
+        return
+    try:
+        available = set((CGROUP_ROOT / "cgroup.controllers").read_text().split())
+    except OSError:
+        available = set()
+    if not set(_CGROUP_CONTROLLERS) <= available:
+        raise _refuse_root("there is no cgroup v2 with pids and memory controllers")
+    path = CGROUP_ROOT / f"ta-universe-tool-{os.getpid()}-{time.monotonic_ns()}"
+    try:
+        subtree = CGROUP_ROOT / "cgroup.subtree_control"
+        missing = set(_CGROUP_CONTROLLERS) - set(subtree.read_text().split())
+        if missing:
+            subtree.write_text(" ".join(f"+{name}" for name in sorted(missing)))
+        path.mkdir()
+    except OSError as exc:
+        raise _refuse_root(f"its cgroup could not be created ({exc})") from None
+    try:
+        try:
+            (path / "pids.max").write_text(str(int(process_cap)))
+            (path / "memory.max").write_text(str(int(limits.tree_memory_bytes)))
+        except OSError as exc:
+            raise _refuse_root(f"its cgroup limits could not be set ({exc})") from None
+        with contextlib.suppress(OSError):
+            (path / "memory.swap.max").write_text("0")
+        yield path
+    finally:
+        _remove_cgroup(path)
+
+
+def _remove_cgroup(path: Path) -> None:
+    """Kill whatever is left in the cgroup, wait for it to empty, remove it."""
+    procs = path / "cgroup.procs"
+    deadline = time.monotonic() + _KILL_GRACE_SECONDS
+    while True:
+        try:
+            members = procs.read_text().split()
+        except OSError:
+            members = []
+        if not members:
+            break
+        try:
+            (path / "cgroup.kill").write_text("1")
+        except OSError:
+            for member in members:
+                with contextlib.suppress(OSError, ValueError):
+                    os.kill(int(member), signal.SIGKILL)
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    with contextlib.suppress(OSError):
+        path.rmdir()
 
 
 def _supervise(

@@ -288,9 +288,10 @@ def test_process_limit_holds_and_a_fork_bomb_is_contained(world):
     from tinyassets import universe_tools as tools
 
     limits = tools.ToolLimits(processes=16, wall_seconds=8)
-    # Count what actually runs at once. Unprivileged, RLIMIT_NPROC refuses the
-    # extra forks; a root-run jail (the hosted runner's sudo fallback, where the
-    # kernel exempts root) is killed by the process-tree watch instead.
+    # Count what actually runs at once. Unprivileged, RLIMIT_NPROC in the jail's
+    # user namespace refuses the extra forks; a root-run jail (the hosted
+    # runner's sudo fallback, where the kernel exempts root) is held by its own
+    # cgroup's pids.max, and the process-tree watch backs both.
     spawn = (
         "import os, time\n"
         "made = 0\n"
@@ -307,7 +308,7 @@ def test_process_limit_holds_and_a_fork_bomb_is_contained(world):
                            limits=limits, wall_seconds=8)
     made = [int(w) for line in run.output.decode().splitlines()
             if line.startswith("made ") for w in line.split()[1:2]]
-    assert run.killed == "process_limit" or (made and made[0] < limits.processes), run
+    assert run.killed == "process_limit" or (made and made[0] <= limits.processes), run
 
     token = f"ta-bomb-{uuid.uuid4().hex}"
     started = time.monotonic()
