@@ -16,6 +16,8 @@ SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-/usr/bin/systemctl}"
 VISUDO_BIN="${VISUDO_BIN:-/usr/sbin/visudo}"
 TINYASSETS_USER="${TINYASSETS_USER:-tinyassets}"
 PRINT_MANIFEST="${TINYASSETS_PRINT_MANIFEST:-0}"
+# Runtime releases kept after a successful install, including the live one.
+KEEP_RELEASES=5
 
 TIMERS=(
     tinyassets-watchdog.timer
@@ -83,7 +85,7 @@ fail() {
 
 for command in \
     awk chmod cmp date find flock grep install ln mktemp mv readlink realpath \
-    rm sha256sum sleep stat wc
+    rm sha256sum sleep sort stat wc
 do
     command -v "${command}" >/dev/null 2>&1 || fail "missing command: ${command}"
 done
@@ -345,3 +347,35 @@ done
 TIMERS_PAUSED=0
 SUCCESS=1
 log "converged ${#TIMERS[@]} timers at ${RELEASE_ID}"
+
+# Bound the content-addressed release history. Every deploy installs a new
+# release directory (257 of them on production on 2026-09-24). Keep the live
+# target plus the newest releases for a manual pointer rollback; touch only
+# directories whose names have the release-id shape. Best-effort: the install
+# above already succeeded, so a prune failure is logged, never fatal.
+prune_old_releases() {
+    local live name path kept=0 pruned=0
+    local -a ordered=()
+    live="$(readlink "${RUNTIME_ROOT}/current")"
+    live="${live#releases/}"
+    while IFS= read -r name; do
+        [[ -n "${name}" ]] && ordered+=("${name}")
+    done < <(
+        for path in "${RUNTIME_ROOT}/releases"/*; do
+            name="${path##*/}"
+            [[ -d "${path}" && ! -L "${path}" ]] || continue
+            [[ "${name}" =~ ^[0-9a-f]{40}-[0-9a-f]{16}$ ]] || continue
+            printf '%s %s\n' "$(stat -c %Y "${path}")" "${name}"
+        done | sort -rn | awk '{print $2}'
+    )
+    for name in "${ordered[@]}"; do
+        [[ "${name}" == "${live}" || "${name}" == "${RELEASE_ID}" ]] && continue
+        if (( kept < KEEP_RELEASES - 1 )); then
+            kept=$((kept + 1))
+            continue
+        fi
+        rm -rf -- "${RUNTIME_ROOT:?}/releases/${name}" && pruned=$((pruned + 1))
+    done
+    log "pruned ${pruned} old runtime release(s); kept current plus ${kept} newest"
+}
+prune_old_releases || log "WARNING: runtime release pruning failed; install is unaffected"

@@ -228,9 +228,11 @@ def test_new_mutable_alias_is_rechecked_under_lock(inventory, tmp_path):
     assert reference(1) not in report["removed"]
 
 
-def test_low_watermark_stops_after_first_removal(inventory, tmp_path):
+def test_threshold_mode_low_watermark_stops_after_first_removal(inventory, tmp_path):
     readings = iter([90, 90, 74, 74])
-    docker, _, options = runner(inventory, tmp_path, measure=lambda p: next(readings))
+    docker, _, options = runner(
+        inventory, tmp_path, mode="threshold", measure=lambda p: next(readings)
+    )
     report = retention.retain(**options)
     assert len(docker.calls) == 1
     assert report["status"] == "pressure_relieved"
@@ -242,14 +244,18 @@ def test_dry_run_never_removes(inventory, tmp_path):
     assert docker.calls == []
 
 
-def test_below_threshold_does_not_verify_or_lock(inventory, tmp_path):
-    docker, state, options = runner(inventory, tmp_path, measure=lambda p: 84.9)
+def test_threshold_mode_below_threshold_does_not_verify_or_lock(inventory, tmp_path):
+    docker, state, options = runner(
+        inventory, tmp_path, mode="threshold", measure=lambda p: 84.9
+    )
     assert retention.retain(**options)["status"] == "below_threshold"
     assert not docker.calls and not state["verified"]
 
 
-def test_dry_run_below_trigger_still_proves_protected_refs(inventory, tmp_path):
-    docker, state, options = runner(inventory, tmp_path, dry_run=True, measure=lambda p: 79)
+def test_threshold_mode_dry_run_below_trigger_still_proves_protected_refs(inventory, tmp_path):
+    docker, state, options = runner(
+        inventory, tmp_path, mode="threshold", dry_run=True, measure=lambda p: 79
+    )
     report = retention.retain(**options)
     assert report["status"] == "below_threshold"
     assert identity(9) in report["protected_image_ids"]
@@ -279,9 +285,10 @@ def test_registry_failure_causes_zero_removal(inventory, tmp_path, digest_aliase
         raise retention.Refusal("registry_unavailable")
 
     options["registry"] = SimpleNamespace(verify=unavailable)
-    with pytest.raises(retention.Refusal):
-        retention.retain(**options)
-    assert not docker.calls
+    report = retention.retain(**options)
+    assert not docker.calls and not report["removed"]
+    assert report["unverified"]
+    assert all(row["reason"] == "registry_unavailable" for row in report["unverified"])
 
 
 def test_locked_deadline_is_at_most_sixty_seconds(inventory, tmp_path):
@@ -583,3 +590,152 @@ def test_retention_activation_does_not_control_transcript_rotation(tmp_path, mon
     calls.clear()
     assert rotation.main(["--dry-run"]) == 0
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Count-based retention (2026-09-24): the keep set is a rule, not a pressure
+# response. Deploys pull a ~2.7 GB image many times a day; the threshold-gated
+# pass reported "below_threshold" with 23 daemon images on a 50 GB disk.
+# ---------------------------------------------------------------------------
+
+
+def drain(inventory, tmp_path, passes=5, **kwargs):
+    """Run passes until one removes nothing; return surviving refs and removals."""
+    removed = []
+    for _ in range(passes):
+        _, _, options = runner(inventory, tmp_path, **kwargs)
+        report = retention.retain(**options)
+        removed.extend(report["removed"])
+        if not report["removed"]:
+            break
+    survivors = {row["RepoDigests"][0] for row in inventory[0]}
+    return survivors, removed
+
+
+def test_count_mode_removes_excess_images_below_the_threshold(inventory, tmp_path):
+    docker, _, options = runner(inventory, tmp_path, measure=lambda p: 50)
+    report = retention.retain(**options)
+    assert report["removed"] == [reference(n) for n in (1, 2, 3, 4)]
+    assert report["status"] == "retained"
+    assert report["mode"] == "count"
+
+
+def test_count_mode_ignores_the_low_watermark(inventory, tmp_path):
+    # 70% is under both the 85% trigger and the 75% stop: the legacy path did
+    # nothing here; the count rule still removes every image outside the keep set.
+    docker, _, options = runner(inventory, tmp_path, measure=lambda p: 70)
+    retention.retain(**options)
+    assert len(docker.calls) == 4
+
+
+def test_count_keep_set_is_current_plus_two_previous(inventory, tmp_path):
+    # Image 10 is newer than the running image 9 (a pulled, not-yet-adopted or
+    # rolled-back candidate) and must survive with it.
+    survivors, removed = drain(inventory, tmp_path, measure=lambda p: 50)
+    assert survivors == {reference(n) for n in (7, 8, 9, 10)}
+    assert sorted(removed) == sorted(reference(n) for n in range(1, 7))
+
+
+def test_count_mode_preserves_rollback_target_and_any_container_image(inventory, tmp_path):
+    inventory[3]["rollback_target"] = reference(2)
+    inventory[1].append(dict(Name="/exited-helper", Image=identity(4), State={"Running": False}))
+    survivors, _ = drain(inventory, tmp_path, measure=lambda p: 50)
+    assert survivors == {reference(n) for n in (2, 4, 7, 8, 9, 10)}
+
+
+def test_count_mode_preserves_the_running_image_even_when_it_is_the_oldest(inventory, tmp_path):
+    # A manual rollback to an old digest: the running image is image 1 and every
+    # newer image is kept as a possible roll-forward target.
+    inventory[2]["Image"] = identity(1)
+    survivors, removed = drain(
+        inventory, tmp_path, measure=lambda p: 50, config_reader=lambda: reference(1)
+    )
+    assert reference(1) in survivors
+    assert removed == []
+
+
+def test_count_mode_emergency_threshold_grades_the_pass(inventory, tmp_path):
+    # Above the trigger the same keep set applies; the threshold grades the
+    # result so pressure the rule cannot relieve stays loud (exit 1).
+    docker, _, options = runner(inventory, tmp_path)
+    options["measure"] = lambda p: 90 - 6 * len(docker.calls)
+    report = retention.retain(**options)
+    assert len(docker.calls) == 4
+    assert report["status"] == "pressure_relieved"
+    docker, _, options = runner(inventory, tmp_path, measure=lambda p: 95)
+    assert retention.retain(**options)["status"] == "pressure_unmet"
+
+
+def test_threshold_mode_is_still_available_as_an_operator_lever(inventory, tmp_path):
+    docker, _, options = runner(inventory, tmp_path, mode="threshold", measure=lambda p: 90)
+    report = retention.retain(**options)
+    assert report["mode"] == "threshold"
+    assert len(docker.calls) == 4
+    assert report["status"] == "pressure_unmet"
+
+
+def test_one_unrecoverable_image_does_not_block_the_rule(inventory, tmp_path):
+    docker, _, options = runner(inventory, tmp_path, measure=lambda p: 50)
+
+    def verify(choice, platform):
+        if choice["ref"] == reference(1):
+            raise retention.Refusal("registry_object_unavailable")
+
+    options["registry"] = SimpleNamespace(verify=verify)
+    report = retention.retain(**options)
+    assert report["removed"] == [reference(n) for n in (2, 3, 4, 5)]
+    assert report["unverified"] == [dict(ref=reference(1), reason="registry_object_unavailable")]
+    assert report["status"] == "retention_incomplete"
+
+
+def test_nothing_to_remove_does_not_contend_for_the_host_lock(inventory, tmp_path):
+    keep = {identity(n) for n in (7, 8, 9, 10)}
+    inventory[0][:] = [row for row in inventory[0] if row["Id"] in keep]
+    docker, _, options = runner(inventory, tmp_path, measure=lambda p: 50)
+
+    @contextmanager
+    def busy():
+        raise retention.Refusal("host_mutation_busy")
+        yield
+
+    options["locker"] = busy
+    report = retention.retain(**options)
+    assert report["status"] == "retained" and not docker.calls
+
+
+def test_count_mode_dry_run_selects_without_removing(inventory, tmp_path):
+    docker, _, options = runner(inventory, tmp_path, dry_run=True, measure=lambda p: 50)
+    report = retention.retain(**options)
+    assert report["status"] == "dry_run"
+    assert [c["ref"] for c in report["selected"]] == [reference(n) for n in (1, 2, 3, 4)]
+    assert not docker.calls
+
+
+@pytest.mark.parametrize(
+    "value,expected", [(None, "count"), ("count", "count"), ("threshold", "threshold")]
+)
+def test_mode_is_read_from_the_environment(monkeypatch, value, expected):
+    seen = {}
+
+    def check(**kwargs):
+        seen.update(kwargs)
+        return dict(status="retained")
+
+    monkeypatch.setattr(retention, "retain", check)
+    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    if value is None:
+        monkeypatch.delenv("TINYASSETS_DAEMON_IMAGE_RETENTION_MODE", raising=False)
+    else:
+        monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_MODE", value)
+    assert retention.main(["--apply"]) == 0
+    assert seen["mode"] == expected
+
+
+@pytest.mark.parametrize("value", ["", "Count", "age", "0"])
+def test_malformed_mode_refuses_before_any_work(monkeypatch, capsys, value):
+    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "1")
+    monkeypatch.setenv("TINYASSETS_DAEMON_IMAGE_RETENTION_MODE", value)
+    monkeypatch.setattr(retention, "retain", lambda **kw: pytest.fail("must refuse before work"))
+    assert retention.main(["--apply"]) == 2
+    assert "invalid_retention_mode" in capsys.readouterr().out

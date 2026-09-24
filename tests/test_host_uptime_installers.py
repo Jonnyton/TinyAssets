@@ -865,6 +865,37 @@ def test_repeat_install_repairs_corrupt_content_addressed_release(tmp_path):
     )
 
 
+def test_install_bounds_old_runtime_releases_and_keeps_current(tmp_path):
+    # Every deploy installs a new content-addressed release; production held 257
+    # of them on 2026-09-24. The installer keeps the newest few for a manual
+    # pointer rollback and never touches the live target or a foreign entry.
+    env = _install_env(tmp_path)
+    releases = tmp_path / "runtime" / "releases"
+    releases.mkdir(parents=True)
+    old = []
+    for n in range(8):
+        name = f"{n:040x}-{n:016x}"
+        (releases / name / "scripts").mkdir(parents=True)
+        stamp = time.time() - (100 - n) * 3600
+        os.utime(releases / name, (stamp, stamp))
+        old.append(name)
+    foreign = releases / "operator-notes"
+    foreign.mkdir()
+    os.utime(foreign, (0, 0))
+
+    result = _run_installer(env)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    current = _bash_readlink(tmp_path / "runtime" / "current").removeprefix("releases/")
+    remaining = {path.name for path in releases.iterdir()}
+    assert current in remaining
+    assert foreign.name in remaining
+    kept_old = sorted(remaining - {current, foreign.name})
+    # KEEP=5 newest releases including the one just installed.
+    assert kept_old == old[-4:]
+    assert "pruned 4 old runtime release" in result.stdout
+
+
 def test_missing_manifest_source_fails_before_systemd(tmp_path):
     source = _copy_source(tmp_path)
     (source / RUNTIME_FILES[-1]).unlink()
