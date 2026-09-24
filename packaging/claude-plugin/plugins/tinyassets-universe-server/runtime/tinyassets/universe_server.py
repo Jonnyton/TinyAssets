@@ -2335,9 +2335,9 @@ def _attempt_evidence_tokens(attempt: Any) -> list[str]:
 
     Why: the 2026-09-24 00:46Z idle-timeout log line carried the class and the
     detail but neither the tool phase nor the observed progress age, so the
-    incident could not distinguish genuine silence from an active tool wait
-    from a watchdog check that ran late. The scalars were on the exception the
-    whole time and were dropped at this hop.
+    incident lacked useful timing context. Progress age is sampled after
+    termination/drain and does not by itself prove silence or a stalled reader.
+    The scalars were on the exception and were dropped at this hop.
     """
     from tinyassets.providers.diagnostics import (
         admitted_tool_phase,

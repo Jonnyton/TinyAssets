@@ -670,6 +670,13 @@ NOT authorize replay, a fallback, a grant or a cooldown.
 - **WHEN** a stored failure lacks tool-phase evidence
 - **THEN** later reads do not infer a pending tool from committed side-effect state or a successful retry
 
+#### Scenario: Served failure logs retain only admitted attempt evidence
+
+- **WHEN** a served provider failure carries an admitted tool-phase enum, finite nonnegative progress age or admitted side-effect state
+- **THEN** the server failure log retains those fields without copying raw attempt telemetry
+- **AND** unknown or malformed values remain absent, with no public response, replay, authority or timeout-policy change
+- **AND** progress age is evidence sampled at failure recording, potentially after termination and drain, not proof of the cause of silence
+
 ### Requirement: Provider failures are classified, and transient attempt timeouts do not cool the provider
 
 Each served attempt outcome SHALL carry a `failure_class` derived from the stream
