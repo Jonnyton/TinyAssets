@@ -47,6 +47,7 @@ from tinyassets.automations import (
     Automation,
     AutomationStore,
     AutomationUnavailable,
+    next_due_at,
     register_automation,
 )
 
@@ -167,6 +168,15 @@ def _document(payload: Any) -> dict[str, Any] | None:
 # -- Projection ---------------------------------------------------------------
 
 
+def _next_due_at(automation: Automation) -> str:
+    """The row's next fire time. A read must never fail on a malformed row."""
+    try:
+        return next_due_at(automation, datetime.now(timezone.utc))
+    except Exception:  # noqa: BLE001 - a projection field, not the trigger itself
+        logger.warning("next_due_at unavailable for %s", automation.automation_id)
+        return ""
+
+
 def _projection(
     automation: Automation,
     *,
@@ -200,6 +210,8 @@ def _projection(
         "last_run_id": automation.last_run_id,
         "last_reason": automation.last_reason,
         "last_finished_at": automation.last_finished_at,
+        # When the pump next owes a run; '' while paused or retired.
+        "next_due_at": _next_due_at(automation),
         # How close this automation is to auto-pausing itself. Read through
         # getattr so the surface does not depend on which half of task 3.1
         # lands first; a row without the counter reports a truthful zero.

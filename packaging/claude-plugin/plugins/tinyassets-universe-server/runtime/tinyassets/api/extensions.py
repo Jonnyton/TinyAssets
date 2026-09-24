@@ -443,6 +443,7 @@ def _extensions_impl(
     subscription_id: str = "",
     active_only: bool = True,
     token: str = "",
+    token_prefix: str = "",
     source_id: str = "",
     outcome_id: str = "",
     evidence_url: str = "",
@@ -577,6 +578,7 @@ def _extensions_impl(
         "universe_id": universe_id,
         # Inbound-trigger ops (webhook mint/revoke/list, source create/revoke/list).
         "token": token,
+        "token_prefix": token_prefix,
         "source_id": source_id,
         # Surgical-rollback args (Task #22 Phase B).
         "reason": reason,
