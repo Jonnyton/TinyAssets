@@ -17,22 +17,29 @@ Reviews run in a fixed order, and the order is load-bearing:
    user** through Slack / the app / the chatbot connector. The live user path is
    the shape oracle: it is the only thing that proves the shape + UX flow are
    right.
-3. **THEN the deep security-hardening rounds** — concurrency, TOCTOU,
+3. **THEN harden what live use shows matters.** Concurrency, TOCTOU,
    durability/crash, timing side-channels, migrations of hypothetical prior
-   state, abuse-at-scale. These run AFTER live-MVP user testing.
-Do NOT gate a first-draft MVP behind multiple hardening rounds — that is
-"endless hardening of the wrong shape," and only live users reveal whether the
-shape is right. The split: a hole that leaks/exfils/bypasses for ONE founder =
-fix pre-live (basic-safety); an edge that only bites multi-tenant / concurrent /
-crash = defer to post-live hardening, tracked in the change's `REVIEW.md`.
+   state, abuse-at-scale: these are tracked as concerns and re-judged after live
+   use. They are not a pre-release gauntlet.
+Do NOT gate a first-draft MVP behind multiple hardening rounds. That is
+"endless hardening of the wrong shape", and only live users reveal whether the
+shape is right. The split: a hole that leaks, exfiltrates or bypasses for ONE
+founder is the floor and is fixed pre-live. An edge that only bites
+multi-tenant, concurrent or crash cases is deferred and tracked.
 
-**Verification is structural.** Substantive changes need test/check evidence
-plus an independent review path before they count as landed. The PRE-live review
-is the shape/approach pass above (one round); the multi-round adversarial
-hardening is post-live-MVP. Self-review alone is never enough for public-surface,
-storage, auth, migration, concurrency, or data-loss-risk changes — but for a
-first-draft MVP the pre-live bar is shape + basic-safety, and deep hardening
-follows live user testing.
+**Review depth is risk-tiered, with a hard stop** (2026-09-24; the tier
+definitions, the floor, and the primitive trigger are in `AGENTS.md` Quality
+Gates; the evidence is in `docs/reviews/2026-09-24-review-deploy-practice.md`).
+Tier 0 gets no review. Tier 1 gets one review that never blocks. Tier 2 (the
+floor or gate-defining files) gets one blocking review. Every tier stops at two
+rounds or one day. Round 2 only verifies the round-1 floor fixes. A floor
+finding still open after round 2 triggers a primitive redesign, not round 3.
+
+**Verification is structural.** A substantive change needs test or check
+evidence, plus live use through the real app, before it counts as landed.
+Self-review alone never suffices for a Tier 2 change. If the other model family
+is rate-limited, an independent same-family review stands in, and the
+cross-family check is recorded as owed.
 
 **`main` enforces a behavioural test gate (live 2026-08-03).** Required contexts
 were originally `policy`, `Diff scope declared`, and `required-tests`, with
@@ -67,7 +74,7 @@ so auto-enrollment cannot merge them ahead of review. Ready only after an
 approval artifact names the unchanged head SHA; any head-changing update
 converts back to draft until fresh exact-head approval. For a first-draft MVP
 that approval is the SHAPE + basic-safety pass (§ Review sequencing) — not a
-completed hardening gauntlet; the deep hardening rounds re-run post-live.
+completed hardening gauntlet. Hardening is re-judged post-live, under the two-round stop.
 
 **Final chatbot-surface verification is a rendered chatbot conversation**
 through the live connector at `https://tinyassets.io/mcp` (`ui-test` skill)
