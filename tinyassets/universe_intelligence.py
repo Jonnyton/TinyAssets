@@ -314,10 +314,19 @@ def _sandboxed_config(
 
 
 def _read_bundle_body(universe_dir: Path, filename: str) -> str:
-    """Return the markdown body of an OKF bundle file, or '' if absent/empty."""
+    """Return the markdown body of an OKF bundle file, or '' if absent/empty.
+
+    Read through the one safe reader (:mod:`tinyassets.universe_files`): the
+    agent can write and link in its own folder, so a planted
+    ``founder.md -> /data/<other>/founder.md`` must not be followed into this
+    universe's prompt. A link, a non-regular file or an over-size file reads as
+    absent (fail closed), exactly as an unreadable file did before.
+    """
+    from tinyassets.universe_files import read_universe_text
+
     try:
-        return (universe_dir / filename).read_text(encoding="utf-8").strip()
-    except OSError:
+        return read_universe_text(universe_dir, filename).strip()
+    except (OSError, UnicodeDecodeError):
         return ""
 
 

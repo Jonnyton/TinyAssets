@@ -157,9 +157,11 @@ def test_the_jail_loads_a_filter_refusing_links_and_special_files(tmp_path, monk
     program = universe_tools.seccomp_program()
     insns = [struct.unpack("=HBBI", program[i:i + 8]) for i in range(0, len(program), 8)]
     denied = {k for code, jt, _jf, k in insns if code == 0x15 and jt > 0}
-    for syscall in (88, 266, 133, 259):  # x86_64 symlink, symlinkat, mknod, mknodat
+    # x86_64: symlink, symlinkat, mknod, mknodat, io_uring setup/enter/register.
+    for syscall in (88, 266, 133, 259, 425, 426, 427):
         assert syscall in denied
-    for syscall in (36, 33):  # aarch64 symlinkat, mknodat
+    # aarch64: symlinkat, mknodat, io_uring setup/enter/register.
+    for syscall in (36, 33, 425, 426, 427):
         assert syscall in denied
     assert insns[-1] == (0x06, 0, 0, 0x00050001), "the deny target is EPERM"
     # Every jump lands inside the program.
@@ -468,6 +470,102 @@ def test_a_skill_file_symlinked_elsewhere_is_never_read_into_the_prompt(tmp_path
     (universe / "skills" / "stolen" / "SKILL.md").symlink_to(foreign)
     (universe / "skills" / "linkdir").symlink_to(foreign.parent, target_is_directory=True)
     assert universe_tools.skill_index(universe) == []
+
+
+# ── untrusted universe files: the shared safe reader and skill parse ─────────
+
+
+def test_skill_description_never_hands_frontmatter_to_a_yaml_loader():
+    """An alias bomb expands to gigabytes under yaml.safe_load; the flat parse
+    returns fast with bounded memory and no description."""
+    bomb = (
+        "---\n"
+        "a: &a [x,x,x,x,x,x,x,x,x]\n"
+        "b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\n"
+        "c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\n"
+        "d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\n"
+        "description: *d\n"
+        "---\n"
+    ).encode("utf-8")
+    # The value is a YAML alias, never expanded: it is read as the literal text.
+    out = universe_tools._skill_description(bomb)
+    assert out == "*d"
+    assert len(bomb) < 300 and len(out) < 300
+
+
+def test_skill_description_caps_length_before_building_a_string():
+    huge = ("---\ndescription: " + "z" * 100_000 + "\n---\n").encode("utf-8")
+    out = universe_tools._skill_description(huge)
+    assert len(out) <= universe_tools._MAX_DESCRIPTION_CHARS
+
+
+@pytest.mark.parametrize("body", [
+    b"no frontmatter at all",
+    b"---\nname: x\n---\nno description key\n",
+    b"---\ndescription:\n---\n",
+    b"\xff\xfe not even utf-8 \x00",
+    b"---\n" + b"description: " + "é".encode() * 10 + b"\n---\n",
+])
+def test_skill_description_never_raises(body):
+    universe_tools._skill_description(body)  # returns a str, never throws
+
+
+@posix_only
+def test_skill_index_leaves_out_a_bad_skill_without_breaking(tmp_path):
+    universe = _universe(tmp_path)
+    (universe / "skills" / "good").mkdir(parents=True)
+    (universe / "skills" / "good" / "SKILL.md").write_text(_SKILL, encoding="utf-8")
+    (universe / "skills" / "bomb").mkdir()
+    (universe / "skills" / "bomb" / "SKILL.md").write_text(
+        "---\ndescription: &a [*a]\n---\n", encoding="utf-8",
+    )
+    names = {name for name, _ in universe_tools.skill_index(universe)}
+    assert "good" in names  # the turn still gets the working skills
+
+
+def test_read_universe_file_refuses_a_symlink_component(tmp_path):
+    from tinyassets.universe_files import read_universe_file
+
+    universe = _universe(tmp_path)
+    (universe / "founder.md").write_text("mine", encoding="utf-8")
+    assert read_universe_file(universe, "founder.md") == b"mine"
+    outside = tmp_path / "secret.txt"
+    outside.write_text("SOMEONE ELSE", encoding="utf-8")
+    try:
+        (universe / "leak.md").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create a symlink")
+    with pytest.raises(OSError):
+        read_universe_file(universe, "leak.md")
+
+
+def test_read_universe_file_bounds_size(tmp_path):
+    from tinyassets.universe_files import read_universe_file
+
+    universe = _universe(tmp_path)
+    (universe / "big.md").write_text("z" * 5000, encoding="utf-8")
+    assert read_universe_file(universe, "big.md", max_bytes=10_000) == b"z" * 5000
+    with pytest.raises(OSError):
+        read_universe_file(universe, "big.md", max_bytes=100)
+
+
+def test_a_planted_link_is_not_followed_by_the_persona_read(tmp_path):
+    """A link that already exists (planted from outside, or via io_uring the
+    seccomp cannot see) is refused by the daemon-side bundle read."""
+    import tinyassets.universe_intelligence as ui
+
+    universe = _universe(tmp_path)
+    secret = tmp_path / "other" / "founder.md"
+    secret.parent.mkdir()
+    secret.write_text("ANOTHER USER'S PRIVATE FOUNDER", encoding="utf-8")
+    (universe / "founder.md").write_text("my own founder notes", encoding="utf-8")
+    assert ui._read_bundle_body(universe, "founder.md") == "my own founder notes"
+    (universe / "founder.md").unlink()
+    try:
+        (universe / "founder.md").symlink_to(secret)
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create a symlink")
+    assert ui._read_bundle_body(universe, "founder.md") == ""
 
 
 def _founder_turn(monkeypatch, root: Path, uid: str, message: str, *, founder: bool):

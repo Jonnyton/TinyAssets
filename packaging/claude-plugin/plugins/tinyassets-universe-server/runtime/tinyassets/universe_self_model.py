@@ -55,8 +55,7 @@ def read_self_model(universe_dir: Path) -> dict[str, object]:
     known: list[dict[str, str]] = []
     open_questions: list[dict[str, str]] = []
     for question in SEED_QUESTIONS:
-        path = root / question.path
-        if _is_learned(path):
+        if _is_learned(root, question.path):
             known.append(
                 {
                     "slug": question.slug,
@@ -70,16 +69,18 @@ def read_self_model(universe_dir: Path) -> dict[str, object]:
     return {
         "bundle_exists": True,
         "okf_version": _read_okf_version(root),
-        "name": _read_concept_name(root / "identity.md"),
+        "name": _read_concept_name(root, "identity.md"),
         "known": known,
         "open_questions": open_questions,
     }
 
 
-def _is_learned(path: Path) -> bool:
+def _is_learned(root: Path, relname: str) -> bool:
+    from tinyassets.universe_files import read_universe_text
+
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+        text = read_universe_text(root, relname)
+    except (OSError, UnicodeDecodeError):
         return False
     status = _read_frontmatter_value(text, "status").lower()
     if status in {"not-learned", "not learned", "unknown", "unlearned"}:
@@ -87,19 +88,23 @@ def _is_learned(path: Path) -> bool:
     return True
 
 
-def _read_concept_name(path: Path) -> str:
+def _read_concept_name(root: Path, relname: str) -> str:
+    from tinyassets.universe_files import read_universe_text
+
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+        text = read_universe_text(root, relname)
+    except (OSError, UnicodeDecodeError):
         return ""
     return _read_frontmatter_value(text, "name")
 
 
 def _read_okf_version(root: Path) -> str:
-    for path in (root / "index.md", root / "soul.md"):
+    from tinyassets.universe_files import read_universe_text
+
+    for relname in ("index.md", "soul.md"):
         try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
+            text = read_universe_text(root, relname)
+        except (OSError, UnicodeDecodeError):
             continue
         value = _read_frontmatter_value(text, "okf_version")
         if value:

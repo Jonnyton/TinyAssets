@@ -147,12 +147,13 @@ def render_soul_markdown(soul: UniverseSoul) -> str:
 
 
 def read_universe_soul(universe_dir: Path) -> UniverseSoul | None:
-    path = soul_path(universe_dir)
+    # Through the one safe reader: the agent can write/link in its own folder,
+    # so soul.md is untrusted and a link must not be followed (universe_files).
+    from tinyassets.universe_files import read_universe_text
+
     try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except OSError:
+        text = read_universe_text(universe_dir, SOUL_FILENAME)
+    except (OSError, UnicodeDecodeError):
         return None
 
     return UniverseSoul(
@@ -179,9 +180,11 @@ def read_pinned_universe_soul(universe_dir: Path) -> PinnedUniverseSoul | None:
     if soul is None:
         return None
 
+    from tinyassets.universe_files import read_universe_text
+
     try:
-        content = soul_path(universe_dir).read_text(encoding="utf-8")
-    except OSError:
+        content = read_universe_text(universe_dir, SOUL_FILENAME)
+    except (OSError, UnicodeDecodeError):
         return None
 
     version_id = _matching_soul_version_id(universe_dir, content)

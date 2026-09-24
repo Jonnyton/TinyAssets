@@ -56,6 +56,7 @@ _NODEIDS = (
     "tests/test_provider_universe_jail.py::test_router_jails_a_new_command_adapter_with_no_jail_code",
     "tests/test_universe_tools_jail.py::test_tools_reach_their_own_universe_and_nothing_else",
     "tests/test_universe_tools_jail.py::test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch",
+    "tests/test_universe_tools_jail.py::test_io_uring_and_symlink_are_refused_in_the_jail",
     "tests/test_universe_tools_jail.py::test_an_engine_pinned_to_another_universe_cannot_reach_it",
     "tests/test_universe_tools_jail.py::test_bash_has_no_network",
     "tests/test_universe_tools_jail.py::test_the_limits_are_applied_inside_the_jail",

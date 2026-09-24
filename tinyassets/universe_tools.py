@@ -176,6 +176,15 @@ class ToolLimits:
     #: Free space the shared data volume must keep: a call is refused below it,
     #: and a running jail is killed when its writes take the volume below it.
     min_free_disk_bytes: int = 1024 * _MiB
+    #: Free inodes the shared data volume must keep: a full inode table is a
+    #: cross-user outage that free BYTES do not show (many tiny files).
+    min_free_inodes: int = 4096
+    #: ``nice`` increment for jail processes: they yield to the daemon's own
+    #: work on the shared 1 vCPU box.
+    nice_increment: int = 10
+    #: The OOM killer picks a jail process first under memory pressure, never
+    #: the daemon (raised in-jail to /proc/self/oom_score_adj; root only lowers).
+    oom_score_adj: int = 1000
 
     def prlimit_args(self, *, cpu_seconds: int | None = None) -> list[str]:
         cpu = int(cpu_seconds if cpu_seconds is not None else self.cpu_seconds)
@@ -277,14 +286,25 @@ TOOL_JAIL_ARGV: Callable[..., list[str]] = tool_jail_argv
 # file into this universe's prompt; a FIFO would hang the reading thread. So the
 # jailed process may create neither: ``symlink``/``symlinkat`` and
 # ``mknod``/``mknodat`` fail with EPERM. Hard links cannot reach outside ``/u``
-# (every other visible path is a different mount: EXDEV). Unknown architectures
-# and the x32 ABI get EPERM for every call, so a filter this module cannot vouch
-# for never runs as ALLOW.
+# (every other visible path is a different mount: EXDEV).
+#
+# io_uring is the way around a syscall filter: ``IORING_OP_SYMLINKAT`` (opcode
+# 38, kernel 5.15+) creates a link through a submission queue, which seccomp
+# never sees -- and production is 6.1 with no ``io_uring_disabled`` sysctl
+# (that arrived in 6.6). So the three io_uring setup calls are refused too;
+# with no ring, no ring op can run. The daemon-side safe reader
+# (:mod:`tinyassets.universe_files`) is the belt to this braces: it never
+# follows a link that already exists, whatever created it.
+#
+# Unknown architectures and the x32 ABI get EPERM for every call, so a filter
+# this module cannot vouch for never runs as ALLOW.
 _AUDIT_ARCH_X86_64 = 0xC000003E
 _AUDIT_ARCH_AARCH64 = 0xC00000B7
 _X32_SYSCALL_BIT = 0x40000000
-_DENIED_X86_64 = (88, 266, 133, 259)  # symlink, symlinkat, mknod, mknodat
-_DENIED_AARCH64 = (36, 33)  # symlinkat, mknodat
+# symlink, symlinkat, mknod, mknodat, io_uring_setup/enter/register.
+_DENIED_X86_64 = (88, 266, 133, 259, 425, 426, 427)
+# symlinkat, mknodat, io_uring_setup/enter/register (asm-generic numbers).
+_DENIED_AARCH64 = (36, 33, 425, 426, 427)
 _SECCOMP_RET_ALLOW = 0x7FFF0000
 _SECCOMP_RET_EPERM = 0x00050000 | 1
 
@@ -330,21 +350,48 @@ def _seccomp_fd() -> int:
     return read_end
 
 
-def _free_disk(path: Path) -> int:
+def _statvfs(path: Path) -> os.statvfs_result | None:
     try:
-        stats = os.statvfs(path)
+        return os.statvfs(path)
     except (AttributeError, OSError):
+        return None
+
+
+def _free_disk(path: Path) -> int:
+    stats = _statvfs(path)
+    return -1 if stats is None else int(stats.f_bavail) * int(stats.f_frsize)
+
+
+def _free_inodes(path: Path) -> int:
+    stats = _statvfs(path)
+    if stats is None:
         return -1
-    return int(stats.f_bavail) * int(stats.f_frsize)
+    favail = getattr(stats, "f_favail", -1)
+    # Some filesystems (e.g. btrfs) report 0 inodes: they have no fixed table,
+    # so the inode floor does not apply -- treat as "unmeasurable", never full.
+    return -1 if favail in (-1, 0) and getattr(stats, "f_files", 0) == 0 else int(favail)
 
 
+#: Set from the parent right after spawn: no ``preexec_fn`` (the daemon is
+#: multithreaded), and the in-jail shell also raises its own as a backstop.
 def _limited(inner: Sequence[str], limits: ToolLimits, cpu_seconds: int) -> list[str]:
-    """``inner`` wrapped so it runs only after every rlimit is in place."""
+    """``inner`` wrapped so it runs only after every rlimit is in place.
+
+    The in-jail shell raises its own OOM score (so the killer takes a jail
+    process, not the daemon) and ``exec``s the command under ``nice`` -- both
+    best-effort, both without a ``preexec_fn`` -- after printing the marker
+    that proves the limits were applied.
+    """
     prlimit = _system_binary("prlimit")
+    nice = shutil.which("nice", path="/usr/bin:/bin")
+    launch = [nice, "-n", str(int(limits.nice_increment)), *inner] if nice else list(inner)
+    script = (
+        f'echo {int(limits.oom_score_adj)} > /proc/self/oom_score_adj 2>/dev/null; '
+        'printf "%s" "$0"; exec "$@" 2>&1'
+    )
     return [
         prlimit, *limits.prlimit_args(cpu_seconds=cpu_seconds), "--",
-        "/bin/sh", "-c", 'printf "%s" "$0"; exec "$@" 2>&1',
-        _LIMITS_MARK.decode("ascii"), *inner,
+        "/bin/sh", "-c", script, _LIMITS_MARK.decode("ascii"), *launch,
     ]
 
 
@@ -489,6 +536,12 @@ def run_jailed(
                     "the shared disk is nearly full, so the tool jail will not start; "
                     "nothing ran"
                 )
+            inodes = _free_inodes(root)
+            if 0 <= inodes < limits.min_free_inodes:
+                raise UniverseToolError(
+                    "the shared disk is nearly out of inodes, so the tool jail will "
+                    "not start; nothing ran"
+                )
             with _root_cgroup(limits, process_cap) as cgroup:
                 if cgroup is not None:
                     # The shell joins the cgroup, THEN becomes bwrap: nothing of
@@ -600,6 +653,11 @@ def _supervise(
         pass_fds=(filter_fd,),
         start_new_session=True,
     )
+    # Belt to the in-jail shell's braces: raise the OOM score of the bwrap
+    # parent so the killer prefers this whole tree over the daemon. Inherited by
+    # every child; best-effort (a lowered score would need root).
+    with contextlib.suppress(OSError, ValueError):
+        Path(f"/proc/{proc.pid}/oom_score_adj").write_text(str(int(limits.oom_score_adj)))
     out = _Drain(proc.stdout, cap + len(_LIMITS_MARK))
     err = _Drain(proc.stderr, 16 * 1024)
     out.start()
@@ -657,11 +715,14 @@ def _watch(
             next_tree = now + 0.2
             count, rss = _tree(proc.pid)
             free = _free_disk(root)
+            inodes = _free_inodes(root)
             if count > process_cap:
                 killed = "process_limit"
             elif rss > limits.tree_memory_bytes:
                 killed = "memory_limit"
             elif 0 <= free < limits.min_free_disk_bytes:
+                killed = "disk_limit"
+            elif 0 <= inodes < limits.min_free_inodes:
                 killed = "disk_limit"
         if killed:
             _kill(proc)
@@ -828,28 +889,34 @@ SKILLS_DIR = "skills"
 MAX_SKILLS = 64
 _MAX_SKILL_FILE_BYTES = 256 * 1024
 _MAX_DESCRIPTION_CHARS = 300
+_MAX_FRONTMATTER_BYTES = 8 * 1024
 _SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_DESCRIPTION_LINE = re.compile(r"^description:[ \t]*(.*)$", re.MULTILINE)
 
 
 def _skill_description(raw: bytes) -> str:
-    """The frontmatter ``description``, one line, or '' when there is none."""
-    import yaml
+    """The frontmatter ``description``, one line, or '' when there is none.
 
-    text = raw.decode("utf-8", "replace").lstrip("﻿")
+    A SKILL.md is a file the agent WRITES, so its frontmatter is untrusted and
+    is never handed to a YAML loader: a 234-byte alias bomb expands to gigabytes
+    and crash-loops the shared daemon. Instead this scans a bounded slice of the
+    frontmatter for a single flat ``description:`` line, caps the length BEFORE
+    building any string, and treats a quoted value literally (no YAML anchors,
+    aliases, tags or block scalars are honoured). Nothing here can allocate more
+    than a few hundred bytes.
+    """
+    text = raw[: 4 + _MAX_FRONTMATTER_BYTES].decode("utf-8", "replace").lstrip("﻿")
     if not text.startswith("---"):
         return ""
     end = text.find("\n---", 3)
-    if end < 0:
+    frontmatter = text[3:end] if end >= 0 else text[3 : 3 + _MAX_FRONTMATTER_BYTES]
+    match = _DESCRIPTION_LINE.search(frontmatter)
+    if match is None:
         return ""
-    try:
-        meta = yaml.safe_load(text[3:end])
-    except yaml.YAMLError:
-        return ""
-    if not isinstance(meta, dict):
-        return ""
-    description = " ".join(str(meta.get("description") or "").split())
-    if len(description) > _MAX_DESCRIPTION_CHARS:
-        description = description[: _MAX_DESCRIPTION_CHARS - 1] + "…"
+    value = match.group(1).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    description = " ".join(value.split())[:_MAX_DESCRIPTION_CHARS]
     return description
 
 
@@ -885,9 +952,11 @@ def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
                     raw = fs.read_regular_file_beneath(
                         skills_fd, f"{name}/SKILL.md", max_bytes=_MAX_SKILL_FILE_BYTES,
                     )
-                except (OSError, NotImplementedError):
+                    description = _skill_description(raw)
+                except (OSError, NotImplementedError, RecursionError, ValueError):
+                    # A bad skill file NEVER breaks the turn: it is left out of
+                    # the index and the turn goes on without it.
                     continue
-                description = _skill_description(raw)
                 if description:
                     skills.append((name, description))
         finally:
@@ -915,8 +984,15 @@ _HARNESS_HEAD = (
 
 
 def harness_prompt(universe_dir: Path) -> str:
-    """The base harness section: the four tools, the folder, the skill index."""
-    skills = skill_index(universe_dir)
+    """The base harness section: the four tools, the folder, the skill index.
+
+    Runs in the shared daemon on every founder turn, so a bad skill folder
+    never breaks the turn: any failure yields the section with no skills.
+    """
+    try:
+        skills = skill_index(universe_dir)
+    except (OSError, RecursionError, ValueError):
+        skills = []
     if not skills:
         return _HARNESS_HEAD + "(none yet)"
     lines = [

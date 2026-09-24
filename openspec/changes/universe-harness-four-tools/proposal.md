@@ -57,8 +57,10 @@ in the new capability because it exists for the harness.
 
 ## Impact
 
-`tinyassets/universe_tools.py` (new), `engine_mcp_server.py`,
-`served_tools.py`, `universe_intelligence.py`, `providers/provider_jail.py`,
+`tinyassets/universe_tools.py` and `tinyassets/universe_files.py` (new, the
+latter the one safe reader every daemon-side universe read now routes through:
+`universe_intelligence`, `universe_soul`, `universe_self_model`, `persona`),
+`engine_mcp_server.py`, `served_tools.py`, `providers/provider_jail.py`,
 `providers/claude_provider.py`, `node_sandbox.py` (one shared process-tree
 walk), `.github/workflows/linux-jail-proof.yml`. No storage schema, credential,
 migration or money change. Linux only, like the #3958 jail; a Windows or macOS

@@ -55,25 +55,43 @@ above.
 Defaults: 512 MiB address space, 64 processes, cpu min(120 s, wall) soft
 with hard one second later (so SIGXCPU names the limit), 32 MiB
 per file, 256 files, 120 s wall (bash may ask up to 600 s), 64 KiB output,
-768 MiB tree RSS, 1 GiB free disk. Concurrency: 2 jails per universe, 4 per
-host (flock slots under the data dir).
+768 MiB tree RSS, 1 GiB free disk, 4096 free inodes. Concurrency: 2 jails per
+universe, 4 per host (flock slots under the data dir). Jail processes run
+under `nice +10` and with `oom_score_adj = 1000` (set on the bwrap parent from
+the daemon and again in-jail on `/proc/self`), so under CPU or memory pressure
+the kernel takes a jail before the daemon.
 
 Fail closed: no bwrap, no prlimit, or output without the marker the jailed
 wrapper prints after prlimit succeeded, and the call is refused with nothing
 run.
 
-### D4. No links, no FIFOs
+### D4. Every universe file is untrusted to the daemon (round 1 fix)
 
 The jail makes the agent's view safe, but the daemon reads the same folder
-from outside (persona grounding, config, soul) with ordinary path opens. A
-symlink the agent planted towards `/data/<other>/founder.md` dangles inside
-the jail and resolves outside it, so another user's file would reach this
-universe's prompt. A FIFO would hang the reading thread. A seccomp filter
-(`universe_tools.seccomp_program`, x86_64 and aarch64; x32 and unknown
-architectures get EPERM for everything) refuses `symlink`, `symlinkat`,
-`mknod`, `mknodat`. Hard links cannot leave `/u`: every other visible path is
-a different mount (EXDEV). Cost: a `git clone` or package install that
-creates symlinks fails for those entries. Residual below.
+from OUTSIDE (persona grounding, config, soul, the skill index). Since the
+agent can write and link in its own folder, every such read is untrusted, and
+round 1 (BLOCK) found two ways it bites. The fix is structural, in two layers:
+
+- **One safe reader.** `tinyassets/universe_files.read_universe_file` opens
+  every path component with `O_NOFOLLOW` (POSIX: via `workspace_fs`; non-POSIX:
+  `lstat` per component), requires a regular file and bounds the read. Every
+  daemon-side universe read routes through it: `_read_bundle_body`
+  (grounding), `read_universe_soul`/`read_pinned_universe_soul` (soul),
+  `read_self_model` (identity/index/soul), `read_persona_voice` (voice), and
+  the skill index (already an `O_NOFOLLOW` descriptor walk). A link on the
+  path, a non-regular file, or an over-size file reads as absent — the same
+  fail-closed the callers already had. This catches a link **however it was
+  created**, including one that a filter cannot see.
+- **The jail refuses to create the link.** A seccomp filter
+  (`universe_tools.seccomp_program`, x86_64 and aarch64; x32 and unknown
+  architectures get EPERM for everything) refuses `symlink`, `symlinkat`,
+  `mknod`, `mknodat`, **and `io_uring_setup`/`enter`/`register`**.
+  `IORING_OP_SYMLINKAT` (opcode 38, kernel 5.15+) creates a link through a
+  submission queue that seccomp never inspects, and production is kernel 6.1
+  with no `io_uring_disabled` sysctl (that arrived in 6.6); refusing the ring
+  setup means no ring op can run. Hard links cannot leave `/u` (EXDEV). Cost:
+  a `git clone` or install that creates symlinks fails for those entries, and
+  a library that uses io_uring for I/O falls back or fails.
 
 ### D5. Vendor-native harness dirs (design risk 8)
 
@@ -96,6 +114,14 @@ tier, flag on). It lists `skills/<name>/SKILL.md` with frontmatter
 `description`, name = directory name, at most 64, descriptions one line and
 <= 300 chars. The daemon reads them with `workspace_fs` descriptor walks and
 `O_NOFOLLOW`, so a link is skipped, never read. POSIX only.
+
+The frontmatter is a file the agent WROTE, so it is never handed to a YAML
+loader (round 1 BLOCK: a 234-byte alias bomb expands to gigabytes under
+`yaml.safe_load` and crash-loops the shared daemon, since `harness_prompt`
+runs on every founder turn). `_skill_description` scans a bounded slice for a
+single flat `description:` line, caps the length before building any string,
+honours no anchors/aliases/tags/block scalars, and both it and `harness_prompt`
+swallow any parse error, so one bad skill is left out and never breaks a turn.
 
 ## Residuals (tracked, not blocking S1)
 

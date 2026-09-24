@@ -121,7 +121,8 @@ from __future__ import annotations
 #: read, write, edit, bash (universe-harness S1, 2026-09-24) — the agent's four
 #:   tools over its OWN universe folder, executed by the platform in the tool
 #:   jail (``tinyassets.universe_tools``): the universe at ``/u`` only,
-#:   ``.runtime``/``.claude``/``.codex`` masked, no network, no credential,
+#:   ``.runtime`` masked (a provider launch also masks every hidden root dir),
+#:   no network, no credential,
 #:   rlimits + wall clock + output and process-tree caps. Pinned like every
 #:   handle here; no parameter names a universe.
 #:

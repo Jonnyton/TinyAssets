@@ -27,14 +27,20 @@ universe is mounted read-write at `/u` and no other universe, no data root,
 no platform source and no credential snapshot is reachable. `.runtime/` SHALL
 be masked so it is neither readable nor writable to disk. The jail SHALL have no network
 namespace shared with the host, SHALL start from an empty environment, and
-SHALL refuse creating symbolic links and special files. A host with no jail
-SHALL refuse the call; there SHALL be no unjailed fallback.
+SHALL refuse creating symbolic links and special files, including through
+io_uring. A host with no jail SHALL refuse the call; there SHALL be no
+unjailed fallback.
 
 #### Scenario: another universe is unreachable
 - **WHEN** the agent reads another universe by its host path, by `..`, or
   through a link it tries to plant
 - **THEN** the read fails, the link is never created, and no foreign content
   is returned
+
+#### Scenario: io_uring cannot create a link
+- **WHEN** a jailed process sets up an io_uring ring (to run a link op the
+  syscall filter would not see)
+- **THEN** the ring setup is refused, so no ring operation runs
 
 #### Scenario: bash has no network
 - **WHEN** a jailed command connects to a listener on the host loopback that
@@ -45,6 +51,20 @@ SHALL refuse the call; there SHALL be no unjailed fallback.
 - **WHEN** the agent reads `.runtime/` or writes into it
 - **THEN** it sees no credential or route bearer, and nothing it wrote exists
   on disk after the call
+
+### Requirement: The daemon treats every universe file as untrusted
+The daemon SHALL read every file in a universe folder from outside the jail —
+persona grounding, soul, self-model, voice, the skill index, and any other
+such read — through one shared reader that opens every path component without
+following a link, requires a regular file, and bounds the read size. A file
+that is or sits behind a link, is not a regular file, or is over the bound
+SHALL read as absent.
+
+#### Scenario: a pre-existing link is not followed into the prompt
+- **WHEN** a universe grounding file is a symlink pointing at another user's
+  file (planted from outside, or by a mechanism the jail filter cannot see)
+- **THEN** the daemon's persona read returns nothing for it and no foreign
+  content reaches the prompt
 
 ### Requirement: A CLI's own project settings are never a loading mechanism
 Every provider launch SHALL mask every hidden directory at the universe root
@@ -60,8 +80,10 @@ launch when a hidden root entry is a symbolic link.
 ### Requirement: Tool jails run under per-universe resource limits that fail closed
 Every tool call SHALL run under limits on address space, process count, cpu
 time, file size, open files, core size, wall-clock time, output size, summed
-resident memory of its process tree and the free space it leaves on the shared
-data volume, with bounded concurrency per universe and per host. A call whose
+resident memory of its process tree, and the free space and free inodes it
+leaves on the shared data volume, with bounded concurrency per universe and
+per host. Jail processes SHALL be de-prioritised for CPU and SHALL be the
+kernel's first choice under memory pressure, ahead of the daemon. A call whose
 limits cannot be applied SHALL be refused with nothing run.
 
 #### Scenario: a runaway is killed

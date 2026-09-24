@@ -179,6 +179,45 @@ def test_tools_reach_their_own_universe_and_nothing_else(world, monkeypatch):
     assert (b / "founder.md").read_text(encoding="utf-8") == FOREIGN_MARKER + "\n"
 
 
+_IO_URING_PROBE = r'''
+import ctypes, ctypes.util, errno, os, struct
+libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+# io_uring_setup(entries, params*) = 425 on x86_64 and aarch64 (asm-generic).
+params = ctypes.create_string_buffer(120)
+ctypes.set_errno(0)
+fd = libc.syscall(425, 8, params)
+err = ctypes.get_errno()
+if fd >= 0:
+    os.close(fd)
+    print("IO_URING_RING_CREATED")
+elif err == errno.EPERM:
+    print("IO_URING_EPERM")
+else:
+    print("IO_URING_OTHER", err)
+# A plain symlink is refused too (the belt seccomp also blocks).
+ctypes.set_errno(0)
+try:
+    os.symlink("/etc/passwd", "u-link")
+    print("SYMLINK_CREATED")
+except OSError as exc:
+    print("SYMLINK_" + errno.errorcode.get(exc.errno, str(exc.errno)))
+'''
+
+
+def test_io_uring_and_symlink_are_refused_in_the_jail(world, monkeypatch):
+    """io_uring is the way around a syscall filter (IORING_OP_SYMLINKAT, kernel
+    5.15+, invisible to seccomp). The jail refuses io_uring_setup, so no ring op
+    can run, and symlink stays refused too."""
+    from tinyassets import universe_tools as tools
+
+    world.universe_a.joinpath("probe.py").write_text(_IO_URING_PROBE, encoding="utf-8")
+    out = tools.bash(world.universe_a, "python3 /u/probe.py", timeout=30)
+    assert "IO_URING_RING_CREATED" not in out, out
+    assert "IO_URING_EPERM" in out, out
+    assert "SYMLINK_CREATED" not in out and "SYMLINK_EPERM" in out, out
+    assert not os.path.lexists(world.universe_a / "u-link")
+
+
 def test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch(
     world, monkeypatch,
 ):
