@@ -310,6 +310,113 @@ async def test_router_failure_terminal_cause_reaches_served_log(caplog):
     assert "ghp_" not in attempt.detail  # Also catches a partially cut secret.
 
 
+@pytest.mark.asyncio
+async def test_idle_timeout_evidence_survives_to_the_served_log_and_nothing_else_does(caplog):
+    """The 2026-09-24 00:46Z line said `provider_idle_timeout ... attempts=1`
+    and nothing about WHERE the turn was when the watchdog fired. The reader had
+    attached `tool_phase` and `last_progress_age_ms` to the exception and the
+    router had validated both onto the attempt; the recorder dropped them.
+
+    Drive the REAL router so the evidence travels the production path, and
+    poison the telemetry snapshot with every kind of field that must never
+    reach a log: a prompt, a tool argument, a token, a user string, a
+    credential-looking key. Only the allowlisted scalars may come out.
+    """
+    import logging
+
+    from tinyassets.exceptions import ProviderIdleTimeoutError
+    from tinyassets.providers.base import BaseProvider
+    from tinyassets.providers.router import ProviderRouter
+    from tinyassets.universe_server import _record_served_failure
+
+    secret = "ghp_" + "S" * 40
+    poison = {
+        "tool_phase": "in_tool",
+        "last_progress_age_ms": 31417.9,
+        "side_effect_state": "possible",
+        # None of the below is allowlisted; none may be rendered.
+        "prompt": "USER_PROMPT_TEXT_MUST_NOT_LOG",
+        "tool_arguments": {"path": "/home/owner/.ssh/id_rsa"},
+        "tool_name": "Bash",
+        "token": secret,
+        "api_key": "sk-ant-SECRETKEY",
+        "user_text": "the owner said something private",
+        "last_assistant_error": "raw provider error string",
+        "phase": "streaming",
+    }
+
+    class IdleProvider(BaseProvider):
+        name = "claude-code"
+        family = "anthropic"
+
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            exc = ProviderIdleTimeoutError(
+                "claude -p produced no protocol event for 30s "
+                "(idle watchdog fired; no provider cooldown)"
+            )
+            exc.attempt_telemetry = dict(poison)
+            raise exc
+
+    router = ProviderRouter(providers={"claude-code": IdleProvider()})
+    with pytest.raises(AllProvidersExhaustedError) as caught:
+        await router.call("writer", "test prompt", "test system")
+    with caplog.at_level(logging.WARNING, logger="universe_server"):
+        _record_served_failure("u-test", caught.value)
+
+    written = caplog.text
+    assert "provider_idle_timeout" in written
+    assert "tool_phase=in_tool" in written, written
+    assert "last_progress_age_ms=31418" in written, written
+    assert "side_effect_state=possible" in written, written
+    # The configured budget stays readable from the detail text.
+    assert "no protocol event for 30s" in written
+    # Probe by the poisoned VALUES: if any unlisted key had travelled, its
+    # value would be here. (The chain-state dict legitimately carries the
+    # boolean flag `api_key_providers_enabled`, so a bare key-name probe for
+    # `api_key` would flag configuration, not a leak.)
+    for leak in (
+        "USER_PROMPT_TEXT_MUST_NOT_LOG", "id_rsa", "Bash", secret, "ghp_",
+        "sk-ant", "owner said", "raw provider error string", "phase=streaming",
+    ):
+        assert leak not in written, f"{leak!r} reached the served log"
+
+
+def test_malformed_evidence_is_omitted_not_rendered(caplog):
+    """An unknown tool phase, a NaN age and an unknown side-effect state are
+    not evidence. The recorder must leave them out rather than invite a
+    reader to interpret them -- and must still write the line."""
+    import logging
+    import math
+
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+    from tinyassets.universe_server import _record_served_failure
+
+    exc = AllProvidersExhaustedError(
+        "Served provider 'claude-code' exhausted; universe authority forbids fallback widening.",
+        failure_class="provider_idle_timeout",
+        attempts=[
+            ProviderAttemptDiagnostic(
+                provider="claude-code",
+                status="failed",
+                skip_class="timed_out",
+                detail="claude -p produced no protocol event for 30s",
+                failure_class="provider_idle_timeout",
+                tool_phase="Bash(rm -rf /)",
+                last_progress_age_ms=math.nan,
+                side_effect_state="ghp_notastate",
+            )
+        ],
+    )
+    with caplog.at_level(logging.WARNING, logger="universe_server"):
+        _record_served_failure("u-test", exc)
+    written = caplog.text
+    assert "provider_idle_timeout" in written
+    assert "tool_phase=" not in written
+    assert "last_progress_age_ms=" not in written
+    assert "side_effect_state=" not in written
+    assert "rm -rf" not in written and "ghp_" not in written
+
+
 def test_a_secret_in_provider_detail_does_not_reach_the_log(caplog):
     """`detail` is provider text and may carry a token or a host path. It is
     scrubbed, and it never enters the owner's notice at all."""
