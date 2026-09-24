@@ -1296,13 +1296,16 @@ def test_execute_branch_version_threads_identity_and_queue_lineage(
     monkeypatch,
 ) -> None:
     from tinyassets import runs
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.run_admission_envelope import _decode as decode_envelope
 
-    # The version executor now performs Branch preflight before persistence;
-    # keep this identity-threading fixture structurally valid while leaving it
-    # graphless so the test remains scoped to queue lineage.
-    branch = SimpleNamespace(
+    # The version executor performs Branch preflight and captures the admission
+    # envelope before persistence, so this fixture must be a real
+    # ``BranchDefinition`` (``to_dict()`` is what the envelope codec freezes).
+    # It stays graphless so the test remains scoped to queue lineage.
+    branch = BranchDefinition(
         branch_def_id="ordinary-user-branch",
-        graph_nodes=[],
+        name="epoch2-dispatch-fixture",
     )
     prepared: dict = {}
     invoked: dict = {}
@@ -1342,6 +1345,21 @@ def test_execute_branch_version_threads_identity_and_queue_lineage(
     assert prepared["daemon_id"] == "daemon-a"
     assert prepared["runtime_instance_id"] == "runtime-a"
     assert prepared["worker_id"] == "worker-a"
+    # The admitted definition reached the stubbed persistence boundary; the envelope the
+    # resume path decodes carries this exact branch -- checked with the
+    # production decoder, not a hand-rolled parse.
+    admitted = decode_envelope(
+        prepared["admission_envelope"],
+        run={
+            "run_id": "run-a",
+            "branch_def_id": "ordinary-user-branch",
+            "branch_version_id": "branch-version-a",
+        },
+        run_id="run-a",
+        branch_from_dict=BranchDefinition.from_dict,
+    )
+    assert admitted.branch.to_dict() == branch.to_dict()
+    assert admitted.branch_version_id == "branch-version-a"
     enqueue = invoked["enqueue_context"]
     assert enqueue.universe_id == "universe-a"
     assert enqueue.parent_branch_task_id == "bt2_parent"
