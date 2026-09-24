@@ -962,7 +962,7 @@ _SERVED_PATCH_SAFE_OPS = frozenset({
     "add_edge", "remove_edge", "add_conditional_edge", "remove_conditional_edge",
     "add_state_field", "remove_state_field", "set_entry_point", "remove_node",
     "set_name", "set_description", "set_tags", "set_goal", "unset_goal",
-    "remove_skill", "set_io_manifest",
+    "remove_skill", "set_io_manifest", "set_default_llm_policy", "set_concurrency_budget",
 })
 #: Refused outright: these expose the branch publicly or graft a foreign lineage — the
 #: exact top-level fields the create sanitizer strips (published/public/visibility/fork_from).
@@ -1046,6 +1046,8 @@ _SERVED_PATCH_OP_SYNONYMS = {
     "title": "set_name", "describe": "set_description",
     "description": "set_description", "tags": "set_tags", "goal": "set_goal",
     "goal_id": "set_goal", "skills": "set_skills", "io_manifest": "set_io_manifest",
+    "default_llm_policy": "set_default_llm_policy",
+    "concurrency_budget": "set_concurrency_budget",
 }
 
 
@@ -1163,6 +1165,9 @@ def _sanitize_served_patch_changes(changes: object) -> str:
             # the compiler still refuses one that is not an ancestor in the run, and
             # the lease/admission checks still run per dispatch.
         elif kind in _SERVED_PATCH_SAFE_OPS:
+            # Execution choices are preferences, not grants. The canonical
+            # transactional patch validates both with the same grammar as create;
+            # naming a provider never bypasses current run/provider admission.
             setter = _SERVED_PATCH_STR_SETTERS.get(kind)
             if setter is not None and setter in op and not isinstance(op[setter], str):
                 raise ValueError(f"patch '{kind}' field '{setter}' must be a string")
@@ -1318,7 +1323,11 @@ def write_graph(
     - ``operation="patch"`` — edit one of YOUR OWN branches in place: pass its
       ``branch_id`` and a JSON array of edit ops in ``payload_json`` (add/remove
       edges + nodes, retune a node's prompt/source or its ``llm_policy`` model pin,
-      rename, retag, add skills). The
+      rename, retag, add skills). Workflow-wide choices use
+      ``{"op":"set_default_llm_policy","default_llm_policy":<policy object>}``
+      and ``{"op":"set_concurrency_budget","concurrency_budget":2}``.
+      Use explicit null to clear either choice; saved versions keep their choices.
+      These settings select among existing permissions and do not grant access. The
       edit is transactional (all-or-nothing). Publishing to the commons, changing
       visibility to public, and forking a foreign shape are NOT available here (they
       stay in the browser flow); a patched source_code node re-enters UNAPPROVED.

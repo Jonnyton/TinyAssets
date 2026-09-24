@@ -6,7 +6,7 @@ and ``to_dict()`` emits both. PR #3933 made ``publish_branch_version`` preserve
 set values into the immutable snapshot (``tinyassets/branch_versions.py``).
 
 This module asserts the capability that change requires and that the earlier
-diagnostic pass proved missing: through the SERVED surface an author can set,
+diagnostic pass proved missing: through the INTERNAL authoring routes an author can set,
 read back, describe, clear and fork-inherit both choices, and a value the run
 would silently reinterpret is refused at authoring time. It drives the real
 route functions (`_ext_branch_build`, `_ext_branch_patch`, `_ext_branch_get`)
@@ -26,6 +26,9 @@ and is NOT part of that 29/16 count. It was not executed against `ff1320d5`;
 it reads columns that do not exist there, so it could not pass — that is
 reasoning about the unfixed tree, not a measured red run.
 
+These tests do not cross engine_mcp_server.write_graph's served sanitizer.
+tests/test_served_execution_choice_patch.py covers that additional app boundary;
+the 2026-09-24 live test exposed its missing setter allowlist entries.
 No new action or field name is invented -- the two canonical fields above are
 the only ones exercised.
 """

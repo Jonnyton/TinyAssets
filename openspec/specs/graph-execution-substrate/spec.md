@@ -935,6 +935,13 @@ Branch definitions SHALL persist an optional branch-level default model policy a
 - **WHEN** an owner clears either choice
 - **THEN** the branch behaves exactly as a branch that never set it, and its snapshot keeps the absent-key form
 
+#### Scenario: The app agent changes execution choices through the served boundary
+
+- **WHEN** an owner submits `set_default_llm_policy` or `set_concurrency_budget` in an ordinary served `write_graph` branch patch
+- **THEN** the served sanitizer admits the existing setters, the canonical transaction validates and persists the choices, and explicit null clears them
+- **AND** malformed batches leave the definition unchanged, foreign-owner edits remain refused, and previously saved versions retain their choices
+- **AND** tool guidance describes these setters without implying they grant provider access
+
 #### Scenario: A pre-existing branch is unaffected
 
 - **WHEN** a branch definition stored before the choices existed is loaded, read or forked
