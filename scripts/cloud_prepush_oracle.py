@@ -16,7 +16,8 @@ no secrets, no environment, that
      to contain this file,
   2. installs Python 3.11 + dev deps in ``candidate/`` BEFORE the patch
      touches the tree,
-  3. receives a bounded base64 unified git patch + its SHA256 as inputs,
+  3. receives a bounded base64 raw-or-gzip unified git patch + its SHA256,
+     capped at 256 KiB uncompressed,
      materializes it under ``runner.temp`` and applies it with
      ``git apply --check`` then ``git apply`` (never ``--unsafe-paths``),
   4. runs ONLY the selected pytest node ids (validated: relative, under
@@ -42,12 +43,14 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import gzip
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import zlib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -55,6 +58,7 @@ from xml.etree import ElementTree as ET
 # GitHub caps the whole workflow_dispatch payload at 65,535 characters; the
 # patch gets ~60 KB, the node-id list the rest, with headroom for the shas.
 MAX_PATCH_B64_CHARS = 60_000
+MAX_PATCH_BYTES = 256 * 1024
 MAX_TESTS_JSON_CHARS = 4_000
 MAX_NODEIDS = 64
 HELPER_REL = "scripts/cloud_prepush_oracle.py"
@@ -113,8 +117,8 @@ def decode_patch(patch_b64: str | None, expected_sha256: str | None) -> bytes:
     if len(patch_b64) > MAX_PATCH_B64_CHARS:
         raise OracleInputError(
             f"patch_b64 is {len(patch_b64)} chars; cap is {MAX_PATCH_B64_CHARS}. "
-            "Split the candidate or shrink the diff -- the oracle does not "
-            "accept oversized input."
+            "Use prepare for compression or a nearer already-pushed base; "
+            "do not omit required candidate code or tests to fit."
         )
     if not isinstance(expected_sha256, str) or not _SHA256_RE.match(expected_sha256):
         raise OracleInputError("patch_sha256 must be 64 hex chars")
@@ -122,6 +126,20 @@ def decode_patch(patch_b64: str | None, expected_sha256: str | None) -> bytes:
         raw = base64.b64decode(patch_b64.strip(), validate=True)
     except (binascii.Error, ValueError) as exc:
         raise OracleInputError(f"patch_b64 is not valid base64: {exc}") from exc
+    if raw.startswith(b"\x1f\x8b"):
+        decoder = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+        try:
+            raw = decoder.decompress(raw, MAX_PATCH_BYTES + 1)
+        except zlib.error as exc:
+            raise OracleInputError(f"invalid gzip patch: {exc}") from exc
+        if len(raw) > MAX_PATCH_BYTES or decoder.unconsumed_tail:
+            raise OracleInputError("uncompressed patch exceeds byte cap")
+        if not decoder.eof:
+            raise OracleInputError("truncated gzip patch")
+        if decoder.unused_data:
+            raise OracleInputError("gzip patch has trailing bytes or multiple members")
+    if len(raw) > MAX_PATCH_BYTES:
+        raise OracleInputError("uncompressed patch exceeds byte cap")
     if not raw:
         raise OracleInputError("decoded patch is empty")
     actual = hashlib.sha256(raw).hexdigest()
@@ -324,13 +342,18 @@ def _git_stdout(argv: list[str], cwd: Path, runner: Runner) -> str:
 def cmd_prepare(args: argparse.Namespace) -> int:
     base = validate_base_sha(args.base)
     raw = Path(args.patch).read_bytes()
+    if len(raw) > MAX_PATCH_BYTES:
+        raise OracleInputError("uncompressed patch exceeds byte cap")
     validate_patch_paths(patch_paths(raw))
     validate_patch_content(raw)
     tests_json = json.dumps(list(args.nodeids))
     validate_nodeids(tests_json)
     b64 = base64.b64encode(raw).decode("ascii")
+    if len(b64) > MAX_PATCH_B64_CHARS:
+        b64 = base64.b64encode(gzip.compress(raw, mtime=0)).decode("ascii")
     sha = hashlib.sha256(raw).hexdigest()
-    decode_patch(b64, sha)  # enforces the size cap on the encoded form
+    if decode_patch(b64, sha) != raw:
+        raise OracleInputError("patch transport did not round-trip byte-exactly")
     _write_json(Path(args.out), {
         "base_sha": base,
         "patch_b64": b64,
