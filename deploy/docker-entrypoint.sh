@@ -81,6 +81,8 @@ _platform_credential_env=(
     WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64
     TINYASSETS_GITHUB_PUSH_CAPABILITIES
     TINYASSETS_GITHUB_PR_CAPABILITIES
+    GH_TOKEN
+    GITHUB_TOKEN
 )
 for _name in "${_platform_credential_env[@]}"; do
     if [[ -n "${!_name+set}" ]]; then

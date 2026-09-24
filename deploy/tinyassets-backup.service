@@ -27,6 +27,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/tinyassets/env
+# GH_TOKEN (off-host GitHub release upload) lives here, host-only, so the
+# daemon container never receives it. Optional: absent file = no GH upload.
+EnvironmentFile=-/etc/tinyassets/backup.env
 ExecStart=/bin/bash /opt/tinyassets-host-uptime/current/deploy/backup.sh
 TimeoutStartSec=30min
 # Don't kill mid-upload — backup.sh handles its own timeouts.

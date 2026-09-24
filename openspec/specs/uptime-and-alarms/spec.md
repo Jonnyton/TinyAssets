@@ -870,9 +870,10 @@ exercise a host model login. The former LLM-binding canary, its post-deploy
 binding gate and the weekly Codex and Claude keepalives are retired. The
 production deploy SHALL instead run `deploy/retire_platform_llm_logins.sh` only
 after the public canary is green; it removes retired credential names from the
-host env file and the platform login credential files, deletes a platform login
-directory only when nothing but CLI login/runtime artifacts remain in it, keeps
-and names any other content, and logs names and counts only. The same step
+host env file, deletes both platform login directories in full (founder
+decision 2026-09-24) behind exact-path, mount and symlink guards, moves
+`GH_TOKEN` to a host-only backup env the daemon never reads, and logs names and
+counts only. The same step
 retires the platform GitHub push credential: it scrubs the push-capability
 maps from the env file and removes the GitHub App token refresher's units,
 script, env file and documented private key, naming (not deleting) a key
@@ -886,10 +887,10 @@ reintroduces either.
 - **WHEN** a deploy's public canary is green
 - **THEN** the retirement step runs, refuses if the running daemon still defines `CODEX_HOME` or `CLAUDE_CONFIG_DIR`, and otherwise removes the retired names and credential files
 
-#### Scenario: Possible universe content is never deleted by the deploy
+#### Scenario: Only the exact platform login directories are ever deleted
 
-- **WHEN** a platform login directory still holds session transcripts or CLI state databases
-- **THEN** the step keeps the directory, names those entries in a warning, and leaves them for the founder decision in `docs/host-actions.md`
+- **WHEN** a login directory is a symlink, resolves anywhere but `<volume>/.codex` or `<volume>/.claude`, is referenced by a universe symlink or config, or the volume is not the daemon's `/data` mount
+- **THEN** the step deletes nothing there, fails loudly, and leaves the universes (`u-*`) untouched
 
 ### Requirement: Executable Uptime Alarm Concurrency Proof
 

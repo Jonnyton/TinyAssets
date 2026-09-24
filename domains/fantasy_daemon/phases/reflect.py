@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.enrichment_signals import load_enrichment_signals, state_enrichment_signals
+from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.ingestion.canon_io import iter_canon_files, safe_canon_path
 from tinyassets.universe_soul import premise_from_soul, read_legacy_premise
 from tinyassets.utils.json_parsing import parse_llm_json
@@ -71,6 +72,10 @@ def reflect(state: dict[str, Any]) -> dict[str, Any]:
                 len(result.updated_weights),
             )
             trace["reflexion_ran"] = True
+        except ProviderAuthorityHeldError:
+            # Includes PlatformLLMCallRefusedError (Hard Rule 15): a refused
+            # model call propagates; it is never logged away as a failed step.
+            raise
         except Exception as e:
             logger.warning("Reflexion failed: %s", e)
 

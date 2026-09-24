@@ -173,11 +173,19 @@ platform login homes, seeded from `TINYASSETS_CODEX_AUTH_JSON_B64` /
 All of that is retired. After every green deploy the
 `Retire platform LLM logins from the host` step
 (`deploy/retire_platform_llm_logins.sh`) removes what an older host still
-holds: the retired names in `/etc/tinyassets/env`, the credential files in the
-two old login directories, and each directory itself once nothing but CLI
-login/runtime artifacts remain. Anything that may be a universe's own content
-(session transcripts, CLI state databases, project histories) is kept and named
-in a warning for the founder decision in `docs/host-actions.md`.
+holds: the retired names in `/etc/tinyassets/env`, and both old login
+directories in full, transcripts included (founder decision 2026-09-24). The
+delete is guarded: the `tinyassets-data` mountpoint must be its own real path
+and be the daemon's `/data` mount; each target must be a real directory whose
+real path is exactly `<volume>/.codex` or `<volume>/.claude`; no universe
+(`u-*` beside them) may symlink into or configure it; and removal uses
+`rm -rf --one-file-system`. Any failed guard leaves the target untouched and
+fails the step. Transcripts are logged as counts only.
+
+`GH_TOKEN` (off-host backup upload, `deploy/backup.sh`) is host-only: the same
+step moves it from `/etc/tinyassets/env` to `/etc/tinyassets/backup.env`
+(`root:root 0600`), which only `tinyassets-backup.service` reads, and the
+container entrypoint strips it.
 
 The platform also holds no GitHub push credential. The former
 `TINYASSETS_GITHUB_PUSH_CAPABILITIES` / `TINYASSETS_GITHUB_PR_CAPABILITIES`

@@ -14,19 +14,38 @@
 #      atomic helper (deploy/install-tinyassets-env.sh `delete`);
 #   2. deletes the credential file inside each platform login directory
 #      (`.codex/auth.json`, `.claude/.credentials.json`);
-#   3. deletes the login directory itself ONLY when every remaining entry is a
-#      known CLI login/runtime artifact. Anything else -- session transcripts,
-#      CLI state databases, project histories, which may hold a universe's own
-#      conversation content -- is NOT deleted (AGENTS.md Hard Rule 13: inventory
-#      before you destroy). The script names it, warns, and leaves it for the
-#      founder decision recorded in docs/host-actions.md;
+#   3. deletes both platform login directories IN FULL, transcripts included
+#      (`sessions/`, `projects/`, the CLI state databases, `.claude.json` and its
+#      backups). Founder decision 2026-09-24, taken after the read-only Hard
+#      Rule 13 inventory: delete rather than archive. Guards, all required:
+#        - targets are built ONLY from the two constant labels `.codex` and
+#          `.claude`;
+#        - the volume: `realpath -e` of the `tinyassets-data` mountpoint equals
+#          the mountpoint itself, AND `docker inspect` shows that same volume
+#          mounted at `/data` in the daemon;
+#        - each target: `[ ! -L ]`, then `realpath -e "$vol/$label"` equals
+#          exactly `$vol_real/$label`. Universes live beside them at the volume
+#          root as `u-*`; the exact-path match is what keeps them out;
+#        - immediately before the `rm`, no symlink under a universe resolves
+#          into the target and no universe config names it;
+#        - `rm -rf --one-file-system -- "$real"`: never crosses into another
+#          mount, and a symlink inside a target is removed as a link, never
+#          followed.
+#      A failed guard leaves the target untouched and the script exits 1.
+#      Transcripts are logged as COUNTS only, never names or contents;
 #   4. retires the platform GitHub push path: the push-capability maps in the
 #      env file (step 1), the GitHub App token refresher's systemd timer and
 #      service, its script copy, its env file, and the App private key at its
 #      documented path. A key configured at any OTHER path is not deleted; it
-#      is named and left for the founder.
+#      is named and left for the founder;
+#   5. moves GH_TOKEN (the off-host backup upload token, used only by
+#      deploy/backup.sh) out of the daemon's env file into a host-only
+#      /etc/tinyassets/backup.env (root:root 0600) that only the backup unit
+#      reads, via a systemd drop-in. The daemon container never sees it again
+#      (the entrypoint also strips it).
 #
-# It logs NAMES and COUNTS only, never a value or file content.
+# It logs variable/unit NAMES and file COUNTS only, never a value, a
+# transcript name or any file content.
 #
 # Precondition: the running daemon must already be the new release -- its
 # container config must not define CODEX_HOME or CLAUDE_CONFIG_DIR. If it does,
@@ -119,6 +138,54 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 5. GH_TOKEN: host backup unit only, never the daemon
+# ---------------------------------------------------------------------------
+BACKUP_ENV_FILE="${TINYASSETS_BACKUP_ENV_FILE:-${ETC_DIR}/backup.env}"
+BACKUP_ENV_OWNER="${TINYASSETS_BACKUP_ENV_OWNER-root:root}"
+BACKUP_DROPIN="${SYSTEMD_DIR}/tinyassets-backup.service.d/10-backup-env.conf"
+backup_env() {
+    TINYASSETS_ENV_FILE="${BACKUP_ENV_FILE}" \
+    TINYASSETS_LEGACY_ENV_FILE="${BACKUP_ENV_FILE}.absent" \
+    TINYASSETS_ENV_OWNER="${BACKUP_ENV_OWNER}" \
+    TINYASSETS_ENV_MODE=600 \
+    TINYASSETS_ENV_READ_USER="" \
+    bash "${ENV_HELPER}" "$@"
+}
+if ! TINYASSETS_ENV_FILE="${ENV_FILE}" bash "${ENV_HELPER}" assert-absent GH_TOKEN >/dev/null 2>&1; then
+    gh_value="$(grep -E '^[[:space:]]*(export[[:space:]]+)?GH_TOKEN[[:space:]]*[=:]' "${ENV_FILE}" \
+        | tail -1 \
+        | sed -E 's/^[[:space:]]*(export[[:space:]]+)?GH_TOKEN[[:space:]]*[=:][[:space:]]*//' || true)"
+    case "${gh_value}" in
+        \"*\") gh_value="${gh_value#\"}"; gh_value="${gh_value%\"}" ;;
+        \'*\') gh_value="${gh_value#\'}"; gh_value="${gh_value%\'}" ;;
+    esac
+    if [ -z "${gh_value}" ]; then
+        echo "::error::retire-platform-llm-logins: GH_TOKEN is assigned in ${ENV_FILE} but its value could not be read; left in place" >&2
+        exit 1
+    fi
+    printf '%s' "${gh_value}" | backup_env set GH_TOKEN >/dev/null
+    unset gh_value
+    if backup_env assert-absent GH_TOKEN >/dev/null 2>&1; then
+        echo "::error::retire-platform-llm-logins: GH_TOKEN did not reach ${BACKUP_ENV_FILE}; left in ${ENV_FILE}" >&2
+        exit 1
+    fi
+    TINYASSETS_ENV_FILE="${ENV_FILE}" bash "${ENV_HELPER}" delete GH_TOKEN >/dev/null
+    echo "retire-platform-llm-logins: moved GH_TOKEN from ${ENV_FILE} to ${BACKUP_ENV_FILE} (backup unit only)"
+else
+    echo "retire-platform-llm-logins: ${ENV_FILE} holds no GH_TOKEN"
+fi
+if [ -f "${BACKUP_ENV_FILE}" ]; then
+    dropin_body="$(printf '[Service]\nEnvironmentFile=-%s\n' "${BACKUP_ENV_FILE}")"
+    if [ "$(cat "${BACKUP_DROPIN}" 2>/dev/null || true)" != "${dropin_body}" ]; then
+        mkdir -p "$(dirname -- "${BACKUP_DROPIN}")"
+        printf '%s\n' "${dropin_body}" > "${BACKUP_DROPIN}"
+        chmod 0644 "${BACKUP_DROPIN}"
+        if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload || true; fi
+        echo "retire-platform-llm-logins: backup unit now reads ${BACKUP_ENV_FILE}"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 4. the GitHub App token refresher (platform push credential)
 # ---------------------------------------------------------------------------
 refresher_env="${ETC_DIR}/github-app-token-refresher.env"
@@ -171,62 +238,104 @@ fi
 vol="$(docker volume inspect "${VOLUME}" --format '{{ .Mountpoint }}' 2>/dev/null || true)"
 if [ -z "${vol}" ] || [ "${vol#/}" = "${vol}" ] || [ ! -d "${vol}" ]; then
     echo "retire-platform-llm-logins: volume ${VOLUME} not found; no login directories to retire"
-    echo "retire_platform_llm_logins_result=$([ "${held_github}" -eq 0 ] && echo complete || echo credentials_removed_content_held)"
+    echo "retire_platform_llm_logins_result=$([ "${held_github}" -eq 0 ] && echo complete || echo github_key_held)"
     exit 0
 fi
 
-# A top-level entry blocks deleting its directory unless it is on this list of
-# pure CLI login/runtime artifacts, or it is a directory with no files in it.
-codex_artifacts=" .lock .personality_migration .sandbox_migration .tinyassets_auth_probe.json .tmp cache config.toml installation_id log models_cache.json plugins skills tmp shell_snapshots thread-writer-locks "
-claude_artifacts=" .last-cleanup policy-limits.json remote-settings.json statsig session-env sessions shell-snapshots todos "
+# Volume guard 1: the mountpoint is its own real path (no link in the way).
+vol_real="$(realpath -e -- "${vol}" 2>/dev/null || true)"
+if [ -z "${vol_real}" ] || [ "${vol_real}" != "${vol}" ] || [ "${vol_real}" = "/" ]; then
+    echo "::error::retire-platform-llm-logins: ${VOLUME} mountpoint does not resolve to itself; login directories not touched" >&2
+    echo "retire_platform_llm_logins_result=refused"
+    exit 1
+fi
+# Volume guard 2: the daemon mounts exactly this volume at /data.
+data_mount="$(docker inspect "${DAEMON}" \
+    --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}|{{.Name}}|{{.Source}}{{end}}{{end}}' 2>/dev/null || true)"
+if [ "${data_mount}" != "volume|${VOLUME}|${vol_real}" ]; then
+    echo "::error::retire-platform-llm-logins: ${DAEMON} does not mount ${VOLUME} at /data; login directories not touched" >&2
+    echo "retire_platform_llm_logins_result=refused"
+    exit 1
+fi
 
-held=0
+# How many universe symlinks resolve into $1, plus universe configs naming it.
+# Universes live at the volume root as u-*.
+universe_references() {
+    local real="$1" label="$2" count=0 link resolved
+    local universes=()
+    local u
+    for u in "${vol_real}"/u-*; do
+        [ -d "${u}" ] && [ ! -L "${u}" ] && universes+=("${u}")
+    done
+    [ "${#universes[@]}" -gt 0 ] || { echo 0; return; }
+    while IFS= read -r -d '' link; do
+        resolved="$(readlink -f -- "${link}" 2>/dev/null || true)"
+        case "${resolved}" in
+            "${real}"|"${real}"/*) count=$((count + 1)) ;;
+        esac
+    done < <(find "${universes[@]}" -type l \( -lname "*${label}" -o -lname "*${label}/*" \) -print0 2>/dev/null)
+    local configs
+    configs="$(grep -rlsF --include='*.json' --include='*.toml' --include='*.yaml' --include='*.yml' \
+        -e "/data/${label}" -e "${real}" "${universes[@]}" 2>/dev/null | wc -l | tr -d ' ')"
+    echo $((count + configs))
+}
+
+refused=0
 retire_dir() {
-    local label="$1" credential="$2" artifacts="$3"
-    local dir="${vol}/${label}"
+    local label="$1" credential="$2"
+    case "${label}" in
+        .codex|.claude) ;;
+        *) echo "::error::retire-platform-llm-logins: unexpected label; refused" >&2; refused=1; return ;;
+    esac
+    local target="${vol_real}/${label}"
 
-    if [ -L "${dir}" ]; then
-        echo "::warning::retire-platform-llm-logins: ${label} is a symlink; not followed, not touched"
-        held=1
-        return
-    fi
-    if [ ! -e "${dir}" ]; then
+    if [ ! -e "${target}" ] && [ ! -L "${target}" ]; then
         echo "retire-platform-llm-logins: ${label} absent"
         return
     fi
+    if [ -L "${target}" ]; then
+        refused=1
+        echo "::error::retire-platform-llm-logins: ${label} is a symlink; refused, not touched" >&2
+        return
+    fi
+    local real
+    real="$(realpath -e -- "${vol}/${label}" 2>/dev/null || true)"
+    if [ "${real}" != "${vol_real}/${label}" ] || [ ! -d "${real}" ]; then
+        refused=1
+        echo "::error::retire-platform-llm-logins: ${label} does not resolve to exactly ${vol_real}/${label}; refused, not touched" >&2
+        return
+    fi
 
-    if [ -f "${dir}/${credential}" ] && [ ! -L "${dir}/${credential}" ]; then
-        rm -f -- "${dir}/${credential}"
+    if [ -f "${real}/${credential}" ] && [ ! -L "${real}/${credential}" ]; then
+        rm -f -- "${real}/${credential}"
         echo "retire-platform-llm-logins: removed credential ${label}/${credential}"
     fi
 
-    local blocking=()
-    local entry name files
-    while IFS= read -r -d '' entry; do
-        name="$(basename -- "${entry}")"
-        case "${artifacts}" in
-            *" ${name} "*) continue ;;
-        esac
-        if [ -d "${entry}" ] && [ ! -L "${entry}" ]; then
-            files="$(find "${entry}" -type f | wc -l | tr -d ' ')"
-            [ "${files}" -eq 0 ] && continue
-            blocking+=("${name}(${files} files)")
-        else
-            blocking+=("${name}")
-        fi
-    done < <(find "${dir}" -mindepth 1 -maxdepth 1 -print0)
-
-    if [ "${#blocking[@]}" -eq 0 ]; then
-        rm -rf -- "${dir}"
-        echo "retire-platform-llm-logins: removed ${label} (only login/runtime artifacts remained)"
-    else
-        held=1
-        echo "::warning::retire-platform-llm-logins: kept ${label}: it holds content that may be a universe's own (${blocking[*]}). Credential removed; the rest awaits the founder decision in docs/host-actions.md"
+    local refs
+    refs="$(universe_references "${real}" "${label}")"
+    if [ "${refs}" != "0" ]; then
+        refused=1
+        echo "::error::retire-platform-llm-logins: ${refs} universe symlink(s)/config(s) point at ${label}; refused, not deleted" >&2
+        return
     fi
+
+    local files dirs
+    files="$(find "${real}" -xdev \( -type f -o -type l \) | wc -l | tr -d ' ')"
+    dirs="$(find "${real}" -xdev -mindepth 1 -type d | wc -l | tr -d ' ')"
+    rm -rf --one-file-system -- "${real}"
+    if [ -e "${real}" ]; then
+        refused=1
+        echo "::error::retire-platform-llm-logins: ${label} still present after removal (another mount inside it?)" >&2
+        return
+    fi
+    echo "retire-platform-llm-logins: removed ${label} in full (${files} files, ${dirs} directories)"
 }
 
-retire_dir ".codex" "auth.json" "${codex_artifacts}"
-retire_dir ".claude" ".credentials.json" "${claude_artifacts}"
+retire_dir ".codex" "auth.json"
+retire_dir ".claude" ".credentials.json"
 
-[ "${held_github}" -eq 0 ] || held=1
-echo "retire_platform_llm_logins_result=$([ "${held}" -eq 0 ] && echo complete || echo credentials_removed_content_held)"
+if [ "${refused}" -ne 0 ]; then
+    echo "retire_platform_llm_logins_result=refused"
+    exit 1
+fi
+echo "retire_platform_llm_logins_result=$([ "${held_github}" -eq 0 ] && echo complete || echo github_key_held)"

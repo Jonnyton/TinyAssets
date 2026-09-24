@@ -146,3 +146,28 @@ def test_entrypoint_strips_and_retire_script_scrubs_the_push_maps():
         assert name in retire, f"host cleanup does not scrub {name}"
     assert "github-app-token-refresher.timer" in retire
     assert "github-app-private-key.pem" in retire
+
+
+def test_gh_token_is_host_backup_only_never_the_daemon():
+    """GH_TOKEN is the off-host backup upload token. It lives in a host-only
+    env file the backup unit reads; the daemon container never receives it."""
+    entrypoint = (REPO / "deploy" / "docker-entrypoint.sh").read_text(encoding="utf-8")
+    match = re.search(
+        r"^_platform_credential_env=\(\n(?P<body>.*?)^\)\n",
+        entrypoint,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match
+    inside = {line.strip() for line in match.group("body").splitlines()}
+    assert {"GH_TOKEN", "GITHUB_TOKEN"} <= inside, "entrypoint must strip GH_TOKEN/GITHUB_TOKEN"
+
+    compose = (REPO / "deploy" / "compose.yml").read_text(encoding="utf-8")
+    assert "GH_TOKEN" not in compose
+    assert "backup.env" not in compose, "the daemon must not read the backup env file"
+
+    unit = (REPO / "deploy" / "tinyassets-backup.service").read_text(encoding="utf-8")
+    assert "EnvironmentFile=-/etc/tinyassets/backup.env" in unit
+
+    retire = (REPO / "deploy" / "retire_platform_llm_logins.sh").read_text(encoding="utf-8")
+    assert "backup_env set GH_TOKEN" in retire
+    assert 'bash "${ENV_HELPER}" delete GH_TOKEN' in retire

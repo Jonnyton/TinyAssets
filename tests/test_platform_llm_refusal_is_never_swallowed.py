@@ -188,3 +188,22 @@ def test_connection_inference_without_an_owner_request_does_not_call_a_model(
 
     assert _run_model(udir, "u-test", shape=[], hints=[], intent="search") == ""
     assert calls == [], "a model call was attempted with no owner request to bind it to"
+
+
+# ---------------------------------------------------------------------------
+# domains/fantasy_daemon/phases/reflect.py (one level up from reflexion)
+# ---------------------------------------------------------------------------
+
+
+def test_reflect_phase_propagates_a_refusal_from_reflexion(monkeypatch):
+    import tinyassets.runtime_singletons as runtime
+    from domains.fantasy_daemon.phases.reflect import reflect
+
+    class _RefusingManager:
+        def run_reflexion(self, _state):
+            raise PlatformLLMCallRefusedError(REFUSAL)
+
+    monkeypatch.setattr(runtime, "memory_manager", _RefusingManager(), raising=False)
+
+    with pytest.raises(PlatformLLMCallRefusedError):
+        reflect({"_universe_path": ""})

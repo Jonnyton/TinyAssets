@@ -35,21 +35,6 @@ name it. In GitHub → Settings → Applications (and Developer settings → Git
 Apps), uninstall/delete any App installed on `Jonnyton/TinyAssets` for the
 community-loop bot identity (Contents + Pull requests write).
 
-## Decide what happens to the transcripts left in the old platform login dirs (2026-09-24)
-
-The deploy's retirement step removes the credentials (`/data/.codex/auth.json`,
-the `CLAUDE_CODE_OAUTH_TOKEN` env line) but keeps anything that may be a
-universe's own content, because Hard Rule 13 forbids deleting it on an agent's
-say-so. Inventory taken read-only on 2026-09-24 (names and counts only):
-`/data/.codex` holds `sessions/` (1,491 files, ~60 MB, 2026-06 to 2026-09-21) and
-the CLI state databases `state_5.sqlite`, `thread_history_1.sqlite`,
-`memories_1.sqlite`, `goals_1.sqlite`, `logs_2.sqlite`, `queue_1.sqlite`;
-`/data/.claude` holds `projects/` (51 transcripts across `-app`, `-tmp` and
-`-data-u-tiny` -- the last is the `u-tiny` universe's working directory),
-`.claude.json` and five `.claude.json` backups. Decide: archive them for the
-owning universes, or delete. Either way, once they are gone the next deploy's
-retirement step removes both directories on its own.
-
 ## Rotate the production Cloudflare tunnel token (2026-09-24)
 
 The `tinyassets-tunnel` container's start command carries the tunnel token in
