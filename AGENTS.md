@@ -241,6 +241,12 @@ Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/e
   supposed to know or work out. That produces a false "works" signal that
   real users, who get no such help, would be blocked behind. Never build or
   edit users' workflows yourself; enable the agent to do it.
+- **Scope is the basic capability set, not the current user's needs**
+  (founder, 2026-09-24). Anticipate the minimal setup that lets a user do
+  anything a user should be able to do. A basic capability goes on the list
+  and stays there until cleared, even if no current user or app agent is
+  blocked by it. "Fine for what I'm building now" from the app agent is
+  evidence about priority, never a reason to drop the item.
 
 ## Hard Rules
 
