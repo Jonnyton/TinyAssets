@@ -61,7 +61,7 @@ def test_model_request_is_non_authorizing_until_owner_answers(rig):
     row = ask(rig)
     assert row["status"] == "pending", row
     assert load_provider_assignment(rig[0], universe_id="u-owner") is None
-    assert "disconnects and reconnects" in row["grant_sentence"]
+    assert "reconnects with this access" in row["grant_sentence"]
     assert "free models only" in row["grant_sentence"]
     result = answer(row)
     assert result.get("status") == "answered", result
@@ -217,7 +217,7 @@ def test_model_setup_does_not_change_existing_spending_ceilings(rig):
     row = ask(rig, expected_revision=bound["agent_binding"]["revision"],
               model_access={"codex": changed.document()})
     assert row["status"] == "pending"
-    assert "existing spending ceilings" in row["grant_sentence"]
+    assert "within spending limits you already set" in row["grant_sentence"]
 
 
 def test_other_accepted_sources_are_preserved_exactly(rig, monkeypatch):

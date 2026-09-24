@@ -863,7 +863,7 @@ def test_deposit_cannot_replay_under_a_different_login(tmp_path, status, body_de
         tmp_path,
         _handshake() + [rejection] + _handshake_with(_SID2)
         + [_ok({"status": "deposited"}, _SID2)],
-        '(async()=>{ const pending=MCP.connectLLM("claude","synthetic-secret");'
+        '(async()=>{ const pending=MCP.connectHTTP("synthetic-dest","synthetic-secret",[]);'
         ' while(!SENT.some(s=>s.tool==="write_graph")) await new Promise(r=>setTimeout(r,1));'
         ' if(MCP.endLogin) MCP.endLogin(); else MCP.invalidateSession();'
         ' bearer="different-login"; return await pending; })()',
@@ -881,7 +881,7 @@ def test_delayed_handshake_cannot_send_a_secret_under_the_next_login(tmp_path):
     plan[0]["headersDelayMs"] = 80
     out = _drive(
         tmp_path, plan + [_ok({"status": "deposited"})],
-        '(async()=>{ const pending=MCP.connectLLM("claude","synthetic-secret");'
+        '(async()=>{ const pending=MCP.connectHTTP("synthetic-dest","synthetic-secret",[]);'
         ' while(!SENT.length) await new Promise(r=>setTimeout(r,1));'
         ' if(MCP.endLogin) MCP.endLogin(); else MCP.invalidateSession();'
         ' bearer="different-login"; return await pending; })()',
@@ -897,7 +897,7 @@ def test_stale_repair_handshake_cannot_discard_the_new_login_session(tmp_path):
     repair[0]["headersDelayMs"] = 80
     out = _drive(
         tmp_path, [_handshake()[0], _session_gone()] + repair,
-        '(async()=>{ const pending=MCP.connectLLM("claude","synthetic-secret");'
+        '(async()=>{ const pending=MCP.connectHTTP("synthetic-dest","synthetic-secret",[]);'
         ' while(SENT.length<3) await new Promise(r=>setTimeout(r,1));'
         ' MCP.endLogin(); bearer="different-login"; MCP.sessionId="new-login-session";'
         ' return await pending; })()',

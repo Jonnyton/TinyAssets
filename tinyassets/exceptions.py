@@ -153,6 +153,18 @@ class ProviderAuthorityHeldError(ProviderError):
         self.chain_state = chain_state
 
 
+class PlatformLLMCallRefusedError(ProviderAuthorityHeldError):
+    """A model call was not bound to one universe's owner-connected credentials.
+
+    The platform has no LLM (AGENTS.md Hard Rule 15). Raised by
+    ``tinyassets.providers.owner_binding`` -- the single enforcement point in
+    the provider router -- before any provider is probed or launched. A
+    SUBCLASS of ``ProviderAuthorityHeldError`` so every caller that already
+    refuses to swallow held authority propagates this refusal too, and it keeps
+    the inherited ``authority_held`` failure class the run taxonomy keys on.
+    """
+
+
 class WorkModelExhaustedError(ProviderAuthorityHeldError):
     """Every model in the run's captured order is exhausted, not unbound.
 

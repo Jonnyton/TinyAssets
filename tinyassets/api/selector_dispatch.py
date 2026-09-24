@@ -6,6 +6,17 @@ no longer applies an opinionated formula; instead it dispatches a
 **selector branch** (a published TinyAssets branch bound to the Goal)
 that consumes signal data and emits ranked entries.
 
+**Retired by AGENTS.md Hard Rule 15 (the platform has no LLM, 2026-09-24).**
+A selector run was a platform model call: it ran on the raw ``call_provider``
+with no universe, which the router served from the host's own CLI login, for
+whoever happened to read the leaderboard. Ranking is platform operation, so
+:func:`dispatch_selector` now fails closed with ``selector_retired`` and runs
+nothing. It is not rewired to any universe (founder, 2026-09-24): leaderboards
+and selection are superseded by user-built workflows. Resolution, the default
+selector publication and the selector binding columns remain only until the
+follow-up deletion listed in
+``docs/reviews/2026-09-24-platform-llm-call-audit.md``.
+
 This module owns:
 
 * :func:`resolve_selector_branch_version_id` — return the selector
@@ -13,105 +24,27 @@ This module owns:
   is set, use it. Otherwise return the platform default selector's
   branch_version_id (lazily published on first call so the substrate
   works on a clean DB).
-* :func:`dispatch_selector` — synchronously (with timeout) run a
-  selector branch_version against the supplied candidate set, parse
-  + validate the output shape, return ``ranked_entries`` or a
-  structured error.
+* :func:`dispatch_selector` — retired; fails closed with
+  ``selector_retired`` (see above).
 * :func:`ensure_default_selector_published` — idempotent helper that
   builds + publishes the platform default selector branch on first
   call. The default is a single prompt-template node that consumes
   the signal map and asks the LLM to rank — the "weights" are a
   prompt the chatbot can tune via fork, not Python constants.
 
-Contract for selector branches (see also
-``drafts/concepts/selector-branch-contract.md``):
-
-Inputs (passed as the run's ``inputs`` dict)::
-
-    {
-        "goal_id": "<goal-id>",
-        "candidate_branches": [
-            {
-                "branch_def_id": "...",
-                "branch_version_id": "...",  # latest active version, or ""
-                "name": "...",
-                "author": "...",
-                "signals": {
-                    "completed_run_count": int,
-                    "failed_run_count":    int,
-                    "judgment_score_avg":  float | null,
-                    "judgment_count":      int,
-                    "fork_count":          int,
-                    "last_successful_run_at": float,  # epoch
-                    "has_gate_rung":       bool,
-                    "gate_rung_top":       str | null,
-                    "safe_to_publish":     bool,
-                    "age_days_since_success": float | null,
-                },
-            },
-            ...
-        ],
-    }
-
-Outputs (read from the run's ``output`` dict)::
-
-    {
-        "ranked_entries": [
-            {
-                "branch_def_id":     "...",
-                "branch_version_id": "...",
-                "score":             <float>,
-                "rationale":         "<human-readable why-ranked-here>",
-            },
-            ...  # ordered by rank, best first
-        ],
-    }
-
-Round-1 design choices
-----------------------
-
-* **Sync dispatch with timeout.** The leaderboard caller blocks on the
-  selector run via ``wait_for(run_id, timeout=SELECTOR_TIMEOUT_S)``. The
-  selector pipeline cost is one LLM call per leaderboard build. A
-  future caching slice can memoize results per Goal for N minutes.
-
-* **Visibility is server-derived.** The candidate set passed to the
-  selector is the public-or-author-owned view per PR-970's auth-
-  boundary contract. The selector branch sees only branches the
-  caller has visibility into; private branches authored by other
-  actors are never even mentioned in the input.
-
-* **Default selector is a published branch, not a code path.**
-  ``ensure_default_selector_published`` builds the BranchDefinition
-  in-Python on first call, calls ``save_branch_definition`` +
-  ``publish_branch_version``, and stores the resulting
-  ``branch_version_id`` for return. Subsequent calls find the
-  existing definition and return its current active version.
-
-* **Failure modes surface structured errors.** Selector missing /
-  not published / timed out / invalid output shape all return
-  ``{"ok": False, "error_kind": "..."}`` dicts that the leaderboard
-  caller renders to the chatbot. The leaderboard never crashes;
-  callers see a clear "selector misbehaved" signal rather than a
-  Python traceback.
+The historical selector-branch contract (inputs ``goal_id`` +
+``candidate_branches`` with signals, output ``ranked_entries``) is in
+``drafts/concepts/selector-branch-contract.md`` and in git history.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-
-# How long the selector run is allowed to complete before the
-# leaderboard caller gives up. One LLM call typically lands in <15s;
-# 60s leaves headroom for slower providers + multiple-candidate
-# prompts. Configurable via env so hosts can tune.
-SELECTOR_TIMEOUT_S_DEFAULT = 60.0
-SELECTOR_TIMEOUT_ENV = "TINYASSETS_SELECTOR_TIMEOUT_S"
 
 # Deterministic branch_def_id for the platform default selector.
 # Tests rely on this being stable across processes.
@@ -505,8 +438,15 @@ If `candidate_branches` is empty, return `{{"ranked_entries":[]}}`.
 
 
 # ---------------------------------------------------------------------------
-# Selector dispatch + result parsing
+# Selector dispatch -- retired (Hard Rule 15)
 # ---------------------------------------------------------------------------
+
+SELECTOR_RETIRED_MESSAGE = (
+    "The platform has no LLM, so leaderboard selectors no longer run: a "
+    "selector was a model call the platform made for whoever read the "
+    "leaderboard, not work inside an owner's universe. Rank or pick branches "
+    "with your own workflow instead."
+)
 
 
 def dispatch_selector(
@@ -514,51 +454,19 @@ def dispatch_selector(
     *,
     goal_id: str,
     candidate_branches: list[dict[str, Any]],
-    actor: str = "",   # no default principal; the caller names one or the write refuses
+    actor: str = "",
     timeout_s: float | None = None,
     provider_call: Any = None,
 ) -> dict[str, Any]:
-    """Run the selector branch synchronously + return its ``ranked_entries``.
+    """Fail closed: selector ranking is a platform model call, and there is none.
 
-    Resolves the selector via :func:`resolve_selector_branch_version_id`,
-    dispatches an async run via ``execute_branch_version_async``, blocks
-    on its background future for up to ``timeout_s`` seconds, reads the
-    final ``runs.output_json``, validates the
-    ``ranked_entries`` shape, and returns it.
-
-    Returns one of:
-
-    Success::
-
-        {
-            "ok": True,
-            "branch_version_id": "...",
-            "source": "goal_binding" | "platform_default",
-            "run_id": "...",
-            "ranked_entries": [...],  # validated shape
-        }
-
-    Failure (selector unresolvable, dispatch failed, timeout, or
-    invalid output shape)::
-
-        {
-            "ok": False,
-            "error_kind": "<one of: selector_not_published |
-                            selector_dispatch_failed |
-                            selector_timeout |
-                            selector_run_failed |
-                            selector_invalid_output>",
-            "error": "<human-readable>",
-            # Optional context fields per error_kind:
-            "branch_version_id": "...",
-            "run_id": "...",
-        }
-
-    Empty ``candidate_branches`` short-circuits to
-    ``{ok: True, ranked_entries: []}`` without dispatching — no
-    point burning an LLM call when there's nothing to rank.
+    An empty candidate set still short-circuits to an empty ranking (no model
+    was ever involved). Anything else returns ``selector_retired`` without
+    resolving, publishing or running a branch, and without touching a
+    provider. The keyword arguments are accepted so existing callers keep
+    their shape; none of them can re-enable a run.
     """
-    # Short-circuit: no candidates means no work.
+    del base_path, actor, timeout_s, provider_call
     if not candidate_branches:
         return {
             "ok": True,
@@ -567,461 +475,9 @@ def dispatch_selector(
             "run_id": None,
             "ranked_entries": [],
         }
-
-    resolution = resolve_selector_branch_version_id(
-        base_path, goal_id=goal_id,
-    )
-    if not resolution.get("ok"):
-        return {
-            "ok": False,
-            "error_kind": resolution.get(
-                "error_kind", "selector_not_published",
-            ),
-            "error": resolution.get("error", ""),
-        }
-    bvid = resolution["branch_version_id"]
-    source = resolution["source"]
-    # P1.C (round 4) — when the bound version was found inactive at
-    # resolve time and the substrate fell back to platform default,
-    # propagate that diagnostic to the leaderboard caller so the
-    # response shape carries it. Empty / None when not applicable.
-    fellback_from = resolution.get("fellback_from")
-
-    timeout = _resolve_timeout(timeout_s)
-
-    # Build the selector's input dict. ``candidate_branches`` is
-    # serialized as-is — the prompt template's placeholder will
-    # render it via str() / JSON depending on the provider's stub.
-    inputs: dict[str, Any] = {
-        "goal_id": goal_id,
-        "candidate_branches": candidate_branches,
-    }
-
-    # Reconstruct the selector branch from the immutable snapshot +
-    # the live branch_definitions row's identity metadata.
-    #
-    # P1.1 fix (DESIGN-008 round 2): ``publish_branch_version`` ->
-    # ``_canonical_snapshot`` deliberately strips name / description /
-    # author from the immutable snapshot — only graph behavior fields
-    # survive. Reconstructing via ``BranchDefinition.from_dict(snapshot)``
-    # alone yields an empty name and ``validate()`` rejects with
-    # "Branch name is required" before compile.
-    #
-    # We enrich here by reading the parent ``branch_definitions``
-    # row (same branch_def_id) and merging name / description /
-    # author / visibility back in. Effects + node graph + state
-    # schema still come from the IMMUTABLE snapshot, so the
-    # selector's actual behavior matches what was published — only
-    # the identity/UI fields come from the mutable parent row.
-    from tinyassets.branch_versions import get_branch_version
-    from tinyassets.branches import BranchDefinition
-    from tinyassets.daemon_server import get_branch_definition
-    from tinyassets.runs import MissingRequiredInputs, _execute_branch_core
-
-    try:
-        bv = get_branch_version(base_path, bvid)
-    except Exception as exc:
-        logger.exception(
-            "selector dispatch | get_branch_version crashed | "
-            "goal=%s bvid=%s", goal_id, bvid,
-        )
-        return {
-            "ok": False,
-            "error_kind": "selector_dispatch_failed",
-            "error": str(exc),
-            "branch_version_id": bvid,
-        }
-    if bv is None:
-        return {
-            "ok": False,
-            "error_kind": "selector_not_published",
-            "error": (
-                f"selector branch_version_id {bvid!r} not found in "
-                "branch_versions."
-            ),
-            "branch_version_id": bvid,
-        }
-
-    # P1 (DESIGN-008 round 5) — dispatch-time status guard. The
-    # resolve-time check in ``resolve_selector_branch_version_id`` +
-    # the fail-closed semantics in ``ensure_default_selector_published``
-    # cover the normal lifecycle, but a final ``status='active'`` check
-    # here closes any race between resolve and dispatch (TOCTOU) and
-    # protects callers that thread their own ``branch_version_id``
-    # straight in without going through ``resolve_selector_branch_version_id``.
-    # Cheap (one already-loaded attribute read) and idempotent.
-    bv_status = getattr(bv, "status", "active") or "active"
-    if bv_status != "active":
-        logger.warning(
-            "selector dispatch | branch_version_id=%r resolved to "
-            "status=%r at dispatch time (active-only required). "
-            "Refusing to execute a rolled-back / superseded selector.",
-            bvid, bv_status,
-        )
-        return {
-            "ok": False,
-            "error_kind": "selector_version_inactive_at_dispatch",
-            "error": (
-                f"selector branch_version_id {bvid!r} resolved to "
-                f"status={bv_status!r} at dispatch time. The "
-                "selector binding is stale or the platform default "
-                "was rolled back without a fresh active replacement. "
-                "Selector binding is not exposed by the advertised handles. "
-                "An operator must bind a different active selector through "
-                "the internal selector-binding surface, unbind to fall back "
-                "to the platform default, or republish the platform default "
-                "with new content so a fresh active version is minted."
-            ),
-            "branch_version_id": bvid,
-            "status": bv_status,
-        }
-
-    snapshot = dict(bv.snapshot or {})
-    parent_def_id = snapshot.get("branch_def_id") or ""
-    parent_row: dict[str, Any] | None = None
-    if parent_def_id:
-        try:
-            parent_row = get_branch_definition(
-                base_path, branch_def_id=parent_def_id,
-            )
-        except KeyError:
-            parent_row = None
-        except Exception:
-            logger.exception(
-                "selector dispatch | parent branch_definitions read "
-                "crashed | goal=%s bvid=%s parent=%s",
-                goal_id, bvid, parent_def_id,
-            )
-            parent_row = None
-
-    # Merge identity fields. Snapshot wins on graph fields; parent
-    # row wins on identity fields (name/description/author). If the
-    # parent row is missing (rare — could happen if the def was
-    # purged but the version row remains), fall back to a synthetic
-    # name derived from the branch_def_id so validate() passes and
-    # the selector can still run.
-    enriched: dict[str, Any] = dict(snapshot)
-    if parent_row:
-        for k in ("name", "description", "author", "visibility",
-                  "domain_id", "tags"):
-            if not enriched.get(k) and parent_row.get(k) is not None:
-                enriched[k] = parent_row[k]
-    if not enriched.get("name"):
-        enriched["name"] = parent_def_id or f"selector_{bvid}"
-
-    try:
-        branch_def = BranchDefinition.from_dict(enriched)
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
-        return {
-            "ok": False,
-            "error_kind": "selector_snapshot_drift",
-            "error": (
-                f"selector snapshot {bvid!r} cannot be reconstructed: "
-                f"{exc}. Republish at the current schema version."
-            ),
-            "branch_version_id": bvid,
-        }
-
-    # Provider resolution: explicit ``provider_call`` kwarg wins
-    # (tests inject a deterministic stub); otherwise fall back to
-    # the fantasy-daemon provider stub, which routes to the
-    # configured TinyAssets provider chain (Anthropic / Codex /
-    # Ollama / etc.). Same fallback shape as
-    # ``_action_run_branch_version``.
-    if provider_call is None:
-        try:
-            from tinyassets.providers.call import (
-                call_provider as _default_provider_call,
-            )
-            provider_call = _default_provider_call
-        except ImportError:
-            provider_call = None
-
-    try:
-        outcome = _execute_branch_core(
-            base_path,
-            branch=branch_def,
-            inputs=inputs,
-            run_name=f"selector_dispatch_for_{goal_id}",
-            actor=actor,
-            provider_call=provider_call,
-            branch_version_id=bvid,
-        )
-    except MissingRequiredInputs as exc:
-        return {
-            "ok": False,
-            "error_kind": exc.failure_class,
-            **exc.to_dict(),
-            "branch_version_id": bvid,
-        }
-    except Exception as exc:
-        logger.exception(
-            "selector dispatch failed for goal=%s bvid=%s",
-            goal_id, bvid,
-        )
-        return {
-            "ok": False,
-            "error_kind": "selector_dispatch_failed",
-            "error": str(exc),
-            "branch_version_id": bvid,
-        }
-
-    run_id = outcome.run_id
-
-    # Block on the background future. ``wait_for`` is a no-op when
-    # ``_execute_branch_core`` completed inline (small graphs or test
-    # paths where the executor pool ran synchronously); otherwise it
-    # waits up to ``timeout`` for the worker to finish.
-    from tinyassets.runs import get_run, wait_for
-    try:
-        wait_for(run_id, timeout=timeout)
-    except Exception as exc:
-        # TimeoutError from concurrent.futures or any other wait
-        # failure collapses to a selector_timeout outcome — never
-        # raise into the leaderboard caller.
-        logger.warning(
-            "selector run %s did not finish within %.1fs: %s",
-            run_id, timeout, exc,
-        )
-        return {
-            "ok": False,
-            "error_kind": "selector_timeout",
-            "error": (
-                f"selector run {run_id!r} did not complete within "
-                f"{timeout:.1f}s. The selector branch may be misconfigured "
-                "or the provider is overloaded."
-            ),
-            "branch_version_id": bvid,
-            "run_id": run_id,
-        }
-
-    # Re-read the run row to pick up the final output. ``outcome``
-    # captures only the queued response; the actual graph output
-    # lives in runs.output_json once the worker writes it.
-    final = get_run(base_path, run_id)
-    if final is None:
-        return {
-            "ok": False,
-            "error_kind": "selector_run_failed",
-            "error": (
-                f"selector run {run_id!r} vanished from the runs DB "
-                "after dispatch. Storage layer may have failed."
-            ),
-            "branch_version_id": bvid,
-            "run_id": run_id,
-        }
-    status = final.get("status") or ""
-    if status != "completed":
-        return {
-            "ok": False,
-            "error_kind": "selector_run_failed",
-            "error": (
-                f"selector run {run_id!r} ended with status={status!r}: "
-                f"{final.get('error') or '(no error message)'}"
-            ),
-            "branch_version_id": bvid,
-            "run_id": run_id,
-            "selector_status": status,
-        }
-
-    output = final.get("output") or {}
-    if not isinstance(output, dict):
-        return {
-            "ok": False,
-            "error_kind": "selector_invalid_output",
-            "error": (
-                f"selector run output was not a JSON object; got "
-                f"{type(output).__name__}"
-            ),
-            "branch_version_id": bvid,
-            "run_id": run_id,
-        }
-
-    parsed = _parse_ranked_entries(output)
-    if parsed.get("ok"):
-        result: dict[str, Any] = {
-            "ok": True,
-            "branch_version_id": bvid,
-            "source": source,
-            "run_id": run_id,
-            "ranked_entries": parsed["ranked_entries"],
-        }
-        if fellback_from is not None:
-            result["fellback_from"] = fellback_from
-        return result
+    logger.info("selector dispatch refused for goal=%s: selector_retired", goal_id)
     return {
         "ok": False,
-        "error_kind": parsed.get(
-            "error_kind", "selector_invalid_output",
-        ),
-        "error": parsed.get("error", ""),
-        "branch_version_id": bvid,
-        "run_id": run_id,
+        "error_kind": "selector_retired",
+        "error": SELECTOR_RETIRED_MESSAGE,
     }
-
-
-# ---------------------------------------------------------------------------
-# Output parsing
-# ---------------------------------------------------------------------------
-
-
-_REQUIRED_ENTRY_KEYS = ("branch_def_id", "score")
-
-
-def _parse_ranked_entries(output: dict[str, Any]) -> dict[str, Any]:
-    """Pull ``ranked_entries`` out of the selector's run output.
-
-    Accepts either:
-
-      * ``output["ranked_entries"]`` as a list (the canonical shape).
-      * ``output["ranked_entries"]`` as a JSON string that decodes to a list
-        (LLM-emitted ``"[{...}]"`` from a prompt-template node that didn't
-        post-process the string).
-
-    Returns ``{ok: True, ranked_entries: [...]}`` on success or
-    ``{ok: False, error_kind, error}`` on any malformation.
-    """
-    raw = output.get("ranked_entries")
-    if raw is None:
-        return {
-            "ok": False,
-            "error_kind": "selector_invalid_output",
-            "error": (
-                "selector output did not contain the required "
-                "'ranked_entries' key."
-            ),
-        }
-    entries = raw
-    if isinstance(entries, str):
-        # LLM-emitted JSON string — attempt to decode. Strip
-        # markdown fence if present.
-        candidate = entries.strip()
-        if candidate.startswith("```"):
-            # Strip a fenced block (```json ... ```).
-            lines = candidate.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip().startswith("```"):
-                lines = lines[:-1]
-            candidate = "\n".join(lines).strip()
-        try:
-            decoded = json.loads(candidate)
-        except (ValueError, TypeError) as exc:
-            return {
-                "ok": False,
-                "error_kind": "selector_invalid_output",
-                "error": (
-                    "selector output 'ranked_entries' is a string but "
-                    f"not parseable JSON: {exc}"
-                ),
-            }
-        if isinstance(decoded, dict) and "ranked_entries" in decoded:
-            # Whole JSON object was stuffed into the field. Unwrap.
-            entries = decoded["ranked_entries"]
-        elif isinstance(decoded, list):
-            entries = decoded
-        else:
-            return {
-                "ok": False,
-                "error_kind": "selector_invalid_output",
-                "error": (
-                    "selector output 'ranked_entries' string decoded to "
-                    f"{type(decoded).__name__}, expected list."
-                ),
-            }
-    if not isinstance(entries, list):
-        return {
-            "ok": False,
-            "error_kind": "selector_invalid_output",
-            "error": (
-                "selector output 'ranked_entries' must be a list; got "
-                f"{type(entries).__name__}."
-            ),
-        }
-    cleaned: list[dict[str, Any]] = []
-    for idx, entry in enumerate(entries):
-        if not isinstance(entry, dict):
-            return {
-                "ok": False,
-                "error_kind": "selector_invalid_output",
-                "error": (
-                    f"ranked_entries[{idx}] must be an object; got "
-                    f"{type(entry).__name__}."
-                ),
-            }
-        for key in _REQUIRED_ENTRY_KEYS:
-            if key not in entry:
-                return {
-                    "ok": False,
-                    "error_kind": "selector_invalid_output",
-                    "error": (
-                        f"ranked_entries[{idx}] missing required key "
-                        f"{key!r}. Entry keys: {sorted(entry.keys())}."
-                    ),
-                }
-        # Normalize types so downstream consumers see consistent
-        # shapes. Score is coerced to float; missing optional fields
-        # become "" / None.
-        try:
-            score = float(entry["score"])
-        except (TypeError, ValueError):
-            return {
-                "ok": False,
-                "error_kind": "selector_invalid_output",
-                "error": (
-                    f"ranked_entries[{idx}].score is not coercible to "
-                    f"float: {entry.get('score')!r}"
-                ),
-            }
-        bdid = (entry.get("branch_def_id") or "").strip()
-        if not bdid:
-            return {
-                "ok": False,
-                "error_kind": "selector_invalid_output",
-                "error": (
-                    f"ranked_entries[{idx}].branch_def_id must be a "
-                    "non-empty string."
-                ),
-            }
-        cleaned.append({
-            "branch_def_id": bdid,
-            "branch_version_id": (
-                entry.get("branch_version_id") or ""
-            ),
-            "score": round(score, 4),
-            "rationale": str(entry.get("rationale") or ""),
-        })
-    return {"ok": True, "ranked_entries": cleaned}
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _resolve_timeout(explicit: float | None) -> float:
-    """Pick the selector dispatch timeout."""
-    if explicit is not None:
-        try:
-            return max(1.0, float(explicit))
-        except (TypeError, ValueError):
-            pass
-    import os
-    raw = os.environ.get(SELECTOR_TIMEOUT_ENV, "").strip()
-    if raw:
-        try:
-            return max(1.0, float(raw))
-        except ValueError:
-            pass
-    return SELECTOR_TIMEOUT_S_DEFAULT
-
-
-__all__ = [
-    "DEFAULT_SELECTOR_BRANCH_DEF_ID",
-    "DEFAULT_SELECTOR_NAME",
-    "SELECTOR_TIMEOUT_S_DEFAULT",
-    "SELECTOR_TIMEOUT_ENV",
-    "resolve_selector_branch_version_id",
-    "ensure_default_selector_published",
-    "dispatch_selector",
-]
