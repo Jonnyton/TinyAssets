@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,16 @@ def _load():
 @pytest.fixture
 def hook():
     return _load()
+
+
+@pytest.fixture(autouse=True)
+def _unmarked_session(monkeypatch):
+    """Every test below is a ROOT session unless it opts in.
+
+    This suite itself runs inside dispatched peers (the marker is inherited by
+    the whole process tree), and the blocking tests must prove blocking there.
+    """
+    monkeypatch.delenv("TINYASSETS_PEER_TASK", raising=False)
 
 
 class _Stdin:
@@ -164,6 +175,61 @@ def test_it_stops_after_the_cap(hook, monkeypatch, capsys, tmp_path):
                          payload=payload, ledger=ledger))
     assert all(d is not None for d in seen[: hook._MAX_BLOCKS])
     assert all(d is None for d in seen[hook._MAX_BLOCKS :])
+
+
+# --- bounded peers ----------------------------------------------------------
+
+
+def test_a_marked_peer_task_is_never_blocked(hook, monkeypatch, capsys, tmp_path):
+    """A peer owns none of the ledger -- not even its parent's running row.
+
+    Blocking it told it to dispatch (its parent's review!), which the
+    peer-agents rule forbids; peers timed out after delivering.
+    """
+    result = tmp_path / "ready.md"
+    result.write_text("VERDICT: APPROVE", encoding="utf-8")
+    ledger = _ledger(tmp_path, [
+        {"event": "started", "out": "output/parent-review.md", "pid": 1, "at": 1e9},
+        {"event": "started", "out": str(result), "pid": 2, "at": 1e9},
+        {"event": "finished", "out": str(result), "pid": 2, "at": 1e9 + 5, "code": 0},
+    ])
+    monkeypatch.setenv(hook.PEER_TASK_ENV, "1")
+    got = _run(hook, monkeypatch, capsys, tmp_path,
+               payload={"cwd": str(tmp_path), "session_id": "peer1"}, ledger=ledger)
+    assert got is None
+    # It must not even spend a block or stamp state: nothing happened.
+    assert not (tmp_path / ".agents" / "supervisor").exists()
+
+
+def test_the_marker_is_a_value_not_a_name(hook, monkeypatch, capsys, tmp_path):
+    """An empty marker is no marker. Only peer_agent's "1" opts a session out."""
+    ledger = _ledger(tmp_path, [
+        {"event": "started", "out": "output/review.md", "pid": 1, "at": 1e9},
+    ])
+    monkeypatch.setenv(hook.PEER_TASK_ENV, "")
+    got = _run(hook, monkeypatch, capsys, tmp_path,
+               payload={"cwd": str(tmp_path), "session_id": "peer2"}, ledger=ledger)
+    assert got is not None and got["decision"] == "block"
+
+
+def test_an_unmarked_root_still_blocks_for_ready_and_running(
+    hook, monkeypatch, capsys, tmp_path
+):
+    """The marker narrows WHO is blocked, never WHAT a root session is told."""
+    result = tmp_path / "ready.md"
+    result.write_text("VERDICT: ADAPT", encoding="utf-8")
+    ledger = _ledger(tmp_path, [
+        # Stamped NOW: an open row older than _STALE_AFTER_S is "vanished", not running.
+        {"event": "started", "out": "output/running.md", "pid": 1, "at": time.time()},
+        {"event": "started", "out": str(result), "pid": 2, "at": 1e9 + 1},
+        {"event": "finished", "out": str(result), "pid": 2, "at": 1e9 + 5, "code": 0},
+    ])
+    got = _run(hook, monkeypatch, capsys, tmp_path,
+               payload={"cwd": str(tmp_path), "session_id": "root1"}, ledger=ledger)
+    assert got is not None and got["decision"] == "block"
+    assert "[running] output/running.md" in got["reason"]
+    assert f"[ready] {result}" in got["reason"]
+    assert (tmp_path / ".agents" / "supervisor" / "keep-working-root1.json").exists()
 
 
 # --- fail-open paths --------------------------------------------------------
