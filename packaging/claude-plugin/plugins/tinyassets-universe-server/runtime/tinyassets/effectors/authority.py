@@ -4,8 +4,9 @@ Gap 1 of the souled-universe self-maintenance model (design note
 ``docs/design-notes/2026-05-28-souled-universe-effect-authority.md``). The
 running universe's soul is the SOURCE of effect-authority: it declares which
 real-world hands (``<sink>:<destination>`` grants) the universe's founder
-authorizes. The env capability map (``TINYASSETS_GITHUB_PR_CAPABILITIES``)
-carries the *secret/token*; the soul carries the *authority decision*.
+authorizes. The secret/token comes from the owner's own connection (the
+platform holds no push credential; the env capability map was retired
+2026-09-24); the soul carries the *authority decision*.
 
 Transitional contract (this scaffold):
 

@@ -33,9 +33,10 @@ def reset_stub():
 
 
 class TestGeminiGroqRegistration:
-    def test_gemini_registered_when_key_and_sdk_present(
+    def test_gemini_never_registered_from_a_host_key(
         self, monkeypatch, reset_stub
     ):
+        """Hard Rule 15: a host key plus the retired switch registers nothing."""
         pytest.importorskip("google.genai")
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-gemini")
         monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
@@ -43,9 +44,9 @@ class TestGeminiGroqRegistration:
         stub = _reload_stub()
 
         assert stub._real_router is not None
-        assert "gemini-free" in stub._real_router.available_providers
+        assert "gemini-free" not in stub._real_router.available_providers
 
-    def test_groq_registered_when_key_and_sdk_present(
+    def test_groq_never_registered_from_a_host_key(
         self, monkeypatch, reset_stub
     ):
         pytest.importorskip("groq")
@@ -55,7 +56,7 @@ class TestGeminiGroqRegistration:
         stub = _reload_stub()
 
         assert stub._real_router is not None
-        assert "groq-free" in stub._real_router.available_providers
+        assert "groq-free" not in stub._real_router.available_providers
 
     def test_gemini_skipped_without_key(self, monkeypatch, reset_stub):
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)

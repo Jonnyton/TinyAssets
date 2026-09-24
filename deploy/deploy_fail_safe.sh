@@ -738,7 +738,7 @@ for volume in svc("daemon").get("volumes") or []:
 if daemon_data_mount != "tinyassets-data":
     problems.append(
         "daemon has no /data volume from 'tinyassets-data' (found %r); every "
-        "universe, both auth bundles and the OAuth db live there"
+        "universe and the OAuth db live there"
         % (daemon_data_mount,)
     )
 

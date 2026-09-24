@@ -351,11 +351,6 @@ def _tool_wait_evidence(exc: BaseException) -> dict[str, Any]:
     return out
 
 
-_API_KEY_PROVIDERS: frozenset[str] = frozenset(
-    {"gemini-free", "groq-free", "grok-free"}
-)
-
-
 # Sync graph nodes call async provider routing through this bounded pool.
 # Keep it above 1 so an unrelated slow provider call does not serialize all
 # other sync callers behind one shared worker.
@@ -471,13 +466,6 @@ class ProviderRouter:
         if allowlist is None:
             return chain
         return [p for p in chain if p in allowlist]
-
-    @staticmethod
-    def _apply_api_key_provider_policy(chain: list[str]) -> list[str]:
-        """Drop API-key-backed providers unless the host opted into them."""
-        if api_key_providers_enabled():
-            return chain
-        return [p for p in chain if p not in _API_KEY_PROVIDERS]
 
     def selected_agent_execution_kind(self, selection) -> str:
         """Advisory installed capability; actual dispatch rechecks the resolved executor."""
@@ -851,21 +839,6 @@ class ProviderRouter:
                     f"not silently fall back to a disallowed provider."
                 )
             chain = filtered
-
-        auth_filtered = self._apply_api_key_provider_policy(chain)
-        if not auth_filtered:
-            raise AllProvidersExhaustedError(
-                f"All providers for role={role!r} are API-key-backed and "
-                "disabled by default. TinyAssets daemons are subscription-only "
-                "unless TINYASSETS_ALLOW_API_KEY_PROVIDERS=1 is set."
-            )
-        if auth_filtered != chain:
-            logger.info(
-                "Ignoring API-key providers by default for role=%s: removed=%s",
-                role,
-                [p for p in chain if p not in auth_filtered],
-            )
-            chain = auth_filtered
 
         # FEAT-006 / BUG-025: collect per-provider skip/failure diagnostics so
         # the final AllProvidersExhaustedError can carry structured detail.

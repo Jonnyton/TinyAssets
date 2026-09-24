@@ -387,20 +387,25 @@ def _truthy_env(value: str | None) -> bool:
 
 
 def api_key_providers_enabled() -> bool:
-    """Return True only when a host explicitly opts into API-key providers."""
-    return _truthy_env(os.environ.get("TINYASSETS_ALLOW_API_KEY_PROVIDERS"))
+    """Always False: no host may opt the platform into its own API keys.
+
+    The platform has no LLM (AGENTS.md Hard Rule 15). The former
+    ``TINYASSETS_ALLOW_API_KEY_PROVIDERS`` switch let a host serve calls from
+    ``*_API_KEY`` variables in its own environment; it was retired 2026-09-24
+    and is no longer read. An owner who wants an API-key provider connects it to
+    their universe as their own open provider.
+    """
+    return False
 
 
 def require_api_key_provider_opt_in(provider_name: str) -> None:
-    """Fail API-key-backed providers unless the host deliberately enables them."""
-    if api_key_providers_enabled():
-        return
+    """Refuse a built-in provider whose only credential is the host's API key."""
     from tinyassets.exceptions import ProviderUnavailableError
 
     raise ProviderUnavailableError(
-        f"{provider_name} is API-key-backed and disabled by default. "
-        "TinyAssets daemons are subscription-only unless the host deliberately "
-        "sets TINYASSETS_ALLOW_API_KEY_PROVIDERS=1 for this daemon."
+        f"{provider_name} can only use an API key from the host's environment, "
+        "and the platform holds no model credential (Hard Rule 15). Connect "
+        "this source to your universe as your own provider instead."
     )
 
 
@@ -459,9 +464,7 @@ _PROVIDER_AUTH_OVERLAY_ENV_VARS: dict[str, frozenset[str]] = {
 
 
 def subprocess_env_without_api_keys() -> dict[str, str] | None:
-    """Return a subprocess env that ignores API-key auth unless opted in."""
-    if api_key_providers_enabled():
-        return None
+    """Return this process's env with every model API-key variable removed."""
     env = os.environ.copy()
     for name in API_KEY_PROVIDER_ENV_VARS:
         env.pop(name, None)

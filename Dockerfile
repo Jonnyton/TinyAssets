@@ -100,8 +100,9 @@ RUN mkdir -p /opt/codex-install && \
     /opt/codex-install/node_modules/.bin/codex --version && \
     python /tmp/codex_cli_smoke.py /opt/codex-install/node_modules/.bin/codex
 
-# Install Claude Code CLI next to Codex so the daemon can register the
-# subscription-backed claude-code provider when CLAUDE_CONFIG_DIR is present.
+# Install Claude Code CLI next to Codex. It runs only as a universe's provider
+# child, on that universe's own credentials; the image holds no model login
+# (AGENTS.md Hard Rule 15).
 RUN mkdir -p /opt/claude-code-install && \
     npm install --prefix /opt/claude-code-install "@anthropic-ai/claude-code@${CLAUDE_CODE_CLI_VERSION}" && \
     /opt/claude-code-install/node_modules/.bin/claude --version

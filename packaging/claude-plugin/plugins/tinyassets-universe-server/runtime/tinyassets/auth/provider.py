@@ -39,18 +39,15 @@ logger = logging.getLogger("universe_server.auth")
 # (``tinyassets.credential_vault``) remains the higher-priority source —
 # effectors check the vault first and fall through to this vended token.
 #
-# ``push`` reads the canonical ``TINYASSETS_GITHUB_PUSH_CAPABILITIES`` map
-# and accepts the older ``TINYASSETS_GITHUB_PR_CAPABILITIES`` as a legacy
-# fallback so existing hosts keep working while they migrate. ``read``
-# reads ``TINYASSETS_GITHUB_READ_CAPABILITIES`` (read scope is granted
-# separately from push by design).
+# ``read`` reads ``TINYASSETS_GITHUB_READ_CAPABILITIES``. There is no
+# ``push`` capability: the platform holds no GitHub push credential. The
+# former ``TINYASSETS_GITHUB_PUSH_CAPABILITIES`` / legacy
+# ``TINYASSETS_GITHUB_PR_CAPABILITIES`` maps, and the GitHub App token
+# refresher that filled them, were retired 2026-09-24. GitHub is a connection
+# a universe's owner may or may not have made.
 
 _GITHUB_SECRET_CAPABILITY_ENVS: dict[str, tuple[str, ...]] = {
     "read": ("TINYASSETS_GITHUB_READ_CAPABILITIES",),
-    "push": (
-        "TINYASSETS_GITHUB_PUSH_CAPABILITIES",
-        "TINYASSETS_GITHUB_PR_CAPABILITIES",
-    ),
 }
 
 
@@ -104,7 +101,7 @@ def vend_github_destination_secret(
     """Return a destination-scoped GitHub credential payload.
 
     Looks up ``destination`` (exact, whitespace-stripped match) in the
-    capability map(s) for ``capability`` ("read" or "push"). The returned
+    capability map for ``capability`` (only "read" exists). The returned
     dict carries routing metadata plus the resolved token (empty string
     when none is configured). It is safe to pass within the daemon, but
     callers MUST NOT echo the ``token`` field into run state or external

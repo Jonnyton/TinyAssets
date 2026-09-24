@@ -733,33 +733,6 @@ The system SHALL declare the DNS canary on GitHub-hosted infrastructure with a `
 - **WHEN** the probe is green and a `dns-red` issue is open
 - **THEN** the sink comments `GREEN — RECOVERED` evidence and closes the issue as completed
 
-### Requirement: LLM binding canary verifies status presence rather than provider execution
-The system SHALL declare the LLM-binding canary on GitHub-hosted infrastructure with a `0 */6 * * *` schedule, manual dispatch, and an `llm-binding-canary` concurrency group whose `cancel-in-progress` value is false. That setting SHALL preserve an already running job, while GitHub's concurrency controller MAY replace an older pending same-group run when another run queues; neither the declared schedule nor the group SHALL promise actual dispatch latency or one execution per schedule tick. When executed, the canary SHALL initialize an MCP session at `https://tinyassets.io/mcp`, call `get_status`, and select `active_host.llm_endpoint_bound` whenever `active_host` is an object containing that key, including when its value is unset; it SHALL use the historical top-level `llm_endpoint_bound` only when the nested key is absent. It SHALL report red when the selected value is `unset`, empty, false, or none. The workflow SHALL NOT require the optional sandbox check and SHALL NOT execute a model request, so green proves only a reported binding. The probe job SHALL publish its overall result and diagnostics from a tolerated probe step, then a final non-tolerated step SHALL fail if and only if the published overall result is red. Its alarm sink SHALL run regardless of probe-job success, consume the published current-run outputs, and use the same first-red, immediately-prior-failed-run threshold, open-issue append, and green-recovery close lifecycle under `llm-binding-red`.
-
-#### Scenario: Reported endpoint is bound
-- **WHEN** MCP initialization and `get_status` succeed and the accepted status field contains a non-empty value other than unset, false, or none
-- **THEN** the canary reports green without proving that the provider can complete a model call, and the final propagation step succeeds
-
-#### Scenario: Missing binding or probe failure is red
-- **WHEN** the status reports an unset binding or the MCP protocol, network, response shape, or tool call fails
-- **THEN** the probe returns non-zero and the workflow exposes red to the alarm sink
-
-#### Scenario: Nested unset binding shadows a historical top-level value
-- **WHEN** `active_host` contains `llm_endpoint_bound = "unset"` while the top-level field contains a non-empty historical value
-- **THEN** the canary selects the nested unset value and reports red
-
-#### Scenario: Two workflow failures open the binding incident
-- **WHEN** the current probe is red, no issue is open, and the immediately prior completed workflow run concluded failure
-- **THEN** the sink opens an `llm-binding-red` issue with endpoint, exit, output, run, likely-cause, and runbook evidence
-
-#### Scenario: Red conclusion becomes threshold evidence
-- **WHEN** the tolerated probe step publishes red
-- **THEN** the final probe-job step exits non-zero, the current alarm sink still receives the published red output, and the completed workflow exposes failure to the next run
-
-#### Scenario: Binding recovery closes the incident
-- **WHEN** the probe is green and an `llm-binding-red` issue is open
-- **THEN** the sink comments recovery evidence and closes the issue as completed
-
 ### Requirement: Scheduled release reconciliation uses deploy-run ancestry as its production proxy
 The system SHALL declare release reconciliation with a `*/15 * * * *` schedule, manual dispatch, and a completed `workflow_run` trigger for `Docker build smoke` on `main`. The reconciliation job SHALL accept schedule and manual reconcile events, but it SHALL accept a `workflow_run` event only when the triggering run concluded successfully, its `head_branch` is `main`, its head repository is the current repository, and its upstream event is `push` or `workflow_dispatch`. The workflow SHALL retain a `release-reconcile` concurrency group whose `cancel-in-progress` value is false. That setting SHALL preserve an already running job and, under GitHub's default single-pending policy, SHALL coalesce a burst into at most one pending same-group run whose newer arrival can replace an older pending run; neither the declared triggers nor the group SHALL promise actual dispatch latency or one execution per event or schedule tick.
 
@@ -889,39 +862,34 @@ Registry verification SHALL occur before acquiring the fence-then-mutation locks
 - **THEN** dry-run never deletes and every entrypoint obeys the identical keep set, recovery and preservation gates
 - **AND** a post-deploy retention failure is a warning that does not fail the successful deploy
 
-### Requirement: Production deploy verifies reported LLM binding and sandbox readiness after public canaries
+### Requirement: No uptime probe expects the platform to hold a model
 
-The production deploy workflow SHALL run `scripts/verify_llm_binding.py` after
-the public canaries in both the configured-auth-bundle and no-bundle branches
-with `--timeout 20 --require-sandbox --retries 12 --retry-delay 10`. The
-verifier SHALL first require a reported LLM binding. When sandbox checking is
-enabled, a missing or falsey `sandbox_status.bwrap_available` SHALL raise
-`VerifyError` code 5 carrying the reported reason, or
-`sandbox_status missing` when no reason is present. The CLI SHALL retry
-`VerifyError` failures up to the requested total attempt count and return the
-last error code if no attempt recovers.
+The platform has no LLM (AGENTS.md Hard Rule 15), so no scheduled probe, deploy
+gate or keepalive SHALL require the daemon to report a bound model or SHALL
+exercise a host model login. The former LLM-binding canary, its post-deploy
+binding gate and the weekly Codex and Claude keepalives are retired. The
+production deploy SHALL instead run `deploy/retire_platform_llm_logins.sh` only
+after the public canary is green; it removes retired credential names from the
+host env file and the platform login credential files, deletes a platform login
+directory only when nothing but CLI login/runtime artifacts remain in it, keeps
+and names any other content, and logs names and counts only. The same step
+retires the platform GitHub push credential: it scrubs the push-capability
+maps from the env file and removes the GitHub App token refresher's units,
+script, env file and documented private key, naming (not deleting) a key
+configured anywhere else. `tests/test_no_platform_llm_credentials.py` and
+`tests/test_no_platform_github_push_credential.py` fail if compose, the
+entrypoint, any workflow, the env template, the drop-first helper or the code
+reintroduces either.
 
-This post-deploy readiness gate is distinct from the scheduled LLM-binding
-canary, which intentionally omits `--require-sandbox`. Neither path executes a
-model request, and a green readiness observation is not proof of workload
-confinement.
+#### Scenario: A green deploy retires what the host still holds
 
-#### Scenario: Missing sandbox readiness produces exit code 5
+- **WHEN** a deploy's public canary is green
+- **THEN** the retirement step runs, refuses if the running daemon still defines `CODEX_HOME` or `CLAUDE_CONFIG_DIR`, and otherwise removes the retired names and credential files
 
-- **WHEN** the verifier sees a reported LLM binding but missing or falsey `sandbox_status.bwrap_available`
-- **THEN** the sandbox check raises `VerifyError` code 5 with the reported reason, or `sandbox_status missing` when no reason is present
-- **AND** exhausting the configured attempts returns exit code 5
+#### Scenario: Possible universe content is never deleted by the deploy
 
-#### Scenario: A later green observation recovers within the retry budget
-
-- **WHEN** an earlier attempt reports unavailable sandbox readiness and a later attempt reports `bwrap_available=true`
-- **THEN** the CLI retries through the configured total-attempt budget
-- **AND** returns exit code 0 after the green observation
-
-#### Scenario: Both deploy auth branches require the same readiness evidence
-
-- **WHEN** production deployment reaches post-canary verification with or without a configured Codex auth bundle
-- **THEN** the selected branch invokes the verifier with timeout 20, required sandbox readiness, 12 total attempts, and a 10-second retry delay
+- **WHEN** a platform login directory still holds session transcripts or CLI state databases
+- **THEN** the step keeps the directory, names those entries in a warning, and leaves them for the founder decision in `docs/host-actions.md`
 
 ### Requirement: Executable Uptime Alarm Concurrency Proof
 

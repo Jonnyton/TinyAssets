@@ -12,6 +12,44 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Delete the platform's model-credential repository secrets (2026-09-24)
+
+The platform has no LLM (AGENTS.md Hard Rule 15), and after the retire-platform-llm-logins
+PR nothing reads these. Agents cannot delete repository secrets. In GitHub →
+Settings → Secrets and variables → Actions, delete: `CLAUDE_CODE_OAUTH_TOKEN`,
+`OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`,
+`WORKFLOW_CODEX_AUTH_JSON_B64`, `WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64`, and the
+platform GitHub push map `WORKFLOW_GITHUB_PR_CAPABILITIES`. Also revoke the
+underlying keys/tokens at each provider, including the GitHub token inside
+`TINYASSETS_GITHUB_PUSH_CAPABILITIES` on the droplet (the deploy scrubs the env
+line; the token itself stays valid until revoked). Do it after that PR deploys,
+so a rollback never meets a missing secret.
+
+## Delete or uninstall the platform GitHub App (2026-09-24)
+
+The GitHub App token refresher and its host units are removed by the same PR.
+Its App was never configured on the droplet (no
+`/etc/tinyassets/github-app-token-refresher.env`, no private key; the timer
+skipped every run), and no App ID is recorded in the repo, so an agent cannot
+name it. In GitHub → Settings → Applications (and Developer settings → GitHub
+Apps), uninstall/delete any App installed on `Jonnyton/TinyAssets` for the
+community-loop bot identity (Contents + Pull requests write).
+
+## Decide what happens to the transcripts left in the old platform login dirs (2026-09-24)
+
+The deploy's retirement step removes the credentials (`/data/.codex/auth.json`,
+the `CLAUDE_CODE_OAUTH_TOKEN` env line) but keeps anything that may be a
+universe's own content, because Hard Rule 13 forbids deleting it on an agent's
+say-so. Inventory taken read-only on 2026-09-24 (names and counts only):
+`/data/.codex` holds `sessions/` (1,491 files, ~60 MB, 2026-06 to 2026-09-21) and
+the CLI state databases `state_5.sqlite`, `thread_history_1.sqlite`,
+`memories_1.sqlite`, `goals_1.sqlite`, `logs_2.sqlite`, `queue_1.sqlite`;
+`/data/.claude` holds `projects/` (51 transcripts across `-app`, `-tmp` and
+`-data-u-tiny` -- the last is the `u-tiny` universe's working directory),
+`.claude.json` and five `.claude.json` backups. Decide: archive them for the
+owning universes, or delete. Either way, once they are gone the next deploy's
+retirement step removes both directories on its own.
+
 ## Rotate the production Cloudflare tunnel token (2026-09-24)
 
 The `tinyassets-tunnel` container's start command carries the tunnel token in

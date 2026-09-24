@@ -344,7 +344,7 @@ jobs:
           BACKUP_REMOTE
           echo "Off-host backup configuration installed and verified."
 
-      - name: Install exact uptime bundle and token refresher
+      - name: Install exact uptime bundle
         env:
           REQUESTED_SOURCE_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
@@ -361,9 +361,6 @@ jobs:
           )
           git archive --format=tar HEAD -- \
               "${uptime_files[@]}" \
-              deploy/github-app-token-refresher.service \
-              deploy/github-app-token-refresher.timer \
-              scripts/github-app-token-refresher.py \
               | gzip -n > "${bundle}"
           (
             cd /tmp
@@ -401,20 +398,6 @@ jobs:
           sudo env TINYASSETS_SOURCE_ROOT="${remote_stage}/source" \
               TINYASSETS_SOURCE_SHA="${source_sha}" \
               bash "${remote_stage}/source/deploy/install-host-uptime-services.sh"
-          sudo mkdir -p /opt/tinyassets/scripts
-          sudo install -m 0755 -o root -g root \
-              "${remote_stage}/source/scripts/github-app-token-refresher.py" \
-              /opt/tinyassets/scripts/github-app-token-refresher.py
-          sudo install -m 0644 -o root -g root \
-              "${remote_stage}/source/deploy/github-app-token-refresher.service" \
-              /etc/systemd/system/github-app-token-refresher.service
-          sudo install -m 0644 -o root -g root \
-              "${remote_stage}/source/deploy/github-app-token-refresher.timer" \
-              /etc/systemd/system/github-app-token-refresher.timer
-          sudo systemctl daemon-reload
-          sudo systemctl enable --now github-app-token-refresher.timer
-          sudo systemctl is-enabled --quiet github-app-token-refresher.timer
-          sudo systemctl is-active --quiet github-app-token-refresher.timer
           REMOTE
 
       - name: Exercise and verify two-tier backup

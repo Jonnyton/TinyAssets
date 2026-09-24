@@ -307,14 +307,26 @@ def test_llm_endpoint_bound_ollama(monkeypatch) -> None:
     assert hint == "ollama"
 
 
-def test_llm_endpoint_bound_anthropic(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "env, which_map",
+    [
+        ({"ANTHROPIC_BASE_URL": "http://relay.internal"}, {}),
+        ({"OPENAI_API_KEY": "sk-test"}, {"codex": "/usr/local/bin/codex"}),
+        ({"XAI_API_KEY": "xai-test"}, {}),
+        ({"GEMINI_API_KEY": "gemini-test"}, {}),
+        ({"GROQ_API_KEY": "groq-test"}, {}),
+        ({"XAI_API_KEY": "x", "GEMINI_API_KEY": "g", "GROQ_API_KEY": "q"}, {}),
+    ],
+)
+def test_host_api_keys_never_bind_even_with_the_retired_switch(
+    monkeypatch, env, which_map,
+) -> None:
+    """The platform has no LLM (Hard Rule 15). A host API key, with or without
+    the retired TINYASSETS_ALLOW_API_KEY_PROVIDERS=1, binds nothing."""
     hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"ANTHROPIC_BASE_URL": "http://relay.internal"},
-        which_map={},
-        api_key_opt_in=True,
+        monkeypatch, env=env, which_map=which_map, api_key_opt_in=True,
     )
-    assert hint == "anthropic"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_ollama_takes_priority_over_anthropic(
@@ -329,16 +341,6 @@ def test_llm_endpoint_bound_ollama_takes_priority_over_anthropic(
         which_map={},
     )
     assert hint == "ollama"
-
-
-def test_llm_endpoint_bound_codex(monkeypatch) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"OPENAI_API_KEY": "sk-test"},
-        which_map={"codex": "/usr/local/bin/codex"},
-        api_key_opt_in=True,
-    )
-    assert hint == "codex"
 
 
 def test_llm_endpoint_bound_codex_subscription_auth(monkeypatch, tmp_path) -> None:
@@ -450,60 +452,6 @@ def test_api_key_endpoint_hints_ignored_without_opt_in(monkeypatch) -> None:
         which_map={"codex": "/usr/local/bin/codex"},
     )
     assert hint == "unset"
-
-
-def test_llm_endpoint_bound_xai(monkeypatch) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"XAI_API_KEY": "xai-test"},
-        which_map={},
-        api_key_opt_in=True,
-    )
-    assert hint == "xai"
-
-
-def test_llm_endpoint_bound_gemini(monkeypatch) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"GEMINI_API_KEY": "gemini-test"},
-        which_map={},
-        api_key_opt_in=True,
-    )
-    assert hint == "gemini"
-
-
-def test_llm_endpoint_bound_groq(monkeypatch) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"GROQ_API_KEY": "groq-test"},
-        which_map={},
-        api_key_opt_in=True,
-    )
-    assert hint == "groq"
-
-
-def test_llm_endpoint_bound_xai_takes_priority_over_gemini(
-    monkeypatch,
-) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"XAI_API_KEY": "xai-test", "GEMINI_API_KEY": "gemini-test"},
-        which_map={},
-        api_key_opt_in=True,
-    )
-    assert hint == "xai"
-
-
-def test_llm_endpoint_bound_gemini_takes_priority_over_groq(
-    monkeypatch,
-) -> None:
-    hint = _get_endpoint_hint(
-        monkeypatch,
-        env={"GEMINI_API_KEY": "gemini-test", "GROQ_API_KEY": "groq-test"},
-        which_map={},
-        api_key_opt_in=True,
-    )
-    assert hint == "gemini"
 
 
 def test_llm_endpoint_bound_claude_beats_xai(monkeypatch) -> None:

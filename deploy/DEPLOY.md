@@ -155,80 +155,35 @@ ls -la /etc/tinyassets/env /etc/tinyassets/agent-interchange.env /etc/tinyassets
 If ownership/mode differs, re-run the bootstrap — it resets to
 `root:tinyassets 640`.
 
-## Step 3b — Codex auth persistent volume
+## Step 3b — No platform model login (Hard Rule 15)
 
-Codex CLI uses single-use OAuth refresh tokens that rotate in-place
-during normal operation. The compose stack persists Codex's auth state
-across container restarts at `CODEX_HOME=/data/.codex` on the shared
-`tinyassets-data` Docker volume (see `deploy/compose.yml`).
-Without this, every restart throws away rotated tokens and the next
-refresh attempt fails with `refresh_token_reused`. Design source:
-<https://developers.openai.com/codex/auth/ci-cd-auth>.
+The platform has no LLM (AGENTS.md Hard Rule 15). There is no host Codex or
+Claude login to create, seed, refresh or keep alive, and nothing to put in
+`/etc/tinyassets/env` for a model: the container entrypoint strips any model
+login, API key or opt-in switch it is handed. Each universe's provider child
+runs on the credentials its owner connected to that universe
+(`<universe>/.runtime/provider-launch-credentials`), started with that
+universe's own CLI home. `/usr/local/bin/codex` is still
+`deploy/codex-flock-wrapper.sh`, which serializes concurrent launches against
+one universe's Codex home.
 
-**The deploy workflow prepares the auth directory + migration automatically.**
-`.github/workflows/deploy-prod.yml` has a `Prepare codex auth
-persistent volume` step that runs on every deploy. It is idempotent:
+Until 2026-09-24 this step prepared `/data/.codex` and `/data/.claude` as
+platform login homes, seeded from `TINYASSETS_CODEX_AUTH_JSON_B64` /
+`CLAUDE_CODE_OAUTH_TOKEN`, and two weekly keepalive workflows exercised them.
+All of that is retired. After every green deploy the
+`Retire platform LLM logins from the host` step
+(`deploy/retire_platform_llm_logins.sh`) removes what an older host still
+holds: the retired names in `/etc/tinyassets/env`, the credential files in the
+two old login directories, and each directory itself once nothing but CLI
+login/runtime artifacts remain. Anything that may be a universe's own content
+(session transcripts, CLI state databases, project histories) is kept and named
+in a warning for the founder decision in `docs/host-actions.md`.
 
-- Creates `tinyassets-data` when missing, resolves its local mountpoint,
-  and creates `.codex` inside it; repairs ownership (`uid 1001:1001`)
-  and mode (`700`) unconditionally every deploy so a failed earlier
-  attempt gets healed back to a state uid 1001 can write.
-- The one-time migration that copied a rotated `auth.json` out of the
-  running worker container was deleted with the host-run worker fleet
-  (2026-08-29). A pre-existing droplet already holds
-  `/data/.codex/auth.json` on the volume; a fresh droplet seeds it from
-  `TINYASSETS_CODEX_AUTH_JSON_B64` (case 1 below).
-- Every deploy is otherwise a complete no-op for this section — the
-  volume + `auth.json` are already in place and the entrypoint
-  preserves the file on restart.
-
-The auth file is used by the `tinyassets-daemon` container alone: its
-in-process executor handles `run_branch` MCP calls and its
-assigned-queue consumer runs due automations, and both call
-`codex exec`. Concurrent
-refresh attempts are serialized by `/usr/local/bin/codex` (which is
-`deploy/codex-flock-wrapper.sh`, installed by the Dockerfile in place
-of the bare codex symlink) — it takes an exclusive `flock -x` on
-`$CODEX_HOME/.lock` before every invocation. This mitigates the
-`refresh_token_reused` race that Codex's official CI/CD auth guide
-warns about for shared-auth scenarios (Codex Issue #10332).
-
-**Host action is only needed in two rare cases:**
-
-1. **Brand-new droplet, no live container to migrate from.** The
-   workflow step creates the empty `/data/.codex`; the new container then
-   seeds `auth.json` from `TINYASSETS_CODEX_AUTH_JSON_B64` (GitHub
-   Actions secret or `/etc/tinyassets/env`) on first boot. Host action:
-   keep `TINYASSETS_CODEX_AUTH_JSON_B64` rotated so a fresh-droplet
-   bootstrap has a known-good seed available.
-2. **Persistent volume wiped (disaster recovery).** Same as case 1:
-   the entrypoint reseeds from the env-var on the next boot. Host
-   action: same — keep the GitHub Actions secret or `/etc/tinyassets/env`
-   value fresh.
-
-In normal steady-state operation (volume intact, container restarts
-for image bumps), Codex's in-place refresh chain survives indefinitely
-with no host intervention.
-
-Claude Code subscription auth mirrors this persistence pattern directly.
-`deploy/compose.yml` sets `CLAUDE_CONFIG_DIR=/data/.claude`, and the
-entrypoint creates that directory on the shared `tinyassets-data` volume.
-The matching keepalive workflow runs a trivial `claude -p` call with the
-same `CLAUDE_CONFIG_DIR` so the subscription session is exercised after
-deploys and during idle weeks. Host login command for a fresh volume:
-
-```bash
-# One-off interactive login on a fresh volume. It is a repo-authored route like
-# every other exec here, so it goes through the wrapper: `claude-login` is a
-# fixed mode whose argv (`claude auth login --claudeai`) is compiled in, and the
-# TTY is inherited by the target only after the identity retirement is verified.
-# This command has NOT been run by the change that added the mode.
-sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon \
-  /usr/local/libexec/ta-op claude-login
-```
-
-The scheduled keepalive that follows it *is* a repo-authored route and runs
-`/usr/local/libexec/ta-op claude-keepalive`.
+The platform also holds no GitHub push credential. The former
+`TINYASSETS_GITHUB_PUSH_CAPABILITIES` / `TINYASSETS_GITHUB_PR_CAPABILITIES`
+maps and the GitHub App token refresher (timer, service, script, env file and
+private key) are removed by the same step; GitHub is a connection a universe's
+owner may or may not have made.
 
 ## Step 4 — Start the daemon (~30 sec)
 
