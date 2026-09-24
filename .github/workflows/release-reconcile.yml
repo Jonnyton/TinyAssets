@@ -159,6 +159,26 @@ jobs:
             exit 0
           fi
 
+          # The path filter is a coarse superset: PLAN.md is copied into the
+          # image, but only its served change-loop excerpts are read at
+          # runtime, and build-image.yml cancels itself (deploying nothing) for
+          # a head that is runtime-equivalent to production. Ask the SAME
+          # classifier for the newest commit that really changed runtime, or a
+          # skipped merge would read as drift here and be redeployed on every
+          # tick. A missing or failing classifier keeps the coarse answer,
+          # which can only be newer -- it errs toward deploying.
+          if [ -f scripts/runtime_paths.py ]; then
+            if REFINED="$(python3 scripts/runtime_paths.py newest-runtime-commit --rev "$RELEVANT")" \
+                && [ -n "$REFINED" ]; then
+              if [ "$REFINED" != "$RELEVANT" ]; then
+                echo "coarse path hit ${RELEVANT:0:8} changes no runtime input; newest runtime commit is ${REFINED:0:8}"
+              fi
+              RELEVANT="$REFINED"
+            else
+              echo "::warning::runtime classifier failed; keeping coarse release commit ${RELEVANT:0:8}"
+            fi
+          fi
+
           echo "main HEAD             : $(git rev-parse HEAD)"
           echo "last release-relevant : ${RELEVANT}"
 

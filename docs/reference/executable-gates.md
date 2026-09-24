@@ -31,7 +31,11 @@ blip read as "yes, it shipped" — the exact failure Hard Rule 14 exists to
 prevent. Any gate that talks to an external service needs this third state.
 The verifier requires the constrained `canary` service-principal bearer and
 exits 2 before network access when it is absent; release state is never exposed
-anonymously to make the gate pass.
+anonymously to make the gate pass. A commit that descends from the served sha
+and changes no runtime input since (`scripts/runtime_paths.py`, the same
+classifier `build-image.yml` uses to skip a redundant image) exits 0 labelled
+*runtime-equivalent*: no image is ever built for it, and the running image
+already equals it on every path production runs.
 
 **A gate that cannot fail is decoration.** Every gate above was mutation-tested:
 break the thing it guards, confirm it goes red, restore, confirm green. Two

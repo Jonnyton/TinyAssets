@@ -89,7 +89,11 @@ on:
 
 
 _GH_DECISION_HARNESS = r"""
-python3() { "${PYTHON_BIN}" "$@"; }
+# Windows Python writes CRLF; the runner's python3 does not. Without the tr a
+# path read as `PLAN.md\r` silently matches nothing (and `tinyassets/**\r`
+# still matches, by accident), so a Windows run would prove the wrong thing.
+# pipefail (set by the step) keeps python's exit status.
+python3() { "${PYTHON_BIN}" "$@" | tr -d '\r'; }
 git() {
   if [ "$1" = "log" ] && [ "${GIT_LOG_STATUS:-0}" != "0" ]; then
     return "${GIT_LOG_STATUS}"
@@ -734,3 +738,94 @@ def test_exact_converge_main_advance_during_discovery_defers(
 
     assert not any(call.startswith("run watch ") for call in calls)
     assert not any("workflow run deploy-prod.yml" in call for call in calls)
+
+
+# --- the drift backstop uses the deploy chain's runtime classifier ----------
+#
+# build-image.yml cancels itself for a head that is runtime-equivalent to
+# production (scripts/runtime_paths.py), so such a head is never deployed. If
+# this backstop kept judging drift by the coarse path filter alone, every
+# PLAN.md-only merge would read as drift and be rebuilt and redeployed on the
+# next tick -- the very recreate the skip exists to avoid.
+
+
+def _runtime_release_repo(tmp_path: Path, *, classifier: str | None = None):
+    from tests.runtime_repo_fixture import make_repo
+
+    build_image = """name: Build and publish image
+on:
+  push:
+    paths:
+      - 'PLAN.md'
+      - 'tinyassets/**'
+"""
+    script = (
+        classifier
+        if classifier is not None
+        else (_REPO_ROOT / "scripts" / "runtime_paths.py").read_text(encoding="utf-8")
+    )
+    return make_repo(
+        tmp_path / "runtime-repo",
+        {
+            ".github/workflows/build-image.yml": build_image,
+            "scripts/runtime_paths.py": script,
+        },
+    )
+
+
+def test_unserved_plan_merge_after_a_deployed_runtime_merge_is_in_sync(
+    tmp_path: Path,
+) -> None:
+    from tests.runtime_repo_fixture import plan
+
+    repo, _ = _runtime_release_repo(tmp_path)
+    runtime = repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
+    repo.commit("plan", {"PLAN.md": plan(unserved="a new principle")})
+
+    result = _run_decision(repo.root, deployed_shas=runtime)
+
+    assert result["action"] == "none", result
+    assert runtime[:8] in result["detail"]
+
+
+def test_served_plan_merge_is_still_drift(tmp_path: Path) -> None:
+    from tests.runtime_repo_fixture import plan
+
+    repo, _ = _runtime_release_repo(tmp_path)
+    runtime = repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
+    served_plan = repo.commit("plan", {"PLAN.md": plan(daemon="changed")})
+
+    result = _run_decision(repo.root, deployed_shas=runtime)
+
+    assert result["action"] == "dispatch"
+    assert served_plan[:8] in result["detail"]
+
+
+def test_docs_merge_after_an_undeployed_runtime_merge_is_drift(
+    tmp_path: Path,
+) -> None:
+    repo, base = _runtime_release_repo(tmp_path)
+    runtime = repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
+    repo.commit("docs", {"docs/notes.md": "more\n"})
+
+    result = _run_decision(repo.root, deployed_shas=base)
+
+    assert result["action"] == "dispatch"
+    assert runtime[:8] in result["detail"]
+
+
+def test_a_failing_classifier_keeps_the_coarse_commit_and_dispatches(
+    tmp_path: Path,
+) -> None:
+    from tests.runtime_repo_fixture import plan
+
+    repo, _ = _runtime_release_repo(
+        tmp_path, classifier="import sys\nsys.exit(3)\n"
+    )
+    runtime = repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
+    coarse = repo.commit("plan", {"PLAN.md": plan(unserved="x")})
+
+    result = _run_decision(repo.root, deployed_shas=runtime)
+
+    assert result["action"] == "dispatch"
+    assert coarse[:8] in result["detail"]
