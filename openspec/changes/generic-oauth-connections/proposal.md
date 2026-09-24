@@ -26,9 +26,12 @@ offers OAuth at all. A token that expires today means a reconnect (concern
 1. **Discovery decides the primary action.** A `connect` ask runs standard
    discovery against the connection's own host(s): RFC 9728 protected-resource
    metadata names the authorization server, then RFC 8414 or OpenID
-   configuration describes it. The ask may also carry `oauth` connection data
-   (issuer, or authorize and token URLs, a public client id or a registration
-   URL, and the scopes the use needs). When the server covers the request
+   configuration describes it. The ask's `oauth` says only what the use needs
+   (`scopes`, optionally a public `client_id`). **Endpoints and issuers are
+   never supplied**: every URL a code, verifier or refresh token goes to is
+   discovered from the connection's own declared host (Tier 2 review round 1:
+   an agent-named token endpoint beside a real sign-in page would collect them).
+   When the server covers the request
    (authorization code, PKCE S256, every requested scope, a public client), the
    resolved offer is stored on the ask and signing in is its primary action.
    Key fields become optional and fold under "Paste a key instead". Otherwise

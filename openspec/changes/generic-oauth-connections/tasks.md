@@ -36,7 +36,10 @@ Cross-family review is owed before landing.
   real callback, refresh before expiry and on 401, concurrent single-flight,
   rotated-token persistence, the failure record, custody, cross-user, and the
   rail JS.
-- [ ] 11. Tier 2 cross-family review, then fold in its findings.
+- [x] 11. Tier 2 cross-family review round 1: BLOCK (credential exposure via
+  agent-named endpoints). Fixed: endpoints only from discovery on the
+  connection host, every host named in consent, token URL pinned, RFC 9207
+  `iss`, vault held before a refresh token is spent. Round 2 verifies these.
 - [ ] 12. Live acceptance in the founder's app (see the PR). Then deploy,
   check with `deployed_sha.py --assert-contains`, sync the spec delta and
   archive.

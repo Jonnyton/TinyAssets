@@ -5,11 +5,13 @@
 ### Requirement: A connect request prefers OAuth when the provider offers it
 
 For every `connect` ask, the platform SHALL decide whether the provider offers
-OAuth that covers the request. It SHALL decide only from connection data
-supplied on the ask (`oauth`: issuer, authorize and token URLs, a public
-client id or registration URL, scopes) or from standard discovery against the
-connection's hosts (RFC 9728 protected-resource metadata, then RFC 8414 or
-OpenID configuration). It SHALL NOT use per-provider code. An offer SHALL
+OAuth that covers the request. Sign-in endpoints (authorize, token,
+registration) SHALL come only from standard discovery rooted at the
+connection's own declared hosts (RFC 9728 protected-resource metadata, then
+RFC 8414 or OpenID configuration on the server it names). The ask's `oauth`
+MAY state the `scopes` the use needs and a public `client_id`, and SHALL NOT
+name an endpoint or issuer. It SHALL NOT use per-provider code. The consent
+sentence SHALL name every host the sign-in contacts. An offer SHALL
 require all of the following:
 
 - the authorization-code grant;
@@ -30,7 +32,7 @@ paste, and the requester SHALL be told the reason.
 - **THEN** the ask requires key fields and the response carries `oauth_unavailable` with the reason
 
 #### Scenario: a forged offer
-- **WHEN** an ask's `oauth` carries anything but the documented request fields, or any client secret
+- **WHEN** an ask's `oauth` names an authorize, token or registration URL or an issuer, or carries anything but `scopes` and `client_id`, or any client secret
 - **THEN** the ask is refused
 
 ### Requirement: Signing in answers the connect request
@@ -38,7 +40,10 @@ paste, and the requester SHALL be told the reason.
 Signing in SHALL use authorization code + PKCE for a public client, with the
 fixed callback `/mcp/app/model-callback/connect` and the flow handle as
 `state`. The flow SHALL be bound to one owner, one universe, one pending
-request and the exact action shown, and SHALL be redeemable once. The code
+request and the exact action shown, and SHALL be redeemable once. When the
+server supports RFC 9207, the callback's `iss` SHALL equal the discovered
+issuer. The stored bundle's token URL SHALL equal the discovered token URL
+the owner approved. The code
 exchange SHALL deposit the tokens through the same answer path as a pasted
 key, under auth scheme `oauth2`. No token SHALL be returned to the app or
 crossed over MCP.
@@ -58,7 +63,8 @@ token. It SHALL refresh before expiry, and once when the service answers 401.
 Refresh SHALL be single-flight per connection across threads and processes, so
 no single-use refresh token is sent twice. A rotated refresh token SHALL be
 persisted through the vault's atomic write before the new access token is
-used. A failed refresh SHALL surface as a connection failure record with stage
+used; the vault SHALL be held before the refresh token is spent, so a
+rotated token is never lost to lock contention. A failed refresh SHALL surface as a connection failure record with stage
 `connection`, class `auth`, and the token endpoint's own bounded detail.
 
 #### Scenario: expiry

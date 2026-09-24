@@ -50,12 +50,15 @@ async def handle_model_connect(request):
               "deposit_key": {"preset_id", "key"},
               "oauth_begin": {"request_id", "code_challenge"},
               "oauth_exchange": {"flow", "code", "code_verifier"}}
+    # RFC 9207 ``iss`` rides the exchange when the provider returned one.
+    optional = {"oauth_exchange": {"iss"}}.get(operation, set())
     if operation not in fields:
         return JSONResponse({"error": "not_found"}, 404, headers=_HEADERS)
     raw = await onboarding._read_bounded_body(request, 8192)
     try:
         data = json.loads(raw) if raw is not None else None
-        if (not isinstance(data, dict) or set(data) != fields[operation]
+        if (not isinstance(data, dict)
+                or not fields[operation] <= set(data) <= fields[operation] | optional
                 or any(not isinstance(v, str) or not v or len(v) > 2048 for v in data.values())):
             raise ValueError
     except (ValueError, UnicodeError, RecursionError):
@@ -127,7 +130,8 @@ async def handle_model_connect(request):
             _, home = scope()
             return sign_in.complete(owner=identity.user_id, universe_id=home,
                                     handle=data["flow"], code=data["code"],
-                                    verifier=data["code_verifier"])
+                                    verifier=data["code_verifier"],
+                                    iss=data.get("iss", ""))
 
     from tinyassets.connection_oauth.flow import FlowError
 

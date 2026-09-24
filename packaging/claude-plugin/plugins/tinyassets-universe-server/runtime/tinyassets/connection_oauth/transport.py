@@ -1,8 +1,8 @@
 """The one network path OAuth uses: the SSRF-hardened outbound driver.
 
 Discovery, dynamic client registration, the code exchange and every refresh go
-to URLs that came from data (a provider's own metadata, or what the user or
-their agent supplied), never from code. So each request is held to the same
+to URLs that came from data (a provider's own metadata, discovered from the
+connection's own host), never from code. So each request is held to the same
 egress rules as any connection call: HTTPS only, public addresses only (DNS
 pinned, rebinding re-checked), no redirects, bounded time and size, and an
 allowlist of exactly the one URL being requested.

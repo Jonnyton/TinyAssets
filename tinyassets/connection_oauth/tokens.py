@@ -16,7 +16,9 @@ when the service answers 401. It is **single-flight per connection** across
 threads and processes (a per-connection lock, and a re-read of the vault inside
 it), so concurrent calls never spend a single-use refresh token twice. A rotated
 refresh token is written back through the vault's atomic write before the new
-access token is used.
+access token is used. The vault's exclusive admission is taken BEFORE the
+refresh token is spent, so a token the provider rotates can always be saved: if
+the vault cannot be held, nothing is spent and the call fails retryably.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ import json
 import os
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterator
@@ -289,32 +291,72 @@ class ConnectionTokens:
             return bundle
         key = f"{self._universe_dir.resolve()}::{destination}"
         deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        locked = False
         with _thread_lock(key):
             try:
                 with _file_lock(self._lock_path(destination), deadline):
-                    return self._refresh_locked(destination, rejected)
+                    locked = True
+                    return self._refresh_locked(destination, rejected, deadline)
             except TimeoutError:
+                if locked:
+                    raise
                 raise self._failed("another refresh of this connection did not finish") from None
 
-    def _refresh_locked(self, destination: str, rejected: str) -> TokenBundle:
-        # Re-read INSIDE the lock: the holder before us may have rotated it.
-        try:
-            current = decode(self._read(destination))
-        except (LookupError, ValueError):
-            raise self._failed("the stored authorization is unreadable; reconnect") from None
-        now = time.time()
-        # Another holder already refreshed: use theirs, never spend the
-        # (possibly single-use) refresh token a second time.
-        if not current.expiring(now) and (not rejected or current.access_token != rejected):
-            return current
-        if not current.refresh_token:
-            raise self._failed("the provider issued no refresh token; reconnect to sign in again")
-        try:
-            fresh = refresh(current)
-        except OAuthError as exc:
-            raise self._failed(exc.detail or exc.code) from None
-        try:
-            self._write(destination, fresh)
-        except Exception:  # noqa: BLE001 - a rotated token that is not saved is lost
-            raise self._failed("the refreshed authorization could not be saved") from None
-        return fresh
+    def _hold_vault(self, deadline: float) -> tuple[ExitStack, Any]:
+        """The vault's exclusive admission, retried until ``deadline``.
+
+        Held BEFORE the refresh token is spent. The cross-process admission is
+        a bounded lock (on Windows it gives up after about a second), so a
+        refresh that took it only to WRITE could rotate the token at the
+        provider and then fail to save it, losing the connection.
+        """
+        from tinyassets.credential_vault import exclusive_credential_vault
+
+        while True:
+            stack = ExitStack()
+            try:
+                write = stack.enter_context(exclusive_credential_vault(self._universe_dir))
+                return stack, write
+            except (TimeoutError, OSError):
+                stack.close()
+                if time.monotonic() >= deadline:
+                    raise self._failed(
+                        "this connection's vault stayed busy; nothing was spent, try again"
+                    ) from None
+                time.sleep(0.05)
+
+    def _refresh_locked(self, destination: str, rejected: str, deadline: float) -> TokenBundle:
+        stack, write = self._hold_vault(deadline)
+        with stack:
+            # Re-read INSIDE the locks: the holder before us may have rotated it.
+            try:
+                current = decode(self._read(destination))
+            except (LookupError, ValueError):
+                raise self._failed("the stored authorization is unreadable; reconnect") from None
+            now = time.time()
+            # Another holder already refreshed: use theirs, never spend the
+            # (possibly single-use) refresh token a second time.
+            if not current.expiring(now) and (not rejected or current.access_token != rejected):
+                return current
+            if not current.refresh_token:
+                raise self._failed(
+                    "the provider issued no refresh token; reconnect to sign in again")
+            try:
+                fresh = refresh(current)
+            except OAuthError as exc:
+                raise self._failed(exc.detail or exc.code) from None
+            record = [{"credential_type": "http", "service": destination,
+                       "destination": destination, "token": encode(fresh)}]
+            # Still holding the vault: only a storage fault can stop this write,
+            # so it is retried until the deadline rather than given up once.
+            while True:
+                try:
+                    write(record, owner_user_id=self._owner,
+                          universe_id=self._universe_dir.name)
+                    return fresh
+                except Exception:  # noqa: BLE001 - a rotated token that is not saved is lost
+                    if time.monotonic() >= deadline:
+                        raise self._failed(
+                            "the refreshed authorization could not be saved; reconnect"
+                        ) from None
+                    time.sleep(0.05)

@@ -2,19 +2,25 @@
 
 Founder, 2026-09-24: "Our generic connector should prefer OAuth when the
 provider allows for what the request is trying to accomplish, as that is less
-actions for the user." There is no table of providers here. The answer comes
-from, in order:
+actions for the user." There is no table of providers here.
 
-1. **Connection data** the user or their agent supplied (``oauth`` on the
-   ``connect`` ask): authorize URL, token URL, scopes and a public client id or a
-   registration URL. No network is needed.
-2. **Standard discovery** against the connection's own host(s):
+**Trust root: the connection's own declared host(s), and nothing else.** The
+endpoints a code, a PKCE verifier and every refresh token are sent to come ONLY
+from standard discovery rooted there:
 
-   * RFC 9728 protected-resource metadata (``/.well-known/oauth-protected-resource``)
-     names the authorization server(s) for the API;
-   * RFC 8414 authorization-server metadata
-     (``/.well-known/oauth-authorization-server``), then OpenID Connect discovery
-     (``/.well-known/openid-configuration``), describe that server.
+* RFC 9728 protected-resource metadata on a connection host
+  (``/.well-known/oauth-protected-resource``, whose ``resource`` must be that
+  host) names the authorization server(s); failing that, the host itself is
+  tried as the issuer;
+* RFC 8414 authorization-server metadata, then OpenID Connect discovery, on the
+  issuer so named, whose ``issuer`` must equal it.
+
+The requester (an agent, possibly steered by remixed or injected content) may
+say only WHAT the use needs: its ``scopes``, and optionally a public
+``client_id``. It can never name an authorize, token or registration URL or an
+issuer: that would let it pair a real sign-in page with its own token endpoint
+and collect the code, the verifier and the refresh tokens (Tier 2 review
+round 1, BLOCK).
 
 An offer exists only when the server covers the request: the authorization-code
 grant with PKCE S256 for a public client, every requested scope (when the server
@@ -41,8 +47,11 @@ _SCOPE_RE = re.compile(r"[\x21\x23-\x5B\x5D-\x7E]{1,128}\Z")
 _CLIENT_ID_RE = re.compile(r"[\x21-\x7E]{1,256}\Z")
 _MAX_SCOPES = 32
 _MAX_ISSUERS = 2
-_REQUEST_KEYS = frozenset({
-    "issuer", "authorize_url", "token_url", "client_id", "registration_url", "scopes",
+_REQUEST_KEYS = frozenset({"client_id", "scopes"})
+#: Endpoint fields a requester may NOT supply: they are discovered, never told.
+_ENDPOINT_KEYS = frozenset({
+    "issuer", "authorize_url", "authorization_endpoint", "token_url", "token_endpoint",
+    "registration_url", "registration_endpoint",
 })
 
 
@@ -52,6 +61,7 @@ class ServerMetadata:
     authorization_endpoint: str
     token_endpoint: str
     registration_endpoint: str
+    iss_parameter_supported: bool
     scopes_supported: tuple[str, ...] | None
     code_challenge_methods: tuple[str, ...]
     grant_types: tuple[str, ...]
@@ -83,39 +93,34 @@ def validate_scopes(value: Any) -> list[str]:
 
 
 def validate_request(raw: Any) -> dict[str, Any]:
-    """The ``oauth`` object a ``connect`` ask may carry: data, never code.
+    """The ``oauth`` object a ``connect`` ask may carry: what the use needs.
 
-    Absent means "discover it". Present, it may name an ``issuer`` to discover
-    from, or the endpoints themselves (both URLs, plus a public ``client_id`` or
-    a ``registration_url``), and the ``scopes`` the requested use needs.
+    ``scopes`` and an optional public ``client_id``. Endpoints and issuers are
+    refused: they are discovered from the connection's own host, never told.
     """
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         raise ValueError("oauth must be an object")
+    endpoints = set(raw) & _ENDPOINT_KEYS
+    if endpoints:
+        raise ValueError(
+            "oauth may not name " + ", ".join(sorted(endpoints)) + ": sign-in endpoints "
+            "are discovered from the connection's own host (RFC 9728 / RFC 8414), "
+            "never supplied"
+        )
     unknown = set(raw) - _REQUEST_KEYS
     if unknown:
         raise ValueError("oauth has unknown fields: " + ", ".join(sorted(unknown))
-                         + " (a client secret never goes through an ask)")
+                         + " (only scopes and a public client_id; a client secret "
+                         "never goes through an ask)")
     out: dict[str, Any] = {}
-    for key in ("issuer", "authorize_url", "token_url", "registration_url"):
-        if raw.get(key) in (None, ""):
-            continue
-        try:
-            out[key] = validate_https_url(raw[key])
-        except OAuthError:
-            raise ValueError(f"oauth.{key} must be a plain https:// URL with no query") from None
     client_id = raw.get("client_id")
     if client_id not in (None, ""):
         if not isinstance(client_id, str) or not _CLIENT_ID_RE.match(client_id):
             raise ValueError("oauth.client_id must be 1-256 printable characters")
         out["client_id"] = client_id
     out["scopes"] = validate_scopes(raw.get("scopes"))
-    endpoints = [k for k in ("authorize_url", "token_url") if k in out]
-    if len(endpoints) == 1:
-        raise ValueError("oauth needs both authorize_url and token_url, or neither")
-    if endpoints and not (out.get("client_id") or out.get("registration_url")):
-        raise ValueError("oauth endpoints need a public client_id or a registration_url")
     return out
 
 
@@ -154,6 +159,8 @@ def fetch_server_metadata(issuer: str) -> ServerMetadata:
         return ServerMetadata(
             issuer=issuer, authorization_endpoint=authorize, token_endpoint=token,
             registration_endpoint=registration,
+            iss_parameter_supported=doc.get("authorization_response_iss_parameter_supported")
+            is True,
             scopes_supported=_strings(doc.get("scopes_supported")),
             code_challenge_methods=_strings(doc.get("code_challenge_methods_supported")) or (),
             # RFC 8414 §2 defaults when omitted.
@@ -186,9 +193,8 @@ def protected_resource_issuers(host: str) -> list[str]:
     return out
 
 
-def _metadata_for(hosts: list[str], issuer: str) -> ServerMetadata:
-    if issuer:
-        return fetch_server_metadata(issuer)
+def _metadata_for(hosts: list[str]) -> ServerMetadata:
+    """Discovery rooted ONLY at the connection's declared hosts."""
     last: OAuthError = OAuthError("no_authorization_server_metadata")
     for host in hosts[:_MAX_ISSUERS]:
         candidates = protected_resource_issuers(host) or [f"https://{host}"]
@@ -216,31 +222,22 @@ def _covers(metadata: ServerMetadata, scopes: list[str]) -> str:
 def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str, Any] | None, str]:
     """``(offer, "")`` when OAuth covers this connection, else ``(None, reason)``.
 
-    The offer is recorded on the ask, so what the owner is shown is exactly what
-    the sign-in uses.
+    Every endpoint in the offer was discovered from ``hosts`` (the connection's
+    own declared hosts). The offer is recorded on the ask, so what the owner is
+    shown (every endpoint host) is exactly what the sign-in uses.
     """
     scopes = list(requested.get("scopes") or [])
-    if requested.get("authorize_url"):
-        return {
-            "issuer": requested.get("issuer", ""),
-            "authorize_url": requested["authorize_url"],
-            "token_url": requested["token_url"],
-            "client_id": requested.get("client_id", ""),
-            "registration_url": requested.get("registration_url", ""),
-            "scopes": scopes,
-            "source": "supplied",
-        }, ""
     if not DISCOVERY_ENABLED:
         return None, "discovery_unavailable"
     try:
-        metadata = _metadata_for(hosts, requested.get("issuer", ""))
+        metadata = _metadata_for(hosts)
     except OAuthError as exc:
         return None, exc.code
     reason = _covers(metadata, scopes)
     if reason:
         return None, reason
     client_id = requested.get("client_id", "")
-    registration = requested.get("registration_url") or metadata.registration_endpoint
+    registration = "" if client_id else metadata.registration_endpoint
     if not client_id and not registration:
         return None, "no_public_client"
     return {
@@ -248,10 +245,21 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
         "authorize_url": metadata.authorization_endpoint,
         "token_url": metadata.token_endpoint,
         "client_id": client_id,
-        "registration_url": "" if client_id else registration,
+        "registration_url": registration,
+        "iss_parameter_supported": metadata.iss_parameter_supported,
         "scopes": scopes,
         "source": "discovered",
     }, ""
+
+
+def offer_hosts(offer: dict[str, Any]) -> list[str]:
+    """Every host the sign-in contacts, in order, for the owner to see."""
+    hosts: list[str] = []
+    for key in ("authorize_url", "token_url", "registration_url"):
+        host = urlsplit(str(offer.get(key) or "")).hostname or ""
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
 
 
 def register_public_client(registration_url: str, *, redirect_uri: str,

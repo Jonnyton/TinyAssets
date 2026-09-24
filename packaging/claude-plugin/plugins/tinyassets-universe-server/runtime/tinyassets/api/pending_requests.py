@@ -340,9 +340,15 @@ def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
 
 
 def _has_sign_in(action: dict[str, Any]) -> bool:
+    """A connect ask whose sign-in endpoints were DISCOVERED from its own host.
+
+    ``source`` is written only by ``resolve_offer`` (a requester cannot supply
+    it), so an offer without it is never trusted.
+    """
     offer = action.get("oauth") if isinstance(action, dict) else None
-    return action.get("type") == "connect" and isinstance(offer, dict) and bool(
-        offer.get("authorize_url"))
+    return (action.get("type") == "connect" and isinstance(offer, dict)
+            and offer.get("source") == "discovered"
+            and bool(offer.get("authorize_url")) and bool(offer.get("token_url")))
 
 
 def _with_sign_in_offer(action: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1159,13 +1165,20 @@ def _sign_in_sentence(row: dict[str, Any]) -> str:
         return ""
     from urllib.parse import urlsplit
 
+    from tinyassets.connection_oauth.discovery import offer_hosts
+
     offer = action["oauth"]
     host = urlsplit(offer["authorize_url"]).hostname or "the provider"
+    token_host = urlsplit(offer["token_url"]).hostname or "the provider"
     scopes = offer.get("scopes") or []
-    asks = f" It asks {host} for: {', '.join(scopes)}." if scopes else ""
+    asks = f" It asks for: {', '.join(scopes)}." if scopes else ""
     paste = " You can paste a key instead." if row.get("fields") else ""
-    return (f" Sign in at {host} to connect it - no key to copy.{asks} Its access "
-            "renews itself, and only your universe can use it." + paste)
+    # EVERY host the sign-in contacts, not only where the owner clicks: the
+    # token host receives the code and every refresh token.
+    return (f" Sign in at {host} to connect it - no key to copy.{asks} Tokens come "
+            f"from {token_host}; sign-in talks only to {', '.join(offer_hosts(offer))}, "
+            "found from the connection's own host. Its access renews itself, and "
+            "only your universe can use it." + paste)
 
 
 def _uses_sentence(action: dict[str, Any]) -> str:
@@ -1831,6 +1844,16 @@ def answer_connect_with_token(
     action = row["action"]
     if not _has_sign_in(action) or not displayed_row_matches(row):
         return _bad("this request no longer offers sign-in as it was shown; ask again")
+    # PIN: the bundle's token URL (where every refresh token will go) must be
+    # the discovered one the owner approved on this request.
+    from tinyassets.connection_oauth.tokens import decode
+
+    try:
+        pinned = decode(token).token_url == action["oauth"]["token_url"]
+    except (TypeError, ValueError, KeyError):
+        pinned = False
+    if not pinned:
+        return _bad("the sign-in's token endpoint is not the one this request showed")
     if "model" in (action.get("uses") or {}):
         refused = _model_use_refusal(uid, action)
         if refused is not None:

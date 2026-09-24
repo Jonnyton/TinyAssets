@@ -5786,7 +5786,11 @@
          query.getAll("code").length!==1||!query.get("code")||query.get("code").length>2048){
         return {error:true,title:saved&&saved.title};
       }
-      return {flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier,title:saved.title};
+      const out={flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier,title:saved.title};
+      // RFC 9207: the server's own issuer, checked server-side against discovery.
+      const iss=query.get("iss");
+      if(iss&&iss.length<=2048) out.iss=iss;
+      return out;
     },
     async post(operation,payload){
       await ensureFreshToken();
@@ -5835,7 +5839,9 @@
         return;
       }
       try{
-        const result=await this.post("oauth_exchange",{flow:cb.flow,code:cb.code,code_verifier:cb.code_verifier});
+        const payload={flow:cb.flow,code:cb.code,code_verifier:cb.code_verifier};
+        if(cb.iss) payload.iss=cb.iss;
+        const result=await this.post("oauth_exchange",payload);
         appendMessage("system","Connected. "+(result.receipt||""));
         await refreshRail();
         // The owner's own line, as for any answered request: the universe

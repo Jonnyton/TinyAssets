@@ -1,29 +1,33 @@
 # Design: generic OAuth for connections (Slice 2)
 
-## D1. The offer: data first, then discovery
+## D1. The offer: discovery rooted at the connection's own host
+
+**Trust root (review round 1, BLOCK).** Authorize, token and registration
+endpoints are trusted ONLY when discovered from the connection's own declared
+hosts. An agent-named URL or issuer is refused at validation: the issuer check
+only proves metadata came from the URL the agent chose, so such metadata could
+pair a real `authorization_endpoint` with the agent's `token_endpoint`. The
+ask's `oauth` carries only `scopes` and an optional public `client_id`.
 
 `connection_oauth.discovery.resolve_offer(requested, hosts)` returns
 `(offer, "")` or `(None, reason)`:
 
-1. **Supplied data.** If the ask's `oauth` names `authorize_url` and
-   `token_url` (plus a public `client_id` or a `registration_url`), that is the
-   offer. No network.
-2. **Discovery** against the connection's hosts (at most two):
+1. **Discovery** against the connection's hosts (at most two):
    `https://<host>/.well-known/oauth-protected-resource` (RFC 9728, whose
    `resource` must be that host) names the issuers. Otherwise the host itself
    is tried as an issuer. For each issuer, the RFC 8414 URL
    (`/.well-known/oauth-authorization-server` inserted before the issuer path)
    comes first, then OpenID (`<issuer>/.well-known/openid-configuration`). The
    document's `issuer` must equal the issuer it was fetched for.
-   `oauth.issuer` skips the resource step.
-3. **Coverage.** `S256` is in `code_challenge_methods_supported`, `code` in
+   No requester-named issuer is accepted.
+2. **Coverage.** `S256` is in `code_challenge_methods_supported`, `code` in
    `response_types_supported`, and `authorization_code` in
    `grant_types_supported` (RFC 8414 default when omitted). The requested
    scopes must be a subset of `scopes_supported` when the server lists them.
    There must be a client: a supplied id or a `registration_endpoint`.
 
 The offer `{issuer, authorize_url, token_url, client_id, registration_url,
-scopes, source}` replaces the ask's `oauth` before storage, so it is part of
+iss_parameter_supported, scopes, source: "discovered"}` replaces the ask's `oauth` before storage, so it is part of
 the displayed-row binding (the dedupe hash). An agent cannot write one
 directly, because unknown keys such as `source` are refused. Discovery never
 fails an ask. Without an offer the ask needs key fields as before, and the
@@ -116,3 +120,19 @@ owner's line.
 Revert the PR. Existing `oauth2` connections then fail closed: the scheme is
 unknown to the ledger and the broker, so they are refused. The owner
 reconnects with a key. No other stored shape changes.
+
+## D6. Round 1 floor
+
+- **Consent names every host.** The grant sentence names the authorize host,
+  the token host, and every host the sign-in contacts (`offer_hosts`).
+- **Pin.** `answer_connect_with_token` decodes the bundle and refuses unless
+  its `token_url` equals the discovered `token_url` stored on the approved
+  request. `_has_sign_in` trusts only offers with `source: "discovered"`.
+- **RFC 9207.** The app forwards the callback's `iss`. `complete` refuses a
+  mismatch with the discovered issuer, and refuses a missing `iss` when the
+  server advertised `authorization_response_iss_parameter_supported`.
+- **Vault held before spending.** `credential_vault.exclusive_credential_vault`
+  yields a writer under the exclusive admission. The refresher takes it
+  (retrying to the 45s deadline) BEFORE sending the refresh token, re-reads
+  inside it, and writes the rotated bundle under the same hold (the write is
+  retried to the deadline). If the vault cannot be held, nothing is spent.

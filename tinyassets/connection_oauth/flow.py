@@ -3,7 +3,8 @@
 This is the hosted first-power PKCE transport, generalized. The same store
 (``pkce.flows_db``), handle grammar and callback route serve both; what changes
 is that endpoints come from the offer recorded on the owner's pending request
-(discovered or supplied data), and the exchange is standard RFC 6749 §4.1.
+(discovered from the connection's own host, never supplied), and the
+exchange is standard RFC 6749 §4.1.
 
 1. **begin** (the owner tapped "Sign in"): the browser made a verifier and sends
    only its S256 challenge. The server re-checks the pending request is the one
@@ -13,10 +14,13 @@ is that endpoints come from the offer recorded on the owner's pending request
    handle as ``state``.
 2. The provider sends the browser back to the fixed callback
    ``/mcp/app/model-callback/connect?code=..&state=..`` (public shell only).
-3. **complete**: the signed-in app posts ``state``, ``code`` and the verifier.
-   The flow is taken exactly once, the code is exchanged at the token URL, and
-   the token bundle is deposited through the same answer path a pasted key
-   uses, under auth scheme ``oauth2``. The response never carries a token.
+3. **complete**: the signed-in app posts ``state``, ``code``, the verifier and
+   any RFC 9207 ``iss``. The flow is taken exactly once, ``iss`` is checked
+   against the discovered issuer (required when the server advertises it), the
+   code is exchanged at the DISCOVERED token URL the owner was shown, and the
+   token bundle is deposited through the same answer path a pasted key uses,
+   under auth scheme ``oauth2``, pinned to that token URL. The response never
+   carries a token.
 """
 
 from __future__ import annotations
@@ -93,9 +97,9 @@ def _pending_connect(universe_id: str, request_id: str) -> dict[str, Any]:
     if row["status"] != "pending":
         raise FlowError("request_already_resolved", 409)
     action = row.get("action") or {}
-    offer = action.get("oauth")
-    if action.get("type") != "connect" or not isinstance(offer, dict) or not offer.get(
-            "authorize_url"):
+    from tinyassets.api.pending_requests import _has_sign_in
+
+    if not _has_sign_in(action):
         raise FlowError("request_has_no_sign_in", 409)
     if not displayed_row_matches(row):
         raise FlowError("request_changed", 409)
@@ -152,7 +156,7 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
 
 
 def complete(*, owner: str, universe_id: str, handle: str, code: str,
-             verifier: str) -> dict[str, Any]:
+             verifier: str, iss: str = "") -> dict[str, Any]:
     """Redeem the code once and deposit the tokens as the owner's answer."""
     if not isinstance(handle, str) or not pkce.HANDLE_RE.fullmatch(handle) or not owner:
         raise FlowError("unknown_sign_in", 404)
@@ -182,6 +186,13 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
     if not hmac.compare_digest(action_digest(row["action"]), flow["action_digest"]):
         raise FlowError("request_changed", 409)
     offer = row["action"]["oauth"]
+    # RFC 9207: the authorization response names its issuer. A mismatch means
+    # the code came from some other server (a mix-up); a server that
+    # advertises the parameter must send it.
+    if iss and not hmac.compare_digest(iss, str(offer.get("issuer") or "")):
+        raise FlowError("issuer_mismatch", 409)
+    if not iss and offer.get("iss_parameter_supported") is True:
+        raise FlowError("issuer_missing", 409)
     try:
         bundle = exchange_code(token_url=offer["token_url"], client_id=flow["client_id"],
                                code=code, verifier=verifier, redirect_uri=flow["redirect_uri"])

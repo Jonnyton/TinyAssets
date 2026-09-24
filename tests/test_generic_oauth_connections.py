@@ -47,6 +47,7 @@ OTHER = "owner-2"
 OTHER_UID = "u-other"
 API = "api.tasklark.io"
 AUTH = "auth.tasklark.io"
+TOKEN = "tokens.tasklark.io"  # a separate token host, so consent must name it
 VERIFIER = "v" * 43
 CHALLENGE = base64.urlsafe_b64encode(hashlib.sha256(VERIFIER.encode()).digest()).rstrip(
     b"=").decode()
@@ -61,12 +62,13 @@ REDIRECT = "https://tinyassets.io/mcp/app/model-callback/connect"
 
 class FakeProvider:
     def __init__(self, *, expires_in=3600, advertise=True, scopes=("tasks.write",),
-                 pkce=("S256",), refresh_delay=0.0):
+                 pkce=("S256",), refresh_delay=0.0, iss=False):
         self.expires_in = expires_in
         self.advertise = advertise
         self.scopes = list(scopes)
         self.pkce = list(pkce)
         self.refresh_delay = refresh_delay
+        self.iss = iss  # RFC 9207: advertise and send the iss parameter
         self.clients: dict[str, list[str]] = {}
         self.codes: dict[str, dict] = {}
         self.access: dict[str, float] = {}  # token -> expiry (server clock)
@@ -123,7 +125,10 @@ class FakeProvider:
         code = secrets.token_urlsafe(16)
         self.codes[code] = {"challenge": q["code_challenge"], "redirect_uri": q["redirect_uri"],
                             "client_id": q["client_id"]}
-        return q["redirect_uri"] + "?" + urlencode({"code": code, "state": q["state"]})
+        back = {"code": code, "state": q["state"]}
+        if self.iss:
+            back["iss"] = f"https://{AUTH}"
+        return q["redirect_uri"] + "?" + urlencode(back)
 
     def _issue(self):
         access = "at-" + secrets.token_urlsafe(16)
@@ -146,12 +151,13 @@ class FakeProvider:
             return 200, {
                 "issuer": f"https://{AUTH}",
                 "authorization_endpoint": f"https://{AUTH}/authorize",
-                "token_endpoint": f"https://{AUTH}/token",
+                "token_endpoint": f"https://{TOKEN}/token",
                 "registration_endpoint": f"https://{AUTH}/register",
                 "code_challenge_methods_supported": self.pkce,
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "scopes_supported": self.scopes,
+                "authorization_response_iss_parameter_supported": self.iss,
             }
         if host == AUTH and path == "/register" and method == "POST":
             doc = json.loads(body)
@@ -159,7 +165,7 @@ class FakeProvider:
             self.clients[client_id] = list(doc["redirect_uris"])
             return 201, {"client_id": client_id, "token_endpoint_auth_method": "none",
                          "redirect_uris": doc["redirect_uris"]}
-        if host == AUTH and path == "/token" and method == "POST":
+        if host == TOKEN and path == "/token" and method == "POST":
             form = dict(parse_qsl(body.decode()))
             if form.get("grant_type") == "authorization_code":
                 grant = self.codes.pop(form.get("code", ""), None)
@@ -298,8 +304,10 @@ def _sign_in(provider, request_id, *, owner=OWNER):
         assert shell.status_code == 200
         q = dict(parse_qsl(back.query))
         assert q["state"] == begun.json()["flow"]
-        done = _post("oauth_exchange", {"flow": q["state"], "code": q["code"],
-                                        "code_verifier": VERIFIER})
+        exchange = {"flow": q["state"], "code": q["code"], "code_verifier": VERIFIER}
+        if "iss" in q:
+            exchange["iss"] = q["iss"]
+        done = _post("oauth_exchange", exchange)
     return begun, back, done
 
 
@@ -353,8 +361,9 @@ def test_discovery_follows_the_resource_to_its_authorization_server(provider):
     assert reason == ""
     assert offer == {
         "issuer": f"https://{AUTH}", "authorize_url": f"https://{AUTH}/authorize",
-        "token_url": f"https://{AUTH}/token", "client_id": "",
-        "registration_url": f"https://{AUTH}/register", "scopes": ["tasks.write"],
+        "token_url": f"https://{TOKEN}/token", "client_id": "",
+        "registration_url": f"https://{AUTH}/register", "iss_parameter_supported": False,
+        "scopes": ["tasks.write"],
         "source": "discovered",
     }
 
@@ -385,23 +394,36 @@ def test_discovery_refuses_metadata_for_another_issuer(provider, monkeypatch):
     assert resolve_offer({}, [API]) == (None, "authorization_server_issuer_mismatch")
 
 
-def test_supplied_connection_data_needs_no_discovery(monkeypatch):
-    from tinyassets.connection_oauth import discovery
-
-    monkeypatch.setattr(discovery, "DISCOVERY_ENABLED", False)
-    requested = discovery.validate_request({
-        "authorize_url": "https://login.example.net/oauth/authorize",
-        "token_url": "https://login.example.net/oauth/token",
-        "client_id": "public-client", "scopes": "a b",
-    })
-    offer, reason = discovery.resolve_offer(requested, ["api.example.net"])
-    assert reason == "" and offer["source"] == "supplied" and offer["scopes"] == ["a", "b"]
+@pytest.mark.parametrize("oauth", [
+    {"token_url": "https://collector.example.net/token"},
+    {"authorize_url": f"https://{AUTH}/authorize",
+     "token_url": "https://collector.example.net/token", "client_id": "c"},
+    {"issuer": "https://collector.example.net"},
+    {"registration_url": "https://collector.example.net/register"},
+    {"token_endpoint": "https://collector.example.net/token"},
+])
+def test_a_requester_cannot_name_sign_in_endpoints(provider, universes, oauth):
+    """Round 1 BLOCK: a remixed or injected ask pairing the real sign-in page with
+    its own token endpoint would collect the code, the verifier and every
+    refresh token. Endpoints come ONLY from discovery on the connection host."""
+    with _as(OWNER):
+        refused = _ask(action={**TASKS_ASK, "oauth": {**oauth, "scopes": ["tasks.write"]}})
+    assert refused["error"] == "request_invalid"
+    assert "never supplied" in refused["detail"]
     with pytest.raises(ValueError, match="client secret"):
-        discovery.validate_request({"client_secret": "x"})
-    with pytest.raises(ValueError):
-        discovery.validate_request({"authorize_url": "http://login.example.net/a",
-                                    "token_url": "https://login.example.net/t",
-                                    "client_id": "c"})
+        from tinyassets.connection_oauth.discovery import validate_request
+
+        validate_request({"client_secret": "x"})
+
+
+def test_discovery_via_the_connection_host_still_works_with_a_client_id(provider):
+    from tinyassets.connection_oauth.discovery import resolve_offer, validate_request
+
+    requested = validate_request({"scopes": "tasks.write", "client_id": "public-client"})
+    offer, reason = resolve_offer(requested, [API])
+    assert reason == "" and offer["source"] == "discovered"
+    assert offer["token_url"] == f"https://{TOKEN}/token"  # from discovery, not the ask
+    assert offer["client_id"] == "public-client" and offer["registration_url"] == ""
 
 
 # --------------------------------------------------------------------------- #
@@ -415,6 +437,8 @@ def test_oauth_is_the_primary_action_when_the_provider_offers_it(provider, unive
         assert asked["primary"] == "sign_in"
         assert asked["action"]["oauth"]["authorize_url"] == f"https://{AUTH}/authorize"
         assert "Sign in at auth.tasklark.io" in asked["grant_sentence"]
+        # Every host the sign-in talks to is shown, not only where the owner clicks.
+        assert "Tokens come from tokens.tasklark.io" in asked["grant_sentence"]
         assert "paste a key instead" in asked["grant_sentence"]
         # With sign-in on offer, the ask needs no key field at all.
         bare = _ask(fields=[], action={**TASKS_ASK, "destination": "tasklark-2"})
@@ -444,6 +468,9 @@ def test_an_agent_cannot_forge_a_discovered_offer(universes):
         forged = _ask(action={**TASKS_ASK, "oauth": {
             "authorize_url": "https://x.example/a", "token_url": "https://x.example/t",
             "client_id": "c", "source": "discovered"}})
+    assert forged["error"] == "request_invalid" and "never supplied" in forged["detail"]
+    with _as(OWNER):
+        forged = _ask(action={**TASKS_ASK, "oauth": {"source": "discovered"}})
     assert forged["error"] == "request_invalid" and "unknown fields" in forged["detail"]
 
 
@@ -481,7 +508,7 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
     resource = ConnectionLedger(app / "outbound.db")._get_connection_resource(connection_id)
     assert resource.auth_scheme == "oauth2"
     bundle = _vault_bundle(app)
-    assert bundle.token_url == f"https://{AUTH}/token"
+    assert bundle.token_url == f"https://{TOKEN}/token"
     assert bundle.refresh_token in provider.refresh_live
 
     # The code is spent: replaying the exchange cannot redeem it again.
@@ -816,3 +843,89 @@ def test_no_vendor_names_in_the_oauth_code():
     text = "\n".join(p.read_text(encoding="utf-8").lower() for p in files)
     for name in ("openrouter", "github", "google", "openai", "anthropic", "tasklark"):
         assert name not in text
+
+
+# --------------------------------------------------------------------------- #
+# Round 1 floor: the token URL is pinned, RFC 9207 iss, and lock contention.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_stored_token_url_is_pinned_to_the_discovered_one(provider, app):
+    from tinyassets.api.pending_requests import answer_connect_with_token
+    from tinyassets.connection_oauth.tokens import TokenBundle, encode
+
+    with _as(OWNER):
+        asked = _ask()
+        elsewhere = encode(TokenBundle(
+            access_token="at-x", refresh_token="rt-x", client_id="c",
+            token_url="https://collector.example.net/token"))
+        refused = answer_connect_with_token(universe_id=UID, request_id=asked["request_id"],
+                                            token=elsewhere)
+    assert refused["error"] == "request_invalid"
+    assert "token endpoint" in refused["detail"]
+    from tinyassets.credential_vault import load_credential_vault
+
+    assert not [r for r in load_credential_vault(app / UID) if r.get("destination") == "tasklark"]
+
+    _begun, _back, done = _sign_in(provider, asked["request_id"])
+    assert done.status_code == 200, done.text
+    assert _vault_bundle(app).token_url == asked["action"]["oauth"]["token_url"]
+
+
+def test_rfc9207_issuer_is_checked_when_the_server_supports_it(provider, app):
+    provider.iss = True
+    with _as(OWNER):
+        asked = _ask()
+    assert asked["action"]["oauth"]["iss_parameter_supported"] is True
+
+    def attempt(**extra):
+        with _as(OWNER):
+            begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                          "code_challenge": CHALLENGE})
+            q = dict(parse_qsl(urlsplit(provider.authorize(begun.json()["authorize_url"])).query))
+            payload = {"flow": q["state"], "code": q["code"], "code_verifier": VERIFIER}
+            payload.update({k: v for k, v in extra.items() if v is not None})
+            if "iss" not in extra:
+                payload["iss"] = q["iss"]
+            return _post("oauth_exchange", payload)
+
+    wrong = attempt(iss="https://collector.example.net")
+    assert wrong.status_code == 409 and wrong.json()["error"] == "issuer_mismatch"
+    missing = attempt(iss=None)
+    assert missing.status_code == 409 and missing.json()["error"] == "issuer_missing"
+    assert provider.access == {}  # no code was redeemed for either
+    right = attempt()
+    assert right.status_code == 200, right.text
+
+
+def test_lock_contention_during_refresh_never_loses_the_rotated_token(
+        provider, app, tmp_path, monkeypatch):
+    """Windows gives up on the cross-process vault lock after about a second.
+    A refresh that spent the single-use refresh token and only THEN failed to
+    take that lock would lose the rotated token; the lock is taken first."""
+    from contextlib import contextmanager
+
+    from tinyassets.provider_assignment import ProviderAssignmentAdmission
+
+    _done, grant_id = _connected(provider, app, tmp_path)
+    before = _vault_bundle(app)
+    _age(app, expires_at=time.time() + 5)
+
+    real = ProviderAssignmentAdmission._file_lock
+    busy = {"left": 3}
+
+    @contextmanager
+    def contended(universe_dir, *, exclusive):
+        if exclusive and busy["left"] > 0:
+            busy["left"] -= 1
+            raise TimeoutError("provider assignment admission lock remained unavailable")
+        with real(universe_dir, exclusive=exclusive):
+            yield
+
+    monkeypatch.setattr(ProviderAssignmentAdmission, "_file_lock", staticmethod(contended))
+    dispatch = _broker(app, UID, OWNER, grant_id, tmp_path / "rt")
+    assert _call(dispatch, grant_id)["status"] == 200
+    after = _vault_bundle(app)
+    assert busy["left"] == 0 and provider.refresh_calls == 1 and provider.reused == 0
+    assert before.refresh_token in provider.refresh_spent
+    assert after.refresh_token in provider.refresh_live  # the rotated token was kept
