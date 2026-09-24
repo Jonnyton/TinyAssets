@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P2** | [Node-timeout test wait margin](2026-09-23-node-timeout-runner-test-sits-on-its-own-deadline.md) — a five-second test wait straddles measured runner overhead; no runtime regression established | 2026-09-23 |
 | **note** | [History expansion followups](2026-09-22-history-expansion-followups.md) — retained long reply accepted live; organic owner use and peripheral expansion cases remain unverified | 2026-09-22 |
 | **note** | [Owned run activity clean-use watch](2026-09-22-owned-run-activity-clean-use.md) — deployed diagnostics passed scoped rendered acceptance; organic owner use and historical intermittent causes remain open | 2026-09-22 |
 | **note** | [Ordinary node edit clean-use watch](2026-09-23-node-edit-organic-use-watch.md) — output/timeout editing accepted live; independent customer use not yet observed | 2026-09-23 |

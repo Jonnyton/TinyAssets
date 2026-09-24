@@ -376,6 +376,71 @@ are unchanged.
 - **WHEN** a `ws.run` command outlives its budget
 - **THEN** the run fails as `workspace_command_timeout`, distinct from a node timeout, classified from a flag on the sandbox result rather than by matching a message
 
+### Requirement: A node that went terminal on timeout SHALL NOT launch new work
+The shared worker pool SHALL refuse node work that reaches worker entry after its admitted deadline.
+
+A prompt-template node's `timeout_seconds` is measured from the moment its
+provider call is submitted to the shared bounded worker pool, so a call can
+spend its entire budget queued behind a saturated pool. When the deadline fires,
+the executor SHALL cancel work that has not yet begun, and SHALL additionally
+refuse, at worker entry, any submitted work whose deadline has already passed —
+`Future.cancel()` returns `False` once a worker has picked the item up, so
+cancellation alone leaves the outcome to scheduling. The check defines the start of the submitted callable; it does not interrupt
+a callable which has already passed that check. Work with
+budget remaining at worker entry SHALL start normally.
+
+Scope, stated as the guarantee actually implemented: the worker-entry check
+lives in the shared `_run_with_timeout` helper, so it covers every call routed
+through the shared pool — today the prompt-template node's policy-router and
+provider-bridge paths. `source_code` nodes do not route through that pool; they
+carry their own sandbox-runner timeout, and this requirement makes no claim
+about their runtime budget propagation. Router-internal retry and admission
+budgets are likewise out of scope.
+
+Work that has already begun SHALL be left to run to completion untouched and
+SHALL NOT be replayed: its thread is never killed, the deadline check precedes
+the first line of the submitted call, and the provider's own subprocess/HTTP
+timeout remains the backstop, because an interrupted call leaves an effect that
+cannot be classified.
+
+A call that waited in the queue for a material part of its budget and then
+started SHALL be given the remaining budget as its provider absolute
+cap, so the provider's own deadline expires with the node's rather than the
+queue wait beyond it. The remaining budget SHALL NOT be floored at any value
+that re-grants material elapsed queue wait; the implementation retains a 1ms
+positivity clamp and ignores scheduling delays below50ms, because
+`ModelConfig.stream_timeout_profile()` accepts any finite positive float but
+discards a non-positive cap in favour of its 600s default. The legacy
+integer-seconds `timeout` scalar, which cannot represent a sub-second budget,
+SHALL keep the same `max(1, int(...))` representation floor the per-node config
+already carries and SHALL NOT be raised above it. The subtraction SHALL produce
+a fresh per-invocation config, never a mutation of the per-node one, and SHALL
+leave a call that did not queue with the node's full timeout unchanged.
+
+#### Scenario: queued work is cancelled rather than started after the deadline
+- **WHEN** a node's call is still waiting in the worker pool queue as its `timeout_seconds` elapses
+- **THEN** the node fails as a node timeout and the queued call is cancelled, never executing
+
+#### Scenario: work reaching a worker after the deadline is refused, not started
+- **WHEN** a worker picks up a node's queued call after its `timeout_seconds` has already elapsed, cancellation having lost the race
+- **THEN** the call is refused at worker entry as a node timeout and the provider is never invoked
+
+#### Scenario: work reaching a worker within its deadline still runs
+- **WHEN** a worker picks up a node's queued call while budget remains
+- **THEN** the call executes normally, the worker-entry check refusing expired work only
+
+#### Scenario: a queue wait comes out of the provider's cap, not the node's deadline
+- **WHEN** a node's call waits in the worker pool queue for a material part of its `timeout_seconds` and then starts
+- **THEN** the provider receives the remaining budget as its absolute cap, while a call that did not queue still receives the node's full timeout
+
+#### Scenario: a sub-second node is not handed its queue wait back by a floor
+- **WHEN** a node whose `timeout_seconds` is at or below the legacy one-second floor spends a material part of that budget queued
+- **THEN** its provider absolute cap is the remaining fraction, strictly less than the node's own timeout and strictly positive
+
+#### Scenario: work already running is left to settle
+- **WHEN** a node's call has already started on a worker as its `timeout_seconds` elapses
+- **THEN** the node fails as a node timeout while that call runs to completion undisturbed and is never re-dispatched
+
 ### Requirement: Interrupted runs resume from checkpoint under owner, status, checkpoint, and version guards
 `resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only when four guards pass: the caller `actor` owns the run (else `auth_failed`), the run is `interrupted` (a run already `resumed` is idempotently returned; any other status raises `not_interrupted`), a checkpoint exists for the run's `thread_id` (else `no_checkpoint`), and the exact branch version the run used still resolves (else `branch_version_mismatch`). On resume the run SHALL be marked `resumed` before background re-invocation with `None` inputs (LangGraph's resume signal). At server startup `recover_in_flight_runs` SHALL sweep ordinary `queued` or `running` rows without a managed-family association or durable prepared admission to `interrupted` so no run is falsely reported in flight after a restart. As-built limitation: the `recover_in_flight_runs` docstring still states that `interrupted` is terminal and that mid-run resume via checkpoint is "not available today" — that docstring is stale, because `resume_run` implements exactly that checkpoint-based resume.
 
@@ -1094,7 +1159,7 @@ IDs, outputs, credentials or raw logs to the sender.
 
 ### Requirement: Prompt-node provider budgets retain the node's streaming cap
 
-A prompt-template node SHALL pass its effective timeout as the provider
+A prompt-template node without material worker-queue delay SHALL pass its effective timeout as the provider
 configuration's streaming absolute cap, on both the injected bridge and policy
 router paths. It SHALL preserve fractional values for that cap and retain the
 existing integer, minimum-one-second legacy timeout for non-streaming providers.
@@ -1108,7 +1173,7 @@ provider never started or that its subprocess stopped at that exact instant.
 
 #### Scenario: Default, fractional and longer node budgets
 
-- **WHEN** a prompt node uses its default timeout or an explicit positive fractional or longer timeout
+- **WHEN** a prompt node uses its default timeout or an explicit positive fractional or longer timeout without material worker-queue delay
 - **THEN** both provider call paths receive that same value as the streaming absolute cap
 - **AND** the library's unconfigured streaming cap and independently configured conversation cap remain unchanged
 
