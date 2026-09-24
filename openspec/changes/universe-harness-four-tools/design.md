@@ -41,11 +41,19 @@ process limit is per jail, not per daemon user.
 The parent adds what an rlimit cannot: wall clock, output cap (killed while
 reading), a process-tree watch (count and summed RSS, via
 `node_sandbox.read_process_tree`, shared with the workspace watchdog), and a
-free-space floor on the data volume. The tree watch also bounds a root-run
-jail, where the kernel exempts root from `RLIMIT_NPROC` (the hosted CI
-runner's sudo fallback).
+free-space floor on the data volume.
 
-Defaults: 512 MiB address space, 64 processes, cpu min(120 s, wall), 32 MiB
+Root is exempt from `RLIMIT_NPROC`, and a root-run bwrap gets no user
+namespace of its own. The first real-jail run (linux-jail-proof 36069992431,
+the hosted runner's sudo fallback) lost its VM to the exponential fork-bomb
+case: a 0.2 s tree watch cannot catch a doubling. So a ROOT-run jail joins a
+fresh cgroup v2 (`pids.max`, `memory.max`) before it becomes bwrap, and is
+refused when no such cgroup can be made. Production never takes this path
+(uid 1001); CI proves it, and the production path rests on the measurement
+above.
+
+Defaults: 512 MiB address space, 64 processes, cpu min(120 s, wall) soft
+with hard one second later (so SIGXCPU names the limit), 32 MiB
 per file, 256 files, 120 s wall (bash may ask up to 600 s), 64 KiB output,
 768 MiB tree RSS, 1 GiB free disk. Concurrency: 2 jails per universe, 4 per
 host (flock slots under the data dir).

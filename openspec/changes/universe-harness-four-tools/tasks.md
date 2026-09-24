@@ -13,11 +13,11 @@
 
 ## 2. Verify
 
-- [ ] 2.1 Real-jail proofs in `tests/test_universe_tools_jail.py`, asserted by
+- [x] 2.1 Real-jail proofs in `tests/test_universe_tools_jail.py`, asserted by
       `linux-jail-proof.yml`: foreign reads, no network, limits, skill next turn.
 - [x] 2.2 Portable tests: tool inventory, jail argv, fail-closed refusals,
       cross-user refusal with real SQLite authority, edit semantics, index.
-- [ ] 2.3 Provider, served-turn, jail and universe-intelligence suites; ruff;
+- [x] 2.3 Provider, served-turn, jail and universe-intelligence suites; ruff;
       `build_plugin.py`; `check_channel_agnostic.py`.
 - [ ] 2.4 Cross-family (Codex) review of the exact head; fold in the verdict.
 
