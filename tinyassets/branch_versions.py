@@ -223,6 +223,22 @@ def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
         "node_defs": normalized.get("node_defs", []),
         "state_schema": normalized.get("state_schema", []),
         **({"io_manifest": normalized["io_manifest"]} if "io_manifest" in normalized else {}),
+        # Execution choices the owner authored on the branch. Conditional on
+        # ``is not None`` so a branch that sets neither keeps the exact
+        # absent-key snapshot form -- and therefore the exact content_hash and
+        # branch_version_id -- that every already-published version was minted
+        # with. Unconditional inclusion would re-hash every unset branch and
+        # fork the run/rollback/parent pointers that reference those ids.
+        **(
+            {"default_llm_policy": normalized["default_llm_policy"]}
+            if normalized.get("default_llm_policy") is not None
+            else {}
+        ),
+        **(
+            {"concurrency_budget": normalized["concurrency_budget"]}
+            if normalized.get("concurrency_budget") is not None
+            else {}
+        ),
     }
 
 
