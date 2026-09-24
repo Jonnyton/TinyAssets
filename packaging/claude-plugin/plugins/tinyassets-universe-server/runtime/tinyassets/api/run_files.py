@@ -56,9 +56,12 @@ def file_limits(*, universe_id):
                 "bound_retention": "until explicit release or owner erasure",
                 "app_upload_available": app_upload,
                 "app_upload_max_bytes": MAX_UPLOAD_BYTES,
-                "supported_intake": ["authoring_handle"] + (["app_upload"] if app_upload else []),
+                "supported_intake": ["authoring_handle"] + (["app_upload"] if app_upload else [])
+                + ["cross_owner_delivery"],
                 "unsupported_intake": ["active_workspace", "url", "arbitrary_path"],
-                "file_delivery_available": False}
+                # Cross-owner delivery copies into receiver-owned custody; a
+                # receiver reads only its own copy, never a sender identifier.
+                "file_delivery_available": True}
     return _result(execute)
 
 

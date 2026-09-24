@@ -1113,16 +1113,42 @@ credentials as a substitute.
 - **WHEN** the receiver no longer has the required current authority
 - **THEN** execution refuses with a safe outcome rather than borrowing sender authority
 
-### Requirement: Explicit delivery validates structured values without claiming file transfer
+### Requirement: Explicit delivery validates structured values and declared file custody
 The engine SHALL validate explicit owner sends against declared source outputs,
 receiver input contracts and link mappings. Structured values SHALL remain data,
-not trusted execution or credential context. The current public delivery path
-SHALL refuse file-reference envelopes before receiver-run reservation; it SHALL
-NOT advertise exact-byte artifact transfer or in-node delivery RPC provenance.
+not trusted execution or credential context. Unsourced explicit sends SHALL refuse
+file-reference envelopes before receiver-run reservation. Trusted node sends SHALL
+accept file references only in receiver-declared file or file_bundle positions,
+validate the source run's bound custody and receiver limits, and copy exact bytes
+through the shared capture journal into independent receiver-owned custody before
+acceptance. Publication SHALL recheck sender and receiver authority and source
+bindings under the existing platform-then-runs writer order; byte streaming SHALL
+occur outside those writer locks. First acceptance SHALL recheck source bindings
+and bind receiver copies in the transaction reserving the receiver run. Receiver
+run inputs SHALL contain only receiver-owned references, while private delivery
+inputs retain the original sender envelopes for occurrence identity.
 
-#### Scenario: Invalid structured input or file reference
-- **WHEN** the mapped input violates the contract or contains a file-reference envelope
+#### Scenario: Invalid structured input or undeclared file reference
+- **WHEN** the mapped input violates the contract, an unsourced send contains a file reference, or a trusted send places a file reference in ordinary JSON rather than a declared file input
 - **THEN** acceptance refuses before a receiver run is reserved
+
+#### Scenario: Declared file or bundle transfer
+- **WHEN** a trusted source run delivers its bound files to a receiver-declared file or file_bundle input
+- **THEN** the receiver reads exact copied bytes using its own run bindings and references, preserving bundle order and receiver-declared size, count and media limits
+- **AND** identical accepted-occurrence replay allocates and binds nothing new, while changed content conflicts
+
+#### Scenario: Authority disappears before publication
+- **WHEN** sender authority is revoked after the last byte is read but before publication
+- **THEN** publication refuses and no receiver custody object or accepted delivery is created
+
+#### Scenario: Source binding disappears after publication
+- **WHEN** source custody binding is removed after copying but before first acceptance
+- **THEN** acceptance refuses without reserving a receiver run or file-provenance row
+- **AND** any independently captured receiver object remains unbound and subject to existing unbound retention, not successful delivery
+
+#### Scenario: Operational custody capacity is unconfigured
+- **WHEN** a file transfer has no configured custody capacity
+- **THEN** it refuses explicitly without treating metadata as transferred bytes
 
 #### Scenario: Control-looking structured values
 - **WHEN** accepted data contains fields named key or token or requests broader authority
