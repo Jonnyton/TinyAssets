@@ -37,12 +37,7 @@
 #      env file (step 1), the GitHub App token refresher's systemd timer and
 #      service, its script copy, its env file, and the App private key at its
 #      documented path. A key configured at any OTHER path is not deleted; it
-#      is named and left for the founder;
-#   5. moves GH_TOKEN (the off-host backup upload token, used only by
-#      deploy/backup.sh) out of the daemon's env file into a host-only
-#      /etc/tinyassets/backup.env (root:root 0600) that only the backup unit
-#      reads, via a systemd drop-in. The daemon container never sees it again
-#      (the entrypoint also strips it).
+#      is named and left for the founder.
 #
 # It logs variable/unit NAMES and file COUNTS only, never a value, a
 # transcript name or any file content.
@@ -135,54 +130,6 @@ if [ "${#present[@]}" -gt 0 ]; then
     echo "retire-platform-llm-logins: the running container keeps these names in its config until its next recreate; its process never saw them (entrypoint strip)"
 else
     echo "retire-platform-llm-logins: ${ENV_FILE} holds none of the retired names"
-fi
-
-# ---------------------------------------------------------------------------
-# 5. GH_TOKEN: host backup unit only, never the daemon
-# ---------------------------------------------------------------------------
-BACKUP_ENV_FILE="${TINYASSETS_BACKUP_ENV_FILE:-${ETC_DIR}/backup.env}"
-BACKUP_ENV_OWNER="${TINYASSETS_BACKUP_ENV_OWNER-root:root}"
-BACKUP_DROPIN="${SYSTEMD_DIR}/tinyassets-backup.service.d/10-backup-env.conf"
-backup_env() {
-    TINYASSETS_ENV_FILE="${BACKUP_ENV_FILE}" \
-    TINYASSETS_LEGACY_ENV_FILE="${BACKUP_ENV_FILE}.absent" \
-    TINYASSETS_ENV_OWNER="${BACKUP_ENV_OWNER}" \
-    TINYASSETS_ENV_MODE=600 \
-    TINYASSETS_ENV_READ_USER="" \
-    bash "${ENV_HELPER}" "$@"
-}
-if ! TINYASSETS_ENV_FILE="${ENV_FILE}" bash "${ENV_HELPER}" assert-absent GH_TOKEN >/dev/null 2>&1; then
-    gh_value="$(grep -E '^[[:space:]]*(export[[:space:]]+)?GH_TOKEN[[:space:]]*[=:]' "${ENV_FILE}" \
-        | tail -1 \
-        | sed -E 's/^[[:space:]]*(export[[:space:]]+)?GH_TOKEN[[:space:]]*[=:][[:space:]]*//' || true)"
-    case "${gh_value}" in
-        \"*\") gh_value="${gh_value#\"}"; gh_value="${gh_value%\"}" ;;
-        \'*\') gh_value="${gh_value#\'}"; gh_value="${gh_value%\'}" ;;
-    esac
-    if [ -z "${gh_value}" ]; then
-        echo "::error::retire-platform-llm-logins: GH_TOKEN is assigned in ${ENV_FILE} but its value could not be read; left in place" >&2
-        exit 1
-    fi
-    printf '%s' "${gh_value}" | backup_env set GH_TOKEN >/dev/null
-    unset gh_value
-    if backup_env assert-absent GH_TOKEN >/dev/null 2>&1; then
-        echo "::error::retire-platform-llm-logins: GH_TOKEN did not reach ${BACKUP_ENV_FILE}; left in ${ENV_FILE}" >&2
-        exit 1
-    fi
-    TINYASSETS_ENV_FILE="${ENV_FILE}" bash "${ENV_HELPER}" delete GH_TOKEN >/dev/null
-    echo "retire-platform-llm-logins: moved GH_TOKEN from ${ENV_FILE} to ${BACKUP_ENV_FILE} (backup unit only)"
-else
-    echo "retire-platform-llm-logins: ${ENV_FILE} holds no GH_TOKEN"
-fi
-if [ -f "${BACKUP_ENV_FILE}" ]; then
-    dropin_body="$(printf '[Service]\nEnvironmentFile=-%s\n' "${BACKUP_ENV_FILE}")"
-    if [ "$(cat "${BACKUP_DROPIN}" 2>/dev/null || true)" != "${dropin_body}" ]; then
-        mkdir -p "$(dirname -- "${BACKUP_DROPIN}")"
-        printf '%s\n' "${dropin_body}" > "${BACKUP_DROPIN}"
-        chmod 0644 "${BACKUP_DROPIN}"
-        if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload || true; fi
-        echo "retire-platform-llm-logins: backup unit now reads ${BACKUP_ENV_FILE}"
-    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -306,17 +253,17 @@ retire_dir() {
         return
     fi
 
-    if [ -f "${real}/${credential}" ] && [ ! -L "${real}/${credential}" ]; then
-        rm -f -- "${real}/${credential}"
-        echo "retire-platform-llm-logins: removed credential ${label}/${credential}"
-    fi
-
     local refs
     refs="$(universe_references "${real}" "${label}")"
     if [ "${refs}" != "0" ]; then
         refused=1
         echo "::error::retire-platform-llm-logins: ${refs} universe symlink(s)/config(s) point at ${label}; refused, not deleted" >&2
         return
+    fi
+
+    if [ -f "${real}/${credential}" ] && [ ! -L "${real}/${credential}" ]; then
+        rm -f -- "${real}/${credential}"
+        echo "retire-platform-llm-logins: removed credential ${label}/${credential}"
     fi
 
     local files dirs

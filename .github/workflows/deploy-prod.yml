@@ -478,9 +478,8 @@ jobs:
         # strips every such name, so what is left on the host is dead weight
         # that is also a live secret. This removes it -- env-file names
         # (including the retired platform GitHub push maps), the GitHub App
-        # token refresher and its key, GH_TOKEN (moved to a host-only backup
-        # env), and both platform login directories in full (founder decision
-        # 2026-09-24), behind exact-path, mount and symlink guards; never a
+        # token refresher and its key, and both platform login directories in
+        # full (founder decision 2026-09-24), behind exact-path, mount and symlink guards; never a
         # universe (u-*). Names and counts only in the log. Idempotent, and it runs ONLY after the public canary is green:
         # the script also refuses unless the running daemon is the new release.
         if: ${{ success() && steps.canary.outcome == 'success' }}

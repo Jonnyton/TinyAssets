@@ -182,10 +182,10 @@ real path is exactly `<volume>/.codex` or `<volume>/.claude`; no universe
 `rm -rf --one-file-system`. Any failed guard leaves the target untouched and
 fails the step. Transcripts are logged as counts only.
 
-`GH_TOKEN` (off-host backup upload, `deploy/backup.sh`) is host-only: the same
-step moves it from `/etc/tinyassets/env` to `/etc/tinyassets/backup.env`
-(`root:root 0600`), which only `tinyassets-backup.service` reads, and the
-container entrypoint strips it.
+The container entrypoint strips `GH_TOKEN`/`GITHUB_TOKEN`, so the daemon
+process never holds them. The host backup unit still reads `GH_TOKEN` from
+`/etc/tinyassets/env` as root (`deploy/backup.sh`); moving it to a backup-only
+env file is open in `docs/concerns/2026-09-24-gh-token-backup-only-env.md`.
 
 The platform also holds no GitHub push credential. The former
 `TINYASSETS_GITHUB_PUSH_CAPABILITIES` / `TINYASSETS_GITHUB_PR_CAPABILITIES`

@@ -19,8 +19,7 @@ answers the two inspections the script makes. It must:
 * refuse unless the tinyassets-data mountpoint is its own real path AND the
   daemon mounts that volume at /data, and refuse to delete a login dir that a
   universe symlink or config still points at;
-* move GH_TOKEN out of the daemon's env file into a host-only backup env the
-  backup unit reads through a drop-in;
+* leave GH_TOKEN in the host env file (the root backup unit reads it there);
 * be idempotent.
 """
 
@@ -104,7 +103,6 @@ def _run(host: dict) -> subprocess.CompletedProcess:
         "STUB_DAEMON_ENV": host["daemon_env"],
         "STUB_VOLUME": str(host["vol"]),
         "STUB_MOUNT": host.get("mount") or f"volume|tinyassets-data|{host['vol']}",
-        "TINYASSETS_BACKUP_ENV_OWNER": "",
         "TINYASSETS_ENV_FILE": str(host["env_file"]),
         "TINYASSETS_LEGACY_ENV_FILE": str(host["env_file"]) + ".legacy",
         "TINYASSETS_ENV_OWNER": "",
@@ -166,6 +164,9 @@ def test_scrubs_env_and_removes_both_login_dirs_in_full(tmp_path):
     assert "TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION=1" in env_text
     assert "TINYASSETS_IMAGE=ghcr.io/x@sha256:abc" in env_text
     assert "WORKOS_API_KEY=keep-me" in env_text
+    # GH_TOKEN stays: the root backup unit reads it from this file.
+    assert f"GH_TOKEN={BACKUP_TOKEN}" in env_text
+    assert not (host["etc"] / "backup.env").exists()
 
     assert not codex.exists(), ".codex was not removed in full"
     assert not claude.exists(), ".claude was not removed in full"
@@ -244,6 +245,7 @@ def test_a_universe_symlink_into_a_login_dir_blocks_the_delete(tmp_path):
     host = _host(tmp_path)
     codex = host["vol"] / ".codex"
     _write(codex / "sessions" / "a.jsonl")
+    _write(codex / "auth.json", SECRET)
     universe = host["vol"] / "u-01kxm1vszd8hwp7em418asq8h9"
     (universe / ".runtime").mkdir(parents=True)
     (universe / ".runtime" / "codex-home").symlink_to(codex, target_is_directory=True)
@@ -252,6 +254,7 @@ def test_a_universe_symlink_into_a_login_dir_blocks_the_delete(tmp_path):
 
     assert result.returncode == 1
     assert (codex / "sessions" / "a.jsonl").exists(), "deleted a dir a universe points at"
+    assert (codex / "auth.json").exists(), "a refused dir still lost its credential file"
     assert "universe symlink(s)/config(s) point at .codex" in result.stderr
 
 
@@ -265,25 +268,6 @@ def test_a_universe_config_naming_a_login_dir_blocks_the_delete(tmp_path):
 
     assert result.returncode == 1
     assert (claude / "projects" / "t.jsonl").exists()
-
-
-def test_gh_token_moves_to_the_host_only_backup_env(tmp_path):
-    host = _host(tmp_path)
-
-    result = _run(host)
-
-    assert result.returncode == 0, result.stderr
-    assert "GH_TOKEN" not in host["env_file"].read_text(encoding="utf-8")
-    backup_env = host["etc"] / "backup.env"
-    assert f"GH_TOKEN={BACKUP_TOKEN}" in backup_env.read_text(encoding="utf-8")
-    dropin = host["systemd"] / "tinyassets-backup.service.d" / "10-backup-env.conf"
-    assert f"EnvironmentFile=-{backup_env}" in dropin.read_text(encoding="utf-8")
-    assert BACKUP_TOKEN not in result.stdout + result.stderr
-
-    again = _run(host)
-    assert again.returncode == 0, again.stderr
-    assert "holds no GH_TOKEN" in again.stdout
-    assert f"GH_TOKEN={BACKUP_TOKEN}" in backup_env.read_text(encoding="utf-8")
 
 
 def test_is_idempotent(tmp_path):

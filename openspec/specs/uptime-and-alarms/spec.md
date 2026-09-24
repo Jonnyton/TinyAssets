@@ -871,9 +871,8 @@ binding gate and the weekly Codex and Claude keepalives are retired. The
 production deploy SHALL instead run `deploy/retire_platform_llm_logins.sh` only
 after the public canary is green; it removes retired credential names from the
 host env file, deletes both platform login directories in full (founder
-decision 2026-09-24) behind exact-path, mount and symlink guards, moves
-`GH_TOKEN` to a host-only backup env the daemon never reads, and logs names and
-counts only. The same step
+decision 2026-09-24) behind exact-path, mount and symlink guards, and logs
+names and counts only. The same step
 retires the platform GitHub push credential: it scrubs the push-capability
 maps from the env file and removes the GitHub App token refresher's units,
 script, env file and documented private key, naming (not deleting) a key
