@@ -35,7 +35,8 @@ pytestmark = pytest.mark.skipif(
 # the awaited callers (`_handleBrowserUtterance`, `handleToolCall`) and the
 # account boundary's `Voice.stop` run for real. Media, rendering and speech
 # output are recorded, not performed: no microphone, no synthesis, no bridge.
-_VOICE_STUB = 'const Voice={isActive:()=>!!SCENARIO.voiceActive,conversationSettled:()=>{}};'
+_VOICE_STUB = ('const Voice={isActive:()=>!!SCENARIO.voiceActive,'
+               'conversationSettled:()=>{},turnStarted:()=>{}};')
 
 _VOICE_SHIM = r"""
 globalThis.window={};
@@ -47,8 +48,8 @@ Voice._speakBrowser=async(reply)=>{ spoken.push(reply); };
 Voice.fail=function(error){
   failed.push(String(error&&error.message)); this.epoch++; this.state="error"; };
 const realSettled=Voice.conversationSettled;
-Voice.conversationSettled=function(delivered){
-  settled.push(delivered); return realSettled.call(this,delivered); };
+Voice.conversationSettled=function(delivered,record){
+  settled.push(delivered); return realSettled.call(this,delivered,record); };
 function setVoiceStatusLine(t){ els["status-line"].voice=t||""; }
 // The account boundary as `enterSignedOut` performs it, in the same order:
 // Voice stops (its own generation bump) BEFORE the page forgets the pair.
