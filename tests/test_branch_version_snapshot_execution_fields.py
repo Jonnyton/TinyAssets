@@ -149,8 +149,8 @@ class TestExecutionRelevantFieldsSurviveSnapshot:
     def test_reconstructed_branch_executes_under_user_choices(self, tmp_path):
         """The execution-facing consequence.
 
-        `_load_branch_version` is what an immutable-version run (and therefore
-        a resumed one) compiles. `compile_branch` reads
+        `_load_branch_version` is what an immutable-version run compiles.
+        This test does not exercise the legacy resume resolver. `compile_branch` reads
         `getattr(branch, "concurrency_budget", None)` (graph_compiler.py:3948)
         and `branch.default_llm_policy` (graph_compiler.py:964, :3985). If the
         reconstruction yields None, the pinned run executes unbounded and
@@ -309,11 +309,9 @@ class TestLegacyAbsentFieldIdentityCompatibility:
 
         Pinned from the absent-key snapshot form, which this change leaves
         byte-identical (the two new keys are conditional and both absent here).
-        Any change that alters that form -- reordering, a new unconditional key,
-        a different default -- changes this value and forks every existing
-        absent-key snapshot bytes -- reordering, a new unconditional key, a
-        ``branch_version_id``, which is exactly the outcome this module exists
-        to prevent.
+        A new unconditional key or different default changes this value and
+        creates a different identity on republish. Dictionary key ordering is
+        normalized by compute_content_hash and does not affect the digest.
         """
         snap = _canonical_snapshot(_branch(branch_id="legacy-digest").to_dict())
         assert compute_content_hash(snap) == (

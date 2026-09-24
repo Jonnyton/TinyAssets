@@ -226,9 +226,9 @@ def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
         # Execution choices the owner authored on the branch. Conditional on
         # ``is not None`` so a branch that sets neither keeps the exact
         # absent-key snapshot form -- and therefore the exact content_hash and
-        # branch_version_id -- that every already-published version was minted
-        # with. Unconditional inclusion would re-hash every unset branch and
-        # fork the run/rollback/parent pointers that reference those ids.
+        # branch_version_id -- for a branch whose choices are unset. Existing
+        # rows are never rewritten; publishing a newly preserved choice must
+        # produce a distinct version instead of silently returning the old one.
         **(
             {"default_llm_policy": normalized["default_llm_policy"]}
             if normalized.get("default_llm_policy") is not None
