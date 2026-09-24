@@ -12,6 +12,7 @@ import concurrent.futures
 import logging
 import math
 import os
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -242,6 +243,71 @@ def _sync_call_timeout_s(cfg: ModelConfig) -> float:
         absolute_cap = 0.0
     legacy = float(getattr(cfg, "timeout", 0) or 0)
     return max(legacy, absolute_cap) + 30.0
+
+
+# Below this, the gap between submit() and worker pickup is scheduling jitter,
+# not queue wait, and correcting for it would only add noise. Same value and
+# same reasoning as the compiler's own subtraction one hop earlier
+# (``graph_compiler._QUEUE_WAIT_SUBTRACT_THRESHOLD_S``).
+_QUEUE_WAIT_SUBTRACT_THRESHOLD_S = 0.05
+# An epsilon, NOT a budget. An already-expired call is refused outright at the
+# worker entry, so this never has to invent time for one; it exists because
+# ``ModelConfig.stream_timeout_profile()`` discards a non-positive cap and
+# substitutes the 600s default, which would invert the correction.
+_MIN_POSITIVE_PROVIDER_CAP_S = 0.001
+
+
+def _caller_deadline_budget_s(cfg: ModelConfig) -> float | None:
+    """The caller's EXPLICIT remaining-budget hand-over in seconds, or ``None``.
+
+    ``absolute_cap_s`` is how a node's remaining budget crosses into the
+    provider layer (``graph_compiler._deadline_cfg``). It is also the only field
+    that *can* carry one: the legacy ``timeout`` scalar is an int with a
+    ``max(1, ...)`` representation floor, so it cannot tell "0.2s left" from "1s
+    left" and must never be read as a deadline.
+
+    ``None`` means no deadline was handed over — a default config leaves the cap
+    unset and resolves to the 600s backstop. Such a call is never refused.
+    """
+    explicit = getattr(cfg, "absolute_cap_s", None)
+    if not isinstance(explicit, (int, float)) or isinstance(explicit, bool):
+        return None
+    value = float(explicit)
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
+def _queue_adjusted_config(
+    cfg: ModelConfig, budget_s: float | None, waited_s: float,
+) -> ModelConfig:
+    """``cfg`` with the provider-sync queue wait already deducted.
+
+    Returns a NEW config — ``ModelConfig`` is frozen and one caller config is
+    shared across concurrent invocations, so it is never mutated. With no
+    caller deadline to deduct from, or a wait below the jitter threshold, the
+    caller's own config is handed over untouched.
+    """
+    if budget_s is None or waited_s < _QUEUE_WAIT_SUBTRACT_THRESHOLD_S:
+        return cfg
+    remaining = max(_MIN_POSITIVE_PROVIDER_CAP_S, budget_s - waited_s)
+    legacy = getattr(cfg, "timeout", 0)
+    try:
+        legacy_int = int(legacy)
+    except (TypeError, ValueError):
+        legacy_int = 0
+    return replace(
+        cfg,
+        # Only ever lowered. The legacy int-seconds scalar carries its own
+        # max(1, int(...)) representation floor for the non-streaming
+        # providers, and ``budget_s`` may exceed it (a caller can set a large
+        # absolute cap with a small legacy timeout), so it is clamped to the
+        # caller's own value — deducting a queue wait must never buy a call
+        # more time than it arrived with.
+        timeout=min(legacy_int, max(1, int(remaining))) if legacy_int > 0
+        else max(1, int(remaining)),
+        absolute_cap_s=remaining,
+    )
 
 
 def _side_effect_from(exc: BaseException) -> str | None:
@@ -1866,26 +1932,43 @@ class ProviderRouter:
         # a timeout cancels the coroutine and kills the streaming subprocess, and
         # never fire below the stream absolute cap.
         inner_timeout = _sync_call_timeout_s(cfg)
+        # One absolute monotonic deadline, armed HERE — on the caller's thread,
+        # BEFORE the queue. See call_sync for why the anchor has to be submit
+        # time and not worker pickup.
+        queued_at = time.monotonic()
+        node_budget_s = _caller_deadline_budget_s(cfg)
+        drain_deadline = queued_at + inner_timeout
 
         # Capture universe_context in the closure so it survives the hop into
         # the ThreadPoolExecutor worker thread (no ContextVar — a ContextVar
         # set here would NOT propagate to the pool's worker thread).
         def _run() -> tuple[str, str, dict]:
+            waited = time.monotonic() - queued_at
+            if node_budget_s is not None and waited >= node_budget_s:
+                raise ProviderTimeoutError(
+                    f"call_with_policy_sync refused role={role} before launch: "
+                    f"its {node_budget_s:.3g}s deadline passed while it waited "
+                    f"{waited:.3g}s in the provider-sync queue"
+                )
+            run_cfg = _queue_adjusted_config(cfg, node_budget_s, waited)
+            run_timeout = max(
+                _MIN_POSITIVE_PROVIDER_CAP_S, drain_deadline - time.monotonic(),
+            )
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(
                     asyncio.wait_for(
                         self.call_with_policy(
-                            role, prompt, system, policy, cfg, difficulty,
+                            role, prompt, system, policy, run_cfg, difficulty,
                             operation=operation,
                             universe_context=universe_context,
                         ),
-                        timeout=inner_timeout,
+                        timeout=run_timeout,
                     )
                 )
             except asyncio.TimeoutError:
                 raise ProviderTimeoutError(
-                    f"call_with_policy_sync exceeded {inner_timeout:.0f}s for "
+                    f"call_with_policy_sync exceeded {run_timeout:.0f}s for "
                     f"role={role} (subprocess cancelled/killed)"
                 )
             finally:
@@ -1943,24 +2026,54 @@ class ProviderRouter:
         # which kills the subprocess. ``future.result`` keeps a slightly larger
         # backstop only for a wedged event loop.
         inner_timeout = _sync_call_timeout_s(cfg)
+        # ONE absolute monotonic deadline for this call, armed HERE — on the
+        # caller's thread, BEFORE the queue. This pool is bounded
+        # (_SYNC_CALL_MAX_WORKERS), so an item can sit in it for the whole of
+        # the caller's budget, while the clock ``asyncio.wait_for`` arms below
+        # only starts at worker pickup. Anchoring the window at submit is what
+        # makes the queue wait DEDUCTED instead of silently re-granted, and it
+        # is the same absolute deadline the compiler's own worker guard applies
+        # one hop earlier (``graph_compiler._run_with_timeout``).
+        queued_at = time.monotonic()
+        node_budget_s = _caller_deadline_budget_s(cfg)
+        drain_deadline = queued_at + inner_timeout
 
         def _run() -> ProviderResponse:
+            waited = time.monotonic() - queued_at
+            if node_budget_s is not None and waited >= node_budget_s:
+                # Refused BEFORE any provider launch: the deadline that
+                # authorised this call has already passed, so starting one now
+                # burns a worker (and a subprocess) on a result nobody awaits.
+                # Nothing in flight is touched — this check sits ahead of the
+                # call, never inside it, so work that got past it settles.
+                raise ProviderTimeoutError(
+                    f"call_sync refused role={role} before launch: its "
+                    f"{node_budget_s:.3g}s deadline passed while it waited "
+                    f"{waited:.3g}s in the provider-sync queue"
+                )
+            run_cfg = _queue_adjusted_config(cfg, node_budget_s, waited)
+            # Still max(legacy, absolute cap) + 30s of reader-drain margin
+            # (blocker L) — just measured from submit, so the queue wait comes
+            # out of it rather than extending it.
+            run_timeout = max(
+                _MIN_POSITIVE_PROVIDER_CAP_S, drain_deadline - time.monotonic(),
+            )
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(
                     asyncio.wait_for(
                         self.call(
-                            role, prompt, system, cfg,
+                            role, prompt, system, run_cfg,
                             operation=operation,
                             universe_context=universe_context,
                         ),
-                        timeout=inner_timeout,
+                        timeout=run_timeout,
                     )
                 )
             except asyncio.TimeoutError:
                 # wait_for already cancelled the coroutine (subprocess killed).
                 raise ProviderTimeoutError(
-                    f"call_sync exceeded {inner_timeout:.0f}s for role={role} "
+                    f"call_sync exceeded {run_timeout:.0f}s for role={role} "
                     "(subprocess cancelled/killed)"
                 )
             finally:
