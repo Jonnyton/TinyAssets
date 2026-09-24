@@ -34,7 +34,8 @@ Read the job's step summary. Cite the base sha and patch sha256 it prints.
    must be full lowercase 40-hex **before** any checkout sees it.
 3. Checks out `base_sha` into `candidate/` (credentials not persisted) and
    installs Python 3.11 + dev deps there, before the patch touches the tree.
-4. `materialize`: decodes the bounded base64 patch, checks its SHA256, the
+4. `materialize`: decodes the bounded base64 raw-or-gzip patch, inflates gzip
+   within the byte cap, checks the uncompressed patch's SHA256, the
    touched paths (only `tinyassets/`, `tests/`, `scripts/`; never the helper),
    credential-shaped tokens, and the pytest node ids (relative, under
    `tests/`, no option-like, absolute or traversal tokens). Confirms HEAD is
@@ -59,11 +60,17 @@ Inputs reach shell only through `env:`; no `${{ inputs.* }}` appears in any
 | Input | Cap |
 |---|---|
 | `patch_b64` | 60,000 chars (GitHub caps the whole dispatch payload at 65,535) |
+| Uncompressed patch | 256 KiB, raw or one gzip member; no trailing bytes |
 | `tests_json` | 4,000 chars, 64 node ids |
 | `base_sha` | full 40-hex only; branches, tags and short shas are rejected |
 
-Split the candidate if the patch is over the cap. The oracle never accepts
-oversized input.
+`prepare` preserves raw base64 for small patches and automatically uses gzip
+with zero modification time when needed. It verifies byte-exact reconstruction
+before writing inputs. The SHA256 always covers the uncompressed patch, never
+the compressed transport. If still over the cap, use a nearer already-pushed
+base where possible; never omit required code or tests to make a proof fit.
+Oversized, truncated, corrupt, trailing-data or multi-member gzip is rejected,
+never retried as raw input.
 
 Contract test: `tests/test_cloud_prepush_oracle.py`.
 
@@ -73,7 +80,9 @@ Only an operator-reviewed source/test diff belongs in this workflow. The candida
 runs Python on a disposable hosted runner; path checks are not a sandbox against
 hostile Python, and the candidate can write its own test results. A green report
 is evidence for the reviewed candidate and selected tests, not a security
-attestation or proof of all platform behavior. No production credentials,
+attestation or proof of all platform behavior. SHA256 is integrity, not
+authentication; bounded decompression necessarily occurs before hash checking.
+No production credentials,
 production service dependencies, or personal-desktop execution are involved.
 
 The workflow must first land on the default branch before dispatch. Removing
