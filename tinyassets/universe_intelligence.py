@@ -22,7 +22,7 @@ from tinyassets.api import interlocutor
 from tinyassets.api.helpers import _request_universe, _universe_dir
 from tinyassets.config import load_universe_config
 from tinyassets.persona import read_persona_voice, resolve_persona
-from tinyassets.providers.base import ModelConfig, UniverseContext
+from tinyassets.providers.base import HOST_REACH_TOOLS, ModelConfig, UniverseContext
 from tinyassets.providers.call import call_provider
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.soul_edit import (
@@ -89,11 +89,8 @@ _ENGINE_ALLOWED_TOOLS = ("WebFetch",)
 # durable fix is an OS sandbox (bwrap/container), tracked as the design-doc
 # residual; unknown names just emit a harmless "no known tool" warning.
 _ENGINE_DISALLOWED_TOOLS = (
-    # shell / process execution (Monitor also runs shell commands)
-    "Bash", "BashOutput", "KillShell", "Monitor",
-    # filesystem
-    "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead",
-    "Glob", "Grep", "LS",
+    # shell / process execution and filesystem: the one host-reach definition
+    *HOST_REACH_TOOLS,
     # web search (WebFetch is the single allowed capability)
     "WebSearch",
     # subagents / skills / plans / deferred-tool loading

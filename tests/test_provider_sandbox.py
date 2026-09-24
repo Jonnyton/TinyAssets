@@ -115,3 +115,29 @@ def test_bwrap_proc_mount_and_lock_signatures_are_sandbox_failures(monkeypatch):
             check_bwrap_failure(text)
     # an unrelated lock error is NOT a sandbox failure
     check_bwrap_failure("flock: cannot open lock file /data/.codex/.lock: Permission denied")
+
+
+def test_workflow_node_call_is_pinned_to_its_universe_with_host_tools_denied(tmp_path):
+    # A workflow node call (2026-09-24 latency root cause): cwd pinned to the
+    # universe, project-only settings, shell/filesystem builtins denied, and
+    # the node's own denies kept. Web tools are not the host's and stay.
+    from tinyassets.providers.base import HOST_REACH_TOOLS
+
+    cfg = ModelConfig(workflow_node=True, disallowed_tools=("CronCreate",))
+    flags, run_cwd = _sandbox_cli_args(cfg, tmp_path)
+
+    assert run_cwd == str(tmp_path)
+    assert flags[flags.index("--setting-sources") + 1] == "project"
+    denied = flags[flags.index("--disallowedTools") + 1:]
+    assert denied == ["CronCreate", *HOST_REACH_TOOLS]
+    assert "--allowedTools" not in flags
+    assert "WebSearch" not in denied and "WebFetch" not in denied
+
+
+def test_workflow_node_call_without_a_universe_fails_closed():
+    import pytest
+
+    from tinyassets.exceptions import ProviderError
+
+    with pytest.raises(ProviderError):
+        _sandbox_cli_args(ModelConfig(workflow_node=True), None)
