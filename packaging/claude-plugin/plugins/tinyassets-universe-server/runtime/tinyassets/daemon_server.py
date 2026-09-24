@@ -571,6 +571,28 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
                 "ALTER TABLE founder_home ADD COLUMN platform_generated "
                 "INTEGER NOT NULL DEFAULT 0"
             )
+        # Branch-level execution choices. Additive and nullable: NULL means
+        # unset/inherit, byte-identical to the pre-migration behaviour, so no
+        # existing row is rewritten or backfilled. No index — neither field is
+        # a list/filter key. These columns are the ONLY home for the two
+        # facts; they are deliberately not also folded into graph_json.
+        #
+        # Rollback note: `save_branch_definition` uses INSERT OR REPLACE, so an
+        # older image whose writer omits these columns would ERASE their values
+        # on the next write. Additive columns do not by themselves make a
+        # rollback data-preserving. Repair forward; if an older image must be
+        # restored, keep a database backup and block definition writes until a
+        # compatible writer is back. Never revert the schema.
+        if "default_llm_policy_json" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE branch_definitions ADD COLUMN "
+                "default_llm_policy_json TEXT"
+            )
+        if "concurrency_budget" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE branch_definitions ADD COLUMN "
+                "concurrency_budget INTEGER"
+            )
         # fork_from migration: content-addressed lineage tracking.
         if "fork_from" not in existing_cols:
             conn.execute(
@@ -2454,6 +2476,16 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
     ) or "public"
     fork_from = row["fork_from"] if "fork_from" in row_keys else None
     skills = _json_loads(row["skills_json"], []) if "skills_json" in row_keys else []
+    # Branch-level execution choices. Same guard: a row predating the
+    # ADD COLUMN migration (or a SELECT that omits them) reads as unset.
+    default_llm_policy = (
+        _json_loads(row["default_llm_policy_json"], None)
+        if "default_llm_policy_json" in row_keys
+        else None
+    )
+    concurrency_budget = (
+        row["concurrency_budget"] if "concurrency_budget" in row_keys else None
+    )
     return {
         "branch_def_id": row["branch_def_id"],
         "name": row["name"],
@@ -2475,6 +2507,8 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "goal_id": goal_id,
         "visibility": visibility,
         "fork_from": fork_from,
+        "default_llm_policy": default_llm_policy,
+        "concurrency_budget": concurrency_budget,
     }
 
 
@@ -2519,6 +2553,22 @@ def _branch_definition_insert(
     visibility_in = (branch_def.get("visibility") or "public").strip().lower()
     visibility = "private" if visibility_in == "private" else "public"
 
+    # Branch-level execution choices → their own columns. NULL is the single
+    # unset representation (cleared and never-set are the same row). Refuse an
+    # unrepresentable budget here too rather than let sqlite3 bind it to a
+    # float or raise a bare OverflowError from deep inside the writer.
+    default_llm_policy = branch_def.get("default_llm_policy")
+    policy_json = (
+        _json_dumps(default_llm_policy) if default_llm_policy is not None else None
+    )
+    concurrency_budget = branch_def.get("concurrency_budget")
+    if concurrency_budget is not None:
+        from tinyassets.branches import validate_concurrency_budget
+
+        budget_errors = validate_concurrency_budget(concurrency_budget)
+        if budget_errors:
+            raise ValueError(budget_errors[0])
+
     return branch_def_id, (
         branch_def_id,
         branch_def.get("name", ""),
@@ -2540,6 +2590,8 @@ def _branch_definition_insert(
         branch_def.get("goal_id") or None,
         visibility,
         branch_def.get("fork_from") or None,
+        policy_json,
+        concurrency_budget,
     )
 
 
@@ -2549,8 +2601,10 @@ _BRANCH_DEFINITION_INSERT_SQL = """
                 tags_json, version, skills_json, parent_def_id, entry_point,
                 graph_json, node_defs_json, state_schema_json,
                 published, stats_json, created_at, updated_at, goal_id,
-                visibility, fork_from
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                visibility, fork_from, default_llm_policy_json,
+                concurrency_budget
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?)
             """
 
 

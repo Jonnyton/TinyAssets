@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import json
 import re
@@ -85,6 +86,139 @@ def test_nodeid_accepts_relative_under_tests_with_params():
 
 def test_patch_roundtrip():
     assert oracle.decode_patch(_b64(_PATCH), _sha(_PATCH).upper()) == _PATCH
+
+
+def test_gzip_patch_roundtrip_and_local_determinism():
+    encoded = gzip.compress(_PATCH, mtime=0)
+    assert encoded == gzip.compress(_PATCH, mtime=0)
+    assert oracle.decode_patch(_b64(encoded), _sha(_PATCH)) == _PATCH
+
+
+@pytest.mark.parametrize("size", [1, oracle.MAX_PATCH_BYTES])
+def test_gzip_accepts_up_to_exact_uncompressed_bound(size):
+    raw = b"x" * size
+    assert oracle.decode_patch(_b64(gzip.compress(raw, mtime=0)), _sha(raw)) == raw
+
+
+def test_gzip_bomb_rejected_before_full_output():
+    raw = b"x" * (oracle.MAX_PATCH_BYTES * 16)
+    packed = gzip.compress(raw, mtime=0)
+    assert len(_b64(packed)) < oracle.MAX_PATCH_B64_CHARS
+    with pytest.raises(oracle.OracleInputError, match="byte cap"):
+        oracle.decode_patch(_b64(packed), _sha(raw))
+
+
+@pytest.mark.parametrize("tail", [b"trailing", b"\x00", gzip.compress(b"second", mtime=0)])
+def test_gzip_trailing_data_or_members_rejected(tail):
+    with pytest.raises(oracle.OracleInputError, match="trailing bytes|multiple members"):
+        oracle.decode_patch(_b64(gzip.compress(_PATCH, mtime=0) + tail), _sha(_PATCH))
+
+
+@pytest.mark.parametrize("remove", [1, 8, 15])
+def test_gzip_truncation_rejected(remove):
+    with pytest.raises(oracle.OracleInputError, match="truncated"):
+        oracle.decode_patch(_b64(gzip.compress(_PATCH, mtime=0)[:-remove]), _sha(_PATCH))
+
+
+def test_gzip_crc_corruption_rejected_without_raw_fallback():
+    packed = bytearray(gzip.compress(_PATCH, mtime=0))
+    packed[-8] ^= 1  # CRC, not ISIZE.
+    with pytest.raises(oracle.OracleInputError, match="invalid gzip"):
+        oracle.decode_patch(_b64(packed), _sha(bytes(packed)))
+
+
+def test_gzip_hash_covers_plain_patch_not_wire_bytes():
+    packed = gzip.compress(_PATCH, mtime=0)
+    with pytest.raises(oracle.OracleInputError, match="mismatch"):
+        oracle.decode_patch(_b64(packed), _sha(packed))
+
+
+def test_empty_gzip_patch_rejected():
+    with pytest.raises(oracle.OracleInputError, match="empty"):
+        oracle.decode_patch(_b64(gzip.compress(b"", mtime=0)), _sha(b""))
+
+
+@pytest.mark.parametrize("large", [False, True])
+def test_prepare_materialize_raw_and_gzip_exact_bytes(tmp_path, monkeypatch, large):
+    raw = _PATCH + (b"+repetitive source line\n" * 4000 if large else b"")
+    patch = tmp_path / "source.patch"
+    patch.write_bytes(raw)
+    inputs = tmp_path / "inputs.json"
+    args = oracle.build_parser().parse_args([
+        "prepare", "--base", _SHA, "--patch", str(patch), "--out", str(inputs),
+        "--", "tests/test_x.py",
+    ])
+    assert oracle.cmd_prepare(args) == 0
+    values = json.loads(inputs.read_text())
+    assert base64.b64decode(values["patch_b64"]).startswith(b"\x1f\x8b") is large
+    assert values["patch_sha256"] == _sha(raw)
+    for key, env in [("base_sha", oracle.ENV_BASE_SHA),
+                     ("patch_b64", oracle.ENV_PATCH_B64),
+                     ("patch_sha256", oracle.ENV_PATCH_SHA256),
+                     ("tests_json", oracle.ENV_TESTS_JSON)]:
+        monkeypatch.setenv(env, values[key])
+
+    def runner(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout=_SHA if argv[1] == "rev-parse" else "")
+
+    work = tmp_path / "materialized"
+    materialize = oracle.build_parser().parse_args([
+        "materialize", "--work", str(work), "--repo", str(tmp_path),
+    ])
+    assert oracle.cmd_materialize(materialize, runner) == 0
+    assert (work / "candidate.patch").read_bytes() == raw
+    manifest = json.loads((work / "manifest.json").read_text())
+    assert manifest["patch_sha256"] == _sha(raw)
+    assert manifest["patch_bytes"] == len(raw)
+
+
+def test_prepare_fails_closed_on_roundtrip_mismatch(tmp_path, monkeypatch):
+    patch = tmp_path / "source.patch"
+    patch.write_bytes(_PATCH)
+    out = tmp_path / "inputs.json"
+    monkeypatch.setattr(oracle, "decode_patch", lambda *args: b"different")
+    args = oracle.build_parser().parse_args([
+        "prepare", "--base", _SHA, "--patch", str(patch), "--out", str(out),
+        "--", "tests/test_x.py",
+    ])
+    with pytest.raises(oracle.OracleInputError, match="byte-exactly"):
+        oracle.cmd_prepare(args)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("raw", [
+    b"diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n",
+    _PATCH + b"+-----BEGIN PRIVATE KEY-----\n",
+])
+def test_compressed_materialize_still_checks_paths_and_secrets(tmp_path, monkeypatch, raw):
+    monkeypatch.setenv(oracle.ENV_BASE_SHA, _SHA)
+    monkeypatch.setenv(oracle.ENV_PATCH_B64, _b64(gzip.compress(raw, mtime=0)))
+    monkeypatch.setenv(oracle.ENV_PATCH_SHA256, _sha(raw))
+    monkeypatch.setenv(oracle.ENV_TESTS_JSON, '["tests/test_x.py"]')
+
+    def runner(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout=_SHA if argv[1] == "rev-parse" else "")
+
+    work = tmp_path / "rejected"
+    args = oracle.build_parser().parse_args([
+        "materialize", "--work", str(work), "--repo", str(tmp_path),
+    ])
+    with pytest.raises(oracle.OracleInputError):
+        oracle.cmd_materialize(args, runner)
+    assert not work.exists()
+
+
+def test_prepare_rejects_uncompressed_over_bound(tmp_path):
+    patch = tmp_path / "large.patch"
+    patch.write_bytes(_PATCH + b"x" * oracle.MAX_PATCH_BYTES)
+    out = tmp_path / "inputs.json"
+    args = oracle.build_parser().parse_args([
+        "prepare", "--base", _SHA, "--patch", str(patch), "--out", str(out),
+        "--", "tests/test_x.py",
+    ])
+    with pytest.raises(oracle.OracleInputError, match="byte cap"):
+        oracle.cmd_prepare(args)
+    assert not out.exists()
 
 
 def test_patch_over_cap_rejected():

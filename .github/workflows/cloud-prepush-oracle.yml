@@ -18,7 +18,8 @@ name: Cloud pre-push oracle
 #                      40-hex;
 #   * Python 3.11 + dev deps are installed in `candidate/` BEFORE the untrusted
 #     patch touches the tree;
-#   * the candidate arrives as a bounded base64 unified git patch + SHA256,
+#   * the candidate arrives as base64 raw-or-gzip unified patch + SHA256,
+#     bounded to 60000 encoded chars and 256 KiB uncompressed,
 #     is materialized under `runner.temp`, and applied with
 #     `git apply --check` then `git apply` (never the unsafe-paths flag);
 #   * selected pytest node ids arrive as JSON and are validated by the helper
@@ -41,11 +42,11 @@ on:
         required: true
         type: string
       patch_b64:
-        description: 'base64 of the unified git patch vs base_sha (max 60000 chars)'
+        description: 'base64 raw-or-gzip patch vs base_sha (60000 chars, 256 KiB uncompressed)'
         required: true
         type: string
       patch_sha256:
-        description: 'SHA256 hex of the DECODED patch bytes'
+        description: 'SHA256 hex of the UNCOMPRESSED patch bytes'
         required: true
         type: string
       tests_json:
