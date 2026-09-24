@@ -817,6 +817,12 @@
     if(navigator.locks && navigator.locks.request) return navigator.locks.request("ta-session-refresh", fn);
     return fn();
   }
+  // Three answers, not two: true (renewed), false (the server looked at the
+  // handle and refused it: the sign-in has ENDED), null (nobody refused anything:
+  // the renewal endpoint could not answer - a 5xx, a rate limit, a dropped
+  // connection, a proxy page). Only false may sign anyone out. Treating null as
+  // false turned a transient edge 503 on a tab resumed from sleep into a
+  // sign-out that erased the message being sent (live, 2026-09-24).
   async function refreshAccessToken(){
     if(refreshing) return refreshing;
     let pendingLogout = logoutPending;
@@ -833,9 +839,10 @@
         const r = await fetch("/mcp/app/token", {method:"POST", credentials:"same-origin",
           headers:{"Content-Type":"application/json"},
           body: JSON.stringify({grant_type:"refresh_token", session_ref: sessionRef() || undefined})});
-        if(!r.ok) return false;
-        const doc = await r.json();
-        if(!doc.access_token) return false;
+        if(!r.ok) return (r.status>=500 || r.status===429 || r.status===408) ? null : false;
+        let doc;
+        try{ doc = await r.json(); }catch(_e){ return null; }   // a 200 that is not our JSON
+        if(!doc || !doc.access_token) return false;
         storeAccessToken(doc.access_token, doc.expires_in);
         storeSessionRef(doc.session_ref);   // handle is stable, but re-store defensively
         // Bump the GENERATION, do not just null the field: a slow call already in
@@ -844,7 +851,7 @@
         // orphan the one built after the refresh.
         MCP.invalidateSession();   // the MCP session was bound to the old bearer
         return true;
-      }catch(_e){ return false; }
+      }catch(_e){ return null; }   // offline / dropped: unavailable, not refused
       finally{ refreshing = null; }
     });
     return refreshing;
@@ -873,9 +880,15 @@
     const exp = Number(sessionStorage.getItem(EXP_KEY) || 0);
     if(token() && exp && exp - Date.now() < 60*1000){ await refreshAccessToken(); }
   }
-  function sessionExpired(){
+  // enterSignedOut empties the composer and the thread (both belong to the
+  // account that is leaving), so this never promises typed text "is still in
+  // the box" - it said that for months while the sign-out erased it. A message
+  // that was being SENT is kept on disk and offered back after sign-in.
+  function sessionExpired(heldMessage){
     enterSignedOut();
-    document.getElementById("signin-notice").textContent = "Your session expired. Sign in again — anything you typed is still in the box.";
+    document.getElementById("signin-notice").textContent = heldMessage
+      ? "Your session expired before your message was sent. Sign in again — the message is kept on this device and offered to send again."
+      : "Your session expired. Sign in again.";
   }
 
   // ---- MCP client (same-origin /mcp, Bearer from sessionStorage) ----
@@ -897,6 +910,15 @@
     e.transport=code;
     e.replayable=!!replayable;
     return e;
+  }
+  // The tool request was never put on the wire, or the server refused its
+  // envelope before anything ran (401, session disowned). That is PROOF the turn
+  // did not happen, so the page says "Not sent" instead of the unconfirmed
+  // "may already have acted". It never licenses an automatic replay: the user
+  // still chooses to send again.
+  function notSent(err){
+    if(err && typeof err==="object") err.notSent=true;
+    return err;
   }
 
   // The MCP session id is a server-side handle that dies for ordinary reasons:
@@ -970,6 +992,23 @@
       const err=doc.error;
       if(!err || typeof err.code!=="number") return false;
       return typeof err.message==="string" && /session/i.test(err.message);
+    },
+    // An HTTP failure carrying what the edge actually said. `X-TA-Origin-Status`
+    // is set by the Worker only on a 5xx our own origin authored
+    // (deploy/cloudflare-worker/worker.js:217); `cf-ray` names the Cloudflare
+    // request, which is what attributes a failure the daemon never logged. The
+    // status and ray go in the message the user sees (a screenshot is enough to
+    // look it up); the rest rides on `err.http` and the console.
+    _httpFailure(code, lead, resp, bodyText, method){
+      const h=name=>{ try{ return resp.headers.get(name)||null; }catch(_e){ return null; } };
+      const http={status:resp.status, ray:h("cf-ray"), originStatus:h("x-ta-origin-status"),
+        contentType:h("content-type"), body:String(bodyText||"").slice(0,300)};
+      const where=http.originStatus ? ", from your universe's server" : "";
+      const err=transportError(code,
+        lead+" (HTTP "+http.status+where+(http.ray ? ", ray "+http.ray : "")+")", false);
+      err.http=http;
+      try{ console.warn("TinyAssets: /mcp "+method+" answered HTTP "+http.status, http); }catch(_e){}
+      return err;
     },
     // ---- liveness bounds -------------------------------------------------
     //
@@ -1149,16 +1188,20 @@
       attempt=attempt||{auth:0, session:0, gateway:0, loginEpoch:this._loginEpoch};
       this._assertLogin(attempt.loginEpoch);
       const isHandshake = (method==="initialize" || method==="notifications/initialized");
-      await ensureFreshToken();
-      this._assertLogin(attempt.loginEpoch);
-      // A proactive token refresh (above) resets the session — it was bound to
-      // the now-rotated bearer (see MCP.sessionId=null in refreshAccessToken).
-      // Re-establish it BEFORE a non-handshake call, or the server rejects the
-      // call as "Invalid request parameters" (no session) instead of a 401, and
-      // the 401 retry path never runs. Without this the first turn after every
-      // ~5-min refresh fails until a reload.
-      if(this.sessionId===null && !isHandshake) await this.ensureInit();
-      this._assertLogin(attempt.loginEpoch);
+      // Everything up to the fetch below happens BEFORE this request exists on
+      // the wire, so a failure here is proof it never ran.
+      try{
+        await ensureFreshToken();
+        this._assertLogin(attempt.loginEpoch);
+        // A proactive token refresh (above) resets the session — it was bound to
+        // the now-rotated bearer (see MCP.sessionId=null in refreshAccessToken).
+        // Re-establish it BEFORE a non-handshake call, or the server rejects the
+        // call as "Invalid request parameters" (no session) instead of a 401, and
+        // the 401 retry path never runs. Without this the first turn after every
+        // ~5-min refresh fails until a reload.
+        if(this.sessionId===null && !isHandshake) await this.ensureInit();
+        this._assertLogin(attempt.loginEpoch);
+      }catch(preErr){ throw isHandshake ? preErr : notSent(preErr); }
       const frame={jsonrpc:"2.0", method, params:params||{}};
       if(opts.expectResult!==false) frame.id=this.nextId++;
       const headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"};
@@ -1212,7 +1255,17 @@
 
       this._assertLogin(attempt.loginEpoch);
       if(resp.status===401){
-        if(attempt.auth<1 && token() && await refreshAccessToken()){
+        // A 401 is refused before any tool runs.
+        const renewed=(attempt.auth<1 && token()) ? await refreshAccessToken() : false;
+        if(renewed===null){
+          // The renewal endpoint could not ANSWER (5xx, offline). Nobody ended
+          // this sign-in, so nobody is signed out: say the request was not sent
+          // and let the next call renew again.
+          this._assertLogin(attempt.loginEpoch);
+          throw notSent(transportError("auth_unavailable",
+            "couldn’t renew your sign-in just then", false));
+        }
+        if(renewed){
           attempt.auth++;
           // refreshAccessToken already nulled the session (it was bound to the
           // old bearer); rebuild it before replaying a real call.
@@ -1223,7 +1276,11 @@
           // no timeout, no further request. ensureInit repairs a half-finished
           // handshake itself instead (see its catch).
           this._assertLogin(attempt.loginEpoch);
-          if(!isHandshake) await this.ensureInit();
+          // The refused original never ran; if the rebuild fails, the replay
+          // was never sent either.
+          if(!isHandshake){
+            try{ await this.ensureInit(); }catch(initErr){ throw notSent(initErr); }
+          }
           return this._rpc(method, params, opts, attempt);
         }
         const e=new Error("authentication_required"); e.authRequired=true; throw e;
@@ -1303,8 +1360,9 @@
         // back in the state this whole change exists to prevent.
         this._retire(gen, isHandshake);
         if(attempt.session>=1){
-          throw transportError("session_lost",
-            "your universe kept dropping this connection", false);
+          // Disowned twice, both times BEFORE dispatch: this request never ran.
+          throw notSent(transportError("session_lost",
+            "your universe kept dropping this connection", false));
         }
         attempt.session++;
         // `_retire` above is a no-op once the generation has moved, so only the
@@ -1313,7 +1371,7 @@
         // minutes) and their 404s come back one after another; without that,
         // every late arrival would discard the session the previous one had just
         // built and mint another.
-        await this.ensureInit();
+        try{ await this.ensureInit(); }catch(initErr){ throw notSent(initErr); }
         return this._rpc(method, params, opts, attempt);
       }
 
@@ -1331,7 +1389,7 @@
         // of work and then have its connection die - emitting exactly that 502.
         // The edge cannot tell those apart either: the Worker marks an
         // origin-authored 5xx with X-TA-Origin-Status
-        // (deploy/cloudflare-worker/worker.js:214), but its absence only means
+        // (deploy/cloudflare-worker/worker.js:217), but its absence only means
         // the body was not JSON, not that the app never saw the request.
         //
         // So a turn stops and asks. That costs a click during a deploy, which is
@@ -1344,12 +1402,16 @@
           await this._pause(2500);
           return this._rpc(method, params, opts, attempt);
         }
-        throw transportError("unavailable",
-          "your universe was restarting just then (HTTP "+resp.status+")", false);
+        // Say what came back, not a guess at why. "Restarting" was the only
+        // story this told, and on 2026-09-24 it was false: the daemon logged no
+        // 5xx at all, so the 503s the founder's tab received were authored in
+        // front of the origin - and nothing on the page recorded which layer.
+        throw this._httpFailure("unavailable", "the connection to your universe failed",
+          resp, bodyText, method);
       }
       if(!resp.ok){
-        throw transportError("http_error",
-          "your universe answered with an unexpected error (HTTP "+resp.status+")", false);
+        throw this._httpFailure("http_error", "your universe answered with an unexpected error",
+          resp, bodyText, method);
       }
 
       if(opts.expectResult===false) return null;
@@ -1427,7 +1489,8 @@
     // on an ambiguous failure.
     async callTool(name,args,opts){
       const loginEpoch=this._loginEpoch;
-      await this.ensureInit();
+      // No session could be built, so the tool request was never sent.
+      try{ await this.ensureInit(); }catch(initErr){ throw notSent(initErr); }
       this._assertLogin(loginEpoch);
       const r=await this._rpc("tools/call",{name,arguments:args||{}},opts,
         {auth:0, session:0, gateway:0, loginEpoch});
@@ -3164,7 +3227,10 @@
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(!stillHere()) return;
-      if(err.authRequired){ setStatusLine(""); $("composer-input").value=message; return sessionExpired(); }
+      // Signing out clears the composer (it is account-scoped), so the text
+      // cannot be "left in the box". What survives is the in-flight record on
+      // disk, which the same account is offered again after signing in.
+      if(err.authRequired){ setStatusLine(""); return sessionExpired(!opts.keepInflight); }
       setStatusLine("");
       // A transport failure is not a dead end: the session has already been
       // dropped, so the next attempt rebuilds it. Say what actually went wrong
@@ -3174,7 +3240,7 @@
         if(!opts.keepInflight)forgetInflight();
         appendFailureNotice(err.message,{speaker:"founder",text:message,display,truncated:false},undefined,err.failureCode);
       }else{
-        unconfirmed=!!(err&&err.transport);
+        unconfirmed=!!(err&&err.transport)&&!err.notSent;
         offerResend(message, display, err, Object.assign({}, opts||{}, {sentAt}));
         // Unsaved or unconfirmed: the local recovery record is still needed.
       }
@@ -3275,7 +3341,7 @@
         forgetInflight();
         appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode);
       }else{
-        unconfirmed=!!(error&&error.transport);
+        unconfirmed=!!(error&&error.transport)&&!error.notSent;
         offerResend(message,message,error,
           Object.assign({},opts,{echoed:true,keepComposer:true,sentAt:voiceSentAt}));
       }
@@ -3352,13 +3418,21 @@
   }
 
   function offerResend(message, display, err, opts){
-    const notice=(err&&err.transport)
+    // A request that provably never ran is NOT SENT - its text stays in the
+    // bubble above and one click sends it. Only an unconfirmed outcome gets the
+    // cautious "may already have acted" and the saved-conversation check.
+    const unsent=!!(err&&err.notSent);
+    const notice=unsent
+      ? "Not sent — "+((err&&err.message)||"your universe could not be reached")+
+        ". This message did not reach your universe, so nothing ran."
+      : (err&&err.transport)
       ? "Delivery could not be confirmed: "+err.message+". Check progress before sending again; the request may already have acted."
       : (err&&err.served)
         ? err.message+(err.failureRecorded?" This failure was not saved to conversation history. Keep this message to retry.":"")
         : "Couldn\u2019t reach your universe: "+((err&&err.message)||"unknown error");
     const again=document.createElement("button");
-    again.className="btn btn--link"; again.textContent=opts&&opts.consumerRequest?"Check this conversation":"Send it again";
+    again.className="btn btn--link";
+    again.textContent=unsent?"Send again":opts&&opts.consumerRequest?"Check this conversation":"Send it again";
     again.addEventListener("click", ()=>{
       // The retry is the same send: same options (a side send stays a side
       // send and keeps the earlier unconfirmed record - Codex round 3).
@@ -3368,7 +3442,7 @@
     // Only an UNCONFIRMED transport outcome gets the read-only check: a served
     // failure already has its own saved record, and the consumer path has an
     // exact request_key receipt that beats any observation this could make.
-    if(err&&err.transport&&!(opts&&opts.consumerRequest)){
+    if(err&&err.transport&&!unsent&&!(opts&&opts.consumerRequest)){
       const look=document.createElement("button");
       look.className="btn btn--link"; look.textContent="Check saved conversation";
       look.addEventListener("click", ()=>{
@@ -6160,8 +6234,13 @@
   // Never reloads mid-typing: only when nothing is being entered in a field.
   async function checkForNewBuild(){
     if(!CFG.build) return;
-    const active=document.activeElement;
-    if(active && (active.tagName==="INPUT"||active.tagName==="TEXTAREA") && active.value) return;
+    // Every hold is asked TWICE: before the probe and again when it answers.
+    // The probe can take seconds (a tab waking from sleep reopens its
+    // connections), and a founder who started typing and sent in the meantime
+    // had the page reload under the turn - composer, bubble and notice gone.
+    const held=()=>{
+      const active=document.activeElement;
+      if(active && (active.tagName==="INPUT"||active.tagName==="TEXTAREA") && active.value) return true;
     // Never mid-turn either: a reload while the universe is answering, or while
     // a failed message is waiting to be resent, throws away what the user is
     // looking at. On 2026-08-29 the 10-minute tick fired seconds after a served
@@ -6174,13 +6253,16 @@
     // exist, not be tight. Past it a reload IS the recovery - the message
     // survives in the in-flight record and is offered back after it. A failed
     // message holds the update ~20 minutes (plus at most one 10-minute tick).
-    if($("btn-send").disabled && (Date.now()-turnStartedAt) < 3*60*60*1000) return;
-    const pending=readInflight();
-    if(!$("btn-send").disabled && pending && (Date.now()-(pending.ts||0)) < 20*60*1000) return;
+      if($("btn-send").disabled && (Date.now()-turnStartedAt) < 3*60*60*1000) return true;
+      const pending=readInflight();
+      if(!$("btn-send").disabled && pending && (Date.now()-(pending.ts||0)) < 20*60*1000) return true;
+      return false;
+    };
+    if(held()) return;
     try{
       const r=await fetch("/mcp/app",{method:"HEAD",cache:"no-store",credentials:"omit"});
       const live=r.headers.get("X-TinyAssets-Build");
-      if(live && live!==CFG.build) location.reload();
+      if(live && live!==CFG.build && !held()) location.reload();
     }catch(_e){ /* offline or blocked: try again next time */ }
   }
 
