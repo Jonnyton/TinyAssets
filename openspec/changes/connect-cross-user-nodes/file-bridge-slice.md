@@ -498,12 +498,29 @@ the guard is removed is decor.
 ## 8. Open items
 
 - Receiver-directed **retry** (task 2.5) is untouched here.
-- No live probe, no deploy, no test execution was performed for this document.
-- This slice is hard to reverse (storage shape + a new authority derivation) and
-  has had **no cross-family review**. Per AGENTS.md Quality Gates it needs a Codex
-  refutation pass before implementation, asked to refute §2's ordering and §1.2's
-  withdrawal of the per-owner quota specifically. This document does not dispatch
-  it; root owns that dispatch.
+- September24: root independently approved this shape before implementation
+  (docs/reviews/2026-09-23-file-bridge-shape.md). Claude independently approved
+  runtime01b8f2e2 after the source-authority and declared-position corrections.
+  Root measured70passed/1skip across six focused modules; independent Opus
+  measured133passed/0skips across nine related modules. These Windows runs do not
+  establish Linux, deployment or ordinary two-owner acceptance.
+- Scoped operator reset currently refuses unknown root custody rather than
+  deleting it. Account erasure is separately tested; successful operator reset
+  is not claimed. See the indexed scoped-reset concern.
+- Non-blocking post-MVP follow-ups from the final review: a replay whose prior
+  delivery is erased mid-call raises raw KeyError rather than a typed refusal;
+  concurrent duplicate first acceptance may safely conflict rather than return
+  the original receipt; remove a dead receiver-row assignment. None is a false
+  acceptance or authority bypass. Preserve these for real-user follow-through,
+  not another generic pre-live hardening round.
+
+Rollback: redeploy the prior cloud image using the existing release workflow if
+new acceptance/custody failures appear. The provenance table is additive: retain
+it and all copied bytes, do not drop data as rollback cleanup. Older code does
+not provide the new transfer capability, so hold file-delivery/account-erasure
+operations involving new provenance until a forward fix if reverting runtime.
+Prefer a forward fix for erasure-specific failures; do not pretend the previous
+image understands the new child table.
 
 Acceptance remains two independently authenticated app owners in ordinary
 rendered conversation, with no operator-built workflow.
