@@ -167,7 +167,6 @@ Known secret metadata table:
 | `DO_SSH_KEY` | DigitalOcean | Non-expiring ed25519 keypair. | [#do-ssh-key](#do-ssh-key) |
 | `DO_DROPLET_HOST` | DigitalOcean | Non-secret IP identifier. | [#do-droplet-host](#do-droplet-host) |
 | `DO_SSH_USER` | DigitalOcean | Non-secret username. | [#do-ssh-user](#do-ssh-user) |
-| `OPENAI_API_KEY` | OpenAI | Deprecated; ignored by default daemons under subscription-only policy. | [#openai-api-key](#openai-api-key) |
 | `PUSHOVER_USER_KEY` | Pushover | Non-expiring account identifier. | [#pushover-user-key](#pushover-user-key) |
 | `PUSHOVER_APP_TOKEN` | Pushover | Non-expiring application token. | [#pushover-app-token](#pushover-app-token) |
 
@@ -265,29 +264,11 @@ expected entry in `authorized_keys`.
 
 #### openai-api-key
 
-**What:** Deprecated legacy Codex API-key credential. As of 2026-04-30,
-TinyAssets daemons run LLM calls through host subscription auth by default.
-`OPENAI_API_KEY` is stripped at container startup unless
-`TINYASSETS_ALLOW_API_KEY_PROVIDERS=1` and is not a valid default recovery path
-for `llm_endpoint_bound=unset`.
-
-**Do not rotate for default-daemon recovery.** Instead:
-1. Confirm `/etc/tinyassets/env` has `TINYASSETS_ALLOW_API_KEY_PROVIDERS=0`.
-2. Provide subscription auth, e.g. set `TINYASSETS_CODEX_AUTH_JSON_B64` to a
-   base64-encoded Codex subscription `~/.codex/auth.json`, or use the approved
-   Claude subscription lane for GitHub Actions (`CLAUDE_CODE_OAUTH_TOKEN`).
-3. Preferred: set `TINYASSETS_CODEX_AUTH_JSON_B64` as a GitHub Actions secret,
-   then trigger `.github/workflows/deploy-prod.yml`. Deploy syncs the bundle
-   into `/etc/tinyassets/env` through `deploy/install-workflow-env.sh`, keeps it
-   out of logs, and forces `TINYASSETS_ALLOW_API_KEY_PROVIDERS=0`.
-4. Manual fallback: SSH to droplet, edit `/etc/tinyassets/env`, then restore
-   permissions: `sudo chown root:workflow /etc/tinyassets/env && sudo chmod 640 /etc/tinyassets/env`
-   (ENV-UNREADABLE invariant per Task #3).
-5. `sudo systemctl restart tinyassets-daemon` if you used the manual fallback.
-6. Trigger `.github/workflows/llm-binding-canary.yml` manually or wait for
-   the next tick. Confirm `llm_endpoint_bound` is not `unset`.
-7. Leave `OPENAI_API_KEY=` blank in `/etc/tinyassets/env`. Revoke any old
-   project-specific OpenAI API key once no non-cloud process depends on it.
+**Retired 2026-09-24.** The platform has no LLM (AGENTS.md Hard Rule 15): no
+model API key, subscription bundle or login belongs on the droplet or in
+GitHub Actions. `llm_endpoint_bound=unset` on the production host is the
+expected state, not an outage -- a universe runs on the provider its owner
+connects. Delete the `OPENAI_API_KEY` repository secret and revoke the key.
 
 #### pushover-user-key
 
@@ -511,32 +492,12 @@ See `#cloudflare-api-token` / `#pushover-app-token` for the general rotation pat
 
 ---
 
-## 7. LLM Binding Canary
+## 7. LLM Binding Canary (retired)
 
-`.github/workflows/llm-binding-canary.yml` runs every 6 hours via GHA schedule.
-It calls `scripts/verify_llm_binding.py --url https://tinyassets.io/mcp` and
-checks that `llm_endpoint_bound` in `get_status` is not `"unset"`.
-
-**Consecutive-fail logic (threshold = 2):**
-- First red: logs to step summary, no issue opened.
-- Second consecutive red: opens `llm-binding-red` GH issue with probe output.
-- Recovery (green after open issue): comments RECOVERED + closes issue.
-
-**Likely causes when it fires:**
-- Subscription auth missing or expired (`TINYASSETS_CODEX_AUTH_JSON_B64` absent,
-  Codex auth file invalid, or Claude OAuth unavailable in the relevant lane)
-- `codex` CLI missing from the container image (image rebuild needed)
-- Container restarted without env file (`docker compose down` + manual restart)
-- API-key vars present but ignored because default daemons are subscription-only
-
-**Manual re-check:**
-```bash
-python scripts/verify_llm_binding.py --url https://tinyassets.io/mcp
-```
-Exit 0 = bound. Exit 3 = unset. See `scripts/verify_llm_binding.py` for full
-exit code table.
-
-No extra secrets required — uses only `GITHUB_TOKEN` (built-in).
+Retired 2026-09-24 with the platform's own model logins (Hard Rule 15). It
+asserted that the production daemon reported a bound model, which is now the
+opposite of the invariant. `scripts/verify_llm_binding.py` remains only as a
+self-host check (`scripts/selfhost_smoke.py`).
 
 ---
 

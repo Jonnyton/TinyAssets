@@ -606,24 +606,13 @@ def _actionable_by(failure_class: str) -> str:
 
 
 def _no_provider_advice() -> str:
-    """Advice for "no model reachable" that matches how this deployment works.
+    """Advice for "no model reachable" that matches how this platform works.
 
-    The old text was "check ANTHROPIC/GROQ/GEMINI keys" unconditionally. A
-    subscription-only universe IGNORES those variables --
-    ``TINYASSETS_ALLOW_API_KEY_PROVIDERS`` gates them off -- so the owner was
-    told to go and fix something the platform is configured to disregard. Advice
-    the reader cannot act on is worse than none: it sends them looking in a
-    place where nothing they find can help.
+    The old text was "check ANTHROPIC/GROQ/GEMINI keys" unconditionally, which
+    sent the owner to fix something the platform disregards. The platform has
+    no LLM (AGENTS.md Hard Rule 15): a universe runs only on the provider its
+    owner connects, so that is the one thing worth pointing at.
     """
-    import os
-
-    if str(os.environ.get("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "")).strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
-        return (
-            "No LLM provider is reachable. Check the universe's connected "
-            "provider, or the API keys this deployment allows."
-        )
     return (
         "No LLM provider is reachable for this universe. It runs on a provider "
         "you connect to it, not on platform API keys -- connect or reconnect "

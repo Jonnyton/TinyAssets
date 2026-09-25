@@ -157,13 +157,17 @@ def test_a_subscription_only_universe_is_not_told_to_check_api_keys(monkeypatch)
     assert "connect" in advice.lower()
 
 
-def test_a_deployment_that_allows_api_keys_still_hears_about_them(monkeypatch):
-    """The advice follows the configuration rather than replacing one fixed
-    answer with another."""
+def test_the_retired_api_key_switch_does_not_change_the_advice(monkeypatch):
+    """The platform has no LLM (Hard Rule 15): no deployment serves a universe
+    from its own API keys, so the old opt-in switch no longer changes what the
+    owner is told. The only fix worth naming is connecting their provider."""
     from tinyassets.api.runs import _no_provider_advice
 
+    monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
+    default = _no_provider_advice()
     monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-    assert "API key" in _no_provider_advice()
+    assert _no_provider_advice() == default
+    assert "connect" in default.lower()
 
 
 def test_the_run_classifier_calls_a_carrier_fault_ours(monkeypatch):

@@ -186,11 +186,10 @@ def check_llm_binding(
     if str(llm_bound).lower() in ("unset", "", "false", "none"):
         raise VerifyError(
             3,
-            f"llm_endpoint_bound is {llm_bound!r} — daemon has no LLM bound. "
-            "For default daemons, provide subscription-backed Claude/Codex CLI "
-            "auth (for example TINYASSETS_CODEX_AUTH_JSON_B64 for Codex) and "
-            "restart the container. API-key billing lanes are ignored when "
-            "TINYASSETS_ALLOW_API_KEY_PROVIDERS is not explicitly truthy.",
+            f"llm_endpoint_bound is {llm_bound!r} — this host reports no model "
+            "CLI it could start. This is a self-host check only: the platform "
+            "daemon has no LLM by design (AGENTS.md Hard Rule 15), and a "
+            "universe runs on the provider its owner connects to it.",
         )
 
     if require_sandbox:

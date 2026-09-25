@@ -84,6 +84,8 @@ row.
   `OPENAI_API_KEY` is stripped when
   `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is not truthy; use subscription-backed
   Claude/Codex auth instead.
+- **Superseded again 2026-09-24:** the platform has no LLM (Hard Rule 15). No
+  host login, key or switch exists; an unbound prod daemon is the invariant.
 - **Why codex (not Anthropic):** codex CLI is subprocess-based (hard
   rule 3) and already wrapped by `workflow.providers.codex_provider`.
   No new HTTP wiring needed.

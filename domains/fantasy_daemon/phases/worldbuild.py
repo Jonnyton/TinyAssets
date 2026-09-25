@@ -1218,6 +1218,7 @@ def _rebuild_raptor(state: dict[str, Any]) -> None:
     in ``knowledge.raptor`` which is also called at daemon startup.
     """
     from tinyassets import runtime_singletons as runtime
+    from tinyassets.exceptions import ProviderAuthorityHeldError
 
     universe_path = state.get("_universe_path")
     if not universe_path:
@@ -1233,5 +1234,8 @@ def _rebuild_raptor(state: dict[str, Any]) -> None:
             embed_fn=runtime.embed_fn,
             universe_id=universe_id,
         )
+    except ProviderAuthorityHeldError:
+        # A refused model call (Hard Rule 15) is not a skipped rebuild.
+        raise
     except Exception as e:
         logger.debug("RAPTOR rebuild skipped: %s", e)

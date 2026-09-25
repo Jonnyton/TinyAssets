@@ -59,7 +59,7 @@ That ordering decides what each row can prove:
 | 3 | malformed NAME (`printenv 'a b'`, `printenv lower`, `printenv 9X`, `printenv ''`) | **post-identity** — uid 1001 in production posture, or uid 0 with exactly the five caps | exit 78, `TA_OP_REFUSED:env-name`. An identity tag here is NOT_PROVEN for this row, not a failure of it |
 | 4 | no mode at all | any uid | exit 78, `TA_OP_REFUSED:no-mode` |
 | 5 | unexpected entry uid | Linux, run as a uid that is neither 0 nor 1001 | exit 78, `TA_OP_REFUSED:unexpected-entry-uid` |
-| 6 | **rootless exact groups** — uid/gid 1001, `Groups: 1001` | Linux container matching production posture (`--user 1001:1001`, `--cap-drop ALL`, `--security-opt no-new-privileges`) | `version` exits 0 and prints `ta-op 1 modes=9` |
+| 6 | **rootless exact groups** — uid/gid 1001, `Groups: 1001` | Linux container matching production posture (`--user 1001:1001`, `--cap-drop ALL`, `--security-opt no-new-privileges`) | `version` exits 0 and prints `ta-op 1 modes=6` |
 | 7 | rootless with a foreign supplementary group | same, plus `--group-add 65534` | exit 78, `TA_OP_REFUSED:legacy-entry-unexpected-group` |
 | 8 | **mutation control** — rootless entry into a container with caps | `--user 1001:1001 --cap-add SYS_ADMIN` | exit 78, `TA_OP_REFUSED:legacy-entry-caps-not-empty`. *Without this row the legacy branch is decorative.* |
 | 9 | rootless without NNP | `--user 1001:1001 --cap-drop ALL` and no `no-new-privileges` | exit 78 at `nnp-readback` |
@@ -122,11 +122,9 @@ container. (Run 2026-09-21 by root in that posture; see the status paragraph
 at the top. Rows 14 and 15 were supplied by a local fd-launcher fixture plus an
 `strace` fixture image, both offline at execution time.)
 
-**Do not run rows that execute a provider.** `claude-keepalive`,
-`codex-keepalive` and `claude-login` are migrated by argv only. Nothing in this
-plan invokes a provider and the driver never invokes those three modes;
-`claude-login` in particular is a fixed route for an operator action, not
-authority to perform it.
+**No mode executes a provider.** The `claude-keepalive`, `codex-keepalive`
+and `claude-login` modes were removed 2026-09-24 with the host logins they
+served: the platform has no LLM (AGENTS.md Hard Rule 15).
 
 ## Remaining proof this plan does NOT supply
 
