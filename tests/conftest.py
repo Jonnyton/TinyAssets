@@ -219,6 +219,19 @@ def _emulate_deployed_visibility_backfill(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_oauth_discovery(monkeypatch):
+    """No test reaches a real authorization server.
+
+    Every ``connect`` ask runs standard OAuth discovery against its hosts, and
+    the suite's hosts are invented. Discovery is switched off by injection; a
+    test that exercises it turns it back on against its own local fake server.
+    """
+    from tinyassets.connection_oauth import discovery
+
+    monkeypatch.setattr(discovery, "DISCOVERY_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
 def _identity_fingerprint_key(monkeypatch):
     """Give tests an explicit dedicated status-fingerprint key."""
     monkeypatch.setenv(

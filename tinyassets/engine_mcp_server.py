@@ -1960,6 +1960,12 @@ def write_graph(
             To connect ANY model or platform, ask with pending_request action
             type "connect": the connect_http fields plus "uses" and
             "constant_headers". An LLM is just a connection with uses.model.
+            When the provider offers OAuth (found ONLY by standard discovery on
+            the connection's own host; say what the use needs with "oauth":
+            {"scopes": [...], optional public "client_id"}; endpoints are never
+            supplied), signing in is the ask's primary action and key fields are
+            optional; the reply says primary "sign_in", or oauth_unavailable
+            with the reason.
         operation: branch create/patch/delete; automation create/pause/resume/delete;
             webhook create/revoke;
             pending_request ask, or withdraw (payload_json {"request_id",

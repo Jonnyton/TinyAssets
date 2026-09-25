@@ -16,9 +16,10 @@ import re
 import secrets
 import sqlite3
 import stat
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -614,16 +615,9 @@ def write_credential_vault(
     """
 
     from tinyassets.provider_assignment import provider_assignment_admission
-    from tinyassets.storage import db_path
-    from tinyassets.storage.current_home import check_principal_not_deleted
 
     universe = Path(universe_dir).resolve(strict=False)
-    owner = (owner_user_id or "").strip()
-    uid = (universe_id or universe.name).strip()
-    if owner_user_id is not None and not owner:
-        raise ValueError("credential owner must be a non-empty server principal")
-    if uid != universe.name:
-        raise ValueError("credential universe does not match its canonical directory")
+    owner, uid = _write_identity(universe, owner_user_id, universe_id)
 
     # Validate the payload BEFORE acquiring the exclusive lock. Entering the lock
     # creates the universe directory AND the admission lock file
@@ -633,76 +627,57 @@ def write_credential_vault(
     _records_from_payload(credentials)
 
     with provider_assignment_admission().exclusive(universe):
-        conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
-        try:
-            # The records THIS call is depositing (pre-merge). Ownership is claimed
-            # only for these — never for untouched records already in the vault.
-            incoming_records = _records_from_payload(credentials)
-            _ensure_llm_deposit_owner_schema(conn)
-            if owner:
-                existing = conn.execute(
-                    """
-                    SELECT service, owner_user_id
-                      FROM llm_credential_deposit_owners
-                     WHERE universe_id = ?
-                    """,
-                    (uid,),
-                ).fetchall()
-                if any(str(row[1]) != owner for row in existing):
-                    raise PermissionError(
-                        "credential ownership transfer requires a dedicated flow"
-                    )
-                # Fail-closed for LEGACY unowned http credentials. An http record
-                # deposited before http ownership was tracked (or via an owner-less
-                # path) has a vault record but NO owner row, so the universe-wide
-                # guard above cannot see an owner to compare — a caller could
-                # otherwise overwrite the orphan and provision as themselves (Codex
-                # review). Refuse to overwrite an existing unowned http slot: it is
-                # unprovable whether the caller is the original owner, so recovering
-                # such a record needs a dedicated flow, never a silent owned rewrite.
-                # Scoped to deposits that actually TOUCH an http slot, so a non-http
-                # multi-record replace that recovers a malformed vault still works
-                # (it never reads the existing file).
-                incoming_http_services = {
-                    service
-                    for record in incoming_records
-                    if record.get("credential_type") == "http"
-                    and (service := _service(record))
-                }
-                if incoming_http_services:
-                    owned_keys = {str(row[0]) for row in existing}
-                    on_disk_http = {
-                        service
-                        for record in load_credential_vault(universe)
-                        if record.get("credential_type") == "http"
-                        and (service := _service(record))
-                    }
-                    for service in incoming_http_services:
-                        if (
-                            service in on_disk_http
-                            and f"http:{service}" not in owned_keys
-                        ):
-                            raise PermissionError(
-                                "credential ownership transfer requires a dedicated flow"
-                            )
+        return _write_credential_vault_locked(universe, credentials, owner, uid)
 
-            # Compute the final merged records + summary IN MEMORY. The vault file
-            # is the LAST mutation (below), never written before the owner-row
-            # commit, so a concurrent unlocked reader can never observe a
-            # credential before its ownership row exists.
-            final_records, summary = _prepare_credential_write(universe, credentials)
-            # Owner-row keys: PRUNE against every ownership-bearing record that
-            # SURVIVES the merge (so a row for a vanished record is dropped), but
-            # CLAIM ownership only for the records this call actually deposits.
-            # Claiming against the whole merged vault would let an unrelated owned
-            # deposit silently seize a pre-existing unowned http record (Codex
-            # review — the LLM-deposit-first seizure).
-            final_owner_keys = _ownership_service_keys(final_records)
-            incoming_owner_keys = _ownership_service_keys(incoming_records)
 
-            # Snapshot the prior owner rows so a (rare) file-replace failure AFTER
-            # the DB commit can be compensated below.
-            prior_owner_rows = conn.execute(
+def _write_identity(
+    universe: Path, owner_user_id: str | None, universe_id: str | None,
+) -> tuple[str, str]:
+    owner = (owner_user_id or "").strip()
+    uid = (universe_id or universe.name).strip()
+    if owner_user_id is not None and not owner:
+        raise ValueError("credential owner must be a non-empty server principal")
+    if uid != universe.name:
+        raise ValueError("credential universe does not match its canonical directory")
+    return owner, uid
+
+
+@contextmanager
+def exclusive_credential_vault(universe_dir: str | Path) -> Iterator[Callable[..., dict]]:
+    """Hold the vault's exclusive admission and yield a writer usable inside it.
+
+    For a writer that must know it CAN persist before it acts: an oauth2
+    refresh spends a (possibly single-use) refresh token, so it takes this
+    first and writes the rotated token under the same hold. Acquiring can fail
+    (a bounded cross-process lock); then nothing has been spent.
+    """
+    from tinyassets.provider_assignment import provider_assignment_admission
+
+    universe = Path(universe_dir).resolve(strict=False)
+    with provider_assignment_admission().exclusive(universe):
+        def write(credentials, *, owner_user_id=None, universe_id=None) -> dict:
+            owner, uid = _write_identity(universe, owner_user_id, universe_id)
+            _records_from_payload(credentials)
+            return _write_credential_vault_locked(universe, credentials, owner, uid)
+
+        yield write
+
+
+def _write_credential_vault_locked(
+    universe: Path, credentials: list[dict[str, Any]] | dict[str, Any], owner: str, uid: str,
+) -> dict[str, Any]:
+    """The write itself; the caller holds the exclusive admission."""
+    from tinyassets.storage import db_path
+    from tinyassets.storage.current_home import check_principal_not_deleted
+
+    conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
+    try:
+        # The records THIS call is depositing (pre-merge). Ownership is claimed
+        # only for these — never for untouched records already in the vault.
+        incoming_records = _records_from_payload(credentials)
+        _ensure_llm_deposit_owner_schema(conn)
+        if owner:
+            existing = conn.execute(
                 """
                 SELECT service, owner_user_id
                   FROM llm_credential_deposit_owners
@@ -710,64 +685,126 @@ def write_credential_vault(
                 """,
                 (uid,),
             ).fetchall()
+            if any(str(row[1]) != owner for row in existing):
+                raise PermissionError(
+                    "credential ownership transfer requires a dedicated flow"
+                )
+            # Fail-closed for LEGACY unowned http credentials. An http record
+            # deposited before http ownership was tracked (or via an owner-less
+            # path) has a vault record but NO owner row, so the universe-wide
+            # guard above cannot see an owner to compare — a caller could
+            # otherwise overwrite the orphan and provision as themselves (Codex
+            # review). Refuse to overwrite an existing unowned http slot: it is
+            # unprovable whether the caller is the original owner, so recovering
+            # such a record needs a dedicated flow, never a silent owned rewrite.
+            # Scoped to deposits that actually TOUCH an http slot, so a non-http
+            # multi-record replace that recovers a malformed vault still works
+            # (it never reads the existing file).
+            incoming_http_services = {
+                service
+                for record in incoming_records
+                if record.get("credential_type") == "http"
+                and (service := _service(record))
+            }
+            if incoming_http_services:
+                owned_keys = {str(row[0]) for row in existing}
+                on_disk_http = {
+                    service
+                    for record in load_credential_vault(universe)
+                    if record.get("credential_type") == "http"
+                    and (service := _service(record))
+                }
+                for service in incoming_http_services:
+                    if (
+                        service in on_disk_http
+                        and f"http:{service}" not in owned_keys
+                    ):
+                        raise PermissionError(
+                            "credential ownership transfer requires a dedicated flow"
+                        )
 
-            # 1. Owner-row DB transaction FIRST, and commit it.
-            conn.execute("BEGIN IMMEDIATE")
-            if owner:
-                # Deletion takes this same admission lock while tombstoning.
-                # Keep non-home administrators valid: this is not a home check.
-                check_principal_not_deleted(conn, owner)
-            placeholders = ",".join("?" for _ in final_owner_keys)
-            if final_owner_keys:
+        # Compute the final merged records + summary IN MEMORY. The vault file
+        # is the LAST mutation (below), never written before the owner-row
+        # commit, so a concurrent unlocked reader can never observe a
+        # credential before its ownership row exists.
+        final_records, summary = _prepare_credential_write(universe, credentials)
+        # Owner-row keys: PRUNE against every ownership-bearing record that
+        # SURVIVES the merge (so a row for a vanished record is dropped), but
+        # CLAIM ownership only for the records this call actually deposits.
+        # Claiming against the whole merged vault would let an unrelated owned
+        # deposit silently seize a pre-existing unowned http record (Codex
+        # review — the LLM-deposit-first seizure).
+        final_owner_keys = _ownership_service_keys(final_records)
+        incoming_owner_keys = _ownership_service_keys(incoming_records)
+
+        # Snapshot the prior owner rows so a (rare) file-replace failure AFTER
+        # the DB commit can be compensated below.
+        prior_owner_rows = conn.execute(
+            """
+            SELECT service, owner_user_id
+              FROM llm_credential_deposit_owners
+             WHERE universe_id = ?
+            """,
+            (uid,),
+        ).fetchall()
+
+        # 1. Owner-row DB transaction FIRST, and commit it.
+        conn.execute("BEGIN IMMEDIATE")
+        if owner:
+            # Deletion takes this same admission lock while tombstoning.
+            # Keep non-home administrators valid: this is not a home check.
+            check_principal_not_deleted(conn, owner)
+        placeholders = ",".join("?" for _ in final_owner_keys)
+        if final_owner_keys:
+            conn.execute(
+                f"""
+                DELETE FROM llm_credential_deposit_owners
+                 WHERE universe_id = ? AND service NOT IN ({placeholders})
+                """,
+                (uid, *sorted(final_owner_keys)),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM llm_credential_deposit_owners WHERE universe_id = ?",
+                (uid,),
+            )
+        if owner:
+            for service_name in incoming_owner_keys:
                 conn.execute(
-                    f"""
-                    DELETE FROM llm_credential_deposit_owners
-                     WHERE universe_id = ? AND service NOT IN ({placeholders})
+                    """
+                    INSERT INTO llm_credential_deposit_owners (
+                        universe_id, service, owner_user_id
+                    ) VALUES (?, ?, ?)
+                    ON CONFLICT(universe_id, service) DO UPDATE SET
+                        owner_user_id = excluded.owner_user_id
                     """,
-                    (uid, *sorted(final_owner_keys)),
+                    (uid, service_name, owner),
                 )
-            else:
-                conn.execute(
-                    "DELETE FROM llm_credential_deposit_owners WHERE universe_id = ?",
-                    (uid,),
-                )
-            if owner:
-                for service_name in incoming_owner_keys:
-                    conn.execute(
-                        """
-                        INSERT INTO llm_credential_deposit_owners (
-                            universe_id, service, owner_user_id
-                        ) VALUES (?, ?, ?)
-                        ON CONFLICT(universe_id, service) DO UPDATE SET
-                            owner_user_id = excluded.owner_user_id
-                        """,
-                        (uid, service_name, owner),
-                    )
-            conn.commit()
+        conn.commit()
 
-            # 2. ONLY after the DB commit, atomically replace the vault file.
-            #    _persist_credential_vault_file raises ONLY for a pre-commit failure
-            #    (the vault file was NOT replaced — Path.replace is atomic — so the
-            #    prior file is intact); it never raises once the file is visible.
+        # 2. ONLY after the DB commit, atomically replace the vault file.
+        #    _persist_credential_vault_file raises ONLY for a pre-commit failure
+        #    (the vault file was NOT replaced — Path.replace is atomic — so the
+        #    prior file is intact); it never raises once the file is visible.
+        try:
+            _persist_credential_vault_file(universe, final_records)
+        except BaseException as persist_error:
+            # 3. Pre-commit failure: the file did not change. Compensate by
+            #    restoring the prior owner rows so no committed-but-ineffective
+            #    ownership survives, then re-raise.
             try:
-                _persist_credential_vault_file(universe, final_records)
-            except BaseException as persist_error:
-                # 3. Pre-commit failure: the file did not change. Compensate by
-                #    restoring the prior owner rows so no committed-but-ineffective
-                #    ownership survives, then re-raise.
-                try:
-                    _restore_owner_rows(conn, uid, prior_owner_rows)
-                except Exception as compensation_error:  # noqa: BLE001
-                    # Double failure: the file write failed AND the owner-row
-                    # commit could not be undone. Fail loud, chaining both — do
-                    # not swallow. Residual: a committed owner row with no vault
-                    # file is a benign phantom (the owner cannot act — there is no
-                    # credential — and a re-deposit reconciles).
-                    raise compensation_error from persist_error
-                raise
-            return summary
-        finally:
-            conn.close()
+                _restore_owner_rows(conn, uid, prior_owner_rows)
+            except Exception as compensation_error:  # noqa: BLE001
+                # Double failure: the file write failed AND the owner-row
+                # commit could not be undone. Fail loud, chaining both — do
+                # not swallow. Residual: a committed owner row with no vault
+                # file is a benign phantom (the owner cannot act — there is no
+                # credential — and a re-deposit reconciles).
+                raise compensation_error from persist_error
+            raise
+        return summary
+    finally:
+        conn.close()
 
 
 @dataclass(frozen=True, slots=True)

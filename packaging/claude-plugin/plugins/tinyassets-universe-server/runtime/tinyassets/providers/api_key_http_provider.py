@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.exceptions import (
+    ProviderAuthenticationError,
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
@@ -201,6 +202,7 @@ class ApiKeyHttpProvider(BaseProvider):
                 "api_key_http compute requires a universe context (universe_dir)"
             )
         from tinyassets.storage.outbound_connections import (
+            ConnectionAuthorizationError,
             ConnectionLedger,
             GrantResolutionError,
         )
@@ -297,6 +299,15 @@ class ApiKeyHttpProvider(BaseProvider):
             raise ProviderUnavailableError(
                 f"compute grant resolution failed: {exc}"
             ) from exc
+        except ConnectionAuthorizationError as exc:
+            # A refresh that failed is a connection/auth failure (the class
+            # maps to the connection stage), with the token endpoint's words.
+            error = ProviderAuthenticationError(
+                "compute connection authorization failed"
+                + (f": {exc.detail}" if exc.detail else "")
+            )
+            error.connection_failure = exc.failure
+            raise error from None
 
         if not isinstance(result, dict):
             if agent_request is not None:
@@ -318,6 +329,10 @@ class ApiKeyHttpProvider(BaseProvider):
             capacity = contract.capacity_decoder(status, result.get("headers"))
             if capacity is not None:
                 raise SelectedModelCapacityError(capacity)
+        if status == 401:
+            # Still refused after the broker's one refresh-and-retry (oauth2),
+            # or a key the service no longer accepts: a sign-in problem.
+            raise ProviderAuthenticationError("compute provider rejected the credential (401)")
         if status == 429:
             raise ProviderRateLimitedError("compute provider rate limited (429)")
         if 500 <= status < 600:
