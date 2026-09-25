@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P1** | [Backup's broad GitHub token readable in the container](2026-09-25-backup-token-readable-from-container.md) — live `gho_` token (repo, workflow) in the compose env_file; the entrypoint strip leaves it in pid 1's environ, readable by the daemon user | 2026-09-25 |
 | **P1** | [Review follow-ups batch 2026-09-24](2026-09-24-review-followups-batch.md) — docs-only merges restart prod and kill turns; plus non-floor follow-ups from #3954/3956/3958/3960/3963/3964/3967/3968 and cancelled required-tests never re-triggering | 2026-09-24 |
 | **P2** | [GitHub-shaped leftovers](2026-09-24-github-shaped-leftovers.md) — after GitHub became an ordinary connection: the repository-spec automation still needs a GitHub pipe no surface creates, 4 stranded pipe rows in prod, and a declared `git_host` can only be set by remove + reconnect | 2026-09-24 |
 | **P1** | [App `POST /mcp` 503s the origin never served](2026-09-24-app-503-authored-in-front-of-origin.md) — founder's resumed tab got 503s that never reached the droplet (no 5xx logged, no token renewal until reload); edge challenge/rate rule vs. a stray tunnel connector, one header set decides | 2026-09-24 |
