@@ -67,3 +67,12 @@ replaces rather than accumulates.
 Delete it when an agent that raises an ask, then learns it is obsolete, can take
 it down without the user acting — with the user-has-engaged case still refused,
 proven by test and observed once on the live rail.
+
+## Status (2026-09-24)
+
+Built in change `agent-access-controls`, not yet deployed:
+`write_graph target=pending_request operation=withdraw`. It takes down only
+a still-pending ask the agent raised (server-stamped `origin`), records the
+reason, and writes no standing decision. Tests are in
+`tests/test_agent_access_controls.py`. The file stays open until a
+withdrawal is observed once on the live rail.

@@ -1740,10 +1740,6 @@ def snapshot_llm_subscription_credential(
         raise
 
 
-def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:
-    return purpose.strip() in _vcs_purposes(record)
-
-
 def _secret_value(record: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = record.get(key)
@@ -1765,42 +1761,17 @@ def _secret_value(record: dict[str, Any], *keys: str) -> str:
     return ""
 
 
-def resolve_github_token(
-    universe_dir: str | Path | None,
-    destination: str,
-    *,
-    purpose: str = "write",
-) -> str:
-    """Return a GitHub token from the per-universe vault, or an empty string."""
-    if universe_dir is None:
-        return ""
-    wanted_destination = destination.strip()
-    if not wanted_destination:
-        return ""
-    for record in load_credential_vault(universe_dir):
-        if record.get("credential_type") != "vcs":
-            continue
-        if _service(record) != "github":
-            continue
-        if str(record.get("destination") or "").strip() != wanted_destination:
-            continue
-        if not _purpose_matches(record, purpose):
-            continue
-        return _secret_value(record, "token", "access_token")
-    return ""
-
-
 def resolve_slack_token(
     universe_dir: str | Path | None,
     connection_id: str,
 ) -> str:
     """Return a Slack bot token for one connection, or an empty string.
 
-    Mirrors :func:`resolve_github_token`: the record must be a ``social``
-    credential for service ``slack`` whose ``destination`` is the exact
-    connection id. Scoping to the connection — rather than to the universe —
-    keeps one universe's Slack workspaces separable, so a second connection
-    cannot be served with the first one's token.
+    The record must be a ``social`` credential for service ``slack`` whose
+    ``destination`` is the exact connection id. Scoping to the connection --
+    rather than to the universe -- keeps one universe's Slack workspaces
+    separable, so a second connection cannot be served with the first one's
+    token.
 
     The caller is responsible for the vault-first / never-fall-through-to-env
     rule; this returns only what the vault holds.

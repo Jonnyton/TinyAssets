@@ -115,7 +115,6 @@ def _universe_dispatch_keys() -> set[str]:
         "queue_list", "queue_cancel",
         "subscribe_goal", "unsubscribe_goal", "list_subscriptions",
         "post_to_goal_pool", "submit_node_bid",
-        "community_change_context",
         "daemon_overview", "daemon_list", "daemon_get",
         "daemon_create", "daemon_summon", "daemon_pause",
         "daemon_resume", "daemon_restart", "daemon_banish",

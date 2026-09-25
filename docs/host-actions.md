@@ -694,9 +694,14 @@ creation, and `PUT /contents/...`, are both Contents writes.
 
 Everything on the platform side is already open and was verified the same day: the connection
 exists with `POST /git/refs` allowed, effector consent for destination `github` is granted and
-unrevoked, and `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` /
-`TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION` are both `1` in the running daemon. This one
-dropdown is the only remaining gate.
+unrevoked, and `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` is `1` in the running daemon.
+(`TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION` is also set there but gates no code: GitHub is an
+ordinary connection, and the flag was dropped from `apply-daemon-env.yml` on 2026-09-24.) This
+one dropdown is the only remaining gate. The same token expires 2026-09-27 03:07 UTC, so a
+fresh one with Contents write may be simpler than editing this one. **Since PR #3967 the
+reconnect must also declare `git_host: "github.com"`** (the platform no longer maps
+`api.github.com` to `github.com`): remove the `github` connection, then answer the universe's
+connect ask that carries it. Without it, workspace clone/push goes to `api.github.com` and 403s.
 
 *Blocks:* the founder's standing goal that the universe push a PR end-to-end to deployed.
 *Where:* GitHub → Settings → Developer settings → Fine-grained tokens → this token →

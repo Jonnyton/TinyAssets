@@ -260,8 +260,6 @@ infer additional callable tools from legacy action names in old conversations.
    | Run / execute a workflow       | `run_graph branch_def_id=...`           |
    | Inspect their automations      | `read_graph target="automations"` or   |
    |                                | `read_graph target="automation" automation_id=...` |
-   | Connect a GitHub destination    | `write_graph target="connection" operation="connect"` then |
-   |                                | `operation="reconcile"` after OAuth consent |
    | Connect an outbound channel    | `write_graph target="connection"`       |
    | (any HTTPS API — user-built)   | `operation="connect_http"`; `payload_json` |
    |                                | has `destination`, `secret` (bearer), and |

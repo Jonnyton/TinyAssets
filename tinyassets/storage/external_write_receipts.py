@@ -4,9 +4,9 @@ Per-universe SQLite store recording every external-write attempt so
 concurrent runs do not produce duplicate side-effects.
 
 Design source: ``drafts/concepts/external-write-phase-2-authority.md``
-§2 "Idempotency store". The store is one of three gates the
-``github_pr`` effector consults before any real ``gh pr create`` fires
-(capability env + consent grant + idempotency receipt).
+§2 "Idempotency store". The store is one of the gates every
+external-write sink consults before it fires (connection grant + consent
+grant + idempotency receipt).
 
 Round-2 fix for Codex P1.1
 --------------------------

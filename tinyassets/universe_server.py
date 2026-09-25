@@ -712,6 +712,12 @@ def read_graph(
         from tinyassets.api.pending_requests import list_requests
 
         return json.dumps(list_requests(universe_id=graph_id, limit=limit))
+    if normalized == "access":
+        # Everything the owner's agent holds in this universe, owner-only and
+        # secret-free (change agent-access-controls).
+        from tinyassets.api.agent_access import read_access
+
+        return json.dumps(read_access(universe_id=graph_id), default=str)
     if normalized == "agents":
         return json.dumps(
             _custom_agents_impl(
@@ -774,6 +780,7 @@ def read_graph(
             "automation",
             "connections",
             "pending_requests",
+            "access",
             "conversation",
             "compute",
             "model_options",
@@ -1310,7 +1317,7 @@ def write_graph(
     if normalized == "connection":
         # LLM subscription deposit is an owner-scoped operation under the pinned
         # write_graph handle (byo-llm-deposit-surface). It routes to its own
-        # owner-scoped handler; cloud_connections stays GitHub-only. Adds no
+        # owner-scoped handler; cloud_connections only lists. Adds no
         # advertised handle — the live tool catalog stays pinned.
         connection_operation = (operation or "").strip().lower()
         if connection_operation == "connect_llm":
@@ -1325,7 +1332,7 @@ def write_graph(
         if connection_operation == "connect_http":
             # Owner-scoped provisioning of a generic outbound http connection so a
             # universe can act on a channel (Slack, any HTTPS API). Its own
-            # owner-scoped handler; cloud_connections stays GitHub-only. Adds no
+            # owner-scoped handler; cloud_connections only lists. Adds no
             # advertised handle — the live tool catalog stays pinned.
             from tinyassets.api.http_connection import connect_http
 
@@ -1379,6 +1386,7 @@ def write_graph(
             )
         if connection_operation in (
             "request_from_user", "answer_request", "unmute_request",
+            "withdraw_request",
         ):
             # ONE general primitive: the agent asks its user something and waits,
             # rendered as a tab in the app's left rail (founder 2026-08-27). The
@@ -2806,7 +2814,6 @@ _mcp_converse = _register_structured_tool(
 # connectors keep working through the migration window.
 _DEPRECATED_TOOL_NAMES = frozenset({
     "universe",
-    "community_change_context",
     "extensions",
     "goals",
     "gates",
@@ -2885,7 +2892,7 @@ def universe(
             queue: queue_list,
             queue_cancel; subscriptions: subscribe_goal, unsubscribe_goal,
             list_subscriptions; goal-pool: post_to_goal_pool,
-            submit_node_bid; community review: community_change_context;
+            submit_node_bid;
             daemon roster/control: daemon_overview, daemon_list,
             daemon_get, daemon_create, daemon_summon, daemon_pause,
             daemon_resume, daemon_restart, daemon_banish,
@@ -2988,57 +2995,6 @@ _mcp_universe = _register_structured_tool(
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
-
-
-# ---------------------------------------------------------------------------
-# TOOL 1B - Community change context (read-only review evidence alias)
-# ---------------------------------------------------------------------------
-
-
-def community_change_context(
-    filter_text: str = "",
-    limit: int = 10,
-    repo: str = "",
-) -> str:
-    """Review PR metadata, changed files, reviews, and project plan context.
-
-    Use this when the user asks to review, approve, reject, send back,
-    or triage live community-loop work: auto-change PRs, PR metadata,
-    patch requests, feature requests, bug requests, issue threads,
-    changed files, review comments, or whether a change fits the project
-    plan.
-
-    Args:
-        filter_text: empty/"queue" for open PRs/change requests/runs;
-            "pr:NUMBER" for PR metadata, changed files, comments, and
-            reviews; or "issue:NUMBER" for the request thread.
-        limit: Max PRs/issues/files/comments to return, capped server-side.
-        repo: Repository to inspect as ``owner/name``. When omitted, the
-            deployment may supply a default; the platform never chooses one.
-    """
-    return _universe_impl(
-        action="community_change_context",
-        filter_text=filter_text,
-        limit=limit,
-        repo=repo,
-    )
-
-
-_mcp_community_change_context = _register_structured_tool(
-    community_change_context,
-    title="Community Change Context",
-    tags={
-        "community", "change-loop", "review", "pull-request",
-        "github", "plan", "tinyassets",
-    },
-    annotations=ToolAnnotations(
-        title="Community Change Context",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
         openWorldHint=True,
     ),
 )

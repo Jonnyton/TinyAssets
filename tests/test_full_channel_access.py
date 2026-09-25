@@ -778,10 +778,10 @@ def test_a_stale_git_host_on_a_persisted_action_is_not_trusted():
     assert "clone or push to any repository it can reach on slack.com" not in sentence
     assert "Where that serves git" in sentence
 
-    # ...and a value that DOES agree with the derivation is still used.
+    # ...and a git host the connection DECLARES is still named.
     github = _grant_sentence({"action": {
         "type": "extend_http", "destination": "github", "access": "full",
-        "hosts": ["api.github.com"], "git_host": "github.com",
+        "hosts": ["api.github.com"], "declared_git_host": "github.com",
     }})
     assert "clone or push to any repository it can reach on github.com" in github
 

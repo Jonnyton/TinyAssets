@@ -50,19 +50,19 @@ The vault file and any materialized credential artifacts (for example a Codex `a
 - **THEN** the on-disk `.credential-vault.json` contains that secret as recoverable cleartext (directly or base64-decodable) with no ciphertext layer
 - **AND** the write sets the file mode to `0o600` on operating systems that honor POSIX permissions, while the content itself remains unencrypted regardless of the mode
 
-### Requirement: Daemon-Side GitHub Token Resolution By Exact Destination And Purpose
+### Requirement: Forge Credentials Are Ordinary Connections
 
-The system SHALL provide a daemon-side resolver (`resolve_github_token`) that returns a GitHub token only from a `vcs` record whose service is `github` and whose `destination` and `purpose` exactly match the request; any mismatch SHALL yield an empty string. Resolved secret values SHALL be returned only to daemon-side effectors and providers that need them and SHALL NOT be written into public universe state.
+The vault SHALL NOT provide a forge-specific token resolver (the former `resolve_github_token`, removed 2026-09-24). A universe reaches a code forge only through a connection its owner deposited through the ordinary `connect` request: the secret is stored under `vault://http/<key>` in that universe's own vault and resolved only inside the credential-blind broker, for the universe the connection grant is bound to. No platform or process-environment token SHALL be used for a universe's forge call.
 
-#### Scenario: Exact destination and purpose select the correct token
+#### Scenario: No connection means no forge call
 
-- **WHEN** the vault holds two github `vcs` records for the same destination with `purpose` `read` and `write`, and a caller resolves that destination with `purpose` `write`
-- **THEN** the resolver returns the write-purpose token, and resolving with `purpose` `read` returns the read-purpose token
+- **WHEN** a universe's workflow fires an authenticated call naming a connection and grant it does not hold
+- **THEN** the call is refused before the wire with the generic `unknown_grant` refusal
 
-#### Scenario: Mismatched destination yields no token
+#### Scenario: Another user's connection is never used
 
-- **WHEN** a caller resolves a destination that does not exactly match any stored `vcs` record
-- **THEN** the resolver returns an empty string rather than a token for a similar destination
+- **WHEN** a universe's workflow names a grant bound to a different universe
+- **THEN** the call is refused before the wire with `grant_not_for_universe`, and each universe's own call carries only its own owner's credential
 
 ### Requirement: Subscription-Home Materialization For CLI Writers
 
