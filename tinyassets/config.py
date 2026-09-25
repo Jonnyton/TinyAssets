@@ -129,13 +129,24 @@ class UniverseConfig:
     a named field."""
 
 
-def _read_config_document(universe_path: str | Path) -> object:
-    """The parsed ``config.yaml``, ``None`` when absent, or raise ``OSError``.
+#: Returned for "no config.yaml at all", where ``None`` would be ambiguous: an
+#: EMPTY config.yaml also parses to ``None``, and a caller that must not erase
+#: an existing file has to tell those apart.
+CONFIG_ABSENT = object()
+
+
+def _read_config_document(
+    universe_path: str | Path, *, absent: object = None,
+) -> object:
+    """The parsed ``config.yaml``, *absent* when there is none, or ``OSError``.
 
     Through the one safe reader (:mod:`tinyassets.universe_files`): no link is
     followed, at most ``MAX_CONFIG_BYTES`` is read, and YAML anchors/aliases
     are refused before anything is expanded. The universe folder is untrusted
     input to the daemon since its agent can write it.
+
+    Callers that only need defaults leave *absent* as ``None``. Pass
+    :data:`CONFIG_ABSENT` to distinguish a missing file from an empty one.
     """
     from tinyassets.universe_files import (
         MAX_CONFIG_BYTES,
@@ -146,7 +157,7 @@ def _read_config_document(universe_path: str | Path) -> object:
     try:
         raw = read_universe_text(universe_path, "config.yaml", max_bytes=MAX_CONFIG_BYTES)
     except FileNotFoundError:
-        return None
+        return absent
     return load_untrusted_yaml(raw, max_bytes=MAX_CONFIG_BYTES)
 
 
@@ -351,12 +362,14 @@ def write_provider_assignment_projection(
     config_file = Path(universe_path) / "config.yaml"
     data: dict[str, Any] = {}
     try:
-        loaded = _read_config_document(universe_path)
+        loaded = _read_config_document(universe_path, absent=CONFIG_ABSENT)
     except (OSError, UnicodeDecodeError) as exc:
         raise ValueError(
             "existing config.yaml is unreadable; refusing to erase it"
         ) from exc
-    if loaded is not None:
+    if loaded is not CONFIG_ABSENT:
+        # A config.yaml that EXISTS but parses to nothing is not a mapping
+        # either, and erasing it is exactly what this function refuses to do.
         if not isinstance(loaded, dict):
             raise ValueError("existing config.yaml must be a mapping")
         data = loaded
