@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import logging
 import os
 import re
 import stat
@@ -30,7 +31,15 @@ from typing import Any
 
 import yaml
 
+from tinyassets.universe_files import (
+    MAX_BRAIN_FILE_BYTES,
+    MAX_FRONTMATTER_BYTES,
+    load_untrusted_yaml,
+    read_universe_text,
+)
 from tinyassets.universe_soul import SOUL_FILENAME, SOUL_VERSIONS_DIR
+
+_logger = logging.getLogger(__name__)
 
 SOUL_EDIT_POLICY_FILENAME = "soul.edit.md"
 
@@ -52,13 +61,21 @@ class SoulEditError(ValueError):
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Split an OKF concept doc into (frontmatter dict, body)."""
+    """Split an OKF concept doc into (frontmatter dict, body).
+
+    The frontmatter is untrusted (the universe agent writes these files), so it
+    is bounded and parsed with anchors/aliases refused before any expansion
+    (:func:`tinyassets.universe_files.load_untrusted_yaml`).
+    """
     if not text.startswith("---"):
         raise SoulEditError("governed file is missing OKF frontmatter")
     parts = text.split("---", 2)
     if len(parts) < 3:
         raise SoulEditError("governed file has malformed OKF frontmatter")
-    meta = yaml.safe_load(parts[1])
+    try:
+        meta = load_untrusted_yaml(parts[1], max_bytes=MAX_FRONTMATTER_BYTES)
+    except OSError as exc:
+        raise SoulEditError(f"governed file frontmatter refused: {exc}") from exc
     if not isinstance(meta, dict):
         raise SoulEditError("governed file frontmatter is not a mapping")
     return meta, parts[2].lstrip("\n")
@@ -128,10 +145,11 @@ def read_governed_files(universe_dir: Path) -> tuple[str, ...]:
     the floor by listing them. ``soul.edit.md`` itself is deliberately NOT in the
     baseline or the brain-writable mapping, so an agent cannot edit its own policy.
     """
-    policy_path = universe_dir / SOUL_EDIT_POLICY_FILENAME
     try:
-        policy = policy_path.read_text(encoding="utf-8")
-    except OSError as exc:
+        policy = read_universe_text(
+            universe_dir, SOUL_EDIT_POLICY_FILENAME, max_bytes=MAX_BRAIN_FILE_BYTES,
+        )
+    except (OSError, UnicodeDecodeError) as exc:
         raise SoulEditError(
             f"soul edit policy missing: {SOUL_EDIT_POLICY_FILENAME} is required "
             "(the execution path reads and follows it)"
@@ -225,8 +243,8 @@ def current_soul_versions(
     out: dict[str, str] = {}
     for filename in filenames:
         try:
-            raw = (universe_dir / filename).read_text(encoding="utf-8")
-        except OSError:
+            raw = read_universe_text(universe_dir, filename, max_bytes=MAX_BRAIN_FILE_BYTES)
+        except (OSError, UnicodeDecodeError):
             continue
         out[filename] = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return out
@@ -328,10 +346,10 @@ def apply_soul_edit(
                     f"{filename}"
                 )
             try:
-                raw = path.read_text(encoding="utf-8")
-            except OSError as exc:
+                raw = read_universe_text(universe_dir, filename, max_bytes=MAX_BRAIN_FILE_BYTES)
+            except (OSError, UnicodeDecodeError) as exc:
                 raise SoulEditError(
-                    f"governed file missing on disk: {filename}"
+                    f"governed file unreadable or over its bound: {filename}"
                 ) from exc
             want = expected.get(filename)
             if want is not None:
@@ -380,9 +398,14 @@ def _append_log(universe_dir: Path, line: str) -> None:
     log_path = universe_dir / "log.md"
     assert_contained(universe_dir, log_path)
     try:
-        text = log_path.read_text(encoding="utf-8")
-    except OSError:
+        text = read_universe_text(universe_dir, "log.md", max_bytes=MAX_BRAIN_FILE_BYTES)
+    except FileNotFoundError:
         text = "# Update Log\n"
+    except (OSError, UnicodeDecodeError) as exc:
+        # Over its bound or not a plain file: never rewrite it (that would drop
+        # the owner's log); skip this line and say so.
+        _logger.warning("soul edit log not appended: log.md refused (%s)", exc)
+        return
     if not text.endswith("\n"):
         text += "\n"
     _atomic_write_text(log_path, text + line + "\n")
@@ -436,9 +459,14 @@ def _write_edit_snapshot(
 
     index_path = versions_dir / "index.md"
     try:
-        index_text = index_path.read_text(encoding="utf-8")
-    except OSError:
+        index_text = read_universe_text(
+            universe_dir, f"{SOUL_VERSIONS_DIR}/index.md", max_bytes=MAX_BRAIN_FILE_BYTES,
+        )
+    except FileNotFoundError:
         index_text = "# Soul Version Index\n"
+    except (OSError, UnicodeDecodeError) as exc:
+        _logger.warning("soul version index not appended: index.md refused (%s)", exc)
+        return f"{SOUL_VERSIONS_DIR}/{snapshot_name}"
     if not index_text.endswith("\n"):
         index_text += "\n"
     _atomic_write_text(

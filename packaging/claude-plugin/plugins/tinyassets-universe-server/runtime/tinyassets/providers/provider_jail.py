@@ -18,7 +18,12 @@ bound (:func:`provider_launch_scope`) runs inside bubblewrap. The jail holds:
 
 * the owning universe's own directory, read-write at its own path, so every
   path the provider environment already points at (its home, temp and
-  credential directories, the universe's own CLI settings) resolves unchanged;
+  credential directories) resolves unchanged;
+* over it, an empty ``tmpfs`` on every hidden directory at the universe root
+  except ``.runtime``: a CLI's own project settings directory is never a
+  loading mechanism (the harness is vendor-neutral files the platform
+  assembles), so a hook the universe's agent wrote there never runs beside the
+  launch credential;
 * over it, an empty ``tmpfs`` on ``.runtime/provider-launch-credentials``, with
   ONLY this launch's own credential snapshot bound back -- a concurrent launch's
   snapshot for another provider is not readable;
@@ -28,9 +33,9 @@ bound (:func:`provider_launch_scope`) runs inside bubblewrap. The jail holds:
 * the host network (``--share-net``): API calls and web tools keep working.
 
 Nothing else. Not ``/data`` or another universe, not ``/app``, not the daemon's
-``/proc``, not the host credential homes. Everything the CLI starts -- hooks
-from the universe's own CLI settings, an MCP stdio server, a shell
-tool -- is a descendant inside the same namespaces.
+``/proc``, not the host credential homes. Everything the CLI starts -- a hook,
+an MCP stdio server, a shell tool -- is a descendant inside the same
+namespaces.
 
 The key is the OWNING UNIVERSE, not the vendor. The router binds it around every
 provider call (``provider_launch_scope``), and the shared spawn point reads it,
@@ -73,6 +78,7 @@ __all__ = [
     "confine_launch",
     "default_view",
     "jail_argv",
+    "hidden_dir_masks",
     "provider_launch_scope",
 ]
 
@@ -129,7 +135,8 @@ def provider_launch_scope(
 
 @dataclass(frozen=True, slots=True)
 class JailMount:
-    """One bubblewrap mount operation: ``bind``, ``ro-bind`` or ``tmpfs``."""
+    """One bubblewrap mount operation: ``bind``, ``ro-bind``, ``tmpfs`` or
+    ``mask-file`` (an empty, read-only file over ``dest``; no source)."""
 
     op: str
     dest: str
@@ -171,6 +178,11 @@ _RESERVED_DESTS: tuple[str, ...] = (
 
 #: Where every universe keeps its per-launch credential snapshots.
 _LAUNCH_CREDENTIALS = Path(".runtime") / "provider-launch-credentials"
+
+#: The platform-owned directory in every universe. Never masked wholesale by
+#: :func:`hidden_dir_masks`: a launch needs its provider home and its own
+#: credential snapshot from under it.
+PLATFORM_RUNTIME_DIR = _LAUNCH_CREDENTIALS.parts[0]
 
 
 def _refuse(detail: str) -> ProviderConfinementError:
@@ -219,6 +231,7 @@ def default_view(
     launch_root = root / _LAUNCH_CREDENTIALS
     if launch_root.is_dir():
         mounts.append(JailMount("tmpfs", str(launch_root)))
+    mounts.extend(hidden_dir_masks(root))
     if credential_dir is not None:
         own = credential_dir.resolve(strict=False)
         if own.is_dir() and _within(own, root):
@@ -233,15 +246,43 @@ def default_view(
     return UniverseView(universe_dir=root, mounts=tuple(mounts), chdir=chdir)
 
 
+def hidden_dir_masks(universe_dir: Path) -> list[JailMount]:
+    """Empty ``tmpfs`` masks over the hidden root directories, or refuse.
+
+    The universe's harness is vendor-neutral, visible files the platform
+    assembles for every adapter (``tinyassets.universe_tools``). A CLI started
+    with the universe as its working directory would also load its OWN project
+    settings directory from there -- hooks and permissions the universe's agent
+    can now write with its own tools -- beside the owner's launch credential.
+    Hiding every hidden root directory except ``.runtime`` removes that second,
+    vendor-specific harness path for any CLI, present or future, without
+    naming one. A hidden entry that is a symlink cannot be masked by mounting
+    over it (the mount would follow the link), so the launch is refused.
+    """
+    masks: list[JailMount] = []
+    try:
+        entries = sorted(os.scandir(universe_dir), key=lambda entry: entry.name)
+    except OSError:
+        return masks
+    for entry in entries:
+        if not entry.name.startswith(".") or entry.name == PLATFORM_RUNTIME_DIR:
+            continue
+        if entry.is_symlink():
+            raise _refuse(f"the universe's {entry.name} is a link; it cannot be masked")
+        if entry.is_dir(follow_symlinks=False):
+            masks.append(JailMount("tmpfs", str(Path(universe_dir) / entry.name)))
+    return masks
+
+
 def _validated_view(view: UniverseView) -> UniverseView:
     root = view.universe_dir.resolve(strict=False)
     for mount in view.mounts:
-        if mount.op not in ("bind", "ro-bind", "tmpfs"):
+        if mount.op not in ("bind", "ro-bind", "tmpfs", "mask-file"):
             raise _refuse(f"unknown mount operation {mount.op!r}")
         dest = mount.dest
         if not dest.startswith("/") or dest.rstrip("/") == "" or _covered(dest, _RESERVED_DESTS):
             raise _refuse(f"a view may not mount at {dest!r}")
-        if mount.op == "tmpfs":
+        if mount.op in ("tmpfs", "mask-file"):
             continue
         if mount.source is None:
             raise _refuse("a bind needs a source")
@@ -350,6 +391,9 @@ def jail_argv(
     bwrap_path: str,
     install_paths: Iterable[Path] = (),
     env: Mapping[str, str] | None = None,
+    share_net: bool = True,
+    clearenv: bool = False,
+    seccomp_fd: int | None = None,
 ) -> list[str]:
     """The bubblewrap argv that runs ``argv`` inside ``view``. Pure of policy.
 
@@ -357,6 +401,13 @@ def jail_argv(
     paths, the provider install tree, then the universe view (so a view mount
     under ``/tmp`` lands on the private tmpfs, and a mask lands on the bind it
     masks), then the environment overrides and the working directory.
+
+    ``share_net=False`` leaves the jail in its own empty network namespace
+    (loopback only, nothing listening); ``clearenv=True`` starts the jailed
+    process from an empty environment plus ``view.setenv``. ``seccomp_fd`` is
+    an inherited descriptor holding a compiled seccomp filter for the jailed
+    process. The universe tool jail uses all three; a provider launch keeps the
+    defaults.
     """
     view = _validated_view(view)
     out: list[str] = [
@@ -364,11 +415,18 @@ def jail_argv(
         "--die-with-parent",
         "--new-session",
         "--unshare-all",
-        "--share-net",
+    ]
+    if share_net:
+        out.append("--share-net")
+    if clearenv:
+        out.append("--clearenv")
+    if seccomp_fd is not None:
+        out.extend(("--seccomp", str(int(seccomp_fd))))
+    out.extend((
         "--dev", "/dev",
         "--proc", "/proc",
         "--tmpfs", "/tmp",
-    ]
+    ))
     bound: list[str] = []
     for system_path in _SYSTEM_RO_PATHS:
         if os.path.lexists(system_path):
@@ -379,6 +437,10 @@ def jail_argv(
     for mount in view.mounts:
         if mount.op == "tmpfs":
             out.extend(("--tmpfs", mount.dest))
+        elif mount.op == "mask-file":
+            # The host's empty character device, read-only: the file reads as
+            # empty and cannot be written, renamed or removed (a mountpoint).
+            out.extend(("--ro-bind", "/dev/null", mount.dest))
         else:
             source = str(mount.source.resolve(strict=True))  # validated above
             out.extend((f"--{mount.op}", source, mount.dest))

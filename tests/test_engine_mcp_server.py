@@ -789,7 +789,7 @@ def test_engine_mcp_flags_emits_strict_config_and_pins(tmp_path, monkeypatch):
     assert "--strict-mcp-config" in flags
     assert "--mcp-config" in flags
 
-    data = json.loads((tmp_path / ".engine_mcp_config.json").read_text())
+    data = json.loads((tmp_path / ".runtime" / "engine-mcp-config.json").read_text())
     srv = data["mcpServers"]["tinyassets"]
     assert srv["args"] == ["-m", "tinyassets.engine_mcp_server"]
     assert srv["env"]["TINYASSETS_ENGINE_ACTOR_ID"] == "sub-9"
