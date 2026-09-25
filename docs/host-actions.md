@@ -25,6 +25,16 @@ underlying keys/tokens at each provider, including the GitHub token inside
 line; the token itself stays valid until revoked). Do it after that PR deploys,
 so a rollback never meets a missing secret.
 
+## Replace the backup's broad GitHub token with a backup-only one (2026-09-25)
+
+`GH_TOKEN` in the droplet's `/etc/tinyassets/env` is a live GitHub CLI token (`gho_`, scopes
+`gist, repo, workflow`) that the daemon user can read. Only the nightly offsite backup needs it
+([concern](concerns/2026-09-25-backup-token-readable-from-container.md)). In GitHub → Settings →
+Developer settings → Fine-grained tokens, create a token with **Contents: read and write on
+`Jonnyton/tinyassets-backups` only**, and add it as the repository secret `BACKUP_GH_TOKEN`. An agent
+then moves the backup to a host-only file and revokes the old token individually (GitHub's credential
+revocation API), so your own `gh` login is not affected.
+
 ## Delete or uninstall the platform GitHub App (2026-09-24)
 
 The GitHub App token refresher and its host units are removed by the same PR.
