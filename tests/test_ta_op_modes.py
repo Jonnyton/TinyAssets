@@ -138,21 +138,21 @@ def test_the_status_path_override_is_compile_time_only_and_never_built_in():
     )
 
 
-def test_claude_login_is_a_fixed_argv_operator_route():
-    """The ninth mode replaces the gate's interactive-TTY carve-out.
+def test_no_mode_logs_in_to_or_exercises_a_model_provider():
+    """The platform has no LLM (AGENTS.md Hard Rule 15).
 
-    It preserves the operator login the runbooks already documented; it takes
-    nothing from the callsite, and nothing in this repo runs it.
+    `claude-keepalive`, `codex-keepalive` and `claude-login` kept a host model
+    login alive or created one. They were removed with the host logins; no mode
+    may exec a provider CLI at all.
     """
-    spec = load_modes()["claude-login"]
-    assert spec["kind"] == "exec"
-    assert spec["argc"] == 2, "no caller operand"
-    assert spec["argv"] == ["/usr/local/bin/claude", "auth", "login", "--claudeai"]
-    dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
-    assert (
-        "ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude"
-        in dockerfile
-    ), "argv[0] must be the path the image actually installs"
+    modes = load_modes()
+    for retired in ("claude-keepalive", "codex-keepalive", "claude-login"):
+        assert retired not in modes
+    for name, spec in modes.items():
+        argv0 = (spec.get("argv") or [""])[0]
+        assert argv0 not in ("/usr/local/bin/claude", "/usr/local/bin/codex"), (
+            f"mode {name!r} execs a model provider CLI"
+        )
 
 
 def test_static_link_is_asserted_at_build_time():

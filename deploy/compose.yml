@@ -98,19 +98,16 @@ services:
     environment:
       HOME: /app
       TINYASSETS_DATA_DIR: /data
-      # Persist Codex subscription auth on the shared tinyassets-data volume.
-      # daemon + worker intentionally share one auth.json lineage; do not
-      # split CODEX_HOME per service or duplicate the single-use refresh token.
-      CODEX_HOME: /data/.codex
-      # Persist Claude subscription auth on the shared tinyassets-data volume.
-      CLAUDE_CONFIG_DIR: /data/.claude
+      # No model login or key lives at the platform level (AGENTS.md Hard Rule
+      # 15). Each universe's provider child gets its own CLI home from that
+      # universe's credentials (tinyassets/providers/base.py
+      # subprocess_env_for_provider); the daemon process has none to share.
       # Shared community-pool root on the durable volume. Load-bearing: the
       # container has no `.git`, so `producers.goal_pool.repo_root_path()`
       # git-detect fallback finds nothing and raises `repo_root_not_resolvable`
       # if this is unset. Do NOT "clean this up" by dropping it. The directory
       # need not pre-exist — `write_pool_post()` mkdirs parents on first write.
       TINYASSETS_REPO_ROOT: /data/community-pool
-      TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
       TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
       # Fleet activation only. Goal-pool/marketplace economy stays dark
       # until the PR-177 follow-on intentionally unstubs it.
@@ -297,7 +294,6 @@ services:
       # READ-ONLY, so a residual vault WRITE fails loudly at the kernel rather
       # than half-succeeding; leaving the resolver unset keeps this service from
       # treating that mount as its data directory at all.
-      TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
       TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-slack-agent-1
       # Required, and found only by RUNNING it: docker-entrypoint.sh hard-exits

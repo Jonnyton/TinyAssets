@@ -65,7 +65,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define TA_OP_VERSION "ta-op 1 modes=9"
+#define TA_OP_VERSION "ta-op 1 modes=6"
 #define TA_UID 1001
 #define TA_GID 1001
 #define SELF "/usr/local/libexec/ta-op"
@@ -113,23 +113,8 @@ static const struct mode MODES[] = {
      {"/opt/venv/bin/python", "/app/scripts/mcp_public_canary.py",
       "--url", "http://127.0.0.1:8001/mcp", "--timeout", "10", NULL}},
     {"printenv", 3, 0, {"/usr/bin/printenv", NULL}},
-    {"claude-keepalive", 2, 0,
-     {"/usr/local/bin/claude", "-p", "Reply with the single word OK.", NULL}},
-    {"codex-keepalive", 2, 0,
-     {"/usr/local/bin/codex", "exec", "--sandbox", "workspace-write",
-      "--disable", "apps", "--disable", "plugins", "--disable", "remote_plugin",
-      "--skip-git-repo-check", "Reply with the single word OK.", NULL}},
     {"bwrap-oracle", 2, 0,
      {"/opt/venv/bin/python", "/app/scripts/workspace_bwrap_oracle.py", NULL}},
-    /* The one-off operator subscription login on a fresh /data volume, which
-     * the runbooks have always documented as a `-it` exec. Fixed argv, no
-     * caller operand, no path and no flag from the callsite: it reaches the
-     * same verified post-drop identity as every other mode. Adding it is what
-     * lets the gate refuse EVERY bare exec, TTY or not. It preserves an
-     * already-supported operator action; it is not authority to log in, and
-     * no test in this repo runs it. */
-    {"claude-login", 2, 0,
-     {"/usr/local/bin/claude", "auth", "login", "--claudeai", NULL}},
 };
 #define N_MODES ((int)(sizeof(MODES) / sizeof(MODES[0])))
 

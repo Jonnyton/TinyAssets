@@ -91,8 +91,8 @@ def test_red_wrapper_named_with_no_mode():
         "docker exec tinyassets-daemon /usr/local/libexec/ta-op canary",
         "docker exec tinyassets-daemon /usr/local/libexec/ta-op env-summary",
         'docker exec "$DAEMON_CONTAINER" "$TA_OP" printenv "$1"',
-        "sudo docker exec -e CODEX_HOME=/data/.codex tinyassets-daemon "
-        "/usr/local/libexec/ta-op codex-keepalive >/dev/null",
+        "sudo docker exec tinyassets-daemon "
+        "/usr/local/libexec/ta-op bwrap-oracle >/dev/null",
         "docker exec tinyassets-daemon /usr/local/libexec/ta-op printenv "
         "TINYASSETS_SOME_FLAG   # confirm it took",
     ],
@@ -125,20 +125,16 @@ def test_a_tty_is_not_an_exemption(snippet):
     assert violations(snippet), "a TTY exec must fail the gate, not be noted"
 
 
-def test_the_migrated_interactive_login_is_green():
-    text = ("sudo docker exec -it -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon "
-            "/usr/local/libexec/ta-op claude-login")
-    assert violations(text) == []
-
-
-def test_claude_login_is_a_declared_fixed_mode_with_no_operand():
-    spec = MODES["claude-login"]
-    assert spec["argc"] == 2, "the callsite supplies no operand"
-    assert spec["argv"] == ["/usr/local/bin/claude", "auth", "login", "--claudeai"]
-    # ... and passing one is still a violation.
-    assert violations(
-        "docker exec -it tinyassets-daemon /usr/local/libexec/ta-op claude-login --extra"
-    )
+def test_the_retired_login_and_keepalive_modes_are_violations():
+    """The platform has no LLM (Hard Rule 15): the login and keepalive modes
+    were removed from the closed table, so the gate now refuses them as modes
+    the runtime does not implement."""
+    for text in (
+        "sudo docker exec -it tinyassets-daemon /usr/local/libexec/ta-op claude-login",
+        "docker exec tinyassets-daemon /usr/local/libexec/ta-op codex-keepalive",
+        "docker exec tinyassets-daemon /usr/local/libexec/ta-op claude-keepalive",
+    ):
+        assert violations(text), f"gate admitted a retired mode: {text}"
 
 
 def test_the_gate_exposes_no_note_channel():

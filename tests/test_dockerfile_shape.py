@@ -3,8 +3,7 @@
 Verifies:
 - codex CLI install layer is present in the Dockerfile
 - nodejs runtime is included in the final stage
-- TINYASSETS_CODEX_AUTH_JSON_B64 is referenced in tinyassets-env.template
-- OPENAI_API_KEY remains a blank deprecated placeholder
+- the host env template carries no platform model credential (Hard Rule 15)
 - compose.yml env_file passes /etc/tinyassets/env to the daemon service
 - The codex module copy layer is present
 
@@ -24,8 +23,6 @@ GITIGNORE = REPO_ROOT / ".gitignore"
 COMPOSE = REPO_ROOT / "deploy" / "compose.yml"
 ENV_TEMPLATE = REPO_ROOT / "deploy" / "tinyassets-env.template"
 ENTRYPOINT = REPO_ROOT / "deploy" / "docker-entrypoint.sh"
-CODEX_KEEPALIVE = REPO_ROOT / ".github" / "workflows" / "codex-auth-keepalive.yml"
-CLAUDE_KEEPALIVE = REPO_ROOT / ".github" / "workflows" / "claude-auth-keepalive.yml"
 CODEX_PROVIDER = REPO_ROOT / "tinyassets" / "providers" / "codex_provider.py"
 
 
@@ -182,8 +179,8 @@ def test_dockerfile_claude_version_smoke():
 def test_dockerfile_installs_codex_flock_wrapper():
     """Final stage must install deploy/codex-flock-wrapper.sh as /usr/local/bin/codex.
 
-    compose sets CODEX_HOME=/data/.codex on the daemon, and the wrapper still
-    serializes the daemon's own concurrent `codex` subprocesses.
+    Every codex launch is a universe's provider child with that universe's own
+    CODEX_HOME; the wrapper serializes concurrent launches against one home.
     Codex's official CI/CD auth guide forbids sharing one
     auth.json across concurrent runners; the wrapper serializes
     invocations via an exclusive flock on CODEX_HOME/.lock.
@@ -262,41 +259,24 @@ def test_local_git_credentials_stay_out_of_git_and_docker_context():
 
 
 # ---------------------------------------------------------------------------
-# tinyassets-env.template — subscription auth + deprecated API-key placeholder
+# tinyassets-env.template — no platform model credential (Hard Rule 15)
 # ---------------------------------------------------------------------------
 
 
-def test_env_template_has_codex_subscription_auth_bundle():
-    """tinyassets-env.template must include a Codex subscription auth placeholder."""
+def test_env_template_carries_no_platform_model_credential():
+    """The host env template once offered a Codex auth bundle, a Claude config
+    dir, a Claude OAuth token, API keys and an opt-in switch. The platform has
+    no LLM, so it offers none of them (full guard:
+    tests/test_no_platform_llm_credentials.py)."""
     text = ENV_TEMPLATE.read_text(encoding="utf-8")
-    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in text, (
-        "tinyassets-env.template must expose the Codex subscription auth bundle path"
-    )
-
-
-def test_env_template_has_claude_subscription_config_dir():
-    text = ENV_TEMPLATE.read_text(encoding="utf-8")
-    assert "CLAUDE_CONFIG_DIR=/data/.claude" in text
-
-
-def test_env_template_has_openai_api_key():
-    """tinyassets-env.template keeps OPENAI_API_KEY as a deprecated placeholder."""
-    text = ENV_TEMPLATE.read_text(encoding="utf-8")
-    assert "OPENAI_API_KEY" in text, (
-        "tinyassets-env.template must mention OPENAI_API_KEY so operators know it is deprecated"
-    )
-
-
-def test_env_template_openai_key_is_placeholder():
-    """OPENAI_API_KEY line must be blank (placeholder, not a real key)."""
-    for line in ENV_TEMPLATE.read_text(encoding="utf-8").splitlines():
-        if line.startswith("OPENAI_API_KEY="):
-            value = line.split("=", 1)[1].strip()
-            assert value == "", (
-                f"OPENAI_API_KEY must be a blank placeholder; found: {value!r}"
-            )
-            return
-    raise AssertionError("OPENAI_API_KEY= line not found in tinyassets-env.template")
+    for name in (
+        "TINYASSETS_CODEX_AUTH_JSON_B64",
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "TINYASSETS_ALLOW_API_KEY_PROVIDERS",
+    ):
+        assert name not in text, f"tinyassets-env.template still offers {name}"
 
 
 # ---------------------------------------------------------------------------
@@ -365,46 +345,24 @@ def test_compose_env_file_covers_daemon_service():
     )
 
 
-def test_compose_codex_auth_home_is_shared_data_volume():
-    """Services that invoke codex must share one persistent CODEX_HOME.
+def test_compose_daemon_has_no_platform_login_home():
+    """No compose service carries a platform Codex or Claude login home.
 
-    `slack-agent` is deliberately absent: it holds no provider auth, and its
-    `tinyassets-data` mount (adopted from production 2026-08-29) is READ-ONLY,
-    so it cannot be a CODEX_HOME. The four `worker*` services were deleted on
-    2026-08-29 with the host-run fleet (nothing runs outside a user's universe
-    -- PLAN.md).
+    Until 2026-09-24 the daemon set CODEX_HOME=/data/.codex and
+    CLAUDE_CONFIG_DIR=/data/.claude so a platform login survived redeploys. The
+    platform has no LLM (Hard Rule 15): a universe's provider child gets its own
+    CLI home from that universe's credentials, never from the daemon.
     """
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
-    for service_name in ("daemon",):
-        service = data["services"][service_name]
+    for service_name, service in data["services"].items():
         environment = service.get("environment") or {}
-        volumes = service.get("volumes") or []
-        assert environment.get("CODEX_HOME") == "/data/.codex", (
-            f"{service_name} must use /data/.codex so Codex CLI and "
-            "get_status look at the persistent tinyassets-data volume"
-        )
-        assert "tinyassets-data:/data" in volumes, (
-            f"{service_name} must mount tinyassets-data at /data"
-        )
-        assert "/var/lib/tinyassets-codex:/app/.codex" not in volumes
-
-
-def test_compose_claude_config_dir_is_shared_data_volume():
-    """Services that invoke claude must share one persistent CLAUDE_CONFIG_DIR.
-
-    Same service set as the CODEX_HOME case above, for the same reasons.
-    """
-    yaml = __import__("yaml")
-    data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
-
-    for service_name in ("daemon",):
-        service = data["services"][service_name]
-        environment = service.get("environment") or {}
-        volumes = service.get("volumes") or []
-        assert environment.get("CLAUDE_CONFIG_DIR") == "/data/.claude"
-        assert "tinyassets-data:/data" in volumes
+        assert "CODEX_HOME" not in environment, service_name
+        assert "CLAUDE_CONFIG_DIR" not in environment, service_name
+    daemon_volumes = data["services"]["daemon"].get("volumes") or []
+    assert "tinyassets-data:/data" in daemon_volumes
+    assert "/var/lib/tinyassets-codex:/app/.codex" not in daemon_volumes
 
 
 # The former `test_compose_declares_four_pinned_cloud_workers_with_goal_pool_off`
@@ -504,84 +462,34 @@ def test_entrypoint_script_exists():
     assert ENTRYPOINT.exists(), f"Missing: {ENTRYPOINT}"
 
 
-def test_entrypoint_installs_codex_auth_bundle():
-    text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in text
-    assert 'CODEX_HOME="${CODEX_HOME:-/data/.codex}"' in text
-    assert "base64 -d" in text
-    assert "auth.json" in text, (
-        "docker-entrypoint.sh must install the subscription-backed Codex auth bundle"
-    )
+def test_entrypoint_holds_no_platform_login():
+    """The entrypoint seeds, preserves and configures no platform login.
 
-
-def test_entrypoint_creates_claude_config_dir():
-    text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert 'CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/data/.claude}"' in text
-    assert 'mkdir -p "${CLAUDE_CONFIG_DIR}"' in text
-    assert 'chmod 700 "${CLAUDE_CONFIG_DIR}"' in text
-
-
-def test_entrypoint_pins_codex_file_credentials_store():
-    text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert 'cli_auth_credentials_store = "file"' in text, (
-        "container auth must use file-backed Codex credentials under CODEX_HOME"
-    )
-
-
-def test_entrypoint_does_not_login_with_api_key():
+    Behaviour is pinned by tests/test_docker_entrypoint.py; this is the static
+    counterpart.
+    """
     text = ENTRYPOINT.read_text(encoding="utf-8")
     executable_text = "\n".join(
         line for line in text.splitlines()
         if not line.lstrip().startswith("#")
     )
-    assert "codex login" not in executable_text
-    assert "--with-api-key" not in executable_text, (
-        "default TinyAssets daemons must not authenticate Codex with OPENAI_API_KEY"
-    )
+    for retired in (
+        "base64 -d",
+        "auth.json",
+        ".credentials.json",
+        "cli_auth_credentials_store",
+        "codex login",
+        "--with-api-key",
+        "mkdir -p",
+    ):
+        assert retired not in executable_text, f"entrypoint still does: {retired!r}"
+    assert 'unset "${_name}"' in text
 
 
-def test_entrypoint_strips_api_key_providers_by_default():
-    text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert "TINYASSETS_ALLOW_API_KEY_PROVIDERS" in text
-    assert "OPENAI_API_KEY" in text
-    assert 'unset "${_name}"' in text, (
-        "entrypoint must strip API-key provider env vars unless explicitly enabled"
-    )
-
-
-def test_entrypoint_replaces_auth_bundle_atomically():
-    text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert "mktemp" in text
-    assert "mv " in text
-    assert "failed to decode TINYASSETS_CODEX_AUTH_JSON_B64" in text, (
-        "entrypoint must atomically replace Codex auth when a bundle is provided"
-    )
-
-
-def test_codex_auth_keepalive_exercises_shared_codex_home():
-    text = CODEX_KEEPALIVE.read_text(encoding="utf-8")
-    assert "workflow_dispatch" in text
-    assert "schedule:" in text
-    assert "DO_SSH_KEY" in text
-    # Migrated to the drop-first wrapper (argv only — the schedule and the
-    # shared CODEX_HOME are unchanged, which is what this test guards).
-    assert (
-        "docker exec -e CODEX_HOME=/data/.codex tinyassets-daemon "
-        "/usr/local/libexec/ta-op codex-keepalive"
-    ) in text
-
-
-def test_claude_auth_keepalive_exercises_shared_config_dir():
-    text = CLAUDE_KEEPALIVE.read_text(encoding="utf-8")
-    assert "workflow_dispatch" in text
-    assert "schedule:" in text
-    assert "DO_SSH_KEY" in text
-    # Migrated to the drop-first wrapper (argv only — the schedule and the
-    # shared CLAUDE_CONFIG_DIR are unchanged, which is what this test guards).
-    assert (
-        "docker exec -e CLAUDE_CONFIG_DIR=/data/.claude tinyassets-daemon "
-        "/usr/local/libexec/ta-op claude-keepalive"
-    ) in text
+def test_host_login_keepalive_workflows_are_retired():
+    workflows = REPO_ROOT / ".github" / "workflows"
+    assert not (workflows / "codex-auth-keepalive.yml").exists()
+    assert not (workflows / "claude-auth-keepalive.yml").exists()
 
 
 def test_entrypoint_execs_cmd():

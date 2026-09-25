@@ -96,35 +96,17 @@ async def test_real_provider_nonzero_paths_keep_json_reason_and_confinement(
     assert "--ignore-user-config" in inner and "--ignore-rules" in inner
 
 
-def test_image_pin_and_keepalive_use_catalogue_compatible_launch():
+def test_image_pin_is_catalogue_compatible_and_no_host_keepalive_remains():
     root = Path(__file__).resolve().parents[1]
     dockerfile = (root / "Dockerfile").read_text()
     version = re.search(r"ARG CODEX_CLI_VERSION=(\d+)\.(\d+)\.(\d+)", dockerfile)
     assert version and tuple(map(int, version.groups())) >= (0, 146, 0)
     assert "python /tmp/codex_cli_smoke.py" in dockerfile
-    # The workflow no longer spells the codex argv: it delegates to the static
-    # drop-first helper's closed `codex-keepalive` mode (PR #3898). Assert the
-    # delegation, then resolve that mode to the argv the helper actually execs
-    # and hold it to the same catalogue-compatible launch the served provider
-    # uses (sandboxed, no full-auto, no bypass, catalogue-only tool surface).
-    keepalive = (root / ".github/workflows/codex-auth-keepalive.yml").read_text()
-    assert "--full-auto" not in keepalive
-    assert "/usr/local/libexec/ta-op codex-keepalive" in keepalive
-    argv = list(load_modes()["codex-keepalive"]["argv"])
-    assert Path(argv[0]).name == "codex" and argv[1] == "exec", argv
-    pairs = list(zip(argv, argv[1:]))
-    assert ("--sandbox", "workspace-write") in pairs, argv
-    assert "--full-auto" not in argv
-    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
-    for name in ("apps", "plugins", "remote_plugin"):
-        assert ("--disable", name) in pairs, argv
-    # test_ta_op_modes.py proves tsv == C for every mode; pin this one row to
-    # the compiled runtime too, so this file goes red on its own if the
-    # helper's launch ever drifts from the catalogue.
-    c_source = " ".join((root / "deploy/native/ta_op.c").read_text(encoding="utf-8").split())
-    assert ", ".join(f'"{a}"' for a in argv) in c_source, (
-        "ta_op.c codex-keepalive argv drifted from ta_op_modes.tsv"
-    )
+    # The weekly host-login keepalive and its `codex-keepalive` helper mode were
+    # retired 2026-09-24: the platform has no LLM (AGENTS.md Hard Rule 15), so
+    # no codex launch outside a universe's own provider child remains.
+    assert not (root / ".github/workflows/codex-auth-keepalive.yml").exists()
+    assert "codex-keepalive" not in load_modes()
 
 
 @pytest.mark.asyncio
