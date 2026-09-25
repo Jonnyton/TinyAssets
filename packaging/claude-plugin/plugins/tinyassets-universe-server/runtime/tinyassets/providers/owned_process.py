@@ -74,6 +74,14 @@ Not fixed here, on purpose: a descendant that deliberately ``setsid``s out of
 the group (only cgroup v2 ``cgroup.kill`` or a pid namespace reaches that), and
 ``node_sandbox``'s jail path, which already has the stronger pid-namespace
 mechanism and is untouched.
+
+Confinement
+-----------
+:func:`aspawn_owned` is also where a provider launch made for a universe is
+jailed (:mod:`tinyassets.providers.provider_jail`). The jail is bubblewrap
+with its own pid namespace and ``--die-with-parent``, and bwrap is what the
+wrapper execs, so the anchor still owns the family: ending the group ends
+bwrap, and the jail's namespace dies with it.
 """
 
 from __future__ import annotations
@@ -588,12 +596,31 @@ async def _aspawn_anchored(argv: list[str], **kwargs):
     return proc
 
 
-async def aspawn_owned(cmd, *, shell: bool = False, **kwargs):
+async def aspawn_owned(
+    cmd,
+    *,
+    shell: bool = False,
+    universe_view=None,
+    install_mounts=None,
+    **kwargs,
+):
     """Spawn ``cmd`` as an owned family and return the ``asyncio`` process.
 
     ``cmd`` is the argv list the adapter built. ``shell=True`` reproduces the
     old ``create_subprocess_shell(shlex.join(cmd))`` call exactly -- the
     Windows ``.cmd`` shim path -- on both platforms.
+
+    **Confinement comes first.** When the call runs inside a
+    :func:`~tinyassets.providers.provider_jail.provider_launch_scope` (the
+    router binds one around every provider call), the argv is wrapped in the
+    owning universe's bubblewrap jail before anything is spawned, or the launch
+    is refused with :class:`~tinyassets.providers.provider_jail.ProviderConfinementError`.
+    This is the one place every provider CLI passes through, so an adapter
+    inherits the jail without code of its own. ``universe_view`` lets an
+    adapter narrow what the universe looks like inside the jail;
+    ``install_mounts`` is a callable naming install trees the generic command
+    resolution cannot see (a wrapper script that execs a binary elsewhere).
+    Both are only read when a jail applies.
 
     POSIX goes through the wrapper/anchor handshake and **fails closed**: on
     any anchor failure the half-spawned family is torn down and
@@ -601,8 +628,23 @@ async def aspawn_owned(cmd, *, shell: bool = False, **kwargs):
     not end. Windows spawns exactly as before and registers the bounded
     tree-walk teardown.
     """
+    from tinyassets.providers.provider_jail import confine_launch
+
+    argv = _shell_argv(cmd) if shell else list(cmd)
+    jailed = confine_launch(
+        argv,
+        cwd=kwargs.get("cwd"),
+        env=kwargs.get("env"),
+        view=universe_view,
+        install_mounts=install_mounts,
+    )
+    if jailed is not None:
+        # bwrap sets the child's working directory itself (--chdir); the host
+        # side only needs a directory that exists.
+        kwargs["cwd"] = "/"
+        return await _aspawn_anchored(jailed, **kwargs)
     if os.name == "posix":
-        return await _aspawn_anchored(_shell_argv(cmd) if shell else list(cmd), **kwargs)
+        return await _aspawn_anchored(argv, **kwargs)
     if shell:
         proc = await asyncio.create_subprocess_shell(
             shlex.join(cmd), **owned_spawn_kwargs(), **kwargs,

@@ -505,9 +505,9 @@ def _confine_workflow_node(config: ModelConfig) -> ModelConfig:
     nodes turning into explorations of that tree -- dozens of
     ``find``/``grep``/``Read`` calls over ``/app/tinyassets`` and ``PLAN.md``,
     ``Explore`` subagents, ``ls /data`` -- at 5-16K output tokens and 100-300s,
-    against 0.3-1.4K tokens and 10-25s when the model used no tools. The same
-    builtins reach every universe under the data root, so this is the
-    cross-user floor, not an owner preference.
+    against 0.3-1.4K tokens and 10-25s when the model used no tools. The
+    cross-user floor itself is the OS jail the shared spawn point puts every
+    universe launch in (``provider_jail``); this narrows the node further.
 
     The served universe turn already runs this way (``sandbox_workspace``);
     this applies the existing rule to workflow nodes. Web tools, subagents and

@@ -9,7 +9,9 @@ later mount re-exposes the tree. Only running the jail answers that.
 
 So this file takes the argv the SHIPPING provider actually builds
 (``tinyassets.providers.codex_provider.CodexProvider.complete`` on a coding
-turn, captured at the ``aspawn_owned`` boundary), swaps the inner command --
+turn, captured at the ``aspawn_owned`` boundary and turned into bwrap argv by
+the shared ``provider_jail.jail_argv``, as the spawn point does), swaps the
+inner command --
 everything after ``--`` -- for a harmless ``/bin/sh`` reader, and runs it.
 Nothing about the mount list is re-typed here; a mask deleted from the provider
 is a mask absent from this jail.
@@ -178,7 +180,17 @@ def _sandbox_argv(monkeypatch: pytest.MonkeyPatch, universe_root: Path) -> list[
     asyncio.run(_drive())
 
     assert spawn.call_args is not None, "codex never reached argv construction"
-    argv = list(spawn.call_args.args[0])
+    # The provider hands the shared spawn point its argv plus its own view of
+    # the universe; the shared jail (provider_jail.jail_argv) turns them into
+    # the bwrap argv that actually runs. Build it with that same function.
+    from tinyassets.providers.provider_jail import jail_argv
+
+    view = spawn.call_args.kwargs.get("universe_view")
+    assert view is not None, "a coding turn reached the spawn point without a jail view"
+    argv = jail_argv(
+        list(spawn.call_args.args[0]), view, bwrap_path=_BWRAP,
+        env=spawn.call_args.kwargs.get("env"),
+    )
     assert argv[0] == _BWRAP, argv[:1]
     return argv
 
