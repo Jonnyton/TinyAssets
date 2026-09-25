@@ -1162,10 +1162,12 @@ def test_phone_create_returns_actionable_setup_when_connections_are_missing(
                         "next": "enroll requester-owned compute before retrying automation create",
                     },
                     "connection_action": {
-                    "target": "connection",
-                    "operation": "connect",
-                    "required_fields": ["destination"],
-                    "next": "authorize GitHub, then reconcile the same destination",
+                    "status": "unavailable",
+                    "detail": (
+                        "this automation kind needs a pull-request destination "
+                        "grant that no surface creates any more; build the "
+                        "delivery as your own workflow over a connection instead"
+                    ),
                 },
             },
         }

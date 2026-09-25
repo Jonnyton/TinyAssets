@@ -37,9 +37,9 @@ class UniverseSoul:
     edit_authority: str = DEFAULT_EDIT_AUTHORITY
     loop_branch_def_id: str = NO_LOOP_DECLARED
     # Each entry is a "<sink>:<destination>" grant naming a real-world hand
-    # this universe's founder authorizes (e.g. "github_pull_request:owner/repo").
+    # this universe's founder authorizes (e.g. "authenticated_external_call:github").
     # Empty = nothing declared (transitional: effectors fall through to the
-    # legacy env-capability + consent gates until the soul-authority cutover).
+    # connection + consent gates until the soul-authority cutover).
     effect_authority: tuple[str, ...] = ()
 
     def summary(self) -> dict[str, object]:

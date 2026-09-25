@@ -142,14 +142,14 @@ def test_the_transport_follows_the_connection_not_a_platform_default(
 def test_no_platform_module_hard_codes_a_repository() -> None:
     """The 'no platform code path that assumes one named repo' clause.
 
-    `auto_ship*.py` are exempt by the same rule `check_channel_agnostic.py`
+    `auto_ship.py` is exempt by the same rule `check_channel_agnostic.py`
     already encodes: there the platform ships ITS OWN releases to its own forge,
     which no user composes. Everything else must take the repo from its caller.
     """
     import ast
 
     root = Path(__file__).resolve().parent.parent / "tinyassets"
-    exempt = {"auto_ship.py", "auto_ship_pr.py"}
+    exempt = {"auto_ship.py"}
     offenders: list[str] = []
     for path in sorted(root.rglob("*.py")):
         if path.name in exempt:

@@ -24,7 +24,7 @@ def test_failure_pair_survives_success_verbatim_without_execution(tmp_path):
         assert [m.speaker for m in rows] == ["founder", "platform", "founder", "universe"]
         assert rows[0].text == original
         assert rows[1].text == failure_notice("auth_invalid")
-        assert normalize_turn_failure(rows[1].failure) == FAILURE
+        assert normalize_turn_failure(rows[1].failure) == {**FAILURE, "effects": "unknown"}
         assert all(m.failure is None for m in (rows[0], rows[2], rows[3]))
         assert all(m.execution is None for m in rows)
         assert isinstance(hash(rows[1]), int)
@@ -140,17 +140,20 @@ def test_unknown_code_does_not_persist_raw_text(tmp_path):
 
 def test_exception_to_code_and_fixed_notice_never_copy_diagnostics():
     import tinyassets.universe_server as us
-    from tinyassets.conversation_failure import failure_notice
+    from tinyassets.conversation_failure import FAILURE_CODES, failure_notice
 
     exc = RuntimeError(SECRET)
     assert us._served_failure_code(exc) == "unknown"
-    for code in us._TURN_ENDED_FAILURE_CLASSES:
+    for code in sorted(FAILURE_CODES - {"unknown"}):
         exc.failure_class = code
         actual = us._served_failure_code(exc)
         assert actual == code
         notice = failure_notice(actual)
         assert SECRET not in notice
-        assert "Check progress before sending again" in notice
+        if code == "setup_required":  # no model connected: nothing can have run
+            assert "Nothing ran." in notice and "Check progress" not in notice
+        else:
+            assert "Check progress before sending again" in notice
         assert "did not run" not in notice and "could not run" not in notice
     exc.failure_class = [SECRET]  # malformed diagnostics must not break failure storage
     assert us._served_failure_code(exc) == "unknown"
@@ -184,8 +187,16 @@ def test_admitted_failure_is_available_to_the_next_turn_only_for_same_owner(tmp_
     monkeypatch.setattr(ui, "converse", run)
     result = json.loads(us.converse(message="  failed Ω\n", graph_id="u-x"))
     assert result["history_saved"] is True
-    assert result["turn_failure"] == {**FAILURE, "code": "unknown"}
-    assert SECRET not in result["failure_notice"]
+    failure = result["turn_failure"]
+    # Founder 2026-09-24: the record carries the source's own (scrubbed,
+    # bounded) words and a ref, so the notice stays diagnostic. With no model
+    # attempt recorded, nothing proves what ran: effects are unknown.
+    assert {k: failure[k] for k in ("version", "kind", "code", "effects")} == {
+        **FAILURE, "code": "unknown", "effects": "unknown",
+    }
+    assert failure["provider_detail"] == SECRET and failure["ref"]
+    assert failure["ref"] in result["failure_notice"]
+    assert "stage" not in failure  # an unknown cause has no invented position
     assert "reply" not in result and "execution" not in result
     assert json.loads(us.converse(message="what failed?", graph_id="u-x"))["reply"]
     assert [m.speaker for m in calls[1]] == ["founder", "platform"]

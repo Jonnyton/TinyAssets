@@ -2320,7 +2320,9 @@
     // Live recovery can be richer than the safe fixed sentence retained by
     // the server. Never copy this live-only text back into stored history.
     const live=[payload.note,payload.error].find(value=>typeof value==="string"&&value.trim());
+    // The record says what ran: no caution when its ledger proved nothing did.
     const caution=recorded&&live&&failure.code!=="setup_required"&&
+      failure.effects!=="none"&&
       !live.includes("Check progress before sending again")
       ? " Actions may already have occurred. Check progress before sending again; sending again repeats the whole request."
       : "";
@@ -5269,6 +5271,143 @@
     });
   }
 
+  // ---- Sign in to connect --------------------------------------------------
+  // A connect request whose provider offers OAuth is answered by signing in:
+  // one tap to the provider, back here connected (founder 2026-09-24: prefer
+  // OAuth whenever the provider allows it; it is fewer actions and no key to
+  // copy). Key fields, when the ask carries them, stay as the fallback. The
+  // PKCE shape is the first-power flow's: the verifier never leaves this tab,
+  // and the server returns no token, ever.
+  const ConnectOAuth={
+    storageKey:"ta_connect_oauth",
+    callbackPath:"/mcp/app/model-callback/connect",
+    pending:null,
+    // Runs as the page loads, BEFORE account sign-in reads the query: the
+    // provider's code and state must never be taken for an account sign-in.
+    takeCallback(){
+      if(window.location.pathname!==this.callbackPath) return null;
+      const query=new URLSearchParams(window.location.search);
+      history.replaceState({},"","/mcp/app");
+      let saved=null;
+      try{saved=JSON.parse(sessionStorage.getItem(this.storageKey)||"null");}catch(_e){}
+      sessionStorage.removeItem(this.storageKey); // one redemption attempt
+      if(NATIVE||!saved||saved.flow!==query.get("state")||
+         typeof saved.verifier!=="string"||!/^[A-Za-z0-9_-]{43}$/.test(saved.verifier)||
+         !Number.isFinite(saved.expires)||saved.expires<=Date.now()||query.has("error")||
+         query.getAll("code").length!==1||!query.get("code")||query.get("code").length>2048){
+        return {error:true,title:saved&&saved.title};
+      }
+      const out={flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier,title:saved.title};
+      // RFC 9207: the server's own issuer, checked server-side against discovery.
+      const iss=query.get("iss");
+      if(iss&&iss.length<=2048) out.iss=iss;
+      return out;
+    },
+    async post(operation,payload){
+      await ensureFreshToken();
+      if(!token()) throw new Error("sign_in_required");
+      // No automatic retry: a code is redeemed at most once.
+      const response=await fetch("/mcp/app/model-connect/"+operation,{
+        method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify(payload),
+      });
+      const result=await response.json();
+      if(!response.ok||result.error){
+        throw new Error((result&&(result.detail||result.error))||"sign_in_incomplete");
+      }
+      return result;
+    },
+    async begin(req,note,button){
+      if(NATIVE) return;
+      button.disabled=true;
+      note.textContent="Opening the provider's sign-in. You choose there whether to allow it.";
+      try{
+        const verifier=randToken(32),code_challenge=await challengeFor(verifier);
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title}));
+        const result=await this.post("oauth_begin",{request_id:req.request_id,code_challenge});
+        const url=new URL(result.authorize_url);
+        if(url.protocol!=="https:"||url.username||url.password||
+           !/^[A-Za-z0-9_-]{43}$/.test(result.flow)||url.searchParams.get("state")!==result.flow||
+           !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600){
+          throw new Error("invalid_sign_in_response");
+        }
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,
+          flow:result.flow,expires:Date.now()+result.expires_in*1000}));
+        window.location.assign(url.href);
+      }catch(err){
+        sessionStorage.removeItem(this.storageKey);
+        note.textContent="Could not start the sign-in: "+((err&&err.message)||"unknown error")+".";
+        button.disabled=false;
+      }
+    },
+    // After the app has signed its user in again: redeem the returned code.
+    async finish(){
+      const cb=this.pending; this.pending=null;
+      if(!cb) return;
+      if(cb.error){
+        appendMessage("system","The sign-in was cancelled or expired. The request is still waiting; open it and sign in again.");
+        return;
+      }
+      try{
+        const payload={flow:cb.flow,code:cb.code,code_verifier:cb.code_verifier};
+        if(cb.iss) payload.iss=cb.iss;
+        const result=await this.post("oauth_exchange",payload);
+        appendMessage("system","Connected. "+(result.receipt||""));
+        await refreshRail();
+        // The owner's own line, as for any answered request: the universe
+        // hears that its ask was completed.
+        sendTurn("Signed in to answer \""+frameTitle({title:cb.title})+"\"",undefined,
+          {relay:true,keepComposer:true,inputMethod:"app_action"});
+      }catch(err){
+        appendMessage("system","The sign-in did not finish: "+((err&&err.message)||"unknown error")+". The request is still waiting; open it and sign in again.");
+        refreshRail();
+      }
+    },
+    resumeWhenSignedIn(){
+      if(!this.pending) return;
+      let tries=0;
+      const tick=()=>{
+        // Wait for the thread to be restored so the result is not wiped by it.
+        if(token()&&(historyLoaded||tries>20)){ this.finish(); return; }
+        if(++tries<120) setTimeout(tick,500);
+      };
+      setTimeout(tick,0);
+    },
+    // Called at the end of railBody: sign-in becomes the primary action and
+    // any key fields fold under "Paste a key instead".
+    decorate(req,box,row,note){
+      const action=req&&req.action,offer=action&&action.type==="connect"&&action.oauth;
+      if(NATIVE||!offer||typeof offer.authorize_url!=="string") return;
+      let host="";
+      try{ host=new URL(offer.authorize_url).host; }catch(_e){ return; }
+      const go=document.createElement("button");
+      go.type="button"; go.className="btn btn--primary"; go.style.width="100%";
+      // The HOST, not friendly words: the owner sees where the click goes.
+      go.textContent="Sign in with "+host;
+      go.addEventListener("click",()=>this.begin(req,note,go));
+      const keys=Array.from(box.children).filter(el=>
+        el.classList&&el.classList.contains("rtab-label")&&el.querySelector("textarea"));
+      const anchor=keys[0]||row;
+      box.insertBefore(go,anchor);
+      if(keys.length){
+        const more=document.createElement("details");
+        const summary=document.createElement("summary");
+        summary.textContent="Paste a key instead";
+        more.appendChild(summary);
+        keys.forEach(el=>more.appendChild(el));
+        box.insertBefore(more,go.nextSibling);
+      }else{
+        // Nothing to paste: signing in IS the answer, so Accept has no meaning.
+        const accept=row.querySelector(".btn--primary");
+        if(accept) accept.hidden=true;
+      }
+    },
+  };
+  ConnectOAuth.pending=ConnectOAuth.takeCallback();
+  ConnectOAuth.resumeWhenSignedIn();
+  // End connect OAuth controller.
+
   // ---- Pending-request rail ------------------------------------------------
   // The agent raises asks; they appear as tabs whose header is the KIND it chose
   // ("API", "Approval", anything). The agent composes the fields, so a kind this
@@ -5557,6 +5696,7 @@
     verb("Clear", "btn--ghost", "clear");
     verb("Send reply", "btn--link", "reply");
     box.appendChild(row); box.appendChild(note);
+    ConnectOAuth.decorate(req, box, row, note);
     return box;
   }
 

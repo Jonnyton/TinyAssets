@@ -9,13 +9,11 @@ The returned key is server-only: never serialize it into an app response.
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import hmac
 import json
-import re
 import secrets
-import sqlite3
+import sqlite3  # noqa: F401 - the flow store's driver, patched here by tests
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -25,16 +23,19 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
+from tinyassets.connection_oauth import pkce
 from tinyassets.providers.discovery_presets import bundled_discovery_documents
 
-FLOW_TTL_SECONDS = 600
+# The PKCE store, handle grammar and callback are shared with the generic
+# OAuth connection flow (``connection_oauth``): one transport, two flows.
+FLOW_TTL_SECONDS = pkce.FLOW_TTL_SECONDS
 MAX_PENDING = 1000
 MAX_PER_OWNER = 10
 MAX_RESPONSE_BYTES = 16384
 EXCHANGE_TIMEOUT = 20.0
-CALLBACK_PREFIX = "/mcp/app/model-callback/"
-_HANDLE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
-_VERIFIER = re.compile(r"[A-Za-z0-9._~-]{43,128}\Z")
+CALLBACK_PREFIX = pkce.CALLBACK_PREFIX
+_HANDLE = pkce.HANDLE_RE
+_VERIFIER = pkce.VERIFIER_RE
 
 
 class HostedAuthError(Exception):
@@ -57,6 +58,28 @@ class AcquisitionPreset:
     inference_url: str
     catalogue_url: str
     benchmark_url: str
+    #: Fixed, non-secret query parameters the provider documents for its
+    #: authorize page (e.g. a key label). Data only; the flow's own
+    #: parameters can never be overridden.
+    authorize_params: tuple[tuple[str, str], ...] = ()
+
+
+_FLOW_PARAMS = frozenset({"callback_url", "code_challenge", "code_challenge_method"})
+
+
+def _authorize_params(value: object) -> tuple[tuple[str, str], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict) or len(value) > 8:
+        raise HostedAuthError("invalid_acquisition_preset", 503)
+    items = []
+    for key, val in sorted(value.items()):
+        if (not isinstance(key, str) or not isinstance(val, str) or key in _FLOW_PARAMS
+                or not 0 < len(key) <= 64 or not 0 < len(val) <= 128
+                or not key.isascii() or not val.isprintable()):
+            raise HostedAuthError("invalid_acquisition_preset", 503)
+        items.append((key, val))
+    return tuple(items)
 
 
 def load_preset(preset_id: str, *, require_manual_key: bool = False) -> AcquisitionPreset:
@@ -98,6 +121,7 @@ def load_preset(preset_id: str, *, require_manual_key: bool = False) -> Acquisit
     ).encode()).hexdigest()
     return AcquisitionPreset(id=preset_id, digest=digest,
                              display_name=doc["display_name"],
+                             authorize_params=_authorize_params(doc.get("authorize_params")),
                              **{field: doc[field] for field in fields})
 
 
@@ -132,42 +156,9 @@ def _authority(owner: str, universe_id: str):
         yield base
 
 
-@contextmanager
-def _flows(base):
-    """No bearer material: only hashed handles and short-lived PKCE bindings."""
-    conn = sqlite3.connect(base / ".hosted-model-auth.db", timeout=5, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA secure_delete=ON")
-        conn.execute("CREATE TABLE IF NOT EXISTS hosted_model_flows ("
-                     "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
-                     "bound_home_id TEXT NOT NULL, preset_id TEXT NOT NULL, "
-                     "preset_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
-                     "callback_origin TEXT NOT NULL, created_at REAL NOT NULL, "
-                     "expires_at REAL NOT NULL)")
-        conn.execute("BEGIN IMMEDIATE")
-        now = time.time()
-        conn.execute("DELETE FROM hosted_model_flows WHERE expires_at <= ? "
-                     "OR created_at > ? OR expires_at <= created_at "
-                     "OR expires_at - created_at > ?",
-                     (now, now, FLOW_TTL_SECONDS))
-        yield conn, now
-        conn.commit()
-    except BaseException:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def _challenge(verifier: str) -> str:
-    digest = hashlib.sha256(verifier.encode("ascii")).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-
-
-def is_callback_path(path: str) -> bool:
-    return path.startswith(CALLBACK_PREFIX) and bool(_HANDLE.fullmatch(path[len(CALLBACK_PREFIX):]))
+_flows = pkce.flows_db
+_challenge = pkce.challenge_for
+is_callback_path = pkce.is_callback_path
 
 
 def begin_flow(*, owner: str, universe_id: str, preset_id: str,
@@ -198,12 +189,13 @@ def begin_flow(*, owner: str, universe_id: str, preset_id: str,
         callback_origin = f"{origin.scheme}://{origin.netloc}"
         callback = f"{callback_origin}{CALLBACK_PREFIX}{handle}"
         conn.execute("INSERT INTO hosted_model_flows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                     (hashlib.sha256(handle.encode()).hexdigest(), owner, universe_id,
+                     (pkce.handle_digest(handle), owner, universe_id,
                       preset.id, preset.digest, challenge, callback_origin, now,
                       now + FLOW_TTL_SECONDS))
     return {
         "flow": handle,
         "authorize_url": preset.authorize_url + "?" + urlencode({
+            **dict(preset.authorize_params),
             "callback_url": callback, "code_challenge": challenge,
             "code_challenge_method": "S256",
         }),
@@ -222,7 +214,7 @@ def take_flow(*, handle: str, owner: str, universe_id: str, verifier: str) -> Pe
     if not isinstance(handle, str) or not _HANDLE.fullmatch(handle) or not owner:
         raise HostedAuthError("unknown_model_connection", 404)
     with _authority(owner, universe_id) as base, _flows(base) as (conn, now):
-        digest = hashlib.sha256(handle.encode()).hexdigest()
+        digest = pkce.handle_digest(handle)
         row = conn.execute("SELECT * FROM hosted_model_flows WHERE handle_digest = ?",
                            (digest,)).fetchone()
         if row is None or owner != row["owner_user_id"]:

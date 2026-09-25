@@ -161,10 +161,15 @@ def _prerequisite_projection(*, actor: str, universe_id: str) -> dict[str, Any]:
             None
             if destination_grants
             else {
-                "target": "connection",
-                "operation": "connect",
-                "required_fields": ["destination"],
-                "next": "authorize GitHub, then reconcile the same destination",
+                # No surface creates this destination any more: the only one was
+                # a single-forge OAuth pipe, removed 2026-09-24 (see
+                # docs/concerns/2026-09-24-github-shaped-leftovers.md).
+                "status": "unavailable",
+                "detail": (
+                    "this automation kind needs a pull-request destination "
+                    "grant that no surface creates any more; build the "
+                    "delivery as your own workflow over a connection instead"
+                ),
             }
         ),
     }
@@ -569,7 +574,7 @@ def cloud_automations(
             },
             "next": (
                 "create or resume the stopped cloud automation after the exact "
-                "GitHub destination is connected"
+                "destination is connected"
             ),
         }
 

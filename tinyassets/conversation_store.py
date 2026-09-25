@@ -61,6 +61,7 @@ from collections import Counter
 from pathlib import Path
 
 from tinyassets.conversation_failure import (
+    TurnFailure,
     failure_column_sql,
     failure_notice,
     normalize_turn_failure,
@@ -392,13 +393,15 @@ def record_failure(
     universe_dir: "str | Path", session_id: str, founder_text: str, code: object,
     *, ts: float | None = None,
 ) -> bool:
-    """Save a fixed platform notice plus original text, without an answer receipt.
+    """Save the composed platform notice plus original text, without an answer receipt.
 
-    True confirms the pair, not optional metadata: writable legacy stores can
-    retain text-only platform rows when an additive migration is unavailable.
+    ``code`` is a class or a full :class:`TurnFailure` record; the stored text
+    is composed from the same record the metadata column keeps. True confirms
+    the pair, not optional metadata: writable legacy stores can retain
+    text-only platform rows when an additive migration is unavailable.
     """
-    failure = turn_failure(code)
-    return _record_pair(universe_dir, session_id, founder_text, failure_notice(failure.code),
+    failure = code if isinstance(code, TurnFailure) else turn_failure(code)
+    return _record_pair(universe_dir, session_id, founder_text, failure_notice(failure),
                         speaker="platform", ts=ts, failure=failure)
 
 
