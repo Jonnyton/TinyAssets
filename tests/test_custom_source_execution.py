@@ -132,12 +132,51 @@ def test_declared_capacity_drives_real_fallback_without_replaying_tool(running):
     assert [round.state for round in agent.latest().rounds] == ["received", "failed", "received"]
 
 
-def test_unknown_capacity_scope_does_not_invent_an_independent_account(running):
+def test_unknown_capacity_scope_tries_a_free_sibling_in_the_same_grant(running):
+    """Unknown scope still proves nothing about the account.
+
+    On a source whose accepted ceilings are all zero the turn narrows it to the
+    model that actually failed and tries a sibling under the SAME grant at the
+    SAME ceilings -- the live 2026-09-25 dead end was a first message refused by
+    one busy free model with siblings right behind it. What it must never
+    become is a claim that the account is fine: nothing paid is admitted, and
+    the retry cannot leave this connection.
+    """
     running.source.document["contract"]["capacity"]["cases"][0]["scope"] = "unknown"
     running.agent.served.rig.api(descriptor=running.source.document)
     prepared = prepare(running)
     running.agent.served.context = replace(
         running.agent.served.context, agent_model_plan=prepared.plan,
+    )
+    running.response.failure_at = 1
+    assert interactive.run(running.agent) == "finished exact answer"
+    assert len(running.agent.wires) == 3 and len(running.agent.tools) == 1
+    assert running.agent.wires[-1][1]["body"]["model"] == OTHER
+    assert {wire[1]["url"] for wire in running.agent.wires} == {
+        "https://owned.example/custom/chat"
+    }
+    assert all(
+        wire[1]["body"]["billing"]["ceilings"] == {"0": "0", "1": "0", "2": "0"}
+        for wire in running.agent.wires
+    )
+
+
+def test_unknown_capacity_scope_on_a_spending_source_stops_at_one_model(running):
+    """A source that can spend keeps the conservative account exclusion.
+
+    Being wrong about the scope costs a refused request on a free source and
+    real money on a metered one, so only the free source is narrowed.
+    """
+    running.source.document["contract"]["capacity"]["cases"][0]["scope"] = "unknown"
+    running.agent.served.rig.api(descriptor=running.source.document)
+    prepared = prepare(running)
+    metered = replace(prepared.plan.source_policies[0], cost_caps=tuple(
+        replace(charge, amount_micros=10_000)
+        for charge in prepared.plan.source_policies[0].cost_caps
+    ))
+    running.agent.served.context = replace(
+        running.agent.served.context,
+        agent_model_plan=replace(prepared.plan, source_policies=(metered,)),
     )
     running.response.failure_at = 1
     with pytest.raises(AllProvidersExhaustedError):

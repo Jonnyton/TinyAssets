@@ -27,7 +27,13 @@ def _exercise(path, implementation, scenario):
                 agent.unknown_inference = True
             elif scenario in {"model_capacity", "account_capacity"}:
                 integration._with_fallback(agent, patch)
-                agent.capacity_failures[2] = 503 if scenario == "model_capacity" else 429
+                # 402 (exhausted credit), not 429: a rate limit's scope is
+                # ``unknown``, and a zero-cost source now narrows that to the
+                # model it failed on rather than the whole account. The oracle
+                # is frozen, so the account path is stimulated with the status
+                # that genuinely reports the account. See
+                # tests/test_free_model_sibling_retry.py for the 429 behaviour.
+                agent.capacity_failures[2] = 503 if scenario == "model_capacity" else 402
             elif scenario == "revoked_before_tool":
                 agent.before_reply = lambda: rig.ledger.revoke_grant("grant-models")
             elif scenario in {"intent_failure", "result_failure"}:

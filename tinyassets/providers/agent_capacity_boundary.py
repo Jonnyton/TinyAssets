@@ -26,6 +26,12 @@ class CapacityBoundary:
     attempted: bool
     failure_class: str | None
     retry_after_s: float | None
+    #: What the SOURCE actually reported, before ``exhaustion`` collapses it to
+    #: the conservative reading: ``model`` when every attempt said so,
+    #: ``account`` when any attempt did, ``unknown`` when none of them could
+    #: tell. Evidence, never a decision -- it exists so a caller can see WHY the
+    #: exhaustion is account-wide instead of assuming a source proved it.
+    observed_scope: str = "account"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,8 +117,13 @@ def capacity_boundary(
         if item.failure_class is not None:
             failures.append(item.failure_class)
     # Only unanimous model-local evidence allows a sibling on the same source.
-    scope = "model" if all(value == "model" for value in scopes) else "account"
+    observed = (
+        "model" if all(value == "model" for value in scopes)
+        else "account" if any(value == "account" for value in scopes)
+        else "unknown"
+    )
+    scope = "model" if observed == "model" else "account"
     return CapacityBoundary(
         Exhaustion(scope, current), attempted, failures[-1] if failures else None,
-        max(delays) if delays else None,
+        max(delays) if delays else None, observed,
     )

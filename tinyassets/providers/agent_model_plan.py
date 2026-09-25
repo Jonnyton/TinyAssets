@@ -57,3 +57,15 @@ class AgentModelPlan:
     def next_candidate(self, owner, universe, exhaustion=()):
         order = self.order(owner, universe, exhaustion)
         return order.candidates[0].ref if order.candidates else None
+
+    def source_cost_caps(self, connection_id):
+        """The ceilings this plan would actually enforce for one source.
+
+        The same precedence ``order_models`` applies: a per-source policy
+        overrides the plan-wide one. Advisory, like the rest of this object --
+        it answers what the order would admit, never what may be spent.
+        """
+        for item in self.source_policies:
+            if item.connection_id == connection_id:
+                return item.cost_caps
+        return self.policy.cost_caps

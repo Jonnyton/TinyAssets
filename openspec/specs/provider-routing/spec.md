@@ -822,6 +822,16 @@ existing conversation read paths.
   universe could not read, to try again or choose another model, and that
   nothing ran
 
+#### Scenario: A capacity refusal quotes the source, not our class name
+
+- **WHEN** a source refuses a selected model before generation with a capacity
+  status (a rate limit, an overload, exhausted credit)
+- **THEN** the attempt's `detail` and the record's `provider_detail` carry the
+  source's OWN words — its HTTP status and its response body, scrubbed for
+  secrets and paths and bounded — rather than repeating the failure class, which
+  the notice has already said
+- **AND** no vendor error envelope is parsed to obtain them
+
 #### Scenario: A universe with no model connected is told to connect one
 
 - **WHEN** the router refuses the turn because no provider is connected

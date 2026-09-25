@@ -303,7 +303,8 @@ __SOURCE__
 def _run_rail(rows, extra=""):
     html, _ = render_app_html()
     source = "\n".join(_js_function(html, name) for name in (
-        "isSetupRequest", "foldedModelAccess", "renderRail", "connectBody"))
+        "isSetupRequest", "isOptionalRequest", "foldedModelAccess", "renderRail",
+        "connectBody"))
     shapes = html[html.index("  const ConnectShapes={"):
                   html.index("  // A declared model list needs")]
     script = (_RAIL_HARNESS.replace("__SOURCE__", source + "\n" + shapes)
