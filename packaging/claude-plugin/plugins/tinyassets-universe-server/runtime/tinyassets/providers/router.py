@@ -217,20 +217,27 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
 }
 
 
-def _rate_limit_cooldown_s(exc: BaseException) -> int:
-    """Cooldown seconds for a genuine rate-limit / overload outcome.
+def _retry_after_cooldown_s(retry_after: object) -> int:
+    """Cooldown seconds implied by a source's own ``Retry-After``.
 
-    Honors the provider's own ``retry_after`` (+1s margin) when present; else
-    falls back to the fixed unavailable cooldown.
+    Honors it (+1s margin) when it is a usable positive number; else falls back
+    to the fixed unavailable cooldown. One definition, so an after-the-fact
+    cooling (``ProviderRouter.cool_source``) and the capacity handler's own
+    cooling cannot drift apart.
     """
-    retry_after = getattr(exc, "retry_after", None)
     if (
         isinstance(retry_after, (int, float))
+        and not isinstance(retry_after, bool)
         and math.isfinite(retry_after)
         and retry_after > 0
     ):
         return int(retry_after) + 1
     return COOLDOWN_UNAVAILABLE
+
+
+def _rate_limit_cooldown_s(exc: BaseException) -> int:
+    """Cooldown seconds for a genuine rate-limit / overload outcome."""
+    return _retry_after_cooldown_s(getattr(exc, "retry_after", None))
 
 
 def _sync_call_timeout_s(cfg: ModelConfig) -> float:
@@ -470,6 +477,24 @@ class ProviderRouter:
         if allowlist is None:
             return chain
         return [p for p in chain if p in allowlist]
+
+    def cool_source(self, provider: str, *, retry_after_s=None) -> int:
+        """Put a source in cooldown after the fact. Restrictive only.
+
+        Cooling can only ever make this router try a source LESS, so this is
+        safe to expose: it admits no model, widens no grant, raises no ceiling,
+        and cannot make an ineligible source eligible.
+
+        It exists because the capacity handler withholds a zero-cost source's
+        cooldown to leave a sibling attempt possible, and only the turn
+        coordinator knows whether one actually followed. Honours the source's
+        own ``Retry-After`` when it supplied one; returns the seconds applied.
+        """
+        if type(provider) is not str or not provider:
+            raise ValueError("cooling a source requires its provider name")
+        seconds = _retry_after_cooldown_s(retry_after_s)
+        self._quota.cooldown(provider, seconds)
+        return seconds
 
     def selected_agent_execution_kind(self, selection) -> str:
         """Advisory installed capability; actual dispatch rechecks the resolved executor."""
@@ -1217,11 +1242,17 @@ class ProviderRouter:
                 # -- EXCEPT on a source that cannot spend, where cooling the
                 # whole connection would also skip the sibling model the turn is
                 # about to try, which is the dead end itself (live 2026-09-25).
+                # ...and not when the source named a wait longer than a whole
+                # turn may live, where waiting IS the answer. Whether a sibling
+                # attempt actually follows is known only to the turn coordinator,
+                # which cools the source itself once it concludes none will.
                 # No selection means no proven ceilings: () is never free-only.
                 selected = cfg.selected_model
                 if exc.signal.scope != "model" and not free_sibling_retry(
                     scope=exc.signal.scope, failure_class=exc.failure_class,
                     cost_caps=selected.cost_caps if selected is not None else (),
+                    retry_after_s=exc.retry_after,
+                    turn_budget_s=cfg.stream_timeout_profile().absolute_cap_s,
                 ):
                     self._quota.cooldown(provider_name, _rate_limit_cooldown_s(exc))
                 attempts.append(ProviderAttemptDiagnostic(

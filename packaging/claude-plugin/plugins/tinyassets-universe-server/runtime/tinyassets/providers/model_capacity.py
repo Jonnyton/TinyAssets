@@ -12,7 +12,9 @@ MAX_RETRY_SECONDS = 2**31 - 1
 TRANSIENT_CAPACITY = frozenset({"provider_rate_limited", "provider_overloaded"})
 
 
-def free_sibling_retry(*, scope, failure_class, cost_caps) -> bool:
+def free_sibling_retry(
+    *, scope, failure_class, cost_caps, retry_after_s=None, turn_budget_s=None,
+) -> bool:
     """POLICY, not evidence: may a zero-cost source try a SIBLING model next?
 
     ``CapacitySignal.scope`` stays exactly what the source's contract reported.
@@ -23,16 +25,46 @@ def free_sibling_retry(*, scope, failure_class, cost_caps) -> bool:
     On a source whose accepted ceilings are all confirmed zero there is nothing
     to protect: being wrong costs one more refused request. Being conservative,
     however, is what left a freshly connected free universe with no second
-    candidate and no answer to its first message (live 2026-09-25). The caller
-    still bounds how many siblings it tries.
+    candidate and no answer to its first message (live 2026-09-25).
+
+    A "yes" here also withholds the source's cooldown, because cooling the
+    connection would skip the very sibling the turn is about to try. So the
+    answer must be **no** once there is no sibling attempt left to protect:
+
+``retry_after_s`` vs ``turn_budget_s`` -- when the source named a window longer
+    than a whole turn is allowed to live, waiting is the honest answer and no
+    sibling attempt can outlast it. ``None`` or a malformed value for either
+    keeps the prior answer.
+
+    Whoever concludes that no sibling attempt remains -- because the budget is
+    spent OR because the order has no candidate left on this source -- is
+    responsible for cooling it after the fact. That is the turn coordinator, the
+    only place that knows both; see ``AgentTurnCoordinator._next_after_capacity``.
+    Without it a source at a DAILY free cap, which refuses every model, would
+    have every turn pay the full budget of requests again, forever.
 
     This grants no authority, widens no grant and never admits a paid model: the
     sibling comes from the SAME order under the SAME ceilings.
     """
-    return (
+    if not (
         scope == "unknown"
         and failure_class in TRANSIENT_CAPACITY
         and _confirmed_free_only(cost_caps)
+    ):
+        return False
+    if (
+        _finite_positive(retry_after_s)
+        and _finite_positive(turn_budget_s)
+        and retry_after_s > turn_budget_s
+    ):
+        return False
+    return True
+
+
+def _finite_positive(value) -> bool:
+    return (
+        type(value) in (int, float) and not isinstance(value, bool)
+        and math.isfinite(value) and value > 0
     )
 
 

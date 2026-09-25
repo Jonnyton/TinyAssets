@@ -253,6 +253,27 @@ the turn replaced SHALL be carried onto the failure that finally escapes.
 - **WHEN** every model tried is refused the same way
 - **THEN** at most three narrowed retries occur, and the reported failure carries one attempt record per model tried
 
+The withheld cooldown buys exactly one thing: another model on the same grant.
+Whoever concludes that no sibling attempt will follow -- the narrowed budget is
+spent, the order has no sibling left on that source, or the turn moves to a
+different connection -- SHALL cool the source after the fact, honouring the
+source's own `Retry-After` when it supplied one. A refusal whose stated window
+is longer than a whole turn may live SHALL keep its cooldown immediately, since
+waiting is then the answer and no sibling attempt can outlast it.
+
+#### Scenario: A daily free cap is paid for once, not every turn
+- **WHEN** a zero-cost source refuses every eligible model with an unknown-scope rate limit
+- **THEN** the first turn spends its bounded budget discovering that and the source is cooled
+- **AND** the next turn is answered off that cooldown with its attempt skipped, rather than sending the same requests again
+
+#### Scenario: A source that answered is not cooled
+- **WHEN** a narrowed sibling attempt succeeds
+- **THEN** the source keeps no cooldown from the refusal that preceded it
+
+#### Scenario: A stated window longer than the turn is waited out
+- **WHEN** a refusal names a retry-after longer than the turn's absolute cap
+- **THEN** the source is cooled for that window and no sibling attempt is made
+
 ### Requirement: Connection-scoped model choices
 The app SHALL expose model choices from the universe owner's authorized connections with freshness and capability information, without a compiled model-release list.
 
