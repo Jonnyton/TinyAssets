@@ -12,7 +12,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
-## Codex credits are exhausted, so no PR touching an authority path can land (2026-09-25)
+## Codex credits are exhausted, so every authority-path PR costs founder time (2026-09-25)
 
 `codex exec` answers only:
 
@@ -22,18 +22,20 @@ whose next step is *"the founder logs into Cloudflare."*
 `codex login status` still reports "Logged in using ChatGPT", so this is a
 credit balance, not an auth failure, and no agent can fix it.
 
-What it blocks: `pr-scope-guard` demands an **exact-head cross-family review
-receipt** for any behavioural change to an authority path
-(`scripts/authority_behavior_check.py`), and the only other model family in this
-harness is Codex. PR #3981 (free-model sibling retry, Tier 2) is red on
-"Diff scope declared" for exactly this reason — `tinyassets/providers/router.py`
-changed behaviour and there is no reviewer to produce the receipt. Every future
-PR touching `router.py`, `provider_assignment*`, `storage/` or the other listed
-authority paths hits the same wall until this clears.
+What it costs: `pr-scope-guard` requires an exact-head **cross-family** review
+receipt for any behavioural change to an authority path
+(`scripts/authority_behavior_check.py`), and Codex is the only other model
+family in this harness. With it down, the only route left is the founder
+reviewing by hand and stamping the receipt -- which is what happened on PR #3981
+(`tinyassets/providers/router.py`). The gate still works; it just spends founder
+time it was designed not to spend, on every PR touching `router.py`,
+`provider_assignment*`, `storage/` or the other listed paths. The receipt is
+head-pinned, so each follow-up push needs a fresh one.
 
 The ask: top up Codex credits at https://chatgpt.com/codex/settings/usage, or
-tell us to wait for the 2026-09-27 17:15 reset. Do not have an agent write the
-`Drain-Review-Verdict: APPROVE` receipt itself — the gate exists because a PR
+tell us to wait for the 2026-09-27 17:15 reset and to keep bringing
+authority-path work to you. Do not have an agent write the
+`Drain-Review-Verdict: APPROVE` receipt itself -- the gate exists because a PR
 can neuter its own checks, and a self-issued receipt is the failure it names.
 
 ## Delete the platform's model-credential repository secrets (2026-09-24)
