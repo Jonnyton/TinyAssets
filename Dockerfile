@@ -109,9 +109,12 @@ RUN mkdir -p /opt/claude-code-install && \
 
 WORKDIR /build
 
-# Copy project metadata + source so editable install works.
+# Copy project metadata + source so editable install works. PLAN.md is NOT
+# copied: nothing in the runtime reads it (#3967 removed the daemon's PLAN
+# serving, and provider_jail never binds /app), and shipping it made every
+# PLAN.md edit a runtime change that rebuilt the image and killed in-flight
+# turns. Adding it back is what re-arms that -- see tests/test_runtime_paths.py.
 COPY pyproject.toml ./
-COPY PLAN.md ./
 COPY tinyassets/ ./tinyassets/
 COPY domains/ ./domains/
 # fantasy_daemon is the node-execution runtime invoked by
@@ -233,7 +236,6 @@ COPY --from=builder /build/tinyassets /app/tinyassets
 COPY --from=builder /build/domains /app/domains
 COPY --from=builder /build/fantasy_daemon /app/fantasy_daemon
 COPY --from=builder /build/pyproject.toml /app/pyproject.toml
-COPY --from=builder /build/PLAN.md /app/PLAN.md
 
 # Static data files required at runtime.
 # world_rules.lp is the ASP constraint program; asp_engine.py resolves it
