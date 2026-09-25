@@ -14,19 +14,60 @@ detail isn't available.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
+
+from tinyassets.workspace_git import _REDACTED
 
 # "skipped" = never tried (registry miss or quota/cooldown gate).
 # "failed"  = tried and got an exception.
 AttemptStatus = Literal["skipped", "failed"]
 
 
+#: Credential-bearing field names, matched case-insensitively. The NAME stays so
+#: the reader can see what was removed; only the value goes.
+_CREDENTIAL_FIELD = "|".join((
+    r"(?:x[_-]?)?api[_-]?key", "authorization", r"access[_-]?token",
+    r"refresh[_-]?token", r"client[_-]?secret", r"secret[_-]?key", r"session[_-]?token",
+))
+
+#: Extra patterns for DIAGNOSTIC text only, never for ``scrub_text`` itself.
+#:
+#: The shared ``scrub_text`` also cleans ``run_git``'s ``stdout_tail``, which
+#: callers PARSE -- ``_head_ref`` and ``_observed_ref`` read refs out of
+#: ``ls-remote`` output. A generic `sk-` rule there rewrites a branch genuinely
+#: named ``refs/heads/sk-login-timeout-fix`` to ``refs/heads/[redacted]``, and
+#: push reconciliation then reads a landed push as failed. Nothing parses an
+#: attempt ``detail``, so the wider net belongs here and only here.
+_DIAGNOSTIC_SCRUB: tuple[tuple[re.Pattern[str], str], ...] = (
+    # A JSON-encoded credential field: {"api_key": "..."} / {"authorization": "..."}.
+    # scrub_text's header rule only sees `Name: value` lines, so a source that
+    # echoes the request as JSON walks straight past it.
+    (
+        re.compile(rf'(?i)("(?:{_CREDENTIAL_FIELD})"\s*:\s*)"[^"]*"'),
+        r"\1" + f'"{_REDACTED}"',
+    ),
+    # The same field in a query string or form body: api_key=... / access_token=...
+    (re.compile(rf"(?i)\b((?:{_CREDENTIAL_FIELD})=)[^&\s\"']+"), r"\1" + _REDACTED),
+    # The widely used `sk-`-prefixed secret shape. Vendor-neutral: a token
+    # SHAPE, not a provider.
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), _REDACTED),
+)
+
+
 def redacted_failure_detail(detail: str, *, limit: int = 200) -> str:
-    """Scrub before clipping, retaining the terminal cause within the budget."""
+    """Scrub before clipping, retaining the terminal cause within the budget.
+
+    Applies the shared secret scrub plus the diagnostic-only patterns above.
+    This text is for a log line and the owner's failure record; no caller parses
+    it, so over-redacting here costs a reader nothing.
+    """
     from tinyassets.workspace_git import scrub_text
 
     scrubbed = scrub_text(detail)
+    for pattern, replacement in _DIAGNOSTIC_SCRUB:
+        scrubbed = pattern.sub(replacement, scrubbed)
     if len(scrubbed) <= limit:
         return scrubbed
     head = limit // 2

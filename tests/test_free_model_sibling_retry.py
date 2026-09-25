@@ -171,6 +171,42 @@ def test_sibling_retries_are_bounded_and_every_attempt_is_recorded(agent, monkey
     assert len({wire[1]["body"]["model"] for wire in agent.wires}) == 4
 
 
+@pytest.mark.parametrize("kind,narrows", [("engine_inference", True), ("native_agent", False)])
+def test_only_engine_inference_narrows_an_unproven_account_exhaustion(kind, narrows):
+    """A native executor runs on ONE subscription, so its account IS the source.
+
+    Its accepted ceilings are ``None`` -- which ``confirmed_free_only`` reads as
+    free-only, correctly, because the members are UNMETERED -- and its rate
+    limit carries no capacity scope, so it observes as ``unknown``. Both
+    narrowing conditions therefore hold for a source where narrowing means
+    nothing: unmetered-per-subscription is not free-per-model. Live proof this
+    matters: narrowing there replaced the account exclusion that was letting a
+    mixed universe fall through to its HTTP source, and two
+    ``test_mixed_agent_execution`` cases went red in CI.
+    """
+    from types import SimpleNamespace
+
+    from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
+    from tinyassets.providers.agent_capacity_boundary import CapacityBoundary
+    from tinyassets.providers.model_policy import Exhaustion, ModelRef
+
+    ref = ModelRef("some-source", "some-model")
+    turn = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
+    turn.execution_kind = kind
+    turn.free_sibling_retries = 0
+    turn.context = SimpleNamespace(model_selection=ref)
+    # A plan whose ceilings for this source are free-only (None), which is
+    # exactly what a native member reports.
+    turn.plan = SimpleNamespace(source_cost_caps=lambda _connection: None)
+    boundary = CapacityBoundary(
+        Exhaustion("account", ref), True, "provider_rate_limited", 60.0, "unknown",
+    )
+    exhaustion, narrowed = turn._narrowed(boundary)
+    assert narrowed is narrows
+    assert exhaustion.scope == ("model" if narrows else "account")
+    assert turn.free_sibling_retries == (1 if narrows else 0)
+
+
 def test_narrowing_cannot_reach_a_connection_the_account_rule_excludes(agent, monkeypatch):
     """The narrowing removed the only thing vouching for a sibling CONNECTION.
 

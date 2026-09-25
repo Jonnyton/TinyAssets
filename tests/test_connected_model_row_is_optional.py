@@ -85,8 +85,8 @@ _ASK = {"request_id": "req_b", "kind": "API", "status": "pending", "title": "Key
 def _run_head(rows, extra=""):
     html, _ = render_app_html()
     source = "\n".join(_js_function(html, name) for name in (
-        "isSetupRequest", "isOptionalRequest", "foldedModelAccess", "renderRail",
-        "connectBody"))
+        "isSetupRequest", "isOptionalRequest", "forgetFinishedSetup", "foldedModelAccess",
+        "renderRail", "connectBody"))
     shapes = html[html.index("  const ConnectShapes={"):
                   html.index("  // A declared model list needs")]
     script = (_RAIL_HARNESS.replace("__SOURCE__", source + "\n" + shapes)
@@ -95,7 +95,8 @@ const tabs=host.children.map(t=>({text:text(t),
   optional:(t.className||'').split(' ').includes('rtab--optional'),
   hasPanel:t.children.some(c=>c.children.includes($('connect-panel')))}));
 console.log(JSON.stringify({tabs,head:$('rail-head').textContent,
-  railHidden:$('request-rail').hidden}));
+  railHidden:$('request-rail').hidden,otherOpen:$('connect-other').open,
+  panelHidden:$('connect-panel').hidden,railOpen}));
 """)
     run = subprocess.run([_NODE, "-e", script], capture_output=True, text=True,
                          encoding="utf-8", timeout=30, check=False)
@@ -131,3 +132,65 @@ def test_an_older_page_payload_without_a_status_is_still_treated_as_an_ask():
 def test_an_optional_row_still_opens_when_the_user_taps_it():
     out = _run_head([_CONNECTED], "railOpen='sys_connect_llm';renderRail(railCache);")
     assert out["tabs"][0]["hasPanel"] is True, "the optional row could not be opened"
+
+
+_BLOCKING = {"request_id": "sys_connect_llm", "kind": "LLM", "sticky": True,
+             "status": "pending", "title": "Connect the model your universe runs on",
+             "body": "Your universe needs a model to think with.", "fields": [],
+             "action": {"type": "connect", "use": "model", "setup": {
+                 "primary": {"preset_id": "guided_models_v1",
+                             "label": "Continue with Example", "name": "Example",
+                             "manage_url": "https://provider.example/keys",
+                             "manual_key": True},
+                 "shapes": ["api_key", "local"]}}}
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_the_finished_setup_card_does_not_carry_its_expansion_across_the_connect():
+    """The exact screen the founder landed on returning from OpenRouter sign-in.
+
+    2026-09-25: the rail showed "Connect another LLM" FULLY EXPANDED, body and
+    all, with "Other ways to connect" open over the Model URL / API key / Model
+    id fields and a Connect button — for a universe that was already connected.
+    The setup card is expanded by ID (``openConnectRequest`` sets ``railOpen``),
+    and that id does not change when the connect succeeds.
+    """
+    # The in-progress setup, opened the way openConnectRequest opens it, with
+    # the shapes disclosure expanded as ConnectShapes leaves it.
+    out = _run_head(
+        [_BLOCKING],
+        "railOpen='sys_connect_llm';$('connect-other').open=true;renderRail(railCache);"
+        # ...then the callback returns and the rail refreshes: now connected.
+        "renderRail(" + json.dumps([_CONNECTED]) + ");",
+    )
+    assert out["tabs"][0]["hasPanel"] is False, "the finished setup card stayed open"
+    assert out["panelHidden"] is True, "the setup panel was still on screen"
+    assert out["otherOpen"] is False, "'Other ways to connect' stayed open"
+    assert out["railOpen"] is None
+    assert out["tabs"][0]["optional"] is True
+    assert out["head"] == "Nothing waiting on you"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_a_still_unpowered_setup_keeps_its_expansion_across_a_refresh():
+    """Only the transition resets it. A rail refresh mid-setup must not."""
+    out = _run_head(
+        [_BLOCKING],
+        "railOpen='sys_connect_llm';$('connect-other').open=true;renderRail(railCache);"
+        "renderRail(" + json.dumps([_BLOCKING]) + ");",
+    )
+    assert out["tabs"][0]["hasPanel"] is True, "the setup collapsed mid-connect"
+    assert out["otherOpen"] is True, "the user's open shape picker closed itself"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_a_powered_user_can_still_open_connect_another_after_the_transition():
+    """The reset is one-shot: adding a SECOND source still opens on demand."""
+    out = _run_head(
+        [_BLOCKING],
+        "railOpen='sys_connect_llm';renderRail(railCache);"
+        "renderRail(" + json.dumps([_CONNECTED]) + ");"
+        # The user now taps "Connect another LLM" themselves.
+        "railOpen='sys_connect_llm';renderRail(railCache);",
+    )
+    assert out["tabs"][0]["hasPanel"] is True, "an optional row could no longer be opened"

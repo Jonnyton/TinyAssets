@@ -141,13 +141,6 @@ def _registered_secrets() -> list[str]:
         return list(_SECRETS)
 
 
-#: Credential-bearing JSON/query field names, matched case-insensitively. The
-#: NAME is kept so the reader can see what was removed; only the value goes.
-_CREDENTIAL_FIELD = "|".join((
-    r"(?:x[_-]?)?api[_-]?key", "authorization", r"access[_-]?token",
-    r"refresh[_-]?token", r"client[_-]?secret", r"secret[_-]?key", r"session[_-]?token",
-))
-
 _SCRUB_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # userinfo in an https URL: https://user:token@host/...
     (re.compile(r"https://[^/@\s]+@"), f"https://{_REDACTED}@"),
@@ -155,22 +148,6 @@ _SCRUB_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)(authorization\s*:\s*)([^\r\n]+)"), r"\1" + _REDACTED),
     (re.compile(r"ghp_[A-Za-z0-9]{20,}"), _REDACTED),
     (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), _REDACTED),
-    # A JSON-encoded credential field: {"api_key": "..."} / {"authorization": "..."}.
-    # The header pattern above only sees `Name: value` lines, so a provider that
-    # echoes the request as JSON walked straight past it.
-    (
-        re.compile(rf'(?i)("(?:{_CREDENTIAL_FIELD})"\s*:\s*)"[^"]*"'),
-        r"\1" + f'"{_REDACTED}"',
-    ),
-    # The same field in a query string or form body: api_key=... / access_token=...
-    (
-        re.compile(rf"(?i)\b((?:{_CREDENTIAL_FIELD})=)[^&\s\"']+"),
-        r"\1" + _REDACTED,
-    ),
-    # The widely used `sk-`-prefixed secret shape (OpenAI-compatible services,
-    # which is most of what a user connects). Vendor-neutral: it is a token
-    # SHAPE, not a provider, and matching it only ever removes more.
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), _REDACTED),
 )
 
 
