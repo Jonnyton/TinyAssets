@@ -3,10 +3,9 @@
 A connection SCOPE says what the deposited credential may do: an http connection's
 scopes are its HTTP verbs, and a git one carries ``git_read:owner/name`` or
 ``git_write:owner/name`` bound to exactly one repository on exactly one host --
-**the host that connection declares** -- with ONE mapping, ``FORGE_GIT_HOSTS``
-below, for a forge whose git and API live on different hosts. GitHub is the only
-entry and it cost a live 403 to learn; GitLab, Gitea and any self-hosted forge
-pass straight through untouched. A typed CONSENT
+**the host that connection declares**: its optional ``git_host`` when the owner
+set one (a forge whose git and API live on different hosts), otherwise the one
+host its endpoints reach. There is no per-service table and no default. A typed CONSENT
 says the universe's owner agreed to this kind of work on that repository at all -
 ``workspace_checkout``, ``workspace_push``, ``workspace_provision``, recorded per
 universe by :mod:`tinyassets.storage.effector_consents` under a destination this
@@ -33,32 +32,6 @@ from typing import Any, Iterable
 GIT_SCOPE_READ = "git_read"
 GIT_SCOPE_WRITE = "git_write"
 GIT_SCOPE_KINDS = (GIT_SCOPE_READ, GIT_SCOPE_WRITE)
-
-#: Providers whose OAuth pipe implies exactly one host even with no declared
-#: endpoints. This is NOT a list of hosts git scopes may use -- any host a
-#: connection declares works. It exists only because a pipe connection has no
-#: endpoint list to read the host off, so the provider has to supply it.
-PROVIDER_PIPE_HOSTS = {"github": "github.com"}
-
-#: Forges that serve their API and their git transport on DIFFERENT hosts.
-#:
-#: A connection declares the host it makes API calls to. For most forges -- a
-#: self-hosted Gitea, an internal GitLab -- that is also the host git clones
-#: from, and this table is empty for them by design: the pass-through default
-#: is what keeps a workspace forge-agnostic.
-#:
-#: GitHub is the exception, and it cost a live run to find. The founder's
-#: connection declares ten endpoints, all ``api.github.com``, so the derived
-#: git host was ``api.github.com`` and the clone became
-#: ``https://api.github.com/owner/name.git`` -- which GitHub answers 403. The
-#: same wrong value was also written into the consent key, so the owner's
-#: perfectly good ``github.com`` consent looked missing.
-#:
-#: A TABLE, not a heuristic. "Strip the api. prefix" happens to work for GitHub
-#: and is wrong for GitLab, whose API lives at ``gitlab.com/api/v4`` on the very
-#: same host. An explicit fact about one forge is honest; a rule inferred from
-#: one example is how the platform ends up shaped like our demo again.
-FORGE_GIT_HOSTS = {"api.github.com": "github.com"}
 
 #: The effector-consent sink the workspace operations record under.
 WORKSPACE_SINK = "workspace"
@@ -179,45 +152,68 @@ def _normalize_host(host: Any) -> str:
     return _text(host).lower().rstrip(".")
 
 
+#: One DNS hostname: dot-separated labels of letters, digits and inner hyphens.
+#: No scheme, port, path, userinfo or IP literal -- it ends up in a git URL, a
+#: credential-broker binding and a consent key.
+_GIT_HOST_RE = re.compile(
+    r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]"
+)
+
+
+def normalize_git_host(value: Any) -> str:
+    """A connection's declared git host, canonical, or ``""`` when none is set.
+
+    Raises :class:`GitScopeError` for anything that is not a bare hostname. The
+    owner states this host when they connect: it is where git operations send
+    their key, so it is never inferred from a table and never defaulted.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise GitScopeError("git_host must be a hostname string")
+    host = _normalize_host(value)
+    if not host:
+        return ""
+    if not _GIT_HOST_RE.fullmatch(host):
+        raise GitScopeError(
+            f"git_host {value!r} must be a bare hostname such as git.example.com "
+            "(no scheme, port, path or IP address)"
+        )
+    return host
+
+
 def connection_hosts(connection: Any) -> tuple[str, ...]:
-    """The hosts a connection's declared endpoints reach. Empty for a pipe."""
+    """The hosts a connection's declared endpoints reach."""
     endpoints = getattr(connection, "allowed_endpoints", ()) or ()
     return tuple(_text(getattr(endpoint, "host", "")).lower() for endpoint in endpoints)
 
 
-def git_host_for_endpoints(hosts: Iterable[str], provider: Any = "") -> str:
-    """The ONE host a git scope on these endpoints binds to, or ``""``.
+def git_host_for_endpoints(hosts: Iterable[str], git_host: Any = "") -> str:
+    """The ONE host a git scope on this connection binds to, or ``""``.
 
     ``git_read:owner/name`` names a repository, and a repository only means
-    something together with a host. The connection supplies it: every declared
-    endpoint must be on the SAME host, and that host is the answer. Two hosts is
-    not "pick one" - the scope would be ambiguous, and honouring it would lend
-    one credential to whichever host the caller preferred, which is the thing a
-    scope exists to stop.
+    something together with a host. The connection supplies it, in this order:
 
-    Which host it is, is none of the platform's business. github.com, an
-    internal GitLab, a Gitea box: a workspace is workflow- and channel-agnostic,
-    and pinning our own demo's host here is what stopped every other forge from
-    working at all.
+    1. its declared ``git_host``, when the owner set one -- the answer for any
+       forge whose git transport lives on a different host from its API;
+    2. otherwise the one host every declared endpoint is on. Two hosts is not
+       "pick one" -- the scope would be ambiguous, and honouring it would lend
+       one credential to whichever host the caller preferred.
 
-    A connection with NO declared endpoints is a provider pipe; only a provider
-    in :data:`PROVIDER_PIPE_HOSTS` can say what its host is.
+    Which host it is, is none of the platform's business: there is no
+    per-service table here and no default.
     """
+    declared = _normalize_host(git_host)
+    if declared:
+        return declared
     host_list = [_normalize_host(host) for host in hosts if _normalize_host(host)]
-    if host_list:
-        unique = set(host_list)
-        if len(unique) != 1:
-            return ""
-        # The declared host is where the connection makes API CALLS. Git may
-        # live somewhere else on the same forge; unknown hosts pass straight
-        # through, which is what keeps every other forge working.
-        return FORGE_GIT_HOSTS.get(host_list[0], host_list[0])
-    return PROVIDER_PIPE_HOSTS.get(_text(provider).lower(), "")
+    unique = set(host_list)
+    return host_list[0] if len(unique) == 1 else ""
 
 
-def endpoints_allow_git_scopes(hosts: Iterable[str], provider: Any = "") -> bool:
+def endpoints_allow_git_scopes(hosts: Iterable[str], git_host: Any = "") -> bool:
     """Whether a connection with these endpoint hosts may carry a git scope."""
-    return bool(git_host_for_endpoints(hosts, provider))
+    return bool(git_host_for_endpoints(hosts, git_host))
 
 
 def connection_git_host(connection: Any) -> str:
@@ -228,7 +224,7 @@ def connection_git_host(connection: Any) -> str:
     from here, so none of them can spell a different one.
     """
     return git_host_for_endpoints(
-        connection_hosts(connection), getattr(connection, "provider", "")
+        connection_hosts(connection), getattr(connection, "git_host", "")
     )
 
 
@@ -238,13 +234,13 @@ def connection_allows_git_scopes(connection: Any) -> bool:
 
 
 def validate_git_scopes(
-    scopes: Iterable[Any], *, hosts: Iterable[str] = (), provider: Any = ""
+    scopes: Iterable[Any], *, hosts: Iterable[str] = (), git_host: Any = ""
 ) -> None:
     """Raise unless every git-shaped scope is well formed and legal here.
 
     Called at every write of a scope tuple, so no stored row can carry a git
     scope on a connection whose host is ambiguous - the check cannot be skipped
-    by a caller that assembles its own tuple. "Ambiguous", not "not github":
+    by a caller that assembles its own tuple. "Ambiguous", not "not a forge":
     the forge is the connection's to name.
     """
     git_scopes = [scope for scope in scopes if is_git_scope(scope)]
@@ -252,10 +248,11 @@ def validate_git_scopes(
         return
     for scope in git_scopes:
         require_git_scope(scope)
-    if not endpoints_allow_git_scopes(hosts, provider):
+    hosts = list(hosts)
+    if not endpoints_allow_git_scopes(hosts, git_host):
         raise GitScopeError(
-            "a git scope needs a connection whose declared endpoints are all on "
-            "ONE host (any host), or a provider pipe that names one; got "
+            "a git scope needs ONE host for git: every endpoint on ONE host, "
+            "or a declared git_host when git lives elsewhere; got "
             f"{sorted(set(_normalize_host(host) for host in hosts)) or 'no endpoints'}"
         )
 
@@ -410,7 +407,7 @@ __all__ = [
     "GitScopeError",
     "WORKSPACE_CONSENTS",
     "WORKSPACE_SINK",
-    "PROVIDER_PIPE_HOSTS",
+    "normalize_git_host",
     "connection_allows_git_scopes",
     "connection_git_host",
     "connection_git_scopes",

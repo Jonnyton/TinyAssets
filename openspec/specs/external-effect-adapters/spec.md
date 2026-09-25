@@ -308,12 +308,18 @@ with the address pinned in git's transport (`http.curloptResolve`) to addresses
 the outbound driver's classification validated as public unicast.
 
 **The host SHALL be derived from the STORED connection, never from the packet.**
-A packet that names a host SHALL be refused unless it agrees with the
-connection's declared endpoints. The packet used to supply the host while the
-scope check ignored it, which pointed a scoped credential at a host the owner
-never allowlisted; the connection's endpoints are the authority, and a
-connection with none falls back to the single host a git scope is permitted on
-at all.
+A packet that names a host SHALL be refused unless it agrees with that derived
+host. The packet used to supply the host while the scope check ignored it, which
+pointed a scoped credential at a host the owner never allowlisted. The git host
+SHALL be the connection's optional declared `git_host` when the owner set one on
+the connect ask (a bare hostname, shown to the owner in the grant sentence),
+and otherwise the single host every declared endpoint is on. A connection with
+no declared `git_host` whose endpoints span several hosts SHALL carry no git
+scope. There SHALL be no per-service host table or default: the former
+`FORGE_GIT_HOSTS` (`api.github.com` -> `github.com`) and `PROVIDER_PIPE_HOSTS`
+were removed on 2026-09-24. A `git_host` is set only by the owner's connect
+answer; changing it on an existing connection is a remove and reconnect, never
+a silent re-deposit.
 
 A `push` SHALL journal its intent — `(connection, repo, remote ref, sha,
 expected old sha, host, grant, universe)` — before anything reaches the wire,
@@ -343,6 +349,16 @@ the handle exists to close.
 #### Scenario: a discard cannot pull the ground from under a push
 - **WHEN** a `discard` for the same workspace runs while a `push` is reading the repository
 - **THEN** the push holds duplicated descriptors for its whole operation, or is refused for a revoked workspace before it starts, and never reads a directory a reused descriptor number now names
+
+#### Scenario: A declared git host is where git goes
+
+- **WHEN** the owner connects a service with API endpoints on one host and `git_host` naming another
+- **THEN** checkout and push use the declared `git_host` for the transport and the consent key
+
+#### Scenario: No declaration means the connection's own host
+
+- **WHEN** a connection declares no `git_host` and its endpoints are all on `api.github.com`
+- **THEN** git uses `api.github.com`; no service's API host is mapped anywhere by the platform
 
 #### Scenario: a packet cannot choose the host its credential is used against
 - **WHEN** a `checkout` or `push` packet names a host that the connection's endpoints do not declare

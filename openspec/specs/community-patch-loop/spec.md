@@ -71,19 +71,14 @@ The auto-ship validator (`validate_ship_request` in `tinyassets.auto_ship`) SHAL
 - **THEN** `would_open_pr` matches the verdict produced with the mode `off`
 - **AND** any warnings are recorded on their own annotation channel without adding a blocking violation
 
-### Requirement: Auto-Ship PR Creation Is Feature-Flagged Off And Never Merges
+### Requirement: Auto-Ship Validates And Records But Opens No Pull Request
 
-Pull-request creation SHALL be gated behind `TINYASSETS_AUTO_SHIP_PR_CREATE_ENABLED`; when the flag is not explicitly truthy the system SHALL remain in dry-run mode, record `pr_create_disabled` on the attempt's ledger row, and make no GitHub call. The PR-open step (`open_auto_ship_pr` in `tinyassets.auto_ship_pr`) SHALL open a pull request only from an existing `auto-change/*` branch whose recorded attempt already passed validation and that is current with its base branch; it SHALL NOT apply patches, push branches, poll approvals, or merge. As-built limitation: automatic merge (the planned Phase 3) is unimplemented — no code path merges an auto-ship pull request.
+The auto-ship lane SHALL validate a ship packet and record the attempt; it SHALL NOT open, push to, or merge a pull request on any forge, and there SHALL be no GitHub-specific pull-request action (the former `open_auto_ship_pr`, removed 2026-09-24). A universe that wants a pull request opens it the way it calls any API: a workflow node on the generic `authenticated_external_call` sink, through a connection its owner deposited, with the owner's own credential.
 
-#### Scenario: Disabled flag stays in dry-run
+#### Scenario: There is no platform pull-request opener
 
-- **WHEN** `open_auto_ship_pr` runs for an eligible attempt while `TINYASSETS_AUTO_SHIP_PR_CREATE_ENABLED` is not truthy
-- **THEN** no GitHub request is made and the attempt's ledger row records `pr_create_disabled` with `ship_status` `skipped`
-
-#### Scenario: Ineligible attempt is refused
-
-- **WHEN** the referenced attempt is not `ship_status` `skipped` with `would_open_pr` true
-- **THEN** PR creation returns a not-eligible error and opens no pull request
+- **WHEN** a caller asks the extensions surface for `open_auto_ship_pr`
+- **THEN** the action is not in the auto-ship dispatch table and no forge request is made
 
 ### Requirement: Auto-Ship Attempts Are Recorded In An Append-Only Ledger
 

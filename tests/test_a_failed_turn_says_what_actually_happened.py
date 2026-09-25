@@ -33,9 +33,9 @@ import json
 
 import pytest
 
+from tinyassets.conversation_failure import _CLASS_WORDS as _TURN_ENDED_FAILURE_CLASSES
 from tinyassets.exceptions import AllProvidersExhaustedError
 from tinyassets.universe_server import (
-    _TURN_ENDED_FAILURE_CLASSES,
     _served_failure_notice,
 )
 
@@ -93,8 +93,10 @@ def test_every_class_the_platform_distinguishes_has_its_own_sentence(failure_cla
     layer threw it away. A distinction the platform computes and does not show
     is a distinction it does not have."""
     assert failure_class in _TURN_ENDED_FAILURE_CLASSES
-    notice = _TURN_ENDED_FAILURE_CLASSES[failure_class]
-    assert notice.strip() and notice[-1] in ".!"
+    words = _TURN_ENDED_FAILURE_CLASSES[failure_class]
+    # A clause the notice is composed from, not a whole sentence of its own.
+    assert words.strip() and words[-1] not in ".!"
+    assert words in _served_failure_notice(_Failure("x", failure_class))
 
 
 def test_no_two_classes_share_a_sentence():
@@ -470,9 +472,9 @@ def test_the_recorder_is_actually_WIRED_into_the_failure_path():
     # The notice and the recorder must appear in the same handler, with the
     # recording BEFORE the reply is built.
     pattern = (
-        r"_record_served_failure\(uid, exc\)\s*\n\s*"
+        r"_record_served_failure\(uid, exc, ref=record\.ref\)\s*\n\s*"
         r"return json\.dumps\(\s*\{\s*\"error\":\s*"
-        r"_served_failure_notice\(exc\)"
+        r"_served_failure_notice\(exc, record\)"
     )
     m = re.search(pattern, source)
     assert m, (

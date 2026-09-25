@@ -2,9 +2,8 @@
 
 Per-universe SQLite store recording user grants of the form
 *"this universe's effectors may write to destination D via sink S."*
-The grant is one of three gates the ``github_pr`` effector consults
-before any real ``gh pr create`` fires (capability env + consent grant
-+ idempotency receipt).
+The grant is one of the gates every external-write sink consults before
+it fires (connection grant + consent grant + idempotency receipt).
 
 Design source: ``drafts/concepts/external-write-phase-2-authority.md``
 §3 "Per-destination consent surface".

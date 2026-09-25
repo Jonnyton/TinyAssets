@@ -124,7 +124,7 @@ def source_channel(
 ) -> str:
     """Dispatch an owner source-channel operation.
 
-    ``action`` ∈ {approve, set_policy, get_policy}. ``universe_id`` is the
+    ``action`` ∈ {approve, revoke, set_policy, get_policy}. ``universe_id`` is the
     owner's universe (``graph_id`` from the connector). ``payload`` carries
     ``channel_type``/``node_id``/``reason``/``sink``/``destination``/``mode``.
     """
@@ -163,6 +163,8 @@ def source_channel(
 
     if normalized == "approve":
         return _approve(base, uid, actor, branch_id, fields)
+    if normalized == "revoke":
+        return _revoke_sink(uid, fields)
     if normalized == "set_policy":
         return _set_policy(base, uid, actor, fields)
     if normalized == "get_policy":
@@ -170,7 +172,7 @@ def source_channel(
     return json.dumps({
         "error": "unknown_source_channel_operation",
         "operation": action,
-        "allowed_operations": ["approve", "set_policy", "get_policy"],
+        "allowed_operations": ["approve", "revoke", "set_policy", "get_policy"],
         "actionable_by": "chatbot",
     })
 
@@ -364,7 +366,7 @@ def _approve_sink(
 ) -> str:
     """Approve a sink/effector channel via the shared effector-consent store.
 
-    ``channel_type`` is the sink name (e.g. ``github_pull_request``), or the
+    ``channel_type`` is the sink name (e.g. ``authenticated_external_call``), or the
     caller may pass ``sink`` explicitly. ``granted_by`` is the authenticated
     owner — stronger than the legacy ``grant_effector_consent`` which derived it
     from the ambient ``UNIVERSE_SERVER_USER`` env.
@@ -405,6 +407,63 @@ def _approve_sink(
         "channel_type": sink,
         "universe_id": uid,
         "consent": record,
+    })
+
+
+def _revoke_sink(uid: str, fields: dict[str, Any]) -> str:
+    """Take a sink consent back. Narrowing only, so any sink may be revoked --
+    including ``workspace``, which the served agent cannot grant itself.
+
+    The reply's ``active`` is read back from the store the effectors consult
+    (``is_consent_active``), not inferred from the write.
+    """
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.storage.effector_consents import is_consent_active, revoke_consent
+
+    sink = (fields.get("sink") or fields.get("channel_type") or "").strip()
+    destination = (fields.get("destination") or "").strip()
+    if sink == CHANNEL_SOURCE_CODE:
+        return json.dumps({
+            "error": (
+                "source_code is not a consent: a code node runs in the OS sandbox "
+                "of the universe that authored it, so there is nothing to revoke"
+            ),
+            "failure_class": "not_a_consent",
+            "actionable_by": "chatbot",
+        })
+    if not sink or not destination:
+        return json.dumps({
+            "error": "channel_type (or sink) and destination are required",
+            "failure_class": "missing_target",
+            "actionable_by": "chatbot",
+        })
+    try:
+        universe_dir = _universe_dir(uid)
+    except ValueError:
+        return json.dumps({
+            "error": f"Invalid universe_id: {uid}",
+            "failure_class": "invalid_universe",
+            "actionable_by": "chatbot",
+        })
+    was_active = is_consent_active(universe_dir, sink=sink, destination=destination)
+    if was_active:
+        revoke_consent(universe_dir, sink=sink, destination=destination)
+    active = is_consent_active(universe_dir, sink=sink, destination=destination)
+    if active:  # fail loudly: the store still says it is granted
+        return json.dumps({
+            "error": "revoke did not take effect; the consent is still active",
+            "failure_class": "revoke_failed",
+            "actionable_by": "host",
+            "channel_type": sink,
+            "destination": destination,
+            "active": True,
+        })
+    return json.dumps({
+        "status": "revoked" if was_active else "not_held",
+        "channel_type": sink,
+        "destination": destination,
+        "universe_id": uid,
+        "active": active,
     })
 
 

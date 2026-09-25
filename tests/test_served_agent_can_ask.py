@@ -51,7 +51,8 @@ def test_the_agent_cannot_answer_its_own_ask_or_lift_a_mute():
     for banned in ("answer_request", "unmute_request"):
         assert f"import {banned}" not in src, banned
         assert f"{banned}(" not in src, banned
-    assert "operation='ask' only" in src
+    assert "operation='ask' or" in src
+    assert "'withdraw' (your own stale ask)" in src
 
 
 def test_an_unknown_pending_request_operation_is_refused(monkeypatch):

@@ -77,8 +77,6 @@ VENDORS = (
 PLATFORM_OWN = {
     "tinyassets/billing/stripe_adapter.py",      # bills its own customers
     "tinyassets/auto_ship.py",                   # ships its own releases
-    "tinyassets/auto_ship_pr.py",                # ships its own releases
-    "tinyassets/workos_pipes.py",                # its own identity provider
 }
 
 

@@ -241,8 +241,8 @@ def test_a_disconnected_universe_turn_is_setup_not_a_mystery(rig, monkeypatch):
 def test_the_setup_failure_notice_carries_no_retry_caution():
     from tinyassets.conversation_failure import failure_notice
 
-    assert "Actions may already have occurred" not in failure_notice("setup_required")
-    assert "Actions may already have occurred" in failure_notice("timed_out")
+    assert "may already have occurred" not in failure_notice("setup_required").lower()
+    assert "may already have occurred" in failure_notice("timed_out").lower()
 
 
 def test_the_account_page_names_a_guided_connection_by_its_preset():
