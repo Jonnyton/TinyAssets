@@ -395,19 +395,65 @@ class AgentTurnCoordinator:
         Returns ``(exhaustion, narrowed)``; ``narrowed`` tells the caller its
         next candidate rests on a guess and must stay inside the same grant.
         """
-        from tinyassets.providers.model_capacity import free_sibling_retry
-
         if self.execution_kind != "engine_inference":
             return boundary.exhaustion, False
         if self.plan is None or self.free_sibling_retries >= self.MAX_FREE_SIBLING_RETRIES:
             return boundary.exhaustion, False
-        if not free_sibling_retry(
-            scope=boundary.observed_scope, failure_class=boundary.failure_class,
-            cost_caps=self.plan.source_cost_caps(self.context.model_selection.connection_id),
-        ):
+        if not self._free_source_refusal(boundary, window=True):
             return boundary.exhaustion, False
         self.free_sibling_retries += 1
         return replace(boundary.exhaustion, scope="model"), True
+
+    def _free_source_refusal(self, boundary, *, window):
+        """Is this the zero-cost refusal whose cooldown the router withholds?
+
+        Mirrors the router's capacity handler, including its "a selection with
+        proven ceilings exists" condition — which only an engine-inference round
+        has, so a native round is never one of these (the router cooled it).
+
+        ``window`` decides whether the source's own ``Retry-After`` may rule the
+        sibling out. Deliberately asymmetric between the two callers:
+
+        * choosing to TRY a sibling passes it, so a window longer than a turn
+          does not buy a round the quota gate would skip anyway;
+        * deciding to COOL afterwards does not, because the boundary reports the
+          MAXIMUM delay across attempts while the router saw one signal. Erring
+          toward cooling re-applies a window the router already set, which costs
+          nothing; erring the other way leaves a capped source hot, which is the
+          bug being fixed.
+        """
+        from tinyassets.providers.model_capacity import free_sibling_retry
+
+        if self.plan is None or self.execution_kind != "engine_inference":
+            return False
+        return free_sibling_retry(
+            scope=boundary.observed_scope, failure_class=boundary.failure_class,
+            cost_caps=self.plan.source_cost_caps(self.context.model_selection.connection_id),
+            retry_after_s=boundary.retry_after_s if window else None,
+            turn_budget_s=(
+                self.config.stream_timeout_profile().absolute_cap_s if window else None
+            ),
+        )
+
+    def _cool_abandoned_source(self, failed, boundary):
+        """Cool a source the router left hot once no sibling attempt will follow.
+
+        The withheld cooldown buys exactly one thing: another model on the same
+        grant. When the budget is spent, or the order has no sibling left, that
+        purchase is over and the source must be cooled — otherwise a source at a
+        DAILY free cap, which refuses every model, has every turn pay the full
+        budget of requests again, forever. Honours its own ``Retry-After``.
+
+        Never raises: a failing turn must not be replaced by a cooling error.
+        """
+        try:
+            if not self._free_source_refusal(boundary, window=False):
+                return
+            self.router.cool_source(
+                failed.connection_id, retry_after_s=boundary.retry_after_s,
+            )
+        except Exception:  # noqa: BLE001 - cooling is hygiene, never the failure
+            _LOG.warning("could not cool a spent free source")
 
     def _next_after_capacity(self, exc):
         if (
@@ -444,7 +490,12 @@ class AgentTurnCoordinator:
             self.exhaustion = base + (boundary.exhaustion,)
             candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
+            self._cool_abandoned_source(failed, boundary)
             return False
+        if candidate.connection_id != failed.connection_id:
+            # Moving to another source: this one is done for the turn, so the
+            # cooldown the router withheld for it now applies.
+            self._cool_abandoned_source(failed, boundary)
         # Only engine-inference rounds. A native round's diagnostics are paired
         # positionally with its own ``native_evidence``, and carrying them onto
         # a later exception would leave the two lists mismatched, which

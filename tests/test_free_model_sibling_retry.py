@@ -188,6 +188,7 @@ def test_only_engine_inference_narrows_an_unproven_account_exhaustion(kind, narr
 
     from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
     from tinyassets.providers.agent_capacity_boundary import CapacityBoundary
+    from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.model_policy import Exhaustion, ModelRef
 
     ref = ModelRef("some-source", "some-model")
@@ -198,6 +199,7 @@ def test_only_engine_inference_narrows_an_unproven_account_exhaustion(kind, narr
     # A plan whose ceilings for this source are free-only (None), which is
     # exactly what a native member reports.
     turn.plan = SimpleNamespace(source_cost_caps=lambda _connection: None)
+    turn.config = ModelConfig(absolute_cap_s=120)
     boundary = CapacityBoundary(
         Exhaustion("account", ref), True, "provider_rate_limited", 60.0, "unknown",
     )
@@ -317,3 +319,132 @@ def test_capacity_detail_passes_the_secret_scrub(agent, secret, body):
     assert "[redacted]" in detail
     # The source's actual explanation survives the scrub.
     assert "rate limited" in detail or "rejected" in detail
+
+
+# --------------------------------------------------------------------------
+# Withholding the cooldown buys a sibling attempt. Once there is no sibling
+# left to buy, the source gets cooled -- or a daily cap costs four requests a
+# turn, every turn, forever.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("retry_after,budget,expected", [
+    (30.0, 120.0, True),      # a wait a turn can absorb
+    (120.0, 120.0, True),     # exactly the budget is not longer than it
+    (600.0, 120.0, False),    # the source named longer than a turn may live
+    (None, 120.0, True),      # no window named
+    (600.0, None, True),      # no turn budget known
+    (float("inf"), 120.0, True),   # malformed: keep the prior answer
+    (float("nan"), 120.0, True),
+    (600.0, 0, True),         # malformed budget: keep the prior answer
+    (600.0, True, True),      # a bool is not a budget
+])
+def test_a_window_longer_than_the_turn_takes_the_cooldown_back(retry_after, budget, expected):
+    assert free_sibling_retry(
+        scope="unknown", failure_class="provider_rate_limited", cost_caps=None,
+        retry_after_s=retry_after, turn_budget_s=budget,
+    ) is expected
+
+
+def test_cooling_a_source_honours_its_own_retry_after():
+    """Restrictive-only, and the source's stated window wins over the default."""
+    from tinyassets.providers.quota import QuotaTracker
+    from tinyassets.providers.router import COOLDOWN_UNAVAILABLE, ProviderRouter
+
+    router = ProviderRouter.__new__(ProviderRouter)
+    router._quota = QuotaTracker()
+    assert router.cool_source("some-source", retry_after_s=45) == 46
+    assert router._quota.cooldown_remaining("some-source") > 0
+    assert router.cool_source("other-source") == COOLDOWN_UNAVAILABLE
+    assert router.cool_source("third", retry_after_s=float("nan")) == COOLDOWN_UNAVAILABLE
+    with pytest.raises(ValueError):
+        router.cool_source("")
+
+
+def _cooldown(agent):
+    provider = agent.served.context.model_selection.connection_id
+    return agent.served.router._quota.cooldown_remaining(provider)
+
+
+def test_the_last_narrowed_attempt_cools_the_source(agent, monkeypatch):
+    """Four refusals exhaust the budget, and the fourth cools the connection."""
+    integration._with_fallback(agent, monkeypatch)
+    agent.capacity_failures.update({index: 429 for index in range(1, 9)})
+    with pytest.raises(AllProvidersExhaustedError):
+        integration.run(agent)
+    assert _cooldown(agent) > 0, "the source stayed hot after its last attempt"
+
+
+def test_a_daily_cap_does_not_cost_a_full_budget_every_turn(agent, monkeypatch):
+    """The live shape of a free account at its daily cap: every model refuses.
+
+    The first turn spends its budget discovering that. Every turn after it must
+    be answered off the cooldown, not by sending the same requests again.
+    """
+    integration._with_fallback(agent, monkeypatch)
+    agent.capacity_failures.update({index: 429 for index in range(1, 40)})
+    with pytest.raises(AllProvidersExhaustedError):
+        integration.run(agent)
+    spent = len(agent.wires)
+    assert spent > 1, "the first turn did not try a sibling at all"
+    assert _cooldown(agent) > 0
+    with pytest.raises(AllProvidersExhaustedError) as second:
+        integration.run(agent)
+    assert len(agent.wires) == spent, "the second turn paid for the cap again"
+    assert [a.status for a in second.value.attempts] == ["skipped"]
+    assert second.value.attempts[0].skip_class == "quota_or_cooldown"
+
+
+def test_a_short_window_still_buys_the_sibling_attempt(agent, monkeypatch):
+    """The fix must not cool a source whose sibling would have answered."""
+    alternate = integration._with_fallback(agent, monkeypatch)
+    agent.capacity_failures[2] = 429
+    assert integration.run(agent) == "finished exact answer"
+    assert agent.wires[-1][1]["body"]["model"] == alternate
+    assert _cooldown(agent) == 0, "a source that answered was cooled anyway"
+
+
+def test_moving_to_another_source_cools_the_one_left_behind(agent, monkeypatch):
+    """A source the turn walks away from is done with, so its cooldown applies.
+
+    The account exclusion legitimately allows an independently-scoped second
+    connection. Reaching it means this source got no sibling attempt out of its
+    withheld cooldown, so nothing was bought and the cooldown goes back on.
+    """
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.discovery_protocols import discovery_protocol
+    from tinyassets.providers.model_policy import (
+        Catalog,
+        ConnectionModels,
+        Model,
+        ModelPolicy,
+        ModelRef,
+        Pricing,
+    )
+
+    snapshot = integration.authority_tests.snapshot_tests._refresh(agent.served.rig)
+    selected = agent.served.context.model_selection
+    # A DIFFERENT provider scope, so the account exclusion admits it.
+    independent = ConnectionModels(
+        connection_id="api_key_http:an-independent-definition",
+        provider_scope="an-independent-scope", source_kind="http", freshness="fresh",
+        owner_filtered=True, executor_tools=True,
+        models=(Model("other-vendor/free-model", True, frozenset({"text"}),
+                      context_tokens=100_000, pricing=Pricing("fresh", unmetered=True)),),
+    )
+    agent.served.context = replace(agent.served.context, agent_model_plan=AgentModelPlan(
+        Catalog("owner", agent.served.context.universe_dir.name,
+                (snapshot.models, independent)),
+        ModelPolicy(
+            generation=7, mode="explicit", saved_default=selected,
+            fallbacks=(ModelRef(independent.connection_id, "other-vendor/free-model"),),
+        ),
+        replace(
+            discovery_protocol(snapshot.models.provider_scope).text_interaction, needs_tools=True,
+        ),
+        policy_source="saved",
+    ))
+    agent.capacity_failures[1] = 429
+    with pytest.raises(BaseException):
+        integration.run(agent)
+    assert _cooldown(agent) > 0, "the source the turn walked away from stayed hot"
