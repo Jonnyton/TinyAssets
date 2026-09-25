@@ -47,8 +47,8 @@ on:
       - 'scripts/codex_cli_smoke.py'
       - 'scripts/workspace_bwrap_oracle.py'
       # Host inputs: installed by install-host-services.yml (the RUNTIME_FILES
-      # of deploy/install-host-uptime-services.sh, the token refresher, the
-      # deploy fence) or, for the expected-instance state, by deploy-prod.yml.
+      # of deploy/install-host-uptime-services.sh, the deploy fence) or, for
+      # the expected-instance state, by deploy-prod.yml.
       - 'scripts/__init__.py'
       - 'scripts/watchdog.py'
       - 'scripts/disk_watch.py'
@@ -57,7 +57,6 @@ on:
       - 'scripts/rotate_run_transcripts.py'
       - 'scripts/backup_ship_gh.py'
       - 'scripts/backup_prune.py'
-      - 'scripts/github-app-token-refresher.py'
       - 'scripts/retire_cheat_loop_deploy_fence.py'
       - 'scripts/prepare_expected_instance_state.py'
       # Python the deploy-chain workflows run, and what it imports

@@ -368,45 +368,67 @@ def _universe():
     return pytest.importorskip("tinyassets.api.universe")
 
 
-def test_plan_serving_is_read_from_the_daemons_own_source():
+DAEMON_SOURCE = REPO_ROOT / "tinyassets" / "api" / "universe.py"
+
+# Daemon source with no served-headings constant at all -- what this repo's own
+# universe.py became once #3967 cut the change-loop paths out of it.
+UNSERVING_UNIVERSE = "def unrelated():\n    return 1\n"
+
+
+def test_the_daemon_serves_no_plan_sections_so_the_differential_has_no_subject():
+    """#3967 ("GitHub is an ordinary connection") deleted the change-loop paths
+    from ``tinyassets/api/universe.py``, and with them
+    ``_CHANGE_LOOP_PLAN_HEADINGS`` and ``_change_loop_plan_context``. The
+    classifier's PLAN.md refinement mirrors those two, so while they are gone
+    there is nothing to run a differential against.
+
+    This is a tripwire, not a retirement. It goes RED the moment a daemon
+    serves PLAN.md excerpts again -- which is exactly when the parity tests
+    this replaced have to come back, comparing ``served_plan_context`` against
+    the daemon's own builder. Until then the classifier must fail OPEN, which
+    the next test pins.
+    """
     univ = _universe()
-    serving = rp.plan_serving(
-        (REPO_ROOT / "tinyassets" / "api" / "universe.py").read_text(encoding="utf-8")
-    )
+    assert not hasattr(univ, rp.PLAN_HEADINGS_NAME)
+    assert not hasattr(univ, rp.PLAN_CONTEXT_FUNCTION)
+    assert rp.plan_serving(DAEMON_SOURCE.read_text(encoding="utf-8")) is None
+
+
+def test_a_daemon_that_serves_nothing_makes_every_plan_edit_build(repo):
+    """Fail open, the direction this whole module defends. With no served
+    headings to diff, the classifier cannot prove a PLAN.md edit is invisible
+    to production, so it must build. The unsafe alternative is skipping a
+    deploy for a PLAN.md the daemon does ship."""
+    r, _ = repo
+    base = r.commit("daemon stops serving PLAN", {"tinyassets/api/universe.py": UNSERVING_UNIVERSE})
+    assert rp.runtime_inputs(r.root, base).plan is None
+
+    # An edit to a section the serving daemon did NOT serve: skippable before,
+    # a build now, because nothing can say it is unserved.
+    head = r.commit("plan", {"PLAN.md": plan(unserved="changed")})
+    decision = _decide(r, base, head)
+    assert decision.build is True
+    assert "PLAN.md (served headings unreadable)" in decision.runtime_paths
+
+
+def test_served_plan_context_mirrors_a_serving_daemon(repo):
+    """The mirror itself, against a daemon that does serve: the classifier
+    reads the headings and the excerpt limit out of the daemon's own source
+    rather than restating them."""
+    r, base = repo
+    serving = rp.plan_serving((r.root / "tinyassets" / "api" / "universe.py").read_text("utf-8"))
     assert serving is not None
-    assert serving.headings == tuple(univ._CHANGE_LOOP_PLAN_HEADINGS)
-    assert serving.limit == 1400
+    assert serving.headings == ("Scoping Rules", "Module: Daemon Platform")
+    assert serving.limit == SERVED_LIMIT
 
+    # Only the served headings appear, each shortened to the daemon's limit.
+    context = rp.served_plan_context((r.root / "PLAN.md").read_text("utf-8"), serving)
+    assert sorted(context) == ["Module: Daemon Platform", "Scoping Rules"]
+    assert len(context["Scoping Rules"]) <= SERVED_LIMIT
 
-_LONG = "word " * 600
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        pytest.param(None, id="real-PLAN.md"),
-        pytest.param("# nothing served here\n", id="no-sections"),
-        pytest.param(
-            "## Scoping Rules\n" + _LONG + "\n## Module: Goals & Gates  \nshort\n",
-            id="long-and-padded",
-        ),
-        pytest.param("## Module: Daemon Platform\nat eof", id="section-at-eof"),
-        pytest.param(
-            "## Module: Evolution & Evaluation\n### sub\nkept\n## Next\ndropped\n", id="subheadings"
-        ),
-    ],
-)
-def test_served_plan_context_matches_the_daemon(tmp_path, monkeypatch, text):
-    """The classifier must compare exactly what the daemon serves."""
-    univ = _universe()
-    if text is None:
-        text = (REPO_ROOT / "PLAN.md").read_text(encoding="utf-8")
-    (tmp_path / "PLAN.md").write_text(text, encoding="utf-8")
-    monkeypatch.setattr(univ, "_bundled_source_root", lambda: tmp_path)
-    serving = rp.plan_serving(
-        (REPO_ROOT / "tinyassets" / "api" / "universe.py").read_text(encoding="utf-8")
-    )
-    assert rp.served_plan_context(text, serving) == univ._change_loop_plan_context()
+    # A heading the daemon does not serve never reaches the comparison.
+    head = r.commit("plan", {"PLAN.md": plan(unserved="changed")})
+    assert _decide(r, base, head).build is False
 
 
 # --- the workflows agree with the classifier ---------------------------------
@@ -630,7 +652,6 @@ def test_real_deploy_python_closure_includes_the_preflight_helper():
     for path in (
         "scripts/prepare_expected_instance_state.py",
         "scripts/cloud_only_preflight.py",
-        "scripts/github-app-token-refresher.py",
         "scripts/retire_cheat_loop_deploy_fence.py",
     ):
         assert inputs.covers(path), path
