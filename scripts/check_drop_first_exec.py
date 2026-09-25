@@ -19,9 +19,9 @@ gate reported a TTY-allocating exec as a note rather than a violation, on the
 reasoning that no automation can allocate a TTY. That reasoning was wrong as a
 *gate* rule: a TTY is a property of the invocation, not proof that nothing
 automated can reach the command, and the exemption admitted arbitrary
-repo-authored argv. The one real shape it covered — the operator subscription
-login on a fresh volume — is now the fixed ``claude-login`` mode, so TTY execs
-go through the wrapper like everything else.
+repo-authored argv. The one real shape it covered — an operator subscription
+login inside the container — no longer exists: the platform has no LLM (Hard
+Rule 15), so there is no login mode and a TTY exec is refused like any other.
 
 STATED LIMIT, not papered over: this governs repo-authored invocations only.
 ``scripts/droplet.py ssh -- <cmd>`` forwards an arbitrary remote command, and

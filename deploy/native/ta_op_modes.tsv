@@ -18,19 +18,13 @@
 #         environment NAME matched against ^[A-Z_][A-Z0-9_]*$ post-drop.
 #
 # Every row preserves the argv a real caller runs today; this table is a
-# migration of existing operations, never a new capability. `claude-login`
-# is the one-off operator subscription login the runbooks have always
-# documented as an interactive `-it` exec; /usr/local/bin/claude is the
-# image's own symlink to /opt/claude-code-install/node_modules/.bin/claude
-# (Dockerfile), so the program is the documented one. It exists so the gate
-# can refuse EVERY bare exec, TTY or not -- it is not authority to log in,
-# and nothing in this repo runs it.
+# migration of existing operations, never a new capability. There is no mode
+# that logs in to, or exercises, a model provider: the platform has no LLM
+# (AGENTS.md Hard Rule 15). `claude-keepalive`, `codex-keepalive` and
+# `claude-login` were removed 2026-09-24 with the host logins they served.
 version	2	builtin	-
 env-summary	2	builtin	-
 pulse	2	exec	/opt/venv/bin/python|/app/scripts/mcp_public_canary.py|--pulse-only|--url|http://127.0.0.1:8001/mcp|--timeout|10
 canary	2	exec	/opt/venv/bin/python|/app/scripts/mcp_public_canary.py|--url|http://127.0.0.1:8001/mcp|--timeout|10
 printenv	3	exec	/usr/bin/printenv
-claude-keepalive	2	exec	/usr/local/bin/claude|-p|Reply with the single word OK.
-codex-keepalive	2	exec	/usr/local/bin/codex|exec|--sandbox|workspace-write|--disable|apps|--disable|plugins|--disable|remote_plugin|--skip-git-repo-check|Reply with the single word OK.
 bwrap-oracle	2	exec	/opt/venv/bin/python|/app/scripts/workspace_bwrap_oracle.py
-claude-login	2	exec	/usr/local/bin/claude|auth|login|--claudeai
