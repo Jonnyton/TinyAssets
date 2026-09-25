@@ -12,7 +12,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
-## Codex credits are exhausted, so every authority-path PR costs founder time (2026-09-25)
+## Codex credits are exhausted until 2026-09-27 17:15 (2026-09-25)
 
 `codex exec` answers only:
 
@@ -22,21 +22,21 @@ whose next step is *"the founder logs into Cloudflare."*
 `codex login status` still reports "Logged in using ChatGPT", so this is a
 credit balance, not an auth failure, and no agent can fix it.
 
-What it costs: `pr-scope-guard` requires an exact-head **cross-family** review
-receipt for any behavioural change to an authority path
-(`scripts/authority_behavior_check.py`), and Codex is the only other model
-family in this harness. With it down, the only route left is the founder
-reviewing by hand and stamping the receipt -- which is what happened on PR #3981
-(`tinyassets/providers/router.py`). The gate still works; it just spends founder
-time it was designed not to spend, on every PR touching `router.py`,
-`provider_assignment*`, `storage/` or the other listed paths. The receipt is
-head-pinned, so each follow-up push needs a fresh one.
+What happens meanwhile: `pr-scope-guard` wants an exact-head cross-family receipt
+for behavioural changes to an authority path (`scripts/authority_behavior_check.py`).
+The founder's standing directive (2026-09-24) is that cross-family review is
+**postponed, not waived**, while ChatGPT is limited. So an authority-path PR
+lands on an independent Claude Tier 2 review (a reviewer that is not its author,
+following `docs/reference/quality-gates.md`). The lead then stamps the receipt from
+that verdict at the exact head. The authoring agent never stamps its own receipt.
+Each PR landed this way **owes a Codex refutation after the reset**:
 
-The ask: top up Codex credits at https://chatgpt.com/codex/settings/usage, or
-tell us to wait for the 2026-09-27 17:15 reset and to keep bringing
-authority-path work to you. Do not have an agent write the
-`Drain-Review-Verdict: APPROVE` receipt itself -- the gate exists because a PR
-can neuter its own checks, and a self-issued receipt is the failure it names.
+- #3981 (free-model sibling retry, `tinyassets/providers/router.py`), reviewed
+  by Claude at 944d0eff and 3f969915.
+
+The ask (optional): top up Codex credits at https://chatgpt.com/codex/settings/usage
+to restore cross-family review sooner. Otherwise nothing is needed from you. Delete
+this row once the owed reviews have run.
 
 ## Delete the platform's model-credential repository secrets (2026-09-24)
 
