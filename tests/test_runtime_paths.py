@@ -56,7 +56,6 @@ def test_real_dockerfile_context_copies_are_all_runtime():
     assert everything is False
     assert {
         "pyproject.toml",
-        "PLAN.md",
         "tinyassets",
         "domains",
         "fantasy_daemon",
@@ -429,6 +428,67 @@ def test_served_plan_context_mirrors_a_serving_daemon(repo):
     # A heading the daemon does not serve never reaches the comparison.
     head = r.commit("plan", {"PLAN.md": plan(unserved="changed")})
     assert _decide(r, base, head).build is False
+
+
+# --- the image manifest is the positive fact --------------------------------
+
+
+def _dockerfile_copy_lines(text: str) -> list[str]:
+    """Every COPY/ADD line, so a prose mention in a comment cannot pass for a
+    copy (this Dockerfile explains the PLAN.md removal in a comment)."""
+    return [ln for ln in text.splitlines() if ln.strip().upper().startswith(("COPY ", "ADD "))]
+
+
+def test_the_image_ships_no_plan_so_plan_is_not_a_runtime_input():
+    """PLAN.md stopped being a runtime input by leaving the image, not by a
+    classifier exception.
+
+    Nothing in the runtime reads the bundled copy. No daemon module opens it --
+    ``tinyassets/api/wiki.py`` reads a *user project's* PLAN.md under its
+    projects root, a different file -- and a provider child cannot reach
+    ``/app`` at all: ``tinyassets/providers/provider_jail.py`` binds the owning
+    universe and "Nothing else. Not /data or another universe, not /app". The
+    ``/app/PLAN.md`` reads recorded in
+    ``docs/reviews/2026-09-24-provider-latency-rootcause.md`` predate that jail.
+
+    Stating that as a positive fact the classifier can read is the point. A
+    source scan could not: ``ast`` sees the same ``"PLAN.md"`` constant in the
+    daemon and in the user-project path, and the thing that used to tell them
+    apart (``_bundled_source_root``) is what #3967 deleted. The image manifest
+    is structural instead, and a wrong answer is impossible rather than
+    unlikely -- nothing can read a file the image does not contain.
+    """
+    text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    # Neither a build-context copy nor a stage-to-stage one:
+    # dockerfile_copy_sources deliberately ignores ``--from`` copies, so
+    # checking every COPY line is what closes that hole.
+    assert [ln for ln in _dockerfile_copy_lines(text) if rp.PLAN in ln] == []
+    sources, everything = rp.dockerfile_copy_sources(text)
+    assert everything is False
+    assert rp.PLAN not in sources
+
+    inputs = _working_tree_inputs()
+    assert inputs.everything is False
+    assert inputs.covers(rp.PLAN) is False
+
+
+def test_re_adding_the_plan_copy_makes_it_a_runtime_input_again():
+    """The safe direction, enforced by the filesystem rather than by a rule: a
+    runtime that starts reading PLAN.md must put the file back in the image,
+    and putting it back is by itself enough to make every PLAN.md edit runtime
+    again. Driven off the real Dockerfile so it cannot drift from it."""
+    text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    patched = text.replace(
+        "COPY pyproject.toml ./\n", f"COPY pyproject.toml ./\nCOPY {rp.PLAN} ./\n", 1
+    )
+    assert patched != text, "the anchor COPY line moved; update this test"
+
+    def read(path: str) -> str | None:
+        return patched if path == "Dockerfile" else _working_tree(path)
+
+    inputs = rp.runtime_inputs_from(read, _working_tree_files)
+    assert inputs.everything is False
+    assert inputs.covers(rp.PLAN) is True
 
 
 # --- the workflows agree with the classifier ---------------------------------
