@@ -86,6 +86,7 @@ WORKFLOWS: dict[str, str] = {
         "concurrency:\n  group: production-host-mutation\n"
         "jobs:\n  deploy:\n    steps:\n"
         "      - run: echo \"${{ secrets.DO_SSH_KEY }}\"\n"
+        "      - run: python scripts/prepare_state.py --out state.json\n"
     ),
     # Block-list trigger, chained on the deploy, holds the SSH key.
     ".github/workflows/install-host-services.yml": (
@@ -119,6 +120,17 @@ BASE_FILES: dict[str, str] = {
     "scripts/_canary_common.py": "TOKEN = 1\n",
     "scripts/watchdog.py": "WATCH = 1\n",
     "scripts/unrelated_tool.py": "TOOL = 1\n",
+    # The prepare_expected_instance_state.py -> cloud_only_preflight.py shape:
+    # deploy-prod runs the first; its output is installed on the host, and it
+    # imports a helper through the sys.path-insert idiom.
+    "scripts/prepare_state.py": (
+        "import sys\nfrom pathlib import Path\n"
+        "sys.path.insert(0, str(Path(__file__).resolve().parent))\n"
+        "from preflight_helper import resolve_expected  # noqa: E402\n"
+        "import json\n"
+        "print(json.dumps(resolve_expected()))\n"
+    ),
+    "scripts/preflight_helper.py": "def resolve_expected():\n    return {'id': 1}\n",
     "data/world_rules.lp": "rule.\n",
     "deploy/install-host-uptime-services.sh": HOST_MANIFEST,
     "deploy/compose.yml": "services: {}\n",

@@ -22,12 +22,16 @@ from a hand-kept list that can drift:
 * every source of a ``COPY``/``ADD`` in the head's ``Dockerfile`` (plus the
   Dockerfile and ``.dockerignore`` themselves);
 * every file ``deploy/install-host-uptime-services.sh`` installs on the host
-  (its ``RUNTIME_FILES`` array), all of ``deploy/``, and the few scripts the
-  deploy workflows ship to the host (:data:`HOST_SCRIPTS`);
+  (its ``RUNTIME_FILES`` array) and all of ``deploy/``;
 * the deploy chain's own workflows -- ``build-image.yml``, everything its
   ``workflow_run`` triggers reach that holds the droplet SSH key, anything they
-  call, and every workflow in the ``production-host-mutation`` group. An edit to
-  one is inert until the next deploy, so it deploys itself;
+  call, the composite actions they use, and every workflow in the
+  ``production-host-mutation`` group. An edit to one is inert until the next
+  deploy, so it deploys itself;
+* the Python the deploy runs: every ``scripts/*.py`` those workflows, actions,
+  the host manifest or the Dockerfile name, plus the transitive closure of
+  their local imports (:func:`python_import_closure`). An import that cannot
+  be resolved makes all of ``scripts/`` count;
 * ``PLAN.md`` is copied into the image, but the daemon serves only a
   1400-character excerpt of each section named by ``_CHANGE_LOOP_PLAN_HEADINGS``
   (``_change_loop_plan_context`` in ``tinyassets/api/universe.py``). A
@@ -71,17 +75,14 @@ PLAN_HEADINGS_NAME = "_CHANGE_LOOP_PLAN_HEADINGS"
 #: Changes to these always change production, whatever the Dockerfile says.
 BUILD_DEFINITION = (DOCKERFILE, ".dockerignore")
 
-#: Host inputs that are not in the image. ``deploy/`` is the compose bundle,
-#: the fail-safe deploy script and every systemd unit; the scripts are the ones
-#: ``deploy-prod.yml`` / ``install-host-services.yml`` put on the host (or whose
-#: output they install there). A test asserts every ``scripts/*.py`` those two
-#: workflows name is classified runtime, except the runner-only verifiers.
+#: Host inputs that are not in the image: the compose bundle, the fail-safe
+#: deploy script and every systemd unit. The Python the deploy runs is not
+#: hand-listed: :func:`python_import_closure` derives it from every
+#: ``scripts/*.py`` a deploy-chain workflow, composite action, the host
+#: manifest or the Dockerfile names, following local imports transitively.
 HOST_PATHS = ("deploy/",)
-HOST_SCRIPTS = (
-    "scripts/github-app-token-refresher.py",
-    "scripts/retire_cheat_loop_deploy_fence.py",
-    "scripts/prepare_expected_instance_state.py",
-)
+ACTIONS_DIR = ".github/actions/"
+_SCRIPT_MENTION = re.compile(r"(?<![\w./-])(scripts/[A-Za-z0-9_./-]+\.py)\b")
 
 #: The deploy chain's root. Every workflow reachable from it through
 #: ``workflow_run`` triggers or ``uses: ./.github/workflows/...`` calls is part
@@ -398,6 +399,8 @@ _WORKFLOW_RUN_BLOCK = re.compile(
     r"^([ \t]*)workflows:[ \t]*\n((?:\1[ \t]*-[^\n]*\n)+)", re.MULTILINE
 )
 _LOCAL_CALL = re.compile(r"uses:[ \t]*['\"]?\./(\.github/workflows/[^\s'\"@]+)")
+_LOCAL_ACTION = re.compile(r"uses:[ \t]*['\"]?\./(\.github/actions/[^\s'\"@]+?)/?['\"]?[ \t]*$",
+                           re.MULTILINE)
 _HOST_GROUP = re.compile(
     rf"^[ \t]*group:[ \t]*['\"]?{re.escape(HOST_MUTATION_GROUP)}['\"]?[ \t]*(?:#.*)?$",
     re.MULTILINE,
@@ -464,65 +467,245 @@ def deploy_chain_workflows(workflows: dict[str, str]) -> list[str] | None:
     return sorted(kept)
 
 
+_DYNAMIC_IMPORTERS = {"import_module", "__import__", "spec_from_file_location",
+                      "run_path", "run_module", "SourceFileLoader"}
+
+
+def _package_inits(path: str, files: set[str]) -> list[str]:
+    """``__init__.py`` of every package enclosing ``path`` that exists."""
+    parts = path.split("/")[:-1]
+    return [
+        init
+        for i in range(1, len(parts) + 1)
+        if (init := "/".join([*parts[:i], "__init__.py"])) in files
+    ]
+
+
+def _module_file(base: str, dotted: str, files: set[str]) -> str | None:
+    stem = "/".join(p for p in [base, *dotted.split(".")] if p)
+    for candidate in (f"{stem}.py", f"{stem}/__init__.py"):
+        if candidate in files:
+            return candidate
+    return None
+
+
+def _is_local_name(top: str, roots: list[str], files: set[str]) -> bool:
+    """Does the repo carry a module or package with this top-level name?"""
+    for root in roots:
+        stem = f"{root}/{top}" if root else top
+        if f"{stem}.py" in files or any(f.startswith(f"{stem}/") for f in files):
+            return True
+    return False
+
+
+def python_import_closure(
+    seeds: list[str],
+    files: set[str],
+    read: Callable[[str], str | None],
+    stop: Callable[[str], bool],
+) -> tuple[list[str], list[str]]:
+    """Repo files the ``seeds`` import, transitively (seeds included).
+
+    Imports resolve against the importing file's directory (``sys.path[0]``
+    when run as a script, and the ``sys.path.insert(0, scripts/)`` idiom), the
+    repo root, and ``scripts/``. Standard-library and third-party names (no
+    such module in the repo) are external. A local import that cannot be
+    resolved, a dynamic import, or an unparseable file is returned in the
+    second list -- the caller fails open on it. ``stop(path)`` is True for files
+    already runtime by another rule (the image's package trees); their own
+    imports are the image's concern and are not walked.
+    """
+    stdlib = set(getattr(sys, "stdlib_module_names", ()))
+    seen: set[str] = set()
+    unresolved: list[str] = []
+    queue = [s for s in seeds if s in files]
+    unresolved.extend(s for s in seeds if s not in files)
+    while queue:
+        path = queue.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        queue.extend(i for i in _package_inits(path, files) if i not in seen)
+        if stop(path):
+            continue
+        tree = _parse(read(path))
+        if tree is None:
+            unresolved.append(path)
+            continue
+        here = path.rpartition("/")[0]
+        roots = list(dict.fromkeys([here, "", "scripts"]))
+        found: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name in _DYNAMIC_IMPORTERS:
+                    unresolved.append(f"{path} (dynamic import)")
+                continue
+            if isinstance(node, ast.Import):
+                targets = [(alias.name, None) for alias in node.names]
+                bases = roots
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    segments = here.split("/") if here else []
+                    bases = ["/".join(segments[: max(0, len(segments) - node.level + 1)])]
+                    if node.module is None:
+                        targets = [(alias.name, None) for alias in node.names]
+                    else:
+                        targets = [(node.module, [a.name for a in node.names])]
+                else:
+                    targets = [(node.module or "", [a.name for a in node.names])]
+                    bases = roots
+            else:
+                continue
+            for dotted, names in targets:
+                top = dotted.split(".")[0]
+                external = top in stdlib or not _is_local_name(top, bases, files)
+                if not node_is_relative(node) and external:
+                    continue  # stdlib or an installed distribution
+                hit = next((m for b in bases if (m := _module_file(b, dotted, files))), None)
+                if hit is None and node_is_relative(node) and names is None:
+                    # `from . import name` where name is an attribute of the package.
+                    hit = _module_file(bases[0], "", files)
+                if hit is None:
+                    unresolved.append(f"{path}: {dotted}")
+                    continue
+                found.append(hit)
+                base_dir = hit.rpartition("/")[0] if hit.endswith("__init__.py") else None
+                for name in names or ():
+                    if base_dir is not None and (sub := _module_file(base_dir, name, files)):
+                        found.append(sub)
+        queue.extend(f for f in found if f not in seen)
+    return sorted(seen), unresolved
+
+
+def node_is_relative(node: ast.AST) -> bool:
+    return isinstance(node, ast.ImportFrom) and bool(node.level)
+
+
 def runtime_inputs(repo: Path, rev: str) -> RuntimeInputs:
-    """Runtime inputs as the tree at ``rev`` defines them."""
+    """Runtime inputs as the tree at ``rev`` defines them.
 
-    def list_workflows() -> list[str] | None:
-        proc = _git(repo, "ls-tree", "--name-only", rev, "--", WORKFLOWS_DIR)
-        if proc.returncode != 0:
+    One ``ls-tree`` per revision; file contents are cached by blob id, so a
+    history walk re-reads only the blobs that actually changed.
+    """
+    out = _git_ok(repo, "ls-tree", "-r", "-z", "--full-tree", rev)
+    tree: dict[str, str] = {}
+    for entry in out.split("\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        fields = meta.split()
+        if len(fields) == 3 and fields[1] == "blob":
+            tree[path] = fields[2]
+
+    def read(path: str) -> str | None:
+        blob = tree.get(path)
+        if blob is None:
             return None
-        return [line for line in proc.stdout.splitlines() if line]
+        if blob not in _BLOB_CACHE:
+            _BLOB_CACHE[blob] = _git_ok(repo, "cat-file", "-p", blob)
+        return _BLOB_CACHE[blob]
 
-    return runtime_inputs_from(lambda path: _show(repo, rev, path), list_workflows)
+    return runtime_inputs_from(read, lambda: list(tree))
+
+
+_BLOB_CACHE: dict[str, str] = {}
 
 
 def runtime_inputs_from(
     read: Callable[[str], str | None],
-    list_workflows: Callable[[], list[str] | None],
+    list_files: Callable[[], list[str] | None],
 ) -> RuntimeInputs:
     """Runtime inputs from any tree.
 
-    ``read(path)`` is None for a missing file; ``list_workflows()`` returns the
-    paths under ``.github/workflows/``, or None when it cannot tell.
+    ``read(path)`` is None for a missing file; ``list_files()`` returns every
+    tracked path, or None when it cannot tell (then workflows, actions and
+    scripts all count).
     """
     notes: list[str] = []
-    paths: list[str] = [*BUILD_DEFINITION, *HOST_PATHS, *HOST_SCRIPTS]
+    paths: list[str] = [*BUILD_DEFINITION, *HOST_PATHS]
     everything = False
 
-    listed = list_workflows()
-    chain = None
-    if listed is not None:
-        texts = {
-            p: t
-            for p in listed
-            if p.endswith((".yml", ".yaml")) and (t := read(p)) is not None
-        }
-        chain = deploy_chain_workflows(texts)
-    if chain is None:
-        paths.append(WORKFLOWS_DIR)
-        notes.append("deploy chain unreadable -- every workflow counts as runtime")
-    else:
-        paths.extend(chain)
+    listed = list_files()
+    files = set(listed) if listed is not None else None
+    if files is None:
+        paths.extend([WORKFLOWS_DIR, ACTIONS_DIR, "scripts/"])
+        notes.append("tree unlistable -- workflows, actions and scripts all count")
 
     dockerfile = read(DOCKERFILE)
+    image_sources: list[str] = []
     if dockerfile is None:
         everything = True
         notes.append("no Dockerfile at head -- every path counts as runtime")
     else:
-        sources, wildcard = dockerfile_copy_sources(dockerfile)
-        paths.extend(sources)
+        image_sources, wildcard = dockerfile_copy_sources(dockerfile)
+        paths.extend(image_sources)
         if wildcard:
             everything = True
             notes.append("Dockerfile copies an unbounded source -- every path counts")
 
     manifest = read(HOST_MANIFEST)
-    files = host_manifest_files(manifest) if manifest is not None else None
-    if files is None:
+    host_files = host_manifest_files(manifest) if manifest is not None else None
+    if host_files is None:
         # Cannot tell which scripts the host runs: all of them count.
         paths.append("scripts/")
         notes.append("host manifest unreadable -- all of scripts/ counts as runtime")
-    else:
-        paths.extend(files)
+        host_files = []
+    paths.extend(host_files)
+
+    # What the deploy chain runs, and every script it names.
+    mention_texts: list[str] = [dockerfile or ""]
+    if files is not None:
+        workflows = {
+            p: t
+            for p in sorted(files)
+            if p.startswith(WORKFLOWS_DIR)
+            and p.endswith((".yml", ".yaml"))
+            and (t := read(p)) is not None
+        }
+        chain = deploy_chain_workflows(workflows)
+        if chain is None:
+            paths.extend([WORKFLOWS_DIR, "scripts/"])
+            notes.append("deploy chain unreadable -- every workflow and script counts")
+        else:
+            paths.extend(chain)
+            mention_texts.extend(workflows.get(p, "") for p in chain)
+            # Composite actions the chain uses (and the actions they use).
+            pending = [a for p in chain for a in _LOCAL_ACTION.findall(workflows.get(p, ""))]
+            actions: set[str] = set()
+            while pending:
+                action = pending.pop().rstrip("/")
+                if action in actions:
+                    continue
+                actions.add(action)
+                paths.append(f"{action}/")
+                text = read(f"{action}/action.yml") or read(f"{action}/action.yaml")
+                if text is None:
+                    notes.append(f"{action} unreadable -- all of scripts/ counts")
+                    paths.append("scripts/")
+                    continue
+                mention_texts.append(text)
+                pending.extend(_LOCAL_ACTION.findall(text))
+        mention_texts.extend(read(p) or "" for p in host_files if not p.endswith(".py"))
+
+        seeds = sorted(
+            {m for text in mention_texts for m in _SCRIPT_MENTION.findall(text)}
+            | {p for p in [*host_files, *image_sources] if p.endswith(".py")}
+        )
+        image_trees = [s for s in image_sources if not s.endswith(".py")]
+
+        def already_runtime(path: str) -> bool:
+            return any(path == t or path.startswith(t.rstrip("/") + "/") for t in image_trees)
+
+        closure, unresolved = python_import_closure(seeds, files, read, already_runtime)
+        paths.extend(closure)
+        if unresolved:
+            # Fail open: whatever it could have reached counts.
+            paths.append("scripts/")
+            notes.append(
+                "unresolvable import -- all of scripts/ counts: " + "; ".join(unresolved[:5])
+            )
 
     return RuntimeInputs(
         paths=tuple(dict.fromkeys(paths)),

@@ -423,8 +423,20 @@ def _working_tree_workflows() -> list[str]:
     )
 
 
+def _working_tree_files() -> list[str]:
+    out = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    return [line for line in out.splitlines() if (REPO_ROOT / line).is_file()]
+
+
 def _working_tree_inputs():
-    return rp.runtime_inputs_from(_working_tree, _working_tree_workflows)
+    return rp.runtime_inputs_from(_working_tree, _working_tree_files)
 
 
 def _reconcile_path_parser() -> str:
@@ -484,14 +496,10 @@ def test_build_image_path_filter_is_a_superset_of_every_runtime_input(tmp_path):
     assert missing == [], f"build-image.yml push paths omit runtime inputs: {missing}"
 
 
-#: Scripts the deploy workflows run on the GitHub runner only, to verify.
-RUNNER_ONLY_SCRIPTS = {"scripts/deployed_sha.py"}
-
-
 @pytest.mark.parametrize("workflow", ["deploy-prod.yml", "install-host-services.yml"])
 def test_every_script_the_deploy_workflows_ship_is_runtime(workflow):
     text = (WORKFLOWS / workflow).read_text(encoding="utf-8")
-    named = set(re.findall(r"scripts/[A-Za-z0-9_.-]+\.py", text)) - RUNNER_ONLY_SCRIPTS
+    named = set(re.findall(r"scripts/[A-Za-z0-9_.-]+\.py", text))
     assert named, f"{workflow} names no scripts -- the scan is broken"
     inputs = _working_tree_inputs()
     assert sorted(p for p in named if not inputs.covers(p)) == []
@@ -596,3 +604,125 @@ def test_the_real_3936_merge_builds():
     decision = rp.decide(REPO_ROOT, f"{sha}^", sha)
     assert decision.build is True
     assert ".github/workflows/deploy-prod.yml" in decision.runtime_paths
+
+
+# --- the Python the deploy runs, and everything it imports (round 2) ---------
+
+
+def test_a_helper_the_deploy_imports_builds(repo):
+    """deploy-prod runs prepare_state.py, which imports preflight_helper.py via
+    the sys.path-insert idiom. A helper-only commit changes what the next deploy
+    installs on the host."""
+    r, base = repo
+    head = r.commit(
+        "helper", {"scripts/preflight_helper.py": "def resolve_expected():\n    return {}\n"}
+    )
+    decision = _decide(r, base, head)
+    assert decision.build is True
+    assert decision.runtime_paths == ("scripts/preflight_helper.py",)
+
+
+def test_real_deploy_python_closure_includes_the_preflight_helper():
+    """prepare_expected_instance_state.py imports resolve_expected_droplet from
+    cloud_only_preflight.py; its output is installed on the droplet."""
+    inputs = _working_tree_inputs()
+    assert inputs.notes == ()
+    for path in (
+        "scripts/prepare_expected_instance_state.py",
+        "scripts/cloud_only_preflight.py",
+        "scripts/github-app-token-refresher.py",
+        "scripts/retire_cheat_loop_deploy_fence.py",
+    ):
+        assert inputs.covers(path), path
+
+
+def _closure(files: dict[str, str], seeds: list[str]):
+    return rp.python_import_closure(
+        seeds, set(files), files.get, lambda path: path.startswith("image/")
+    )
+
+
+def test_closure_follows_every_local_import_form():
+    files = {
+        "scripts/run.py": (
+            "import os, yaml\n"
+            "import helper_a\n"
+            "from pkg import sub\n"
+            "from pkg.deep import thing\n"
+            "def f():\n    import late_helper\n"
+            "import image.module\n"
+        ),
+        "scripts/helper_a.py": "from shared import X\n",
+        "scripts/late_helper.py": "",
+        "shared.py": "X = 1\n",
+        "scripts/pkg/__init__.py": "from .inner import y\nfrom . import sibling\n",
+        "scripts/pkg/inner.py": "from ..helper_a import *\n",
+        "scripts/pkg/sibling.py": "",
+        "scripts/pkg/sub.py": "",
+        "scripts/pkg/deep.py": "",
+        "image/__init__.py": "",
+        "image/module.py": "import never_walked_because_image_is_runtime\n",
+        "scripts/unused.py": "",
+    }
+    closure, unresolved = _closure(files, ["scripts/run.py"])
+    assert unresolved == []
+    assert set(closure) == set(files) - {"scripts/unused.py"} | {"scripts/pkg/__init__.py"}
+
+
+@pytest.mark.parametrize(
+    ("source", "why"),
+    [
+        ("import pkg.missing\n", "pkg.missing"),
+        ("import importlib\nimportlib.import_module(NAME)\n", "dynamic import"),
+        ("def broken(:\n", "scripts/run.py"),
+    ],
+)
+def test_an_unresolvable_import_is_reported(source, why):
+    files = {"scripts/run.py": source, "scripts/pkg/__init__.py": ""}
+    _, unresolved = _closure(files, ["scripts/run.py"])
+    assert any(why in item for item in unresolved), unresolved
+
+
+def test_an_unresolvable_import_makes_all_scripts_runtime(repo):
+    r, _ = repo
+    broken = r.commit(
+        "dynamic", {"scripts/preflight_helper.py": "import importlib\nimportlib.import_module(X)\n"}
+    )
+    head = r.commit("tool", {"scripts/unrelated_tool.py": "TOOL = 2\n"})
+    decision = _decide(r, broken, head)
+    assert decision.build is True
+    assert decision.runtime_paths == ("scripts/unrelated_tool.py",)
+
+
+def test_a_named_script_that_does_not_exist_fails_open(repo):
+    r, _ = repo
+    wf = ".github/workflows/deploy-prod.yml"
+    text = (r.root / wf).read_text(encoding="utf-8")
+    renamed = r.commit("stale", {wf: text + "      - run: python scripts/gone.py\n"})
+    head = r.commit("tool", {"scripts/unrelated_tool.py": "TOOL = 2\n"})
+    assert _decide(r, renamed, head).build is True
+
+
+def test_a_composite_action_the_chain_uses_is_runtime(repo):
+    r, _ = repo
+    wf = ".github/workflows/deploy-prod.yml"
+    text = (r.root / wf).read_text(encoding="utf-8")
+    with_action = r.commit(
+        "action",
+        {
+            wf: text + "      - uses: ./.github/actions/prep\n",
+            ".github/actions/prep/action.yml": (
+                "runs:\n  using: composite\n  steps:\n"
+                "    - run: python scripts/action_tool.py\n      shell: bash\n"
+            ),
+            "scripts/action_tool.py": "import action_dep\n",
+            "scripts/action_dep.py": "",
+        },
+    )
+    for path, content in (
+        ("scripts/action_dep.py", "X = 1\n"),
+        (".github/actions/prep/action.yml", "runs:\n  using: composite\n  steps: []\n"),
+    ):
+        head = r.commit("edit", {path: content})
+        assert _decide(r, with_action, head).build is True, path
+        with_action = head

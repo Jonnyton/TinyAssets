@@ -179,3 +179,19 @@ def test_equivalence_requires_descent_even_when_the_trees_match_on_runtime(
     _serve(monkeypatch, served)
 
     assert deployed_sha.main(["--assert-contains", side]) == 1
+
+
+def test_a_helper_the_deploy_imports_is_not_served_until_deployed(
+    history, monkeypatch, capsys
+):
+    """prepare_expected_instance_state.py -> cloud_only_preflight.py shape: the
+    helper is imported by a script deploy-prod runs; its output lands on the
+    host at the next deploy, not before."""
+    repo, base = history
+    head = repo.commit(
+        "helper", {"scripts/preflight_helper.py": "def resolve_expected():\n    return {}\n"}
+    )
+    _serve(monkeypatch, base)
+
+    assert deployed_sha.main(["--assert-contains", head]) == 1
+    assert "scripts/preflight_helper.py" in capsys.readouterr().err
