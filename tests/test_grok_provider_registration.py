@@ -31,9 +31,11 @@ def reset_stub():
 
 
 class TestGrokRegistration:
-    def test_grok_registered_when_key_and_sdk_present(
+    def test_grok_never_registered_from_a_host_key(
         self, monkeypatch, reset_stub
     ):
+        """The platform has no LLM (Hard Rule 15): a host XAI_API_KEY, even
+        with the retired opt-in switch set, registers nothing."""
         pytest.importorskip("openai")
         monkeypatch.setenv("XAI_API_KEY", "test-key-grok")
         monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
@@ -41,7 +43,7 @@ class TestGrokRegistration:
         stub = _reload_stub()
 
         assert stub._real_router is not None
-        assert "grok-free" in stub._real_router.available_providers
+        assert "grok-free" not in stub._real_router.available_providers
 
     def test_grok_skipped_without_key(self, monkeypatch, reset_stub):
         monkeypatch.delenv("XAI_API_KEY", raising=False)

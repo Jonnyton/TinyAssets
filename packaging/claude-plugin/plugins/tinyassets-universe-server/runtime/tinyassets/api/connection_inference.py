@@ -537,6 +537,7 @@ def _run_model(udir, uid: str, *, shape: list, hints: list, intent: str) -> str:
         provider_request_capability,
     )
     from tinyassets.config import load_universe_config
+    from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers.base import UniverseContext
     from tinyassets.providers.call import call_provider
 
@@ -569,6 +570,15 @@ def _run_model(udir, uid: str, *, shape: list, hints: list, intent: str) -> str:
         )
         return ""
 
+    if request_carrier is None:
+        # No live owner request to bind the call to. Asking anyway would only
+        # be refused (Hard Rule 15: the platform has no LLM), so do not ask:
+        # degrade to the manual fields without attempting a model call.
+        logger.warning(
+            "resolve_connection: no owner request carrier for %s; cannot infer", uid,
+        )
+        return ""
+
     ctx = UniverseContext(
         universe_dir=udir,
         config=load_universe_config(udir),
@@ -592,6 +602,11 @@ def _run_model(udir, uid: str, *, shape: list, hints: list, intent: str) -> str:
             # Interactive: never block the request on a synchronous backoff.
             retry_on_exhaustion=False,
         )
+    except ProviderAuthorityHeldError:
+        # Includes PlatformLLMCallRefusedError. A refusal is never an
+        # "unresolvable paste": it names the fix (connect a provider), so it
+        # propagates instead of degrading to an empty proposal.
+        raise
     except Exception:  # noqa: BLE001 - an unresolvable paste is a normal outcome
         logger.warning("resolve_connection: provider call failed", exc_info=True)
         return ""

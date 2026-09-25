@@ -1281,8 +1281,8 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
     # Priority chain mirrors the provider-router's preference order:
     # local/subscription endpoints beat API-key-only providers. Ollama is
     # always-local; codex+claude are subprocess-bound CLIs the daemon can drive;
-    # xai/gemini/groq are API-key-backed network providers and are ignored
-    # unless TINYASSETS_ALLOW_API_KEY_PROVIDERS is explicitly enabled.
+    # xai/gemini/groq are API-key-backed network providers the platform never
+    # uses: it has no LLM (AGENTS.md Hard Rule 15).
     # Claude is "bound" only when its binary AND subscription auth are present —
     # the binary-only check let a dead-auth claude masquerade as bound (the
     # 2026-06-25 blind spot). Codex already gates on auth.json below; mirror it.
@@ -1383,16 +1383,17 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         )
     if endpoint_hint == "unset":
         caveats.append(
-            "No default LLM provider detected (checked: OLLAMA_HOST, Codex CLI "
-            "with subscription auth, and Claude CLI). API-key providers are "
-            "ignored unless TINYASSETS_ALLOW_API_KEY_PROVIDERS=1."
+            "No default LLM provider detected on this host (checked: "
+            "OLLAMA_HOST, Codex CLI with subscription auth, and Claude CLI). "
+            "That is expected: the platform has no LLM of its own. A universe "
+            "runs on the provider its owner connects -- see read_graph "
+            "target=model_options for that universe."
         )
     if api_key_vars_present and not api_key_enabled:
         caveats.append(
-            "API-key provider env vars are present but ignored by default: "
-            f"{', '.join(api_key_vars_present)}. Set "
-            "TINYASSETS_ALLOW_API_KEY_PROVIDERS=1 only for an intentional "
-            "API-key daemon."
+            "API-key provider env vars are present on this host and ignored: "
+            f"{', '.join(api_key_vars_present)}. The platform never uses a "
+            "host credential for a model call."
         )
     caveats.append(
         "Legacy surface does NOT enforce per-universe sensitivity_tier. "
@@ -1411,10 +1412,9 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         )
     if endpoint_hint == "unset":
         actionable_next_steps.append(
-            "Bind a default LLM provider: set OLLAMA_HOST (local Ollama), "
-            "install Claude CLI subscription auth, or install Codex CLI with "
-            "subscription auth at CODEX_HOME/auth.json. API-key providers require "
-            "explicit TINYASSETS_ALLOW_API_KEY_PROVIDERS=1 opt-in."
+            "To run a universe, its owner connects their own provider to it "
+            "(read_graph target=model_options shows what is connected). There "
+            "is no platform or host model to bind."
         )
     if last_completed_llm == "unknown" and activity_tail:
         actionable_next_steps.append(

@@ -393,9 +393,10 @@ The 2026-04-19 P0 outage-postmortem (`docs/audits/2026-04-20-public-mcp-outage-p
 
 ## PROBE-008 — LLM binding freshness canary
 
-**Current disposition:** SUSPENDED against public `/mcp` as of 2026-07-24.
-The workflow description below records historical/internal behavior and is not
-authorization to retrieve operator evidence through an anonymous connector.
+**Current disposition:** RETIRED 2026-09-24. The platform has no LLM (AGENTS.md
+Hard Rule 15), so a production daemon reporting no bound model is the invariant,
+not a failure; `.github/workflows/llm-binding-canary.yml` was deleted. The
+description below is historical only.
 
 **Validated:** registration 2026-04-27 — workflow live since `.github/workflows/llm-binding-canary.yml` landed; runs every 6h from GitHub Actions.
 **Source script:** `scripts/verify_llm_binding.py` (invoked from GHA workflow).

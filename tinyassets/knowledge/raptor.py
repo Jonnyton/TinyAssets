@@ -315,6 +315,8 @@ def rebuild_raptor_from_canon(
     import asyncio
     import logging
 
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
     logger = logging.getLogger(__name__)
 
     paragraphs = _read_canon_paragraphs(canon_dir)
@@ -335,10 +337,12 @@ def rebuild_raptor_from_canon(
         logger.debug("RAPTOR: embedding failed: %s", e)
         return None
 
-    # Async wrapper for the sync provider stub
+    # Async wrapper for the sync provider call. No ``fallback_response``: an
+    # empty string would become an empty summary node, i.e. a tree that looks
+    # built but says nothing. A failed call fails the build instead.
     async def _summarize(prompt: str, system: str, role: str) -> str:
         from tinyassets.providers.call import call_provider
-        return call_provider(prompt, system, role=role, fallback_response="")
+        return call_provider(prompt, system, role=role)
 
     # Build tree
     try:
@@ -363,6 +367,11 @@ def rebuild_raptor_from_canon(
             len(tree.nodes), tree.depth, len(paragraphs),
         )
         return tree
+    except ProviderAuthorityHeldError:
+        # Includes PlatformLLMCallRefusedError (Hard Rule 15). A refused
+        # summarization call propagates to the caller, loudly; it is never
+        # reported as a skipped build.
+        raise
     except Exception as e:
         logger.warning("RAPTOR tree build failed: %s", e)
         return None

@@ -10,7 +10,8 @@ Covers:
   (g) alarm-sink opens issue on consecutive red + closes on green
   (h) dns-red label used consistently
   (i) No checkout/setup-python steps (stdlib needs no deps)
-  (j) uptime-canary.yml and llm-binding-canary.yml also use literal workflow_id
+  (j) uptime-canary.yml also uses a literal workflow_id (llm-binding-canary.yml
+      was retired 2026-09-24: the platform has no LLM, Hard Rule 15)
 """
 
 from __future__ import annotations
@@ -31,7 +32,6 @@ except ImportError:
 _REPO = Path(__file__).resolve().parent.parent
 _DNS_WF = _REPO / ".github" / "workflows" / "dns-canary.yml"
 _UPTIME_WF = _REPO / ".github" / "workflows" / "uptime-canary.yml"
-_LLM_WF = _REPO / ".github" / "workflows" / "llm-binding-canary.yml"
 
 pytestmark = pytest.mark.skipif(
     not _YAML_AVAILABLE, reason="pyyaml not installed"
@@ -274,7 +274,7 @@ def test_no_setup_python_step_in_dns_check():
 
 
 # ---------------------------------------------------------------------------
-# (j) Audit: uptime-canary + llm-binding-canary also use literal workflow_id
+# (j) Audit: uptime-canary also uses a literal workflow_id
 # ---------------------------------------------------------------------------
 
 def test_uptime_canary_workflow_id_is_literal():
@@ -300,12 +300,3 @@ def test_uptime_canary_runs_after_successful_deploy():
         == "github.event_name != 'workflow_run' || "
            "github.event.workflow_run.conclusion == 'success'"
     )
-
-
-def test_llm_binding_canary_workflow_id_is_literal():
-    text = _text(_LLM_WF)
-    assert "context.workflow" not in text, (
-        "llm-binding-canary.yml must use literal workflow filename, not context.workflow"
-    )
-    assert "workflow_id: 'llm-binding-canary.yml'" in text or \
-           'workflow_id: "llm-binding-canary.yml"' in text

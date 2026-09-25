@@ -287,8 +287,9 @@ Load-bearing invariants:
 - **CWD-independent resolvers only** -- `tinyassets.storage.data_dir()`,
   `wiki_path()`. Never `Path.cwd()` logic or a re-implemented precedence.
 - **Containers:** `TINYASSETS_DATA_DIR=/data` + bind-mount (`deploy/README.md`).
-- **Subscription-only by default:** API-key provider vars are ignored unless
-  `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is truthy.
+- **No platform model credential (Hard Rule 15):** the daemon env carries no
+  model login, API key or opt-in switch; the entrypoint strips any that appear
+  (`tests/test_no_platform_llm_credentials.py`).
 - **Secrets are vault-first:** `set -a; source scripts/load_secrets.sh; set +a`.
   Never a committed plaintext file.
 

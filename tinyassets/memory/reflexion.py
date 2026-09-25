@@ -16,6 +16,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from tinyassets.exceptions import ProviderAuthorityHeldError
+
 logger = logging.getLogger(__name__)
 
 
@@ -110,6 +112,10 @@ class ReflexionEngine:
             llm_critique = self._llm_critique(state, feedback, template_critique)
             if llm_critique:
                 return llm_critique
+        except ProviderAuthorityHeldError:
+            # Includes PlatformLLMCallRefusedError (Hard Rule 15): a refused
+            # model call propagates; it is never papered over with a template.
+            raise
         except Exception as e:
             logger.debug("LLM critique unavailable, using template: %s", e)
 
@@ -128,6 +134,9 @@ class ReflexionEngine:
             llm_reflection = self._llm_reflection(critique, state)
             if llm_reflection:
                 return llm_reflection
+        except ProviderAuthorityHeldError:
+            # Includes PlatformLLMCallRefusedError: propagate, never template.
+            raise
         except Exception as e:
             logger.debug("LLM reflection unavailable, using template: %s", e)
 

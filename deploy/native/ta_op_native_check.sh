@@ -9,8 +9,8 @@
 #
 #   usage: bash deploy/native/ta_op_native_check.sh /path/to/ta-op
 #
-# It never invokes a provider (claude-keepalive, codex-keepalive, claude-login)
-# and never touches production.
+# No mode invokes a model provider (the platform has no LLM, Hard Rule 15),
+# and this driver never touches production.
 set -uo pipefail
 
 BIN="${1:?path to a compiled ta-op required}"

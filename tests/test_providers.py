@@ -980,6 +980,46 @@ class TestOllamaProvider:
 # =====================================================================
 
 
+@pytest.fixture
+def _host_key_gate_bypassed(monkeypatch):
+    """Exercise a host-key provider's response handling in isolation.
+
+    In production these providers can never be constructed: the platform holds
+    no model credential (Hard Rule 15), so ``require_api_key_provider_opt_in``
+    always refuses (``test_host_key_providers_refuse_even_with_the_old_switch``).
+    These tests only pin the parsing/error mapping of the code that remains.
+    """
+    import tinyassets.providers.gemini_provider as gemini_mod
+    import tinyassets.providers.grok_provider as grok_mod
+
+    monkeypatch.setattr(gemini_mod, "require_api_key_provider_opt_in", lambda _name: None)
+    monkeypatch.setattr(grok_mod, "require_api_key_provider_opt_in", lambda _name: None)
+
+
+@pytest.mark.parametrize(
+    "module_name, class_name, key",
+    [
+        ("tinyassets.providers.gemini_provider", "GeminiProvider", "GEMINI_API_KEY"),
+        ("tinyassets.providers.groq_provider", "GroqProvider", "GROQ_API_KEY"),
+        ("tinyassets.providers.grok_provider", "GrokProvider", "XAI_API_KEY"),
+    ],
+)
+def test_host_key_providers_refuse_even_with_the_old_switch(module_name, class_name, key):
+    """The platform has no LLM (Hard Rule 15): a key in the host environment,
+    plus the retired TINYASSETS_ALLOW_API_KEY_PROVIDERS=1, still constructs nothing."""
+    import importlib
+
+    provider_cls = getattr(importlib.import_module(module_name), class_name)
+    with patch.dict(
+        "os.environ",
+        {key: "host-key", "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1"},
+        clear=True,
+    ):
+        with pytest.raises(ProviderUnavailableError, match="host's environment"):
+            provider_cls()
+
+
+@pytest.mark.usefixtures("_host_key_gate_bypassed")
 class TestGeminiProvider:
     @pytest.mark.asyncio
     async def test_sync_sdk_call_yields_event_loop(self):
@@ -1010,7 +1050,6 @@ class TestGeminiProvider:
                 "os.environ",
                 {
                     "GEMINI_API_KEY": "test-key",
-                    "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1",
                 },
             ),
             patch.dict(
@@ -1043,14 +1082,8 @@ class TestGeminiProvider:
 # =====================================================================
 
 
+@pytest.mark.usefixtures("_host_key_gate_bypassed")
 class TestGrokProvider:
-    def test_requires_api_key_provider_opt_in(self):
-        with patch.dict("os.environ", {"XAI_API_KEY": "test-key"}, clear=True):
-            from tinyassets.providers.grok_provider import GrokProvider
-
-            with pytest.raises(ProviderUnavailableError, match="disabled by default"):
-                GrokProvider()
-
     @pytest.mark.asyncio
     async def test_success(self):
         mock_choice = MagicMock()
@@ -1067,7 +1100,7 @@ class TestGrokProvider:
         with (
             patch.dict(
                 "os.environ",
-                {"XAI_API_KEY": "test-key", "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1"},
+                {"XAI_API_KEY": "test-key"},
             ),
             patch.dict(sys.modules, {"openai": fake_openai}),
         ):
@@ -1094,7 +1127,7 @@ class TestGrokProvider:
         with (
             patch.dict(
                 "os.environ",
-                {"XAI_API_KEY": "test-key", "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1"},
+                {"XAI_API_KEY": "test-key"},
             ),
             patch.dict(sys.modules, {"openai": fake_openai}),
         ):
@@ -1117,7 +1150,7 @@ class TestGrokProvider:
         with (
             patch.dict(
                 "os.environ",
-                {"XAI_API_KEY": "test-key", "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1"},
+                {"XAI_API_KEY": "test-key"},
             ),
             patch.dict(sys.modules, {"openai": fake_openai}),
         ):
@@ -1131,7 +1164,7 @@ class TestGrokProvider:
         with (
             patch.dict(
                 "os.environ",
-                {"TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1"},
+                {},
                 clear=True,
             ),
             patch.dict(sys.modules, {"openai": MagicMock()}),
