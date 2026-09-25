@@ -114,3 +114,18 @@ storage as completed model setup.
 - **WHEN** the provider finishes signup on its workspace instead of returning
 - **THEN** TinyAssets explains how to return and continue the connection
 - **AND** an authorization error remains visibly incomplete without blind retry advice
+
+### Requirement: The provider's sign-in page names the connection
+
+An installed acquisition preset MAY carry `authorize_params`: fixed, non-secret
+query parameters the provider documents for its authorize page (for example a
+key label), so the user sees what they are connecting rather than a generic
+"An app". They are installed data, not code or caller input. They MUST NOT set or
+override the flow's own `callback_url`, `code_challenge` or
+`code_challenge_method`; a malformed map (a non-string, empty, oversized, non-ASCII key,
+non-printable value, or more than 8 entries) MUST make the preset invalid.
+
+#### Scenario: A labelled preset starts sign-in
+- **WHEN** an owner starts sign-in for a preset whose `authorize_params` names the key
+- **THEN** the authorize URL carries that label alongside the flow's own parameters
+- **AND** a preset parameter that names a flow parameter never replaces the flow's value

@@ -58,6 +58,28 @@ class AcquisitionPreset:
     inference_url: str
     catalogue_url: str
     benchmark_url: str
+    #: Fixed, non-secret query parameters the provider documents for its
+    #: authorize page (e.g. a key label). Data only; the flow's own
+    #: parameters can never be overridden.
+    authorize_params: tuple[tuple[str, str], ...] = ()
+
+
+_FLOW_PARAMS = frozenset({"callback_url", "code_challenge", "code_challenge_method"})
+
+
+def _authorize_params(value: object) -> tuple[tuple[str, str], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict) or len(value) > 8:
+        raise HostedAuthError("invalid_acquisition_preset", 503)
+    items = []
+    for key, val in sorted(value.items()):
+        if (not isinstance(key, str) or not isinstance(val, str) or key in _FLOW_PARAMS
+                or not 0 < len(key) <= 64 or not 0 < len(val) <= 128
+                or not key.isascii() or not val.isprintable()):
+            raise HostedAuthError("invalid_acquisition_preset", 503)
+        items.append((key, val))
+    return tuple(items)
 
 
 def load_preset(preset_id: str, *, require_manual_key: bool = False) -> AcquisitionPreset:
@@ -99,6 +121,7 @@ def load_preset(preset_id: str, *, require_manual_key: bool = False) -> Acquisit
     ).encode()).hexdigest()
     return AcquisitionPreset(id=preset_id, digest=digest,
                              display_name=doc["display_name"],
+                             authorize_params=_authorize_params(doc.get("authorize_params")),
                              **{field: doc[field] for field in fields})
 
 
@@ -172,6 +195,7 @@ def begin_flow(*, owner: str, universe_id: str, preset_id: str,
     return {
         "flow": handle,
         "authorize_url": preset.authorize_url + "?" + urlencode({
+            **dict(preset.authorize_params),
             "callback_url": callback, "code_challenge": challenge,
             "code_challenge_method": "S256",
         }),
