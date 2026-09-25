@@ -135,7 +135,8 @@ def provider_launch_scope(
 
 @dataclass(frozen=True, slots=True)
 class JailMount:
-    """One bubblewrap mount operation: ``bind``, ``ro-bind`` or ``tmpfs``."""
+    """One bubblewrap mount operation: ``bind``, ``ro-bind``, ``tmpfs`` or
+    ``mask-file`` (an empty, read-only file over ``dest``; no source)."""
 
     op: str
     dest: str
@@ -276,12 +277,12 @@ def hidden_dir_masks(universe_dir: Path) -> list[JailMount]:
 def _validated_view(view: UniverseView) -> UniverseView:
     root = view.universe_dir.resolve(strict=False)
     for mount in view.mounts:
-        if mount.op not in ("bind", "ro-bind", "tmpfs"):
+        if mount.op not in ("bind", "ro-bind", "tmpfs", "mask-file"):
             raise _refuse(f"unknown mount operation {mount.op!r}")
         dest = mount.dest
         if not dest.startswith("/") or dest.rstrip("/") == "" or _covered(dest, _RESERVED_DESTS):
             raise _refuse(f"a view may not mount at {dest!r}")
-        if mount.op == "tmpfs":
+        if mount.op in ("tmpfs", "mask-file"):
             continue
         if mount.source is None:
             raise _refuse("a bind needs a source")
@@ -436,6 +437,10 @@ def jail_argv(
     for mount in view.mounts:
         if mount.op == "tmpfs":
             out.extend(("--tmpfs", mount.dest))
+        elif mount.op == "mask-file":
+            # The host's empty character device, read-only: the file reads as
+            # empty and cannot be written, renamed or removed (a mountpoint).
+            out.extend(("--ro-bind", "/dev/null", mount.dest))
         else:
             source = str(mount.source.resolve(strict=True))  # validated above
             out.extend((f"--{mount.op}", source, mount.dest))

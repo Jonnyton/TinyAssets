@@ -137,7 +137,7 @@ def test_tools_reach_their_own_universe_and_nothing_else(world, monkeypatch):
         "edited /u/notes/new.md"
     )
     assert (a / "notes" / "new.md").read_text(encoding="utf-8") == "alpha\ngamma\n"
-    assert "[exit code 0]" in _run(s.run_bash(command="test -w /u && pwd"))
+    assert "[exit code 0]" in _run(s.run_bash(command="test -w /u/notes && pwd"))
 
     # Another universe: by its host path, by '..', and through a planted symlink.
     for path in (str(b / "founder.md"), "../u-bravo/founder.md", "/u/../u-bravo/founder.md"):
@@ -221,19 +221,25 @@ def test_io_uring_and_symlink_are_refused_in_the_jail(world, monkeypatch):
 def test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch(
     world, monkeypatch,
 ):
-    """Design risk 8, in the real jails: the agent may write a CLI's project
-    settings dir into its folder, and the next provider launch cannot see it."""
+    """Design risk 8, in the real jails: the agent cannot create a CLI's project
+    settings dir (the root is read-only), and one the OWNER placed there is
+    masked from both the tool jail and the next provider launch."""
     from tinyassets.providers.provider_jail import default_view, jail_argv
 
     s = _engine(monkeypatch, world)
     a = world.universe_a
     hook = '{"hooks": {"SessionStart": "cat .runtime/*"}}'
-    assert _run(s.write_file(path=".claude/settings.json", content=hook)).startswith("wrote")
+    assert _run(s.write_file(path=".claude/settings.json", content=hook)).startswith("error:")
     _run(s.run_bash(command="mkdir -p .anycli && echo x > .anycli/config"))
-    assert (a / ".claude" / "settings.json").is_file(), "the owner's file is kept"
+    assert not (a / ".claude").exists() and not (a / ".anycli").exists()
 
+    # An owner-placed settings dir (from outside the jail) is masked in both.
+    (a / ".claude").mkdir()
+    (a / ".claude" / "settings.json").write_text(hook, encoding="utf-8")
+    seen = _run(s.run_bash(command="cat .claude/settings.json; ls -A .claude"))
+    assert "SessionStart" not in seen, seen
     probe = (
-        f"cat {a}/.claude/settings.json {a}/.anycli/config 2>/dev/null && echo LOADED; "
+        f"cat {a}/.claude/settings.json 2>/dev/null && echo LOADED; "
         f"cat {a}/notes/own.txt"
     )
     argv = jail_argv(["/bin/sh", "-c", probe], default_view(a), bwrap_path=_BWRAP)
@@ -242,6 +248,61 @@ def test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch(
     )
     assert OWN_MARKER in launched.stdout, launched  # positive control
     assert "LOADED" not in launched.stdout and "SessionStart" not in launched.stdout
+
+
+VAULT_MARKER = "SYNTHETIC-OWNER-VAULT-SECRET"
+
+
+def test_the_owners_credentials_and_authority_state_are_out_of_reach(world, monkeypatch):
+    """The credential vault and the consent / usage databases sit in the
+    universe ROOT. In the tool jail they read as empty, cannot be written, and
+    a missing one cannot be created; soul.md and config.yaml are read-only."""
+    s = _engine(monkeypatch, world)
+    a = world.universe_a
+    (a / ".credential-vault.json").write_text('{"k": "' + VAULT_MARKER + '"}', encoding="utf-8")
+    (a / ".credentials").mkdir()
+    (a / ".credentials" / "vcs.json").write_text(VAULT_MARKER, encoding="utf-8")
+    (a / "soul.md").write_text("# Universe Soul\n", encoding="utf-8")
+    (a / "config.yaml").write_text("timeout: 42\n", encoding="utf-8")
+
+    for path in (".credential-vault.json", ".credentials/vcs.json"):
+        assert VAULT_MARKER not in _run(s.read_file(path=path)), path
+    dumped = _run(s.run_bash(command="cat .credential-vault.json; ls -A .credentials; "
+                                     "grep -r SYNTHETIC . 2>/dev/null"))
+    assert VAULT_MARKER not in dumped, dumped
+
+    forge = _run(s.run_bash(command=(
+        "echo forged > .credential-vault.json; echo forged > .effector_consents.db; "
+        "echo forged > .usage_ledger.db; echo pwned > soul.md; echo 'timeout: 1' > config.yaml"
+    )))
+    assert "[exit code 0]" not in forge, forge
+    assert VAULT_MARKER in (a / ".credential-vault.json").read_text(encoding="utf-8")
+    assert not (a / ".effector_consents.db").exists()
+    assert not (a / ".usage_ledger.db").exists()
+    assert (a / "soul.md").read_text(encoding="utf-8") == "# Universe Soul\n"
+    assert (a / "config.yaml").read_text(encoding="utf-8") == "timeout: 42\n"
+    # Positive control: what the agent owns is writable.
+    assert _run(s.write_file(path="notes/mine.md", content="ok")).startswith("wrote")
+
+
+def test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt(world, monkeypatch):
+    """The reviewer's reproduction through the real tool: a 4 MB config.yaml.
+    config.yaml is platform-owned and read-only in the jail, so the write is
+    refused; and a planted oversized one is never parsed by the next turn."""
+    from tinyassets.config import UniverseConfig, load_universe_config
+
+    s = _engine(monkeypatch, world)
+    a = world.universe_a
+    big = "timeout: 999\n" + "".join(f"k{i}: v{i}\n" for i in range(300_000))
+    assert _run(s.write_file(path="config.yaml", content=big[:4 * 1024 * 1024 - 1])).startswith(
+        "error:")
+    assert not (a / "config.yaml").exists()
+    started = time.monotonic()
+    assert load_universe_config(a).timeout == UniverseConfig().timeout
+    (a / "config.yaml").write_text(big, encoding="utf-8")  # planted from outside
+    config = load_universe_config(a)
+    assert time.monotonic() - started < 2.0
+    assert config.timeout == UniverseConfig().timeout, "never parsed"
 
 
 def test_an_engine_pinned_to_another_universe_cannot_reach_it(world, monkeypatch):
@@ -392,7 +453,7 @@ def test_a_jail_that_fills_the_shared_disk_is_killed(world):
     try:
         out = tools.bash(
             world.universe_a,
-            "for i in $(seq 1 40); do head -c 30000000 /dev/zero > fill$i || exit 3; done; "
+            "for i in $(seq 1 40); do head -c 30000000 /dev/zero > notes/fill$i || exit 3; done; "
             "echo filled",
             limits=floor, timeout=120,
         )
@@ -403,7 +464,7 @@ def test_a_jail_that_fills_the_shared_disk_is_killed(world):
             tools.bash(world.universe_a, "true",
                        limits=tools.ToolLimits(min_free_disk_bytes=free * 2))
     finally:
-        for path in world.universe_a.glob("fill*"):
+        for path in (world.universe_a / "notes").glob("fill*"):
             path.unlink()
 
 

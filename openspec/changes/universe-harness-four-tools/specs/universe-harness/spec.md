@@ -24,8 +24,11 @@ name a universe: the folder is the engine's pinned universe.
 ### Requirement: The tools run in a tool jail that holds only the universe
 Every tool call SHALL run as a process inside an OS jail in which the owning
 universe is mounted read-write at `/u` and no other universe, no data root,
-no platform source and no credential snapshot is reachable. `.runtime/` SHALL
-be masked so it is neither readable nor writable to disk. The jail SHALL have no network
+no platform source and no credential snapshot is reachable. The universe root
+SHALL be read-only in the jail, with only the agent-owned brain files and
+harness directories writable, and every hidden root entry (the credential vault,
+`.runtime/`, the consent and usage databases) SHALL be masked so it is neither
+readable nor writable and cannot be created. The jail SHALL have no network
 namespace shared with the host, SHALL start from an empty environment, and
 SHALL refuse creating symbolic links and special files, including through
 io_uring. A host with no jail SHALL refuse the call; there SHALL be no
@@ -52,13 +55,25 @@ unjailed fallback.
 - **THEN** it sees no credential or route bearer, and nothing it wrote exists
   on disk after the call
 
+#### Scenario: the owner's credentials and authority state are out of reach
+- **WHEN** the agent reads the credential vault, or writes the vault, a consent
+  or usage database, `soul.md` or `config.yaml`
+- **THEN** the read returns no secret, every write fails, and a database that
+  did not exist is not created
+
 ### Requirement: The daemon treats every universe file as untrusted
 The daemon SHALL read every file in a universe folder from outside the jail —
 persona grounding, soul, self-model, voice, the skill index, and any other
 such read — through one shared reader that opens every path component without
-following a link, requires a regular file, and bounds the read size. A file
-that is or sits behind a link, is not a regular file, or is over the bound
-SHALL read as absent.
+following a link, requires a regular file, bounds the read size, and parses
+YAML only after refusing anchors and aliases. A file that is or sits behind a
+link, is not a regular file, is over the bound or is hostile YAML SHALL become
+a fail-closed default with a logged note, never an error that breaks the turn.
+
+#### Scenario: an oversized or alias-bomb config is never parsed
+- **WHEN** `config.yaml` is megabytes long or carries YAML anchors/aliases
+- **THEN** the next turn's config load returns defaults promptly with bounded
+  memory, and a strict writer refuses rather than erasing the file
 
 #### Scenario: a pre-existing link is not followed into the prompt
 - **WHEN** a universe grounding file is a symlink pointing at another user's

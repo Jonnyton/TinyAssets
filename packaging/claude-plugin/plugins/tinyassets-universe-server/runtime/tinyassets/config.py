@@ -129,6 +129,27 @@ class UniverseConfig:
     a named field."""
 
 
+def _read_config_document(universe_path: str | Path) -> object:
+    """The parsed ``config.yaml``, ``None`` when absent, or raise ``OSError``.
+
+    Through the one safe reader (:mod:`tinyassets.universe_files`): no link is
+    followed, at most ``MAX_CONFIG_BYTES`` is read, and YAML anchors/aliases
+    are refused before anything is expanded. The universe folder is untrusted
+    input to the daemon since its agent can write it.
+    """
+    from tinyassets.universe_files import (
+        MAX_CONFIG_BYTES,
+        load_untrusted_yaml,
+        read_universe_text,
+    )
+
+    try:
+        raw = read_universe_text(universe_path, "config.yaml", max_bytes=MAX_CONFIG_BYTES)
+    except FileNotFoundError:
+        return None
+    return load_untrusted_yaml(raw, max_bytes=MAX_CONFIG_BYTES)
+
+
 def load_universe_config(universe_path: str | Path) -> UniverseConfig:
     """Load config.yaml from a universe directory.
 
@@ -143,25 +164,22 @@ def load_universe_config(universe_path: str | Path) -> UniverseConfig:
         Parsed config with defaults for missing fields.  Returns
         a default config if the file doesn't exist or can't be parsed.
     """
-    config_file = Path(universe_path) / "config.yaml"
-    if not config_file.exists():
-        logger.debug("No config.yaml in %s; using defaults", universe_path)
-        return UniverseConfig()
-
     try:
-        import yaml
+        data = _read_config_document(universe_path)
     except ImportError:
         logger.warning(
             "PyYAML not installed; cannot read config.yaml. "
             "Install with: pip install pyyaml"
         )
         return UniverseConfig()
-
-    try:
-        raw = config_file.read_text(encoding="utf-8")
-        data = yaml.safe_load(raw)
-    except Exception as e:
-        logger.warning("Failed to parse config.yaml: %s", e)
+    except (OSError, UnicodeDecodeError) as e:
+        # A linked, oversized, alias-bearing or malformed config.yaml is never
+        # parsed into the shared daemon: defaults, and a note -- never an
+        # exception that breaks the turn (harness S1 review round 2).
+        logger.warning("config.yaml in %s refused (%s); using defaults", universe_path, e)
+        return UniverseConfig()
+    if data is None:
+        logger.debug("No config.yaml in %s; using defaults", universe_path)
         return UniverseConfig()
 
     if not isinstance(data, dict):
@@ -221,16 +239,15 @@ def write_universe_config_fields(
 
     config_file = Path(universe_path) / "config.yaml"
     data: dict[str, Any] = {}
-    if config_file.exists():
-        try:
-            loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except Exception as e:  # noqa: BLE001 - fall back to empty, log below
-            logger.warning(
-                "Existing config.yaml at %s unreadable (%s); rewriting fresh",
-                config_file, e,
-            )
+    try:
+        loaded = _read_config_document(universe_path)
+        if isinstance(loaded, dict):
+            data = loaded
+    except (OSError, UnicodeDecodeError) as e:
+        logger.warning(
+            "Existing config.yaml at %s unreadable (%s); rewriting fresh",
+            config_file, e,
+        )
     data.update(fields)
 
     config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -333,8 +350,13 @@ def write_provider_assignment_projection(
 
     config_file = Path(universe_path) / "config.yaml"
     data: dict[str, Any] = {}
-    if config_file.exists():
-        loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    try:
+        loaded = _read_config_document(universe_path)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            "existing config.yaml is unreadable; refusing to erase it"
+        ) from exc
+    if loaded is not None:
         if not isinstance(loaded, dict):
             raise ValueError("existing config.yaml must be a mapping")
         data = loaded

@@ -16,10 +16,15 @@ Every call -- reads included -- runs as a process inside bubblewrap, built by
 the SAME :func:`tinyassets.providers.provider_jail.jail_argv` as a provider
 launch, with a narrower view:
 
-* the owning universe read-write at ``/u``, and nothing else of ``/data``;
-* ``.runtime/`` (platform-owned: launch credentials, provider homes, the engine
-  route config) masked by an empty ``tmpfs``, so it is neither readable nor
-  writable to disk;
+* the owning universe at ``/u``, and nothing else of ``/data``. The root is
+  READ-ONLY; only what the agent owns is bound read-write (its brain files and
+  the harness directories ``skills/``, ``prompts/``, ``notes/`` ...), see
+  :data:`AGENT_BRAIN_FILES`;
+* every hidden root entry masked -- the credential vault
+  (``.credential-vault.json``, ``.credentials/``), ``.runtime/``, the consent,
+  usage and receipt databases -- so the agent can neither read the owner's
+  credentials nor forge the platform's authority state, and cannot create a
+  new root entry the daemon would trust;
 * system binaries read-only, a private ``/tmp``, ``/dev`` and pid-namespace
   ``/proc``; NO ``/app``, no install tree, no credential snapshot at all;
 * NO network: no ``--share-net``, so the jail has its own empty network
@@ -102,12 +107,26 @@ TOOL_NAMES: tuple[str, ...] = ("read", "write", "edit", "bash")
 #: Where the universe appears inside the tool jail.
 MOUNT_POINT = "/u"
 
-#: Platform-owned directories inside a universe, masked by an empty tmpfs in the
-#: tool jail. ``.runtime`` holds launch credentials, provider homes and the
-#: engine route config (the route bearer). The agent may create any other
-#: directory, hidden ones included: a provider launch masks every hidden root
-#: directory (``provider_jail.hidden_dir_masks``), so none of them can become a
-#: CLI's project settings.
+#: What the agent OWNS in its folder: the only paths bound read-write into the
+#: tool jail. Everything else at the universe root is the platform's and is
+#: either read-only (visible, e.g. ``soul.md``, ``config.yaml``) or masked
+#: (every hidden root entry: the credential vault ``.credential-vault.json`` and
+#: ``.credentials/``, ``.runtime/``, the consent / usage / receipt databases).
+#: The root itself is read-only, so no new root entry -- hidden or not -- can
+#: be created: the agent can neither read the platform's state nor plant a file
+#: the daemon would later trust as its own.
+#:
+#: Brain files are bound only when they already exist (an empty brain file
+#: would read as "learned"); the harness directories are created first.
+AGENT_BRAIN_FILES: tuple[str, ...] = (
+    "identity.md", "founder.md", "origin.md", "body.md", "orgchart.md",
+    "projects.md", "goals.md", "index.md", "log.md", "voice.md",
+)
+AGENT_HARNESS_DIRS: tuple[str, ...] = (
+    "skills", "prompts", "extensions", "workflows", "bin", "notes",
+)
+
+#: Kept for callers that name the platform-owned runtime directory.
 MASKED_DIRS: tuple[str, ...] = (PLATFORM_RUNTIME_DIR,)
 
 #: Environment inside the jail: fixed, secret-free, nothing inherited.
@@ -229,23 +248,45 @@ def _system_binary(name: str) -> str:
     return found
 
 
-def _prepare_masks(root: Path) -> None:
-    """Every masked directory exists as a real directory before the jail starts.
+def _universe_view(root: Path) -> UniverseView:
+    """The tool jail's view of ``root``: read-only, hidden entries masked,
+    agent-owned paths read-write.
 
-    A mountpoint the agent cannot remove or replace keeps it from ever writing
-    to, or replacing, the platform's own directory. A symlink or file already
-    there is refused, not followed.
+    Order is fixed: the read-only root first, then the masks and the
+    read-write binds, which land on top of it.
     """
-    for name in MASKED_DIRS:
+    for name in AGENT_HARNESS_DIRS:
         path = root / name
-        if os.path.lexists(path):
-            if path.is_symlink() or not path.is_dir():
+        if not os.path.lexists(path):
+            path.mkdir(mode=0o755)
+    mounts = [JailMount("ro-bind", MOUNT_POINT, root)]
+    with os.scandir(root) as entries:
+        listing = sorted(entries, key=lambda entry: entry.name)
+    for entry in listing:
+        dest = f"{MOUNT_POINT}/{entry.name}"
+        if entry.name.startswith("."):
+            if entry.is_symlink():
                 raise UniverseToolError(
-                    f"the universe's {name} is not a plain directory; the tool jail "
-                    "will not start over it"
+                    f"the universe's {entry.name} is a link; the tool jail cannot mask it, "
+                    "so it will not start"
                 )
+            if entry.is_dir(follow_symlinks=False):
+                mounts.append(JailMount("tmpfs", dest))
+            else:
+                mounts.append(JailMount("mask-file", dest))
             continue
-        path.mkdir(mode=0o700)
+        if entry.is_symlink():
+            continue  # never bound; the read-only root shows a dangling link
+        if entry.name in AGENT_HARNESS_DIRS and entry.is_dir(follow_symlinks=False):
+            mounts.append(JailMount("bind", dest, root / entry.name))
+        elif entry.name in AGENT_BRAIN_FILES and entry.is_file(follow_symlinks=False):
+            mounts.append(JailMount("bind", dest, root / entry.name))
+    return UniverseView(
+        universe_dir=root,
+        mounts=tuple(mounts),
+        chdir=MOUNT_POINT,
+        setenv=_JAIL_ENV,
+    )
 
 
 def tool_jail_argv(
@@ -259,15 +300,7 @@ def tool_jail_argv(
     if not root.is_dir():
         raise UniverseToolError("the universe folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
-    _prepare_masks(root)
-    mounts = [JailMount("bind", MOUNT_POINT, root)]
-    mounts.extend(JailMount("tmpfs", f"{MOUNT_POINT}/{name}") for name in MASKED_DIRS)
-    view = UniverseView(
-        universe_dir=root,
-        mounts=tuple(mounts),
-        chdir=MOUNT_POINT,
-        setenv=_JAIL_ENV,
-    )
+    view = _universe_view(root)
     return jail_argv(
         list(inner), view, bwrap_path=bwrap, share_net=False, clearenv=True,
         seccomp_fd=seccomp_fd,
@@ -923,46 +956,33 @@ def _skill_description(raw: bytes) -> str:
 def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
     """``(name, description)`` for each ``skills/<name>/SKILL.md``.
 
-    Read by the daemon, so every component is opened without following a link
-    (a skill file the agent symlinked at another universe is skipped, never
-    read). POSIX only; elsewhere the tools cannot run, so there is no index.
+    Read by the daemon through the one safe reader
+    (:mod:`tinyassets.universe_files`): the directory is listed and each file
+    opened without following a link, each read is bounded, and a skill whose
+    file is a link, is over its bound or fails to parse is left out -- never
+    read into the prompt, never an error in the turn.
     """
-    from tinyassets import workspace_fs as fs
+    from tinyassets.universe_files import list_universe_dir, read_universe_file
 
-    if not getattr(fs, "_POSIX", False):
-        return []
     try:
-        root_fd = fs.open_dir_nofollow(Path(universe_dir).resolve(strict=True))
+        names = list_universe_dir(universe_dir, SKILLS_DIR)
     except (OSError, NotImplementedError):
         return []
     skills: list[tuple[str, str]] = []
-    try:
+    for name in names:
+        if len(skills) >= MAX_SKILLS:
+            break
+        if not _SKILL_NAME.match(name):
+            continue
         try:
-            skills_fd = fs.open_subdir_nofollow(root_fd, SKILLS_DIR)
-        except (OSError, NotImplementedError):
-            return []
-        try:
-            names = sorted(os.listdir(skills_fd))
-            for name in names:
-                if len(skills) >= MAX_SKILLS:
-                    break
-                if not _SKILL_NAME.match(name):
-                    continue
-                try:
-                    raw = fs.read_regular_file_beneath(
-                        skills_fd, f"{name}/SKILL.md", max_bytes=_MAX_SKILL_FILE_BYTES,
-                    )
-                    description = _skill_description(raw)
-                except (OSError, NotImplementedError, RecursionError, ValueError):
-                    # A bad skill file NEVER breaks the turn: it is left out of
-                    # the index and the turn goes on without it.
-                    continue
-                if description:
-                    skills.append((name, description))
-        finally:
-            os.close(skills_fd)
-    finally:
-        os.close(root_fd)
+            raw = read_universe_file(
+                universe_dir, f"{SKILLS_DIR}/{name}/SKILL.md", max_bytes=_MAX_SKILL_FILE_BYTES,
+            )
+            description = _skill_description(raw)
+        except (OSError, NotImplementedError, RecursionError, ValueError):
+            continue
+        if description:
+            skills.append((name, description))
     return skills
 
 
@@ -973,7 +993,11 @@ _HARNESS_HEAD = (
     "file), `edit` (replace one exact passage in a file) and `bash` (a shell in "
     "/u with no network and bounded memory, processes and time, so long-running "
     "work does not belong there). Relative paths are under /u. Nothing outside "
-    "/u is mine or reachable, and `.runtime/` is the platform's.\n"
+    "/u is mine or reachable. I can write my brain files (identity.md, "
+    "founder.md, origin.md, body.md, orgchart.md, projects.md, goals.md, "
+    "index.md, log.md, voice.md) and anything under skills/, prompts/, "
+    "extensions/, workflows/, bin/ and notes/; the rest of /u is the "
+    "platform's and read-only.\n"
     "A skill is `skills/<name>/SKILL.md`, starting with frontmatter that has a "
     "`name:` and a one-line `description:` of when to use it. Only the list "
     "below is in this prompt: when a request matches a skill, I `read` its "

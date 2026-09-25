@@ -21,8 +21,10 @@ universe) and it changes the served tool surface.
   the per-universe engine route, so `claude -p`, `codex exec` and the
   OpenAI-compatible HTTP loop all see the same four definitions (~330 tokens).
 - A tool jail built by the same `provider_jail.jail_argv` as a provider
-  launch, narrower: the universe at `/u` and nothing else of `/data`;
-  `.runtime/` masked; no network (no `--share-net`); empty environment; no
+  launch, narrower: the universe at `/u` and nothing else of `/data`, its
+  root read-only with only the agent-owned brain files and harness dirs
+  writable; every hidden root entry (credential vault, `.runtime/`, consent and
+  usage DBs) masked; no network (no `--share-net`); empty environment; no
   credential snapshot; a seccomp filter refusing `symlink`/`mknod`, because
   the daemon reads the folder from outside the jail and follows links.
 - Per-call, per-universe resource limits, fail-closed: `prlimit` inside the

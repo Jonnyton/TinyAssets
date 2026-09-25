@@ -104,10 +104,15 @@ def test_the_four_definitions_fit_the_harness_budget():
 # ── the tool jail argv ──────────────────────────────────────────────────────
 
 
+def _pairs(argv: list[str], flag: str) -> list[tuple[str, str]]:
+    return [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv[:-2]) if a == flag]
+
+
 def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     tmp_path, monkeypatch,
 ):
     universe = _universe(tmp_path)
+    (universe / "identity.md").write_text("---\nname: A\n---\n", encoding="utf-8")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
     argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
     root = str(universe.resolve())
@@ -115,25 +120,55 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     assert "--share-net" not in argv
     for flag in ("--unshare-all", "--clearenv", "--die-with-parent", "--new-session"):
         assert flag in argv, flag
-    bind = argv.index("/u")
-    assert argv[bind - 2:bind + 1] == ["--bind", root, "/u"]
-    mask = argv.index("/u/.runtime")
-    assert argv[mask - 1] == "--tmpfs" and mask > bind
-    assert (universe / ".runtime").is_dir(), "a mountpoint the agent cannot replace"
-    # Nothing vendor-named: hidden dirs the agent makes are masked at LAUNCH.
-    assert not any(a.startswith("/u/.") and a != "/u/.runtime" for a in argv)
+    # The universe root is READ-ONLY at /u; only agent-owned paths are rw.
+    assert (root, "/u") in _pairs(argv, "--ro-bind")
+    rw = dict((dest, src) for src, dest in _pairs(argv, "--bind"))
+    assert rw["/u/identity.md"] == str(universe.resolve() / "identity.md")
+    assert rw["/u/skills"] == str(universe.resolve() / "skills")
+    assert "/u" not in rw
+    assert set(rw) <= {f"/u/{name}" for name in (
+        *universe_tools.AGENT_BRAIN_FILES, *universe_tools.AGENT_HARNESS_DIRS)}
+    for name in universe_tools.AGENT_HARNESS_DIRS:
+        assert (universe / name).is_dir(), f"harness dir {name} is created first"
     # Nothing else of the data root, and no credential snapshot or install tree.
-    for i, arg in enumerate(argv[:-2]):
-        if arg in ("--bind", "--ro-bind"):
-            source = argv[i + 1]
-            assert source == root or not source.startswith(str(tmp_path)), source
+    for source, _dest in _pairs(argv, "--bind") + _pairs(argv, "--ro-bind"):
+        assert source.startswith(root) or not source.startswith(str(tmp_path)), source
     env = {argv[i + 1]: argv[i + 2] for i, a in enumerate(argv) if a == "--setenv"}
     assert env["HOME"] == "/tmp" and set(env) == {"PATH", "HOME", "LANG", "TERM"}
     assert argv[argv.index("--chdir") + 1] == "/u"
     assert argv[argv.index("--") + 1:] == ["/bin/true"]
 
 
-def test_a_symlinked_mask_dir_is_refused_not_followed(tmp_path, monkeypatch):
+def test_the_owners_credentials_and_authority_state_are_masked_from_the_agent(
+    tmp_path, monkeypatch,
+):
+    """The credential vault and the consent / usage databases live in the
+    universe ROOT, not .runtime. Every hidden root entry is masked: a dir by an
+    empty tmpfs, a file by a read-only /dev/null. None is bound read-write."""
+    universe = _universe(tmp_path)
+    (universe / ".credential-vault.json").write_text('{"k": "SECRET"}', encoding="utf-8")
+    (universe / ".credentials").mkdir()
+    (universe / ".effector_consents.db").write_bytes(b"sqlite")
+    (universe / ".usage_ledger.db").write_bytes(b"sqlite")
+    (universe / ".runtime").mkdir()
+    (universe / ".claude").mkdir()
+    (universe / "soul.md").write_text("# soul", encoding="utf-8")
+    (universe / "config.yaml").write_text("timeout: 5\n", encoding="utf-8")
+    monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+
+    masked_files = {dest for src, dest in _pairs(argv, "--ro-bind") if src == "/dev/null"}
+    assert {"/u/.credential-vault.json", "/u/.effector_consents.db",
+            "/u/.usage_ledger.db"} <= masked_files
+    tmpfs = {argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--tmpfs"}
+    assert {"/u/.credentials", "/u/.runtime", "/u/.claude"} <= tmpfs
+    rw = {dest for _src, dest in _pairs(argv, "--bind")}
+    # Control plane and platform state stay read-only (visible, never writable).
+    for name in ("soul.md", "config.yaml", ".credential-vault.json", ".effector_consents.db"):
+        assert f"/u/{name}" not in rw, name
+
+
+def test_a_symlinked_hidden_root_entry_is_refused_not_followed(tmp_path, monkeypatch):
     universe = _universe(tmp_path)
     other = _universe(tmp_path, "u-bravo")
     try:
@@ -141,7 +176,7 @@ def test_a_symlinked_mask_dir_is_refused_not_followed(tmp_path, monkeypatch):
     except (OSError, NotImplementedError):
         pytest.skip("this host cannot create a symlink")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    with pytest.raises(UniverseToolError, match="not a plain directory"):
+    with pytest.raises(UniverseToolError, match="is a link"):
         universe_tools.tool_jail_argv(universe, ["/bin/true"])
 
 
@@ -156,13 +191,16 @@ def test_the_jail_loads_a_filter_refusing_links_and_special_files(tmp_path, monk
 
     program = universe_tools.seccomp_program()
     insns = [struct.unpack("=HBBI", program[i:i + 8]) for i in range(0, len(program), 8)]
-    denied = {k for code, jt, _jf, k in insns if code == 0x15 and jt > 0}
+    # Each arch's deny list is asserted on its OWN branch of the program, so a
+    # syscall missing from one arch cannot hide behind the other's list.
+    arm_at = next(i for i, (code, _jt, _jf, k) in enumerate(insns)
+                  if code == 0x15 and k == 0xC00000B7)
+    x86_denied = {k for code, jt, _jf, k in insns[3:arm_at] if code == 0x15 and jt > 0}
+    arm_denied = {k for code, jt, _jf, k in insns[arm_at + 1:] if code == 0x15 and jt > 0}
     # x86_64: symlink, symlinkat, mknod, mknodat, io_uring setup/enter/register.
-    for syscall in (88, 266, 133, 259, 425, 426, 427):
-        assert syscall in denied
+    assert x86_denied == {88, 266, 133, 259, 425, 426, 427}
     # aarch64: symlinkat, mknodat, io_uring setup/enter/register.
-    for syscall in (36, 33, 425, 426, 427):
-        assert syscall in denied
+    assert arm_denied == {36, 33, 425, 426, 427}
     assert insns[-1] == (0x06, 0, 0, 0x00050001), "the deny target is EPERM"
     # Every jump lands inside the program.
     for pc, (code, jt, jf, _k) in enumerate(insns):
@@ -620,3 +658,135 @@ def test_only_a_founder_turn_with_the_tools_is_shown_the_folder_and_skills(
     monkeypatch.delenv("TINYASSETS_ENGINE_MCP_TOOLS")
     dark = _founder_turn(monkeypatch, root, "u-a", "hi dark", founder=True)
     assert "My folder" not in dark
+
+
+# ── the class: config.yaml / soul-edit frontmatter / soul_versions ───────────
+
+_ALIAS_BOMB = (
+    "a: &a [x,x,x,x,x,x,x,x,x]\n"
+    "b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\n"
+    "c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\n"
+    "d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\n"
+    "e: &e [*d,*d,*d,*d,*d,*d,*d,*d,*d]\n"
+    "timeout: 777\n"
+)
+
+
+def test_an_oversized_config_yaml_is_never_parsed(tmp_path, caplog):
+    import time
+
+    from tinyassets.config import UniverseConfig, load_universe_config
+
+    universe = _universe(tmp_path)
+    body = "timeout: 999\n" + "".join(f"k{i}: v{i}\n" for i in range(300_000))
+    (universe / "config.yaml").write_text(body, encoding="utf-8")
+    assert len(body) > 4 * 1024 * 1024
+    started = time.monotonic()
+    config = load_universe_config(universe)
+    assert time.monotonic() - started < 1.0
+    assert config.timeout == UniverseConfig().timeout, "defaults, not the 999 inside"
+    assert "refused" in caplog.text
+
+
+def test_an_alias_bomb_config_yaml_is_refused_before_expansion(tmp_path):
+    import tracemalloc
+
+    from tinyassets.config import UniverseConfig, load_universe_config
+
+    universe = _universe(tmp_path)
+    (universe / "config.yaml").write_text(_ALIAS_BOMB, encoding="utf-8")
+    tracemalloc.start()
+    try:
+        config = load_universe_config(universe)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert config.timeout == UniverseConfig().timeout and config.extra == {}
+    assert peak < 8 * 1024 * 1024, peak
+
+
+def test_a_linked_config_yaml_is_not_followed(tmp_path):
+    from tinyassets.config import UniverseConfig, load_universe_config
+
+    universe = _universe(tmp_path)
+    foreign = _universe(tmp_path, "u-bravo") / "config.yaml"
+    foreign.write_text("timeout: 4242\n", encoding="utf-8")
+    try:
+        (universe / "config.yaml").symlink_to(foreign)
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create a symlink")
+    assert load_universe_config(universe).timeout == UniverseConfig().timeout
+
+
+def test_a_strict_config_write_refuses_to_erase_an_unreadable_config(tmp_path):
+    from tinyassets.config import write_provider_assignment_projection
+
+    universe = _universe(tmp_path)
+    (universe / "config.yaml").write_text(_ALIAS_BOMB, encoding="utf-8")
+    with pytest.raises(ValueError, match="unreadable"):
+        write_provider_assignment_projection(universe, state="unassigned", generation=0)
+    assert (universe / "config.yaml").read_text(encoding="utf-8") == _ALIAS_BOMB
+
+
+def _governed_universe(tmp_path: Path) -> Path:
+    from tinyassets.universe_bundle import seed_okf_bundle
+
+    universe = _universe(tmp_path)
+    seed_okf_bundle(universe, purpose="help", loop_branch_def_id="")
+    return universe
+
+
+def test_a_soul_edit_refuses_alias_frontmatter_without_expanding_it(tmp_path):
+    from tinyassets.soul_edit import SoulEditError, apply_soul_edit
+
+    universe = _governed_universe(tmp_path)
+    (universe / "identity.md").write_text("---\n" + _ALIAS_BOMB + "---\nbody\n",
+                                          encoding="utf-8")
+    with pytest.raises(SoulEditError, match="refused"):
+        apply_soul_edit(universe, changes={"identity.md": "new identity body"},
+                        source="test", context="c", summary="s")
+
+
+def test_a_soul_edit_refuses_an_oversized_governed_file(tmp_path):
+    from tinyassets.soul_edit import SoulEditError, apply_soul_edit
+
+    universe = _governed_universe(tmp_path)
+    (universe / "identity.md").write_text("---\nname: x\n---\n" + "z" * (2 * 1024 * 1024),
+                                          encoding="utf-8")
+    with pytest.raises(SoulEditError, match="over its bound"):
+        apply_soul_edit(universe, changes={"identity.md": "new identity body"},
+                        source="test", context="c", summary="s")
+
+
+def test_soul_versions_are_listed_and_read_without_following_links(tmp_path):
+    from tinyassets.universe_soul import SOUL_VERSIONS_DIR, _matching_soul_version_id
+
+    universe = _universe(tmp_path)
+    versions = universe / SOUL_VERSIONS_DIR
+    versions.mkdir()
+    (versions / "0001.md").write_text("own soul", encoding="utf-8")
+    assert _matching_soul_version_id(universe, "own soul") == f"{SOUL_VERSIONS_DIR}/0001.md"
+    foreign = _universe(tmp_path, "u-bravo") / "soul.md"
+    foreign.write_text("FOREIGN SOUL", encoding="utf-8")
+    try:
+        (versions / "0002.md").symlink_to(foreign)
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create a symlink")
+    assert _matching_soul_version_id(universe, "FOREIGN SOUL") is None
+
+
+def test_agent_owned_paths_are_pinned():
+    """Widening what the agent may write makes new daemon readers untrusted.
+
+    Changing this set needs, in the same change: every reader of the new path
+    routed through tinyassets.universe_files and its module added to TURN_PATH
+    in tests/test_universe_file_reads_are_bounded.py
+    (docs/concerns/2026-09-24-universe-file-readers-outside-the-turn-path.md).
+    """
+    assert universe_tools.AGENT_BRAIN_FILES == (
+        "identity.md", "founder.md", "origin.md", "body.md", "orgchart.md",
+        "projects.md", "goals.md", "index.md", "log.md", "voice.md",
+    )
+    assert universe_tools.AGENT_HARNESS_DIRS == (
+        "skills", "prompts", "extensions", "workflows", "bin", "notes",
+    )

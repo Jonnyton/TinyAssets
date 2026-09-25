@@ -15,10 +15,35 @@ tool list. The CLIs' own `Read`/`Bash`/... stay denied on every turn.
 
 ### D2. One jail builder, narrower view
 
-`tool_jail_argv` calls `provider_jail.jail_argv` with a `UniverseView` binding
-the universe at `/u`, a `tmpfs` mask over `.runtime`, and new keyword arguments `share_net=False`, `clearenv=True`, `seccomp_fd=`.
-Provider launches keep the defaults. Path policy is the jail's: a path outside
-`/u` is passed through unchanged and simply does not exist inside.
+`tool_jail_argv` calls `provider_jail.jail_argv` with new keyword arguments
+`share_net=False`, `clearenv=True`, `seccomp_fd=`, and a `UniverseView` that
+splits the folder into what the agent OWNS and what the platform does
+(round-2 correction, below). Provider launches keep the defaults. Path policy
+is the jail's: a path outside `/u` is passed through unchanged and simply does
+not exist inside.
+
+**The agent owns a small, explicit part of its folder.** The universe root is
+bound READ-ONLY at `/u`. Read-write binds go only to
+`universe_tools.AGENT_BRAIN_FILES` (identity, founder, origin, body, orgchart,
+projects, goals, index, log, voice; bound only if present, since an empty brain
+file reads as "learned") and `AGENT_HARNESS_DIRS` (skills, prompts, extensions,
+workflows, bin, notes; created first). Every hidden root entry is masked: a
+directory by an empty `tmpfs`, a file by a read-only `/dev/null` (new
+`mask-file` mount op). Everything else (`soul.md`, `config.yaml`, `soul_versions/`,
+`wiki/`, `workspaces/` ...) is visible and read-only. No new root entry can be
+created. The set is pinned by `test_agent_owned_paths_are_pinned`.
+
+Why (found while fixing round 2): the credential vault
+(`.credential-vault.json`, `.credentials/`) and the per-universe authority
+databases (`.effector_consents.db`, `.usage_ledger.db`,
+`.external_write_receipts.db`, `.subscription_state.db`) live in the universe
+ROOT, not `.runtime/`. The round-1 view masked only `.runtime/`, so the
+agent's `read` could return the owner's credentials and its `bash` could
+forge consent (an act the platform reserves to the person) or create one of
+those databases where none existed. `soul.md` carries the executable
+`effect_authority`, so it is read-only too. The same rule closes the
+round-2 class at its source: `config.yaml` is no longer agent-writable at
+all.
 
 Reads go through the jail too (a jailed `tail | head`), not a daemon-side
 open: the jail is then the only thing deciding what is reachable.
@@ -72,16 +97,25 @@ from OUTSIDE (persona grounding, config, soul, the skill index). Since the
 agent can write and link in its own folder, every such read is untrusted, and
 round 1 (BLOCK) found two ways it bites. The fix is structural, in two layers:
 
-- **One safe reader.** `tinyassets/universe_files.read_universe_file` opens
-  every path component with `O_NOFOLLOW` (POSIX: via `workspace_fs`; non-POSIX:
-  `lstat` per component), requires a regular file and bounds the read. Every
-  daemon-side universe read routes through it: `_read_bundle_body`
-  (grounding), `read_universe_soul`/`read_pinned_universe_soul` (soul),
-  `read_self_model` (identity/index/soul), `read_persona_voice` (voice), and
-  the skill index (already an `O_NOFOLLOW` descriptor walk). A link on the
-  path, a non-regular file, or an over-size file reads as absent — the same
-  fail-closed the callers already had. This catches a link **however it was
-  created**, including one that a filter cannot see.
+- **One safe reader.** `tinyassets/universe_files` (`read_universe_file`,
+  `read_universe_text`, `list_universe_dir`, `load_untrusted_yaml`) opens every
+  path component with `O_NOFOLLOW` (POSIX: via `workspace_fs`; non-POSIX:
+  `lstat` per component), requires a regular file, bounds the read (64 KiB for
+  `config.yaml` and any frontmatter, 1 MiB for brain/soul/log markdown,
+  256 KiB per skill), and parses YAML only after refusing anchors and aliases
+  by scanning parser events (nothing is expanded). EVERY daemon read in the
+  turn-path modules goes through it: grounding, soul, self-model, voice,
+  `config.yaml` (all three readers), soul-edit policy / governed files /
+  frontmatter / log / version index, `soul_versions/` (listed link-free, the
+  newest 256 compared), and the skill index. A refused file is a fail-closed
+  default plus a logged note, never an exception that breaks the turn.
+  `tests/test_universe_file_reads_are_bounded.py` scans those modules' AST and
+  fails on any raw `read_text`/`read_bytes`/`open`/`yaml.*load`/`json.load`
+  outside four reasoned exemptions (cgroup files, slot locks, `.soul.lock`);
+  on the pre-fix tree it reported 15 reads in 3 modules. The ~20 modules that
+  read universe files outside the turn path, all of them read-only to the
+  agent, are triaged in
+  `docs/concerns/2026-09-24-universe-file-readers-outside-the-turn-path.md`.
 - **The jail refuses to create the link.** A seccomp filter
   (`universe_tools.seccomp_program`, x86_64 and aarch64; x32 and unknown
   architectures get EPERM for everything) refuses `symlink`, `symlinkat`,
