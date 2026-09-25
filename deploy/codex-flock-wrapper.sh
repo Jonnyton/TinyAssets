@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Codex CLI cross-container serialization wrapper.
 #
-# deploy/compose.yml sets CODEX_HOME=/data/.codex in the
-# tinyassets-daemon and Codex worker-fleet containers so Codex's in-place
-# refresh chain survives container restarts on the shared tinyassets-data
-# volume. Codex's official CI/CD
-# auth guide warns that one auth.json must NOT be shared across
-# concurrent runners — concurrent refresh attempts race the rotation
-# and trigger the exact `refresh_token_reused` class we are fixing
-# (see OpenAI Codex issue #10332).
+# Every codex launch is a universe's provider child, started with that
+# universe's own CODEX_HOME (tinyassets/providers/base.py
+# subprocess_env_for_provider); the platform holds no Codex login of its own
+# (AGENTS.md Hard Rule 15). Codex's official CI/CD auth guide warns that one
+# auth.json must NOT be shared across concurrent runners -- concurrent
+# refresh attempts race the rotation and trigger `refresh_token_reused`
+# (OpenAI Codex issue #10332) -- and two turns of one universe can launch
+# against the same home.
 #
 # Mitigation: every `codex` invocation goes through this wrapper, which
 # takes an exclusive flock on a sentinel file inside the shared auth
@@ -18,10 +18,8 @@
 # refresh + write happen inside one `codex exec` process, so the
 # serialization window matches the rotation window exactly.
 #
-# When CODEX_HOME is not present (local dev, Docker run without the
-# compose env/volume), the wrapper falls back to HOME/.codex and then a
-# per-process lock in /tmp. Single-container correctness is not at risk
-# because there's no second container competing for the auth file.
+# When CODEX_HOME is not present (local dev), the wrapper falls back to
+# HOME/.codex and then a per-process lock in /tmp.
 
 set -euo pipefail
 

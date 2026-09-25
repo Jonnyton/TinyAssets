@@ -59,7 +59,11 @@ CREATE TABLE IF NOT EXISTS pending_requests (
     answer_json TEXT,
     feedback    TEXT,
     created_at  REAL NOT NULL,
-    resolved_at REAL
+    resolved_at REAL,
+    -- Who raised it: "agent" (the universe's agent or the owner's chatbot) or
+    -- "platform" (e.g. onboarding's model confirmation). Server-set, never
+    -- read from the ask, because it decides what the agent may withdraw.
+    origin      TEXT NOT NULL DEFAULT 'agent'
 );
 -- "don't ask me this again" (founder 2026-08-27). Keyed on the request's own
 -- dedupe key, so it suppresses THIS ask rather than a whole category the user
@@ -111,7 +115,14 @@ FIELD_TYPES = frozenset({"text", "secret", "choice"})
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("request_suppressions", "decision", "TEXT NOT NULL DEFAULT 'declined'"),
     ("request_suppressions", "answer_json", "TEXT"),
+    ("pending_requests", "origin", "TEXT NOT NULL DEFAULT 'agent'"),
 )
+
+#: Who may raise a request. Only ``agent`` requests can be withdrawn by the
+#: agent; a platform-raised ask is the platform's to clear.
+ORIGIN_AGENT = "agent"
+ORIGIN_PLATFORM = "platform"
+ORIGINS = frozenset({ORIGIN_AGENT, ORIGIN_PLATFORM})
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
@@ -143,12 +154,15 @@ def create_request(
     fields: list[dict[str, Any]],
     action: dict[str, Any],
     dedupe_key: str,
+    origin: str = ORIGIN_AGENT,
 ) -> dict[str, Any] | None:
     """Record one pending request. Returns the row, or None on storage failure.
 
     Deduplicated on ``dedupe_key`` while pending, so an agent retrying the same
     ask does not open a second identical tab.
     """
+    if origin not in ORIGINS:
+        raise ValueError(f"unknown request origin {origin!r}")
     try:
         with _db(universe_dir) as conn:
             # A user who said "don't ask me this again" must not be asked again.
@@ -206,7 +220,8 @@ def create_request(
             conn.execute(
                 "INSERT INTO pending_requests (request_id, kind, title, body, "
                 "fields_json, action_json, dedupe_key, status, answer_json, "
-                "created_at, resolved_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,?,NULL)",
+                "created_at, resolved_at, origin) "
+                "VALUES (?,?,?,?,?,?,?,'pending',NULL,?,NULL,?)",
                 (
                     row_id,
                     kind,
@@ -216,6 +231,7 @@ def create_request(
                     json.dumps(action),
                     dedupe_key,
                     time.time(),
+                    origin,
                 ),
             )
         return get_request(universe_dir, row_id)
@@ -246,12 +262,14 @@ def _project(row: Any) -> dict[str, Any]:
         "resolved_at": row[9],
         "feedback": row[10],
         "dedupe_key": row[11],
+        "origin": row[12] or ORIGIN_AGENT,
     }
 
 
 _SELECT = (
     "SELECT request_id, kind, title, body, fields_json, action_json, status, "
-    "answer_json, created_at, resolved_at, feedback, dedupe_key FROM pending_requests"
+    "answer_json, created_at, resolved_at, feedback, dedupe_key, origin "
+    "FROM pending_requests"
 )
 
 
@@ -339,6 +357,39 @@ def resolve_request(
         return False
 
 
+def withdraw_request(
+    universe_dir: Path, request_id: str, *, reason: str = ""
+) -> dict[str, Any]:
+    """The agent takes back an ask it raised and no longer needs.
+
+    One guarded UPDATE: only a row that is still ``pending`` AND was raised by
+    the agent moves, so a withdrawal racing the owner's answer cannot both win,
+    and a platform-raised ask stays up. Writes no standing decision, so the
+    agent may ask again later. On a miss, says why.
+    """
+    try:
+        with _db(universe_dir) as conn:
+            cur = conn.execute(
+                "UPDATE pending_requests SET status = 'withdrawn', feedback = ?, "
+                "resolved_at = ? WHERE request_id = ? AND status = 'pending' "
+                "AND origin = ?",
+                (reason or None, time.time(), request_id, ORIGIN_AGENT),
+            )
+            moved = cur.rowcount > 0
+    except Exception as exc:  # noqa: BLE001 - report, never raise into the turn
+        logger.warning("pending_requests: withdraw failed", exc_info=True)
+        return {"error": "request_storage_unavailable", "detail": str(exc)}
+    row = get_request(universe_dir, request_id)
+    if moved and row is not None:
+        return row
+    if row is None:
+        return {"error": "not_found", "resource": "pending_request"}
+    if row["status"] != "pending":
+        return {"error": "already_resolved", "status": row["status"]}
+    return {"error": "not_withdrawable", "origin": row["origin"],
+            "detail": "this ask was raised by the platform, not by you"}
+
+
 def list_resolved(universe_dir: Path, limit: int = 20) -> list[dict[str, Any]]:
     """Recently answered requests — how the agent reads what it was told."""
     try:
@@ -423,4 +474,5 @@ __all__ = [
     "record_unmute",
     "resolve_request",
     "unsuppress",
+    "withdraw_request",
 ]

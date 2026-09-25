@@ -53,7 +53,8 @@ def _cli_uses_http(kind, tmp_path, *, root=None):
     from tinyassets.providers.claude_provider import _engine_mcp_flags
 
     _engine_mcp_flags(_config(), tmp_path)
-    data = json.loads((tmp_path / ".engine_mcp_config.json").read_text(encoding="utf-8"))
+    config_path = tmp_path / ".runtime" / "engine-mcp-config.json"
+    data = json.loads(config_path.read_text(encoding="utf-8"))
     server = data["mcpServers"]["tinyassets"]
     if "url" not in server:
         assert server["env"]["TINYASSETS_ENGINE_ACTOR_ID"] == "actor-a"

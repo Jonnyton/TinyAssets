@@ -139,7 +139,7 @@ def test_setup_hold_keeps_a_connection_recovery_button_without_fake_answer(tmp_p
     }
     result = _run_app(tmp_path, {"kind": "send", "message": "hello", "payload": held})
     assert result["inflight"] is None
-    assert result["notes"][0]["buttons"] == ["Send it again", "Connect a source"]
+    assert result["notes"][0]["buttons"] == ["Send it again", "Connect a model"]
     assert [m["role"] for m in result["messages"]] == ["founder", "platform"]
     assert result["messages"][-1]["text"] == held["note"]
 

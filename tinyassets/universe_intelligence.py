@@ -76,6 +76,12 @@ _UNTRUSTED_ENVELOPE_RULE = (
 # engine turn is web + no-filesystem. Brain writes go through the separate
 # governed `commit_learning` path, never the engine's tools, so the reply turn
 # needs no write capability either.
+#
+# DELIVERED 2026-09-24 (universe-harness S1): the OS sandbox exists, so a
+# founder turn with engine tools now gets `read`/`write`/`edit`/`bash` over its
+# own folder -- PLATFORM-executed in the tool jail (`tinyassets.universe_tools`)
+# and served as engine MCP handles, never the CLI's own file tools, which stay
+# denied below for every turn.
 _ENGINE_ALLOWED_TOOLS = ("WebFetch",)
 # Fail-closed denylist. The claude CLI has NO "allow-only-X" mode — an allowlist
 # merely pre-approves; every unlisted built-in stays usable — so isolation
@@ -308,10 +314,19 @@ def _sandboxed_config(
 
 
 def _read_bundle_body(universe_dir: Path, filename: str) -> str:
-    """Return the markdown body of an OKF bundle file, or '' if absent/empty."""
+    """Return the markdown body of an OKF bundle file, or '' if absent/empty.
+
+    Read through the one safe reader (:mod:`tinyassets.universe_files`): the
+    agent can write and link in its own folder, so a planted
+    ``founder.md -> /data/<other>/founder.md`` must not be followed into this
+    universe's prompt. A link, a non-regular file or an over-size file reads as
+    absent (fail closed), exactly as an unreadable file did before.
+    """
+    from tinyassets.universe_files import read_universe_text
+
     try:
-        return (universe_dir / filename).read_text(encoding="utf-8").strip()
-    except OSError:
+        return read_universe_text(universe_dir, filename).strip()
+    except (OSError, UnicodeDecodeError):
         return ""
 
 
@@ -1088,24 +1103,35 @@ def converse(
     # with nothing to continue — so it cannot pressure the model to INVENT a topic
     # on a genuine first contact. The directive itself only asks to name a topic
     # when clearly supported by that (untrusted) history.
-    if history_block:
-        system = system + "\n\n" + _CROSS_SURFACE_CONTINUITY
-    system = system + "\n\n" + _turn_input_method_context(input_method)
     # Engine MCP identity binds to the VERIFIED request principal (the WorkOS
     # subject that passed the transport auth gate), NOT the actor_id param — see
     # _sandboxed_config + Codex REJECT 2026-08-13 #1. No verified capability (or a
     # non-founder turn) → no principal → engine MCP fails closed to WebFetch-only.
     founder_principal = capability.principal_id if capability is not None else ""
+    turn_config = _sandboxed_config(
+        ctx,
+        founder_principal=founder_principal,
+        universe_id=uid,
+        granted=granted,
+    )
+    # The universe is the harness (S1): a turn that HAS the four folder tools is
+    # told about them and given its skill index -- the name and one-line
+    # description of each skills/<name>/SKILL.md, read fresh from the folder
+    # every turn, so a skill the agent writes changes what it does from its next
+    # turn. Gated on the tools actually being wired, so a visitor, a flag-off
+    # deploy or an unverified principal is never shown a folder it cannot reach.
+    if turn_config.engine_mcp_enabled:
+        from tinyassets.universe_tools import harness_prompt
+
+        system = system + "\n\n" + harness_prompt(udir)
+    if history_block:
+        system = system + "\n\n" + _CROSS_SURFACE_CONTINUITY
+    system = system + "\n\n" + _turn_input_method_context(input_method)
     reply = _call_writer(
         turn_input,
         system=system,
         universe_context=ctx,
-        config=_sandboxed_config(
-            ctx,
-            founder_principal=founder_principal,
-            universe_id=uid,
-            granted=granted,
-        ),
+        config=turn_config,
         **({} if response_observer is None else {"response_observer": response_observer}),
     )
     # Only a FOUNDER teaches the universe.

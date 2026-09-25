@@ -37,9 +37,9 @@ class UniverseSoul:
     edit_authority: str = DEFAULT_EDIT_AUTHORITY
     loop_branch_def_id: str = NO_LOOP_DECLARED
     # Each entry is a "<sink>:<destination>" grant naming a real-world hand
-    # this universe's founder authorizes (e.g. "github_pull_request:owner/repo").
+    # this universe's founder authorizes (e.g. "authenticated_external_call:github").
     # Empty = nothing declared (transitional: effectors fall through to the
-    # legacy env-capability + consent gates until the soul-authority cutover).
+    # connection + consent gates until the soul-authority cutover).
     effect_authority: tuple[str, ...] = ()
 
     def summary(self) -> dict[str, object]:
@@ -147,12 +147,13 @@ def render_soul_markdown(soul: UniverseSoul) -> str:
 
 
 def read_universe_soul(universe_dir: Path) -> UniverseSoul | None:
-    path = soul_path(universe_dir)
+    # Through the one safe reader: the agent can write/link in its own folder,
+    # so soul.md is untrusted and a link must not be followed (universe_files).
+    from tinyassets.universe_files import read_universe_text
+
     try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except OSError:
+        text = read_universe_text(universe_dir, SOUL_FILENAME)
+    except (OSError, UnicodeDecodeError):
         return None
 
     return UniverseSoul(
@@ -179,9 +180,11 @@ def read_pinned_universe_soul(universe_dir: Path) -> PinnedUniverseSoul | None:
     if soul is None:
         return None
 
+    from tinyassets.universe_files import read_universe_text
+
     try:
-        content = soul_path(universe_dir).read_text(encoding="utf-8")
-    except OSError:
+        content = read_universe_text(universe_dir, SOUL_FILENAME)
+    except (OSError, UnicodeDecodeError):
         return None
 
     version_id = _matching_soul_version_id(universe_dir, content)
@@ -305,12 +308,31 @@ def ensure_universe_soul(
 
 
 def read_legacy_premise(universe_dir: Path) -> str:
+    from tinyassets.universe_files import MAX_BRAIN_FILE_BYTES, read_universe_text
+
     try:
-        return legacy_premise_path(universe_dir).read_text(encoding="utf-8")
-    except FileNotFoundError:
+        return read_universe_text(
+            universe_dir, LEGACY_PREMISE_FILENAME, max_bytes=MAX_BRAIN_FILE_BYTES,
+        )
+    except (OSError, UnicodeDecodeError):
         return ""
+
+
+#: How many of the newest soul snapshots are compared per read. The folder is
+#: untrusted input; an unbounded glob-and-read every turn is not.
+_MAX_SOUL_VERSIONS_SCANNED = 256
+_SOUL_VERSION_NAME = re.compile(r"^[0-9]{4}\.md$")
+
+
+def _soul_version_names(universe_dir: Path) -> list[str]:
+    """Snapshot names in ``soul_versions/``, oldest first, never via a link."""
+    from tinyassets.universe_files import list_universe_dir
+
+    try:
+        names = list_universe_dir(universe_dir, SOUL_VERSIONS_DIR)
     except OSError:
-        return ""
+        return []
+    return sorted(name for name in names if _SOUL_VERSION_NAME.match(name))
 
 
 def premise_from_soul(universe_dir: Path) -> str:
@@ -365,34 +387,43 @@ def _render_list(items: tuple[str, ...]) -> str:
 
 
 def _write_soul_version(universe_dir: Path, rendered: str) -> None:
+    from tinyassets.universe_files import MAX_BRAIN_FILE_BYTES, read_universe_text
+
     versions_dir = universe_dir / SOUL_VERSIONS_DIR
     versions_dir.mkdir(parents=True, exist_ok=True)
-    versions = sorted(versions_dir.glob("[0-9][0-9][0-9][0-9].md"))
+    versions = _soul_version_names(universe_dir)
     if versions:
         try:
-            if versions[-1].read_text(encoding="utf-8") == rendered:
+            latest = read_universe_text(
+                universe_dir, f"{SOUL_VERSIONS_DIR}/{versions[-1]}",
+                max_bytes=MAX_BRAIN_FILE_BYTES,
+            )
+            if latest == rendered:
                 return
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             pass
     next_number = 1
     if versions:
         try:
-            next_number = int(versions[-1].stem) + 1
+            next_number = int(versions[-1][:4]) + 1
         except ValueError:
             next_number = len(versions) + 1
     (versions_dir / f"{next_number:04d}.md").write_text(rendered, encoding="utf-8")
 
 
 def _matching_soul_version_id(universe_dir: Path, content: str) -> str | None:
-    versions_dir = universe_dir / SOUL_VERSIONS_DIR
-    if not versions_dir.is_dir():
-        return None
-    for path in sorted(versions_dir.glob("[0-9][0-9][0-9][0-9].md"), reverse=True):
+    from tinyassets.universe_files import MAX_BRAIN_FILE_BYTES, read_universe_text
+
+    newest = _soul_version_names(universe_dir)[::-1][:_MAX_SOUL_VERSIONS_SCANNED]
+    for name in newest:
         try:
-            if path.read_text(encoding="utf-8") == content:
-                return f"{SOUL_VERSIONS_DIR}/{path.name}"
-        except OSError:
+            text = read_universe_text(
+                universe_dir, f"{SOUL_VERSIONS_DIR}/{name}", max_bytes=MAX_BRAIN_FILE_BYTES,
+            )
+        except (OSError, UnicodeDecodeError):
             continue
+        if text == content:
+            return f"{SOUL_VERSIONS_DIR}/{name}"
     return None
 
 

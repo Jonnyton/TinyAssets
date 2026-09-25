@@ -244,6 +244,27 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # graph-scoped, owner-gated, no secret, no cross-universe/global reach — so the
 # pin is a real confinement. It is the read sibling of connect_compute, letting
 # the served agent SEE the compute providers it can register/select.
+#: How the served agent changes what ``read_graph target=access`` shows, in the
+#: verbs THIS surface has.
+_SERVED_ACCESS_VERBS = {
+    "grant_channel": (
+        'source_channel action="approve" payload={"channel_type": "<sink>", '
+        '"destination": "<destination>"}'
+    ),
+    "revoke_channel": (
+        'source_channel action="revoke" payload={"channel_type": "<sink>", '
+        '"destination": "<destination>"}'
+    ),
+    "widen_add_or_remove_a_key": (
+        'write_graph target="pending_request" operation="ask" with an extend_http, '
+        'connect_http or remove_http action; the owner answers it'
+    ),
+    "withdraw_your_ask": (
+        'write_graph target="pending_request" operation="withdraw" '
+        'payload_json={"request_id": "...", "reason": "..."}'
+    ),
+}
+
 _PINNED_READ_TARGETS = frozenset({
     "status", "graph", "branches", "branch", "runs", "run", "run_output",
     "compute", "connections", "automations", "automation", "conversation",
@@ -252,6 +273,9 @@ _PINNED_READ_TARGETS = frozenset({
     # carries no credential material — the answer to a credential ask goes to
     # the vault, never into this read.
     "pending_requests",
+    # Everything the agent holds here in one owner-only, secret-free read
+    # (channels + access mode, consents, spend allowances, waiting asks).
+    "access",
 })
 
 
@@ -370,10 +394,16 @@ def read_graph(
             ``automations`` (list recurring triggers,
             their desired state, revision and latest run) and ``automation``
             (inspect one by automation_id; ``next_due_at`` is when it fires
-            next). A paused or retired trigger is not evidence that an
-            already-running job has stopped. ``webhooks`` lists your active
-            inbound webhooks (branch_def_id + token_prefix; the URL itself is
-            shown only when created). Any other target is refused.
+            next), and ``access`` (EVERYTHING you hold in this universe:
+            channels with ``access`` exact/full, every channel consent,
+            workspace consents, spend allowances with their ceilings, the asks
+            you are waiting on and which you may withdraw, and the owner's
+            standing decisions; read it when asked "what can you access?" and
+            after any grant, revoke or withdraw). A paused or retired trigger
+            is not evidence that an already-running job has stopped.
+            ``webhooks`` lists your active inbound webhooks (branch_def_id +
+            token_prefix; the URL itself is shown only when created). Any
+            other target is refused.
     Model setup: target="model_options" reads the current home's complete model
     inventory, accepted access, binding revision and saved preferences. It may
     refresh approved discovery and is admission-limited. Model names and remote
@@ -455,6 +485,12 @@ def read_graph(
             except Exception:
                 return json.dumps({"error": "conversation_read_failed"})
             return _untrusted("conversation", json.dumps(payload, ensure_ascii=False))
+        if normalized == "access":
+            from tinyassets.api.agent_access import read_access
+
+            return json.dumps(read_access(
+                universe_id=_GRAPH_ID, how_to_change=_SERVED_ACCESS_VERBS,
+            ), default=str)
         if normalized in {"automations", "automation"}:
             from tinyassets.api.automations import automations
 
@@ -1585,10 +1621,14 @@ def write_graph(
     be asked to do twice.
 
     **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
-    ``git_read:owner/name`` / ``git_write:owner/name``, on a github connection
-    (every endpoint of the same ask must be on github.com). That is what lets the
+    ``git_read:owner/name`` / ``git_write:owner/name``. That is what lets the
     workspace sink clone or push that ONE repository; the HTTP methods still come
-    from the endpoints, never from this list.
+    from the endpoints, never from this list. A git scope binds ONE git host: the
+    connection's endpoint host, or — when the service serves git somewhere other
+    than its API — the ``"git_host"`` the connect ask declares (a bare hostname).
+    Nothing is defaulted per service: if git lives on a different host from the
+    API endpoints you listed, say so with ``git_host`` or the clone goes to the
+    API host.
 
     **A path_template can be a PATTERN, so ask for the JOB, not one file.** Any
     segment may be a ``{name}`` placeholder, and the FINAL segment may be a
@@ -1920,12 +1960,21 @@ def write_graph(
             To connect ANY model or platform, ask with pending_request action
             type "connect": the connect_http fields plus "uses" and
             "constant_headers". An LLM is just a connection with uses.model.
+            When the provider offers OAuth (found ONLY by standard discovery on
+            the connection's own host; say what the use needs with "oauth":
+            {"scopes": [...], optional public "client_id"}; endpoints are never
+            supplied), signing in is the ask's primary action and key fields are
+            optional; the reply says primary "sign_in", or oauth_unavailable
+            with the reason.
         operation: branch create/patch/delete; automation create/pause/resume/delete;
             webhook create/revoke;
-            pending_request ask. For model access, ask with action type
-            bind_model_access, agent_binding_id, expected_revision, provider
-            and complete model_access. No fields: the owner sees the exact
-            change and reconnect warning, and must confirm in their app.
+            pending_request ask, or withdraw (payload_json {"request_id",
+            "reason"}) to take down YOUR OWN still-pending ask once you know it
+            is stale - never leave a wrong tab on the owner's rail. For model
+            access, ask with action type bind_model_access, agent_binding_id,
+            expected_revision, provider and complete model_access. No fields:
+            the owner sees the exact change and reconnect warning, and must
+            confirm in their app.
             Other accepted sources and spending ceilings must be preserved.
         payload_json: for create, a complete Branch spec (JSON object); for patch, a
             JSON array of edit ops.
@@ -1995,20 +2044,28 @@ def write_graph(
         # own principal, so an exposed answer_request would let it satisfy its
         # own ask, and an exposed unmute_request would let it lift a mute the
         # user set. Those stay on the surface a person drives.
+        #
+        # WITHDRAW is the author's half of the lifecycle, not the person's: it
+        # takes down only a still-pending ask YOU raised (a platform ask and an
+        # answered one are refused), records the reason, and grants nothing.
         op = (operation or "ask").strip().lower()
-        if op not in {"ask", "request_from_user"}:
+        if op not in {"ask", "request_from_user", "withdraw"}:
             return json.dumps({
                 "error": (
-                    "target='pending_request' supports operation='ask' only. "
-                    "Answering a request, and lifting a mute, belong to the "
-                    "person you asked - not to you."
+                    "target='pending_request' supports operation='ask' or "
+                    "'withdraw' (your own stale ask). Answering a request, and "
+                    "lifting a mute, belong to the person you asked - not to you."
                 ),
             })
-        from tinyassets.api.pending_requests import request_from_user
+        from tinyassets.api.pending_requests import request_from_user, withdraw_request
         from tinyassets.auth.middleware import _current_identity
 
         token = _bind_founder_identity()
         try:
+            if op == "withdraw":
+                return json.dumps(
+                    withdraw_request(universe_id=_GRAPH_ID, payload=payload_json)
+                )
             return json.dumps(
                 request_from_user(universe_id=_GRAPH_ID, payload=payload_json)
             )
@@ -2998,7 +3055,8 @@ def connect_compute(
 #    `sandboxed-code-node` approval is provenance, not an execution gate (code runs in
 #    the OS sandbox, only in the universe that authored it), so there is nothing to
 #    approve on this surface; the verb stays about outbound sinks.
-#  * Only action=="approve" is served (set_policy/get_policy are not exposed yet).
+#  * action=="approve" and action=="revoke" are served. set_policy/get_policy are
+#    not: the policy store has no reader (change agent-access-controls D3).
 #  * owner-gated (source_channel's impl requires an admin ACL row for the bound founder;
 #    unbound / read-write collaborators get auth_failed), graph-PINNED (universe_id is
 #    never caller-supplied — the agent cannot approve for another universe), secret-free
@@ -3026,8 +3084,13 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     credential. Executable ``source_code`` needs no approval (it runs in the OS sandbox,
     in the universe that authored it); this approves outbound-channel sinks only.
 
+    ``revoke`` takes a consent back (any sink, including a workspace consent you
+    cannot grant yourself); the reply's ``active`` is read back from the store the
+    effector checks. See everything you hold with ``read_graph target="access"``.
+
     Args:
-        action: ``approve`` — grant effector consent for an outbound sink. Required.
+        action: ``approve`` — grant effector consent for an outbound sink; ``revoke``
+            — take one back. Required.
         branch_id: Optional branch context (unused for a pure sink consent).
         payload: JSON object ``{"channel_type": "<sink, e.g. authenticated_external_call>",
             "destination": "<the connection's configured destination>"}``.
@@ -3038,11 +3101,11 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     if err is not None:
         return err
     act = (action or "").strip().lower()
-    if act != "approve":
+    if act not in {"approve", "revoke"}:
         return json.dumps({
             "error": (
-                "source_channel supports action=approve (outbound sink consent) on "
-                "the served surface."
+                "source_channel supports action=approve (grant an outbound sink "
+                "consent) or action=revoke (take one back) on the served surface."
             ),
         })
     raw = (payload or "").strip()
@@ -3069,7 +3132,7 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     # `sink` is checked too because `_approve_sink` reads `fields["sink"]` FIRST
     # and only falls back to `channel_type` -- refusing one spelling and not the
     # other would be a refusal with a documented way around it.
-    if EXTERNAL_WRITE_SINK_WORKSPACE in {
+    if act == "approve" and EXTERNAL_WRITE_SINK_WORKSPACE in {
         channel_type,
         (payload_obj.get("sink") or "").strip(),
     }:
@@ -3093,7 +3156,7 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
                 "verb approves outbound channel sinks only."
             ),
         })
-    if channel_type == "source_code":
+    if act == "approve" and channel_type == "source_code":
         # Approval is provenance only (change `sandboxed-code-node`); execution is
         # gated by the sandbox and authorship. This verb approves sinks, not code.
         return json.dumps({
@@ -3110,8 +3173,10 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     # graph_id is PINNED — the agent cannot approve a channel for another universe.
     token = _bind_founder_identity(_SOURCE_CHANNEL_CAPABILITIES)
     try:
+        # Revoke narrows: it may take back any sink, including a workspace
+        # consent this verb cannot grant. The impl refuses source_code.
         result = _impl(
-            action="approve",
+            action=act,
             universe_id=_GRAPH_ID,
             branch_id=(branch_id or "").strip(),
             payload=payload_obj,
@@ -3119,6 +3184,70 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
         return result if isinstance(result, str) else json.dumps(result, default=str)
     finally:
         _current_identity.reset(token)
+
+
+# ── the universe's four tools (universe-harness S1) ─────────────────────────
+# ``read`` / ``write`` / ``edit`` / ``bash`` over the agent's OWN universe
+# folder, executed by the platform inside the tool jail
+# (``tinyassets.universe_tools``): no network, no credential, resource-limited,
+# the universe at ``/u`` and nothing else. The graph pin picks the folder; no
+# parameter names a universe, and a path outside ``/u`` does not exist in the
+# jail. Every call first rechecks current serving-owner authority.
+
+
+async def _universe_tool(op, /, **kwargs) -> str:
+    import asyncio
+
+    err = _binding_error()
+    if err is not None:
+        return err
+    from tinyassets import universe_tools
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.providers.provider_jail import ProviderConfinementError
+
+    udir = _universe_dir(_GRAPH_ID)
+    try:
+        return await asyncio.to_thread(op, udir, **kwargs)
+    except (universe_tools.UniverseToolError, ProviderConfinementError) as exc:
+        return f"error: {exc}"
+
+
+@mcp.tool(name="read")
+async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
+    """Read a file in your folder /u (relative paths are under /u).
+    offset: first line (1-based); limit: line count (default 2000)."""
+    from tinyassets import universe_tools
+
+    return await _universe_tool(
+        universe_tools.read_file, path=path, offset=offset, limit=limit,
+    )
+
+
+@mcp.tool(name="write")
+async def write_file(path: str, content: str) -> str:
+    """Create or replace a file in /u, making parent folders."""
+    from tinyassets import universe_tools
+
+    return await _universe_tool(universe_tools.write_file, path=path, content=content)
+
+
+@mcp.tool(name="edit")
+async def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """In a file in /u, replace old_text (must match exactly once) with new_text."""
+    from tinyassets import universe_tools
+
+    return await _universe_tool(
+        universe_tools.edit_file, path=path, old_text=old_text, new_text=new_text,
+    )
+
+
+@mcp.tool(name="bash")
+async def run_bash(command: str, timeout: int = 0) -> str:
+    """Run a bash command in /u. No network; memory, processes and time are
+    limited. timeout: seconds (default 120, max 600)."""
+    from tinyassets import universe_tools
+
+    return await _universe_tool(universe_tools.bash, command=command, timeout=timeout)
 
 
 if __name__ == "__main__":

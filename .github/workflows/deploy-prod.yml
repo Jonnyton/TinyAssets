@@ -236,7 +236,12 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" "ls -l '${stage}/'"
 
-      - name: Prepare codex auth persistent volume
+      - name: Prepare data volume root
+        # The volume root holds the OAuth registration db and every universe.
+        # It no longer holds platform model logins: the platform has no LLM
+        # (AGENTS.md Hard Rule 15), so this step creates no .codex or .claude
+        # directory. The host copies left from before are removed by the
+        # "Retire platform LLM logins" step, after the canary is green.
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -249,8 +254,6 @@ jobs:
 
           docker volume create "$VOLUME_NAME" >/dev/null
           VOLUME_DIR="$(docker volume inspect "$VOLUME_NAME" --format '{{ .Mountpoint }}')"
-          CODEX_DIR="$VOLUME_DIR/.codex"
-          CLAUDE_DIR="$VOLUME_DIR/.claude"
 
           # OAuth registration state lives directly at /data/.auth.db.
           # The volume root must be writable by the container's uid 1001;
@@ -262,32 +265,6 @@ jobs:
             \( -name '.auth.db' -o -name '.auth.db-*' \) \
             -exec chown "$TINYASSETS_UID:$TINYASSETS_GID" {} + \
             -exec chmod 600 {} + || true
-
-          # Create the directory if missing. mkdir -p is itself a no-op
-          # when the path already exists.
-          if [ ! -d "$CODEX_DIR" ]; then
-            echo "creating codex auth persistent directory at $CODEX_DIR"
-            mkdir -p "$CODEX_DIR"
-          fi
-
-          # Ownership + mode are repaired UNCONDITIONALLY every deploy.
-          # If a prior attempt left the dir root-owned, this heals the
-          # posture so uid 1001 can write. Both chown and chmod are
-          # themselves idempotent — no-op when state already matches.
-          chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"
-          chmod 700 "$CODEX_DIR"
-
-          # Confirm final state for the log.
-          ls -la "$CODEX_DIR" || true
-
-          if [ ! -d "$CLAUDE_DIR" ]; then
-            echo "creating Claude auth persistent directory at $CLAUDE_DIR"
-            mkdir -p "$CLAUDE_DIR"
-          fi
-          chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
-          chmod 700 "$CLAUDE_DIR"
-
-          ls -la "$CLAUDE_DIR" || true
           SH
 
       - name: Sync the canary bearer into /etc/tinyassets/env
@@ -494,6 +471,25 @@ jobs:
           if [ "${rc}" -ne 0 ]; then
             echo "::warning::post-deploy image retention did not complete (rc=${rc}); the daily timer and hourly disk-watch retry. The pass report is above."
           fi
+
+      - name: Retire platform LLM logins from the host
+        # The platform has no LLM (AGENTS.md Hard Rule 15). The new image and
+        # compose file read no platform model credential, and the entrypoint
+        # strips every such name, so what is left on the host is dead weight
+        # that is also a live secret. This removes it -- env-file names
+        # (including the retired platform GitHub push maps), the GitHub App
+        # token refresher and its key, and both platform login directories in
+        # full (founder decision 2026-09-24), behind exact-path, mount and symlink guards; never a
+        # universe (u-*). Names and counts only in the log. Idempotent, and it runs ONLY after the public canary is green:
+        # the script also refuses unless the running daemon is the new release.
+        if: ${{ success() && steps.canary.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/retire_platform_llm_logins.sh deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo bash /tmp/retire_platform_llm_logins.sh /tmp/install-tinyassets-env.sh"
 
       - name: Open deploy-failed issue
         if: ${{ failure() }}

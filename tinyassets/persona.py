@@ -50,11 +50,11 @@ def read_persona_voice(universe_dir: Path | str) -> str:
     error. Unreadable content is likewise treated as unforked: a voice fork is
     cosmetic, so a read failure must never break the universe's ability to speak.
     """
+    from tinyassets.universe_files import read_universe_text
+
     try:
-        return (Path(universe_dir) / VOICE_FILENAME).read_text(
-            encoding="utf-8"
-        ).strip()
-    except OSError:
+        return read_universe_text(universe_dir, VOICE_FILENAME).strip()
+    except (OSError, UnicodeDecodeError):
         return ""
 
 

@@ -778,10 +778,10 @@ def test_a_stale_git_host_on_a_persisted_action_is_not_trusted():
     assert "clone or push to any repository it can reach on slack.com" not in sentence
     assert "Where that serves git" in sentence
 
-    # ...and a value that DOES agree with the derivation is still used.
+    # ...and a git host the connection DECLARES is still named.
     github = _grant_sentence({"action": {
         "type": "extend_http", "destination": "github", "access": "full",
-        "hosts": ["api.github.com"], "git_host": "github.com",
+        "hosts": ["api.github.com"], "declared_git_host": "github.com",
     }})
     assert "clone or push to any repository it can reach on github.com" in github
 
@@ -834,7 +834,12 @@ def test_a_full_deposit_moves_an_existing_connection(tmp_path):
     # existing-connection mode transition these assertions protect.
     wrapper = inspect.getsource(hc.connect_http)
     assert "_gesture_lock(" in wrapper
-    assert "return _connect_http(universe_id=universe_id, payload=payload)" in wrapper
+    # The owner's universe and payload reach the implementation. Asserted by
+    # argument rather than by the whole call's literal text, so a new
+    # pass-through parameter is not a false failure.
+    assert "return _connect_http(" in wrapper
+    assert "universe_id=universe_id" in wrapper
+    assert "payload=payload" in wrapper
     body = inspect.getsource(hc._connect_http)
     assert "set_access_mode(" in body
     assert body.index("set_access_mode(") < body.index("Idempotent grant bound")

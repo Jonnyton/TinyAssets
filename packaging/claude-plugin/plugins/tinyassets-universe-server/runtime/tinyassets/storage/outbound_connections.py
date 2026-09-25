@@ -28,7 +28,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from tinyassets.storage.workspace_authority import is_git_scope, validate_git_scopes
+from tinyassets.storage.workspace_authority import (
+    is_git_scope,
+    normalize_git_host,
+    validate_git_scopes,
+)
 
 AuthenticatedPrincipalVerifier = Callable[[], str]
 
@@ -137,6 +141,10 @@ class ConnectionResource:
     #: allowlist, the git-scope check and the workspace consents; never by the
     #: SSRF safety checks, which run for both modes.
     access_mode: str = ACCESS_EXACT
+    #: The host git operations use, when the owner declared one at connect time
+    #: (a forge whose git transport is not its API host). Empty: the connection's
+    #: own endpoint host. Never defaulted per service.
+    git_host: str = ""
 
     def __repr__(self) -> str:
         return (
@@ -152,7 +160,8 @@ class ConnectionResource:
             f"connection_type={self.connection_type!r}, "
             f"auth_scheme={self.auth_scheme!r}, "
             f"allowed_endpoints={self.allowed_endpoints!r}, "
-            f"access_mode={self.access_mode!r})"
+            f"access_mode={self.access_mode!r}, "
+            f"git_host={self.git_host!r})"
         )
 
     def to_view(self) -> ConnectionView:
@@ -173,6 +182,7 @@ class ConnectionResource:
             destination=self.destination,
             revoked_at=self.revoked_at,
             access_mode=self.access_mode,
+            git_host=self.git_host,
         )
 
 
@@ -200,6 +210,8 @@ class ConnectionView:
     #: the ONE sentence that says what a full grant means; never as a wildcard
     #: endpoint row, because none is stored.
     access_mode: str = ACCESS_EXACT
+    #: The declared git host, or empty (see :class:`ConnectionResource`).
+    git_host: str = ""
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -214,6 +226,7 @@ class ConnectionView:
             "destination": self.destination,
             "revoked_at": self.revoked_at,
             "access_mode": self.access_mode,
+            "git_host": self.git_host,
         }
 
 
@@ -401,6 +414,31 @@ class SsrfValidationError(ProxyRequestError):
     """
 
 
+class ConnectionAuthorizationError(ProxyRequestError):
+    """The connection's authorization could not be made current.
+
+    Raised when an ``oauth2`` refresh fails (the token endpoint refused, the
+    provider issued no refresh token, or the rotated token could not be
+    saved). It is an ordinary connection failure, recorded as structured
+    fields rather than a vendor message: stage ``connection``, class ``auth``,
+    and the token endpoint's own bounded, secret-free words as the detail.
+    """
+
+    STAGE = "connection"
+    CLASS = "auth"
+
+    def __init__(self, detail: str = "") -> None:
+        super().__init__("outbound request failed: connection authorization failed")
+        self.detail = str(detail or "")[:200]
+
+    @property
+    def failure(self) -> dict[str, str]:
+        record = {"stage": self.STAGE, "class": self.CLASS}
+        if self.detail:
+            record["provider_detail"] = self.detail
+        return record
+
+
 _MAX_PROXY_FRAME_BYTES = 16 * 1024 * 1024
 
 
@@ -499,8 +537,10 @@ _KNOWN_CONNECTION_TYPES = frozenset({"", "http"})
 
 #: Auth schemes an ``http`` connection may declare. ``oauth1a`` (Twitter) signs
 #: with the four OAuth secrets carried in the bundle; the rest use one token.
+#: ``oauth2`` sends a Bearer access token the broker keeps current from the
+#: connection's refreshable token bundle (``connection_oauth.tokens``).
 _SUPPORTED_HTTP_AUTH_SCHEMES = frozenset(
-    {"none", "bearer", "basic", "header", "oauth1a"}
+    {"none", "bearer", "basic", "header", "oauth1a", "oauth2"}
 )
 
 #: The ONLY credential_ref scheme an ``http`` connection may reference. Binding
@@ -692,6 +732,16 @@ def _run_proxy_worker(
                 continue
             try:
                 result = dispatch(grant_id, verb, message.get("request"))
+            except ConnectionAuthorizationError as exc:
+                _send_message(
+                    channel,
+                    {
+                        "ok": False,
+                        "error_type": "ConnectionAuthorizationError",
+                        "message": str(exc),
+                        "failure": exc.failure,
+                    },
+                )
             except (
                 AmbiguousProxyOutcome,
                 GrantResolutionError,
@@ -755,6 +805,10 @@ class _ProxyChannel:
             raise GrantResolutionError(message)
         if error_type == "AmbiguousProxyOutcome":
             raise AmbiguousProxyOutcome(message)
+        if error_type == "ConnectionAuthorizationError":
+            failure = response.get("failure")
+            detail = failure.get("provider_detail", "") if isinstance(failure, dict) else ""
+            raise ConnectionAuthorizationError(str(detail))
         raise ProxyRequestError(message)
 
     def close(self) -> None:
@@ -802,7 +856,9 @@ class ScopedConnectionProxy:
 class CredentialBlindBroker:
     """Trusted daemon-side dispatcher; adapter-facing errors are secret-free."""
 
-    __slots__ = ("_audit", "_ledger", "_network_request", "_resolve_credential")
+    __slots__ = (
+        "_audit", "_ledger", "_network_request", "_oauth_tokens", "_resolve_credential",
+    )
 
     def __init__(
         self,
@@ -811,11 +867,15 @@ class CredentialBlindBroker:
         resolve_credential: Callable[[str], str],
         network_request: Callable[..., Any],
         audit: Callable[[dict[str, object]], None] | None = None,
+        oauth_tokens: Any = None,
     ) -> None:
         self._ledger = ledger
         self._resolve_credential = resolve_credential
         self._network_request = network_request
         self._audit = audit or (lambda _record: None)
+        # Keeps an oauth2 connection's access token current (refresh before
+        # expiry and once on 401, single-flight). None refuses oauth2 loudly.
+        self._oauth_tokens = oauth_tokens
 
     def dispatch(self, grant_id: str, verb: str, request: object) -> Any:
         resource = self._ledger._active_resource_for_grant(grant_id)
@@ -873,8 +933,62 @@ class CredentialBlindBroker:
                     "outbound request failed: constant headers unavailable"
                 ) from None
             request = merge_constant_headers(request, headers)
+        oauth = (
+            resource.connection_type == "http"
+            and (resource.auth_scheme or "").strip().lower() == "oauth2"
+        )
+        # Every value to keep out of a response. For oauth2 that is the access
+        # AND refresh token, never the JSON bundle string as a whole.
+        secrets_held: tuple[str, ...] = (credential,)
+        wire_credential = credential
+        if oauth:
+            bundle = self._oauth_bundle(resource, grant_id, verb, credential)
+            wire_credential = bundle.access_token
+            secrets_held = bundle.secret_values()
+        response = self._send(resource, grant_id, verb, request, wire_credential,
+                              revalidate_authority)
+        if oauth and isinstance(response, dict) and response.get("status") == 401:
+            # The service rejected the token before doing anything: refresh
+            # once (unless another holder already did) and send once more.
+            bundle = self._oauth_bundle(resource, grant_id, verb, credential,
+                                        rejected=wire_credential)
+            if bundle.access_token != wire_credential:
+                wire_credential = bundle.access_token
+                secrets_held = tuple(dict.fromkeys((*secrets_held, *bundle.secret_values())))
+                response = self._send(resource, grant_id, verb, request, wire_credential,
+                                      revalidate_authority)
+        if any(_contains_secret(response, secret) for secret in secrets_held if secret):
+            self._record_error(
+                resource,
+                grant_id,
+                verb,
+                "destination response contained credential material",
+            )
+            raise ProxyRequestError(
+                "outbound request failed: unsafe destination response"
+            )
+        return response
+
+    def _oauth_bundle(
+        self, resource: ConnectionResource, grant_id: str, verb: str, credential: str,
+        *, rejected: str = "",
+    ) -> Any:
+        if self._oauth_tokens is None:
+            self._record_error(resource, grant_id, verb, "oauth2 tokens unavailable")
+            raise ProxyRequestError("outbound request failed: credential unavailable")
+        destination = (resource.credential_ref or "")[len(_HTTP_CREDENTIAL_REF_PREFIX):].strip()
         try:
-            response = self._network_request(
+            return self._oauth_tokens.current(destination, credential, rejected=rejected)
+        except ConnectionAuthorizationError:
+            self._record_error(resource, grant_id, verb, "connection authorization failed")
+            raise
+
+    def _send(
+        self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
+        credential: str, revalidate_authority: Any,
+    ) -> Any:
+        try:
+            return self._network_request(
                 credential=credential,
                 provider=resource.provider,
                 destination=resource.destination,
@@ -904,17 +1018,6 @@ class CredentialBlindBroker:
             raise ProxyRequestError(
                 "outbound request failed at destination"
             ) from None
-        if _contains_secret(response, credential):
-            self._record_error(
-                resource,
-                grant_id,
-                verb,
-                "destination response contained credential material",
-            )
-            raise ProxyRequestError(
-                "outbound request failed: unsafe destination response"
-            )
-        return response
 
     def _record_error(
         self,
@@ -1438,6 +1541,9 @@ def _ssrf_auth_headers(
             raise SsrfValidationError("custom auth header name is not permitted")
         _reject_forbidden_header_name(name)
         result = {name: bundle.get("token")}
+    elif scheme == "oauth2":
+        # The broker already replaced the bundle with the CURRENT access token.
+        result = {"Authorization": f"Bearer {bundle.get('token')}"}
     elif scheme == "oauth1a":
         # OAuth 1.0a (Twitter): the signature is over the request method + URL, so
         # they are threaded in from the driver. Signed entirely in the child.
@@ -3188,7 +3294,17 @@ def _build_http_secret_bundle(auth_scheme: str, credential: str) -> ConnectionSe
         raise SsrfValidationError(
             "credential encoding does not match the connection's auth scheme"
         )
-    if scheme in ("bearer", "header"):
+    # The same binding for oauth2: its vault string holds a refresh token and
+    # must never be sent as a bearer/header/basic value by a mutated row. The
+    # broker hands the driver the access token alone, so an oauth2 connection
+    # that still sees a bundle here was bypassed and is refused too.
+    from tinyassets.connection_oauth.tokens import looks_like_bundle
+
+    if looks_like_bundle(credential):
+        raise SsrfValidationError(
+            "credential encoding does not match the connection's auth scheme"
+        )
+    if scheme in ("bearer", "header", "oauth2"):
         return ConnectionSecretBundle(token=credential)
     if scheme == "basic":
         if ":" not in credential:
@@ -3315,11 +3431,17 @@ def _build_credential_broker_dispatch(
 ) -> Callable[[str, str, object], Any]:
     runtime_root = Path(config["runtime_root"])
     runtime_root.mkdir(parents=True, exist_ok=True)
+    from tinyassets.connection_oauth.tokens import ConnectionTokens
+
     broker = CredentialBlindBroker(
         ConnectionLedger(config["ledger_db_path"]),
         resolve_credential=_TrustedCredentialResolver(config),
         network_request=_TrustedNetworkDriver(config, runtime_root),
         audit=_JsonlAuditWriter(str(runtime_root / "audit.jsonl")),
+        oauth_tokens=ConnectionTokens(
+            universe_dir=config["universe_dir"],
+            owner_user_id=config["owner_user_id"],
+        ),
     )
     return broker.dispatch
 
@@ -3358,6 +3480,8 @@ CREATE TABLE IF NOT EXISTS outbound_connections (
     auth_scheme     TEXT NOT NULL DEFAULT '',
     allowed_endpoints_json TEXT NOT NULL DEFAULT '[]',
     access_mode     TEXT NOT NULL DEFAULT 'exact',
+    -- The owner-declared git host; '' means "the connection's endpoint host".
+    git_host        TEXT NOT NULL DEFAULT '',
     -- Minted fresh on every deposit. The connection id and the credential_ref
     -- are both deterministic per (universe, destination), so without this a
     -- key removed and REPLACED under the same destination with an identical
@@ -3441,6 +3565,7 @@ def _resource_from_row(row: sqlite3.Row) -> ConnectionResource:
         access_mode=normalize_access_mode(
             row["access_mode"] if "access_mode" in columns else ""
         ),
+        git_host=(row["git_host"] if "git_host" in columns else "") or "",
     )
 
 
@@ -3514,6 +3639,9 @@ class ConnectionLedger:
                 # migration must never widen an existing grant.
                 ("access_mode", "TEXT NOT NULL DEFAULT 'exact'"),
                 ("incarnation", "TEXT NOT NULL DEFAULT ''"),
+                # Empty for every existing row: a migration never names a host
+                # the owner did not.
+                ("git_host", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if column not in connection_columns:
                     connection.execute(
@@ -3579,8 +3707,10 @@ class ConnectionLedger:
         auth_scheme: str = "",
         allowed_endpoints: Any = (),
         access_mode: str = ACCESS_EXACT,
+        git_host: str = "",
     ) -> ConnectionView:
         endpoints = _parse_allowed_endpoints(allowed_endpoints)
+        declared_git_host = normalize_git_host(git_host)
         normalized_access = normalize_access_mode(access_mode)
         normalized_type = (connection_type or "").strip().lower()
         normalized_scheme = (auth_scheme or "").strip().lower()
@@ -3602,13 +3732,13 @@ class ConnectionLedger:
             if normalized_scheme not in _SUPPORTED_HTTP_AUTH_SCHEMES:
                 raise SsrfValidationError("auth scheme is not supported")
         # A git scope binds one repository on one host, so it may only ride on a
-        # connection provably pointed at github.com. Checked HERE, at the storage
+        # connection that names exactly one git host. Checked HERE, at the storage
         # boundary: every issuer assembles its own scope tuple, and a rule that
         # lives in one of them is a rule the next one forgets.
         validate_git_scopes(
             scopes,
             hosts=[endpoint.host for endpoint in endpoints],
-            provider=provider,
+            git_host=declared_git_host,
         )
         resource = ConnectionResource(
             connection_id=_required("connection_id", connection_id),
@@ -3623,6 +3753,7 @@ class ConnectionLedger:
             auth_scheme=normalized_scheme,
             allowed_endpoints=endpoints,
             access_mode=normalized_access,
+            git_host=declared_git_host,
         )
         with self._connect() as connection:
             connection.execute(
@@ -3631,8 +3762,8 @@ class ConnectionLedger:
                     connection_id, owner_user_id, connection_class, scopes_json,
                     provider, destination, credential_ref, revoked_at,
                     connection_type, auth_scheme, allowed_endpoints_json,
-                    access_mode, incarnation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+                    access_mode, incarnation, git_host
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     resource.connection_id,
@@ -3647,6 +3778,7 @@ class ConnectionLedger:
                     json.dumps([ep.as_dict() for ep in resource.allowed_endpoints]),
                     resource.access_mode,
                     uuid.uuid4().hex,
+                    resource.git_host,
                 ),
             )
         # Return the REDACTED view — no caller (not even the creator) gets
@@ -3688,6 +3820,7 @@ class ConnectionLedger:
         expected_access_mode: str | None = None,
         expected_incarnation: str | None = None,
         expected_grant_id: str | None = None,
+        git_host: str = "",
     ) -> bool:
         """ADD endpoints to an existing http connection. Never remove or replace.
 
@@ -3718,16 +3851,24 @@ class ConnectionLedger:
                 "an http connection requires at least one allowed endpoint"
             )
         new_scopes = tuple(_required("scope", scope) for scope in scopes)
-        validate_git_scopes(new_scopes, hosts=[endpoint.host for endpoint in parsed])
+        # ``git_host`` is the STORED connection's declared host (the caller read
+        # it); an extension never changes it.
+        validate_git_scopes(
+            new_scopes, hosts=[endpoint.host for endpoint in parsed], git_host=git_host
+        )
         sql = """
                 UPDATE outbound_connections
                 SET allowed_endpoints_json = ?, scopes_json = ?
                 WHERE connection_id = ? AND allowed_endpoints_json = ?
-                  AND scopes_json = ?
+                  AND scopes_json = ? AND git_host = ?
         """
+        # The git host the scopes were validated against is part of the CAS:
+        # a remove-and-reconnect under a different git_host with identical
+        # endpoints and scopes must not receive this widening.
         params: list[Any] = [
             json.dumps([ep.as_dict() for ep in parsed]), json.dumps(list(new_scopes)),
             connection_id, expected_endpoints_json, expected_scopes_json,
+            normalize_git_host(git_host),
         ]
         if expected_access_mode is not None or expected_incarnation is not None:
             if not expected_access_mode or not expected_incarnation:

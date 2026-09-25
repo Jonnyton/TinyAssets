@@ -105,9 +105,12 @@ from __future__ import annotations
 #:       form / connect_http, which is deliberately NOT here). SINK CONSENT ONLY:
 #:       channel_type=="source_code" is refused (that approval sets approved_source_hash,
 #:       the provenance the create-only write_graph strips — keeping it off this
-#:       surface keeps a served build from attesting its own code). action=approve only;
-#:       set_policy/get_policy
-#:       and the raw-secret connect_http stay off-surface. Gated to the same u-tiny run
+#:       surface keeps a served build from attesting its own code). action=approve or
+#:       revoke (change agent-access-controls: revoke narrows, so it may take back any
+#:       sink, including a workspace consent the agent cannot grant). set_policy/
+#:       get_policy stay off-surface (the policy store has no reader), as does the
+#:       raw-secret connect_http. What the agent holds reads back through
+#:       read_graph target=access. Gated to the same u-tiny run
 #:       allowlist; the outbound call also needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED.
 #:
 #: write_graph (BUILD half of the channel slice, 2026-08-25): the ONE channel-agnostic
@@ -117,6 +120,15 @@ from __future__ import annotations
 #:   only the sink NAME and fires nothing; the run-time effector re-checks the
 #:   connection-grant-bound-to-this-universe + per-destination consent (granted via
 #:   source_channel) + TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED + SSRF per dispatch.
+#:
+#: read, write, edit, bash (universe-harness S1, 2026-09-24) — the agent's four
+#:   tools over its OWN universe folder, executed by the platform in the tool
+#:   jail (``tinyassets.universe_tools``): the universe at ``/u`` only, its
+#:   root read-only with just the agent-owned brain files and harness dirs
+#:   read-write, every hidden root entry (credential vault, ``.runtime``,
+#:   consent/usage DBs) masked, no network, no credential,
+#:   rlimits + wall clock + output and process-tree caps. Pinned like every
+#:   handle here; no parameter names a universe.
 #:
 #: Deliberately EXCLUDED pending their own review (tracked by the
 #: ``served-agent-build-run`` OpenSpec change):
@@ -135,6 +147,10 @@ SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "write_brain",
     "connect_compute",
     "source_channel",
+    "read",
+    "write",
+    "edit",
+    "bash",
 )
 
 # Explicit reviewed authority boundary. A future connector write action must not

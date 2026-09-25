@@ -446,10 +446,13 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     from tinyassets.engine_mcp_http import read_engine_mcp_route
     from tinyassets.storage import data_dir
 
-    # Config lives in the sandboxed universe_dir (the engine has no filesystem
-    # read tool, so it never sees it). HTTP config carries the private bearer;
-    # never put this config in the prompt or logs. Overwritten each turn.
-    config_path = universe_dir / ".engine_mcp_config.json"
+    # Config lives under the universe's platform-owned ``.runtime/``, which the
+    # universe tool jail masks: the agent's own read/bash tools never see it.
+    # HTTP config carries the private bearer; never put this config in the
+    # prompt or logs. Overwritten each turn. The pre-harness location at the
+    # universe root is removed so no stale bearer stays readable there.
+    config_path = universe_dir / ".runtime" / "engine-mcp-config.json"
+    legacy_path = universe_dir / ".engine_mcp_config.json"
     server_env = {
         "TINYASSETS_ENGINE_ACTOR_ID": actor_id,
         "TINYASSETS_ENGINE_GRAPH_ID": graph_id,
@@ -487,7 +490,10 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
             }
         }
     try:
+        config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         config_path.write_text(_json.dumps(mcp_config), encoding="utf-8")
+        if legacy_path.is_file() and not legacy_path.is_symlink():
+            legacy_path.unlink()
     except OSError:
         # If we cannot write the config, fail closed to WebFetch-only rather than
         # passing --mcp-config a missing path (which would error the whole turn).
@@ -505,9 +511,9 @@ def _confine_workflow_node(config: ModelConfig) -> ModelConfig:
     nodes turning into explorations of that tree -- dozens of
     ``find``/``grep``/``Read`` calls over ``/app/tinyassets`` and ``PLAN.md``,
     ``Explore`` subagents, ``ls /data`` -- at 5-16K output tokens and 100-300s,
-    against 0.3-1.4K tokens and 10-25s when the model used no tools. The same
-    builtins reach every universe under the data root, so this is the
-    cross-user floor, not an owner preference.
+    against 0.3-1.4K tokens and 10-25s when the model used no tools. The
+    cross-user floor itself is the OS jail the shared spawn point puts every
+    universe launch in (``provider_jail``); this narrows the node further.
 
     The served universe turn already runs this way (``sandbox_workspace``);
     this applies the existing rule to workflow nodes. Web tools, subagents and

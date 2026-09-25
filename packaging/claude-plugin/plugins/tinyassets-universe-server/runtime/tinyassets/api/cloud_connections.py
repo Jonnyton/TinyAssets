@@ -1,16 +1,20 @@
-"""Phone-safe WorkOS Pipes connection handles."""
+"""The universe's connection inventory: ``read_graph target=connections``.
+
+Every connection a universe holds is one its owner deposited through the
+ordinary ``connect`` request -- a key for any host, GitHub included. This module
+only LISTS them, channel-agnostically, in a redacted projection. There is no
+per-service setup path here: a GitHub-only WorkOS pipe used to live in this
+file, and was removed on 2026-09-24 because nothing could ever resolve its
+credential and it was the one place GitHub was special.
+"""
 
 from __future__ import annotations
 
-import hashlib
-import json
-import os
-import re
 from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
-from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.workspace_authority import (
     WORKSPACE_SINK,
     connection_access_mode,
@@ -18,11 +22,13 @@ from tinyassets.storage.workspace_authority import (
     connection_git_scopes,
     parse_workspace_consent_destination,
 )
-from tinyassets.workos_pipes import WorkOSPipesClient, WorkOSPipesError
 
-_REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
-_SCOPES = ("pull_requests:read_for_commit", "pull_requests:write")
-_CANONICAL_RETURN_TO = "https://tinyassets.io/mcp"
+#: The write_graph operations that DO create or change a connection. Named in
+#: the refusal so an agent that reaches for a per-service setup finds the
+#: general one instead.
+_GENERIC_CONNECTION_OPERATIONS = (
+    "request_from_user", "answer_request", "configure", "remove_http",
+)
 
 
 def _actor() -> str | None:
@@ -33,28 +39,6 @@ def _actor() -> str | None:
     from tinyassets.principals import named_principal
 
     return named_principal(permissions.current_actor_id()) or None
-
-
-def _repository(value: object) -> str:
-    normalized = str(value or "").strip().lower()
-    normalized = normalized.removeprefix("https://").removeprefix("http://")
-    normalized = normalized.removeprefix("github.com/").strip("/")
-    if _REPOSITORY.fullmatch(normalized) is None:
-        raise ValueError("destination must identify one GitHub repository")
-    return normalized
-
-
-def _payload(value: Any) -> dict[str, Any]:
-    document = json.loads(value) if isinstance(value, str) else value
-    if not isinstance(document, dict):
-        raise ValueError("payload_json must be a JSON object")
-    return document
-
-
-def _ids(*, actor: str, universe_id: str, destination: str) -> tuple[str, str]:
-    material = f"{actor}\0{universe_id}\0github\0{destination}".encode()
-    digest = hashlib.sha256(material).hexdigest()[:32]
-    return f"pipes_github_{digest}", f"pipes_grant_{digest}"
 
 
 def _project(resource: Any, grant: Any) -> dict[str, Any]:
@@ -70,8 +54,8 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
         # required_query) — i.e. the owner's OWN declared egress policy, never the
         # credential (ConnectionView carries no credential_ref). An http channel
         # connection exposes these so the agent can read back the exact host + path
-        # it must emit in an authenticated_external_call packet; a github pipe has
-        # none, so this is an empty list there.
+        # it must emit in an authenticated_external_call packet; a legacy row
+        # with no declared endpoints shows an empty list.
         "allowed_endpoints": [
             ep.as_dict() for ep in (getattr(resource, "allowed_endpoints", ()) or ())
         ],
@@ -84,6 +68,8 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
         # agent can SEE which repositories this connection may clone or push
         # without having to know the scope grammar. A universe that can read
         # what it holds stops asking for what it already has.
+        # Where git goes when the owner declared it ("" = the endpoint host).
+        "git_host": getattr(resource, "git_host", "") or "",
         "git_scopes": [
             {"kind": kind, "repo": repo, "host": connection_git_host(resource)}
             for kind, repo in sorted(connection_git_scopes(resource))
@@ -127,22 +113,6 @@ def _ledger(actor: str) -> ConnectionLedger:
     )
 
 
-def _return_to() -> str:
-    """Return the only callback target accepted by the production contract.
-
-    Older deployments allowed an environment override here.  That made a
-    stale or malformed host value reach WorkOS and collapse into its generic
-    ``request failed`` response, leaving phone setup with no actionable URL.
-    The OpenSpec design calls for a fixed canonical MCP return target, so keep
-    the environment name only as a compatibility read and fail closed to the
-    canonical value.
-    """
-    configured = os.environ.get("WORKOS_PIPES_RETURN_TO", "").strip()
-    if configured and configured != _CANONICAL_RETURN_TO:
-        return _CANONICAL_RETURN_TO
-    return _CANONICAL_RETURN_TO
-
-
 def cloud_connections(
     *,
     action: str,
@@ -157,91 +127,12 @@ def cloud_connections(
 
     if not permissions.universe_access_allows(uid, write=action != "list"):
         return {"error": "not_found", "resource": "connection"}
-    client = WorkOSPipesClient()
     normalized = (action or "").strip().lower()
-    if normalized == "connect":
-        try:
-            destination = _repository(_payload(payload).get("destination"))
-            url = client.authorization_url(user_id=actor, return_to=_return_to())
-        except (TypeError, ValueError, WorkOSPipesError) as exc:
-            return {"error": "connection_setup_invalid", "detail": str(exc)}
-        return {
-            "status": "authorization_required",
-            "provider": "github",
-            "destination": destination,
-            "authorization_url": url,
-            "next": "after GitHub consent, retry write_graph target=connection operation=reconcile",
-        }
-    if normalized == "reconcile":
-        try:
-            document = _payload(payload)
-            destination = _repository(document.get("destination"))
-            account = client.connected_account(user_id=actor)
-        except (TypeError, ValueError, WorkOSPipesError) as exc:
-            return {"error": "connection_reconcile_invalid", "detail": str(exc)}
-        if account.state != "connected":
-            try:
-                url = client.authorization_url(user_id=actor, return_to=_return_to())
-            except WorkOSPipesError:
-                url = None
-            return {
-                "status": "authorization_required",
-                "provider": "github",
-                "destination": destination,
-                "authorization_url": url,
-                "account_state": account.state or "unknown",
-            }
-        ledger = _ledger(actor)
-        connection_id, grant_id = _ids(
-            actor=actor,
-            universe_id=uid,
-            destination=destination,
-        )
-        # Credential-bearing read: this idempotency/conflict check must compare
-        # the stored credential_ref, which the redacted get_connection view no
-        # longer exposes (outbound redaction is structural now). Trusted server
-        # code only — the ref never reaches a caller projection (`_project` below).
-        resource = ledger._get_connection_resource(connection_id)
-        if resource is None:
-            resource = ledger.create_connection(
-                connection_id=connection_id,
-                owner_user_id=actor,
-                connection_class="pull-request-writer",
-                scopes=_SCOPES,
-                provider="github",
-                destination=destination,
-                credential_ref=f"workos-pipes://github/{actor}",
-            )
-        elif (
-            resource.owner_user_id != actor
-            or resource.provider != "github"
-            or resource.destination != destination
-            or resource.credential_ref != f"workos-pipes://github/{actor}"
-            or resource.revoked_at is not None
-        ):
-            return {"error": "connection_conflict", "resource": "connection"}
-        grant = ledger.get_grant(grant_id)
-        if grant is None:
-            grant = ledger.grant_connection(
-                grant_id=grant_id,
-                connection_id=connection_id,
-                owner_user_id=actor,
-                universe_id=uid,
-                unprompted_action_cap=ActionCap("one_pull_request", 1, "pull_requests"),
-            )
-        elif (
-            grant.connection_id != connection_id
-            or grant.owner_user_id != actor
-            or grant.universe_id != uid
-            or grant.revoked_at is not None
-        ):
-            return {"error": "connection_conflict", "resource": "grant"}
-        return _project(resource, grant)
     if normalized == "list":
         # List EVERY connection granted to this universe, channel-agnostically:
-        # github pipes AND generic http channel connections (Slack, Discord, or any
-        # HTTPS endpoint the owner deposited via connect_http). No per-service code —
-        # the owner-chosen `destination` label IS the channel identity, and each row
+        # any HTTPS host the owner deposited a key for, plus any legacy row a
+        # retired setup path left behind. No per-service code — the
+        # owner-chosen `destination` label IS the channel identity, and each row
         # carries the connection_id + grant_id + allowed_endpoints the agent needs to
         # build an authenticated_external_call node WITHOUT the owner pasting them
         # back by hand. Redacted views only (no credential_ref), scoped to the
@@ -271,7 +162,15 @@ def cloud_connections(
         }
     return {
         "error": "unknown_connection_action",
-        "allowed_actions": ["connect", "reconcile", "list"],
+        "allowed_actions": ["list"],
+        "detail": (
+            "Connecting any service is the ordinary connect request: "
+            "write_graph target=connection operation=request_from_user with "
+            "action.type=\"connect\" naming its host and endpoints, which the "
+            "owner answers in the app. There is no per-service setup "
+            "operation."
+        ),
+        "connection_operations": list(_GENERIC_CONNECTION_OPERATIONS),
     }
 
 

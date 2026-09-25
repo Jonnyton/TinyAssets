@@ -26,7 +26,11 @@ Two actions exist, and the difference is where the answer goes:
   non-secret ``constant_headers``. One answer deposits the key, creates the
   connection and grant, records the uses, and - when the universe has no model
   yet and this one serves models - makes it the universe's model. An LLM is
-  just another connection (founder, 2026-09-24).
+  just another connection (founder, 2026-09-24). When the provider offers
+  OAuth for what the connection needs (found by standard discovery, or from
+  ``oauth`` connection data on the ask), signing in is the request's primary
+  action and key paste the fallback (founder, 2026-09-24: "prefer OAuth when
+  the provider allows for what the request is trying to accomplish").
 * ``{"type": "answer"}`` — the answer is ordinary data the agent reads back.
 
 Nothing is inferred anywhere in this flow. For a credential the agent already
@@ -290,16 +294,46 @@ def _validated_action(raw: Any) -> dict[str, Any]:
             "scopes": [],
             "access": "full",
             "hosts": [endpoint["host"] for endpoint in endpoints],
+            **_validated_git_host(action),
         }
     endpoints = _validated_endpoint_list(action)
+    git_host = _validated_git_host(action)
+    if git_host and not action.get("scopes"):
+        # A declared git host is where the owner's key is SENT for git. On an
+        # exact ask with no git scope it authorizes nothing, so it would be a
+        # destination stored without a purpose -- and later scope-only
+        # extensions would inherit it (Tier 2 review round 1, BLOCK).
+        raise ValueError(
+            "git_host names where git sends this key; an exact ask with no git "
+            "scope has no use for it -- add the git scopes it is for, or drop it"
+        )
     return {
         "type": "connect_http",
         "destination": destination,
         "auth_scheme": scheme,
         "endpoints": endpoints,
-        "scopes": _validated_git_scopes(action, endpoints),
+        "scopes": _validated_git_scopes(
+            action, endpoints, git_host=git_host.get("git_host", "")
+        ),
         "access": "exact",
+        **git_host,
     }
+
+
+def _validated_git_host(action: dict[str, Any]) -> dict[str, str]:
+    """``{"git_host": host}`` when the ask declares where git goes, else ``{}``.
+
+    Optional on any deposit, for any service: a forge whose git transport is
+    not its API host says so here, and the owner reads it in the grant. There
+    is no per-service default.
+    """
+    from tinyassets.storage.workspace_authority import GitScopeError, normalize_git_host
+
+    try:
+        host = normalize_git_host(action.get("git_host"))
+    except GitScopeError as exc:
+        raise ValueError(str(exc)) from None
+    return {"git_host": host} if host else {}
 
 
 def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
@@ -313,6 +347,7 @@ def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
         validate_constant_headers,
         validate_uses,
     )
+    from tinyassets.connection_oauth.discovery import validate_request
 
     deposit = _validated_action({**action, "type": "connect_http"})
     try:
@@ -320,13 +355,56 @@ def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
         headers = validate_constant_headers(action.get("constant_headers"))
     except ConnectionUseError as exc:
         raise ValueError(str(exc)) from None
+    # What the agent knows about signing in (endpoints, issuer, scopes). It is
+    # REPLACED by the resolved offer before the ask is stored, so a caller can
+    # never claim an offer was discovered.
+    oauth_request = validate_request(action.get("oauth"))
     if "model" in uses and deposit["access"] == "exact" and not any(
         "POST" in (endpoint.get("methods") or []) for endpoint in deposit["endpoints"]
     ):
         raise ValueError(
             "a model use needs a POST endpoint for inference (the model URL path)"
         )
-    return {**deposit, "type": "connect", "uses": uses, "constant_headers": headers}
+    return {**deposit, "type": "connect", "uses": uses, "constant_headers": headers,
+            "oauth_request": oauth_request}
+
+
+def _has_sign_in(action: dict[str, Any]) -> bool:
+    """A connect ask whose sign-in endpoints were DISCOVERED from its own host.
+
+    ``source`` is written only by ``resolve_offer`` (a requester cannot supply
+    it), so an offer without it is never trusted.
+    """
+    offer = action.get("oauth") if isinstance(action, dict) else None
+    return (action.get("type") == "connect" and isinstance(offer, dict)
+            and offer.get("source") == "discovered"
+            and bool(offer.get("authorize_url")) and bool(offer.get("token_url")))
+
+
+def _with_sign_in_offer(action: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve whether the provider offers OAuth for this connection.
+
+    Returns the action to store (with ``oauth`` = the offer when there is one)
+    and what to tell the requester. Discovery never fails the ask: without an
+    offer the ask is a key paste, and the reason says why.
+    """
+    from tinyassets.connection_oauth.discovery import resolve_offer
+    from tinyassets.connection_oauth.flow import configured_redirect_uri
+
+    requested = action.pop("oauth_request", {}) or {}
+    hosts = list(dict.fromkeys(
+        [str(e.get("host") or "") for e in action.get("endpoints") or []]
+        + [str(h) for h in action.get("hosts") or []]
+    ))
+    offer, reason = resolve_offer(requested, [h for h in hosts if h])
+    if offer is None:
+        return action, {"oauth_unavailable": reason}
+    note: dict[str, Any] = {"primary": "sign_in"}
+    callback = configured_redirect_uri()
+    if callback:
+        # A client registered by hand must list exactly this redirect URI.
+        note["redirect_uri"] = callback
+    return {**action, "oauth": offer}, note
 
 
 #: A channel is 1-4 hosts. More than that is not one channel; it is a request
@@ -397,6 +475,7 @@ def _validated_git_scopes(
     endpoints: list[dict[str, Any]],
     *,
     host_checked: bool = True,
+    git_host: str = "",
 ) -> list[str]:
     """The git scopes an http ask may carry, validated the way the deposit will.
 
@@ -437,12 +516,11 @@ def _validated_git_scopes(
     # DEPOSIT checks the connection's stored set instead. Skipping it here
     # cannot widen anything - the ledger refuses the write either way.
     if host_checked and scopes and not endpoints_allow_git_scopes(
-        [str(endpoint.get("host") or "") for endpoint in endpoints]
+        [str(endpoint.get("host") or "") for endpoint in endpoints], git_host
     ):
         raise ValueError(
             "a git scope needs every endpoint of the same ask to be on ONE host "
-            "(any host); ask for the git scope on the connection that reaches "
-            "the forge"
+            "(any host), or a git_host on the connect ask naming where git lives"
         )
     return sorted(set(scopes))
 
@@ -556,6 +634,9 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
     if action["type"] == "bind_model_access":
         if raw not in (None, []):
             raise ValueError("model access is a fieldless owner confirmation")
+        return []
+    if not fields and _has_sign_in(action):
+        # Signing in IS the answer; key fields, when present, are the fallback.
         return []
     if not fields:
         # NO unlabelled fallback for a credential ask.
@@ -700,8 +781,14 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
-    """The agent raises a tab. Writes no credential."""
+def request_from_user(
+    *, universe_id: str = "", payload: Any = None, origin: str = "agent",
+) -> dict[str, Any]:
+    """The agent raises a tab. Writes no credential.
+
+    ``origin`` is server-set (keyword only, never read from ``payload``): the
+    platform's own asks pass ``"platform"`` so the agent cannot withdraw them.
+    """
     from tinyassets.storage.pending_requests import create_request
 
     _uid, udir, denied = _owner_gate(universe_id)
@@ -719,11 +806,15 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
         return _bad("kind is the tab header (e.g. 'API'); it is required")
     if not title:
         return _bad("title is required; the user is being asked for something")
+    sign_in: dict[str, Any] = {}
     try:
         action = _validated_action(document.get("action"))
+        if action.get("type") == "connect":
+            action, sign_in = _with_sign_in_offer(action)
         fields = _validated_fields(document.get("fields"), action)
     except ValueError as exc:
-        return _bad(str(exc))
+        reason = sign_in.get("oauth_unavailable")
+        return _bad(str(exc) + (f" (no sign-in is offered: {reason})" if reason else ""))
     except Exception as exc:  # noqa: BLE001 - endpoint validator
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
 
@@ -739,6 +830,12 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
         refused = _model_use_refusal(_uid, action)
         if refused is not None:
             return refused
+    if action.get("type") == "grant_workspace_consent":
+        host = _owned_connection_git_host(action["connection_id"])
+        if not host:
+            # Uniform with the answer path: never name "the connection's host".
+            return {"error": "not_found", "resource": "connection"}
+        action = {**action, "host": host}
     if action.get("type") == "remove_http":
         from tinyassets.api.helpers import _base_path
         from tinyassets.api.http_connection import _ids
@@ -752,6 +849,18 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
         held = _extend_ask_verdict(_uid, action, captured_preview=captured_preview)
         if held is not None:
             return held
+        if _grants_git(action):
+            # The owner must read WHERE git will send the key before saying yes
+            # to a git scope (Tier 2 review round 1, BLOCK): the stored
+            # connection's resolved git host, from the same preview that
+            # admitted the ask.
+            scope_host = str(captured_preview.get("git_host") or "").strip()
+            if not scope_host:
+                return _bad(
+                    "this connection names no git host, so a git scope on it "
+                    "cannot be granted; reconnect it with git_host"
+                )
+            action = {**action, "git_scope_host": scope_host}
         if any(e.get("redirect_mode") == "public_https_get" for e in action["endpoints"]):
             # Capture the same preview that admitted the ask. Agent-supplied
             # snapshots are never accepted by action normalization.
@@ -788,7 +897,7 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
     )
     row = create_request(
         udir, kind=kind, title=title, body=body, fields=fields,
-        action=action, dedupe_key=dedupe,
+        action=action, dedupe_key=dedupe, origin=origin,
     )
     if row is None:
         return {"error": "request_storage_unavailable"}
@@ -810,7 +919,30 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
                 "decision rather than asking again."
             ),
         }
-    return {**row, "grant_sentence": _grant_sentence(row)}
+    return {**row, "grant_sentence": _grant_sentence(row), **sign_in}
+
+
+def _owned_connection_git_host(connection_id: str) -> str:
+    """The resolved git host of the caller's own live connection, or ``""``."""
+    from pathlib import Path
+
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+    from tinyassets.storage.workspace_authority import connection_git_host
+
+    actor = permissions.current_actor_id().strip()
+    connection = ConnectionLedger(
+        Path(_base_path()) / "outbound.db",
+        verify_authenticated_principal=lambda: actor,
+    ).get_connection(connection_id)
+    if (
+        connection is None
+        or connection.owner_user_id != actor
+        or connection.revoked_at is not None
+    ):
+        return ""
+    return connection_git_host(connection)
 
 
 def _full_channel_reach(universe_id: str, action: dict[str, Any]) -> dict[str, Any]:
@@ -848,17 +980,13 @@ def _full_channel_reach(universe_id: str, action: dict[str, Any]) -> dict[str, A
     hosts = preview.get("hosts")
     if isinstance(hosts, list) and hosts:
         reach["hosts"] = [str(h) for h in hosts]
-    # Only a RECOGNISED forge is named. `git_host_for_endpoints` passes an
-    # unknown single host straight through -- correct for the platform, which
-    # must work with any forge, and wrong to repeat to an owner: it made a full
-    # grant on a Slack key read as "clone or push on slack.com" (Codex code
-    # review round 1). An unrecognised host gets the conditional clause.
-    from tinyassets.storage.workspace_authority import FORGE_GIT_HOSTS
-
-    git_host = str(preview.get("git_host") or "").strip().lower()
-    declared = [str(h).strip().lower() for h in (reach.get("hosts") or [])]
-    if git_host and len(declared) == 1 and FORGE_GIT_HOSTS.get(declared[0]) == git_host:
-        reach["git_host"] = git_host
+    # Only a git host the OWNER declared is named. A host merely derived from
+    # the endpoints is repeated to nobody: it made a full grant on a Slack key
+    # read as "clone or push on slack.com" (Codex code review round 1). An
+    # undeclared host gets the conditional clause.
+    declared_git_host = str(preview.get("declared_git_host") or "").strip().lower()
+    if declared_git_host:
+        reach["declared_git_host"] = declared_git_host
     return reach
 
 
@@ -900,11 +1028,21 @@ def _extend_ask_verdict(
     if preview.get("error"):
         detail = str(preview.get("detail") or preview["error"])
         git_host = str(preview.get("git_host") or "")
-        if git_host and git_host in (preview.get("asked_hosts") or []):
+        asked_hosts = [str(h) for h in (preview.get("asked_hosts") or [])]
+        if git_host and git_host in asked_hosts:
             detail += (
                 f" The key already reaches {git_host} for git: a clone or push "
                 "uses the connection's git scopes and needs no HTTP endpoint on "
                 "that host."
+            )
+        elif asked_hosts and not preview.get("declared_git_host"):
+            # An HTTP endpoint never moves git. Where git goes is the
+            # connection's declared git_host, set when the owner connects.
+            detail += (
+                " An HTTP endpoint does not change where git goes. If this "
+                "service serves git on another host, the connection must "
+                "declare it: remove this key and raise a connect ask with "
+                '"git_host" naming that host.'
             )
         return {
             "error": "ask_cannot_be_granted",
@@ -955,10 +1093,20 @@ def _granted_lines(action: dict[str, Any]) -> list[str]:
         if not text or ":" not in text:
             continue
         kind, _, repo = text.partition(":")
+        # The owner is told WHERE git sends the key. A deposit names the host it
+        # declares; an extension names the stored connection's resolved git
+        # host, captured when the ask was raised (never a caller-supplied value:
+        # action normalization drops both fields).
+        host = (
+            action.get("git_scope_host")
+            if action.get("type") == "extend_http"
+            else action.get("git_host")
+        )
+        on = f" on {host}" if host else ""
         if kind == "git_read":
-            lines.append(f"use git to READ {repo}")
+            lines.append(f"use git to READ {repo}{on}")
         elif kind == "git_write":
-            lines.append(f"use git to WRITE to {repo}")
+            lines.append(f"use git to WRITE to {repo}{on}")
     return lines
 
 
@@ -970,8 +1118,6 @@ def _full_channel_sentence(action: dict[str, Any]) -> str:
     exactly the grant an owner must not have to infer. It never renders a
     wildcard row: there is no wildcard, only a mode.
     """
-    from tinyassets.storage.workspace_authority import FORGE_GIT_HOSTS
-
     destination = action.get("destination")
     hosts = [str(h).strip().lower() for h in (action.get("hosts") or []) if str(h).strip()]
     if not hosts:
@@ -987,17 +1133,22 @@ def _full_channel_sentence(action: dict[str, Any]) -> str:
         if deposit
         else f'Full access to your {destination} key'
     )
-    # Only a forge we RECOGNISE gets named, because naming one is a claim: a
-    # full grant on a Slack key would otherwise read as "git clone or push on
-    # slack.com". Any other host gets the general clause below, which is true
-    # for a Gitea box and harmless for a key that serves no git at all.
-    # Derived HERE from the hosts, never taken from the action. A row persisted
-    # before the derivation was tightened carries whatever the old code put
-    # there, and "slack.com" in that field would render as a git host (Codex
-    # code review round 2). The stored value is only honoured when it agrees.
-    recognised = FORGE_GIT_HOSTS.get(hosts[0]) if len(hosts) == 1 else ""
-    declared = str(action.get("git_host") or "").strip().lower()
-    if declared and declared != recognised:
+    # Only a git host the owner DECLARED gets named, because naming one is a
+    # claim: a full grant on a Slack key would otherwise read as "git clone or
+    # push on slack.com". Any other single host gets the general clause below,
+    # which is true for a Gitea box and harmless for a key that serves no git.
+    # Re-validated here: a value that is not a hostname is not rendered.
+    from tinyassets.storage.workspace_authority import GitScopeError, normalize_git_host
+
+    # A deposit's `git_host` is the field the owner's ask declared (validated
+    # when it was raised). An extension names the STORED connection's declared
+    # host under `declared_git_host`; a legacy extension row's `git_host` was
+    # derived from the endpoints and is never rendered (Codex code review
+    # round 2).
+    field = "git_host" if deposit else "declared_git_host"
+    try:
+        recognised = normalize_git_host(action.get(field))
+    except GitScopeError:
         recognised = ""
     if recognised:
         git_clause = (
@@ -1050,18 +1201,27 @@ def _grant_sentence(row: dict[str, Any]) -> str:
             CONSENT_OPERATIONS.get(consent, consent)
             for consent in (action.get("consents") or [])
         ]
-        # The host is the CONNECTION's, so the sentence shows what was asked
-        # for rather than a host the platform assumed. An older row that
-        # predates the field says "the connection's host" rather than guessing.
-        host = str(action.get("host") or "").strip() or "the connection's host"
+        # The host is the connection's RESOLVED git host, captured when the ask
+        # was raised. A row without one (older than the field) names no host,
+        # so it cannot be granted: the owner must see where the key goes.
+        host = str(action.get("host") or "").strip()
+        if not host:
+            return (
+                "This request does not say which host the key would be used "
+                "against, so it cannot be granted. Ask again."
+            )
         return (
             "Let this universe " + ", ".join(operations) + " "
-            f"{host}/{action.get('repo')} with the key you already "
+            f"{action.get('repo')} on {host} with the key you already "
             "gave. Nothing to paste; this is the yes."
         )
+    if action.get("type") == "connect" and "setup" in action:
+        # The synthesized setup entry grants nothing itself; each shape it
+        # completes raises (or answers) its own exact request.
+        return ""
     if action.get("type") == "connect":
         base = _grant_sentence({**row, "action": {**action, "type": "connect_http"}})
-        return (base + _uses_sentence(action)) if base else ""
+        return (base + _uses_sentence(action) + _sign_in_sentence(row)) if base else ""
     if action.get("type") in ("extend_http", "connect_http") and action.get("access") == "full":
         return _full_channel_sentence(action)
     if action.get("type") == "extend_http":
@@ -1090,8 +1250,9 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     # so a user cannot tell the one that works from the one that fails
     # (observed live, 2026-08-28).
     where = f' as "{action.get("destination")}"' if action.get("destination") else ""
+    git_to = _git_host_clause(action.get("git_host"))
     if len(lines) == 1:
-        return f"This key{where} will be able to {lines[0]} - nothing else."
+        return f"This key{where} will be able to {lines[0]} - nothing else.{git_to}"
     # "reach" is the established wording and describes an endpoint list. It does
     # NOT describe "use git to WRITE to owner/repo", so the verb widens only
     # when a git scope is actually present -- every ask without one reads
@@ -1099,8 +1260,42 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     verb = "do" if _grants_git(action) else "reach"
     return (
         f"This key{where} will be able to {verb} exactly these, and nothing "
-        "else: " + "; ".join(lines) + "."
+        "else: " + "; ".join(lines) + "." + git_to
     )
+
+
+def _sign_in_sentence(row: dict[str, Any]) -> str:
+    """How a sign-in-capable ask is completed, naming where the click goes."""
+    action = row.get("action") or {}
+    if not _has_sign_in(action):
+        return ""
+    from urllib.parse import urlsplit
+
+    from tinyassets.connection_oauth.discovery import offer_hosts
+
+    offer = action["oauth"]
+    host = urlsplit(offer["authorize_url"]).hostname or "the provider"
+    token_host = urlsplit(offer["token_url"]).hostname or "the provider"
+    scopes = offer.get("scopes") or []
+    asks = f" It asks for: {', '.join(scopes)}." if scopes else ""
+    paste = " You can paste a key instead." if row.get("fields") else ""
+    # EVERY host the sign-in contacts, not only where the owner clicks: the
+    # token host receives the code and every refresh token.
+    return (f" Sign in at {host} to connect it - no key to copy.{asks} Tokens come "
+            f"from {token_host}; sign-in talks only to {', '.join(offer_hosts(offer))}, "
+            "found from the connection's own host. Its access renews itself, and "
+            "only your universe can use it." + paste)
+
+
+def _git_host_clause(value: Any) -> str:
+    """" Git operations with this key go to <host>." for a declared git host.
+
+    Rendered on EVERY deposit that declares one, not only beside a git scope:
+    it is a place the owner's key is sent, and the owner approves it here.
+    """
+    if not value:
+        return ""
+    return f" Git operations with this key go to {value}."
 
 
 def _uses_sentence(action: dict[str, Any]) -> str:
@@ -1157,19 +1352,65 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
         return False
 
 
+#: The shapes the rail can complete itself for a model connection, in the order
+#: it offers them. Each is answered through the ONE ``connect`` action with
+#: explicit fields; nothing is inferred by an LLM, because an unpowered universe
+#: has none. A ``command`` runner joins this list when one exists to run it.
+_MODEL_CONNECT_SHAPES = ("api_key", "local")
+
+
+def _first_power_preset() -> dict[str, object] | None:
+    """The bundled guided sign-in the setup request offers first, as display data.
+
+    It is installed data (``acquisition_presets.json``), not code: the app shows
+    whatever preset is installed and names no provider itself. An unreadable
+    preset drops the button rather than offering one that cannot work.
+    """
+    import json as _json
+    from pathlib import Path
+
+    from tinyassets.onboarding.hosted_model_auth import HostedAuthError, load_preset
+
+    try:
+        path = Path(__file__).parent.parent / "providers" / "acquisition_presets.json"
+        docs = _json.loads(path.read_text(encoding="utf-8"))
+        preset_id = next(iter(docs))
+        preset = load_preset(preset_id)
+        manual = docs[preset_id].get("manual_key_entry") is True
+    except (OSError, ValueError, StopIteration, HostedAuthError, KeyError, TypeError):
+        return None
+    return {
+        "preset_id": preset.id,
+        "name": preset.display_name,
+        "label": f"Continue with {preset.display_name}",
+        "manage_url": preset.manage_url,
+        "manual_key": manual,
+    }
+
+
 def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
-    """A blocking setup entry, or an optional additional-source entry when ready."""
+    """A blocking setup entry, or an optional additional-source entry when ready.
+
+    It is the whole model setup (founder, 2026-09-24): the app completes every
+    shape inside this one request, through the one ``connect`` action.
+    """
+    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES)}
+    primary = None if connected else _first_power_preset()
+    if primary is not None:
+        setup["primary"] = primary
     return {
         "request_id": _LLM_REQUEST_ID,
         "kind": "LLM",
         "title": ("Connect another LLM" if connected
                   else "Connect the model your universe runs on"),
         "body": (
-            "Connect a model you control: a subscription, an API, or your own "
-            "model endpoint. Your universe uses only connections you authorize."
+            "Add another model source. Your universe keeps running on the one it has."
+            if connected else
+            "Your universe needs a model to think with. It only ever uses "
+            "connections you authorize."
         ),
         "fields": [],
-        "action": {"type": "connect_llm"},
+        "action": {"type": "connect", "use": "model", "setup": setup},
         "status": "pending",
         "sticky": not connected,
         "created_at": 0.0,
@@ -1247,6 +1488,50 @@ def unmute_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     return {"status": "unmuted" if lifted else "not_muted"}
 
 
+def withdraw_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """The agent takes down an ask of its own that it knows is stale.
+
+    Owner-gated like every rail operation. Only a still-pending ask the agent
+    raised moves; an answered one, a platform ask, and the synthesized model
+    entry are refused with the reason. Records the withdrawal (status
+    ``withdrawn`` with the reason) rather than deleting, and writes no standing
+    decision.
+    """
+    from tinyassets.storage.pending_requests import list_pending
+    from tinyassets.storage.pending_requests import withdraw_request as _withdraw
+
+    _uid, udir, denied = _owner_gate(universe_id)
+    if denied is not None:
+        return denied
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return _bad(str(exc))
+    request_id = str(document.get("request_id") or "").strip()
+    if not request_id:
+        return _bad("request_id is required; read_graph target=pending_requests lists it")
+    if request_id == _LLM_REQUEST_ID:
+        return {
+            "error": "not_withdrawable",
+            "detail": (
+                "this entry is derived from whether a model is connected; it "
+                "clears itself when one is, and nobody raised it"
+            ),
+        }
+    reason = str(document.get("reason") or "").strip()[:_MAX_ANSWER_CHARS]
+    if reason and _ENTROPY_RUN_RE.search(reason):
+        return _bad(
+            "that reason looks like it contains a credential; it is stored in "
+            "the clear, so say it in words instead"
+        )
+    row = _withdraw(udir, request_id, reason=reason)
+    if row.get("error"):
+        return row
+    on_rail = any(r["request_id"] == request_id for r in list_pending(udir, limit=500))
+    return {**{k: v for k, v in row.items() if k != "action"},
+            "still_on_rail": on_rail}
+
+
 def _grant_workspace_consent(
     *,
     udir: Any,
@@ -1311,6 +1596,17 @@ def _grant_workspace_consent(
     host = connection_git_host(connection)
     if not host:
         return {"error": "not_found", "resource": "connection"}
+    if host != str(action.get("host") or "").strip():
+        # The owner said yes to a named host. A row that names none, or a
+        # connection that now resolves elsewhere, is not that yes. PENDING.
+        return {
+            "error": "connection_conflict",
+            "resource": "connection",
+            "detail": (
+                "this request no longer names the host the key would be used "
+                "against; ask again and the tab will name it"
+            ),
+        }
     destinations = [
         workspace_consent_destination(
             consent, repo, connection_id=connection_id, host=host
@@ -1353,7 +1649,6 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     is deposited under the policy stored ON THE REQUEST — never one supplied
     here — so the tab's promise is what gets granted.
     """
-    from tinyassets.api.http_connection import connect_http
     from tinyassets.storage.pending_requests import get_request, resolve_request
 
     _uid, udir, denied = _owner_gate(universe_id)
@@ -1460,11 +1755,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     # tab that reads "also let me write one more file" and have it delete their
     # credential instead: the fields check below never ran for a fieldless row,
     # and nothing ever compared the action to what was on screen.
-    expected = json.dumps(
-        [row["kind"], row["title"], row["body"], row["fields"], action],
-        sort_keys=True, separators=(",", ":"),
-    )
-    if row.get("dedupe_key") and row["dedupe_key"] != expected:
+    if not displayed_row_matches(row):
         return _bad(
             "this request no longer matches what it was created as, so what "
             "you were shown is not what would happen; ask again"
@@ -1553,6 +1844,10 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 # ...and the policy that mode was read against, so the write
                 # cannot land on a reach that grew while the tab was open.
                 "policy_snapshot": action.get("policy_snapshot") or None,
+                # The git host the owner read beside the git scope. The write
+                # refuses if the connection now resolves somewhere else.
+                **({"expected_git_host": action.get("git_scope_host") or ""}
+                   if _grants_git(action) else {}),
             }),
         )
         if widened.get("error"):
@@ -1604,6 +1899,11 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         refused = _model_use_refusal(_uid, action)
         if refused is not None:
             return {**refused, "request_pending": True}
+    if action.get("type") in _DEPOSIT_TYPES and not secret_names and _has_sign_in(action):
+        return _bad(
+            "this connection is completed by signing in: use the request's "
+            "Sign in button, which returns here connected"
+        )
     if action.get("type") in _DEPOSIT_TYPES:
         # ONE secret field -> its value. SEVERAL -> a JSON object keyed by field
         # name, which is the encoding a multi-value scheme's vault string uses.
@@ -1643,46 +1943,11 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             secret = f"{supplied['username']}:{supplied['password']}"
         else:
             secret = json.dumps(supplied)
-        deposited = connect_http(
-            universe_id=universe_id,
-            payload=json.dumps(
-                {
-                    "destination": action["destination"],
-                    "secret": secret,
-                    "auth_scheme": action["auth_scheme"],
-                    "allowed_endpoints": action["endpoints"],
-                    "scopes": action.get("scopes") or [],
-                    # As above: the owner accepted a full channel, so the
-                    # connection is created full. It was stored exact, and the
-                    # first call outside the recorded endpoints was refused.
-                    "access": action.get("access") or "exact",
-                }
-            ),
+        return _deposit_answer(
+            universe_id=universe_id, uid=_uid, udir=udir, row=row, secret=secret,
+            auth_scheme=action["auth_scheme"], answer=answer, feedback=feedback,
+            dont_ask_again=dont_ask_again,
         )
-        if deposited.get("error"):
-            # Leave it PENDING: the answer did not land, and closing the tab
-            # here would lose the ask with nothing deposited.
-            return deposited
-        extra: dict[str, Any] = {}
-        if action.get("type") == "connect":
-            extra = _complete_connect(_uid, action, deposited)
-            if extra.get("error"):
-                # The key is in the vault, but the uses did not land. Leave the
-                # ask PENDING: answering again re-deposits idempotently and
-                # retries the uses, so nothing is half-granted for long.
-                return {**extra, "request_pending": True}
-        resolve_request(udir, request_id, status="answered", answer=answer,
-                        feedback=feedback, dont_ask_again=dont_ask_again,
-                        decision="allowed")
-        return {
-            "status": "answered",
-            "request_id": request_id,
-            "suppressed": dont_ask_again,
-            "destination": action["destination"],
-            "receipt": _grant_sentence(row).replace("will be able to", "may"),
-            "connection_id": deposited.get("connection_id"),
-            **extra,
-        }
 
     # For a plain answer the user's own words decide it: an explicit decline
     # field, else answering at all is a yes.
@@ -1705,6 +1970,122 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         "feedback": feedback,
         "suppressed": dont_ask_again,
     }
+
+
+def displayed_row_matches(row: dict[str, Any]) -> bool:
+    """Whether the stored row still reproduces what the owner was shown.
+
+    The dedupe key is a hash of exactly [kind, title, body, fields, action] --
+    the tuple the tab renders from -- so a row whose action was rewritten after
+    rendering no longer reproduces it and must not execute.
+    """
+    expected = json.dumps(
+        [row["kind"], row["title"], row["body"], row["fields"], row["action"]],
+        sort_keys=True, separators=(",", ":"),
+    )
+    return not row.get("dedupe_key") or row["dedupe_key"] == expected
+
+
+def _deposit_answer(
+    *, universe_id: str, uid: str, udir: Any, row: dict[str, Any], secret: str,
+    auth_scheme: str, answer: dict[str, Any], feedback: str, dont_ask_again: bool,
+) -> dict[str, Any]:
+    """Deposit under the policy stored ON THE REQUEST, then finish a connect.
+
+    One path for a pasted key and for a completed sign-in (``oauth2`` tokens),
+    so what the owner was shown is what gets granted either way.
+    """
+    from tinyassets.api.http_connection import connect_http
+    from tinyassets.storage.pending_requests import resolve_request
+
+    action = row["action"]
+    request_id = row["request_id"]
+    deposited = connect_http(
+        universe_id=universe_id,
+        payload=json.dumps(
+            {
+                "destination": action["destination"],
+                "secret": secret,
+                "auth_scheme": auth_scheme,
+                "allowed_endpoints": action["endpoints"],
+                "scopes": action.get("scopes") or [],
+                # As above: the owner accepted a full channel, so the
+                # connection is created full. It was stored exact, and the
+                # first call outside the recorded endpoints was refused.
+                "access": action.get("access") or "exact",
+                # Where git goes, as the owner read it in the grant.
+                "git_host": action.get("git_host") or "",
+            }
+        ),
+        allow_oauth2=auth_scheme == "oauth2",
+    )
+    if deposited.get("error"):
+        # Leave it PENDING: the answer did not land, and closing the tab
+        # here would lose the ask with nothing deposited.
+        return deposited
+    extra: dict[str, Any] = {}
+    if action.get("type") == "connect":
+        extra = _complete_connect(uid, action, deposited)
+        if extra.get("error"):
+            # The key is in the vault, but the uses did not land. Leave the
+            # ask PENDING: answering again re-deposits idempotently and
+            # retries the uses, so nothing is half-granted for long.
+            return {**extra, "request_pending": True}
+    resolve_request(udir, request_id, status="answered", answer=answer,
+                    feedback=feedback, dont_ask_again=dont_ask_again,
+                    decision="allowed")
+    return {
+        "status": "answered",
+        "request_id": request_id,
+        "suppressed": dont_ask_again,
+        "destination": action["destination"],
+        "receipt": _grant_sentence(row).replace("will be able to", "may"),
+        "connection_id": deposited.get("connection_id"),
+        **({"signed_in": True} if auth_scheme == "oauth2" else {}),
+        **extra,
+    }
+
+
+def answer_connect_with_token(
+    *, universe_id: str = "", request_id: str = "", token: str = "",
+) -> dict[str, Any]:
+    """The owner answered a sign-in-capable ``connect`` by signing in.
+
+    Called only by the sign-in flow after a code exchange, with the token bundle
+    as the secret. The same checks as a pasted answer run first: owner, still
+    pending, still what was shown, and the money floor for a model use.
+    """
+    from tinyassets.storage.pending_requests import get_request
+
+    uid, udir, denied = _owner_gate(universe_id)
+    if denied is not None:
+        return denied
+    row = get_request(udir, request_id) if request_id else None
+    if row is None:
+        return {"error": "not_found", "resource": "pending_request"}
+    if row["status"] != "pending":
+        return {"error": "already_resolved", "status": row["status"]}
+    action = row["action"]
+    if not _has_sign_in(action) or not displayed_row_matches(row):
+        return _bad("this request no longer offers sign-in as it was shown; ask again")
+    # PIN: the bundle's token URL (where every refresh token will go) must be
+    # the discovered one the owner approved on this request.
+    from tinyassets.connection_oauth.tokens import decode
+
+    try:
+        pinned = decode(token).token_url == action["oauth"]["token_url"]
+    except (TypeError, ValueError, KeyError):
+        pinned = False
+    if not pinned:
+        return _bad("the sign-in's token endpoint is not the one this request showed")
+    if "model" in (action.get("uses") or {}):
+        refused = _model_use_refusal(uid, action)
+        if refused is not None:
+            return {**refused, "request_pending": True}
+    return _deposit_answer(
+        universe_id=universe_id, uid=uid, udir=udir, row=row, secret=token,
+        auth_scheme="oauth2", answer={}, feedback="", dont_ask_again=False,
+    )
 
 
 def _model_use_refusal(uid: str, action: dict[str, Any]) -> dict[str, Any] | None:
@@ -1765,8 +2146,10 @@ def _complete_connect(
 
 
 __all__ = [
+    "answer_connect_with_token",
     "answer_request",
     "list_requests",
     "request_from_user",
     "unmute_request",
+    "withdraw_request",
 ]

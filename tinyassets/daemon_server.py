@@ -3519,7 +3519,7 @@ class SelectorHasEffectsError(ValueError):
     branch that could trigger external writes, including transitively:
 
     * **Round 2 P1.3** — node declares non-empty ``effects``
-      (e.g. ``github_pull_request``). Each read would fire the
+      (e.g. ``authenticated_external_call``). Each read would fire the
       effector directly.
     * **Round 3 P1.B** — node declares ``invoke_branch_spec`` or
       ``invoke_branch_version_spec``. The child run executes through

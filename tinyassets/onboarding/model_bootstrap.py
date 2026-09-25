@@ -114,7 +114,8 @@ def complete_bootstrap(*, base: Path, uid: str, owner: str, preset: AcquisitionP
     # The existing public binding action accepts the registered definition id;
     # capture_action normalizes it into the manifest's api_key_http identity.
     provider = did
-    request = request_from_user(universe_id=uid, payload={
+    # Raised by the platform, not by the agent, so the agent cannot withdraw it.
+    request = request_from_user(universe_id=uid, origin="platform", payload={
         "kind": "Models", "title": "Power your universe with free models",
         "body": (f"Use eligible free models from your {preset.display_name} account. "
                  "No paid-model access or credit purchase is approved. Your source's privacy "

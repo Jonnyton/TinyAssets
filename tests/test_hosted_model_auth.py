@@ -243,3 +243,25 @@ def test_total_exchange_deadline(monkeypatch):
         return httpx.Response(200, json={"key": "too-late"})
     with pytest.raises(auth.HostedAuthError, match="outcome_unknown"):
         exchange(handler)
+
+
+def test_preset_authorize_params_name_the_key_without_overriding_the_flow(monkeypatch):
+    """A naive user saw "An app" on the provider's page: the preset names the key as data."""
+    query = parse_qs(urlsplit(begin()["authorize_url"]).query)
+    assert query["key_label"] == ["TinyAssets"]
+    hostile = replace(auth.load_preset("openrouter_user_models_v1"),
+                      authorize_params=(("code_challenge", "attacker"),))
+    monkeypatch.setattr(auth, "load_preset", lambda _: hostile)
+    query = parse_qs(urlsplit(begin()["authorize_url"]).query)
+    assert query["code_challenge"] == [CHALLENGE]
+
+
+@pytest.mark.parametrize("value", [
+    "TinyAssets", ["key_label"], {"callback_url": "https://evil.example/"},
+    {"code_challenge_method": "plain"}, {"key_label": 7}, {"key_label": ""},
+    {"key_label": "x" * 129}, {"k\u00e9y": "v"}, {"key_label": "a\nb"},
+    {f"k{i}": "v" for i in range(9)},
+])
+def test_preset_authorize_params_are_validated(value):
+    with pytest.raises(auth.HostedAuthError):
+        auth._authorize_params(value)

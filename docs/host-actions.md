@@ -12,6 +12,65 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Codex credits are exhausted, so every authority-path PR costs founder time (2026-09-25)
+
+`codex exec` answers only:
+
+> ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage
+> to purchase more credits or try again at Sep 27th, 2026 5:15 PM.
+
+`codex login status` still reports "Logged in using ChatGPT", so this is a
+credit balance, not an auth failure, and no agent can fix it.
+
+What it costs: `pr-scope-guard` requires an exact-head **cross-family** review
+receipt for any behavioural change to an authority path
+(`scripts/authority_behavior_check.py`), and Codex is the only other model
+family in this harness. With it down, the only route left is the founder
+reviewing by hand and stamping the receipt -- which is what happened on PR #3981
+(`tinyassets/providers/router.py`). The gate still works; it just spends founder
+time it was designed not to spend, on every PR touching `router.py`,
+`provider_assignment*`, `storage/` or the other listed paths. The receipt is
+head-pinned, so each follow-up push needs a fresh one.
+
+The ask: top up Codex credits at https://chatgpt.com/codex/settings/usage, or
+tell us to wait for the 2026-09-27 17:15 reset and to keep bringing
+authority-path work to you. Do not have an agent write the
+`Drain-Review-Verdict: APPROVE` receipt itself -- the gate exists because a PR
+can neuter its own checks, and a self-issued receipt is the failure it names.
+
+## Delete the platform's model-credential repository secrets (2026-09-24)
+
+The platform has no LLM (AGENTS.md Hard Rule 15), and after the retire-platform-llm-logins
+PR nothing reads these. Agents cannot delete repository secrets. In GitHub →
+Settings → Secrets and variables → Actions, delete: `CLAUDE_CODE_OAUTH_TOKEN`,
+`OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`,
+`WORKFLOW_CODEX_AUTH_JSON_B64`, `WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64`, and the
+platform GitHub push map `WORKFLOW_GITHUB_PR_CAPABILITIES`. Also revoke the
+underlying keys/tokens at each provider, including the GitHub token inside
+`TINYASSETS_GITHUB_PUSH_CAPABILITIES` on the droplet (the deploy scrubs the env
+line; the token itself stays valid until revoked). Do it after that PR deploys,
+so a rollback never meets a missing secret.
+
+## Replace the backup's broad GitHub token with a backup-only one (2026-09-25)
+
+`GH_TOKEN` in the droplet's `/etc/tinyassets/env` is a live GitHub CLI token (`gho_`, scopes
+`gist, repo, workflow`) that the daemon user can read. Only the nightly offsite backup needs it
+([concern](concerns/2026-09-25-backup-token-readable-from-container.md)). In GitHub → Settings →
+Developer settings → Fine-grained tokens, create a token with **Contents: read and write on
+`Jonnyton/tinyassets-backups` only**, and add it as the repository secret `BACKUP_GH_TOKEN`. An agent
+then moves the backup to a host-only file and revokes the old token individually (GitHub's credential
+revocation API), so your own `gh` login is not affected.
+
+## Delete or uninstall the platform GitHub App (2026-09-24)
+
+The GitHub App token refresher and its host units are removed by the same PR.
+Its App was never configured on the droplet (no
+`/etc/tinyassets/github-app-token-refresher.env`, no private key; the timer
+skipped every run), and no App ID is recorded in the repo, so an agent cannot
+name it. In GitHub → Settings → Applications (and Developer settings → GitHub
+Apps), uninstall/delete any App installed on `Jonnyton/TinyAssets` for the
+community-loop bot identity (Contents + Pull requests write).
+
 ## Rotate the production Cloudflare tunnel token (2026-09-24)
 
 The `tinyassets-tunnel` container's start command carries the tunnel token in
@@ -694,9 +753,14 @@ creation, and `PUT /contents/...`, are both Contents writes.
 
 Everything on the platform side is already open and was verified the same day: the connection
 exists with `POST /git/refs` allowed, effector consent for destination `github` is granted and
-unrevoked, and `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` /
-`TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION` are both `1` in the running daemon. This one
-dropdown is the only remaining gate.
+unrevoked, and `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` is `1` in the running daemon.
+(`TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION` is also set there but gates no code: GitHub is an
+ordinary connection, and the flag was dropped from `apply-daemon-env.yml` on 2026-09-24.) This
+one dropdown is the only remaining gate. The same token expires 2026-09-27 03:07 UTC, so a
+fresh one with Contents write may be simpler than editing this one. **Since PR #3967 the
+reconnect must also declare `git_host: "github.com"`** (the platform no longer maps
+`api.github.com` to `github.com`): remove the `github` connection, then answer the universe's
+connect ask that carries it. Without it, workspace clone/push goes to `api.github.com` and 403s.
 
 *Blocks:* the founder's standing goal that the universe push a PR end-to-end to deployed.
 *Where:* GitHub → Settings → Developer settings → Fine-grained tokens → this token →

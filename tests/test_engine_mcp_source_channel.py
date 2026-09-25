@@ -59,13 +59,25 @@ def test_source_channel_refused_without_serving_authority(monkeypatch):
     assert cap == {}  # never reached the impl
 
 
-def test_source_channel_only_approve_action(monkeypatch):
+def test_source_channel_only_approve_and_revoke_actions(monkeypatch):
+    """approve and revoke are served (change agent-access-controls); the policy
+    verbs are not, because the policy store has no reader (design D3)."""
     s = _bind(monkeypatch)
     cap = _patch_impl(monkeypatch)
-    for bad in ("set_policy", "get_policy", "revoke", ""):
+    for bad in ("set_policy", "get_policy", "delete", ""):
         out = json.loads(s.source_channel(action=bad, payload=_AEC))
         assert "error" in out
-    assert cap == {}  # impl never reached for any non-approve action
+    assert cap == {}  # impl never reached for any unserved action
+
+
+def test_source_channel_revoke_pins_universe_and_least_privilege(monkeypatch):
+    s = _bind(monkeypatch, graph="u-pinned", allow=("u-pinned",))
+    cap = _patch_impl(monkeypatch)
+    out = json.loads(s.source_channel(action="revoke", payload=_AEC))
+    assert out == {"ok": True}
+    assert cap["universe_id"] == "u-pinned"
+    assert cap["action"] == "revoke"
+    assert cap["caps"] == {"write"}
 
 
 def test_source_channel_refuses_source_code_rce_closure(monkeypatch):

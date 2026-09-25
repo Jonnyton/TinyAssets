@@ -304,22 +304,21 @@ def transport_host_for(resource: Any) -> str:
     check ignored it, so a packet could point a scoped credential at a host the
     owner never allowlisted (Codex round 3, P0 #1).
 
-    WHICH host is the connection's business, not the platform's: github.com, a
-    company GitLab, a Gitea box. ``connection_git_host`` owns that derivation
-    and every other surface reads it from there, so the consent the rail writes
-    and the transport the sink builds cannot name two different forges.
+    WHICH host is the connection's business, not the platform's: its declared
+    ``git_host`` when the owner set one, otherwise its one endpoint host. There
+    is no per-service default. ``connection_git_host`` owns that derivation and
+    every other surface reads it from there, so the consent the rail writes and
+    the transport the sink builds cannot name two different hosts.
     """
-    hosts = {host for host in connection_hosts(resource) if host}
-    if len(hosts) > 1:
-        raise _Refused(
-            "host_not_allowlisted",
-            "the connection declares several hosts; a git transport needs exactly one",
-        )
     host = connection_git_host(resource)
     if not host:
+        several = len({h for h in connection_hosts(resource) if h}) > 1
         raise _Refused(
             "host_not_allowlisted",
-            "the connection declares no host a git scope may reach",
+            "the connection declares several hosts and no git_host; a git "
+            "transport needs exactly one"
+            if several
+            else "the connection declares no host a git scope may reach",
         )
     return host
 

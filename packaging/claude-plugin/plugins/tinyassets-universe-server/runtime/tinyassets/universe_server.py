@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
 from typing import Annotated, Any, Literal
@@ -711,6 +712,12 @@ def read_graph(
         from tinyassets.api.pending_requests import list_requests
 
         return json.dumps(list_requests(universe_id=graph_id, limit=limit))
+    if normalized == "access":
+        # Everything the owner's agent holds in this universe, owner-only and
+        # secret-free (change agent-access-controls).
+        from tinyassets.api.agent_access import read_access
+
+        return json.dumps(read_access(universe_id=graph_id), default=str)
     if normalized == "agents":
         return json.dumps(
             _custom_agents_impl(
@@ -773,6 +780,7 @@ def read_graph(
             "automation",
             "connections",
             "pending_requests",
+            "access",
             "conversation",
             "compute",
             "model_options",
@@ -1309,7 +1317,7 @@ def write_graph(
     if normalized == "connection":
         # LLM subscription deposit is an owner-scoped operation under the pinned
         # write_graph handle (byo-llm-deposit-surface). It routes to its own
-        # owner-scoped handler; cloud_connections stays GitHub-only. Adds no
+        # owner-scoped handler; cloud_connections only lists. Adds no
         # advertised handle — the live tool catalog stays pinned.
         connection_operation = (operation or "").strip().lower()
         if connection_operation == "connect_llm":
@@ -1324,7 +1332,7 @@ def write_graph(
         if connection_operation == "connect_http":
             # Owner-scoped provisioning of a generic outbound http connection so a
             # universe can act on a channel (Slack, any HTTPS API). Its own
-            # owner-scoped handler; cloud_connections stays GitHub-only. Adds no
+            # owner-scoped handler; cloud_connections only lists. Adds no
             # advertised handle — the live tool catalog stays pinned.
             from tinyassets.api.http_connection import connect_http
 
@@ -1378,6 +1386,7 @@ def write_graph(
             )
         if connection_operation in (
             "request_from_user", "answer_request", "unmute_request",
+            "withdraw_request",
         ):
             # ONE general primitive: the agent asks its user something and waits,
             # rendered as a tab in the app's left rail (founder 2026-08-27). The
@@ -2114,71 +2123,13 @@ _mcp_write_page = _register_structured_tool(
 )
 
 
-#: Streamed-attempt outcomes that are the TURN ending, not the provider being
-#: unavailable. The router's exhaustion message for a served writer reads
-#: "exhausted; universe authority forbids fallback widening", which a user
-#: reads as capacity/quota. On 2026-08-29 a healthy turn ended on the idle
-#: watchdog and the founder saw exactly that. The spec (provider-routing,
-#: "the user notice reflects the true failure class") forbids the mislabel.
-_TURN_ENDED_FAILURE_CLASSES = {
-    # A served turn may have ACTED before it was ended (a branch pushed, a
-    # request raised); the app's resend repeats the whole instruction. Say so
-    # plainly instead of implying a resend merely picks up where it left off
-    # (Codex round 1 on the notice, P1 concern).
-    "provider_idle_timeout": (
-        "Your universe went quiet mid-turn, so the turn was ended. Whatever it "
-        "finished before that stands. Sending again repeats the whole request; "
-        "asking it to continue is usually the better move."
-    ),
-    "interactive_deadline": (
-        "Your universe ran past the interactive time limit, so the turn was "
-        "ended. Whatever it finished before that stands. Sending again repeats "
-        "the whole request; asking it to continue is usually the better move."
-    ),
-    # Everything below was previously UNMAPPED, which meant the raw router
-    # exception reached the owner -- and that exception says "exhausted" for
-    # every all-attempts-failed reason there is. The founder went and checked
-    # his codex usage because of it; the real cause was a platform bug
-    # (2026-09-01). A wrong diagnosis costs more than a vague one, because the
-    # owner acts on it.
-    "provider_rate_limited": (
-        "Your universe's model provider is rate-limiting it right now, so the "
-        "turn could not run. This usually clears on its own within a few "
-        "minutes -- send again then."
-    ),
-    "provider_overloaded": (
-        "Your universe's model provider is overloaded right now, so the turn "
-        "could not run. Nothing is wrong with your setup; send again in a "
-        "minute."
-    ),
-    # Do not promise a waiting request: the rail now checks local serving
-    # authority, but remote credential expiration may leave local custody
-    # unchanged. Recovery still needs that remote failure signal; local custody
-    # validation alone cannot establish whether the upstream accepts a token.
-    "auth_invalid": (
-        "Your universe's model provider reported a sign-in problem. Check the "
-        "connection and reconnect the provider for this universe if needed. "
-        "This is not evidence of a usage or billing limit."
-    ),
-    "endpoint_unreachable": (
-        "Your universe could not reach its model provider at all. That is a "
-        "network or service problem rather than anything you set up wrong; "
-        "send again shortly."
-    ),
-    # NOT the owner's problem, and it must not be described as though it were.
-    "platform_fault": (
-        "Something broke on our side while starting your universe's turn, so "
-        "it did not run. This is not a problem with your account, your "
-        "credentials or your usage limits, and sending again may well work. "
-        "It is recorded for us either way."
-    ),
-}
-
-
-#: Substrings that mark a failure as OURS -- an internal invariant tripping,
-#: not anything the owner configured. These reach the owner as
-#: ``platform_fault`` no matter what class the layers below assigned, because
-#: the router labels its own bugs with the same word it uses for quota.
+#: The per-class words live in ``conversation_failure`` and the notice is
+#: composed from the failure record there. The router's exhaustion message for
+#: a served writer reads "exhausted; universe authority forbids fallback
+#: widening", which a user reads as capacity/quota. On 2026-08-29 a healthy
+#: turn ended on the idle watchdog and the founder saw exactly that. The spec
+#: (provider-routing, "the user notice reflects the true failure class")
+#: forbids the mislabel.
 #: Text from OUR router that reads as a diagnosis and is not one. The class
 #: attached to the exception is the real signal; this string is the same
 #: whatever went wrong, so on its own it misinforms.
@@ -2187,6 +2138,10 @@ _MISLEADING_ROUTER_TELLS = (
     "forbids fallback widening",
 )
 
+#: Substrings that mark a failure as OURS -- an internal invariant tripping,
+#: not anything the owner configured. These reach the owner as
+#: ``platform_fault`` no matter what class the layers below assigned, because
+#: the router labels its own bugs with the same word it uses for quota.
 _PLATFORM_FAULT_TELLS = (
     "carrier",
     "seal is invalid",
@@ -2367,7 +2322,7 @@ def _attempt_evidence_tokens(attempt: Any) -> list[str]:
     return tokens
 
 
-def _record_served_failure(universe_id: str, exc: BaseException) -> None:
+def _record_served_failure(universe_id: str, exc: BaseException, ref: str = "") -> None:
     """Write the per-provider diagnosis to the server log. Never raises.
 
     ``AllProvidersExhaustedError`` has carried a structured ``attempts`` list
@@ -2399,8 +2354,10 @@ def _record_served_failure(universe_id: str, exc: BaseException) -> None:
             for a in attempts
         )
         logger.warning(
-            "served turn failed universe=%s class=%s retry_after=%s attempts=%d [%s] chain=%s",
+            "served turn failed universe=%s ref=%s class=%s retry_after=%s attempts=%d "
+            "[%s] chain=%s",
             universe_id,
+            ref or "-",
             getattr(exc, "failure_class", None),
             getattr(exc, "retry_after", None),
             len(attempts),
@@ -2456,65 +2413,161 @@ def _served_failure_code(exc: BaseException) -> str:
     return "unknown"
 
 
-def _served_failure_notice(exc: BaseException) -> str:
-    """The user-facing sentence for a failed served turn.
+_FS_PATH = re.compile(
+    r"(?:(?<![A-Za-z])[A-Za-z]:[\\/]"
+    r"|/(?:data|home|root|tmp|opt|var|app|usr|etc|srv|mnt|Users|Volumes|private)/)"
+    r"[^\s'\"]*"
+)
 
-    Keyed on the streamed ``failure_class``. The fall-through USED to be the
-    verbatim exception, and the router's exception says "Served provider 'x'
-    exhausted" for every all-attempts-failed reason -- so a platform bug, an
-    expired credential and a genuine quota all reached the owner as a billing
-    problem. On 2026-09-01 the founder checked his provider usage because of
-    it; the real cause was ``provider invocation carrier is already consumed``.
 
-    A vague sentence is a poor outcome. A CONFIDENT WRONG one is worse, because
-    the owner acts on it -- so the unknown case now says it is unknown, and
-    anything carrying our own invariants in its text is named as ours.
+def _connect_first(exc: BaseException) -> bool:
+    """The router's own no-model refusal: nothing was ever sent to a model."""
+    from tinyassets.exceptions import ProviderAuthorityHeldError, WorkModelExhaustedError
+    from tinyassets.providers.router import _CONNECT_PROVIDER_MESSAGE
+
+    return (
+        isinstance(exc, ProviderAuthorityHeldError)
+        and not isinstance(exc, WorkModelExhaustedError)
+        and not getattr(exc, "attempts", None)
+        and str(exc) == _CONNECT_PROVIDER_MESSAGE
+    )
+
+
+def _ledger_evidence(exc: BaseException) -> tuple[str, str | None, str | None] | None:
+    """The agent turn's own effects evidence, wherever it rode on the chain."""
+    from tinyassets.conversation_failure import EFFECTS
+
+    seen: set[int] = set()
+    node: BaseException | None = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        effects = getattr(node, "turn_effects", None)
+        if effects in EFFECTS:
+            return effects, getattr(node, "turn_stage", None), getattr(node, "turn_ref", None)
+        node = node.__cause__ or node.__context__
+    return None
+
+
+def _provider_detail(exc: BaseException) -> str:
+    """The source's own words: the last attempt's detail, scrubbed and bounded.
+
+    Our router's synthetic wrapper is not a source's words -- it says
+    "exhausted" whatever happened -- so it never stands in for them.
     """
-    text = str(exc).lower()
-    # OUR invariants first: their text names a fault the class layer cannot see,
-    # because the router labels its own bugs with the same class it uses for a
-    # dead provider. Kept deliberately narrow -- an earlier draft included
-    # "authority", which appears in the router's ORDINARY message and hijacked
-    # every correctly-classified failure.
-    if any(tell in text for tell in _PLATFORM_FAULT_TELLS):
-        return _TURN_ENDED_FAILURE_CLASSES["platform_fault"]
-    # Then the class the router attached: the best signal there is.
-    notice = _TURN_ENDED_FAILURE_CLASSES.get(getattr(exc, "failure_class", None))
-    if notice is not None:
-        return notice
-    # Then the class the ATTEMPT carried. `dominant_failure_class` only accepts
-    # a STREAMED failure_class, and a ProviderUnavailableError is classified
-    # into `skip_class` instead -- so a served chain that dies on auth yields an
-    # attempt marked `auth_invalid` beside a top-level class of None.
-    #
-    # Live 2026-09-01: the founder read "we could not identify why" while the
-    # payload beside it said {"provider": "codex", "status": "failed",
-    # "skip_class": "auth_invalid"}. Both halves were in the same response.
-    notice = _TURN_ENDED_FAILURE_CLASSES.get(_attempt_class(exc))
-    if notice is not None:
-        return notice
-    if _has_native_auth_clue(exc):
-        return (
-            "Your universe's turn did not complete. Its model provider reported "
-            "a sign-in problem during this turn. Check this universe's provider "
-            "connection; reconnect if needed. We have not confirmed that was "
-            "the only cause, or whether the turn already acted. Check progress "
-            "before sending again."
+    from tinyassets.providers.diagnostics import redacted_failure_detail
+
+    detail = ""
+    attempts = getattr(exc, "attempts", None)
+    if isinstance(attempts, (list, tuple)):
+        ranked = [a for a in attempts if getattr(a, "status", "") == "failed"] or list(attempts)
+        if ranked:
+            detail = str(getattr(ranked[-1], "detail", "") or "")
+    if not detail:
+        text = str(exc)
+        if not any(lie in text.lower() for lie in _MISLEADING_ROUTER_TELLS):
+            detail = text
+    # Paths first: clipping first can cut a path's root off and let its tail
+    # through unrecognized.
+    return redacted_failure_detail(_FS_PATH.sub("<path>", detail))
+
+
+def _served_failure_record(exc: BaseException, *, held: bool = False):
+    """Every field of a failed served turn, derived from what was observed.
+
+    ``stage`` comes from the class (a transport fact) unless the turn's ledger
+    places it at a tool; ``effects`` comes from the turn's own journal, or is
+    ``none`` only when no model was ever invoked; ``ref`` is the journal's
+    turn id, or a fresh id the log line shares.
+    """
+    from tinyassets.conversation_failure import STAGE_OF_CLASS, turn_failure
+
+    try:
+        code = "setup_required" if held or _connect_first(exc) else _served_failure_code(exc)
+        attempts = getattr(exc, "attempts", None)
+        attempts = attempts if isinstance(attempts, (list, tuple)) else []
+        invoked = any(getattr(a, "status", "") != "skipped" for a in attempts)
+        evidence = _ledger_evidence(exc)
+        if evidence is not None:
+            effects, ledger_stage, ref = evidence
+        else:
+            never_sent = code == "setup_required" or (bool(attempts) and not invoked)
+            effects, ledger_stage, ref = ("none" if never_sent else "unknown"), None, None
+        stage = ledger_stage or STAGE_OF_CLASS.get(code)
+        if code == "setup_required" or (attempts and not invoked):
+            stage = "before_send"
+        return turn_failure(
+            code, stage=stage, effects=effects,
+            provider_detail="" if code == "setup_required" else _provider_detail(exc),
+            ref=ref if isinstance(ref, str) and ref else uuid.uuid4().hex[:16],
         )
-    # Unmapped. Pass the text through UNLESS it is our own synthetic wrapper,
-    # which is the only text here that actively lies: the router says
-    # "exhausted ... forbids fallback widening" whatever the attempts failed
-    # for. An earlier draft suppressed every unmapped exception and two existing
-    # tests caught it -- `RuntimeError("engine binding unreadable")` is precise
-    # and useful, and hiding it behind "we do not know" trades one wrong answer
-    # for another. Hard Rule 8 cuts this way too: fail loudly.
-    if any(lie in text for lie in _MISLEADING_ROUTER_TELLS):
-        return (
-            "Your universe's turn could not run, and we could not identify why. "
-            "We cannot tell whether this is a connection, usage, billing, or "
-            "platform problem -- rather than guess, we have recorded the details."
-        )
-    return f"Your universe couldn't be reached right now: {exc}"
+    except Exception:  # noqa: BLE001 - a malformed diagnostic is not another failure
+        return turn_failure("unknown", ref=uuid.uuid4().hex[:16])
+
+
+def _served_failure_notice(exc: BaseException, record=None) -> str:
+    """The user-facing sentence for a failed served turn, composed from fields.
+
+    History: this was a table of hand-written sentences, and every new failure
+    needed new copy -- the 2026-09-24 free-model turn failed with a KNOWN class
+    (``provider_protocol_error``) and still read "we could not identify why".
+    The notice is now composed from the structured record (stage, class,
+    effects, the source's own detail, ref), the same record history re-renders.
+    """
+    from tinyassets.conversation_failure import failure_notice
+
+    return failure_notice(record if record is not None else _served_failure_record(exc))
+
+
+def _unpowered_setup_payload(universe_id: str, exc: BaseException) -> dict | None:
+    """The setup envelope for a turn refused because nothing serves the universe.
+
+    Live 2026-09-24: an unpowered free-only account read "Your universe couldn't
+    be reached right now: connect your provider: exactly one founder serving
+    binding is required. Actions may already have occurred." Nothing had run -
+    no binding serves the universe, so no model was called - and the notice
+    named a storage concept and warned about effects that cannot exist. The
+    refusal is typed, so the turn says what is true and points at the one place
+    that fixes it: the connect request.
+
+    Two refusals mean "nothing to think with": no serving binding
+    (``NoServingProvider``) and a held authority that invoked nothing (a
+    ``ProviderAuthorityHeldError`` with no attempts). Either counts only when
+    the owner's universe really has no current serving connection, so a
+    powered universe's own failure is never retold as "connect a model".
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.api.pending_requests import _serving_llm_bound
+    from tinyassets.api.permissions import current_actor_id
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_serving_binding import NoServingProvider
+
+    def refused_before_any_call(error: BaseException) -> bool:
+        if isinstance(error, NoServingProvider):
+            return True
+        return (isinstance(error, ProviderAuthorityHeldError)
+                and getattr(error, "attempts", None) is None
+                and getattr(error, "chain_state", None) is None)
+
+    seen: set[int] = set()
+    cause: BaseException | None = exc
+    while cause is not None and id(cause) not in seen:
+        if refused_before_any_call(cause):
+            if _serving_llm_bound(_base_path(), universe_id, current_actor_id()):
+                return None
+            return {
+                "status": "held",
+                "reason": "setup_required",
+                "universe_id": universe_id,
+                "missing": ["model_connection"],
+                "note": (
+                    "Your universe has no model connected yet, so nothing ran and "
+                    "nothing was sent anywhere. Connect one from the request under "
+                    "“Waiting on you”, then send your message again."
+                ),
+            }
+        seen.add(id(cause))
+        cause = cause.__cause__ or cause.__context__
+    return None
 
 
 def converse(
@@ -2699,30 +2752,26 @@ def converse(
         # outage and still surfaces verbatim.
         from tinyassets.api.universe import engine_setup_required_payload
 
-        held = engine_setup_required_payload(uid, exc)
-        from tinyassets.conversation_failure import (
-            failure_notice,
-            normalize_turn_failure,
-            turn_failure,
-        )
+        held = engine_setup_required_payload(uid, exc) or _unpowered_setup_payload(uid, exc)
+        from tinyassets.conversation_failure import failure_notice, normalize_turn_failure
         from tinyassets.conversation_store import record_failure
 
-        code = "setup_required" if held is not None else _served_failure_code(exc)
+        record = _served_failure_record(exc, held=held is not None)
         try:
-            saved = record_failure(memory_universe_dir, memory_session, message, code)
+            saved = record_failure(memory_universe_dir, memory_session, message, record)
         except Exception:  # Original failure remains usable even if memory fails.
             logger.warning("converse: failed-turn history could not be saved")
             saved = False
         history = {
-            "turn_failure": normalize_turn_failure(turn_failure(code)),
-            "failure_notice": failure_notice(code),
+            "turn_failure": normalize_turn_failure(record),
+            "failure_notice": failure_notice(record),
             "history_saved": saved,
         }
         if held is not None:
             return json.dumps({**held, **history})
-        _record_served_failure(uid, exc)
+        _record_served_failure(uid, exc, ref=record.ref)
         return json.dumps({
-            "error": _served_failure_notice(exc),
+            "error": _served_failure_notice(exc, record),
             **_served_failure_diagnosis(exc),
             **history,
         })
@@ -2765,7 +2814,6 @@ _mcp_converse = _register_structured_tool(
 # connectors keep working through the migration window.
 _DEPRECATED_TOOL_NAMES = frozenset({
     "universe",
-    "community_change_context",
     "extensions",
     "goals",
     "gates",
@@ -2844,7 +2892,7 @@ def universe(
             queue: queue_list,
             queue_cancel; subscriptions: subscribe_goal, unsubscribe_goal,
             list_subscriptions; goal-pool: post_to_goal_pool,
-            submit_node_bid; community review: community_change_context;
+            submit_node_bid;
             daemon roster/control: daemon_overview, daemon_list,
             daemon_get, daemon_create, daemon_summon, daemon_pause,
             daemon_resume, daemon_restart, daemon_banish,
@@ -2947,57 +2995,6 @@ _mcp_universe = _register_structured_tool(
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
-
-
-# ---------------------------------------------------------------------------
-# TOOL 1B - Community change context (read-only review evidence alias)
-# ---------------------------------------------------------------------------
-
-
-def community_change_context(
-    filter_text: str = "",
-    limit: int = 10,
-    repo: str = "",
-) -> str:
-    """Review PR metadata, changed files, reviews, and project plan context.
-
-    Use this when the user asks to review, approve, reject, send back,
-    or triage live community-loop work: auto-change PRs, PR metadata,
-    patch requests, feature requests, bug requests, issue threads,
-    changed files, review comments, or whether a change fits the project
-    plan.
-
-    Args:
-        filter_text: empty/"queue" for open PRs/change requests/runs;
-            "pr:NUMBER" for PR metadata, changed files, comments, and
-            reviews; or "issue:NUMBER" for the request thread.
-        limit: Max PRs/issues/files/comments to return, capped server-side.
-        repo: Repository to inspect as ``owner/name``. When omitted, the
-            deployment may supply a default; the platform never chooses one.
-    """
-    return _universe_impl(
-        action="community_change_context",
-        filter_text=filter_text,
-        limit=limit,
-        repo=repo,
-    )
-
-
-_mcp_community_change_context = _register_structured_tool(
-    community_change_context,
-    title="Community Change Context",
-    tags={
-        "community", "change-loop", "review", "pull-request",
-        "github", "plan", "tinyassets",
-    },
-    annotations=ToolAnnotations(
-        title="Community Change Context",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
         openWorldHint=True,
     ),
 )
