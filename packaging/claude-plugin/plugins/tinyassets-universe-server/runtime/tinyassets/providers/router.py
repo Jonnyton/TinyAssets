@@ -1210,13 +1210,23 @@ class ProviderRouter:
                 ))
                 continue
             except SelectedModelCapacityError as exc:
+                from tinyassets.providers.model_capacity import free_sibling_retry
+
                 # One model's capacity is not evidence its whole connection is
-                # unhealthy. Shared/unknown scope keeps the conservative cooldown.
-                if exc.signal.scope != "model":
+                # unhealthy. Shared/unknown scope keeps the conservative cooldown
+                # -- EXCEPT on a source that cannot spend, where cooling the
+                # whole connection would also skip the sibling model the turn is
+                # about to try, which is the dead end itself (live 2026-09-25).
+                # No selection means no proven ceilings: () is never free-only.
+                selected = cfg.selected_model
+                if exc.signal.scope != "model" and not free_sibling_retry(
+                    scope=exc.signal.scope, failure_class=exc.failure_class,
+                    cost_caps=selected.cost_caps if selected is not None else (),
+                ):
                     self._quota.cooldown(provider_name, _rate_limit_cooldown_s(exc))
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed", skip_class="quota_or_cooldown",
-                    detail=exc.failure_class, failure_class=exc.failure_class,
+                    detail=redacted_failure_detail(str(exc)), failure_class=exc.failure_class,
                     retry_after_s=exc.retry_after, capacity_scope=exc.signal.scope,
                     side_effect_state=(
                         "none" if cfg.agent_request is not None

@@ -210,6 +210,49 @@ Restart or eviction MAY lose advisory health; it SHALL NOT change authority.
 - **THEN** the picker displays a non-blocking reconnect warning
 - **AND** it does not disable manual selection, claim successful sign-in or expose raw provider errors
 
+### Requirement: A zero-cost source's unproven capacity refusal is narrowed to the model that failed
+
+A source contract reports a capacity refusal's scope as `model`, `account` or
+`unknown`, and that reported scope SHALL remain the evidence unchanged. When the
+scope is `unknown` and the failure class is a transient window
+(`provider_rate_limited`, `provider_overloaded`) and the plan's effective cost
+ceilings for that source are all confirmed zero, a served agent turn SHALL narrow
+the resulting exhaustion to the MODEL that failed rather than the whole account,
+and the router SHALL NOT apply a source-wide cooldown to that attempt. Being
+wrong about an unproven scope costs a refused request on a source that cannot
+spend, and being conservative leaves a freshly connected free universe with no
+second candidate for its first message.
+
+The narrowing SHALL be bounded at three per turn, SHALL take its replacement from
+the SAME advisory order under the SAME ceilings, and SHALL refuse a replacement on
+any other connection — a narrowed exhaustion is a guess about one source's window,
+never evidence that a different connection sharing its scope is healthy. Exhausted
+credit (`provider_credit_exhausted`), an `account` scope the source actually
+reported, and any source whose ceilings are not all confirmed zero SHALL keep the
+conservative account exclusion and its cooldown. The diagnostics of every attempt
+the turn replaced SHALL be carried onto the failure that finally escapes.
+
+#### Scenario: A free universe's first message meets a busy model
+- **WHEN** a served turn's selected free model is refused with an unknown-scope rate limit and nothing ran
+- **THEN** the turn tries the next eligible model of the SAME grant at the SAME zero ceilings and answers
+- **AND** no source-wide cooldown is applied that would have skipped that sibling
+
+#### Scenario: A source that can spend keeps the conservative reading
+- **WHEN** the same unknown-scope refusal arrives for a source with a nonzero accepted ceiling
+- **THEN** the whole account is excluded, the source is cooled, and no sibling is tried
+
+#### Scenario: Exhausted credit is never narrowed
+- **WHEN** a source reports exhausted credit
+- **THEN** the account exclusion and cooldown stand regardless of the accepted ceilings
+
+#### Scenario: A narrowed guess cannot cross into another connection
+- **WHEN** the only remaining candidate after a narrowed exhaustion belongs to a different connection
+- **THEN** the turn stops rather than treating that connection as independently healthy
+
+#### Scenario: Repeated refusals stop rather than sweep the catalogue
+- **WHEN** every model tried is refused the same way
+- **THEN** at most three narrowed retries occur, and the reported failure carries one attempt record per model tried
+
 ### Requirement: Connection-scoped model choices
 The app SHALL expose model choices from the universe owner's authorized connections with freshness and capability information, without a compiled model-release list.
 

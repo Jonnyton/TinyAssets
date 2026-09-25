@@ -7,6 +7,40 @@ from email.utils import parsedate_to_datetime
 
 MAX_RETRY_SECONDS = 2**31 - 1
 
+#: Capacity classes a source itself describes as a passing window. Exhausted
+#: credit is deliberately absent: it is about money, not about waiting.
+TRANSIENT_CAPACITY = frozenset({"provider_rate_limited", "provider_overloaded"})
+
+
+def free_sibling_retry(*, scope, failure_class, cost_caps) -> bool:
+    """POLICY, not evidence: may a zero-cost source try a SIBLING model next?
+
+    ``CapacitySignal.scope`` stays exactly what the source's contract reported.
+    When that is ``unknown`` the platform cannot tell a per-model window from an
+    account-wide one, so the conservative reading -- exclude the whole account,
+    and cool the source -- is the only safe one for a source that can spend.
+
+    On a source whose accepted ceilings are all confirmed zero there is nothing
+    to protect: being wrong costs one more refused request. Being conservative,
+    however, is what left a freshly connected free universe with no second
+    candidate and no answer to its first message (live 2026-09-25). The caller
+    still bounds how many siblings it tries.
+
+    This grants no authority, widens no grant and never admits a paid model: the
+    sibling comes from the SAME order under the SAME ceilings.
+    """
+    return (
+        scope == "unknown"
+        and failure_class in TRANSIENT_CAPACITY
+        and _confirmed_free_only(cost_caps)
+    )
+
+
+def _confirmed_free_only(cost_caps) -> bool:
+    from tinyassets.providers.model_policy import confirmed_free_only
+
+    return confirmed_free_only(cost_caps)
+
 
 @dataclass(frozen=True, slots=True)
 class CapacitySignal:

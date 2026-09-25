@@ -289,7 +289,7 @@ $('rail-items'); const rail=$('request-rail'); rail.appendChild($('connect-panel
 // textContent="" on a host clears children, as the DOM does.
 const host=$('rail-items');
 Object.defineProperty(host,'textContent',{get(){return '';},set(v){this.replaceChildren();}});
-let railOpen=null, railCache=[], NATIVE=false;
+let railOpen=null, railCache=[], NATIVE=false, connectWasBlocking=null;
 const CONNECT_REQUEST_ID="sys_connect_llm";
 const answered=[];
 const HostedModelConnect={setup:'empty',busy:false,request:null,primary:null,
@@ -303,7 +303,8 @@ __SOURCE__
 def _run_rail(rows, extra=""):
     html, _ = render_app_html()
     source = "\n".join(_js_function(html, name) for name in (
-        "isSetupRequest", "foldedModelAccess", "renderRail", "connectBody"))
+        "isSetupRequest", "isOptionalRequest", "forgetFinishedSetup", "foldedModelAccess",
+        "renderRail", "connectBody"))
     shapes = html[html.index("  const ConnectShapes={"):
                   html.index("  // A declared model list needs")]
     script = (_RAIL_HARNESS.replace("__SOURCE__", source + "\n" + shapes)

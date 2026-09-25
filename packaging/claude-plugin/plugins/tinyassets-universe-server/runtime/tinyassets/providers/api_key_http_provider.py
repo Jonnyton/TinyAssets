@@ -131,6 +131,30 @@ class ApiKeyHttpProvider(BaseProvider):
         # Availability is per-call (does the grant resolve?), not a binary probe.
         return True
 
+    @staticmethod
+    def _capacity_detail(status: int, result: Any) -> str:
+        """The source's OWN words for a refusal: its status and its body.
+
+        A pre-generation capacity refusal used to reach the owner as the single
+        word ``provider_rate_limited`` -- our class name, which says nothing the
+        notice had not already said (live 2026-09-25). The body is the only
+        place the source explains itself, and it belongs to the authenticated
+        owner reading their own universe.
+
+        No shape is assumed of it: parsing a vendor's error envelope would be
+        vendor code (Hard Rule 3). It is treated as untrusted transport text --
+        scrubbed for secrets and paths by the same gate every other attempt
+        detail passes through, then bounded to the failure record's own limit.
+        """
+        from tinyassets.conversation_failure import DETAIL_LIMIT, clean_detail
+        from tinyassets.providers.diagnostics import redacted_failure_detail
+
+        body = result.get("body") if isinstance(result, dict) else None
+        words = body if isinstance(body, str) else ""
+        return clean_detail(
+            redacted_failure_detail(f"HTTP {status}: {words}".strip(), limit=DETAIL_LIMIT)
+        )
+
     def _resolve_proxy(
         self,
         *,
@@ -328,7 +352,9 @@ class ApiKeyHttpProvider(BaseProvider):
 
             capacity = contract.capacity_decoder(status, result.get("headers"))
             if capacity is not None:
-                raise SelectedModelCapacityError(capacity)
+                raise SelectedModelCapacityError(
+                    capacity, detail=self._capacity_detail(status, result)
+                )
         if status == 401:
             # Still refused after the broker's one refresh-and-retry (oauth2),
             # or a key the service no longer accepts: a sign-in problem.

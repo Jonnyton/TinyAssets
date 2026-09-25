@@ -129,3 +129,28 @@ non-printable value, or more than 8 entries) MUST make the preset invalid.
 - **WHEN** an owner starts sign-in for a preset whose `authorize_params` names the key
 - **THEN** the authorize URL carries that label alongside the flow's own parameters
 - **AND** a preset parameter that names a flow parameter never replaces the flow's value
+
+### Requirement: A connected universe's connect entry is optional, not outstanding
+
+The rail's synthesized `sys_connect_llm` entry SHALL remain present once a
+universe is powered — it is the only route to adding a second source — but it
+SHALL report `status: optional` rather than `pending`, and it SHALL NOT be
+counted among the requests waiting on the user. The app SHALL render an optional
+entry collapsed and visually distinct from an ask, and the rail heading SHALL NOT
+claim work is waiting when every entry is optional. An entry with no `status`, or
+one the client does not recognize, SHALL be treated as a real ask.
+
+The unpowered state is unchanged: its entry stays `pending` and `sticky`.
+
+#### Scenario: A powered universe has nothing waiting
+- **WHEN** the owner's universe has a current serving binding
+- **THEN** the connect entry is `status: optional`, `sticky: false`, still answerable, and no entry reports `pending`
+- **AND** the rail heading stops saying work is waiting, while the entry stays visible and openable
+
+#### Scenario: One real ask still asks
+- **WHEN** any non-optional request is in the rail beside the optional connect entry
+- **THEN** the heading asks again and only the connect entry renders as optional
+
+#### Scenario: An unpowered universe still blocks
+- **WHEN** no serving binding exists
+- **THEN** the connect entry remains `pending` and `sticky` with its first-power sign-in

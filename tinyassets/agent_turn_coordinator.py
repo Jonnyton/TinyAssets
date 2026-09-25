@@ -52,6 +52,11 @@ class AgentTurnCoordinator:
         self.visited = set()
         self.execution_kind = None
         self.native_input = None
+        # Narrowed sibling retries used so far, and the diagnostics of the
+        # rounds they replaced -- a turn that tried four models must not report
+        # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
+        self.free_sibling_retries = 0
+        self.spent_attempts = []
 
     def _check_scope(self):
         owner = self.adapter.check(self.context, self.config)
@@ -194,6 +199,7 @@ class AgentTurnCoordinator:
         except BaseException as exc:
             try:
                 exc.turn_effects, exc.turn_stage, exc.turn_ref = self.effects_evidence()
+                self._carry_spent_attempts(exc)
             except Exception:  # noqa: BLE001 - evidence never replaces the failure
                 _LOG.warning("agent turn effects evidence unavailable")
             # A later pre-intent failure has no uncertain action to preserve.
@@ -365,6 +371,44 @@ class AgentTurnCoordinator:
                         if self.turn.state not in {"ready", "tools_pending"}:
                             raise ProviderProtocolError("agent tool result requires attention")
 
+    #: How many times one turn may narrow an UNPROVEN account exhaustion to the
+    #: model that actually failed. Small on purpose: the narrowing is a policy
+    #: bet that the source's window was per-model, and a bet re-taken without
+    #: limit is just hammering. Three covers the live case (a busy free model
+    #: with eligible siblings) without turning one message into a sweep.
+    MAX_FREE_SIBLING_RETRIES = 3
+
+    def _narrowed(self, boundary):
+        """Exclude only the failed MODEL when excluding the account is a guess.
+
+        A source that reported the account, a class that is not a passing
+        window, or any source that can spend keeps the conservative exhaustion.
+        Only a zero-cost source with an ``unknown`` scope is narrowed, and only
+        a bounded number of times per turn. The replacement comes from the SAME
+        order under the SAME ceilings, so this can never reach a paid model.
+
+        Engine inference only. A native executor runs on ONE subscription, so a
+        rate limit there is a fact about that account, not about a model within
+        it — and narrowing a source whose members are unmetered rather than
+        free-per-model is a guess with nothing behind it.
+
+        Returns ``(exhaustion, narrowed)``; ``narrowed`` tells the caller its
+        next candidate rests on a guess and must stay inside the same grant.
+        """
+        from tinyassets.providers.model_capacity import free_sibling_retry
+
+        if self.execution_kind != "engine_inference":
+            return boundary.exhaustion, False
+        if self.plan is None or self.free_sibling_retries >= self.MAX_FREE_SIBLING_RETRIES:
+            return boundary.exhaustion, False
+        if not free_sibling_retry(
+            scope=boundary.observed_scope, failure_class=boundary.failure_class,
+            cost_caps=self.plan.source_cost_caps(self.context.model_selection.connection_id),
+        ):
+            return boundary.exhaustion, False
+        self.free_sibling_retries += 1
+        return replace(boundary.exhaustion, scope="model"), True
+
     def _next_after_capacity(self, exc):
         if (
             not self._has_candidate_order() or not isinstance(exc, AllProvidersExhaustedError)
@@ -378,14 +422,57 @@ class AgentTurnCoordinator:
         )
         if boundary is None:
             return False
-        self.visited.add(self.context.model_selection)
-        self.exhaustion += (boundary.exhaustion,)
-        candidate = self._next_candidate()
+        failed = self.context.model_selection
+        self.visited.add(failed)
+        base = self.exhaustion
+        narrowed_exhaustion, narrowed = self._narrowed(boundary)
+        candidate = None
+        if narrowed:
+            self.exhaustion = base + (narrowed_exhaustion,)
+            candidate = self._next_candidate()
+            # A narrowed exhaustion is a guess about ONE source's window, never
+            # evidence that a different connection sharing its scope is healthy
+            # — deciding THAT is exactly what the conservative account exclusion
+            # does. So a narrowed candidate must be a sibling on the same grant;
+            # anything else falls back to the unnarrowed exclusion and asks
+            # again, which is what was already allowed. Narrowing may only ever
+            # add a candidate, never remove one.
+            if candidate is None or candidate.connection_id != failed.connection_id:
+                candidate, narrowed = None, False
+                self.free_sibling_retries -= 1
+        if not narrowed:
+            self.exhaustion = base + (boundary.exhaustion,)
+            candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
             return False
+        # Only engine-inference rounds. A native round's diagnostics are paired
+        # positionally with its own ``native_evidence``, and carrying them onto
+        # a later exception would leave the two lists mismatched, which
+        # ``capacity_boundary`` correctly refuses to read.
+        if self.execution_kind == "engine_inference":
+            self.spent_attempts += list(exc.attempts or ())
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
+
+    def _carry_spent_attempts(self, exc):
+        """Prepend the replaced rounds' diagnostics to the failure that escapes.
+
+        Only the last round's exception propagates, so without this a turn that
+        tried four models reports one attempt -- and the owner's failure record
+        and the server log both describe a dead end that never happened.
+        """
+        if not self.spent_attempts or not isinstance(exc, AllProvidersExhaustedError):
+            return
+        attempts = list(exc.attempts or ())
+        evidence = getattr(exc, "native_evidence", ())
+        # ``native_evidence`` is positional against ``attempts``; a pairing this
+        # hop does not recognize is left alone rather than repaired blind.
+        if type(evidence) is not tuple or len(evidence) != len(attempts):
+            return
+        # Every carried round was engine inference, which has no native proof.
+        exc.attempts = self.spent_attempts + attempts
+        exc.native_evidence = (None,) * len(self.spent_attempts) + evidence
 
     def close_quiescent(self):
         if self.turn is not None and self.turn.state == "ready":

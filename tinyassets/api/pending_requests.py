@@ -1393,6 +1393,12 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
 
     It is the whole model setup (founder, 2026-09-24): the app completes every
     shape inside this one request, through the one ``connect`` action.
+
+    ``status`` is what tells the two apart. A connected universe's entry used to
+    say ``pending`` like any real ask, so the rail listed "Connect another LLM"
+    under "Waiting on you" with nothing actually waiting (live 2026-09-25). The
+    entry stays -- it is the only route to a second source -- but it is
+    ``optional``: offered, answerable, and outstanding to nobody.
     """
     setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES)}
     primary = None if connected else _first_power_preset()
@@ -1411,7 +1417,7 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
         ),
         "fields": [],
         "action": {"type": "connect", "use": "model", "setup": setup},
-        "status": "pending",
+        "status": "optional" if connected else "pending",
         "sticky": not connected,
         "created_at": 0.0,
         "resolved_at": None,

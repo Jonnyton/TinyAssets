@@ -76,14 +76,20 @@ class ProviderUnavailableError(ProviderError):
 
 
 class SelectedModelCapacityError(ProviderUnavailableError):
-    """Confirmed pre-generation HTTP refusal with protocol-scoped evidence."""
+    """Confirmed pre-generation HTTP refusal with protocol-scoped evidence.
 
-    def __init__(self, signal):
+    ``detail`` is the SOURCE's own scrubbed, bounded words about the refusal.
+    Without one the message degrades to the class name, which is what the owner
+    used to be shown as the provider's explanation (live 2026-09-25). It is
+    diagnostic text only: the typed ``signal`` remains the sole evidence.
+    """
+
+    def __init__(self, signal, *, detail: str = ""):
         from tinyassets.providers.model_capacity import CapacitySignal
 
         if type(signal) is not CapacitySignal:
             raise TypeError("capacity error requires normalized evidence")
-        super().__init__(signal.failure_class)
+        super().__init__(detail if type(detail) is str and detail else signal.failure_class)
         self.signal = signal
         self.failure_class = signal.failure_class
         self.retry_after = signal.retry_after_s

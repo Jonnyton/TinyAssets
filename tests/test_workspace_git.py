@@ -492,6 +492,49 @@ def test_scrub_removes_generic_credential_shapes() -> None:
     assert scrubbed.count("[redacted]") >= 4
 
 
+def test_run_git_stdout_keeps_a_branch_that_looks_like_a_secret(
+    tmp_path: Path, empty_home: Path
+) -> None:
+    """``stdout_tail`` is PARSED, so scrubbing it may not rewrite git's nouns.
+
+    ``_head_ref`` and ``_observed_ref`` read refs straight out of ``ls-remote``
+    output. A generic `sk-`-token rule in ``scrub_text`` would turn a branch
+    genuinely named ``sk-login-timeout-fix`` into ``[redacted]``, and push
+    reconciliation would then read a landed push as failed. Credential shapes
+    that broad belong to the diagnostic-only path
+    (``providers.diagnostics.redacted_failure_detail``), never here.
+    """
+    sha = "9" * 40
+    launcher = RecordingLauncher(FakeCompleted(stdout=(
+        f"ref: refs/heads/sk-login-timeout-fix\tHEAD\n"
+        f"{sha}\trefs/heads/sk-login-timeout-fix\n"
+    ).encode()))
+    result = run_git(
+        ["ls-remote", "--symref", "https://github.com/o/r.git", "HEAD"],
+        cwd=tmp_path, home_dir=empty_home, path="/usr/bin", timeout_s=5, launcher=launcher,
+    )
+    assert "refs/heads/sk-login-timeout-fix" in result.stdout_tail
+    assert "[redacted]" not in result.stdout_tail
+    # The parse those callers actually perform still finds the ref and the sha.
+    rows = [line.split() for line in result.stdout_tail.splitlines()]
+    assert ["ref:", "refs/heads/sk-login-timeout-fix", "HEAD"] in rows
+    assert [sha, "refs/heads/sk-login-timeout-fix"] in rows
+
+
+def test_run_git_stdout_still_scrubs_a_real_credential(
+    tmp_path: Path, empty_home: Path
+) -> None:
+    """Narrowing the net back must not stop it catching what it always caught."""
+    launcher = RecordingLauncher(FakeCompleted(
+        stdout=f"remote: https://x-access-token:{TOKEN}@github.com/o/r\n".encode(),
+    ))
+    result = run_git(
+        ["ls-remote", "https://github.com/o/r.git"],
+        cwd=tmp_path, home_dir=empty_home, path="/usr/bin", timeout_s=5, launcher=launcher,
+    )
+    assert TOKEN not in result.stdout_tail and "[redacted]" in result.stdout_tail
+
+
 def test_error_messages_are_scrubbed_in_args_not_only_in_str() -> None:
     with CredentialBroker("https", "github.com", "owner/repo", "u", TOKEN):
         error = WorkspaceGitError("auth", f"git said {TOKEN}")

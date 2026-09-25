@@ -76,6 +76,10 @@
                color:var(--muted);padding:.2rem .3rem}
     .rtab{border:1px solid var(--line);border-radius:10px;background:var(--surface-2);
           overflow:hidden}
+    /* Offered, not outstanding: it reads as an extra rather than an ask. */
+    .rtab--optional{background:none;border-style:dashed}
+    .rtab--optional .rtab-kind{color:var(--muted)}
+    .rtab--optional .rtab-title{color:var(--muted)}
     .rtab-btn{width:100%;text-align:left;font:inherit;color:inherit;background:none;
               border:0;padding:.6rem .7rem;cursor:pointer;display:block}
     .rtab-kind{display:inline-block;font-size:.68rem;letter-spacing:.06em;
@@ -244,7 +248,7 @@
           </div>
         </div>
         <aside id="request-rail" class="rail" hidden>
-          <div class="rail-head">Waiting on you</div>
+          <div id="rail-head" class="rail-head">Waiting on you</div>
           <div id="rail-items"></div>
           <button id="btn-rail-add" class="btn btn--link" type="button"
             aria-expanded="false" aria-controls="rail-add-panel">Add a key yourself</button>
@@ -5413,6 +5417,7 @@
   // ("API", "Approval", anything). The agent composes the fields, so a kind this
   // code has never heard of still renders — that is the point of the primitive.
   let railOpen = null;      // request_id of the expanded tab
+  let connectWasBlocking = null;  // was the connect request sticky last render?
   let railCache = [];
 
   function railFieldControl(field, reqId){
@@ -5449,10 +5454,44 @@
     return access.length===1?access[0]:null;
   }
 
+  // An entry the platform offers rather than asks for. Only an explicit
+  // "optional" is optional: an older payload without a status, or any status
+  // this page does not know, is treated as a real ask — guessing the other way
+  // would hide something the user has to answer.
+  function isOptionalRequest(req){ return !!req && req.status === "optional"; }
+
+  // The setup card is expanded BY ID — openConnectRequest sets railOpen to the
+  // connect request, and ConnectShapes opens "Other ways to connect" with it.
+  // That id does not change when the connect succeeds, so the whole in-progress
+  // card carried straight over into the optional state: live 2026-09-25,
+  // returning from a source's sign-in showed "Connect another LLM" fully open,
+  // its Model URL / API key / Model id fields and its Connect button still on
+  // screen, over a universe that was already connected. The TRANSITION is what
+  // resets it, not the tap — tapping an optional row must still open it.
+  function forgetFinishedSetup(rows){
+    const setup = rows.find(isSetupRequest);
+    if(!setup) return;
+    const blocking = !!setup.sticky;
+    if(connectWasBlocking === true && !blocking){
+      if(railOpen === setup.request_id) railOpen = null;
+      const other = $("connect-other");
+      if(other) other.open = false;
+    }
+    connectWasBlocking = blocking;
+  }
+
   function renderRail(items){
     railCache = items || [];
-    const rail = $("request-rail"), host = $("rail-items");
+    const rail = $("request-rail"), host = $("rail-items"), head = $("rail-head");
     if(!rail || !host) return;
+    forgetFinishedSetup(railCache);
+    // The heading is a claim about the user's queue. A connected universe's
+    // "Connect another LLM" row is offered, not outstanding, and a heading that
+    // keeps saying "Waiting on you" over it is simply false (live 2026-09-25).
+    if(head){
+      head.textContent = railCache.some(r=>!isOptionalRequest(r))
+        ? "Waiting on you" : "Nothing waiting on you";
+    }
     // Park the setup panel before the tabs are rebuilt, so the node (and what
     // the user typed into it) survives every refresh.
     const panel = $("connect-panel");
@@ -5467,7 +5506,8 @@
     rail.hidden = false;
     railCache.forEach(req=>{
       if(folded && req.request_id === folded.request_id) return;
-      const tab = document.createElement("div"); tab.className = "rtab";
+      const tab = document.createElement("div");
+      tab.className = isOptionalRequest(req) ? "rtab rtab--optional" : "rtab";
       const btn = document.createElement("button");
       btn.type = "button"; btn.className = "rtab-btn";
       const kind = document.createElement("span");
