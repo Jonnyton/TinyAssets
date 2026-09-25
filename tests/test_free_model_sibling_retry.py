@@ -171,6 +171,62 @@ def test_sibling_retries_are_bounded_and_every_attempt_is_recorded(agent, monkey
     assert len({wire[1]["body"]["model"] for wire in agent.wires}) == 4
 
 
+def test_narrowing_cannot_reach_a_connection_the_account_rule_excludes(agent, monkeypatch):
+    """The narrowing removed the only thing vouching for a sibling CONNECTION.
+
+    An account exhaustion is what excludes another connection that shares this
+    source's scope without a verified account identity
+    (``capacity_identity_unverified``). Narrowing to one model takes that
+    exclusion away, so the turn must not reach such a connection THROUGH the
+    narrowing: a narrowed candidate has to be a sibling on the same grant, and
+    anything else falls back to the unnarrowed exclusion — which here refuses.
+
+    Founder review of #3981, finding 2: this guard had no test behind it, and
+    its first version was too blunt, stopping turns that the conservative rule
+    would happily have advanced (it broke two native mixed-source tests).
+    """
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.discovery_protocols import discovery_protocol
+    from tinyassets.providers.model_policy import (
+        Catalog,
+        ConnectionModels,
+        Model,
+        ModelPolicy,
+        ModelRef,
+        Pricing,
+    )
+
+    snapshot = integration.authority_tests.snapshot_tests._refresh(agent.served.rig)
+    selected = agent.served.context.model_selection
+    # Same provider scope, no verified account identity: the account rule calls
+    # this one `capacity_identity_unverified` and refuses it.
+    elsewhere = ConnectionModels(
+        connection_id="api_key_http:some-other-definition",
+        provider_scope=snapshot.models.provider_scope, source_kind="http", freshness="fresh",
+        owner_filtered=True, executor_tools=True,
+        models=(Model("other-vendor/free-model", True, frozenset({"text"}),
+                      context_tokens=100_000, pricing=Pricing("fresh", unmetered=True)),),
+    )
+    agent.served.context = replace(agent.served.context, agent_model_plan=AgentModelPlan(
+        Catalog("owner", agent.served.context.universe_dir.name,
+                (snapshot.models, elsewhere)),
+        ModelPolicy(
+            generation=7, mode="explicit", saved_default=selected,
+            fallbacks=(ModelRef(elsewhere.connection_id, "other-vendor/free-model"),),
+        ),
+        replace(
+            discovery_protocol(snapshot.models.provider_scope).text_interaction, needs_tools=True,
+        ),
+        policy_source="saved",
+    ))
+    agent.capacity_failures[1] = 429
+    with pytest.raises(AllProvidersExhaustedError) as error:
+        integration.run(agent)
+    # One request, to the grant that was actually authorized for this source.
+    assert len(agent.wires) == 1 and not agent.tools
+    assert {attempt.provider for attempt in error.value.attempts} == {selected.connection_id}
+
+
 # --------------------------------------------------------------------------
 # The owner's own failure record must carry the source's words, not our class.
 # --------------------------------------------------------------------------
@@ -191,12 +247,37 @@ def test_capacity_detail_carries_the_sources_own_words(agent):
     assert record.provider_detail != "provider_rate_limited"
 
 
-def test_capacity_detail_is_bounded_and_scrubbed(agent):
-    """Provider text is the owner's own, but it is still untrusted transport."""
+def test_capacity_detail_is_bounded(agent):
+    """A source can answer with a megabyte; the record takes one line of it."""
     from tinyassets.conversation_failure import DETAIL_LIMIT
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 
-    body = json.dumps({"error": {"message": "sk-live-" + "A" * 4000}})
+    body = json.dumps({"error": {"message": "A" * 4000}})
     detail = ApiKeyHttpProvider._capacity_detail(429, {"body": body})
     assert len(detail) <= DETAIL_LIMIT
     assert "A" * 400 not in detail
+
+
+@pytest.mark.parametrize("secret,body", [
+    ("sk-or-v1-0123456789abcdefghijklmnop",
+     '{"error":{"message":"key sk-or-v1-0123456789abcdefghijklmnop rejected"}}'),
+    ("Bearer hunter2hunter2hunter2",
+     "Authorization: Bearer hunter2hunter2hunter2\nrate limited"),
+    ("topsecretvalue0123",
+     '{"headers":{"x-api-key":"topsecretvalue0123"},"error":"rate limited"}'),
+    ("topsecretvalue0123", "rate limited; retry at /v1/keys?api_key=topsecretvalue0123"),
+])
+def test_capacity_detail_passes_the_secret_scrub(agent, secret, body):
+    """The body is the owner's own words, and still untrusted transport.
+
+    This asserts the scrub gate FIRES, not merely that the result is short --
+    a length-only assertion stayed green with ``redacted_failure_detail``
+    deleted, which made it decorative (founder review of #3981, finding 1).
+    """
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+
+    detail = ApiKeyHttpProvider._capacity_detail(429, {"body": body})
+    assert secret not in detail
+    assert "[redacted]" in detail
+    # The source's actual explanation survives the scrub.
+    assert "rate limited" in detail or "rejected" in detail

@@ -492,6 +492,34 @@ def test_scrub_removes_generic_credential_shapes() -> None:
     assert scrubbed.count("[redacted]") >= 4
 
 
+def test_scrub_removes_encoded_credential_fields_and_sk_tokens() -> None:
+    """A credential does not always arrive as a `Name: value` header line.
+
+    Since a provider's own response body reaches an owner-visible failure
+    record, the same text can carry a key as JSON or as a query parameter --
+    shapes the header pattern walks straight past.
+    """
+    raw = (
+        '{"api_key":"topsecretvalue0123","x-api-key":"another0123456789"}\n'
+        '{"Authorization":"Bearer hunter2hunter2hunter2"}\n'
+        "GET /v1/keys?access_token=querysecret0123&model=free-one\n"
+        "key sk-or-v1-0123456789abcdefghijklmnop was rejected\n"
+    )
+    scrubbed = scrub_text(raw)
+    for secret in ("topsecretvalue0123", "another0123456789", "querysecret0123",
+                   "hunter2hunter2hunter2", "sk-or-v1-0123456789abcdefghijklmnop"):
+        assert secret not in scrubbed
+    # The field NAMES and the surrounding meaning survive; only values go.
+    assert "api_key" in scrubbed and "model=free-one" in scrubbed
+    assert "was rejected" in scrubbed
+
+
+def test_scrub_leaves_ordinary_prose_and_model_ids_alone() -> None:
+    """Redacting more is safe; redacting a model id would corrupt a diagnosis."""
+    raw = "model inclusionai/ling-3.0-flash-vl:free is rate limited (sk-short)"
+    assert scrub_text(raw) == raw
+
+
 def test_error_messages_are_scrubbed_in_args_not_only_in_str() -> None:
     with CredentialBroker("https", "github.com", "owner/repo", "u", TOKEN):
         error = WorkspaceGitError("auth", f"git said {TOKEN}")

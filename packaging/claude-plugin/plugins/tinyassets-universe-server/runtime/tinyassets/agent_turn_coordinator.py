@@ -387,11 +387,18 @@ class AgentTurnCoordinator:
         a bounded number of times per turn. The replacement comes from the SAME
         order under the SAME ceilings, so this can never reach a paid model.
 
+        Engine inference only. A native executor runs on ONE subscription, so a
+        rate limit there is a fact about that account, not about a model within
+        it — and narrowing a source whose members are unmetered rather than
+        free-per-model is a guess with nothing behind it.
+
         Returns ``(exhaustion, narrowed)``; ``narrowed`` tells the caller its
         next candidate rests on a guess and must stay inside the same grant.
         """
         from tinyassets.providers.model_capacity import free_sibling_retry
 
+        if self.execution_kind != "engine_inference":
+            return boundary.exhaustion, False
         if self.plan is None or self.free_sibling_retries >= self.MAX_FREE_SIBLING_RETRIES:
             return boundary.exhaustion, False
         if not free_sibling_retry(
@@ -417,16 +424,26 @@ class AgentTurnCoordinator:
             return False
         failed = self.context.model_selection
         self.visited.add(failed)
-        exhaustion, narrowed = self._narrowed(boundary)
-        self.exhaustion += (exhaustion,)
-        candidate = self._next_candidate()
+        base = self.exhaustion
+        narrowed_exhaustion, narrowed = self._narrowed(boundary)
+        candidate = None
+        if narrowed:
+            self.exhaustion = base + (narrowed_exhaustion,)
+            candidate = self._next_candidate()
+            # A narrowed exhaustion is a guess about ONE source's window, never
+            # evidence that a different connection sharing its scope is healthy
+            # — deciding THAT is exactly what the conservative account exclusion
+            # does. So a narrowed candidate must be a sibling on the same grant;
+            # anything else falls back to the unnarrowed exclusion and asks
+            # again, which is what was already allowed. Narrowing may only ever
+            # add a candidate, never remove one.
+            if candidate is None or candidate.connection_id != failed.connection_id:
+                candidate, narrowed = None, False
+                self.free_sibling_retries -= 1
+        if not narrowed:
+            self.exhaustion = base + (boundary.exhaustion,)
+            candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
-            return False
-        # A narrowed exhaustion is a guess about ONE source's window, never
-        # evidence that a different connection sharing its scope is healthy.
-        # The conservative account exclusion is what normally proves that, and
-        # narrowing removed it, so the retry stays inside the same grant.
-        if narrowed and candidate.connection_id != failed.connection_id:
             return False
         # Only engine-inference rounds. A native round's diagnostics are paired
         # positionally with its own ``native_evidence``, and carrying them onto
