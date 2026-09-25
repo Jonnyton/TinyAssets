@@ -3186,6 +3186,70 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
         _current_identity.reset(token)
 
 
+# ── the universe's four tools (universe-harness S1) ─────────────────────────
+# ``read`` / ``write`` / ``edit`` / ``bash`` over the agent's OWN universe
+# folder, executed by the platform inside the tool jail
+# (``tinyassets.universe_tools``): no network, no credential, resource-limited,
+# the universe at ``/u`` and nothing else. The graph pin picks the folder; no
+# parameter names a universe, and a path outside ``/u`` does not exist in the
+# jail. Every call first rechecks current serving-owner authority.
+
+
+async def _universe_tool(op, /, **kwargs) -> str:
+    import asyncio
+
+    err = _binding_error()
+    if err is not None:
+        return err
+    from tinyassets import universe_tools
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.providers.provider_jail import ProviderConfinementError
+
+    udir = _universe_dir(_GRAPH_ID)
+    try:
+        return await asyncio.to_thread(op, udir, **kwargs)
+    except (universe_tools.UniverseToolError, ProviderConfinementError) as exc:
+        return f"error: {exc}"
+
+
+@mcp.tool(name="read")
+async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
+    """Read a file in your folder /u (relative paths are under /u).
+    offset: first line (1-based); limit: line count (default 2000)."""
+    from tinyassets import universe_tools
+
+    return await _universe_tool(
+        universe_tools.read_file, path=path, offset=offset, limit=limit,
+    )
+
+
+@mcp.tool(name="write")
+async def write_file(path: str, content: str) -> str:
+    """Create or replace a file in /u, making parent folders."""
+    from tinyassets import universe_tools
+
+    return await _universe_tool(universe_tools.write_file, path=path, content=content)
+
+
+@mcp.tool(name="edit")
+async def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """In a file in /u, replace old_text (must match exactly once) with new_text."""
+    from tinyassets import universe_tools
+
+    return await _universe_tool(
+        universe_tools.edit_file, path=path, old_text=old_text, new_text=new_text,
+    )
+
+
+@mcp.tool(name="bash")
+async def run_bash(command: str, timeout: int = 0) -> str:
+    """Run a bash command in /u. No network; memory, processes and time are
+    limited. timeout: seconds (default 120, max 600)."""
+    from tinyassets import universe_tools
+
+    return await _universe_tool(universe_tools.bash, command=command, timeout=timeout)
+
+
 if __name__ == "__main__":
     # Transport: HTTP when a port is pinned (the reliable path — claude CLI's
     # stdio-MCP spawn is flaky in the headless served subprocess, HTTP is not),
