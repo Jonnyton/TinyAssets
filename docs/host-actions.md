@@ -12,6 +12,29 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Delete the platform's model-credential repository secrets (2026-09-24)
+
+The platform has no LLM (AGENTS.md Hard Rule 15), and after the retire-platform-llm-logins
+PR nothing reads these. Agents cannot delete repository secrets. In GitHub →
+Settings → Secrets and variables → Actions, delete: `CLAUDE_CODE_OAUTH_TOKEN`,
+`OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`,
+`WORKFLOW_CODEX_AUTH_JSON_B64`, `WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64`, and the
+platform GitHub push map `WORKFLOW_GITHUB_PR_CAPABILITIES`. Also revoke the
+underlying keys/tokens at each provider, including the GitHub token inside
+`TINYASSETS_GITHUB_PUSH_CAPABILITIES` on the droplet (the deploy scrubs the env
+line; the token itself stays valid until revoked). Do it after that PR deploys,
+so a rollback never meets a missing secret.
+
+## Delete or uninstall the platform GitHub App (2026-09-24)
+
+The GitHub App token refresher and its host units are removed by the same PR.
+Its App was never configured on the droplet (no
+`/etc/tinyassets/github-app-token-refresher.env`, no private key; the timer
+skipped every run), and no App ID is recorded in the repo, so an agent cannot
+name it. In GitHub → Settings → Applications (and Developer settings → GitHub
+Apps), uninstall/delete any App installed on `Jonnyton/TinyAssets` for the
+community-loop bot identity (Contents + Pull requests write).
+
 ## Rotate the production Cloudflare tunnel token (2026-09-24)
 
 The `tinyassets-tunnel` container's start command carries the tunnel token in

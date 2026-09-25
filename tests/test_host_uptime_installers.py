@@ -1385,7 +1385,7 @@ def test_writer_affecting_remote_mutations_run_inside_authoritative_host_lock():
         },
         WORKFLOW: {
             "Ensure off-host backup configuration": 2,
-            "Install exact uptime bundle and token refresher": 1,
+            "Install exact uptime bundle": 1,
         },
     }
     for path, names in expected_steps.items():
@@ -1409,7 +1409,7 @@ def test_host_mutation_workflow_shell_blocks_parse():
         WORKFLOW: (
             "Refuse host mutation during stop-writer cutover",
             "Ensure off-host backup configuration",
-            "Install exact uptime bundle and token refresher",
+            "Install exact uptime bundle",
         ),
         P0_WORKFLOW: (
             "Refuse host mutation during stop-writer cutover",
@@ -1461,7 +1461,7 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     steps = workflow["jobs"]["install"]["steps"]
     names = [step.get("name") for step in steps]
     backup_index = names.index("Ensure off-host backup configuration")
-    install_index = names.index("Install exact uptime bundle and token refresher")
+    install_index = names.index("Install exact uptime bundle")
     assert backup_index < install_index
 
     backup_step = steps[backup_index]

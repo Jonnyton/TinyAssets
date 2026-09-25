@@ -9,7 +9,7 @@ Covers:
   (f) Post-deploy canary step probes ONLY canonical URL (not direct)
   (g) Rollback step present and conditioned on failure
   (h) CF Access gate step blocks deploy on 200 (Access broken); advisory on tunnel-down
-  (i) Optional Codex subscription auth bundle is synced without API-key fallback
+  (i) No platform model credential is synced, prepared or verified (Hard Rule 15)
   (j) Droplet disk pressure is pruned before image pull/restart
 """
 
@@ -19,10 +19,8 @@ import base64
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -328,10 +326,6 @@ def test_do_ssh_key_secret_referenced():
     assert "DO_SSH_KEY" in _text()
 
 
-def test_codex_subscription_bundle_secret_referenced():
-    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in _text()
-
-
 def test_no_legacy_hetzner_secrets():
     text = _text()
     assert "HETZNER_HOST" not in text, "Legacy HETZNER_HOST still in deploy-prod.yml"
@@ -614,23 +608,27 @@ def test_rollback_runs_always_and_eligibility_keys_to_image_marker():
 
 
 # ---------------------------------------------------------------------------
-# (i) Codex subscription auth sync
+# (i) No platform model credential in the deploy (Hard Rule 15)
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_syncs_codex_subscription_bundle_with_helper():
-    wf = _load()
-    deploy_step = next(
-        (s for s in _steps(wf) if s.get("id") == "deploy"),
-        None,
-    )
-    assert deploy_step is not None, "deploy job must have a deploy step"
-    run_script = deploy_step.get("run", "") or ""
-    assert "TINYASSETS_CODEX_AUTH_JSON_B64" in run_script
-    assert "install-tinyassets-env.sh set TINYASSETS_CODEX_AUTH_JSON_B64" in run_script
-    assert "install-tinyassets-env.sh set TINYASSETS_ALLOW_API_KEY_PROVIDERS" in run_script
-    assert "OPENAI_API_KEY" not in run_script, (
-        "deploy must not recover the public daemon by syncing API-key writer auth"
+def test_deploy_syncs_no_platform_model_credential():
+    """The platform has no LLM (Hard Rule 15): no step syncs, seeds or verifies
+    a platform model login, key, bundle or opt-in switch. Full guard across
+    every workflow: tests/test_no_platform_llm_credentials.py."""
+    text = _text()
+    for name in (
+        "TINYASSETS_CODEX_AUTH_JSON_B64",
+        "TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "TINYASSETS_ALLOW_API_KEY_PROVIDERS",
+        "OPENAI_API_KEY",
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+    ):
+        assert name not in text, f"deploy-prod.yml still handles {name}"
+    assert "verify_llm_binding.py" not in text, (
+        "the deploy must not require the platform to report a bound model"
     )
 
 
@@ -816,9 +814,6 @@ def test_deploy_scrubs_legacy_workflow_env_from_cloud_env():
         "WORKFLOW_IMAGE",
         "WORKFLOW_DATA_DIR",
         "WORKFLOW_MCP_CANARY_URL",
-        "WORKFLOW_CODEX_AUTH_JSON_B64",
-        "WORKFLOW_CLAUDE_CREDENTIALS_JSON_B64",
-        "WORKFLOW_GITHUB_PR_CAPABILITIES",
         "BACKUP_GH_REPO",
     ):
         assert key in run_script
@@ -901,36 +896,6 @@ def test_deploy_retires_legacy_workflow_service_before_restart():
     assert "docker rm -f" in run_script
     assert 'rm -f "$unit_file"' in run_script
     assert "systemctl mask workflow-daemon.service" in run_script
-
-
-def test_deploy_verifies_llm_binding_when_codex_auth_is_synced():
-    wf = _load()
-    for step in _steps(wf):
-        if "Verify subscription LLM binding" in (step.get("name") or ""):
-            assert "HAS_CODEX_AUTH_BUNDLE" in str(step.get("if", ""))
-            run_script = step.get("run", "") or ""
-            assert "verify_llm_binding.py" in run_script
-            assert "--require-sandbox" in run_script
-            assert "--retries 12" in run_script
-            assert "--retry-delay 10" in run_script
-            return
-    pytest.fail("deploy must verify LLM binding when it syncs Codex subscription auth")
-
-
-def test_deploy_requires_llm_binding_even_without_visible_deploy_secret():
-    wf = _load()
-    step_name = "Report subscription LLM binding when no deploy auth bundle is configured"
-    step = next(
-        (s for s in _steps(wf) if s.get("name") == step_name),
-        None,
-    )
-    assert step is not None
-    run_script = step.get("run", "") or ""
-    assert "verify_llm_binding.py" in run_script
-    assert "--require-sandbox" in run_script
-    assert "--retries 12" in run_script
-    assert "--retry-delay 10" in run_script
-    assert "::warning::No deploy-visible TINYASSETS_CODEX_AUTH_JSON_B64" not in run_script
 
 
 def test_production_marker_is_immediately_before_first_scrub_host_write():
@@ -1318,218 +1283,104 @@ def test_deploy_failure_issue_has_truthful_bounded_wording():
 
 
 # ---------------------------------------------------------------------------
-# Codex auth persistent volume (PR #965) — idempotence + ownership repair
+# Data volume root: ownership repair, and no platform login dirs (Hard Rule 15)
 # ---------------------------------------------------------------------------
 
 
-def _codex_volume_step(wf: dict) -> dict:
+def _volume_root_step(wf: dict) -> dict:
     step = next(
-        (s for s in _steps(wf) if s.get("name") == "Prepare codex auth persistent volume"),
+        (s for s in _steps(wf) if s.get("name") == "Prepare data volume root"),
         None,
     )
     assert step is not None, (
-        "deploy must include a 'Prepare codex auth persistent volume' "
-        "step that provisions tinyassets-data/.codex on every deploy "
-        "(Forever Rule — no host-action required)"
+        "deploy must include a 'Prepare data volume root' step that repairs "
+        "the tinyassets-data root on every deploy (Forever Rule: no host action)"
     )
     return step
 
 
-def test_codex_volume_step_runs_before_deploy():
+def test_volume_root_step_runs_before_deploy():
     wf = _load()
     steps = _steps(wf)
     names = [s.get("name", "") for s in steps]
-    volume_idx = names.index("Prepare codex auth persistent volume")
+    volume_idx = names.index("Prepare data volume root")
     deploy_idx = next(i for i, step in enumerate(steps) if step.get("id") == "deploy")
     assert volume_idx < deploy_idx, (
-        "Codex auth volume must be provisioned BEFORE the daemon "
-        "container restarts; otherwise the first restart may miss "
-        "the persistent CODEX_HOME auth directory."
+        "the volume root (OAuth db) must be writable by uid 1001 before the "
+        "daemon container restarts"
     )
 
 
-def test_codex_volume_step_chown_is_unconditional():
-    """Regression guard for Codex round-2 Finding 2.
-
-    Round-1 placed `chown` inside the `if [ ! -d "$VOLUME_DIR" ]` branch.
-    If a prior deploy attempt left the dir root-owned, subsequent
-    deploys silently skipped the ownership repair and uid 1001 couldn't
-    write. Fix: run chown unconditionally every deploy.
-    """
-    wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
-
-    # Extract the heredoc body so we can reason about block structure.
-    # The heredoc starts after `<<'SH'` and ends at a line containing `SH`.
-    lines = run_script.splitlines()
-    start = next(
-        (i for i, line in enumerate(lines) if line.endswith("<<'SH'")),
-        None,
-    )
-    end = (
-        next(
-            (
-                i
-                for i, line in enumerate(lines[start + 1 :], start=start + 1)
-                if line.strip() == "SH"
-            ),
-            None,
-        )
-        if start is not None
-        else None
-    )
-    assert start is not None and end is not None, (
-        "Could not locate heredoc body in 'Prepare codex auth persistent volume'"
-    )
-    body = lines[start + 1 : end]
-
-    chown_line_idx = next(
-        (
-            i
-            for i, line in enumerate(body)
-            if line.strip().startswith('chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"')
-        ),
-        None,
-    )
-    chmod_line_idx = next(
-        (i for i, line in enumerate(body) if line.strip().startswith('chmod 700 "$CODEX_DIR"')),
-        None,
-    )
-    assert chown_line_idx is not None, "chown on $CODEX_DIR must be present"
-    assert chmod_line_idx is not None, "chmod 700 on $CODEX_DIR must be present"
-
-    # Walk backwards from each line; the most recent unmatched `if [` must
-    # NOT be the `[ ! -d "$CODEX_DIR" ]` branch. Track indent depth via
-    # leading whitespace as a coarse signal — both unconditional lines
-    # should sit at the heredoc's base indent.
-    def _indent(line: str) -> int:
-        return len(line) - len(line.lstrip(" "))
-
-    base_indent = min(
-        (_indent(line) for line in body if line.strip()),
-        default=0,
-    )
-    chown_indent = _indent(body[chown_line_idx])
-    chmod_indent = _indent(body[chmod_line_idx])
-    assert chown_indent == base_indent, (
-        f"chown line must sit at heredoc base indent ({base_indent}); "
-        f"got indent {chown_indent}. Being nested inside `if [ ! -d ]` "
-        "is exactly the Finding-2 regression we are guarding against."
-    )
-    assert chmod_indent == base_indent, (
-        f"chmod line must sit at heredoc base indent ({base_indent}); got indent {chmod_indent}."
-    )
+def test_volume_root_step_creates_volume_idempotently():
+    run_script = _volume_root_step(_load()).get("run", "") or ""
+    assert 'docker volume create "$VOLUME_NAME"' in run_script
+    assert 'docker volume inspect "$VOLUME_NAME"' in run_script
 
 
-def test_codex_volume_step_creates_dir_idempotently():
-    wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
-    assert 'docker volume create "$VOLUME_NAME"' in run_script, (
-        "tinyassets-data named volume must be created idempotently before resolving its mountpoint"
-    )
-    assert 'docker volume inspect "$VOLUME_NAME"' in run_script, (
-        "deploy must resolve the local volume mountpoint before preparing .codex"
-    )
-    assert 'CODEX_DIR="$VOLUME_DIR/.codex"' in run_script
-    assert 'mkdir -p "$CODEX_DIR"' in run_script, (
-        "directory creation must use `mkdir -p` so re-running the step "
-        "is a no-op when the dir already exists"
-    )
-    assert 'if [ ! -d "$CODEX_DIR" ]' in run_script, (
-        "dir-create branch must be guarded by an existence check so the "
-        "create-log line is skipped when the dir already exists"
-    )
-
-
-def test_codex_volume_step_repairs_volume_root_for_auth_db():
-    wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
-
+def test_volume_root_step_repairs_volume_root_for_auth_db():
+    run_script = _volume_root_step(_load()).get("run", "") or ""
     assert 'chown "$TINYASSETS_UID:$TINYASSETS_GID" "$VOLUME_DIR"' in run_script
     assert 'chmod 755 "$VOLUME_DIR"' in run_script
     assert ".auth.db" in run_script
     assert "unable to open database file" in run_script
 
 
-# `test_codex_volume_step_migrates_from_running_container_once` lived here. It
-# asserted the deploy copies auth.json OUT of a running `tinyassets-worker`.
-# Deleted 2026-08-29 with the host-run fleet: nothing runs outside a user's
-# universe (PLAN.md), so there is no such container to migrate from. The
-# volume-preparation half of that step is still covered below.
+def test_volume_root_step_creates_no_platform_login_dir():
+    """Until 2026-09-24 this step created /data/.codex and /data/.claude as the
+    platform's own Codex and Claude login homes. The platform has no LLM (Hard
+    Rule 15), so it creates neither, and it reaches into no fleet container."""
+    run_script = _volume_root_step(_load()).get("run", "") or ""
+    for retired in ("CODEX_DIR", "CLAUDE_DIR", "/.codex", "/.claude", "tinyassets-worker"):
+        assert retired not in run_script, f"volume step still handles {retired!r}"
 
 
-def test_subscription_volume_step_prepares_auth_dirs_without_a_worker_container():
-    """The step still creates + locks down both auth dirs on the volume.
-
-    The `docker cp ... tinyassets-worker:` migration assertions were deleted
-    2026-08-29 with the host-run fleet (PLAN.md). Their inverse is asserted:
-    the step must not reach into a fleet container that no longer exists.
-    """
+def test_retire_step_runs_the_host_cleanup_only_after_a_green_canary():
     wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
-    assert 'CODEX_DIR="$VOLUME_DIR/.codex"' in run_script
-    assert 'chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"' in run_script
-    assert 'chmod 700 "$CODEX_DIR"' in run_script
-    assert 'CLAUDE_DIR="$VOLUME_DIR/.claude"' in run_script
-    assert 'mkdir -p "$CLAUDE_DIR"' in run_script
-    assert 'chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"' in run_script
-    assert 'chmod 700 "$CLAUDE_DIR"' in run_script
-    assert "tinyassets-worker" not in run_script, (
-        "the retired host fleet has no container to migrate credentials from"
+    steps = _steps(wf)
+    idx = {s.get("name"): i for i, s in enumerate(steps)}
+    retire = steps[idx["Retire platform LLM logins from the host"]]
+    assert "deploy/retire_platform_llm_logins.sh" in retire.get("run", "")
+    assert "steps.canary.outcome == 'success'" in str(retire.get("if", ""))
+    canary_idx = next(i for i, s in enumerate(steps) if s.get("id") == "canary")
+    assert idx["Retire platform LLM logins from the host"] > canary_idx
+    assert idx["Retire platform LLM logins from the host"] < idx["Open deploy-failed issue"], (
+        "a failed cleanup must still reach the deploy-failed issue step"
     )
 
 
 # ---------------------------------------------------------------------------
-# PR-128 — Phase 2 capability map sync into /etc/tinyassets/env
+# No platform GitHub push credential (retired 2026-09-24)
 # ---------------------------------------------------------------------------
+#
+# PR-128 synced a GitHub push-capability map (from the WORKFLOW_GITHUB_PR_
+# CAPABILITIES repository secret) into /etc/tinyassets/env on every deploy,
+# and a GitHub App refresher re-minted it. Pushing with a platform token must
+# not be possible: GitHub is a connection a universe's owner may or may not
+# have made. The tests below assert the ABSENCE of that path; the host copies
+# are removed by deploy/retire_platform_llm_logins.sh after a green canary.
 
 
-def test_deploy_job_env_has_github_pr_capability_flag():
-    """The job-level env block must surface ``HAS_GITHUB_PR_CAPABILITY``
-    so the Deploy step + summary can branch on whether the secret is
-    visible to this run. Pattern mirrors ``HAS_CODEX_AUTH_BUNDLE``."""
+_RETIRED_GITHUB_PUSH_NAMES = (
+    "HAS_GITHUB_PR_CAPABILITY",
+    "GITHUB_PR_CAPABILITIES_SOURCE",
+    "WORKFLOW_GITHUB_PR_CAPABILITIES",
+    "TINYASSETS_GITHUB_PR_CAPABILITIES",
+    "TINYASSETS_GITHUB_PUSH_CAPABILITIES",
+)
+
+
+def test_deploy_job_env_has_no_github_push_capability():
     wf = _load()
     job_env = (wf.get("jobs", {}).get("deploy", {}) or {}).get("env") or {}
-    assert "HAS_GITHUB_PR_CAPABILITY" in job_env, (
-        "deploy job env must expose HAS_GITHUB_PR_CAPABILITY so the "
-        "Deploy step and summary can branch on capability visibility"
-    )
-    raw_value = str(job_env["HAS_GITHUB_PR_CAPABILITY"])
-    assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value, (
-        "the bounded migration must use the one existing pre-rename secret "
-        "as its unambiguous source of truth"
-    )
-    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" not in raw_value, (
-        "dual secret precedence makes revocation ambiguous; the migration "
-        "must select exactly one repository secret"
-    )
-    assert "!= ''" in raw_value, (
-        "HAS_GITHUB_PR_CAPABILITY must use a non-empty-string check, "
-        "matching the HAS_CODEX_AUTH_BUNDLE pattern"
-    )
+    leaked = [name for name in _RETIRED_GITHUB_PUSH_NAMES if name in job_env]
+    assert not leaked, f"deploy job env still carries {leaked}"
 
 
-def test_deploy_step_env_imports_github_pr_capabilities_secret():
-    """The Deploy step's local env block must import the capability
-    map secret so the inline ssh-piping path can read it."""
-    wf = _load()
-    deploy_step = next(
-        (s for s in _steps(wf) if s.get("id") == "deploy"),
-        None,
-    )
-    assert deploy_step is not None, "deploy job must have a deploy step"
-    step_env = deploy_step.get("env") or {}
-    assert "GITHUB_PR_CAPABILITIES_SOURCE" in step_env, (
-        "Deploy step must import the bounded migration source without "
-        "pretending the unvalidated map is already the runtime value"
-    )
-    raw_value = str(step_env["GITHUB_PR_CAPABILITIES_SOURCE"])
-    assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value
-    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" not in raw_value
+def test_deploy_never_installs_a_github_push_capability():
+    text = _text()
+    for name in _RETIRED_GITHUB_PUSH_NAMES:
+        assert name not in text, f"deploy-prod.yml still handles {name}"
+    assert "install-tinyassets-env.sh set TINYASSETS_GITHUB" not in text
 
 
 def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
@@ -1554,7 +1405,7 @@ def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
         "Transitional task 2.1 stop-writer preflight",
         "Scrub stale cloud env overrides",
         "Sync runtime deploy files",
-        "Prepare codex auth persistent volume",
+        "Prepare data volume root",
         "Retire legacy Workflow service",
         "Deploy new image",
     }
@@ -1698,7 +1549,7 @@ def test_deploy_requires_and_installs_daemon_request_idempotency_hmac_secret():
         install_name,
         "Scrub stale cloud env overrides",
         "Sync runtime deploy files",
-        "Prepare codex auth persistent volume",
+        "Prepare data volume root",
         "Retire legacy Workflow service",
         "Deploy new image",
     }
@@ -1877,358 +1728,6 @@ def test_unsafe_recovery_validates_both_hmac_prerequisites_before_mutation():
     assert indexes["Validate host HMAC pair before recovery mutation"] < indexes[
         "Pull recovery image on production host"
     ]
-
-
-def test_deploy_step_syncs_github_pr_capabilities_when_set():
-    """When ``HAS_GITHUB_PR_CAPABILITY=true``, the Deploy step must
-    pipe the secret into install-tinyassets-env.sh via the same atomic
-    helper used for TINYASSETS_CODEX_AUTH_JSON_B64."""
-    wf = _load()
-    deploy_step = next(
-        (s for s in _steps(wf) if s.get("id") == "deploy"),
-        None,
-    )
-    assert deploy_step is not None
-    run_script = deploy_step.get("run", "") or ""
-
-    # Required-shape assertions: the conditional, the pipe, the helper
-    # invocation, and the warning surface for the missing-secret case.
-    assert 'if [ "${HAS_GITHUB_PR_CAPABILITY}" = "true" ]' in run_script, (
-        "deploy must gate the exact GitHub push-capability sync on "
-        "HAS_GITHUB_PR_CAPABILITY=true so absence is a warning, not "
-        "an unbound-variable failure"
-    )
-    assert 'destination = "Jonnyton/TinyAssets"' in run_script
-    assert 'historical_destination = "Jonnyton/Workflow"' in run_script
-    assert "set(source) == {destination}" in run_script
-    assert "set(source) == {historical_destination}" in run_script
-    assert "json.dumps(" in run_script
-    assert "{destination: token}" in run_script
-    assert "GITHUB_PR_CAPABILITIES_SOURCE" in run_script
-    assert "printf '%s' \"${scoped_github_pr_capabilities}\"" in run_script, (
-        "deploy must pipe only the validated exact-destination map and never "
-        "echo the broad source map or token"
-    )
-    assert "unset scoped_github_pr_capabilities" in run_script
-    assert "install-tinyassets-env.sh set TINYASSETS_GITHUB_PUSH_CAPABILITIES" in run_script, (
-        "deploy must call the atomic install-tinyassets-env.sh helper "
-        "(the same path that enforces root:tinyassets 640 + post-write "
-        "readability) to write the capability map"
-    )
-    assert "GitHub PR capability source is not visible to deploy" in run_script, (
-        "deploy must emit a structured ::warning:: when the secret is "
-        "absent so the operator notices before chatbots try real-PR "
-        "emission and see missing_capability dry-run evidence"
-    )
-
-
-def test_deploy_step_invalid_capability_source_revokes_before_failure():
-    """Malformed or wrong-destination migration input must fail closed.
-
-    The deploy must remove any previously installed runtime capability before
-    exiting, instead of retaining stale authority or installing an empty map.
-    """
-    wf = _load()
-    deploy_step = next(
-        (s for s in _steps(wf) if s.get("id") == "deploy"),
-        None,
-    )
-    assert deploy_step is not None
-    run_script = deploy_step.get("run", "") or ""
-    validation = "if ! scoped_github_pr_capabilities="
-    delete = (
-        "install-tinyassets-env.sh delete "
-        "TINYASSETS_GITHUB_PUSH_CAPABILITIES "
-        "TINYASSETS_GITHUB_PR_CAPABILITIES"
-    )
-    failure = 'exit 1'
-    validation_idx = run_script.find(validation)
-    delete_idx = run_script.find(delete, validation_idx)
-    restart_idx = run_script.find(
-        "systemctl restart tinyassets-daemon",
-        delete_idx,
-    )
-    failure_idx = run_script.find(failure, delete_idx)
-    assert validation_idx != -1
-    assert delete_idx > validation_idx
-    assert restart_idx > delete_idx
-    assert failure_idx > restart_idx
-    assert (
-        "TINYASSETS_GITHUB_PR_CAPABILITIES && "
-        "sudo systemctl restart tinyassets-daemon"
-    ) in run_script
-    assert (
-        '"capability source must contain exactly one supported "'
-        in run_script
-    )
-
-
-def _github_capability_validator() -> str:
-    wf = _load()
-    deploy_step = next(s for s in _steps(wf) if s.get("id") == "deploy")
-    run_script = deploy_step.get("run", "") or ""
-    segment = run_script[run_script.index("if ! scoped_github_pr_capabilities=") :]
-    match = re.search(r"python -c '\n(?P<code>.*?)\n\s*'", segment, re.DOTALL)
-    assert match is not None
-    return textwrap.dedent(match.group("code"))
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        {"Jonnyton/TinyAssets": "current-token"},
-        {"Jonnyton/Workflow": "historical-token"},
-    ],
-)
-def test_github_capability_validator_emits_only_current_destination(source: dict):
-    result = subprocess.run(
-        [sys.executable, "-c", _github_capability_validator()],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "GITHUB_PR_CAPABILITIES_SOURCE": json.dumps(source),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {
-        "Jonnyton/TinyAssets": next(iter(source.values()))
-    }
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        {"Jonnyton/Workflow": "old", "Jonnyton/TinyAssets": "new"},
-        {"Jonnyton/Elsewhere": "token"},
-        {"Jonnyton/Workflow": "token", "extra": "authority"},
-        {"Jonnyton/Workflow": ""},
-    ],
-)
-def test_github_capability_validator_rejects_ambiguous_or_invalid_maps(
-    source: dict,
-):
-    result = subprocess.run(
-        [sys.executable, "-c", _github_capability_validator()],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "GITHUB_PR_CAPABILITIES_SOURCE": json.dumps(source),
-        },
-    )
-
-    assert result.returncode != 0
-    assert result.stdout == ""
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        '{"Jonnyton/TinyAssets":"first","Jonnyton/TinyAssets":"second"}',
-        '{"Jonnyton/Workflow":"first","Jonnyton/Workflow":"second"}',
-    ],
-)
-def test_github_capability_validator_rejects_duplicate_json_members(
-    source: str,
-):
-    result = subprocess.run(
-        [sys.executable, "-c", _github_capability_validator()],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "GITHUB_PR_CAPABILITIES_SOURCE": source,
-        },
-    )
-
-    assert result.returncode != 0
-    assert result.stdout == ""
-    assert "first" not in result.stderr
-    assert "second" not in result.stderr
-
-
-def test_deploy_step_is_valid_bash_after_actions_expression_substitution():
-    """Guard the executable script shape, including inline validators."""
-    wf = _load()
-    deploy_step = next(
-        (s for s in _steps(wf) if s.get("id") == "deploy"),
-        None,
-    )
-    assert deploy_step is not None
-    run_script = re.sub(
-        r"\$\{\{.*?\}\}",
-        "github-actions-value",
-        deploy_step.get("run", "") or "",
-    )
-    bash = None
-    if sys.platform == "win32":
-        git_bash = Path(r"C:\Program Files\Git\bin\bash.exe")
-        if git_bash.exists():
-            bash = str(git_bash)
-    if bash is None:
-        bash = shutil.which("bash")
-    if bash is None:
-        pytest.skip("bash is unavailable")
-    result = subprocess.run(
-        [bash, "-n"],
-        input=run_script,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-
-
-def test_deploy_step_summary_reports_github_pr_capability_visibility():
-    """The GH Actions step summary must surface whether the capability
-    was synced this run so the operator can confirm post-deploy."""
-    wf = _load()
-    deploy_step = next(
-        (s for s in _steps(wf) if s.get("id") == "deploy"),
-        None,
-    )
-    assert deploy_step is not None
-    run_script = deploy_step.get("run", "") or ""
-    assert "Exact TinyAssets GitHub push capability source visible to deploy" in run_script, (
-        "deploy step summary must report the capability-map visibility "
-        "alongside the codex-auth visibility line so the operator can "
-        "verify both auth surfaces from one place"
-    )
-
-
-def test_github_pr_capability_sync_runs_after_codex_auth_sync():
-    """Determinism: both sync blocks live in the same Deploy step, and
-    the capability sync must run AFTER the codex-auth sync so the
-    summary order matches the operator's mental model (codex first,
-    capability second)."""
-    wf = _load()
-    deploy_step = next(
-        (s for s in _steps(wf) if s.get("id") == "deploy"),
-        None,
-    )
-    assert deploy_step is not None
-    run_script = deploy_step.get("run", "") or ""
-    codex_marker = "set TINYASSETS_CODEX_AUTH_JSON_B64"
-    cap_marker = "set TINYASSETS_GITHUB_PUSH_CAPABILITIES"
-    codex_idx = run_script.find(codex_marker)
-    cap_idx = run_script.find(cap_marker)
-    assert codex_idx != -1, "codex-auth sync block must be present"
-    assert cap_idx != -1, "capability sync block must be present"
-    assert codex_idx < cap_idx, (
-        "capability sync must run after the codex-auth sync — both "
-        "live in the same Deploy step and the operator-facing summary "
-        "lists them in that order"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Round-2 (Codex round-1 finding) — capability-revoke must actually revoke
-# ---------------------------------------------------------------------------
-
-
-def test_deploy_step_deletes_github_pr_capability_when_secret_absent():
-    """Round-2 regression guard. Round-1 logged a warning when
-    ``TINYASSETS_GITHUB_PR_CAPABILITIES`` was absent but did NOT remove
-    the existing key from ``/etc/tinyassets/env``, so deleting the GH
-    Actions secret to revoke had no effect — the next deploy
-    restarted the daemon with the OLD capability still active.
-
-    The fix: when ``HAS_GITHUB_PR_CAPABILITY=false`` (or unset), the
-    Deploy step must issue an explicit
-    ``install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES``
-    call so the effector observes ``missing_capability`` on its next
-    read. The documented contract ("absence -> dry-run") was being
-    silently violated; this test gates the fix.
-    """
-    wf = _load()
-    deploy_step = next(
-        (s for s in _steps(wf) if s.get("id") == "deploy"),
-        None,
-    )
-    assert deploy_step is not None
-    run_script = deploy_step.get("run", "") or ""
-    assert "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PUSH_CAPABILITIES" in run_script, (
-        "Deploy step must issue an explicit `install-tinyassets-env.sh "
-        "delete TINYASSETS_GITHUB_PUSH_CAPABILITIES ...` call when the secret "
-        "is absent so revoking the GH Actions secret actually "
-        "revokes capability on the droplet (round-2 fix for PR #980 "
-        "Codex finding)."
-    )
-
-
-def test_capability_delete_is_gated_on_else_branch():
-    """The delete call must live inside the ``else`` branch of the
-    ``HAS_GITHUB_PR_CAPABILITY`` conditional — never run when the
-    secret IS present. A naive fix that placed the delete
-    unconditionally would clobber the value the previous ``set``
-    call just installed."""
-    wf = _load()
-    deploy_step = next(
-        (s for s in _steps(wf) if s.get("id") == "deploy"),
-        None,
-    )
-    assert deploy_step is not None
-    run_script = deploy_step.get("run", "") or ""
-
-    # Anchor the conditional. The set call must come before the
-    # else+delete tail.
-    set_marker = "install-tinyassets-env.sh set TINYASSETS_GITHUB_PUSH_CAPABILITIES"
-    delete_marker = "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PUSH_CAPABILITIES"
-    set_idx = run_script.find(set_marker)
-    # The validation-failure branch also revokes. The last delete is the
-    # absence/revocation arm whose placement this test owns.
-    delete_idx = run_script.rfind(delete_marker)
-    assert set_idx != -1, "set call must remain in the truthy branch"
-    assert delete_idx != -1, "delete call must be present in else branch"
-    assert set_idx < delete_idx, (
-        "set call (truthy branch) must precede delete call (else "
-        "branch) in the source — confirms the delete lives in the "
-        "ELSE arm of the HAS_GITHUB_PR_CAPABILITY conditional"
-    )
-
-    # Walk the lines between the two markers and assert an ``else``
-    # token sits between them. This is the regression guard: a future
-    # refactor that flattens the conditional without re-checking would
-    # fail this assertion.
-    between = run_script[set_idx + len(set_marker) : delete_idx]
-    assert "else" in between, (
-        "An `else` keyword must appear between the set call and the "
-        "delete call. If a refactor restructures the conditional, the "
-        "delete must remain inside an else-gated branch — never run "
-        "unconditionally."
-    )
-
-
-def test_capability_delete_warning_explains_revocation():
-    """The warning line on the else branch must convey that the
-    revocation actually happens (removing the prior key), not just
-    that the secret is absent — operators need to know the deploy
-    actively cleaned up the env."""
-    wf = _load()
-    deploy_step = next(
-        (s for s in _steps(wf) if s.get("id") == "deploy"),
-        None,
-    )
-    assert deploy_step is not None
-    run_script = deploy_step.get("run", "") or ""
-    assert "::warning::" in run_script
-    # The warning must reference removing/deleting the prior value so
-    # an operator skimming GH Actions logs can tell the difference
-    # between "noop because never set" and "actually revoked".
-    assert (
-        "removing any prior" in run_script
-        or "remove any prior" in run_script
-        or "delete TINYASSETS_GITHUB_PR_CAPABILITIES" in run_script
-    ), (
-        "the absence warning must describe the revocation action so "
-        "operators can confirm capability was actually cleared from "
-        "/etc/tinyassets/env, not just absent from GH Actions"
-    )
 
 
 # ---------------------------------------------------------------------------
