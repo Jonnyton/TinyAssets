@@ -58,7 +58,10 @@ that way is circular and can never pass. Codex flagged exactly that in the
 fix is shipped.
 
 Exit codes: 0 pass, 1 assertion failed (commit not in production), 2 could not
-determine (network, missing field, unknown sha). 2 is deliberately distinct
+determine (network, missing field, unknown sha). A commit that descends from the
+served sha and changes no runtime input since (``scripts/runtime_paths.py``)
+passes as *runtime-equivalent*: build-image never builds such a head, and the
+running image already equals it on every path production runs. 2 is deliberately distinct
 from 1 — "I could not tell" must never read as "yes, it shipped."
 """
 
@@ -78,6 +81,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+import runtime_paths  # noqa: E402
 from _canary_common import require_canary_bearer  # noqa: E402
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
@@ -93,21 +97,11 @@ class DeployedShaError(Exception):
     """Could not determine what production is serving."""
 
 
-# Mirrors the `paths:` filter in .github/workflows/build-image.yml. A commit
-# touching none of these cannot produce an image, so it cannot be "undeployed"
-# in any actionable sense. Keep the two lists in step -- a test asserts it.
-BUILD_PATHS = (
-    "Dockerfile",
-    ".dockerignore",
-    "pyproject.toml",
-    "PLAN.md",
-    "tinyassets/",
-    "domains/",
-    "fantasy_daemon/",
-    "data/world_rules.lp",
-    "scripts/mcp_public_canary.py",
-    "deploy/",
-)
+# What counts as "changes what production runs" is scripts/runtime_paths.py --
+# the same classifier build-image.yml uses to skip a redundant image and
+# release-reconcile.yml uses to find drift. A commit it calls non-runtime is
+# never built, so it can never appear in the receipt's sha; it is served the
+# moment production serves a runtime-equivalent tree.
 
 
 def _git(*args: str) -> str:
@@ -323,17 +317,17 @@ def report(
         try:
             behind = _git("rev-list", "--count", f"{deployed}..origin/main")
             info["commits_on_main_not_deployed"] = int(behind)
-            # A docs or CI commit CANNOT reach production: `build-image.yml`
-            # is path-filtered, so nothing is built and nothing is deployed.
-            # Counting those as drift makes the tool cry wolf permanently --
-            # on 2026-08-27 it reported 9 undeployed commits, all of which
-            # touched zero build paths. Split the count so a real gap is
-            # distinguishable from "nothing to deploy".
-            undeployed = _git(
-                "rev-list", f"{deployed}..origin/main", "--", *BUILD_PATHS
-            ).split()
+            # A docs or CI commit CANNOT reach production: build-image.yml
+            # builds only runtime changes, so nothing is built and nothing is
+            # deployed. Counting those as drift makes the tool cry wolf
+            # permanently -- on 2026-08-27 it reported 9 undeployed commits,
+            # all of which touched zero build paths. Split the count so a real
+            # gap is distinguishable from "nothing to deploy".
+            undeployed = runtime_paths.runtime_commits(
+                REPO_ROOT, deployed, "origin/main"
+            )
             info["build_affecting_not_deployed"] = len(undeployed)
-        except DeployedShaError:
+        except (DeployedShaError, runtime_paths.ClassifyError):
             info["commits_on_main_not_deployed"] = None
             info["build_affecting_not_deployed"] = None
     except DeployedShaError:
@@ -425,38 +419,54 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         info["asserted"] = args.assert_contains
         info["contains"] = ok
+        # Not in the receipt's history. It is still SERVED when it descends
+        # from the served sha and changes no runtime input since: build-image
+        # never builds such a head (it cancels itself), so its sha can never
+        # appear in a receipt, and the running image's tree already equals it
+        # on every path production runs. Anything this cannot establish stays
+        # "not shipped" -- the equivalence is a second way to pass, never a
+        # softer reading of a failure.
+        runtime_hits: list[str] | None = None
+        if not ok:
+            try:
+                deployed_full = _git("rev-parse", f"{info['deployed_sha']}^{{commit}}")
+                target_full = _git("rev-parse", f"{args.assert_contains}^{{commit}}")
+                if runtime_paths.is_ancestor(REPO_ROOT, deployed_full, target_full):
+                    runtime_hits = runtime_paths.runtime_changes(
+                        REPO_ROOT, deployed_full, target_full
+                    )
+            except (DeployedShaError, runtime_paths.ClassifyError):
+                runtime_hits = None
+        equivalent = runtime_hits == []
+        info["runtime_equivalent"] = equivalent
+        info["undeployed_runtime_changes"] = runtime_hits
+        passed = ok or equivalent
         if args.json:
-            print(json.dumps({"ok": ok, **info}, indent=2))
+            print(json.dumps({"ok": passed, **info}, indent=2))
         elif ok:
             print(
                 f"SHIPPED (per receipt): production reports {info['deployed_sha'][:12]}, "
                 f"which contains {args.assert_contains}"
             )
+        elif equivalent:
+            print(
+                f"SHIPPED (runtime-equivalent, per receipt): production reports "
+                f"{info['deployed_sha'][:12]}; {args.assert_contains} descends from it "
+                "and changes no runtime input since (scripts/runtime_paths.py), so no "
+                "image was built for it and the running image already serves it."
+            )
         else:
-            # Say WHICH kind of "not shipped" this is. A commit touching no
-            # build path can never appear in production's sha, because
-            # build-image.yml is path-filtered -- so "check the push event" is
-            # the wrong advice and reads as a missed deploy. Measured
-            # 2026-08-27: four merged PRs, zero build paths between them, and
-            # this gate reported a deploy gap that did not exist.
-            touches_build = None
-            try:
-                touches_build = bool(
-                    _git(
-                        "rev-list", "-1",
-                        f"{info['deployed_sha']}..{args.assert_contains}",
-                        "--", *BUILD_PATHS,
-                    ).strip()
-                )
-            except DeployedShaError:
-                pass
-            info["asserted_touches_build_path"] = touches_build
-            if touches_build is False:
+            # Say WHICH kind of "not shipped" this is: runtime changes waiting
+            # to deploy, or a commit that is not on the served line at all.
+            if runtime_hits:
+                shown = ", ".join(runtime_hits[:8])
+                if len(runtime_hits) > 8:
+                    shown += f" (+{len(runtime_hits) - 8} more)"
                 detail = (
-                    "This commit touches NO build path, so no image was built "
-                    "and none will be: build-image.yml is path-filtered. Nothing "
-                    "is waiting to deploy -- the running image is correct. "
-                    "Assert a commit that changes product code instead."
+                    f"Runtime inputs changed since the served sha and are not "
+                    f"deployed: {shown}. Merged is not deployed - check that the "
+                    "merge raised a push event (docs/decisions/"
+                    "ADR-004-merge-attribution-and-the-deploy-gap.md)."
                 )
             else:
                 detail = (
@@ -470,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"contain {args.assert_contains}.\n" + detail,
                 file=sys.stderr,
             )
-        return 0 if ok else 1
+        return 0 if passed else 1
 
     if args.json:
         print(json.dumps({"ok": True, **info}, indent=2))
@@ -482,13 +492,13 @@ def main(argv: list[str] | None = None) -> int:
         build_gap = info.get("build_affecting_not_deployed")
         if behind and build_gap:
             print(
-                f"  {build_gap} of {behind} undeployed commit(s) touch build "
-                f"paths -- production IS behind"
+                f"  {build_gap} of {behind} undeployed commit(s) change runtime "
+                f"inputs -- production IS behind"
             )
         elif behind:
             print(
                 f"  {behind} commit(s) on origin/main are not in production, but "
-                f"NONE touch a build path -- nothing to deploy"
+                f"NONE changes a runtime input -- nothing to deploy"
             )
         elif behind == 0:
             print("  up to date with origin/main")

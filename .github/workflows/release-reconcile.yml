@@ -112,11 +112,19 @@ jobs:
           except OSError:
               raise SystemExit(0)
 
-          block = re.search(r"\n\s*paths:\s*\n((?:\s*-\s*.+\n)+)", text)
+          # Comment and blank lines inside the list are part of the block: a
+          # pattern that stopped at the first `#` line silently dropped every
+          # path after it.
+          block = re.search(
+              r"\n[ \t]*paths:[ \t]*\n((?:[ \t]*(?:-[^\n]*|#[^\n]*)?\n)+)", text
+          )
           if not block:
               raise SystemExit(0)
           for line in block.group(1).splitlines():
-              item = line.strip().lstrip("-").strip().strip("'\"")
+              line = line.strip()
+              if not line.startswith("-"):
+                  continue
+              item = line[1:].split(" #", 1)[0].strip().strip("'\"")
               if item:
                   print(item)
           PY
@@ -157,6 +165,26 @@ jobs:
             echo "action=defer" >> "$GITHUB_OUTPUT"
             echo "detail=no release-relevant history — no decision made" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          # The path filter is a coarse superset: PLAN.md is copied into the
+          # image, but only its served change-loop excerpts are read at
+          # runtime, and build-image.yml cancels itself (deploying nothing) for
+          # a head that is runtime-equivalent to production. Ask the SAME
+          # classifier for the newest commit that really changed runtime, or a
+          # skipped merge would read as drift here and be redeployed on every
+          # tick. A missing or failing classifier keeps the coarse answer,
+          # which can only be newer -- it errs toward deploying.
+          if [ -f scripts/runtime_paths.py ]; then
+            if REFINED="$(python3 scripts/runtime_paths.py newest-runtime-commit --rev "$RELEVANT")" \
+                && [ -n "$REFINED" ]; then
+              if [ "$REFINED" != "$RELEVANT" ]; then
+                echo "coarse path hit ${RELEVANT:0:8} changes no runtime input; newest runtime commit is ${REFINED:0:8}"
+              fi
+              RELEVANT="$REFINED"
+            else
+              echo "::warning::runtime classifier failed; keeping coarse release commit ${RELEVANT:0:8}"
+            fi
           fi
 
           echo "main HEAD             : $(git rev-parse HEAD)"

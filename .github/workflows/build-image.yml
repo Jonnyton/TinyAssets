@@ -3,6 +3,29 @@ name: Build and publish image
 # Self-host migration Row I:
 # publish the daemon image Row D deploys, while docker-build.yml remains
 # the PR/push smoke test that proves the Dockerfile still boots.
+#
+# Every image this publishes is deployed, and every deploy RECREATES the
+# production daemon, killing in-flight user turns and runs. So a push builds
+# only when it changes something production runs:
+#
+#   1. `paths:` below is a coarse, cheap pre-filter. It must stay a SUPERSET of
+#      the runtime inputs (tests/test_runtime_paths.py enforces it), so docs,
+#      specs and tests never even start a run.
+#   2. The `decide` job asks scripts/runtime_paths.py whether the pushed head is
+#      runtime-equivalent to the sha production's receipt names -- judged on
+#      the whole served..head range, so batched merges and a docs merge on top
+#      of an undeployed runtime merge still build. PLAN.md is copied into the
+#      image but only its served change-loop excerpts are read at runtime; an
+#      edit elsewhere in it is not a runtime change.
+#   3. On `skip`, the run cancels ITSELF. deploy-prod.yml fires only on a
+#      SUCCESSFUL build, so nothing is deployed, install-host-services.yml
+#      (chained on a successful deploy) does not run, and production is
+#      untouched. release-reconcile.yml and deployed_sha.py use the same
+#      classifier, so the skipped head is not drift and is reported as served.
+#
+# Anything the decision cannot establish (receipt unreadable, served sha not an
+# ancestor, git failure) builds. workflow_dispatch always builds: it is how
+# release-reconcile and operators ask for a specific image.
 
 on:
   push:
@@ -19,11 +42,43 @@ on:
       - 'data/world_rules.lp'
       - 'scripts/mcp_public_canary.py'
       - 'deploy/**'
+      # Other Dockerfile COPY sources.
+      - 'scripts/_canary_common.py'
+      - 'scripts/codex_cli_smoke.py'
+      - 'scripts/workspace_bwrap_oracle.py'
+      # Host inputs: installed by install-host-services.yml (the RUNTIME_FILES
+      # of deploy/install-host-uptime-services.sh, the deploy fence) or, for
+      # the expected-instance state, by deploy-prod.yml.
+      - 'scripts/__init__.py'
+      - 'scripts/watchdog.py'
+      - 'scripts/disk_watch.py'
+      - 'scripts/disk_autoprune.py'
+      - 'scripts/daemon_image_retention.py'
+      - 'scripts/rotate_run_transcripts.py'
+      - 'scripts/backup_ship_gh.py'
+      - 'scripts/backup_prune.py'
+      - 'scripts/retire_cheat_loop_deploy_fence.py'
+      - 'scripts/prepare_expected_instance_state.py'
+      # Python the deploy-chain workflows run, and what it imports
+      # (scripts/runtime_paths.py python_import_closure).
+      - 'scripts/cloud_only_preflight.py'
+      - 'scripts/deployed_sha.py'
+      - 'scripts/runtime_paths.py'
+      - 'scripts/pushover_page.py'
+      - 'scripts/triage_classify.py'
+      # The deploy chain itself and every workflow that writes to the host
+      # (scripts/runtime_paths.py deploy_chain_workflows): an edit to one is
+      # inert until the next deploy, so it deploys itself.
+      - '.github/workflows/build-image.yml'
+      - '.github/workflows/deploy-prod.yml'
+      - '.github/workflows/install-host-services.yml'
+      - '.github/workflows/apply-daemon-env.yml'
+      - '.github/workflows/p0-outage-triage.yml'
+      - '.github/workflows/restart-daemon.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: build-image-${{ github.ref }}
@@ -34,14 +89,113 @@ env:
   IMAGE_NAME: tinyassets-daemon
 
 jobs:
-  build-and-push:
-    name: Build and push GHCR image
+  decide:
+    name: Decide whether production needs this image
     # Auto-build on main pushes; allow a manual workflow_dispatch from any ref so
     # a specific branch image can be built + deployed via deploy-prod (image input)
     # without first merging the branch to main.
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Only to cancel this run when the image would be redundant.
+      actions: write
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The decision diffs production's served sha against this head.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Read the sha production serves
+        id: served
+        if: github.event_name == 'push'
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
+        run: |
+          set -uo pipefail
+          # The protected release receipt, through the same reader Hard Rule 14
+          # uses. Any failure leaves the sha empty, and an empty sha builds.
+          served=""
+          if receipt="$(python scripts/deployed_sha.py --json)"; then
+            served="$(printf '%s' "${receipt}" | python -c 'import json, sys; print(json.load(sys.stdin).get("deployed_sha") or "")')" || served=""
+          else
+            echo "::warning::could not read production's release receipt; building"
+          fi
+          if [[ -n "${served}" && ! "${served}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::warning::receipt sha is not a full commit sha; building"
+            served=""
+          fi
+          echo "production serves: ${served:-<unknown>}"
+          echo "sha=${served}" >> "${GITHUB_OUTPUT}"
+
+      - name: Decide
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SERVED_SHA: ${{ steps.served.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" != "push" ]; then
+            echo "decision=build" >> "${GITHUB_OUTPUT}"
+            echo "reason=${EVENT_NAME} always builds" >> "${GITHUB_OUTPUT}"
+            echo "build: ${EVENT_NAME} always builds"
+            exit 0
+          fi
+          # A classifier crash builds: the job must still SUCCEED so the image
+          # it then builds is deployed -- a failed decide would deploy nothing.
+          if ! python scripts/runtime_paths.py decide \
+              --base "${SERVED_SHA}" \
+              --head "${GITHUB_SHA}" \
+              --github-output "${GITHUB_OUTPUT}"; then
+            echo "::warning::runtime classifier failed; building"
+            echo "decision=build" >> "${GITHUB_OUTPUT}"
+            echo "reason=runtime classifier failed" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Record the decision
+        env:
+          DECISION: ${{ steps.decide.outputs.decision }}
+          REASON: ${{ steps.decide.outputs.reason }}
+        run: |
+          {
+            echo "## Image decision: ${DECISION}"
+            echo ""
+            echo "${REASON}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Cancel this run -- production already serves this runtime
+        # deploy-prod.yml runs only after a SUCCESSFUL build, so a cancelled run
+        # deploys nothing and recreates nothing. If the cancel never lands, fail
+        # loudly: a failed run does not deploy either, and it is visible.
+        if: steps.decide.outputs.decision == 'skip'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run cancel "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}"
+          for _ in $(seq 1 36); do
+            sleep 5
+          done
+          echo "::error::self-cancel did not take effect; failing so nothing deploys"
+          exit 1
+
+  build-and-push:
+    name: Build and push GHCR image
+    needs: decide
+    # Anything but an explicit `skip` builds.
+    if: needs.decide.outputs.decision != 'skip'
+    runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 

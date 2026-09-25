@@ -1,30 +1,35 @@
-r"""`deployed_sha.BUILD_PATHS` must mirror `build-image.yml`'s `paths:` filter.
+r"""`deployed_sha --assert-contains` judges non-runtime commits by the deploy chain's classifier.
 
-`deployed_sha.py` reports whether production is behind `main`. Counting every
-commit as drift made it cry wolf permanently: a docs or CI commit CANNOT reach
-production, because `build-image.yml` is path-filtered, so nothing is built and
-nothing is deployed. On 2026-08-27 it reported 9 undeployed commits, all of
-which touched zero build paths.
+`deployed_sha.py` answers Hard Rule 14 ("merged is not deployed"). A commit
+that changes nothing production runs is never built -- build-image.yml cancels
+itself for it (scripts/runtime_paths.py) -- so its sha can never appear in the
+release receipt. Before 2026-09-24 the gate returned 1 for such a commit and
+explained that nothing was waiting; that was true but still read as a failure,
+and once PLAN.md-only merges stopped deploying it would have "failed" every
+PLAN change forever.
 
-It now splits the count -- but only correctly while its path list matches the
-workflow's. If the workflow adds a build input and this list does not, a real
-deploy gap is reported as "nothing to deploy", which is the dangerous direction:
-Hard Rule 14 exists because five PRs once landed and none shipped.
+The contract now: a commit that DESCENDS from the served sha and changes no
+runtime input since is served (exit 0, labelled runtime-equivalent). A commit
+with undeployed runtime changes between it and the served sha -- including a
+docs merge sitting on top of an undeployed runtime merge -- is still exit 1,
+and names the runtime paths waiting to deploy.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
-import yaml
+import pytest
+
+from tests.runtime_repo_fixture import make_repo, plan
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build-image.yml"
 
 _SPEC = importlib.util.spec_from_file_location(
-    "deployed_sha_for_test", REPO_ROOT / "scripts" / "deployed_sha.py"
+    "deployed_sha_for_runtime_test", REPO_ROOT / "scripts" / "deployed_sha.py"
 )
 assert _SPEC is not None and _SPEC.loader is not None
 deployed_sha = importlib.util.module_from_spec(_SPEC)
@@ -32,91 +37,161 @@ sys.modules[_SPEC.name] = deployed_sha
 _SPEC.loader.exec_module(deployed_sha)
 
 
-def _workflow_paths() -> set[str]:
-    wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    # `on` is parsed as the boolean True by YAML 1.1 unless quoted.
-    on = wf.get("on", wf.get(True))
-    return set(on["push"]["paths"])
+@pytest.fixture
+def history(tmp_path, monkeypatch):
+    repo, base = make_repo(tmp_path / "repo")
+    monkeypatch.setattr(deployed_sha, "REPO_ROOT", repo.root)
+    return repo, base
 
 
-def test_the_workflow_still_declares_a_path_filter() -> None:
-    # Guards the guard: if the filter is removed, every commit builds and this
-    # whole comparison is meaningless -- fail loudly rather than pass vacuously.
-    assert _workflow_paths(), "build-image.yml declares no push paths filter"
-
-
-def test_build_paths_cover_every_workflow_path() -> None:
-    missing = []
-    for raw in _workflow_paths():
-        # `tinyassets/**` in the workflow == `tinyassets/` as a git pathspec.
-        normalized = raw.replace("/**", "/")
-        if not any(
-            normalized == known or normalized.rstrip("/") == known.rstrip("/")
-            for known in deployed_sha.BUILD_PATHS
-        ):
-            missing.append(raw)
-    assert not missing, (
-        "build-image.yml builds on these paths but deployed_sha.BUILD_PATHS "
-        f"omits them, so a real deploy gap would read as 'nothing to deploy': {missing}"
-    )
-
-
-# --- the two kinds of "not shipped" -----------------------------------------
-
-
-def _assert_contains(monkeypatch, capsys, *, deployed, target, build_hits):
-    """Drive main() with git and the live surface stubbed."""
+def _serve(monkeypatch, sha: str) -> None:
     monkeypatch.setattr(
-        deployed_sha, "report",
-        lambda *a, **k: {
-            "deployed_sha": deployed,
-            "deployed_subject": "some subject",
-            "known_to_git": True,
-            "commits_on_main_not_deployed": 4,
-            "build_affecting_not_deployed": 0,
+        deployed_sha,
+        "live_release_state",
+        lambda url, timeout: {
+            "git_sha": sha,
+            "image_tag": f"ghcr.io/o/tinyassets-daemon:{sha[:12]}",
         },
     )
-    monkeypatch.setattr(deployed_sha, "contains", lambda *a, **k: False)
-
-    def fake_git(*args):
-        if args[:2] == ("rev-list", "-1"):
-            return build_hits
-        return ""
-
-    monkeypatch.setattr(deployed_sha, "_git", fake_git)
-    monkeypatch.setattr(sys, "argv",
-                        ["deployed_sha.py", "--assert-contains", target])
-    code = deployed_sha.main()
-    return code, capsys.readouterr().err
 
 
-def test_a_commit_with_no_build_path_says_there_is_nothing_to_deploy(
-    monkeypatch, capsys
-):
-    """The gate cried wolf on 2026-08-27: four merged PRs, zero build paths.
+def test_docs_only_commit_on_top_of_the_served_sha_is_served(history, monkeypatch, capsys):
+    repo, base = history
+    docs = repo.commit("docs", {"docs/notes.md": "more\n"})
+    _serve(monkeypatch, base)
 
-    "check that the merge raised a push event" is the wrong advice for a commit
-    that build-image.yml will never build, and it reads as a missed deploy.
-    """
-    code, err = _assert_contains(
-        monkeypatch, capsys, deployed="a" * 40, target="b" * 40, build_hits="",
-    )
-    assert "touches NO build path" in err
-    assert "the running image is correct" in err
-    assert "raised a push event" not in err
-    # The message changes; the CONTRACT does not. Hard Rule 14 still fails.
-    assert code == 1
+    assert deployed_sha.main(["--assert-contains", docs]) == 0
+    out = capsys.readouterr().out
+    assert "runtime-equivalent" in out
 
 
-def test_a_commit_that_does_touch_a_build_path_still_names_the_deploy_gap(
-    monkeypatch, capsys
-):
-    """The real gap must keep pointing at ADR-004, which is how it gets fixed."""
-    code, err = _assert_contains(
-        monkeypatch, capsys, deployed="a" * 40, target="b" * 40,
-        build_hits="b" * 40,
-    )
-    assert "raised a push event" in err
+def test_unserved_plan_edit_is_served(history, monkeypatch):
+    repo, base = history
+    head = repo.commit("plan", {"PLAN.md": plan(unserved="new principle")})
+    _serve(monkeypatch, base)
+
+    assert deployed_sha.main(["--assert-contains", head]) == 0
+
+
+def test_served_plan_edit_is_not_served_until_deployed(history, monkeypatch, capsys):
+    repo, base = history
+    head = repo.commit("plan", {"PLAN.md": plan(daemon="changed")})
+    _serve(monkeypatch, base)
+
+    assert deployed_sha.main(["--assert-contains", head]) == 1
+    assert "Module: Daemon Platform" in capsys.readouterr().err
+
+
+def test_docs_merge_on_an_undeployed_runtime_merge_is_not_served(history, monkeypatch, capsys):
+    """The runtime merge never deployed; the docs merge after it must not pass."""
+    repo, base = history
+    repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
+    docs = repo.commit("docs", {"docs/notes.md": "more\n"})
+    _serve(monkeypatch, base)
+
+    assert deployed_sha.main(["--assert-contains", docs]) == 1
+    err = capsys.readouterr().err
+    assert "tinyassets/app.py" in err
     assert "ADR-004" in err
-    assert "touches NO build path" not in err
-    assert code == 1
+
+
+def test_runtime_commit_is_not_served_until_deployed(history, monkeypatch):
+    repo, base = history
+    code = repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
+    _serve(monkeypatch, base)
+
+    assert deployed_sha.main(["--assert-contains", code]) == 1
+
+
+def test_a_commit_off_the_served_line_is_not_served(history, monkeypatch):
+    """No descent from the served sha: equivalence is never even considered."""
+    repo, base = history
+    served = repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
+    repo.git("checkout", "-q", "-b", "side", base)
+    side_docs = repo.commit("docs", {"docs/notes.md": "side\n"})
+    _serve(monkeypatch, served)
+
+    assert deployed_sha.main(["--assert-contains", side_docs]) == 1
+
+
+def test_a_classifier_failure_is_not_a_pass(history, monkeypatch):
+    repo, base = history
+    docs = repo.commit("docs", {"docs/notes.md": "more\n"})
+    _serve(monkeypatch, base)
+
+    def broken(*_a, **_k):
+        raise deployed_sha.runtime_paths.ClassifyError("simulated")
+
+    monkeypatch.setattr(deployed_sha.runtime_paths, "runtime_changes", broken)
+    assert deployed_sha.main(["--assert-contains", docs]) == 1
+
+
+def test_json_output_says_which_kind_of_pass(history, monkeypatch, capsys):
+    repo, base = history
+    docs = repo.commit("docs", {"docs/notes.md": "more\n"})
+    _serve(monkeypatch, base)
+
+    assert deployed_sha.main(["--json", "--assert-contains", docs]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["contains"] is False
+    assert payload["runtime_equivalent"] is True
+    assert payload["undeployed_runtime_changes"] == []
+
+
+def test_report_counts_only_runtime_commits_as_behind(history, monkeypatch):
+    repo, base = history
+    repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
+    repo.commit("plan", {"PLAN.md": plan(unserved="x")})
+    repo.commit("docs", {"docs/notes.md": "more\n"})
+    repo.git("update-ref", "refs/remotes/origin/main", "HEAD")
+    _serve(monkeypatch, base)
+
+    info = deployed_sha.report("https://example.invalid/mcp", 1.0)
+    assert info["commits_on_main_not_deployed"] == 3
+    assert info["build_affecting_not_deployed"] == 1
+
+
+def test_a_deploy_workflow_edit_is_not_served_until_deployed(history, monkeypatch, capsys):
+    """#3936 shape: deploy-prod.yml changed. That edit mutates the host only on
+    the next deploy, so it is not served until then -- never "equivalent"."""
+    repo, base = history
+    text = (repo.root / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8")
+    head = repo.commit(
+        "deploy tweak",
+        {".github/workflows/deploy-prod.yml": text + "# x\n", "docs/review.md": "r\n"},
+    )
+    _serve(monkeypatch, base)
+
+    assert deployed_sha.main(["--assert-contains", head]) == 1
+    assert ".github/workflows/deploy-prod.yml" in capsys.readouterr().err
+
+
+def test_equivalence_requires_descent_even_when_the_trees_match_on_runtime(
+    history, monkeypatch
+):
+    """The ancestor gate, isolated: served and asserted differ only in docs,
+    but the asserted commit is on a side line production never served."""
+    repo, base = history
+    served = repo.commit("docs on main", {"docs/notes.md": "main\n"})
+    repo.git("checkout", "-q", "-b", "side", base)
+    side = repo.commit("docs on side", {"docs/other.md": "side\n"})
+    _serve(monkeypatch, served)
+
+    assert deployed_sha.main(["--assert-contains", side]) == 1
+
+
+def test_a_helper_the_deploy_imports_is_not_served_until_deployed(
+    history, monkeypatch, capsys
+):
+    """prepare_expected_instance_state.py -> cloud_only_preflight.py shape: the
+    helper is imported by a script deploy-prod runs; its output lands on the
+    host at the next deploy, not before."""
+    repo, base = history
+    head = repo.commit(
+        "helper", {"scripts/preflight_helper.py": "def resolve_expected():\n    return {}\n"}
+    )
+    _serve(monkeypatch, base)
+
+    assert deployed_sha.main(["--assert-contains", head]) == 1
+    assert "scripts/preflight_helper.py" in capsys.readouterr().err
