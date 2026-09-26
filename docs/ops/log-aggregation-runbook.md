@@ -238,7 +238,7 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets-host-uptime/current/deploy
 
 | Storage | Retention | Where |
 |---------|-----------|-------|
-| Docker fluentd driver buffer | In-memory; **drops** while Vector is down | Not durable, never evidence |
+| Docker fluentd driver buffer | In-memory; **drops** while Vector is down (`docs/concerns/2026-09-26-fluentd-driver-drops-while-vector-is-down.md`) | Not durable, never evidence |
 | **host journal** | **1 G / 14 days, persistent** (`deploy/journald-tinyassets.conf`) | Droplet local disk, survives container recreates |
 | Better Stack | 3 GB/month (free tier) | Better Stack cloud |
 | Offsite archive | 30 days | `LOG_DEST` (Hetzner/DO Spaces) |

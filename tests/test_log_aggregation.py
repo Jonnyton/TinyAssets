@@ -554,3 +554,34 @@ def test_the_journald_dropin_is_pinned_to_lf():
     assert JOURNALD_DROPIN.suffix == ".conf", (
         "the drop-in must keep the .conf suffix the pinned rule matches"
     )
+
+
+def test_the_fluentd_drop_gap_has_a_concern_file():
+    """The journal is durable; everything upstream of the sidecar is not.
+
+    A runbook line is guidance, not a tracked item — it has no home to be deleted
+    from when the gap is closed. `docs/concerns/` is that home, and the row in its
+    README is what makes the gap visible to a reader who never opens the runbook.
+    """
+    concern = REPO_ROOT / "docs" / "concerns" / (
+        "2026-09-26-fluentd-driver-drops-while-vector-is-down.md"
+    )
+    assert concern.exists(), (
+        "the fluentd-drop gap must be a tracked concern, not only a runbook line"
+    )
+    index = (REPO_ROOT / "docs" / "concerns" / "README.md").read_text(encoding="utf-8")
+    assert concern.name in index, "concern file is not linked from docs/concerns/README.md"
+
+    text = concern.read_text(encoding="utf-8")
+    # The blocker is the specific reason this is not fixed in the same change, and
+    # it is the part a future reader would otherwise re-derive.
+    assert "journalctl" in text and "alpine" in text.lower()
+    # And it must say what closing it looks like, or it is a complaint.
+    assert "journald" in text
+    assert "deploy_fail_safe.sh" in text
+
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+    assert concern.name in runbook, (
+        "the runbook must point at the concern file, so the gap is findable from "
+        "the doc someone reads mid-incident"
+    )
