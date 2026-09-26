@@ -383,6 +383,19 @@ jobs:
               echo "THIS PR by a repository owner, member or collaborator. Only"
               echo "\`APPROVE\` counts — a BLOCK verdict can never satisfy this."
               echo "Re-stamp after every push: the head SHA must match exactly."
+              # Both complaints at once. The receipt is checked before the label
+              # declaration below, so reporting only this one sends a legitimate
+              # PR round the loop twice: stamp, still red, then add the label.
+              if [ "$HIT_COUNT" -gt 0 ]; then
+                case ",${LABELS}," in
+                  *,infra-change,*) ;;
+                  *)
+                    echo ""
+                    echo "This PR also needs the \`infra-change\` label:"
+                    echo "${HIT_COUNT} release-critical file(s) are undeclared."
+                    ;;
+                esac
+              fi
             } >> "$GITHUB_STEP_SUMMARY"
             echo "scope guard: BLOCKED — no exact-head blocking-review receipt"
             cat "$RUNNER_TEMP/receipt-why.txt" || true

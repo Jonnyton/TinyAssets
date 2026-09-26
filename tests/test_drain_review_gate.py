@@ -872,5 +872,10 @@ def test_scope_guard_wires_the_blocking_review_decision() -> None:
         assert endpoint in text, endpoint
     assert "author_association" in text
     # A failed comment read must not fail an unrelated PR, but must leave no
-    # inventory behind for one that needs a receipt.
-    assert 'rm -f "$COMMENTS_FILE"' in text
+    # inventory behind for one that needs a receipt. Asserted as the ORDERED
+    # sequence inside the loop: the bare string also appears before the loop,
+    # so a looser check stayed green when the in-loop removal was deleted.
+    assert re.search(
+        r'rm -f "\$COMMENTS_FILE"\s*\n\s*break\s*\n\s*fi\s*\n\s*done',
+        text,
+    ), "a partial inventory must be discarded, not read as the complete one"
