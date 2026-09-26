@@ -830,6 +830,39 @@ for source, read_only in sorted(binds.items(), key=lambda item: str(item[0])):
     if not read_only:
         problems.append("logs mount %s is not read-only" % (source,))
 
+# Where the logs come to REST. Vector re-emits every forwarded line on its own
+# stdout, so the `logs` container's driver is the durable host-side copy of every
+# other container's output. With a container-scoped driver (json-file is Docker's
+# default) that copy dies with the container, and this script force-recreates
+# exactly this service whenever a vector input changes -- which is how a live
+# latency investigation lost its evidence six minutes after the turns that
+# produced it (2026-09-26; docs/ops/log-aggregation-runbook.md). A compose
+# file that converges without this is a compose file that logs into a bucket with
+# a hole in it, so it belongs with the other "converges successfully and serves
+# nothing" checks above.
+logs_logging = svc("logs").get("logging") or {}
+if logs_logging.get("driver") != "journald":
+    problems.append(
+        "logs.logging.driver is %r, expected 'journald'; the sidecar's stdout is "
+        "the only host-side copy of every container's output and a "
+        "container-scoped driver is deleted on recreate"
+        % (logs_logging.get("driver"),)
+    )
+if (logs_logging.get("options") or {}).get("tag") != "tinyassets-logs":
+    problems.append(
+        "logs.logging.options.tag is %r, expected 'tinyassets-logs'; without it "
+        "journald records a truncated container id that changes every recreate, "
+        "so the query meant to read ACROSS recreates cannot be written"
+        % ((logs_logging.get("options") or {}).get("tag"),)
+    )
+for service in ("daemon", "cloudflared"):
+    forwarding = svc(service).get("logging") or {}
+    if forwarding.get("driver") != "fluentd":
+        problems.append(
+            "%s.logging.driver is %r, expected 'fluentd'; its output would not "
+            "reach the sidecar at all" % (service, forwarding.get("driver"))
+        )
+
 if problems:
     for problem in problems:
         sys.stderr.write("::error::staged bundle rejected: %s\n" % problem)
@@ -837,7 +870,7 @@ if problems:
 
 print(
     "[deploy-fail-safe] bundle validated: services=%s, daemon image + mem_limit ok, "
-    "logs mounts read-only" % sorted(services)
+    "logs mounts read-only, log retention on journald" % sorted(services)
 )
 PY
   rc=$?

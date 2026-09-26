@@ -6,6 +6,7 @@ set -euo pipefail
 SOURCE_ROOT="${TINYASSETS_SOURCE_ROOT:-/opt/tinyassets}"
 RUNTIME_ROOT="${TINYASSETS_RUNTIME_ROOT:-/opt/tinyassets-host-uptime}"
 SYSTEMD_DIR="${TINYASSETS_SYSTEMD_DIR:-/etc/systemd/system}"
+JOURNALD_DIR="${TINYASSETS_JOURNALD_DIR:-/etc/systemd/journald.conf.d}"
 SUDOERS_DIR="${TINYASSETS_SUDOERS_DIR:-/etc/sudoers.d}"
 LOCK_DIR="${TINYASSETS_LOCK_DIR:-/run/lock}"
 SOURCE_SHA="${TINYASSETS_SOURCE_SHA:-}"
@@ -64,6 +65,12 @@ RUNTIME_FILES=(
 )
 # Release root plus deploy/, scripts/, tinyassets/, and tinyassets/storage/.
 EXPECTED_RELEASE_DIRECTORY_COUNT=5
+# journald drop-in. This is the retention policy for the host journal, which
+# deploy/compose.yml makes the durable home of every container's output, so the
+# installer owns it the same way it owns the units: converged on every install,
+# checked by the idempotence gate, never left to a one-time bootstrap.
+JOURNALD_DROPIN_SOURCE="deploy/journald-tinyassets.conf"
+JOURNALD_DROPIN_NAME="tinyassets.conf"
 
 if [[ "${PRINT_MANIFEST}" == "1" ]]; then
     printf '%s\n' deploy/install-host-uptime-services.sh
@@ -71,6 +78,7 @@ if [[ "${PRINT_MANIFEST}" == "1" ]]; then
         printf 'deploy/%s\n' "${unit}"
     done
     printf '%s\n' "${RUNTIME_FILES[@]}"
+    printf '%s\n' "${JOURNALD_DROPIN_SOURCE}"
     exit 0
 fi
 
@@ -95,20 +103,26 @@ done
 [[ "${ACTIVE_WAIT_SECONDS}" =~ ^[0-9]+$ ]] || fail "TINYASSETS_ACTIVE_WAIT_SECONDS must be a non-negative integer"
 [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]] || fail "TINYASSETS_LOCK_WAIT_SECONDS must be a non-negative integer"
 
-for path in "${SOURCE_ROOT}" "${RUNTIME_ROOT}" "${SYSTEMD_DIR}" "${SUDOERS_DIR}" "${LOCK_DIR}"; do
+for path in "${SOURCE_ROOT}" "${RUNTIME_ROOT}" "${SYSTEMD_DIR}" "${JOURNALD_DIR}" \
+    "${SUDOERS_DIR}" "${LOCK_DIR}"
+do
     [[ "${path}" == /* ]] || fail "all roots must be absolute: ${path}"
 done
 
 SOURCE_ROOT="$(realpath -e "${SOURCE_ROOT}")"
 RUNTIME_ROOT="$(realpath -m "${RUNTIME_ROOT}")"
 SYSTEMD_DIR="$(realpath -m "${SYSTEMD_DIR}")"
+JOURNALD_DIR="$(realpath -m "${JOURNALD_DIR}")"
 SUDOERS_DIR="$(realpath -m "${SUDOERS_DIR}")"
 LOCK_DIR="$(realpath -m "${LOCK_DIR}")"
+JOURNALD_DROPIN="${JOURNALD_DIR}/${JOURNALD_DROPIN_NAME}"
 
 if [[ "${ALLOW_TEST_ROOTS}" != "1" ]]; then
     [[ "${EUID}" -eq 0 ]] || fail "production installation must run as root"
     [[ "${RUNTIME_ROOT}" == "/opt/tinyassets-host-uptime" ]] || fail "unsafe production runtime root"
     [[ "${SYSTEMD_DIR}" == "/etc/systemd/system" ]] || fail "unsafe production systemd root"
+    [[ "${JOURNALD_DIR}" == "/etc/systemd/journald.conf.d" ]] \
+        || fail "unsafe production journald drop-in root"
     [[ "${SUDOERS_DIR}" == "/etc/sudoers.d" ]] || fail "unsafe production sudoers root"
     [[ "${LOCK_DIR}" == "/run/lock" ]] || fail "unsafe production lock root"
 else
@@ -121,7 +135,7 @@ for unit in "${UNIT_FILES[@]}"; do
     [[ -f "${source_file}" && ! -L "${source_file}" ]] \
         || fail "missing or unsafe unit source: ${source_file}"
 done
-for relative in "${RUNTIME_FILES[@]}"; do
+for relative in "${RUNTIME_FILES[@]}" "${JOURNALD_DROPIN_SOURCE}"; do
     source_file="${SOURCE_ROOT}/${relative}"
     [[ -f "${source_file}" && ! -L "${source_file}" ]] \
         || fail "missing or unsafe runtime source: ${source_file}"
@@ -195,7 +209,8 @@ on_exit() {
     done
     rm -f -- \
         "${RUNTIME_ROOT}/.current.new.$$" \
-        "${RUNTIME_ROOT}/.current.rollback.$$"
+        "${RUNTIME_ROOT}/.current.rollback.$$" \
+        "${JOURNALD_DIR}/.${JOURNALD_DROPIN_NAME}.new.$$"
     [[ -z "${SUDOERS_TEMP}" ]] || rm -f -- "${SUDOERS_TEMP}"
     rm -rf -- "${TRANSACTION_DIR}"
     exit "${rc}"
@@ -304,6 +319,11 @@ current_release_is_exact() {
         exact_file "${SYSTEMD_DIR}/${unit}" 644 || return 1
         cmp -s "${SOURCE_ROOT}/deploy/${unit}" "${SYSTEMD_DIR}/${unit}" || return 1
     done
+
+    # The journald drop-in decides how much of the host journal survives, and
+    # the journal is where container output now lives (deploy/compose.yml).
+    exact_file "${JOURNALD_DROPIN}" 644 || return 1
+    cmp -s "${SOURCE_ROOT}/${JOURNALD_DROPIN_SOURCE}" "${JOURNALD_DROPIN}" || return 1
 
     # The sudoers rule is part of what this script installs, and sudo itself
     # rejects it unless it is a regular file at 0440.
@@ -440,6 +460,25 @@ for unit in "${UNIT_FILES[@]}"; do
     UNITS_MUTATED=1
 done
 
+# journald retention. Installed atomically like the units; journald is only
+# restarted when the bytes actually changed, for the same reason the idempotence
+# gate exists -- a restart per deploy is churn, and journald drops whatever is in
+# flight across one.
+JOURNALD_CHANGED=0
+if ! cmp -s "${SOURCE_ROOT}/${JOURNALD_DROPIN_SOURCE}" "${JOURNALD_DROPIN}" \
+    || [[ -L "${JOURNALD_DROPIN}" ]] \
+    || [[ "$(stat -c %a "${JOURNALD_DROPIN}" 2>/dev/null || echo none)" != "644" ]]
+then
+    mkdir -p "${JOURNALD_DIR}" || fail "cannot create journald drop-in dir ${JOURNALD_DIR}"
+    install -m 0644 "${SOURCE_ROOT}/${JOURNALD_DROPIN_SOURCE}" \
+        "${JOURNALD_DIR}/.${JOURNALD_DROPIN_NAME}.new.$$" \
+        || fail "cannot stage journald drop-in"
+    mv -f "${JOURNALD_DIR}/.${JOURNALD_DROPIN_NAME}.new.$$" "${JOURNALD_DROPIN}" \
+        || fail "cannot install journald drop-in"
+    JOURNALD_CHANGED=1
+    log "journald drop-in installed: ${JOURNALD_DROPIN}"
+fi
+
 SUDOERS_TEMP="$(mktemp "${SUDOERS_DIR}/.tinyassets-watchdog.XXXXXX")"
 install -m 0440 "${SUDOERS_CANDIDATE}" "${SUDOERS_TEMP}"
 "${VISUDO_BIN}" -cf "${SUDOERS_TEMP}" >/dev/null
@@ -470,6 +509,19 @@ for timer in "${TIMERS[@]}"; do
     "${SYSTEMCTL_BIN}" is-enabled "${timer}" >/dev/null
     "${SYSTEMCTL_BIN}" is-active "${timer}" >/dev/null
 done
+
+# Apply the journald policy. Not fatal: journald keeps running on its previous
+# configuration if this fails, so the timers converged above are worth more than
+# this restart, and the next install retries it (the gate compares bytes on
+# disk, so a failed restart still reads as converged -- which is why this logs
+# loudly rather than silently).
+if [[ "${JOURNALD_CHANGED}" -eq 1 ]]; then
+    if "${SYSTEMCTL_BIN}" restart systemd-journald; then
+        log "journald restarted to apply ${JOURNALD_DROPIN_NAME}"
+    else
+        log "WARNING: systemd-journald restart failed; drop-in applies on next restart"
+    fi
+fi
 
 TIMERS_PAUSED=0
 SUCCESS=1

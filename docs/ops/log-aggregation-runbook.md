@@ -6,12 +6,31 @@ row: K (self-host uptime migration)
 
 # Log Aggregation Runbook
 
-TinyAssets uses a two-layer logging strategy on the self-hosted Droplet:
+TinyAssets uses a layered logging strategy on the self-hosted Droplet:
 
 | Layer | Tool | What it does |
 |-------|------|--------------|
-| Real-time forwarding | Vector sidecar (`deploy/vector.yaml`) | Receives daemon, tunnel, and worker stdout from Docker's async Fluent driver on host-loopback port 24224; has no Docker socket; ships to Better Stack when `BETTERSTACK_SOURCE_TOKEN` is set |
+| Collection | Vector sidecar (`deploy/vector.yaml`) | Receives daemon, tunnel, and slack-agent stdout from Docker's async Fluent driver on host-loopback port 24224; has no Docker socket; re-emits everything on its own stdout |
+| **Durable, on-box** | **the host journal** | The `logs` container uses the `journald` driver (`deploy/compose.yml`), so Vector's re-emitted stream is journal data and **survives container recreates**. Retention: `deploy/journald-tinyassets.conf`, a drop-in the host-uptime installer owns |
+| Real-time (optional) | Better Stack | Vector also ships live when `BETTERSTACK_SOURCE_TOKEN` is set |
 | Offsite archiving | `deploy/ship-logs.sh` + systemd timer | Pulls last 24 h of container logs, archives as `.tar.gz`, uploads to `LOG_DEST` (Hetzner Storage Box or DO Spaces), prunes archives older than 30 days |
+
+**Why the journal is the durable layer (2026-09-26).** It used to be the `logs`
+container's own json-file, which lives under `/var/lib/docker/containers/<id>/`
+and is deleted with the container. Every deploy recreates the daemon, and
+`deploy/deploy_fail_safe.sh` force-recreates `tinyassets-logs` whenever a Vector
+input changes. On 2026-09-26 a live latency investigation needed the per-attempt
+`latency_ms` lines from turns six minutes earlier and they no longer existed
+anywhere (`docs/concerns/2026-09-26-daemon-logs-not-shipped.md`).
+
+Two claims that were in this repo and were **wrong**, corrected here: `compose.yml`
+and `tinyassets-env.template` both said logs were "captured by journald" via
+compose stdout. `docker compose up -d` detaches, so a container's stdout goes to
+its logging driver, never to the systemd unit that ran compose.
+
+> **`LOG_DEST` is still unset in production, so the offsite row below still ships
+> nothing.** That is tracked separately and is not fixed by this change — what is
+> fixed is that the evidence now survives on the box long enough to be collected.
 
 ---
 
@@ -96,11 +115,43 @@ docker logs tinyassets-logs --since 1h
 docker logs tinyassets-logs -f
 ```
 
-### Query via journald (compose captures Vector's stdout)
+### Query via journald — this is the one that survives a deploy
 
 ```bash
-# The shipped systemd unit owns the attached Compose process and Vector stdout
+# Every forwarded line from every container, across past container recreates.
+journalctl CONTAINER_NAME=tinyassets-logs --since "1 hour ago"
+
+# Microsecond timestamps — needed for per-attempt latency evidence.
+journalctl CONTAINER_NAME=tinyassets-logs --output=short-iso-precise \
+  --since "2026-09-26 18:10" --until "2026-09-26 18:20"
+
+# One originating container: the JSON payload carries Vector's `tag`/`role`.
+journalctl CONTAINER_NAME=tinyassets-logs -o cat | grep '"role":"daemon"'
+
+# The systemd unit that runs compose — the supervisor's own output, NOT the
+# containers' (`docker compose up -d` detaches).
 journalctl -u tinyassets-daemon --since "1 hour ago"
+```
+
+`docker logs tinyassets-logs` also still works, because journald is a readable
+driver — but it is scoped to the current container, so prefer `journalctl` when
+the question spans a deploy.
+
+### Journal retention (no host action — the installer owns it)
+
+`deploy/journald-tinyassets.conf` is installed to
+`/etc/systemd/journald.conf.d/tinyassets.conf` by
+`deploy/install-host-uptime-services.sh`, which runs after every successful
+production deploy and restarts `systemd-journald` only when the bytes changed.
+`Storage=persistent`, `SystemMaxUse=1G`, `MaxRetentionSec=14day`,
+`SystemKeepFree=2G`, rate limiting off — a dropped message during an incident is
+the evidence this exists to keep.
+
+Change it there, not on the box, or the next install reverts it.
+
+```bash
+journalctl --disk-usage
+cat /etc/systemd/journald.conf.d/tinyassets.conf
 ```
 
 ### Query from Better Stack
@@ -172,7 +223,10 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets-host-uptime/current/deploy
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | No logs in Better Stack | Token not set or wrong | Check `BETTERSTACK_SOURCE_TOKEN` in `/etc/tinyassets/env`; restart `logs` container |
-| Vector container not running | Depends-on daemon unhealthy | Check `docker logs tinyassets-logs`; confirm daemon healthcheck passes |
+| Vector container not running | Depends-on daemon unhealthy | Check `docker logs tinyassets-logs`; confirm daemon healthcheck passes. While it is down the fluentd driver buffers in memory and then **drops** — the journal gets nothing, so fix this first |
+| `journalctl CONTAINER_NAME=tinyassets-logs` is empty | The `logs` container is not on the journald driver (compose drift) | `docker inspect -f '{{.HostConfig.LogConfig.Type}}' tinyassets-logs` must print `journald`; if not, the deployed compose.yml is behind `deploy/compose.yml` |
+| Journal history shorter than 14 days | Drop-in missing, or `SystemMaxUse` hit | `cat /etc/systemd/journald.conf.d/tinyassets.conf`; `journalctl --disk-usage`. Absent drop-in means the installer has not run since the change landed |
+| Journal empties on reboot | `Storage` is not persistent | `/var/log/journal` must exist; the drop-in sets `Storage=persistent` and journald creates it on restart |
 | ship-logs.sh exits 1 | `LOG_DEST` missing, a required container missing, or its logs unreadable | Set `LOG_DEST`; then inspect `docker ps -a` and `docker logs <container>` for every required fleet member |
 | rclone upload fails | Remote misconfigured | Run `rclone lsd "${LOG_DEST}/"` to test connectivity |
 | Archives not being pruned | Clock skew or naming mismatch | Check archive names match `tinyassets-logs-YYYY-MM-DDTHH-MM-SS.tar.gz` pattern |
@@ -184,9 +238,9 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets-host-uptime/current/deploy
 
 | Storage | Retention | Where |
 |---------|-----------|-------|
-| Droplet memory (Vector buffer) | In-memory, ~1 000 events | Drops oldest on overflow |
+| Docker fluentd driver buffer | In-memory; **drops** while Vector is down | Not durable, never evidence |
+| **host journal** | **1 G / 14 days, persistent** (`deploy/journald-tinyassets.conf`) | Droplet local disk, survives container recreates |
 | Better Stack | 3 GB/month (free tier) | Better Stack cloud |
 | Offsite archive | 30 days | `LOG_DEST` (Hetzner/DO Spaces) |
-| journald (compose stdout) | Disk-size-limited, typically 1–7 days | Droplet local disk |
 
 To adjust offsite retention, set `LOG_RETAIN_DAYS` in `/etc/tinyassets/env`.
