@@ -265,13 +265,20 @@ exact_file() { # exact_file <path> <expected-mode>
 current_release_is_exact() {
     local current_dir link_target relative mode installed_file unit timer
 
-    # The pointer itself, before anything it points at. Require the relative
-    # `releases/<id>` form the installer writes: that rejects an absolute path,
-    # a `..` escape and a nested path in one test, so "exact" cannot be
-    # satisfied by a tree outside the managed root.
+    # The pointer itself, before anything it points at: it must be the exact
+    # relative form the installer writes, `releases/<40 hex>-<16 hex>`.
+    #
+    # Pinning the release-id SHAPE rather than a character class is the point. A
+    # class of "safe-looking" characters still admits `releases/.` and
+    # `releases/..` -- both are made only of accepted characters -- which resolve
+    # to the releases directory and to RUNTIME_ROOT itself. Neither is a tree
+    # this script ever wrote. The shape is knowable exactly: RELEASE_ID is
+    # "${SOURCE_SHA}-${manifest_hash:0:16}" and SOURCE_SHA is already required to
+    # be ^[0-9a-f]{40}$ above, so this can never reject a release the transaction
+    # produced.
     [[ -L "${RUNTIME_ROOT}/current" ]] || return 1
     link_target="$(readlink -- "${RUNTIME_ROOT}/current")" || return 1
-    [[ "${link_target}" =~ ^releases/[A-Za-z0-9._-]+$ ]] || return 1
+    [[ "${link_target}" =~ ^releases/[0-9a-f]{40}-[0-9a-f]{16}$ ]] || return 1
     current_dir="${RUNTIME_ROOT}/${link_target}"
     [[ -d "${current_dir}" && ! -L "${current_dir}" ]] || return 1
 
