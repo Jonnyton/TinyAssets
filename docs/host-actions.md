@@ -12,6 +12,37 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Install the dev-box hygiene timer, and let the first `--apply` run (2026-09-26)
+
+PR #4011 builds `scripts/dev_hygiene.py` plus a SessionStart hook. The hook lands
+with the merge and needs nothing from you. Two steps do:
+
+1. **Register the hourly timer** (one command, unelevated, reversible):
+
+   ```
+   powershell -ExecutionPolicy Bypass -File scripts/install_dev_hygiene_task.ps1
+   ```
+
+   Preview it first with `-WhatIfOnly`; remove it with `-Remove`. The hook alone
+   covers only the two cheap classes, and only when a session starts — the timer is
+   what covers the hours a long unattended lane is filling the disk.
+
+2. **Confirm the first `--apply` may run.** The lead held it pending review. The
+   dry-run on 2026-09-26 found **11.68 GB disposable** with **3.8 GB free**, and the
+   box oscillated between 3.8 and 12 GB free over the following hour. Once #4011 is
+   stamped, an agent runs `python scripts/dev_hygiene.py --apply` and reports.
+
+Separately, and **only you can do this one**: 68 temp directories plus
+`.codex-test-tmp/` and `.pytest-tmp/` inside the checkout carry sandbox-token ACLs
+no ordinary shell can read, list, or delete. They need an **elevated**:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/clear_sandbox_temp_dirs.ps1 -Apply
+```
+
+`dev_hygiene.py` reports these as `acl_locked_needs_elevation` and deliberately
+never tries to force them.
+
 ## Decide: make a blocking review verdict a required check (2026-09-26)
 
 A Tier 2 review verdict is posted as a PR comment, and auto-merge doesn't read
