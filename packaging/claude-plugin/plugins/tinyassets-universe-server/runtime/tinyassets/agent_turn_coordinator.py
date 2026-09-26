@@ -381,11 +381,11 @@ class AgentTurnCoordinator:
     def _narrowed(self, boundary):
         """Exclude only the failed MODEL when excluding the account is a guess.
 
-        A source that reported the account, a class that is not a passing
-        window, or any source that can spend keeps the conservative exhaustion.
-        Only a zero-cost source with an ``unknown`` scope is narrowed, and only
-        a bounded number of times per turn. The replacement comes from the SAME
-        order under the SAME ceilings, so this can never reach a paid model.
+        A source that reported the account, or a class that is not a passing
+        window, keeps the conservative exhaustion. Any source with an
+        ``unknown`` scope is narrowed, for every account alike, and only a
+        bounded number of times per turn. The replacement comes from the SAME
+        order under the SAME per-attempt ceilings, which is what bounds money.
 
         Engine inference only. A native executor runs on ONE subscription, so a
         rate limit there is a fact about that account, not about a model within
@@ -405,11 +405,15 @@ class AgentTurnCoordinator:
         return replace(boundary.exhaustion, scope="model"), True
 
     def _free_source_refusal(self, boundary, *, window):
-        """Is this the zero-cost refusal whose cooldown the router withholds?
+        """Is this the refusal whose cooldown the router withholds?
 
-        Mirrors the router's capacity handler, including its "a selection with
-        proven ceilings exists" condition — which only an engine-inference round
-        has, so a native round is never one of these (the router cooled it).
+        Mirrors the router's capacity handler. Neither side reads the owner's
+        ceilings any more (2026-09-25): the same refusal must mean the same thing
+        for every account, and a price branch here made a paid source's 429 a
+        dead end its free neighbour never hit. What still narrows this to
+        engine-inference rounds is the EXECUTION KIND, a fact about the source —
+        a native round runs on one subscription, so its account IS the source and
+        the router already cooled it.
 
         ``window`` decides whether the source's own ``Retry-After`` may rule the
         sibling out. Deliberately asymmetric between the two callers:
@@ -428,7 +432,6 @@ class AgentTurnCoordinator:
             return False
         return free_sibling_retry(
             scope=boundary.observed_scope, failure_class=boundary.failure_class,
-            cost_caps=self.plan.source_cost_caps(self.context.model_selection.connection_id),
             retry_after_s=boundary.retry_after_s if window else None,
             turn_budget_s=(
                 self.config.stream_timeout_profile().absolute_cap_s if window else None

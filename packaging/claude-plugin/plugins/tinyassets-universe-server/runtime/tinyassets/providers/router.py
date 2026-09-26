@@ -74,6 +74,7 @@ from tinyassets.providers.quota import (
     COOLDOWN_OTHER,
     COOLDOWN_TIMEOUT,
     COOLDOWN_UNAVAILABLE,
+    MAX_COOLDOWN_S,
     QuotaTracker,
 )
 
@@ -220,10 +221,11 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
 def _retry_after_cooldown_s(retry_after: object) -> int:
     """Cooldown seconds implied by a source's own ``Retry-After``.
 
-    Honors it (+1s margin) when it is a usable positive number; else falls back
-    to the fixed unavailable cooldown. One definition, so an after-the-fact
-    cooling (``ProviderRouter.cool_source``) and the capacity handler's own
-    cooling cannot drift apart.
+    Honors it (+1s margin) when it is a usable positive number, bounded by
+    ``MAX_COOLDOWN_S``; else falls back to the fixed unavailable cooldown. One
+    definition, so an after-the-fact cooling (``ProviderRouter.cool_source``) and
+    the capacity handler's own cooling cannot drift apart -- and one place to
+    bound remote input, so no header can retire a source indefinitely.
     """
     if (
         isinstance(retry_after, (int, float))
@@ -231,7 +233,7 @@ def _retry_after_cooldown_s(retry_after: object) -> int:
         and math.isfinite(retry_after)
         and retry_after > 0
     ):
-        return int(retry_after) + 1
+        return min(int(retry_after) + 1, MAX_COOLDOWN_S)
     return COOLDOWN_UNAVAILABLE
 
 
@@ -519,7 +521,13 @@ class ProviderRouter:
         if type(provider) is not str or not provider:
             raise ValueError("cooling a source requires its provider name")
         seconds = _retry_after_cooldown_s(retry_after_s)
-        self._quota.cooldown(provider, seconds)
+        # Through the one guarded door (``_cool``), so the secondary-call rule
+        # cannot be bypassed by a future caller of this seam. ``None`` for the
+        # config is the honest value: this is an AFTER-THE-FACT cooling by the
+        # turn coordinator, which only ever follows a founder-facing turn, so it
+        # is never secondary -- and saying so beats leaving a second unguarded
+        # write of the shared map.
+        self._cool(None, provider, seconds)
         return seconds
 
     def selected_agent_execution_kind(self, selection) -> str:
@@ -1277,18 +1285,18 @@ class ProviderRouter:
 
                 # One model's capacity is not evidence its whole connection is
                 # unhealthy. Shared/unknown scope keeps the conservative cooldown
-                # -- EXCEPT on a source that cannot spend, where cooling the
-                # whole connection would also skip the sibling model the turn is
-                # about to try, which is the dead end itself (live 2026-09-25).
+                # -- EXCEPT where cooling the whole connection would also skip
+                # the sibling model the turn is about to try, which is the dead
+                # end itself (live 2026-09-25).
                 # ...and not when the source named a wait longer than a whole
                 # turn may live, where waiting IS the answer. Whether a sibling
                 # attempt actually follows is known only to the turn coordinator,
                 # which cools the source itself once it concludes none will.
-                # No selection means no proven ceilings: () is never free-only.
-                selected = cfg.selected_model
+                # The owner's ceilings are NOT consulted: they price every
+                # attempt anyway, and reading them here made the same refusal
+                # mean different things to a free and a paid account.
                 if exc.signal.scope != "model" and not free_sibling_retry(
                     scope=exc.signal.scope, failure_class=exc.failure_class,
-                    cost_caps=selected.cost_caps if selected is not None else (),
                     retry_after_s=exc.retry_after,
                     turn_budget_s=cfg.stream_timeout_profile().absolute_cap_s,
                 ):

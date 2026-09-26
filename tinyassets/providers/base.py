@@ -383,7 +383,15 @@ class ProviderResponse:
     ``display_name`` when the connection was deposited by the
     guided sign-in, else the destination they named it. Empty when nothing
     resolves; a renderer then falls back to ``provider`` rather than invent one.
-    Never routing authority, never a model id, never substituted for either."""
+    Never routing authority, never a model id, never substituted for either.
+
+    No channel or vendor name belongs in this string. The label is READ from
+    installed preset data at runtime, so the substrate never learns one
+    (``scripts/check_channel_agnostic.py``). Note this is an ATTRIBUTE docstring,
+    NOT a real one -- only a module's, class's or function's FIRST statement is
+    exempt from that survey -- so a name here counts as a runtime literal and
+    fails the ratchet even though nothing executes it. That cost a CI round on
+    #3988; run the check before pushing prose under a field."""
 
     agent_reply: AgentReply | None = field(default=None, repr=False)
     """One inference's validated result; requested tools have not been executed."""
