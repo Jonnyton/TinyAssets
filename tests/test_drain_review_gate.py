@@ -1388,6 +1388,74 @@ def test_a_grep_failure_never_reads_as_no_release_critical_paths(
         assert "failing closed" in completed.stderr
 
 
+def test_the_blocked_summary_tells_a_human_exactly_what_to_do(tmp_path: Path) -> None:
+    """The gate's human-facing output, rendered by running its own lines.
+
+    This is the only thing a blocked stamper reads, and nothing else asserts it.
+    It must substitute the REAL head (a placeholder would send them to stamp the
+    wrong sha), give both steps, and state the placement rule — every one of the
+    three cross-family rounds produced a wall, and "MOVE IT UP" is the recovery.
+    """
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - CI runners all have bash
+        pytest.skip("bash is required to exercise the workflow's own lines")
+
+    lines = POLICY_WORKFLOW.read_text(encoding="utf-8").splitlines()
+    anchor = next(
+        i for i, ln in enumerate(lines) if "Blocked — no exact-head blocking-review receipt" in ln
+    )
+    start = next(i for i in range(anchor, 0, -1) if lines[i].strip() == "{")
+    end = next(i for i in range(anchor, len(lines)) if '} >> "$GITHUB_STEP_SUMMARY"' in lines[i])
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    block = "\n".join(
+        ln[indent:] if ln.startswith(" " * indent) else ln for ln in lines[start : end + 1]
+    )
+
+    head = "1" * 40
+    (tmp_path / "receipt-why.txt").write_text(
+        "because the title declares Tier 2\n", encoding="utf-8"
+    )
+    script = tmp_path / "summary.sh"
+    script.write_text(
+        "set -euo pipefail\n" + block.replace('>> "$GITHUB_STEP_SUMMARY"', '>> "$OUT"') + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    completed = subprocess.run(
+        [bash, str(script)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "RUNNER_TEMP": str(tmp_path),
+            "OUT": str(tmp_path / "summary.md"),
+            "HEAD_OID": head,
+            "REPO": REPO,
+            "PR": str(PR),
+            "HIT_COUNT": "2",
+            "LABELS": "",
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    # COUNTED, not `in`: the head line appears once per step, so an `in` check
+    # was satisfied by step 2 while step 1 printed a placeholder. That is the
+    # fifth assertion in this file that a different occurrence rescued.
+    assert summary.count(f"Drain-Review-Head: {head}") == 2, (
+        "both steps must show the real head, or the stamper signs the wrong sha"
+    )
+    assert f"https://github.com/{REPO}/pull/{PR}#issuecomment-<id>" in summary
+    assert "because the title declares Tier 2" in summary, "the reason must reach the reader"
+    assert "FIRST two non-blank lines" in summary
+    assert "FIRST three non-blank lines" in summary
+    assert "MOVE IT UP" in summary, "a refused honest receipt needs the recovery step"
+    # Both complaints at once: an undeclared release-critical PR also hears about
+    # the label, instead of discovering it on the next round.
+    assert "infra-change" in summary
+
+
 def test_scope_guard_wires_the_blocking_review_decision() -> None:
     text = POLICY_WORKFLOW.read_text(encoding="utf-8")
 
