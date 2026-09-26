@@ -73,8 +73,18 @@ def _working(journal, *, boot):
     return journal.universe_working_turn("home", now=_now(), max_age_s=_CAP, boot=boot)
 
 
+def _home(journal):
+    """The universe directory. A live universe always has one; the journal
+    fixture registers the home binding without creating the folder, and the
+    conversation store writes INSIDE it."""
+    path = journal._ledger.base_path / "home"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _killed_native_turn(journal):
     """One ``native_started`` turn, aged to when the deploy killed the real one."""
+    _home(journal)
     turn = begin_native(journal, new(journal)).snapshot
     assert turn.state == "native_started"
     _age(journal, turn.turn_id)
@@ -99,7 +109,7 @@ def test_a_row_a_dead_boot_left_native_started_is_settled_and_stops_reading_as_a
 
     assert settled == [{
         "universe_id": "home", "turn_id": turn.turn_id,
-        "was": "native_started", "settled": "held_native_unknown",
+        "was": "native_started", "settled": "held_native_unknown", "notified": True,
     }]
     stored = journal.get("owner", "home", turn.turn_id)
     assert stored.state == "held_native_unknown"
@@ -205,6 +215,104 @@ def test_every_progressing_shape_a_dead_boot_can_leave_is_settled(journal, build
     assert _working(journal, boot=BOOT) is None
 
 
+def _thread(journal):
+    from tinyassets.conversation_store import load_recent
+
+    return load_recent(journal._ledger.base_path / "home", "principal:owner")
+
+
+def test_the_interrupted_turn_is_left_visible_in_the_thread(journal):
+    """Settling stops the indicator; without this the turn simply VANISHES.
+
+    The founder sent a message, watched a phantom indicator, and then — once the
+    row was settled — had nothing at all in the thread saying what happened.
+    """
+    turn = _killed_native_turn(journal)
+    assert _thread(journal) == [], "precondition: nothing was ever stored for this turn"
+
+    settled = reconcile_orphaned_turns(journal._ledger.base_path, boot=BootTurns())
+
+    assert settled[0]["notified"] is True
+    messages = _thread(journal)
+    assert len(messages) == 1, "one platform notice, and no invented founder half"
+    notice = messages[0]
+    assert notice.speaker == "platform"
+    # Composed by conversation_failure from this turn's ledger, not written here.
+    assert "something broke on our side" in notice.text
+    assert "We can't tell whether actions ran" in notice.text, (
+        "a killed native round is unknown effects; claiming nothing ran would be a lie")
+    assert turn.turn_id in notice.text, "the ref ties the notice to the journal row"
+    # The structured record rides along, which is what a client reads as `failure`.
+    assert notice.failure is not None
+    assert (notice.failure.code, notice.failure.stage) == ("platform_fault", "platform")
+    assert notice.failure.effects == "unknown"
+    assert notice.failure.ref == turn.turn_id
+
+
+def test_the_notice_never_replays_the_stored_prompt_as_the_founders_message(journal):
+    """The journal's `prompt` is `history_block + founder_message` for a granted
+    turn (universe_intelligence._call_writer), so writing it back as the founder
+    half would re-post the rendered conversation history as if they had typed it.
+    """
+    _home(journal)
+    turn = journal.create(
+        "owner", "home",
+        prompt="PREVIOUS EXCHANGES\nfounder: an older line\n\nwhat did I just ask",
+        system="s",
+    )
+    turn = begin_native(journal, turn).snapshot
+    _age(journal, turn.turn_id)
+
+    reconcile_orphaned_turns(journal._ledger.base_path, boot=BootTurns())
+
+    messages = _thread(journal)
+    assert [m.speaker for m in messages] == ["platform"], "no founder row is invented"
+    assert all("an older line" not in m.text for m in messages)
+    assert all("what did I just ask" not in m.text for m in messages)
+
+
+def test_a_second_sweep_over_the_same_turn_leaves_one_notice(journal):
+    """Keyed on the journal's turn id, so a restart loop cannot stack notices."""
+    turn = _killed_native_turn(journal)
+    reconcile_orphaned_turns(journal._ledger.base_path, boot=BootTurns())
+    assert len(_thread(journal)) == 1
+
+    # The row is settled now, so the sweep no longer sees it -- drive `_notify`
+    # directly with the settled snapshot, which is what a repeat would do.
+    from tinyassets.agent_turn_reconcile import _notify
+
+    stored = journal.get("owner", "home", turn.turn_id)
+    assert _notify(journal._ledger.base_path, "owner", "home", stored) is False
+    assert len(_thread(journal)) == 1
+
+
+def test_a_work_invocation_turn_has_no_thread_to_interrupt(journal):
+    """Background work's evidence belongs to its receipt, not a founder thread."""
+    from tinyassets.agent_turn_reconcile import _notify
+
+    _home(journal)
+    turn = journal.create(
+        "owner", "home", prompt="p", system="s",
+        authority_kind="work_invocation", work_receipt_id="receipt-1",
+    )
+    assert turn.authority_kind == "work_invocation"
+
+    assert _notify(journal._ledger.base_path, "owner", "home", turn) is False
+    assert _thread(journal) == []
+
+
+def test_effects_evidence_has_one_definition_for_both_callers(journal):
+    """The sweep and the running coordinator answer the same ledger question."""
+    from tinyassets.agent_turn_coordinator import AgentTurnCoordinator, turn_effects
+
+    turn = _killed_native_turn(journal)
+    running = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
+    running.turn = turn
+    assert running.effects_evidence() == turn_effects(turn)
+    assert turn_effects(turn) == ("unknown", None, turn.turn_id)
+    assert turn_effects(None) == ("none", None, None)
+
+
 def test_a_missing_database_is_no_work_and_creates_nothing(tmp_path):
     absent = tmp_path / "never-served"
     assert reconcile_orphaned_turns(absent, boot=BootTurns()) == []
@@ -248,7 +356,10 @@ def test_one_unsettleable_turn_does_not_stop_the_sweep(journal, monkeypatch):
 
     by_turn = {record["turn_id"]: record for record in settled}
     assert by_turn[doomed.turn_id]["error"] == "CurrentHomeChanged"
+    assert "notified" not in by_turn[doomed.turn_id], (
+        "a row that was not settled must not tell the founder it was interrupted")
     assert by_turn[other.turn_id]["settled"] == "held_native_unknown"
+    assert by_turn[other.turn_id]["notified"] is True
     assert journal.get("owner", "home", doomed.turn_id).state == "native_started"
     assert journal.get("owner", "home", other.turn_id).state == "held_native_unknown"
 
@@ -325,6 +436,11 @@ def test_the_serving_lifespan_settles_the_orphan_before_anything_can_read_it(
     assert journal.get("owner", "home", turn.turn_id).state == "held_native_unknown"
     assert _working(journal, boot=BOOT) is None, (
         "the indicator the founder watched for 35 minutes")
+    # The whole chain, not just the half that stops the indicator: the founder
+    # opens the app and the interrupted turn is THERE.
+    thread = _thread(journal)
+    assert [m.speaker for m in thread] == ["platform"]
+    assert "something broke on our side" in thread[0].text
 
 
 def test_boot_ownership_is_claim_or_younger_than_the_boot_and_nothing_else():

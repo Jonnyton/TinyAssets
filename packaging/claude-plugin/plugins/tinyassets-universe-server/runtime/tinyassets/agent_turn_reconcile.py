@@ -44,6 +44,8 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from tinyassets.agent_turn_coordinator import turn_effects
+from tinyassets.conversation_failure import failure_notice, turn_failure
 from tinyassets.storage import db_path
 from tinyassets.storage.agent_native_records import NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT, BootTurns
@@ -58,6 +60,10 @@ _LOG = logging.getLogger(__name__)
 #: the reason lives in the log and in this function's return value rather than
 #: being wedged into a record shape that validates its own bytes.
 REASON = "server restarted during this turn"
+#: The class the notice is composed from. "something broke on our side; this is
+#: not a problem with your account, your credentials or your usage limits, and
+#: sending again may well work" is exactly what a killed container is.
+INTERRUPTED_CODE = "platform_fault"
 
 
 def _orphan_rows(path: Path, boot: BootTurns) -> list[tuple[str, str, str, str]]:
@@ -95,16 +101,17 @@ def _orphan_rows(path: Path, boot: BootTurns) -> list[tuple[str, str, str, str]]
     ]
 
 
-def _settle(journal: AgentTurnJournal, owner: str, universe: str, turn_id: str) -> str:
-    """Move one orphaned turn to its terminal state; returns the state reached.
+def _settle(journal: AgentTurnJournal, owner: str, universe: str, turn_id: str):
+    """Move one orphaned turn to its terminal state; returns the settled snapshot.
 
     Re-reads the turn under the journal's own transaction and passes the
     generation it saw, so a turn that started progressing between the scan and
-    here yields a ``conflict`` transition rather than a stolen step.
+    here yields a ``conflict`` transition rather than a stolen step. The SETTLED
+    snapshot is what comes back, because that is the ledger the notice describes.
     """
     turn = journal.get(owner, universe, turn_id)
     if turn is None or turn.state not in WORKING_STATES:
-        return "" if turn is None else turn.state
+        return turn
     ordinal = len(turn.rounds)
     if turn.state == "ready":
         transition = journal.abandon(
@@ -124,7 +131,7 @@ def _settle(journal: AgentTurnJournal, owner: str, universe: str, turn_id: str) 
         transition = _settle_tool(journal, owner, universe, turn)
     if transition.status != "applied":
         raise RuntimeError(f"orphaned agent turn not settled: {transition.status}")
-    return transition.snapshot.state
+    return transition.snapshot
 
 
 def _settle_tool(journal: AgentTurnJournal, owner: str, universe: str, turn):
@@ -149,27 +156,90 @@ def _settle_tool(journal: AgentTurnJournal, owner: str, universe: str, turn):
     )
 
 
+def _notify(base_path: Path, owner: str, universe: str, turn) -> bool:
+    """Leave the interrupted turn visible in the founder's thread.
+
+    Without this the turn does not merely stop reading as "thinking" -- it
+    VANISHES. The notice is composed where every other failed turn's is
+    (``conversation_failure``) and persisted where every other failed turn's is
+    (``conversation_turns``), from this turn's own ledger evidence: a killed
+    native round is ``unknown`` effects, a completed tool makes it ``some``.
+
+    Three deliberate departures from ``record_failure``, which is what a turn
+    that fails while its request is alive writes:
+
+    * **One platform row, not a founder+platform pair.** The pair needs the
+      founder's text and nothing persisted it -- the journal's ``prompt`` is
+      ``history_block + founder_message`` for a granted turn
+      (``universe_intelligence._call_writer``), so writing it back would re-post
+      the rendered conversation history into the thread as if the founder had
+      typed it. A notice with no founder half is honest about a message that was
+      never stored; inventing the half is not.
+    * **The session is derived, not carried.** ``f"principal:{owner}"`` is the
+      same derivation ``conversation_run_admissions._Scope.session`` already uses
+      over the same ``owner_user_id``, and ``check_current_home`` has proved that
+      owner is the founder this universe is bound to. Safe to be wrong about:
+      the notice is content-free -- stage, class, effects, ref -- so a misplaced
+      one cannot carry anyone's message anywhere.
+    * **Served requests only.** A ``work_invocation`` turn has no conversation
+      thread to interrupt; its evidence belongs to its work receipt.
+
+    Best-effort by contract, like every other conversation write: returns whether
+    it landed and never raises into the sweep.
+    """
+    if turn.authority_kind != "served_request":
+        return False
+    effects, stage, ref = turn_effects(turn)
+    record = turn_failure(
+        INTERRUPTED_CODE, stage=stage or "platform", effects=effects, ref=ref,
+    )
+    from tinyassets.conversation_store import record_turn
+
+    try:
+        # ``ext_id`` makes this idempotent on the journal's own turn id: a sweep
+        # that runs twice over one row leaves one notice, never two.
+        return bool(record_turn(
+            Path(base_path) / universe, f"principal:{owner}", "platform",
+            failure_notice(record), ext_id=f"interrupted:{turn.turn_id}", failure=record,
+        ))
+    except Exception:  # noqa: BLE001 - a settled row must not be reported unsettled
+        _LOG.warning("interrupted-turn notice could not be written", exc_info=True)
+        return False
+
+
 def reconcile_orphaned_turns(
     base_path: str | Path, *, boot: BootTurns = BOOT,
 ) -> list[dict[str, str]]:
     """Settle every progressing turn row this boot is not running.
 
     Returns one record per row it touched: ``universe_id``, ``turn_id``, the
-    ``was`` state, and either the ``settled`` state or the ``error`` that stopped
-    it. Per-row failures do not stop the sweep and do not raise: one turn whose
-    owner's home was rebound (``CurrentHomeChanged``) must not leave every other
-    universe's orphan painting a thinking indicator, and the projection guard in
-    ``universe_working_turn`` covers whatever this could not settle.
+    ``was`` state, and either the ``settled`` state plus whether the thread was
+    ``notified``, or the ``error`` that stopped it. Per-row failures do not stop
+    the sweep and do not raise: one turn whose owner's home was rebound
+    (``CurrentHomeChanged``) must not leave every other universe's orphan painting
+    a thinking indicator, and the projection guard in ``universe_working_turn``
+    covers whatever this could not settle.
+
+    Settling is what stops the indicator; the notice (:func:`_notify`) is what
+    stops the turn vanishing. They are ordered, not combined: a notice is only
+    written for a row this call actually settled, so a failed settlement never
+    tells the founder a turn was interrupted while its row still says otherwise.
     """
     path = db_path(Path(base_path))
     if not path.exists():
         return []
     journal = AgentTurnJournal(base_path)
-    settled: list[dict[str, str]] = []
+    settled: list[dict[str, object]] = []
     for owner, universe, turn_id, state in _orphan_rows(path, boot):
-        record = {"universe_id": universe, "turn_id": turn_id, "was": state}
+        record: dict[str, object] = {
+            "universe_id": universe, "turn_id": turn_id, "was": state,
+        }
         try:
-            record["settled"] = _settle(journal, owner, universe, turn_id)
+            turn = _settle(journal, owner, universe, turn_id)
+            record["settled"] = "" if turn is None else turn.state
+            record["notified"] = turn is not None and _notify(
+                base_path, owner, universe, turn,
+            )
         except Exception as exc:  # noqa: BLE001 - one unreachable row is not the sweep
             record["error"] = type(exc).__name__
             _LOG.error(
@@ -178,8 +248,8 @@ def reconcile_orphaned_turns(
             )
         else:
             _LOG.warning(
-                "orphaned agent turn %s settled %s -> %s: %s",
-                turn_id, state, record["settled"], REASON,
+                "orphaned agent turn %s settled %s -> %s (thread notified: %s): %s",
+                turn_id, state, record["settled"], record["notified"], REASON,
             )
         settled.append(record)
     return settled
