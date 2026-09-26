@@ -1087,6 +1087,7 @@ class _BackgroundAssignedProviderSession:
         )
         from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
         from tinyassets.storage.request_admissions import RequestAdmissionStore
+        from tinyassets.subscription_refresh import refresh_deposited_subscriptions
 
         held = "Assigned background provider authority is unavailable; retry after repair."
         # `_authorize_launch` is the single mint path for this lane: `_call`
@@ -1109,6 +1110,16 @@ class _BackgroundAssignedProviderSession:
                 )
             )
         universe_dir = self._base_path / self._task.universe_id
+        # Still outside the transaction, and BEFORE custody is resolved below: a
+        # refresh writes the vault, which moves `_subscription_record_digest`,
+        # which is what custody pins. Refreshing after resolution would make the
+        # snapshot refuse with "credential changed before launch snapshot".
+        refresh_deposited_subscriptions(
+            base_path=self._base_path,
+            universe_dir=universe_dir,
+            owner_user_id=self._task.actor_id,
+            universe_id=self._task.universe_id,
+        )
         snapshot = None
         carrier = None
         try:

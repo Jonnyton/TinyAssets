@@ -832,6 +832,7 @@ class _ForegroundRunProviderSession:
         from tinyassets.storage.provider_work_authority import (
             SQLiteProviderWorkAuthorityStore,
         )
+        from tinyassets.subscription_refresh import refresh_deposited_subscriptions
 
         # Agent tool rounds can enter directly, without going through _call.
         # A retained receipt is not process admission. This check is cached-only.
@@ -852,6 +853,16 @@ class _ForegroundRunProviderSession:
             ):
                 raise PermissionError("foreground immutable Branch subject changed")
             self._validate_run(allowed_statuses={"running"})
+            # BEFORE custody is resolved below, and outside the transaction: a
+            # refresh writes the vault, which moves the record digest custody
+            # pins, so refreshing after resolution would make the snapshot
+            # refuse with "credential changed before launch snapshot".
+            refresh_deposited_subscriptions(
+                base_path=self._base_path,
+                universe_dir=self._universe_dir,
+                owner_user_id=self._principal_id,
+                universe_id=self._universe_id,
+            )
             with self._lock:
                 self._call_index += 1
                 invocation_index = self._call_index

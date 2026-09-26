@@ -279,7 +279,7 @@ class AgentTurnCoordinator:
                                     reply=None,
                                 )
                             )
-                        if self._next_after_capacity(exc):
+                        if self._next_after_capacity(exc) or self._next_after_signin(exc):
                             continue
                         raise
                     if self.execution_kind == "native_agent":
@@ -457,6 +457,59 @@ class AgentTurnCoordinator:
             )
         except Exception:  # noqa: BLE001 - cooling is hygiene, never the failure
             _LOG.warning("could not cool a spent free source")
+
+    def _next_after_signin(self, exc):
+        """Advance to the owner's next model when THIS source's sign-in is done.
+
+        Only a CAPACITY exhaustion advanced the turn, so a source whose stored
+        sign-in had expired ended it: the founder's subscription failed every turn
+        from 2026-09-24 and each one stopped rather than answering on the next
+        model they had allowed. A finished sign-in is as final for this turn as a
+        spent quota and as fixable by moving on, and unlike a quota it will not
+        clear on its own -- so excluding it was the harsher of the two.
+
+        The exclusion the capacity path enforces is kept exactly: only candidates
+        already in the owner's accepted order are reachable
+        (``_next_candidate``), so this never widens authority. It advances only
+        when EVERY attempt of the round was a sign-in refusal -- a round that also
+        hit capacity is the capacity path's to reason about, with its own
+        narrowing -- and never when a native attempt may have committed a side
+        effect, which is the state ``_next_after_capacity`` fences too.
+        """
+        if (
+            not self._has_candidate_order()
+            or not isinstance(exc, AllProvidersExhaustedError)
+            or self.turn.state not in {"ready", "held_transport", "held_native_capacity"}
+        ):
+            return False
+        attempts = tuple(exc.attempts or ())
+        if not attempts or any(a.failure_class != "auth_invalid" for a in attempts):
+            return False
+        if any(
+            getattr(a, "side_effect_state", "none") not in ("", "none")
+            for a in attempts
+        ):
+            # A round that may have acted is not replayable on another model; the
+            # turn's own held state is the honest answer.
+            return False
+        failed = self.context.model_selection
+        self.visited.add(failed)
+        # The source is excluded for the REST OF THIS TURN by the same mechanism
+        # capacity uses -- an ``account``-scoped exclusion, because a finished
+        # sign-in is the whole connection's, never one model's. It is separately
+        # marked for reconnect by the router, so the owner's next turn does not
+        # start here either.
+        from tinyassets.providers.model_policy import Exhaustion
+
+        self.exhaustion = self.exhaustion + (Exhaustion("account", failed),)
+        candidate = self._next_candidate()
+        if candidate is None or candidate in self.visited:
+            return False
+        if self.execution_kind == "engine_inference":
+            self.spent_attempts += list(attempts)
+        self.context = replace(self.context, model_selection=candidate)
+        self.retrying_capacity = self.turn.state != "ready"
+        return True
 
     def _next_after_capacity(self, exc):
         if (
