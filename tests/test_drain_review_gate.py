@@ -492,6 +492,45 @@ def test_tier0_and_tier1_prs_outside_the_paths_are_unaffected(
     assert completed.stdout.strip() == "receipt-not-required"
 
 
+def test_a_tier2_title_needs_a_receipt_even_with_only_docs_changes(tmp_path: Path) -> None:
+    """A Tier 2 declaration is about the CHANGE, not about which paths it hits.
+
+    The three triggers are independent by design. A PR touching nothing but
+    `docs/` produces an empty hits file and carries no label, so the title is
+    the only thing demanding a receipt — and it must be enough on its own, or
+    "Tier 2" would mean nothing unless the author also happened to edit a
+    release-critical path.
+    """
+    docs_only: dict[str, object] = {"hits": (), "labels": ""}
+
+    blocked = _run_blocking(
+        tmp_path, title="docs: rewrite the authority model guide (Tier 2)", **docs_only
+    )
+    stamped = _run_blocking(
+        tmp_path,
+        title="docs: rewrite the authority model guide (Tier 2)",
+        body=_receipt_body(),
+        **docs_only,
+    )
+    # The discriminator: the SAME docs-only PR without the declaration sails
+    # through. Without this row the test would pass even if every PR needed a
+    # receipt, which would prove nothing about the title.
+    undeclared = _run_blocking(
+        tmp_path, title="docs: rewrite the authority model guide", **docs_only
+    )
+
+    assert blocked.returncode == 2
+    assert blocked.stdout.strip() == "deny"
+    # And for the right reason: the title, not a path or a label.
+    assert blocked.stderr.strip().endswith("because the title declares Tier 2")
+
+    assert stamped.returncode == 0
+    assert stamped.stdout.strip() == "allow"
+
+    assert undeclared.returncode == 0
+    assert undeclared.stdout.strip() == "receipt-not-required"
+
+
 def test_valid_receipt_unblocks_a_tier2_pr(tmp_path: Path) -> None:
     completed = _run_blocking(
         tmp_path, title="deploy: a thing (Tier 2)", body=_receipt_body()
