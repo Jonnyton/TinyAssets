@@ -21,7 +21,10 @@ cross-family review is owed before landing.
 - [x] 7. Tests: red on the unfixed tree, then green. Cover readback matching
   after grant, revoke and withdraw; cross-user refusal for read, revoke and
   withdraw; platform-origin, answered and synthesized requests refused.
-- [x] 8. Concern: the source-channel policy store has no reader (D3).
+- [x] 8. Concern: the source-channel policy store has no reader (D3) --
+  filed 2026-09-24, RESOLVED 2026-09-25 by deleting `set_policy`/`get_policy`,
+  `apply_auto_approval_policy` and `storage/source_channel_policy.py`. The
+  connector's `allowed_operations` is now `["approve", "revoke"]`.
 - [x] 9. Plugin mirror rebuilt; `ruff check`.
 - [ ] 10. Live acceptance (after deploy): through the app, the agent reads
   its access, revokes one consent and reads it back, then withdraws one

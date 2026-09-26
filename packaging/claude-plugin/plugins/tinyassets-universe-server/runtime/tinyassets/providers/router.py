@@ -425,6 +425,32 @@ class ProviderRouter:
         self._quota = quota or QuotaTracker()
 
     # ------------------------------------------------------------------
+    # Shared health
+    # ------------------------------------------------------------------
+
+    def _cool(self, cfg: Any, provider_name: str, seconds: int) -> bool:
+        """The ONE place an in-flight attempt writes the shared cooldown map.
+
+        Returns whether it was written. A ``ModelConfig.secondary_call`` is
+        refused: a call the founder never made must not decide what their next
+        turn may do (see ``ModelConfig.secondary_call`` for the live incident).
+        Skipping the write is strictly LESS restrictive than writing it, so this
+        can only ever make the router try an authorized source MORE -- it admits
+        no model, widens no grant and raises no ceiling.
+
+        Reading the gate is unchanged: a secondary call still skips a source
+        already cooling, so it never hammers one.
+        """
+        if getattr(cfg, "secondary_call", False):
+            logger.info(
+                "Not cooling %s for %ds: secondary call, the founder's next turn "
+                "keeps this source", provider_name, seconds,
+            )
+            return False
+        self._quota.cooldown(provider_name, seconds)
+        return True
+
+    # ------------------------------------------------------------------
     # Registration helpers
     # ------------------------------------------------------------------
 
@@ -1218,14 +1244,26 @@ class ProviderRouter:
                 from tinyassets.providers.source_health import SOURCE_HEALTH, source_key
 
                 if served_authority is not None:
-                    SOURCE_HEALTH.authentication_failed(source_key(
-                        universe_context.universe_dir.parent, served_authority.owner_user_id,
-                        served_authority.universe_id, served_authority,
-                    ))
+                    # A secondary call writes no shared health at all: a
+                    # reconnect mark removes the source from the founder's next
+                    # turn's plan (``served_model_plan``), which is the same
+                    # lockout the cooldown gate was causing, and the reply that
+                    # just succeeded already cleared this key.
+                    if not getattr(cfg, "secondary_call", False):
+                        SOURCE_HEALTH.authentication_failed(source_key(
+                            universe_context.universe_dir.parent,
+                            served_authority.owner_user_id,
+                            served_authority.universe_id, served_authority,
+                        ))
+                    else:
+                        logger.info(
+                            "Not marking %s for reconnect: secondary call",
+                            provider_name,
+                        )
                 else:
                     # Preserve legacy host routing. Owned serving failures must
                     # not quarantine another owner's credential on this host.
-                    self._quota.cooldown(provider_name, COOLDOWN_OTHER)
+                    self._cool(cfg, provider_name, COOLDOWN_OTHER)
                 proof = getattr(exc, "native_evidence", None)
                 if type(proof) is NativeCompletionEvidence and proof.provider == provider_name:
                     native_proofs[len(attempts)] = proof
@@ -1256,7 +1294,7 @@ class ProviderRouter:
                     retry_after_s=exc.retry_after,
                     turn_budget_s=cfg.stream_timeout_profile().absolute_cap_s,
                 ):
-                    self._quota.cooldown(provider_name, _rate_limit_cooldown_s(exc))
+                    self._cool(cfg, provider_name, _rate_limit_cooldown_s(exc))
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed", skip_class="quota_or_cooldown",
                     detail=redacted_failure_detail(str(exc)), failure_class=exc.failure_class,
@@ -1280,11 +1318,11 @@ class ProviderRouter:
                 # provider until its own retry-after (+margin), keeping fallback
                 # forbidden for the sole served writer.
                 cd = _rate_limit_cooldown_s(exc)
-                self._quota.cooldown(provider_name, cd)
-                logger.warning(
-                    "Provider %s rate-limited/overloaded (%s), cooldown %ds",
-                    provider_name, exc.failure_class, cd,
-                )
+                if self._cool(cfg, provider_name, cd):
+                    logger.warning(
+                        "Provider %s rate-limited/overloaded (%s), cooldown %ds",
+                        provider_name, exc.failure_class, cd,
+                    )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class=classify_unavailable(exc),
@@ -1313,11 +1351,11 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderProtocolError as exc:
-                self._quota.cooldown(provider_name, COOLDOWN_OTHER)
-                logger.warning(
-                    "Provider %s protocol error, cooldown %ds",
-                    provider_name, COOLDOWN_OTHER,
-                )
+                if self._cool(cfg, provider_name, COOLDOWN_OTHER):
+                    logger.warning(
+                        "Provider %s protocol error, cooldown %ds",
+                        provider_name, COOLDOWN_OTHER,
+                    )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class="provider_error",
@@ -1328,11 +1366,11 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderUnavailableError as exc:
-                self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
-                logger.warning(
-                    "Provider %s unavailable, cooldown %ds",
-                    provider_name, COOLDOWN_UNAVAILABLE,
-                )
+                if self._cool(cfg, provider_name, COOLDOWN_UNAVAILABLE):
+                    logger.warning(
+                        "Provider %s unavailable, cooldown %ds",
+                        provider_name, COOLDOWN_UNAVAILABLE,
+                    )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class=classify_unavailable(exc),
@@ -1340,11 +1378,11 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderTimeoutError as exc:
-                self._quota.cooldown(provider_name, COOLDOWN_TIMEOUT)
-                logger.warning(
-                    "Provider %s timed out, cooldown %ds",
-                    provider_name, COOLDOWN_TIMEOUT,
-                )
+                if self._cool(cfg, provider_name, COOLDOWN_TIMEOUT):
+                    logger.warning(
+                        "Provider %s timed out, cooldown %ds",
+                        provider_name, COOLDOWN_TIMEOUT,
+                    )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class="timed_out",
@@ -1352,11 +1390,11 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderError as exc:
-                self._quota.cooldown(provider_name, COOLDOWN_OTHER)
-                logger.warning(
-                    "Provider %s error, cooldown %ds: %s",
-                    provider_name, COOLDOWN_OTHER, exc,
-                )
+                if self._cool(cfg, provider_name, COOLDOWN_OTHER):
+                    logger.warning(
+                        "Provider %s error, cooldown %ds: %s",
+                        provider_name, COOLDOWN_OTHER, exc,
+                    )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class="provider_error",
@@ -1373,7 +1411,7 @@ class ProviderRouter:
                 # this outer classifier.
                 raise
             except Exception as exc:
-                self._quota.cooldown(provider_name, COOLDOWN_OTHER)
+                self._cool(cfg, provider_name, COOLDOWN_OTHER)
                 logger.exception("Unexpected error from %s", provider_name)
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
@@ -1382,6 +1420,21 @@ class ProviderRouter:
                 ))
                 continue
 
+            # Decorate the earned answer with the owner's own name for the
+            # source that produced it, so the app's "Answered by" line can say
+            # "OpenRouter" instead of `api_key_http:provdef_ed0169c8...`. Display
+            # only, resolved from the definition's grant and connection; a miss
+            # returns "" and the renderer keeps the routing identity.
+            if not resp.provider_display and universe_dir is not None:
+                from tinyassets.providers.source_display import source_display_name
+
+                label = source_display_name(
+                    base=universe_dir.parent,
+                    universe_id=universe_dir.name,
+                    provider=provider_name,
+                )
+                if label:
+                    resp = replace(resp, provider_display=label)
             return resp
 
         # All providers exhausted.

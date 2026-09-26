@@ -2308,11 +2308,16 @@
     const provider=executionLabel(receipt&&receipt.provider,400);
     const model=receipt&&receipt.model_status==="reported"
       ?executionLabel(receipt.model,200):"";
+    // The owner's own name for the connection, when the reply reported one. The
+    // routing identity ("api_key_http:provdef_ed0169c8...") is what a founder
+    // was shown about their own connection on 2026-09-25; it stays the fallback,
+    // because inventing a name would be worse than an ugly one.
+    const display=executionLabel(receipt&&receipt.provider_display,200);
     const detail=document.createElement("div"); detail.className="msg-execution";
     // Reply-owned observation only: never substitute a default, speech voice,
     // previous answer or alias. textContent keeps remote labels inert.
     detail.textContent=provider
-      ?"Answered by "+provider+" · "+(model||"Model not reported")
+      ?"Answered by "+(display||provider)+" · "+(model||"Model not reported")
       :"Provider and model not reported";
     if(typeof ModelPicker!=="undefined") ModelPicker.observe(detail.textContent);
     return detail;

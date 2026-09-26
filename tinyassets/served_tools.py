@@ -107,9 +107,10 @@ from __future__ import annotations
 #:       the provenance the create-only write_graph strips — keeping it off this
 #:       surface keeps a served build from attesting its own code). action=approve or
 #:       revoke (change agent-access-controls: revoke narrows, so it may take back any
-#:       sink, including a workspace consent the agent cannot grant). set_policy/
-#:       get_policy stay off-surface (the policy store has no reader), as does the
-#:       raw-secret connect_http. What the agent holds reads back through
+#:       sink, including a workspace consent the agent cannot grant). approve/revoke are
+#:       now the ONLY source_channel operations: set_policy/get_policy were deleted with
+#:       their store (2026-09-25), having read nothing. The raw-secret connect_http stays
+#:       off-surface. What the agent holds reads back through
 #:       read_graph target=access. Gated to the same u-tiny run
 #:       allowlist; the outbound call also needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED.
 #:

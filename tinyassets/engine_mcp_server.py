@@ -3055,8 +3055,11 @@ def connect_compute(
 #    `sandboxed-code-node` approval is provenance, not an execution gate (code runs in
 #    the OS sandbox, only in the universe that authored it), so there is nothing to
 #    approve on this surface; the verb stays about outbound sinks.
-#  * action=="approve" and action=="revoke" are served. set_policy/get_policy are
-#    not: the policy store has no reader (change agent-access-controls D3).
+#  * action=="approve" and action=="revoke" are the only operations that exist.
+#    set_policy/get_policy were never served (change agent-access-controls D3) and
+#    were DELETED from the connector too (2026-09-25): they wrote an approval mode
+#    no gate read, so the owner was told `policy_set` for nothing. The consent row
+#    is the channel policy enforcement reads.
 #  * owner-gated (source_channel's impl requires an admin ACL row for the bound founder;
 #    unbound / read-write collaborators get auth_failed), graph-PINNED (universe_id is
 #    never caller-supplied — the agent cannot approve for another universe), secret-free

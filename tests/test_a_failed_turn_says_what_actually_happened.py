@@ -577,18 +577,34 @@ def test_the_EXACT_payload_the_founder_got_now_names_the_cause():
 
 
 def test_a_provider_that_was_never_TRIED_explains_nothing():
-    """A `skipped` attempt is not a cause. My first capture was a skip during a
-    cooldown window, which says only that an earlier failure happened -- reading
-    it as the reason would report a cooldown as the diagnosis forever."""
+    """A `skipped` attempt is not a cause when something actually failed.
+
+    My first capture was a skip during a cooldown window, which says only that an
+    earlier failure happened -- reading it as the reason would report a cooldown
+    as the diagnosis forever. NARROWED 2026-09-25: that holds whenever ANY
+    provider was tried -- even one whose own class came out unknown -- and for a
+    skip whose class was guessed rather than measured. It does not hold for a
+    chain where the gate is the only thing that happened, because then the gate is
+    the whole story: see the next test.
+    """
     from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
 
     exc = AllProvidersExhaustedError(
         "Served provider 'codex' exhausted; universe authority forbids fallback widening.",
-        attempts=[ProviderAttemptDiagnostic(
-            provider="codex", status="skipped", skip_class="quota_or_cooldown",
-        )],
+        attempts=[
+            ProviderAttemptDiagnostic(
+                provider="claude-code", status="failed", skip_class="provider_error",
+                detail="the source's own words",
+            ),
+            ProviderAttemptDiagnostic(
+                provider="codex", status="skipped", skip_class="quota_or_cooldown",
+            ),
+        ],
     )
-    assert "could not identify" in _served_failure_notice(exc).lower()
+    notice = _served_failure_notice(exc).lower()
+    assert "cooldown window" not in notice, (
+        "a provider that was never tried was reported as the cause"
+    )
 
     # And with a class that IS mapped, so the assertion can actually
     # discriminate: quota_or_cooldown falls through either way, which made an
@@ -600,8 +616,33 @@ def test_a_provider_that_was_never_TRIED_explains_nothing():
         )],
     )
     assert "could not identify" in _served_failure_notice(skipped_but_mapped).lower(), (
-        "a provider that was never tried was reported as the cause"
+        "a GUESSED skip class was reported as the cause"
     )
+
+
+def test_a_chain_that_was_only_ever_GATED_says_so():
+    """When the gate is the whole story, the gate IS the answer.
+
+    Live 2026-09-25: a free-model universe's next message produced exactly one
+    attempt -- ``skipped quota_or_cooldown``, from the router's own cooldown map,
+    with the seconds remaining attached -- and the founder was told "we could not
+    identify why". Nothing was unknown: we had refused our own call and knew for
+    how long. Only MEASURED skip classes qualify (the assertion above keeps a
+    guessed one unknown), and only when no attempt actually failed.
+    """
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = AllProvidersExhaustedError(
+        "Served provider 'codex' exhausted; universe authority forbids fallback widening.",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="skipped", skip_class="quota_or_cooldown",
+            detail="quota or cooldown gate", cooldown_remaining_s=92,
+        )],
+    )
+    notice = _served_failure_notice(exc).lower()
+    assert "could not identify" not in notice
+    assert "cooldown window" in notice
+    assert "2 minutes" in notice, "the owner is not told how long to wait"
 
 
 def test_the_streamed_class_still_wins_when_both_are_present():

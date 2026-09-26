@@ -497,10 +497,26 @@ voices SHALL NOT substitute for answering-model evidence. Held/error replies
 SHALL omit execution receipts. Public inputs, direct JSON-string return type,
 and authentication/authority checks SHALL remain unchanged.
 
+The receipt MAY additionally carry `provider_display`, the owner's own name for
+the connection that answered, for display only. It is resolved from stored data
+-- the definition's grant, that grant's connection destination, and for a
+connection deposited by the guided model sign-in the installed acquisition
+preset's own display name -- with no vendor named in platform code. It SHALL be
+absent rather than empty when nothing resolves, SHALL never be resolved from
+another universe's connection, and SHALL NOT substitute for `provider`,
+`model` or any routing decision; a renderer falls back to `provider` and always
+names the model beside the label. Records stored before the field existed
+SHALL keep normalizing unchanged.
+
 #### Scenario: A reply is followed by learning or another conversation
 - **WHEN** a writer completes and subsequent inference uses another provider
 - **THEN** the successful reply retains only its own request-local receipt
 - **AND** receipt-observer failure does not discard or retry the earned answer
+
+#### Scenario: The answering connection has an owner-facing name
+- **WHEN** a reply is served by a connection whose destination names an installed acquisition preset
+- **THEN** the receipt carries that preset's display name beside the routing identity and the model, and a connection the owner named themselves carries their own destination
+- **AND** a source whose grant, connection or preset cannot be resolved carries no display name at all
 
 #### Scenario: Provider does not report the resolved model
 - **WHEN** the writer succeeds without validated resolved-model metadata
