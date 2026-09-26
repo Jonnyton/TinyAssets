@@ -946,6 +946,34 @@ def test_anything_may_follow_the_receipt(tmp_path: Path, why: str) -> None:
     assert completed.stdout.strip() == "allow"
 
 
+@pytest.mark.parametrize(
+    "body,why",
+    [
+        (
+            f"Drain-Review-Verdict: APPROVE\nDrain-Review-Head: {HEAD}\n",
+            "the body attests but cites nothing: there are only two lines",
+        ),
+        (
+            f"Drain-Review-Verdict: APPROVE\nDrain-Review-Head: {HEAD}\n\n## notes\n",
+            "the third non-blank line is prose, not an artifact",
+        ),
+        ("Drain-Review-Verdict: APPROVE\n", "one line"),
+        ("", "no body at all"),
+    ],
+)
+def test_the_body_needs_all_three_lines_and_denies_cleanly_without_them(
+    tmp_path: Path, body: str, why: str
+) -> None:
+    # Cleanly, not by IndexError: the artifact is read positionally, so the
+    # count check has to happen before the subscript. A crash would still fail
+    # the step, but the gate must say why.
+    completed = _run_blocking(tmp_path, title="deploy: a thing (Tier 2)", body=body)
+
+    assert completed.returncode == 2, why
+    assert completed.stdout.strip() == "deny", why
+    assert "Traceback" not in completed.stderr, why
+
+
 def test_a_contradiction_below_the_receipt_is_not_read(tmp_path: Path) -> None:
     """A deliberate semantic change from the whole-text scan, stated openly.
 
