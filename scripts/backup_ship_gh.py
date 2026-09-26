@@ -45,7 +45,14 @@ from typing import Any
 GH_API = "https://api.github.com"
 GH_UPLOAD_API = "https://uploads.github.com"
 DEFAULT_REPO = "Jonnyton/tinyassets-backups"
-DEFAULT_RETAIN = 30
+# Releases kept, as ONE pool across every prunable prefix (see the sort in
+# `prune_old_releases`) -- not a per-tier count. So the number of NIGHTS of
+# history it buys is `DEFAULT_RETAIN / tiers-per-night`, and adding
+# deploy/backup.sh's logs tier on 2026-09-26 took that from 2 to 3. 30 would
+# have quietly cut the brain and data history from 15 nights to 10: a
+# regression to the restore surface caused by a change to the log surface. 45
+# keeps 15 nights at three tiers.
+DEFAULT_RETAIN = 45
 GH_API_TIMEOUT_SECONDS = 15
 PRUNE_RECONCILE_ATTEMPTS = 6
 PRUNE_RECONCILE_DELAY_SECONDS = 2
@@ -274,7 +281,7 @@ def delete_release(
 # releases regardless of name, so a parked archive would have been
 # silently destroyed within days of landing.
 PRUNABLE_TAG_PREFIXES: tuple[str, ...] = (
-    "tinyassets-brain-", "tinyassets-data-",
+    "tinyassets-brain-", "tinyassets-data-", "tinyassets-logs-",
     "workflow-brain-", "workflow-data-2",
 )
 

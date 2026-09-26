@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-import tarfile
+import re
 from pathlib import Path
 
 import pytest
@@ -15,9 +12,9 @@ COMPOSE = REPO_ROOT / "deploy" / "compose.yml"
 VECTOR_YAML = REPO_ROOT / "deploy" / "vector.yaml"
 VECTOR_BETTERSTACK_YAML = REPO_ROOT / "deploy" / "vector-betterstack.yaml"
 VECTOR_ENTRYPOINT = REPO_ROOT / "deploy" / "vector-entrypoint.sh"
-SHIP_LOGS = REPO_ROOT / "deploy" / "ship-logs.sh"
 JOURNALD_DROPIN = REPO_ROOT / "deploy" / "journald-tinyassets.conf"
 INSTALLER = REPO_ROOT / "deploy" / "install-host-uptime-services.sh"
+BACKUP_SH = REPO_ROOT / "deploy" / "backup.sh"
 RUNBOOK = REPO_ROOT / "docs" / "ops" / "log-aggregation-runbook.md"
 
 
@@ -222,244 +219,17 @@ def test_vector_yaml_parses_cleanly():
     assert isinstance(data, dict)
 
 
-# ---------------------------------------------------------------------------
-# ship-logs.sh — basic sanity
-# ---------------------------------------------------------------------------
-
-
-_BASH_AVAILABLE = sys.platform != "win32"
-
-
-def test_ship_logs_script_exists():
-    assert SHIP_LOGS.exists(), "deploy/ship-logs.sh must exist"
-
-
-def test_ship_logs_default_covers_the_production_containers():
-    """The default set is exactly what compose runs: every name here is
-    REQUIRED (a missing one aborts the archive), so a retired container in
-    the default would make the hourly shipper exit 1 forever."""
-    text = SHIP_LOGS.read_text(encoding="utf-8")
-    default_line = next(
-        line for line in text.splitlines() if line.startswith("LOG_CONTAINERS=")
-    )
-    for container in ("tinyassets-daemon", "tinyassets-tunnel"):
-        assert container in default_line
-    assert "tinyassets-worker" not in default_line, (
-        "the host-run worker fleet was deleted 2026-08-29; a required container "
-        "that never exists makes ship-logs.sh fail on every run"
-    )
-
-
-def test_ship_logs_requires_a_complete_readable_fleet_archive():
-    text = SHIP_LOGS.read_text(encoding="utf-8")
-    collect = text.split("# Collect Docker container logs", 1)[1].split(
-        "# Archive", 1
-    )[0]
-    assert "docker ps" not in collect
-    assert "{{.State.Status}}" in collect
-    assert "{{.Id}}" in collect
-    assert "fleet-manifest.tsv" in text
-    assert "docker logs" in collect
-    assert "|| true" not in collect
-    assert 'docker logs "${container_id}"' in collect
-    assert 'current_id="$(docker inspect' in collect
-
-
-def test_log_runbook_uses_current_production_identities():
-    text = RUNBOOK.read_text(encoding="utf-8")
-    for stale in (
-        "docker-compose@workflow",
-        "docker-compose@tinyassets",
-        '.service = "workflow"',
-        "workflow-logs-",
-        "docker logs workflow-logs",
-    ):
-        assert stale not in text
-    assert "journalctl -u tinyassets-daemon" in text
-    assert '.service = "tinyassets"' in text
-    assert "tinyassets-logs-" in text
-    assert "docker logs tinyassets-logs" in text
-    assert "/opt/tinyassets-host-uptime/current/deploy/ship-logs.sh" in text
-    assert "/opt/tinyassets/deploy/ship-logs.sh" not in text
-
-
-@pytest.mark.skipif(not _BASH_AVAILABLE, reason="bash not available on Windows")
-def test_ship_logs_dry_run_exits_0(tmp_path):
-    if not SHIP_LOGS.exists():
-        pytest.skip("ship-logs.sh not yet created")
-    env = {
-        "DRY_RUN": "1",
-        "LOG_DEST": "s3://test-bucket/logs",
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(tmp_path),
-    }
-    result = subprocess.run(
-        ["bash", str(SHIP_LOGS)],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, (
-        f"DRY_RUN=1 should exit 0; got {result.returncode}\n{result.stderr}"
-    )
-
-
-@pytest.mark.skipif(not _BASH_AVAILABLE, reason="bash not available on Windows")
-def test_ship_logs_dry_run_prints_indicator(tmp_path):
-    if not SHIP_LOGS.exists():
-        pytest.skip("ship-logs.sh not yet created")
-    env = {
-        "DRY_RUN": "1",
-        "LOG_DEST": "s3://test-bucket/logs",
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(tmp_path),
-    }
-    result = subprocess.run(
-        ["bash", str(SHIP_LOGS)],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    combined = result.stdout + result.stderr
-    assert "dry" in combined.lower(), "DRY_RUN=1 should print a dry-run indicator"
-
-
-@pytest.mark.skipif(not _BASH_AVAILABLE, reason="bash not available on Windows")
-def test_ship_logs_missing_log_dest_exits_1(tmp_path):
-    if not SHIP_LOGS.exists():
-        pytest.skip("ship-logs.sh not yet created")
-    env = {
-        "LOG_DEST": "",
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(tmp_path),
-    }
-    result = subprocess.run(
-        ["bash", str(SHIP_LOGS)],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0, "missing LOG_DEST should exit non-zero"
-
-
-@pytest.mark.skipif(not _BASH_AVAILABLE, reason="bash not available on Windows")
-@pytest.mark.parametrize(
-    "failure", [None, "missing", "unreadable", "recreated", "recreated-earlier"]
-)
-def test_ship_logs_archives_stopped_members_and_fails_closed(tmp_path, failure):
-    bin_dir = tmp_path / "bin"
-    capture_dir = tmp_path / "capture"
-    bin_dir.mkdir()
-    capture_dir.mkdir()
-    docker = bin_dir / "docker"
-    docker.write_text(
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        "case \"$1\" in\n"
-        "  inspect)\n"
-        "    format=$3\n"
-        "    name=$4\n"
-        "    if [ \"${SHIP_LOG_FAILURE-}\" = missing ] "
-        "&& [ \"$name\" = worker-b ]; then exit 1; fi\n"
-        "    id=$(cat \"${SHIP_LOG_STATE:?}/$name.id\")\n"
-        "    status=$(cat \"${SHIP_LOG_STATE:?}/$name.status\")\n"
-        "    case \"$format\" in\n"
-        "      '{{.Id}} {{.State.Status}}')\n"
-        "        printf '%s %s\\n' \"$id\" \"$status\"\n"
-        "        if [ \"${SHIP_LOG_FAILURE-}\" = recreated ] "
-        "&& [ \"$name\" = worker-b ]; then printf '%064x' 99 > \"$SHIP_LOG_STATE/$name.id\"; fi\n"
-        "        if [ \"${SHIP_LOG_FAILURE-}\" = recreated-earlier ] "
-        "&& [ \"$name\" = worker-b ]; then "
-        "printf '%064x' 98 > \"$SHIP_LOG_STATE/worker-a.id\"; fi\n"
-        "        ;;\n"
-        "      '{{.Id}}') printf '%s\\n' \"$id\" ;;\n"
-        "      *) exit 91 ;;\n"
-        "    esac\n"
-        "    ;;\n"
-        "  logs)\n"
-        "    id=$2\n"
-        "    if [ \"${SHIP_LOG_FAILURE-}\" = unreadable ] "
-        "&& [ \"$id\" = \"$(cat \"$SHIP_LOG_STATE/worker-b.id\")\" ]; then exit 1; fi\n"
-        "    printf 'logs for %s\\n' \"$id\"\n"
-        "    ;;\n"
-        "  *) exit 90 ;;\n"
-        "esac\n",
-        encoding="utf-8",
-    )
-    docker.chmod(0o755)
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    worker_ids = {
-        "worker-a": f"{1:064x}",
-        "worker-b": f"{2:064x}",
-    }
-    for name, container_id in worker_ids.items():
-        (state_dir / f"{name}.id").write_text(container_id, encoding="utf-8")
-        (state_dir / f"{name}.status").write_text(
-            "exited" if name == "worker-b" else "running", encoding="utf-8"
-        )
-    rclone = bin_dir / "rclone"
-    rclone.write_text(
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        "if [ \"$1\" = copyto ]; then\n"
-        "  cp \"$2\" \"${SHIP_LOG_CAPTURE:?}/archive.tar.gz\"\n"
-        "  touch \"${SHIP_LOG_CAPTURE:?}/uploaded\"\n"
-        "fi\n",
-        encoding="utf-8",
-    )
-    rclone.chmod(0o755)
-    env = os.environ.copy()
-    env.update(
-        {
-            "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
-            "LOG_DEST": "fake:logs",
-            "LOG_CONTAINERS": "worker-a worker-b",
-            "LOG_DIR": str(tmp_path / "scratch"),
-            "SHIP_LOG_CAPTURE": str(capture_dir),
-            "SHIP_LOG_FAILURE": failure or "",
-            "SHIP_LOG_STATE": str(state_dir),
-        }
-    )
-
-    result = subprocess.run(
-        ["bash", str(SHIP_LOGS)],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    if failure:
-        assert result.returncode != 0
-        assert not (capture_dir / "uploaded").exists()
-        return
-
-    assert result.returncode == 0, result.stderr
-    assert (capture_dir / "uploaded").exists()
-    with tarfile.open(capture_dir / "archive.tar.gz", "r:gz") as archive:
-        assert set(archive.getnames()) == {
-            "fleet-manifest.tsv",
-            "worker-a.log",
-            "worker-b.log",
-        }
-        manifest = archive.extractfile("fleet-manifest.tsv")
-        assert manifest is not None
-        contents = manifest.read().decode("utf-8")
-    assert f"worker-a\t{worker_ids['worker-a']}\trunning\tworker-a.log" in contents
-    assert f"worker-b\t{worker_ids['worker-b']}\texited\tworker-b.log" in contents
 
 
 # ---------------------------------------------------------------------------
-# Where the forwarded lines come to rest -- the journal, not a container
+# Where the forwarded lines come to rest — the journal, not a container
 # ---------------------------------------------------------------------------
 #
-# Regression cover for the 2026-09-26 finding
-# (docs/concerns/2026-09-26-daemon-logs-not-shipped.md). The `logs` container is
-# the one place every forwarded line exists on this host (Vector's console sink
-# re-emits them), so ITS logging driver decides whether a deploy erases the
-# evidence. It used to be Docker's default json-file, which lives in the
-# container's own directory and dies with it.
+# Regression cover for the 2026-09-26 finding (docs/ops/log-aggregation-runbook.md). The
+# `logs` container is the one place every forwarded line exists on this host
+# (Vector's console sink re-emits them), so ITS logging driver decides whether a
+# deploy erases the evidence. It used to be Docker's default json-file, which
+# lives in the container's own directory and dies with it.
 
 
 def test_logs_service_output_lands_in_the_journal():
@@ -545,6 +315,102 @@ def test_installer_owns_the_journald_dropin():
     assert "restart systemd-journald" in text
 
 
+def test_log_retention_window_covers_the_offsite_bundle_window():
+    """The journal has to hold at least as much history as the nightly bundle
+    claims to ship, or the bundle is silently shorter than advertised."""
+    dropin = JOURNALD_DROPIN.read_text(encoding="utf-8")
+    retention_days = int(
+        next(
+            line.split("=", 1)[1].removesuffix("day")
+            for line in dropin.splitlines()
+            if line.startswith("MaxRetentionSec=")
+        )
+    )
+    backup = BACKUP_SH.read_text(encoding="utf-8")
+    bundle_days = int(
+        next(
+            line for line in backup.splitlines() if "BACKUP_LOG_SINCE:-" in line
+        ).split("BACKUP_LOG_SINCE:-", 1)[1].split()[0]
+    )
+    assert retention_days > bundle_days, (
+        f"journal keeps {retention_days}d but the nightly tier asks for "
+        f"{bundle_days}d"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ship-logs retirement
+# ---------------------------------------------------------------------------
+#
+# Retired 2026-09-26. It could not have worked as deployed: it read logs with
+# `docker logs`, and Docker refuses that on a container using the fluentd driver
+# that compose.yml has given the daemon since Row K. So the hourly
+# `ERROR: LOG_DEST is required` was not one missing setting away from shipping
+# anything. The nightly backup's logs tier replaces it on a credential the box
+# already holds (deploy/backup.sh).
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "deploy/ship-logs.sh",
+        "deploy/tinyassets-ship-logs.service",
+        "deploy/tinyassets-ship-logs.timer",
+    ],
+)
+def test_ship_logs_files_are_gone(relative):
+    assert not (REPO_ROOT / relative).exists(), (
+        f"{relative} was retired; a copy left in the tree gets re-installed"
+    )
+
+
+def test_installer_removes_the_retired_units_from_the_host():
+    """Deleting the files is not the fix on its own. The enabled copies in
+    /etc/systemd/system keep firing, which is how this timer logged an ERROR
+    hourly for months."""
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert "RETIRED_UNITS=(" in text
+    retired = text.split("RETIRED_UNITS=(", 1)[1].split(")", 1)[0]
+    assert "tinyassets-ship-logs.timer" in retired
+    assert "tinyassets-ship-logs.service" in retired
+    # The timer must be disabled before the service, and both before the unlink.
+    assert retired.index("timer") < retired.index("service")
+    assert 'disable --now "${unit}"' in text
+
+
+def test_installer_no_longer_ships_or_enables_ship_logs():
+    text = INSTALLER.read_text(encoding="utf-8")
+    timers = text.split("TIMERS=(", 1)[1].split(")", 1)[0]
+    runtime = text.split("RUNTIME_FILES=(", 1)[1].split(")", 1)[0]
+    assert "ship-logs" not in timers
+    assert "ship-logs" not in runtime
+    # ...and it ships what replaced it.
+    assert "scripts/backup_log_tier.py" in runtime
+    assert "scripts/redact_log_bundle.py" in runtime
+
+
+def test_retirement_is_visible_to_the_idempotence_gate():
+    """The gate exits before the first mutation when everything looks converged,
+    so a retired unit it does not check is a unit that is never removed."""
+    text = INSTALLER.read_text(encoding="utf-8")
+    gate = text.split("current_release_is_exact() {", 1)[1]
+    gate = gate.split("\nif current_release_is_exact", 1)[0]
+    assert "RETIRED_UNITS" in gate
+    assert "JOURNALD_DROPIN" in gate
+
+
+def test_nothing_live_still_reads_a_log_dest():
+    """LOG_DEST was the host decision this retirement removes: a destination plus
+    a credential, for a second off-box log path. A surviving *use* of the
+    variable would mean the requirement came back by another name. Naming it in
+    a comment is how the retirement stays legible, so match uses, not mentions.
+    """
+    uses = re.compile(r"\$\{?LOG_DEST|^\s*LOG_DEST=", re.MULTILINE)
+    for path in (INSTALLER, BACKUP_SH, COMPOSE):
+        found = uses.search(path.read_text(encoding="utf-8"))
+        assert found is None, f"{path} still reads LOG_DEST: {found.group(0)!r}"
+
+
 def test_runbook_leads_with_the_query_that_survives_a_deploy():
     """The runbook is read mid-incident. `docker logs` is scoped to the current
     container, so a responder who reaches for it after a deploy finds nothing --
@@ -553,9 +419,35 @@ def test_runbook_leads_with_the_query_that_survives_a_deploy():
     assert "journalctl CONTAINER_NAME=tinyassets-logs" in text
     assert "--output=short-iso-precise" in text
     assert "deploy/journald-tinyassets.conf" in text
-    # The correction is part of the content: a reader who still believes compose
-    # stdout reaches journald will not understand why the driver had to change.
-    assert "detaches" in text
+    # The off-box path, by the name an operator can actually list.
+    assert "Jonnyton/tinyassets-backups" in text
+    assert "backup_log_tier.py" in text
+
+
+def test_runbook_does_not_instruct_a_retired_procedure():
+    """A runbook step for a removed unit sends a responder down a dead path."""
+    text = RUNBOOK.read_text(encoding="utf-8")
+    for stale in (
+        "bash /opt/tinyassets-host-uptime/current/deploy/ship-logs.sh",
+        "systemctl enable --now tinyassets-ship-logs.timer",
+        "LOG_DEST=sftp:",
+        "LOG_RETAIN_DAYS",
+        "docker-compose@workflow",
+        '.service = "workflow"',
+    ):
+        assert stale not in text, f"runbook still instructs: {stale}"
+    # The retirement itself has to be stated, or the next reader re-adds it.
+    assert "retired" in text.lower()
+
+
+def test_runbook_keeps_the_fluentd_drop_visible():
+    """The one gap this design leaves: while Vector is down the fluentd driver
+    buffers in memory and then drops, so nothing reaches the journal. A runbook
+    that omits it invites 'the journal is complete' as an assumption."""
+    text = RUNBOOK.read_text(encoding="utf-8")
+    assert "drop" in text.lower()
+    troubleshooting = text.split("## Troubleshooting", 1)[1]
+    assert "Vector container not running" in troubleshooting
 
 
 def test_the_journald_dropin_is_pinned_to_lf():

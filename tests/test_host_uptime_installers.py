@@ -28,14 +28,12 @@ TIMERS = (
     "tinyassets-backup.timer",
     "tinyassets-prune.timer",
     "tinyassets-disk-watch.timer",
-    "tinyassets-ship-logs.timer",
 )
 SERVICES = tuple(name.removesuffix(".timer") + ".service" for name in TIMERS)
 UNIT_FILES = tuple(item for pair in zip(SERVICES, TIMERS, strict=True) for item in pair)
 RUNTIME_FILES = (
     "deploy/daemon-watchdog.sh",
     "deploy/backup.sh",
-    "deploy/ship-logs.sh",
     "scripts/__init__.py",
     "scripts/_canary_common.py",
     "scripts/watchdog.py",
@@ -46,6 +44,8 @@ RUNTIME_FILES = (
     "scripts/rotate_run_transcripts.py",
     "scripts/backup_ship_gh.py",
     "scripts/backup_prune.py",
+    "scripts/backup_log_tier.py",
+    "scripts/redact_log_bundle.py",
     "tinyassets/__init__.py",
     "tinyassets/ttl_memo.py",
     "tinyassets/storage/__init__.py",
@@ -56,6 +56,11 @@ RUNTIME_FILES = (
 # manifest and the same transaction.
 JOURNALD_DROPIN_SOURCE = "deploy/journald-tinyassets.conf"
 JOURNALD_DROPIN_NAME = "tinyassets.conf"
+# Units the installer must REMOVE from the host, not merely stop shipping.
+RETIRED_UNITS = (
+    "tinyassets-ship-logs.timer",
+    "tinyassets-ship-logs.service",
+)
 
 _BASH = shutil.which("bash")
 
@@ -852,7 +857,6 @@ def test_fresh_install_converges_exact_manifest(tmp_path):
         "tinyassets-backup.service",
         "tinyassets-prune.service",
         "tinyassets-disk-watch.service",
-        "tinyassets-ship-logs.service",
     ):
         text = (systemd / service).read_text(encoding="utf-8")
         assert "/opt/tinyassets-host-uptime/current/" in text

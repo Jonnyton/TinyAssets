@@ -17,6 +17,12 @@
 #      changed as we read it") is EXPECTED on a hot volume and tolerated;
 #      exit >= 2 is fatal. Before 2026-06-10 this exit-1 case failed the
 #      whole unit nightly and silently starved the offsite history.
+#   3. LOGS tier (best-effort, added 2026-09-26): a redacted window of the
+#      host journal (scripts/backup_log_tier.py). Evidence rather than state
+#      — before this, container output existed only inside a container and
+#      every deploy that recreated one erased it
+#      (found 2026-09-26; docs/ops/log-aggregation-runbook.md). Never fatal: a
+#      journal problem must not starve the brain tier.
 #
 # Retention: 7 daily + 4 weekly + 6 monthly per tier, pruned at the end
 # of each run (scripts/backup_prune.py).
@@ -38,6 +44,7 @@
 #   BACKUP_RETAIN_MONTHLY  keep first archive per month, last N months (default: 6)
 #   DRY_RUN                set to "1" — print plan, no tar/upload/prune
 #   BACKUP_LOG             append log to this file (default: /var/log/tinyassets-backup.log)
+#   BACKUP_LOG_SINCE       journal window for the logs tier (default: "3 days ago")
 #   GH_TOKEN               GitHub token for offsite upload to BACKUP_GH_REPO.
 #                          When set, both tarballs are also shipped as GH
 #                          release assets.
@@ -191,13 +198,59 @@ if ! rclone copyto --contimeout 60s --timeout 900s \
 fi
 log "  upload OK"
 
+# ----- 4b. logs tier — recent journal history, redacted (best-effort) ----
+#
+# The third tier carries evidence rather than state: container output that used
+# to live only inside a container and died with every deploy that recreated it
+# (found 2026-09-26; docs/ops/log-aggregation-runbook.md). compose.yml now points
+# the Vector sidecar at the journald driver, so the history is on the host; this
+# puts a redacted window of it OFF the host, on the credential the nightly
+# backup already holds. No new vendor, no new secret.
+#
+# Strictly best-effort and deliberately non-fatal: a journal problem must never
+# starve the brain archive, which is the irreplaceable tier. The script exits 3
+# for "no journal to read" so this can tell a skipped tier from a real failure,
+# and either way the backup's own exit code is unchanged.
+
+LOGS_NAME="tinyassets-logs-${TS}.tar.gz"
+LOGS_PATH="/tmp/${LOGS_NAME}"
+LOG_TIER_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/backup_log_tier.py"
+BACKUP_LOG_SINCE="${BACKUP_LOG_SINCE:-3 days ago}"
+logs_tier_built=0
+
+log "building logs tier (journal since '${BACKUP_LOG_SINCE}', redacted)..."
+set +e
+python3 "${LOG_TIER_SCRIPT}" --out "${LOGS_PATH}" --since "${BACKUP_LOG_SINCE}" \
+    2>&1 | while IFS= read -r line; do log "  ${line}"; done
+logs_tier_status="${PIPESTATUS[0]}"
+set -e
+if [[ "${logs_tier_status}" -eq 0 && -f "${LOGS_PATH}" ]]; then
+    logs_tier_built=1
+    log "  logs archive size: $(stat -c %s "${LOGS_PATH}" 2>/dev/null || echo '?') bytes"
+    log "uploading logs tier to ${BACKUP_DEST}/${LOGS_NAME}..."
+    if ! rclone copyto --contimeout 60s --timeout 900s \
+            "${LOGS_PATH}" "${BACKUP_DEST}/${LOGS_NAME}"; then
+        log "WARN: logs tier rclone upload failed (state tiers already uploaded)"
+    else
+        log "  logs upload OK"
+    fi
+elif [[ "${logs_tier_status}" -eq 3 ]]; then
+    log "WARN: no readable journal — logs tier skipped (state tiers unaffected)"
+else
+    log "WARN: logs tier exited ${logs_tier_status} — skipped (state tiers unaffected)"
+fi
+
 # ----- 5. offsite upload (GH release assets) ----------------------------
 # Best-effort; failure is non-fatal so local backup still counts as done.
-# Activated only when GH_TOKEN is set. Ships both tiers.
+# Activated only when GH_TOKEN is set. Ships every tier that was built.
 
 SHIP_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/backup_ship_gh.py"
+SHIP_PATHS=("${TAR_PATH}" "${BRAIN_PATH}")
+if [[ "${logs_tier_built}" -eq 1 ]]; then
+    SHIP_PATHS+=("${LOGS_PATH}")
+fi
 if [[ -n "${GH_TOKEN:-}" ]]; then
-    for ship_path in "${TAR_PATH}" "${BRAIN_PATH}"; do
+    for ship_path in "${SHIP_PATHS[@]}"; do
         log "shipping $(basename "${ship_path}") to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/tinyassets-backups})..."
         set +e
         python3 "${SHIP_SCRIPT}" "${ship_path}" 2>&1 | while IFS= read -r line; do
@@ -213,7 +266,7 @@ else
     log "GH_TOKEN not set — skipping offsite GH release upload"
 fi
 
-rm -f "${TAR_PATH}" "${BRAIN_PATH}"
+rm -f "${TAR_PATH}" "${BRAIN_PATH}" "${LOGS_PATH}"
 
 # ----- 6. retention prune ----------------------------------------------
 

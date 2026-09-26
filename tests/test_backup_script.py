@@ -13,6 +13,7 @@ Coverage:
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -837,6 +838,85 @@ def test_backup_sh_has_brain_tier_and_tolerates_live_tar():
         "full-tier tar must tolerate rc=1 and fail only on rc>=2"
     )
     assert "src.backup(dst)" in text, "consistent sqlite copy (sqlite3 backup API) missing"
+
+
+def test_backup_sh_builds_the_logs_tier_without_risking_the_state_tiers():
+    """Structural anchors for the 2026-09-26 third tier.
+
+    The load-bearing property is that it cannot fail the backup: the brain tier
+    is irreplaceable and a journal problem must not starve it. Exit 3 from
+    backup_log_tier.py is "no journal to read", and every branch here logs a
+    WARN rather than exiting.
+    """
+    text = BACKUP_SH.read_text(encoding="utf-8")
+    assert "tinyassets-logs-" in text, "logs-tier archive missing from backup.sh"
+    assert "backup_log_tier.py" in text
+    section = text.split("# ----- 4b.", 1)[1].split("# ----- 5.", 1)[0]
+    assert "logs_tier_status" in section
+    # No `exit` anywhere in the tier: every failure path is a WARN.
+    assert not re.search(r"^\s*exit\b", section, re.MULTILINE), (
+        "the logs tier must never exit; a journal problem cannot be allowed to "
+        f"abort the run before the retention prune:\n{section}"
+    )
+    assert section.count("WARN") >= 3
+    # Shipped off-box only through the tier list, so a tier that was not built
+    # cannot be uploaded as a stale path.
+    assert 'if [[ "${logs_tier_built}" -eq 1 ]]; then' in text
+    assert 'SHIP_PATHS+=("${LOGS_PATH}")' in text
+
+
+def test_backup_sh_removes_the_logs_archive_from_local_disk():
+    """/tmp on the droplet is small and disk_watch.py alerts on it."""
+    text = BACKUP_SH.read_text(encoding="utf-8")
+    assert 'rm -f "${TAR_PATH}" "${BRAIN_PATH}" "${LOGS_PATH}"' in text
+
+
+def test_logs_tier_participates_in_both_retention_paths():
+    """Archives at the rclone destination AND releases in the GitHub repo. A tier
+    missing from either list is the one thing that accumulates forever, because
+    both pruners deliberately ignore names they do not recognise."""
+    from backup_prune import TIER_PATTERNS
+
+    sys.path.insert(0, str(REPO / "scripts"))
+    from backup_ship_gh import PRUNABLE_TAG_PREFIXES
+
+    assert any("tinyassets-logs-" in pattern for pattern in TIER_PATTERNS)
+    assert "tinyassets-logs-" in PRUNABLE_TAG_PREFIXES
+
+
+def test_gh_retention_still_buys_the_same_nights_of_history():
+    """GitHub-release retention is one pool across every tier, not per tier, so
+    adding a third tier divides the nights of history it buys. Keeping the
+    number at 30 would have cut the restore surface's history from 15 nights to
+    10 as a side effect of a log change."""
+    from backup_ship_gh import DEFAULT_RETAIN
+
+    tiers_per_night = 3
+    assert DEFAULT_RETAIN / tiers_per_night >= 15, (
+        f"{DEFAULT_RETAIN} releases over {tiers_per_night} tiers is only "
+        f"{DEFAULT_RETAIN / tiers_per_night:.0f} nights"
+    )
+
+
+def test_prune_keeps_log_tier_retention_independent_of_state_tiers():
+    """Retention is applied per tier at the rclone destination, so a nightly log
+    bundle must not push out a data archive."""
+    names = []
+    for day in range(1, 11):
+        for prefix in ("tinyassets-data-", "tinyassets-brain-", "tinyassets-logs-"):
+            names.append(f"{prefix}2026-04-{day:02d}T02-00-00Z.tar.gz")
+    cmd = [sys.executable, str(PRUNE_PY),
+           "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "6"]
+    proc = subprocess.run(
+        cmd, input="\n".join(names) + "\n", capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr
+    deleted = {line for line in proc.stdout.split() if line}
+    assert deleted == {
+        "tinyassets-data-2026-04-01T02-00-00Z.tar.gz",
+        "tinyassets-brain-2026-04-01T02-00-00Z.tar.gz",
+        "tinyassets-logs-2026-04-01T02-00-00Z.tar.gz",
+    }, deleted
 
 
 def test_prune_script_subprocess_emits_deletions():

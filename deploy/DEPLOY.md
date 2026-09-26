@@ -655,9 +655,17 @@ events. Vector receives no Docker socket or container-control capability. Two pa
 5. Verify in Better Stack dashboard — events should appear within ~30s.
 
 If the box dies, Better Stack retains the most recent logs for
-debugging the death itself. Without it the journal is box-local and lost on
-destroy — bounded but real: this change makes the evidence survive a container
-recreate, not the loss of the box.
+debugging the death itself. Without it, the journal is box-local — but no longer
+lost on destroy: `deploy/backup.sh` ships a redacted 3-day window of it as a
+third tier in the nightly backup, into the same private GitHub release repo as
+the state tiers (`scripts/backup_log_tier.py`, `scripts/redact_log_bundle.py`).
+No extra vendor and no extra credential.
+
+`tinyassets-ship-logs.timer` was retired on 2026-09-26 and the installer removes
+it from the host. It had logged `ERROR: LOG_DEST is required` hourly for months,
+and it could not have worked once configured either: it read logs with
+`docker logs`, which Docker refuses on a container using the fluentd driver that
+this row gave the daemon.
 
 ## What this deploy does NOT include (future rows)
 

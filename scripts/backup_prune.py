@@ -26,6 +26,12 @@ import sys
 TIER_PATTERNS = (
     r"^tinyassets-data-\d.*\.tar\.gz$",
     r"^tinyassets-brain-\d.*\.tar\.gz$",
+    # Logs tier, added 2026-09-26 with deploy/backup.sh's third tier. Retention
+    # is applied per tier, so this does not shorten the state tiers' history —
+    # but omitting the pattern would have made log bundles the one thing at the
+    # destination that accumulates forever, since unmatched names are never
+    # deleted.
+    r"^tinyassets-logs-\d.*\.tar\.gz$",
 )
 
 

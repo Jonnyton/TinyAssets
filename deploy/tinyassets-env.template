@@ -195,9 +195,13 @@ BACKUP_DEST=
 
 # "journald-only" above became true on 2026-09-26. Before that the default was
 # the `logs` container's json-file, which a container recreate deletes, so a
-# deploy erased the history. Nothing to configure: the driver lives in
-# deploy/compose.yml and the retention in deploy/journald-tinyassets.conf,
-# installed with the host-uptime units.
+# deploy erased the history (docs/ops/log-aggregation-runbook.md).
+# Nothing to configure: the driver is in deploy/compose.yml and the retention is
+# deploy/journald-tinyassets.conf, installed with the host-uptime units.
+#
+# Window for the nightly off-box log bundle (tier 3 of deploy/backup.sh). It
+# uses the backup's existing destination and GH_TOKEN — no extra credential.
+# BACKUP_LOG_SINCE=3 days ago
 
 
 # Override the data-dir root. Default (unset) resolves to /data inside

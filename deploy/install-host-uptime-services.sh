@@ -26,7 +26,6 @@ TIMERS=(
     tinyassets-backup.timer
     tinyassets-prune.timer
     tinyassets-disk-watch.timer
-    tinyassets-ship-logs.timer
 )
 SERVICES=(
     tinyassets-watchdog.service
@@ -34,7 +33,6 @@ SERVICES=(
     tinyassets-backup.service
     tinyassets-prune.service
     tinyassets-disk-watch.service
-    tinyassets-ship-logs.service
 )
 UNIT_FILES=(
     tinyassets-watchdog.service tinyassets-watchdog.timer
@@ -42,12 +40,26 @@ UNIT_FILES=(
     tinyassets-backup.service tinyassets-backup.timer
     tinyassets-prune.service tinyassets-prune.timer
     tinyassets-disk-watch.service tinyassets-disk-watch.timer
-    tinyassets-ship-logs.service tinyassets-ship-logs.timer
+)
+# Units this installer must REMOVE from the host, not merely stop shipping.
+# Deleting a unit from the repo leaves the enabled copy in /etc/systemd/system
+# running forever, which is how tinyassets-ship-logs.timer came to log
+# `ERROR: LOG_DEST is required` hourly for months while shipping nothing
+# (docs/ops/log-aggregation-runbook.md). Retired 2026-09-26: it
+# collected logs with `docker logs`, which cannot read a container using the
+# fluentd driver that deploy/compose.yml has given the daemon since Row K, so
+# the unit could not have worked even with a destination configured. The nightly
+# backup's logs tier replaces it on a credential the box already holds.
+#
+# Order matters: timer before service, so the timer cannot fire the service
+# between the two removals.
+RETIRED_UNITS=(
+    tinyassets-ship-logs.timer
+    tinyassets-ship-logs.service
 )
 RUNTIME_FILES=(
     deploy/daemon-watchdog.sh
     deploy/backup.sh
-    deploy/ship-logs.sh
     scripts/__init__.py
     scripts/_canary_common.py
     scripts/watchdog.py
@@ -58,19 +70,21 @@ RUNTIME_FILES=(
     scripts/rotate_run_transcripts.py
     scripts/backup_ship_gh.py
     scripts/backup_prune.py
+    scripts/backup_log_tier.py
+    scripts/redact_log_bundle.py
     tinyassets/__init__.py
     tinyassets/ttl_memo.py
     tinyassets/storage/__init__.py
     tinyassets/storage/rotation.py
 )
-# Release root plus deploy/, scripts/, tinyassets/, and tinyassets/storage/.
-EXPECTED_RELEASE_DIRECTORY_COUNT=5
 # journald drop-in. This is the retention policy for the host journal, which
 # deploy/compose.yml makes the durable home of every container's output, so the
 # installer owns it the same way it owns the units: converged on every install,
 # checked by the idempotence gate, never left to a one-time bootstrap.
 JOURNALD_DROPIN_SOURCE="deploy/journald-tinyassets.conf"
 JOURNALD_DROPIN_NAME="tinyassets.conf"
+# Release root plus deploy/, scripts/, tinyassets/, and tinyassets/storage/.
+EXPECTED_RELEASE_DIRECTORY_COUNT=5
 
 if [[ "${PRINT_MANIFEST}" == "1" ]]; then
     printf '%s\n' deploy/install-host-uptime-services.sh
@@ -199,6 +213,10 @@ rollback() {
         rm -rf -- "${RELEASE_DIR}"
         mv -- "${RELEASE_BACKUP}" "${RELEASE_DIR}"
     fi
+    # Retirement is deliberately NOT rolled back. Everything else here restores
+    # a working previous state; putting a retired unit back would restore a timer
+    # whose whole problem is that it runs. It is also idempotent, so the next
+    # install removes it again with nothing to undo.
     "${SYSTEMCTL_BIN}" daemon-reload >/dev/null 2>&1 || true
     [[ "${TIMERS_PAUSED}" -eq 0 ]] || restore_timers
 }
@@ -337,6 +355,15 @@ current_release_is_exact() {
     for unit in "${UNIT_FILES[@]}"; do
         exact_file "${SYSTEMD_DIR}/${unit}" 644 || return 1
         cmp -s "${SOURCE_ROOT}/deploy/${unit}" "${SYSTEMD_DIR}/${unit}" || return 1
+    done
+
+    # A retired unit still present on the host is drift, and it is the drift
+    # with the longest half-life: nothing else in this transaction would ever
+    # touch a unit the repo no longer mentions. Checking it HERE is what makes
+    # the removal happen at all -- this gate returns 0 on an otherwise-converged
+    # host and exits before the first mutation.
+    for unit in "${RETIRED_UNITS[@]}"; do
+        [[ ! -e "${SYSTEMD_DIR}/${unit}" ]] || return 1
     done
 
     # The journald drop-in decides how much of the host journal survives, and
@@ -486,6 +513,28 @@ for unit in "${UNIT_FILES[@]}"; do
     install -m 0644 "${TRANSACTION_DIR}/units/${unit}" "${SYSTEMD_DIR}/.${unit}.new.$$"
     mv -f "${SYSTEMD_DIR}/.${unit}.new.$$" "${SYSTEMD_DIR}/${unit}"
     UNITS_MUTATED=1
+done
+
+# Retire the units the repo no longer ships. `disable --now` before the unlink,
+# because removing the file first leaves the enablement symlinks in
+# timers.target.wants pointing at nothing and systemd then reports a unit it
+# cannot load -- and a `not-found` unit is exactly the state the gate above
+# treats as converged, so the mess would be permanent.
+for unit in "${RETIRED_UNITS[@]}"; do
+    [[ -e "${SYSTEMD_DIR}/${unit}" ]] || continue
+    load_state="$("${SYSTEMCTL_BIN}" show --property=LoadState --value "${unit}")" \
+        || fail "cannot inspect retired unit load state: ${unit}"
+    case "${load_state}" in
+        loaded|masked)
+            "${SYSTEMCTL_BIN}" disable --now "${unit}" \
+                || fail "cannot disable retired unit: ${unit}"
+            ;;
+        not-found) ;;
+        *) fail "unsafe load state for retired unit ${unit}: ${load_state}" ;;
+    esac
+    rm -f -- "${SYSTEMD_DIR}/${unit}" || fail "cannot remove retired unit: ${unit}"
+    UNITS_MUTATED=1
+    log "retired unit removed: ${unit}"
 done
 
 # journald retention. Installed atomically like the units; journald is only
