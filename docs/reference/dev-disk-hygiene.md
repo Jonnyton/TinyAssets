@@ -1,0 +1,170 @@
+# Dev-box disk hygiene (automatic)
+
+On 2026-09-26 the Windows dev box's C: drive (931 GB) reached **0 bytes free** and
+broke every agent lane. None of it was project data. It was agent scratch:
+126 pytest `--basetemp` directories holding 7.9 GB, ~330 git worktrees of this
+repo, Docker build cache, and repo scratch folders. The production droplet
+already self-cleans (`scripts/daemon_image_retention.py` count-based retention
+plus the `disk_watch.py` timer); the dev side had nothing, so the founder was
+being asked about it periodically instead.
+
+Founder directive 2026-09-26: **disk cleaning is part of the architecture, not a
+question.** `scripts/dev_hygiene.py` is that part.
+
+## What runs by itself
+
+| Mechanism | What it does | Cost |
+|---|---|---|
+| `.claude/hooks/dev_hygiene_hook.py` (SessionStart) | `--apply` on the two cheap classes (`basetemp,scratch`) every session start; injects an escalation into session context when free space is under the floor | ~4 s (measured 2026-09-26: basetemp 3.4 s, scratch 0.3 s) |
+| `scripts/install_dev_hygiene_task.ps1` | registers `TinyAssets-DevHygiene`, an hourly unelevated Task Scheduler job running the **full** pass with `--if-low-disk`; writes `.claude/logs/dev-hygiene-full.json` | ~2.5 min, off-session |
+
+The hook is the primary mechanism because it already exists here, needs no
+elevation or install step, is version-controlled with the repo (so every lane on
+the box gets it), and sessions are what create the garbage. Its only gap is that
+it fires only when a session starts — the scheduled task covers the hours a long
+background lane runs unattended. The hook reads the task's summary file, so an
+unattended escalation is seen at the next session start without the session
+paying for its own full scan.
+
+Neither can block or fail a session: the hook always exits 0, and a pass that
+times out injects nothing.
+
+## The four classes and what proves each disposable
+
+| Class | Removed only when | Never |
+|---|---|---|
+| `basetemp` | directly under the OS temp root, name matches an agent-convention prefix, **and every child** is a pytest artifact (a `<slug><N>` numbered dir, `.lock`, `garbage-*`, a `*-current` link), untouched for `--min-age-hours` (6) | anything with one unrecognised child; anything containing a reparse point |
+| `worktree` | a worktree of **this** repo per `git worktree list --porcelain`, clean of tracked *and* ignored content, idle for `--worktree-idle-hours` (24) by **recursive** newest mtime, and content-merged into `origin/main` (or PR closed with every commit on a remote) | the primary checkout, `main`/`master`/`production`, a detached HEAD, another project's repo |
+| `docker` | `docker builder prune` with a keep budget whose flag was probed from `--help`, only when the engine answers | volumes, images, containers, `system prune`, `-a` |
+| `scratch` | a name on a closed allowlist in the repo root, `git check-ignore` confirms it is ignored, older than `--min-age-days` (7) | `output/`, `universes/`, `logs/`, `data-room/`, `.secrets/`, `.codex-worktrees/`, `.tmp/`, `.review/`, or anything tracked |
+
+A branch ref is deleted only on the `merged_and_clean` path, with `git branch -d`.
+A PR-closed lane loses its worktree and **keeps its branch ref** as the recovery
+path: `git log --not --remotes` and `git branch -d` both read *local* tracking
+refs, so neither can tell a live remote branch from a tracking ref that was pruned
+after the PR closed. A ref costs ~41 bytes; the worktree is the disk win.
+
+**Every unknown is a KEEP.** An undecidable git query, an unrecognised directory
+shape, a tree over the entry budget, and a tree containing a symlink or junction
+all fail closed. Each pass is also capped at `--max-removals` (25) per class —
+the same idea as `daemon_image_retention.MAX_REMOVALS` on the droplet, so a pass
+that runs by itself can never do something enormous and a logic bug shows up in
+the log before the next pass.
+
+### The guard that matters most
+
+`git worktree remove` decides cleanliness with `git status --porcelain`, which
+**omits ignored files entirely**. That is how a checkout that looked like stale
+cruft came to hold 4,711 lines of unique research on 2026-08-26 (Hard Rule 13).
+So a worktree is also scanned with `--ignored=matching`, and any ignored path
+outside a short disposable allowlist (`.venv/`, `__pycache__/`, caches,
+root-only `_PURPOSE.md`, `.agents/supervisor/` session telemetry) keeps the
+worktree and names the path in the escalation. `.claude/agent-memory/`, `output/`,
+`universes/`, `.env`, and `.secrets/` are all unique work by this rule.
+
+On the real inventory this held back 75 of 328 worktrees, and the shape gate on
+`basetemp` held back whole stale repo checkouts (`ta-base-tree`, `ta-baseline-*`)
+kept deliberately as audit oracles — a prefix match alone would have destroyed
+them.
+
+Three properties of that allowlist are load-bearing, each one a defect cross-family
+review found before this shipped:
+
+* **Matching is by path component**, never substring or bare prefix. A rule of
+  `startswith` accepted `_PURPOSE.md-git-credentials.txt`, and a nested
+  `docs/_PURPOSE.md` was accepted as disposable although `wt.py` only ever
+  archives the root copy.
+* **An extension is not a provenance.** `*.db` was on the allowlist because this
+  repo ignores it for the SQLite mirror of its YAML catalog. The same pattern
+  covers a user's own database — on the real box it would have removed a 103 MB
+  worktree holding `test.db`.
+* **A collapsed directory entry is not a content check.** `--ignored=matching`
+  reports a wholly-ignored directory as one line, so accepting `.agents/supervisor/`
+  says nothing about what is in it. Its contents are verified against the
+  filenames its producers actually emit (`events.jsonl`, `seen.json`,
+  `keep-working-*.json`); anything else keeps the worktree.
+
+### Everything is re-verified at the removal boundary
+
+Inventory and removal are minutes apart on a full pass, and `git worktree remove`
+re-checks tracked cleanliness but not ignored content. So a worktree's dirty and
+ignored scans both run again immediately before removal, and a `_PURPOSE.md`
+archive that fails **aborts** the removal rather than logging and continuing —
+that archive is the only thing preserving an unpublished lane draft.
+
+## Running it by hand
+
+```bash
+python scripts/dev_hygiene.py                       # dry-run inventory (default)
+python scripts/dev_hygiene.py --verbose              # plus every KEEP and its reason
+python scripts/dev_hygiene.py --json                 # machine-readable
+python scripts/dev_hygiene.py --apply --classes basetemp
+python scripts/dev_hygiene.py --apply --if-low-disk 40 --escalate-below 40
+```
+
+Exit `3` means escalation: the disposable set cannot bring free space above the
+threshold, and the block printed names every item it refused to remove with the
+reason. `--dry-run` is the default; `--apply` is the only mode that deletes, and
+it appends every removal (path, size, reason) to `.claude/logs/dev-hygiene.log`.
+
+## Escalation is the only thing it asks you for
+
+Two founder-facing classes it will not resolve on its own:
+
+* **ACL-locked temp dirs.** A sandbox agent that pointed `--basetemp`/`TMPDIR` at
+  a path under a restricted token leaves a directory the interactive user cannot
+  read, list, or delete (68 of them on 2026-09-26, plus two inside the repo:
+  `.codex-test-tmp/`, `.pytest-tmp/`). Reported as
+  `acl_locked_needs_elevation`; cleared with an **elevated**
+  `powershell -ExecutionPolicy Bypass -File scripts/clear_sandbox_temp_dirs.ps1 -Apply`.
+  Prevention is in `tests/conftest.py`, which refuses a temp root inside the repo.
+* **Lanes needing a decision.** Dirty, unmerged, unpushed, or ignored-content
+  worktrees. Land them or abandon them (`python scripts/wt.py done --force
+  --reason '...'`); the tool will not choose.
+
+## Relationship to the existing tools
+
+`scripts/wt.py sweep` is the interactive worktree reaper and stays the right tool
+when a human is driving; `dev_hygiene.py` reuses its `_archive_purpose` so a
+lane's unpublished `_PURPOSE.md` still lands in
+`.git/tinyassets-worktrees.log` before anything is removed, and it reuses
+`git_squash_merge.is_merged_into` for the squash-aware merge proof. It adds the
+three gates `wt.py` does not have: ignored-content, idleness, and
+commits-on-no-remote.
+
+### Links and platform notes
+
+**One rule for every link, on every platform: it contributes nothing to a size
+and is never descended into.** `entry.is_dir(follow_symlinks=False)` is True for a
+Windows junction, and a POSIX symlink's own `lstat` size is its target-path length
+— neither is content in this tree. Both of `tree_stats`' returns are load-bearing
+(size ranks the escalation, newest mtime is the idleness gate). `remove_path`
+refuses a link handed to it directly. Git writes loose objects read-only, so the
+remover does one chmod sweep and retries; a later failure reports **partial**
+removal, because `rmtree` deletes as it walks. Status parsing uses `--porcelain -z`.
+
+## Scaling later (not built)
+
+Founder addendum 2026-09-26: *"also scaled with users as needed, but that's
+mostly later."* The build is scoped to the dev box. The policy is deliberately
+the part that generalizes, so the same four rules — disposable-only,
+inventory-first, logged, runs on a schedule and on low disk, escalates only with
+a concrete list — apply unchanged to the production host and to per-universe
+scratch. Everything machine-specific is data, not code: prefixes, class names,
+age floors, the keep budget, the per-pass cap and the roots are all module
+constants or CLI flags, and the extra temp root defaults to the repo's own drive
+rather than a literal `C:\`.
+
+What would have to be added when user count makes it necessary, and is NOT here:
+
+- **Per-universe quotas.** A reclaim decision per universe needs a tier quota to
+  measure against; today the tool has one global free-space floor.
+- **Reclaiming scratch leases.** Per-job scratch is leased, so the disposability
+  proof becomes "the lease expired", not "the mtime is old" — a different
+  question, and the one the production side should ask.
+- **Host disk expansion.** On the droplet, escalation should be able to end in
+  "grow the volume" rather than "delete more"; the dev box has no such lever.
+
+None of those change the rules above; they add classes with their own proof of
+disposability. Production disk pressure today is `DISK_AUTOPRUNE_PCT` and
+`scripts/daemon_image_retention.py`, which this tool deliberately does not touch.
