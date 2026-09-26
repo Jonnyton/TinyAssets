@@ -62,6 +62,18 @@ notification card has no authority of its own. Executable custom components use
 governed adapters; imported HTML or scripts never execute in the authenticated
 application's origin with ambient access.
 
+**The platform's own app experiences use the same authoring contracts as users,
+with no privileged path.** The first-party board, list and phone views are
+compositions authored through the contracts in this document — the same
+component identifiers, action bindings, event routing and renderer adapters a
+user gets. There is no internal-only action name, no privileged resource role,
+and no platform source of authority a user's composition cannot reach. The
+consequence is a testable one: a first-party behaviour that cannot be reproduced
+through the public contracts is a gap in the contracts, not a first-party
+feature. (Carried from PR #3842, which was closed without landing; the
+acceptance evidence for it is the export/remix proof below, and a theme or an
+independently coded lookalike does not satisfy it.)
+
 Prefer a namespaced experience representation carried by the existing native
 composition/interchange pipeline. Shape review must settle the extension and
 renderer contract before adding fields or a new registry. Experience source and

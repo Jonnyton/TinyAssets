@@ -42,6 +42,70 @@ cleared, and add one line to the completion record.
 | C25 | See status, usage and limits | The app explains actual storage, admissions and limits for this universe |
 | C32 | Everything works with no host online (cloud-only) | Authenticated uptime probes plus ordinary cloud-only use pass |
 
+## Shape carried from closed PRs
+
+Directional decisions the acceptance column cannot hold. Each names the row it
+binds and where it came from; the row above is still the pass/fail bar, and
+these do not add one.
+
+### C4 — export is the universe folder, not a second envelope
+
+PR #3840 built a separate portable "project" envelope with its own descriptor,
+inventory and digest, and was closed. The keep is the direction, not the
+envelope: **the export is built from the universe folder itself**, which is
+already the harness (skills, prompts, extensions, workflows, bin, notes, wiki,
+brain files). A second container is a second definition of the same folder, and
+the repo has paid for that shape before.
+
+The exclusion rule, which is the part worth pinning:
+
+- **In** — public source and deliberate seed assets.
+- **Out** — private bindings, credentials, run state, and **every entry the
+  jail already masks**. That set is not hand-listed here either: it is the one
+  in [`universe-harness-four-tools/design.md` D2](../universe-harness-four-tools/design.md)
+  (the credential vault, the per-universe authority databases, `.runtime/`, and
+  every hidden root entry). One definition, read by both.
+
+**Edits carry a stale-digest refusal.** An edit submits the digest it read; a
+digest that no longer matches is refused with the current one rather than
+applied, which is C17's rule on this surface. Unrelated bytes and the descriptor
+are preserved, and a no-op edit changes nothing.
+
+### C3 — deletion erases what the user reported, too
+
+**Account deletion must erase the feedback and bug reports the user submitted.**
+Carried from PR #3747, which was closed. Anything less makes "we deleted your
+data" false, which is exactly what `/legal` and the Play deletion path promise.
+
+Already satisfied by construction, with one condition to check when feedback
+storage lands: `account_deletion` derives its row set from the live schema, so a
+table keyed by `universe_id` or by one of `PRINCIPAL_KEYS` is covered the day
+its migration lands. The condition is that feedback rows are keyed that way and
+are not added to `PRESERVED_TABLES`. A satellite store needs the satellite
+sweep. No hand-written table list — see the module docstring on why.
+
+### C20 / C28 — feedback is a published shape, not a platform inbox
+
+PR #3747 built a single configured global reviewer
+(`TINYASSETS_FEEDBACK_REVIEWER`, one principal id read from server env) and was
+closed. **There is no global platform reviewer.** Feedback is a user-published
+shape that any owner can subscribe to: publishing it is C20, and delivery
+between two different owners' nodes is C28. Both already have acceptance rows
+above, so this needs no new capability — it needs the feedback surface to be
+composed from them rather than from a privileged inbox only the platform holds.
+This is the same rule as the first-party parity requirement in
+[`composable-ui-experiences/design.md`](../composable-ui-experiences/design.md):
+the platform does not get a path a user cannot author.
+
+### C24 — the network this row needs
+
+Installing an admitted dependency needs network from inside the jail, which the
+four tools do not have today. That is scoping, not policy: see
+[`universe-harness-four-tools/design.md` D7](../universe-harness-four-tools/design.md)
+— limit, never forbid. C24 is the use case that turns per-tenant egress from
+speculative work into a build; do not relax the jail's `share_net` globally to
+clear it.
+
 ## Completion record
 
 - C10 Build workflows from primitives, with no graph-size cap (spec synced; the agent builds its own probes)

@@ -54,7 +54,7 @@ No → it is the user's, whatever it is protecting them from.
 | `MAX_WORKSPACE_TIMEOUT_SECONDS = 1800` | see the chain below |
 | Branch naming, "never the default branch" | your git workflow |
 | Retry / resume / recovery policy | your workflow's error handling |
-| No network in the jail | **contested — see below** |
+| No network in the jail | nothing — resolved below: arbitrate (rate, quota, per-tenant egress), never prohibit |
 
 ### The `ws.__globals__` finding inverts
 
@@ -122,12 +122,18 @@ an uninspected workflow it didnt test and come to trust first."* Inspection and
 testing are the user's judgement, not a platform gate. The platform's job is to
 make the worst case survivable, which the vault does.
 
-### Network — the one still open
+### Network — resolved elsewhere: limit, never forbid
 
 "You are god in your own universe" says your code should have outbound network.
 The cross-tenant edge is narrow but real: shared egress IP reputation, and
 abuse attributable to the platform. That is an *arbitration* problem — rate,
-quota, attribution — not a reason the owner cannot make a request. Unresolved
+quota, attribution — not a reason the owner cannot make a request.
+
+**No longer open.** Settled in
+[`universe-harness-four-tools/design.md` D7](../universe-harness-four-tools/design.md)
+— the danger is shared fate, not anonymity; per-tenant rate, quota and
+attribution now, per-tenant egress identity when a use case needs it; and a
+missing network is "not needed yet", never "not allowed". Do not re-decide it
 here.
 
 ## The chain, now visibly a chain

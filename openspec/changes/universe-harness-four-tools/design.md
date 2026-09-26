@@ -157,6 +157,48 @@ single flat `description:` line, caps the length before building any string,
 honours no anchors/aliases/tags/block scalars, and both it and `harness_prompt`
 swallow any parse error, so one bad skill is left out and never breaks a turn.
 
+### D7. Network — limit, never forbid
+
+The four tools have no network: D2 passes `share_net=False`, so the jail gets its
+own empty network namespace (`provider_jail.jail_argv`, `universe_tools.py:305`).
+**That is "not needed yet", not "not allowed"** — recorded here so a later slice
+does not read the flag as a safety rule and write a prohibition into the surface.
+Carried from PR #2751, which was closed without landing.
+
+**The danger is shared fate, not anonymity.** An earlier draft argued against
+"raw anonymous sockets from the shared IP". There are no anonymous actors here:
+only users create universes and only universes act, so every request already has
+an owner. What the floor does let the platform touch is narrower — every
+universe's traffic leaves from one public IP, services judge by IP, and one
+universe that gets the address rate-limited or blocklisted degrades every other
+universe on the host. Attribution identifies who did it; it does not un-blocklist
+anyone. That collateral damage is a genuine user-to-user effect.
+
+**So arbitrate.** Because every action has an owner, the instruments already
+exist or are ordinary builds:
+
+- **now** — per-tenant egress rate and quota, and attribution, which ships
+  today: the outbound proxy writes `audit.jsonl` and `network.jsonl` under
+  `<data_dir>/.outbound-proxy/<grant_runtime_id>/`
+  (`storage/outbound_connections.py:1187,3440,4497-4503`). (PR #2751 cited this
+  as `/data/.outbound-proxy/<connection>/audit.jsonl`; the path is keyed by
+  grant runtime id, not connection.)
+- **when a use case needs it** — per-tenant egress identity, which removes
+  shared fate outright. Not speculative work, and not a proxy pool built ahead
+  of demand.
+
+A prohibition denies the owner a capability that arbitration solves. The
+exposure is small in the current shape anyway: outbound goes through
+`authenticated_external_call` on a connection the user holds, so reputation
+attaches to the user's own provider account rather than to the droplet.
+
+**The use case that will arrive first is C24** — "cloud dependencies and
+previews for your own work" in
+[`consolidate-platform-resource-policy/capabilities.md`](../consolidate-platform-resource-policy/capabilities.md):
+installing an admitted dependency needs network from inside the jail, and it is
+the row that turns this from scoping into a build. When it lands, build
+per-tenant egress; do not relax `share_net` globally.
+
 ## Residuals (tracked, not blocking S1)
 
 - The persona prompt assembly still reads grounding files whole. With the
