@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -986,6 +987,23 @@ def _drift_current_points_outside_releases(tmp_path: Path) -> None:
     _symlink_or_skip(runtime / "current", rogue)
 
 
+def _repoint_current(tmp_path: Path, target: str) -> None:
+    current = tmp_path / "runtime" / "current"
+    current.unlink()
+    _symlink_or_skip(current, Path(target))
+
+
+def _drift_current_points_at_the_releases_dir(tmp_path: Path) -> None:
+    # `releases/.` is made entirely of "safe-looking" characters, so a character
+    # class accepts it -- and it resolves to the releases directory itself.
+    _repoint_current(tmp_path, "releases/.")
+
+
+def _drift_current_points_above_the_releases_dir(tmp_path: Path) -> None:
+    # `releases/..` likewise, resolving to RUNTIME_ROOT.
+    _repoint_current(tmp_path, "releases/..")
+
+
 def _drift_timer_stopped_but_still_enabled(tmp_path: Path) -> None:
     (tmp_path / "state" / f"{TIMERS[0]}.active").unlink()
 
@@ -1001,9 +1019,12 @@ def _repair_unit_is_not_world_writable(tmp_path: Path) -> None:
     assert oct(unit.stat().st_mode & 0o777) == "0o644"
 
 
-def _repair_current_points_inside_releases(tmp_path: Path) -> None:
+def _repair_current_points_at_a_release_id(tmp_path: Path) -> None:
+    # The exact shape, not merely the prefix: `releases/.` and `releases/..` both
+    # start with "releases/", so a prefix check would call either of them
+    # repaired.
     target = _bash_readlink(tmp_path / "runtime" / "current")
-    assert target.startswith("releases/"), target
+    assert re.fullmatch(r"releases/[0-9a-f]{40}-[0-9a-f]{16}", target), target
 
 
 def _repair_timer_is_active_again(tmp_path: Path) -> None:
@@ -1030,8 +1051,22 @@ def _repair_timer_is_active_again(tmp_path: Path) -> None:
         ),
         pytest.param(
             _drift_current_points_outside_releases,
-            _repair_current_points_inside_releases,
+            _repair_current_points_at_a_release_id,
             id="current-outside-releases",
+        ),
+        # These two pin that the transaction REPAIRS such a pointer. They do not
+        # discriminate the pointer pattern -- see
+        # test_the_current_pointer_pattern_admits_only_a_release_id for why no
+        # behavioural test can.
+        pytest.param(
+            _drift_current_points_at_the_releases_dir,
+            _repair_current_points_at_a_release_id,
+            id="current-is-releases-dot",
+        ),
+        pytest.param(
+            _drift_current_points_above_the_releases_dir,
+            _repair_current_points_at_a_release_id,
+            id="current-is-releases-dotdot",
         ),
         pytest.param(
             _drift_timer_stopped_but_still_enabled,
@@ -1063,6 +1098,61 @@ def test_the_gate_does_not_bless_drift_the_transaction_repairs(tmp_path, drift, 
     assert "second:daemon-reload" in second_log, second_log
     assert "second:enable --now" in second_log, second_log
     repair(tmp_path)
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+def test_the_current_pointer_pattern_admits_only_a_release_id():
+    """Defence in depth, tested at the PATTERN rather than at the outcome.
+
+    `releases/.` and `releases/..` are made entirely of characters a
+    "safe-looking" class accepts, and they resolve to the releases directory and
+    to RUNTIME_ROOT. Today the file checks *below* the pointer test decline both
+    anyway -- neither directory holds the runtime files -- so a behavioural test
+    cannot tell a loose class from the exact shape, and the two drift cases above
+    pass either way. That is precisely why this is pinned here: the gate must not
+    depend on a later check to reject a pointer it should never have accepted.
+
+    The pattern is read out of the script and evaluated by bash, so loosening
+    that line turns this red; restating the regex here would not.
+    """
+    source = INSTALLER.read_text(encoding="utf-8")
+    match = re.search(r'\[\[ "\$\{link_target\}" =~ (\S+) \]\]', source)
+    assert match, "the pointer check moved or changed shape; update this test"
+    pattern = match.group(1)
+
+    real = f"releases/{'a' * 40}-{'b' * 16}"
+    accept = [real]
+    reject = [
+        "releases/.",
+        "releases/..",
+        "releases/",
+        f"/abs/releases/{'a' * 40}-{'b' * 16}",
+        f"releases/sub/{'a' * 40}-{'b' * 16}",
+        f"releases/{'a' * 39}-{'b' * 16}",  # sha one char short
+        f"releases/{'a' * 40}-{'b' * 15}",  # hash one char short
+        f"releases/{'A' * 40}-{'b' * 16}",  # uppercase is not what we write
+        f"releases/{'z' * 40}-{'b' * 16}",  # not hex
+        f"releases/{'a' * 40}_{'b' * 16}",  # wrong separator
+    ]
+
+    def matches(value: str) -> bool:
+        # Through the ENVIRONMENT, not argv. Git Bash mangles braces out of
+        # arguments -- `{40}` arrives as `40` -- which silently turns an interval
+        # quantifier into a literal and makes every comparison here wrong.
+        # Verified on this host before relying on it.
+        result = subprocess.run(
+            [_BASH, "-c", '[[ "$TA_VALUE" =~ $TA_PATTERN ]]'],
+            env={**os.environ, "TA_PATTERN": pattern, "TA_VALUE": value},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode in (0, 1), f"{result.stdout}\n{result.stderr}"
+        return result.returncode == 0
+
+    assert [value for value in accept if not matches(value)] == []
+    assert [value for value in reject if matches(value)] == []
 
 
 def test_repeat_install_with_changed_content_still_stops_timers(tmp_path):
