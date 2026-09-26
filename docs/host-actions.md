@@ -12,6 +12,19 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Decide: make a blocking review verdict a required check (2026-09-26)
+
+A Tier 2 review verdict is posted as a PR comment, and auto-merge doesn't read
+comments. On 2026-09-26, #3989 (installer idempotence gate) auto-merged at the
+exact head its reviewer had BLOCKED. It carried `infra-change`, which satisfies
+`pr-scope-guard` for release-critical files without a receipt. The fixes followed
+in #3993. The lead now disables auto-merge on every PR sent to Tier 2 review until
+it is approved. That is discipline, not enforcement. The durable option: have
+`pr-scope-guard` also require an exact-head `Drain-Review-Verdict: APPROVE` receipt
+whenever a PR declares `infra-change` or a Tier 2 title, so a BLOCK holds the PR
+the way a failing required check does. That changes a gate file, so it's yours to
+approve. Say yes and an agent builds it.
+
 ## Codex is usage-limited, so a cross-family pass is OWED on what lands meanwhile (2026-09-25)
 
 `codex exec` answers only:
