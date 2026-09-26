@@ -35,21 +35,6 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from tinyassets.storage.source_channel_policy import (
-    MODE_AUTO,
-    MODE_REQUIRE,
-    VALID_MODES,
-)
-from tinyassets.storage.source_channel_policy import (
-    get_policy as _store_get_policy,
-)
-from tinyassets.storage.source_channel_policy import (
-    get_policy_mode as _store_get_policy_mode,
-)
-from tinyassets.storage.source_channel_policy import (
-    set_policy as _store_set_policy,
-)
-
 CHANNEL_SOURCE_CODE = "source_code"
 
 
@@ -124,9 +109,17 @@ def source_channel(
 ) -> str:
     """Dispatch an owner source-channel operation.
 
-    ``action`` ∈ {approve, revoke, set_policy, get_policy}. ``universe_id`` is the
-    owner's universe (``graph_id`` from the connector). ``payload`` carries
-    ``channel_type``/``node_id``/``reason``/``sink``/``destination``/``mode``.
+    ``action`` ∈ {approve, revoke} -- the consent row, which is the only
+    per-channel setting enforcement reads. ``universe_id`` is the owner's
+    universe (``graph_id`` from the connector). ``payload`` carries
+    ``channel_type``/``node_id``/``reason``/``sink``/``destination``.
+
+    ``set_policy``/``get_policy`` were REMOVED (concern
+    `2026-09-24-source-channel-policy-store-has-no-reader`): they wrote and read
+    an approval mode no gate consulted, so the owner configured nothing and was
+    told `policy_set`. Since change `sandboxed-code-node` an approval gates no
+    run, and PLAN.md settles the direction -- authorship, not host approval,
+    decides whose code runs. An unknown operation now says so.
     """
     from tinyassets.api.helpers import _base_path, _request_universe
 
@@ -153,7 +146,7 @@ def source_channel(
         })
 
     # Single owner gate for every operation: only the admin-ACL owner of THIS
-    # universe may approve or configure its channels.
+    # universe may grant or take back its channels.
     if not universe_owner_actor(base, uid, actor):
         return _auth_failed(
             "only the universe owner may approve or configure its source "
@@ -165,14 +158,10 @@ def source_channel(
         return _approve(base, uid, actor, branch_id, fields)
     if normalized == "revoke":
         return _revoke_sink(uid, fields)
-    if normalized == "set_policy":
-        return _set_policy(base, uid, actor, fields)
-    if normalized == "get_policy":
-        return _get_policy(base, uid, fields)
     return json.dumps({
         "error": "unknown_source_channel_operation",
         "operation": action,
-        "allowed_operations": ["approve", "revoke", "set_policy", "get_policy"],
+        "allowed_operations": ["approve", "revoke"],
         "actionable_by": "chatbot",
     })
 
@@ -467,109 +456,8 @@ def _revoke_sink(uid: str, fields: dict[str, Any]) -> str:
     })
 
 
-def _set_policy(base: Any, uid: str, actor: str, fields: dict[str, Any]) -> str:
-    channel_type = (fields.get("channel_type") or "").strip()
-    mode = (fields.get("mode") or "").strip().lower()
-    if not channel_type:
-        return json.dumps({
-            "error": "channel_type is required",
-            "failure_class": "missing_channel_type",
-            "actionable_by": "chatbot",
-        })
-    if mode not in VALID_MODES:
-        return json.dumps({
-            "error": f"mode must be one of {sorted(VALID_MODES)}",
-            "failure_class": "invalid_mode",
-            "actionable_by": "chatbot",
-        })
-    record = _store_set_policy(
-        base,
-        universe_id=uid,
-        channel_type=channel_type,
-        mode=mode,
-        set_by=actor,
-    )
-    return json.dumps({
-        "status": "policy_set",
-        **record,
-    })
-
-
-def _get_policy(base: Any, uid: str, fields: dict[str, Any]) -> str:
-    channel_type = (fields.get("channel_type") or "").strip()
-    if not channel_type:
-        return json.dumps({
-            "error": "channel_type is required",
-            "failure_class": "missing_channel_type",
-            "actionable_by": "chatbot",
-        })
-    record = _store_get_policy(base, universe_id=uid, channel_type=channel_type)
-    return json.dumps({
-        "status": "policy",
-        **record,
-    })
-
-
-def apply_auto_approval_policy(base: Any, branch: Any, universe_id: str) -> bool:
-    """Run-time preflight: auto-approve the owner's own private source nodes.
-
-    Called by ``run_branch`` after loading the branch. When the run universe's
-    ``source_code`` policy is ``auto``, the branch is PRIVATE, and the branch
-    ``author`` holds ``admin`` on the run universe (i.e. the branch is the
-    universe owner's OWN node), this marks the branch's ``source_code`` nodes
-    approved in-memory (hash-pinned) so the run proceeds without an explicit
-    approve call.
-
-    Scoped so it NEVER touches the commons or another user's nodes: a public
-    branch, a branch authored by a non-owner of the run universe, or a policy of
-    ``require`` all leave the branch unchanged. Returns True iff it changed the
-    branch. Best-effort: any error leaves the branch unchanged (fail-closed —
-    the compiler still enforces approval).
-    """
-    from tinyassets.api.branches import _source_code_hash
-
-    uid = (universe_id or "").strip()
-    if not uid:
-        return False
-    try:
-        mode = _store_get_policy_mode(
-            base, universe_id=uid, channel_type=CHANNEL_SOURCE_CODE
-        )
-        if mode != MODE_AUTO:
-            return False
-        visibility = (
-            getattr(branch, "visibility", "public") or "public"
-        ).strip().lower()
-        if visibility != "private":  # fail-closed allowlist (never the commons)
-            return False
-        author = (getattr(branch, "author", "") or "").strip()
-        if not author or not universe_owner_actor(base, uid, author):
-            return False
-        changed = False
-        stamp = datetime.now(timezone.utc).isoformat()
-        for node in getattr(branch, "node_defs", []) or []:
-            src = getattr(node, "source_code", "") or ""
-            if not src:
-                continue
-            expected = _source_code_hash(src)
-            if node.approved and node.approved_source_hash == expected:
-                continue
-            node.approved = True
-            node.approved_by = author
-            node.approved_at = stamp
-            node.approved_source_hash = expected
-            node.approval_reason = "auto-approved by owner policy"
-            changed = True
-        return changed
-    except Exception:  # noqa: BLE001 — never break a run on a policy read
-        return False
-
-
 __all__ = [
     "CHANNEL_SOURCE_CODE",
-    "MODE_AUTO",
-    "MODE_REQUIRE",
-    "apply_auto_approval_policy",
     "source_channel",
     "universe_owner_actor",
 ]

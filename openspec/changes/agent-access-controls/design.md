@@ -41,7 +41,18 @@ least-privilege `("write",)` identity and pin the universe.
 `sandboxed-code-node`, approval gates no run. Serving `set_policy` would
 report `policy_set` for a setting that nothing enforces. Rule 8 forbids
 that. The consent row is the channel policy that enforcement reads, so
-D2 exposes that. The dead store is filed as a concern, to delete or rewire.
+D2 exposes that.
+
+**Resolved 2026-09-25: DELETED, not rewired.** Keeping it off the served
+surface left the same lie on the connector, where the owner's own chatbot could
+still set a policy and read it back. A rewire was the other option and it
+contradicts an approved principle -- PLAN.md (founder-approved 2026-08-30):
+authorship, not host approval, decides whose code runs, and the OS sandbox
+bounds what it touches. There is no enforcement point left for an approval mode
+to reach. So `set_policy`, `get_policy`, `apply_auto_approval_policy` and the
+store are gone, and an unknown operation now names the two that exist. Any
+future per-channel policy is a new authority change with its own proposal, not
+a revival of this one.
 
 ## D4. Withdraw a stale request
 
