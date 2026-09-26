@@ -823,6 +823,7 @@ class _ForegroundRunProviderSession:
         from tinyassets.exceptions import ProviderAuthorityHeldError
         from tinyassets.provider_assignment import provider_assignment_admission
         from tinyassets.provider_serving_binding import (
+            _PROVIDER_SERVICE,
             _current_selected_member_authority,
             _current_serving_authority,
             _is_open_provider,
@@ -862,6 +863,10 @@ class _ForegroundRunProviderSession:
                 universe_dir=self._universe_dir,
                 owner_user_id=self._principal_id,
                 universe_id=self._universe_id,
+                # Only THIS launch's source may fail this launch. `_provider` is
+                # set on the resolved assignment; empty before one exists, which
+                # the seam reads as "nothing may raise".
+                launching=_PROVIDER_SERVICE.get(self._provider, ""),
             )
             with self._lock:
                 self._call_index += 1

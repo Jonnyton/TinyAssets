@@ -676,13 +676,111 @@ def test_no_token_reaches_a_result_log_or_exception(tmp_path, monkeypatch, caplo
         with pytest.raises(ProviderAuthenticationError) as caught:
             subscription_refresh.refresh_deposited_subscriptions(
                 base_path=tmp_path, universe_dir=universe_dir,
-                owner_user_id=OWNER, universe_id=UID,
+                owner_user_id=OWNER, universe_id=UID, launching="codex",
             )
     rendered = f"{caught.value!r} {caught.value} {caplog.text}"
     for secret in secrets:
         assert secret not in rendered
     # The owner is still told which source, and what to do about it.
     assert "codex" in str(caught.value) and "sign in again" in str(caught.value)
+
+
+def test_another_sources_dead_signin_does_not_fail_this_launch(tmp_path, monkeypatch):
+    """Codex refute-review, P1 #2: the owner has more than one source on purpose.
+
+    Raising for ANY deposited source let a second, unrelated dead credential kill
+    a launch that was never going to use it. Only the launching source may.
+    """
+    from tinyassets import subscription_refresh
+    from tinyassets.credential_refresh import RefreshRejected
+    from tinyassets.credential_vault import write_credential_vault
+
+    universe_dir = tmp_path / UID
+    universe_dir.mkdir()
+    write_credential_vault(
+        universe_dir,
+        [
+            {"credential_type": "llm_subscription", "service": "codex",
+             "auth_json_b64": _document(refresh="r-dead", last_refresh="2020-01-01T00:00:00Z")},
+            {"credential_type": "llm_subscription", "service": "claude",
+             "auth_json_b64": _document(refresh="r-live", last_refresh="2020-01-01T00:00:00Z")},
+        ],
+        owner_user_id=OWNER, universe_id=UID,
+    )
+    _endpoint_from_the_credential(monkeypatch)
+    asked: list[str] = []
+
+    def refusing(document, **_):
+        asked.append(document.refresh_token)
+        if document.refresh_token == "r-dead":
+            raise RefreshRejected("the stored sign-in is no longer accepted; sign in again")
+        return subscription_refresh._rebuild(
+            document, access_token="a-2", refresh_token="r-live", id_token="")
+
+    monkeypatch.setattr(subscription_refresh, "_spend", refusing)
+
+    # The launch is using the OTHER, healthy source: the dead one must not stop it.
+    subscription_refresh.refresh_deposited_subscriptions(
+        base_path=tmp_path, universe_dir=universe_dir,
+        owner_user_id=OWNER, universe_id=UID, launching="claude",
+    )
+    # Both were still attempted -- a stale document costs whoever launches next a
+    # turn, so refreshing it is right; only the RAISE is scoped.
+    assert sorted(asked) == ["r-dead", "r-live"]
+
+    # ...and when the launch IS that source, it does raise.
+    with pytest.raises(ProviderAuthenticationError):
+        subscription_refresh.refresh_deposited_subscriptions(
+            base_path=tmp_path, universe_dir=universe_dir,
+            owner_user_id=OWNER, universe_id=UID, launching="codex",
+        )
+
+
+def test_the_refresh_token_is_sent_through_the_hardened_transport(tmp_path, monkeypatch):
+    """Codex refute-review, P1 #1: the endpoint comes from an UNSIGNED token.
+
+    A plain client would have been a token-exfiltration path. The refresh must go
+    through the same SSRF-hardened, secret-scrubbing transport the `oauth2`
+    connection refresh uses.
+    """
+    from tinyassets.connection_oauth import transport
+    from tinyassets.subscription_refresh import _Document, _spend
+
+    seen: dict = {}
+
+    def request_json(method, url, *, form=None, json_body=None, secrets=()):
+        seen.update(method=method, url=url, form=form, secrets=secrets)
+        return 200, {"access_token": "a-2", "refresh_token": "r-2"}
+
+    monkeypatch.setattr(transport, "request_json", request_json)
+    document = _Document(
+        text=json.dumps({"tokens": {"access_token": "a-1", "refresh_token": "r-1"}}),
+        access_token="a-1", refresh_token="r-1", id_token="i-1",
+        last_refresh="", expires_at=None,
+    )
+    _spend(document, token_url="https://sign-in.example.net/token", client_id="client-1")
+
+    assert seen["method"] == "POST"
+    assert seen["url"] == "https://sign-in.example.net/token"
+    assert seen["form"]["grant_type"] == "refresh_token"
+    # Every value this request carries is declared as a secret, so the transport
+    # scrubs it out of any detail it produces.
+    assert set(seen["secrets"]) == {"r-1", "a-1", "i-1"}
+
+
+def test_a_non_https_endpoint_is_refused_before_anything_is_spent(monkeypatch):
+    from tinyassets.connection_oauth import transport
+    from tinyassets.credential_refresh import RefreshUnavailable
+    from tinyassets.subscription_refresh import _Document, _spend
+
+    monkeypatch.setattr(transport, "request_json", lambda *a, **k: pytest.fail(
+        "nothing may be sent to a non-https endpoint"))
+    document = _Document(
+        text="{}", access_token="a-1", refresh_token="r-1", id_token="",
+        last_refresh="", expires_at=None,
+    )
+    with pytest.raises(RefreshUnavailable):
+        _spend(document, token_url="http://sign-in.example.net/token", client_id="c-1")
 
 
 def test_an_unreadable_stored_document_is_never_echoed(tmp_path):

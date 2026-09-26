@@ -1119,6 +1119,12 @@ class _BackgroundAssignedProviderSession:
             universe_dir=universe_dir,
             owner_user_id=self._task.actor_id,
             universe_id=self._task.universe_id,
+            # No `launching` here: which provider this attempt uses is resolved
+            # inside the transaction below, so nothing is known yet to fail the
+            # launch FOR. Every document is still brought up to date; a finished
+            # sign-in surfaces from the launch itself, which now types it as a
+            # sign-in failure rather than an outage
+            # (providers/codex_provider._terminal_auth_failure).
         )
         snapshot = None
         carrier = None

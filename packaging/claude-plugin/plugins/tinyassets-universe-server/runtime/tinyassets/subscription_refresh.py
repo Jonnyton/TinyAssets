@@ -37,6 +37,7 @@ import base64
 import binascii
 import datetime as _dt
 import json
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,8 @@ REFRESH_SKEW_SECONDS = 60.0
 #: (the Codex CLI's is 28 days). A document refreshed within the window is left
 #: alone, so an ordinary turn does no network work.
 REFRESH_AGE_SECONDS = 12 * 3600.0
+
+logger = logging.getLogger(__name__)
 
 _MAX_DOCUMENT_BYTES = 128 * 1024
 _TIMEOUT = 20.0
@@ -195,37 +198,48 @@ def _terminal(status: int, body: Any) -> bool:
 def _spend(document: _Document, *, token_url: str, client_id: str) -> _Document:
     """RFC 6749 section 6 against the source's token endpoint, one attempt.
 
+    Sent through the SSRF-hardened broker transport
+    (:func:`tinyassets.connection_oauth.transport.request_json`), the same one the
+    ``oauth2`` connection refresh uses -- not a plain client. The endpoint is
+    derived from an UNSIGNED identity token, so the request carries a refresh
+    token to a URL this process did not choose: HTTPS validation, the SSRF driver,
+    the body cap and the secret scrubbing are exactly the protections that makes
+    safe. A plain client here would have been a token-exfiltration path (Codex
+    refute-review, P1 #1).
+
     A source that rotates returns a new refresh token; one that does not leaves
     the old one valid, so it is kept. The response is read field by field --
     never merged wholesale into the stored document, which would let the
     endpoint add keys to a document a subprocess is launched with.
     """
-    import httpx
+    from tinyassets.connection_oauth.transport import (
+        OAuthError,
+        request_json,
+        validate_https_url,
+    )
 
+    secrets = tuple(
+        value for value in (document.refresh_token, document.access_token, document.id_token)
+        if value
+    )
     try:
-        with httpx.Client(timeout=_TIMEOUT) as client:
-            response = client.post(
-                token_url,
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": document.refresh_token,
-                    "client_id": client_id,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-    except httpx.HTTPError:
-        raise RefreshUnavailable("the sign-in service could not be reached") from None
-    body: Any = None
-    try:
-        body = response.json()
+        validate_https_url(token_url)
+        status, body = request_json("POST", token_url, form={
+            "grant_type": "refresh_token",
+            "refresh_token": document.refresh_token,
+            "client_id": client_id,
+        }, secrets=secrets)
     except ValueError:
-        body = None
-    if response.status_code >= 400:
-        if _terminal(response.status_code, body):
+        raise RefreshUnavailable("the sign-in endpoint is not usable") from None
+    except OAuthError:
+        # The transport's own failure (unreachable, refused host, oversized body).
+        # Its detail is scrubbed but describes OUR request, so it is not echoed.
+        raise RefreshUnavailable("the sign-in service could not be reached") from None
+    if status >= 400:
+        if _terminal(status, body):
             raise RefreshRejected(
                 "the stored sign-in is no longer accepted; sign in again")
-        raise RefreshUnavailable(
-            f"the sign-in service answered {response.status_code}")
+        raise RefreshUnavailable(f"the sign-in service answered {status}")
     if not isinstance(body, dict):
         raise RefreshUnavailable("the sign-in service answered in an unreadable shape")
     access = body.get("access_token")
@@ -578,6 +592,7 @@ def refresh_deposited_subscriptions(
     universe_dir: str | Path,
     owner_user_id: str,
     universe_id: str,
+    launching: str = "",
 ) -> None:
     """The launch-path seam: make every refreshable stored document current.
 
@@ -588,10 +603,19 @@ def refresh_deposited_subscriptions(
     a property of the record, not of a vendor. A record that is not refreshable
     launches exactly as it does today.
 
-    Raises :class:`~tinyassets.exceptions.ProviderAuthenticationError` when a
-    stored sign-in is finished, so the router marks the source for reconnect and
-    the turn continues to the next model the owner allowed — instead of the
-    cooldown a ``ProviderUnavailableError`` would buy, which stops the turn.
+    ``launching`` names the ONE service this launch is about to use, and is the
+    only one whose finished sign-in may raise. Raising for any of them let a
+    second, unrelated subscription's dead credential kill a launch that was never
+    going to use it (Codex refute-review, P1 #2) -- the owner has more than one
+    deposited source precisely so one of them being dead does not matter. A
+    non-launching source is still refreshed (it will be somebody's launch soon,
+    and a stale document costs a turn), just never at this launch's expense. An
+    empty ``launching`` means the caller does not know yet, so nothing raises.
+
+    A raise is :class:`~tinyassets.exceptions.ProviderAuthenticationError`, so the
+    router marks the source for reconnect and the turn continues to the next model
+    the owner allowed -- instead of the cooldown a ``ProviderUnavailableError``
+    would buy, which stops the turn.
 
     A TRANSPORT failure is swallowed: the stored document may still work, and a
     launch must not be lost to a blip in a service that is not even the one the
@@ -600,6 +624,7 @@ def refresh_deposited_subscriptions(
     from tinyassets.credential_vault import load_credential_vault
 
     universe = Path(universe_dir)
+    launched = launching.strip().lower()
     try:
         services = sorted({
             str(record.get("service") or "").strip().lower()
@@ -631,6 +656,12 @@ def refresh_deposited_subscriptions(
                 universe_id=universe_id,
             )
         except RefreshRejected as exc:
+            if service != launched:
+                # Another source's dead credential. Recorded for its own owner's
+                # next turn by the launch that actually uses it; never this
+                # launch's failure.
+                logger.info("a deposited sign-in for another source needs renewing")
+                continue
             from tinyassets.exceptions import ProviderAuthenticationError
 
             raise ProviderAuthenticationError(
