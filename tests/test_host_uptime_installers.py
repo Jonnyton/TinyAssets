@@ -2065,7 +2065,11 @@ exit 0
 
 
 def _run_watchdog(
-    tmp_path: Path, trigger: str, *, started_at: str | None = None
+    tmp_path: Path,
+    trigger: str,
+    *,
+    started_at: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], list[str], Path, str]:
     """Run the real watchdog against mocked externals; return its command logs.
 
@@ -2116,6 +2120,9 @@ def _run_watchdog(
         "TINYASSETS_DATA_VOLUME": "",
         "TINYASSETS_HEARTBEAT_RELATIVE": "",
     }
+    # Last, so a test can override a pinned default (a deliberately bad
+    # threshold, say) rather than only add to the set.
+    assignments.update(extra_env or {})
     exported = " ".join(
         f"{key}={shlex.quote(value)}" for key, value in assignments.items()
     )
@@ -2326,3 +2333,82 @@ def test_a_freshly_started_container_still_restarts_when_it_is_not_running(tmp_p
     )
     assert "too young" not in result.stdout
     assert "restart tinyassets-daemon.service" in systemctl_lines
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+def test_a_container_reporting_a_future_start_time_gets_no_grace(tmp_path):
+    """A negative age is unknowable, not young.
+
+    A container reporting a start time in the future means the host clock
+    stepped back -- an NTP correction, or a VM restored from a snapshot. Every
+    negative number is below the grace window, so the young-container branch
+    would have been taken unconditionally and recovery suppressed for as long as
+    the skew lasted. Same treatment as an unreadable timestamp: no grace.
+    """
+    result, systemctl_lines, _docker, _relay, _compose = _run_watchdog(
+        tmp_path, "stale-heartbeat", started_at=_minutes_ago(-5)
+    )
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "restarting daemon container: heartbeat stale" in result.stdout
+    assert "too young" not in result.stdout
+    assert "restart tinyassets-daemon.service" in systemctl_lines
+
+
+# Three distinct failure modes, not three spellings of one. Verified against
+# `set -euo pipefail` before writing the test:
+#   "abc"  -> arithmetic treats it as a variable NAME; `set -u` makes it an
+#             unbound variable and the script EXITS 1. A recovery tool that
+#             refuses to run is the one outcome worse than a wrong threshold.
+#   "1+"   -> arithmetic syntax error; `(( ))` returns non-zero, so inside an
+#             `if` it silently evaluates FALSE -- no heartbeat is ever stale.
+#   "-3"   -> parses fine and is accepted, so EVERY heartbeat is stale.
+_BAD_THRESHOLDS = ("abc", "1+", "-3", "  ")
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+@pytest.mark.parametrize(
+    "var",
+    [
+        "TINYASSETS_HEARTBEAT_MAX_AGE_SECONDS",
+        "TINYASSETS_HEARTBEAT_GRACE_MARGIN_SECONDS",
+    ],
+)
+@pytest.mark.parametrize("bad", _BAD_THRESHOLDS)
+def test_a_bad_threshold_falls_back_instead_of_silencing_recovery(tmp_path, var, bad):
+    """An operator typo in a host env file must not disarm the watchdog.
+
+    Both thresholds feed `(( ... ))`, where a bad value does one of three
+    unrelated wrong things (see above) -- and one of them kills the script
+    outright. Whatever the operator wrote, the run has to reach a decision, so a
+    non-integer is replaced by its default and said out loud.
+    """
+    result, systemctl_lines, _docker, _relay, _compose = _run_watchdog(
+        tmp_path, "stale-heartbeat", extra_env={var: bad}
+    )
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert f"ignoring {var}='{bad}'" in result.stdout, result.stdout
+    # And it still recovered: the default container is old and its heartbeat is
+    # two hours stale under either threshold's default.
+    assert "restarting daemon container: heartbeat stale" in result.stdout
+    assert "restart tinyassets-daemon.service" in systemctl_lines
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+def test_a_valid_threshold_is_left_alone(tmp_path):
+    """The fallback must not fire on good input -- otherwise an operator's real
+    setting would be silently discarded and the grace window would always be
+    the default."""
+    result, _systemctl, _docker, _relay, _compose = _run_watchdog(
+        tmp_path,
+        "stale-heartbeat",
+        started_at=_minutes_ago(1),
+        extra_env={"TINYASSETS_HEARTBEAT_GRACE_MARGIN_SECONDS": "30"},
+    )
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "ignoring" not in result.stdout
+    # max-age 60 + margin 30 = a 90s window, and the container is 60s old.
+    assert "too young to have refreshed the heartbeat" in result.stdout
+    assert "(< 90s)" in result.stdout, result.stdout

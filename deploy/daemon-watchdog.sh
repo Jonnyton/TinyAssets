@@ -22,6 +22,27 @@ log() {
     printf '%s [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LOG_TAG" "$*"
 }
 
+seconds_or_default() {
+    # Replace a non-integer threshold with its default instead of dying on it.
+    #
+    # These two feed `(( ... ))`, and under `set -e` a value bash cannot parse
+    # arithmetically -- "1+", "5 " -- aborts the script. Aborting is the one
+    # outcome a recovery tool must never have: a typo in a host env file would
+    # silence auto-recovery entirely, and the operator would see a unit that
+    # exits non-zero rather than a daemon that never gets restarted. A bad
+    # threshold is an operator mistake; refusing to run is an outage.
+    # Names the ENV var in the message, not the internal one: the operator set
+    # TINYASSETS_*, and that is what they have to go and fix.
+    local name="$1" default="$2" env_name="$3" value="${!1}"
+    [[ "${value}" =~ ^[0-9]+$ ]] && return 0
+    log "ignoring ${env_name}='${value}': not a non-negative integer; using ${default}"
+    printf -v "${name}" '%s' "${default}"
+}
+
+seconds_or_default HEARTBEAT_MAX_AGE_SECONDS 900 TINYASSETS_HEARTBEAT_MAX_AGE_SECONDS
+seconds_or_default HEARTBEAT_GRACE_MARGIN_SECONDS 120 \
+    TINYASSETS_HEARTBEAT_GRACE_MARGIN_SECONDS
+
 restart_daemon() {
     local reason="$1"
     # Fail-closed by design: every restart here targets the SAME cloud service
@@ -113,7 +134,13 @@ within_heartbeat_grace() {
     local name="$1" age grace
     age="$(container_age_seconds "$name")" || return 1
     grace=$(( HEARTBEAT_MAX_AGE_SECONDS + HEARTBEAT_GRACE_MARGIN_SECONDS ))
-    (( age < grace )) || return 1
+    # A NEGATIVE age means the container reports having started in the future:
+    # the host clock stepped back (NTP correction, a VM restored from a
+    # snapshot). That is unknowable age, not youth, and it took the grace branch
+    # unconditionally -- every negative number is less than the window -- which
+    # would have suppressed recovery for as long as the skew lasted. Treated
+    # like an unreadable timestamp: no grace.
+    (( age >= 0 && age < grace )) || return 1
     log "heartbeat grace: ${name} started ${age}s ago (< ${grace}s), too young to have refreshed the heartbeat"
     return 0
 }
