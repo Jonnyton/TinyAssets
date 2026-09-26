@@ -2180,6 +2180,19 @@ _PLATFORM_FAULT_TELLS = (
     "already consumed",
 )
 
+#: OUR OWN refusal when the request does not fit the selected model's published
+#: context window (``providers/router``). It raises a bare ``PermissionError``
+#: with no attempts behind it, so every taxonomy below reads "unknown" and the
+#: owner is told "we could not identify why" about the one failure whose cause we
+#: measured ourselves -- live 2026-09-26, turn 8dc8ada56b8e4d1cbfd2e4f37a111e7d,
+#: killed by a 1,274,067-byte tool result. These are the router's exact words;
+#: matching the sentence, not a keyword, keeps an unrelated provider message that
+#: happens to say "context" out of this class.
+_CONTEXT_OVERFLOW_TELLS = (
+    "selected model cannot fit this inference context",
+    "selected model cannot fit this workflow context",
+)
+
 
 #: Classes whose remedy is time. Only these carry a measured wait into the
 #: notice; for anything else a number would send the owner away to wait out a
@@ -2484,6 +2497,19 @@ def _has_native_auth_clue(exc: BaseException) -> bool:
     return False
 
 
+def _context_overflow(exc: BaseException) -> bool:
+    """True when this turn, or anything it wraps, is our own context refusal."""
+    seen: set[int] = set()
+    node: BaseException | None = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        text = str(node).lower()
+        if any(tell in text for tell in _CONTEXT_OVERFLOW_TELLS):
+            return True
+        node = node.__cause__ or node.__context__
+    return False
+
+
 def _served_failure_code(exc: BaseException) -> str:
     """Reduce observed diagnostics to a closed code before any durable write."""
     from tinyassets.conversation_failure import FAILURE_CODES
@@ -2491,6 +2517,12 @@ def _served_failure_code(exc: BaseException) -> str:
     try:
         if any(tell in str(exc).lower() for tell in _PLATFORM_FAULT_TELLS):
             return "platform_fault"
+        # Before the taxonomies: this refusal is ours and carries no attempt for
+        # them to read, so consulting them first is how a measured cause became
+        # "unknown". Read the whole chain -- a wrapper that says "exhausted"
+        # must not bury the measurement underneath it.
+        if _context_overflow(exc):
+            return "context_window_exceeded"
         for code in (getattr(exc, "failure_class", None), _attempt_class(exc)):
             if isinstance(code, str) and code in FAILURE_CODES:
                 return code

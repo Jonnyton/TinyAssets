@@ -1,0 +1,180 @@
+"""One ceiling for every tool result handed to a served agent.
+
+Live 2026-09-26 (turn ``8dc8ada56b8e4d1cbfd2e4f37a111e7d``, a free-model
+universe): the agent was asked to build a custom UI, called
+``read_graph target="model_options"``, and the server handed back **1,274,067
+bytes** -- the entire provider model catalogue. That one result did not fit the
+selected model's context, the turn was abandoned after five rounds, and the
+owner was told "we could not identify why". ``read_graph target="status"``
+(32.6 KB) and a ``read`` (17.6 KB) rode along in the same turn.
+
+The platform chooses how big a tool result is, so the platform owns the bound.
+This module is the bound: pure string arithmetic, no I/O and no provider
+knowledge, applied in ONE middleware (``engine_mcp_server``) so every served
+tool -- including one added tomorrow -- passes through it.
+
+**Never silent.** Over the ceiling the agent gets a JSON envelope carrying
+``truncated: true``, the original byte count, and one line naming the parameters
+that narrow *that* tool's read. An agent that can see it was truncated can
+narrow its next call; one handed a quietly clipped catalogue cannot, and will
+report the clipped view as the whole truth.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+
+#: Bytes a single tool result may occupy when the selected model's context
+#: window is not known at dispatch. Sized to leave a small-context free model
+#: room for the conversation plus several more tool calls in the same turn: the
+#: turn above had made five rounds before it died, so a ceiling that only fits
+#: one result is not a working turn either.
+DEFAULT_CEILING_BYTES = 24_576
+
+#: Floor and cap on a context-derived ceiling. The floor keeps a tiny-context
+#: model from being handed results too small to carry a useful row; the cap keeps
+#: a huge-context model from re-opening the same failure with a megabyte result,
+#: because the context window is shared with everything else in the turn.
+MIN_CEILING_BYTES = 4_096
+MAX_CEILING_BYTES = 262_144
+
+#: Share of the selected model's context window one tool result may claim. The
+#: rest belongs to the system prompt, the conversation, the agent's own output
+#: and the other tool calls of the same turn.
+CONTEXT_SHARE = 0.15
+
+#: Conservative bytes-per-token for the JSON these results are made of. Used
+#: only to turn a token-denominated context window into a byte ceiling; an
+#: under-estimate here makes the ceiling smaller, which is the safe direction.
+BYTES_PER_TOKEN = 3
+
+#: Env override for the ceiling, in bytes. A deploy-level escape hatch.
+CEILING_ENV = "TINYASSETS_ENGINE_RESULT_CEILING_BYTES"
+#: The selected model's context window in tokens, when the caller that spawned
+#: this server knew it. Absent on the persistent HTTP transport, where the
+#: server outlives any one turn's model choice -- hence the safe default.
+CONTEXT_TOKENS_ENV = "TINYASSETS_ENGINE_MODEL_CONTEXT_TOKENS"
+
+#: How to ask each tool for less, in its OWN parameters. The hint is the whole
+#: value of the marker: "too big" tells the agent to give up, while "pass
+#: query=... and read the next page" tells it what to do next.
+NARROWING_HINTS = {
+    "read_graph": (
+        'narrow this read: pass query="<text>" to filter, and limit / '
+        "output_offset to page through the rest one chunk at a time"
+    ),
+    "read": (
+        "read less of this file at a time: pass offset and limit to page "
+        "through it instead of reading the whole file"
+    ),
+    "bash": (
+        "narrow the command's own output (a filter, a head/tail, a count) "
+        "rather than asking for everything and reading it here"
+    ),
+    "browse_commons": (
+        'narrow the search: pass query="<text>" and a smaller limit, then page'
+    ),
+}
+_GENERIC_HINT = (
+    "ask this tool for less: use its query/filter parameters, or its "
+    "offset/limit parameters to page through the result"
+)
+
+_MARKER_NOTE = (
+    "This tool result was larger than the ceiling on a single result, so only "
+    "the first bytes are below. It is NOT the whole answer -- do not report it "
+    "as complete."
+)
+
+
+def narrowing_hint(tool: str) -> str:
+    """The one line telling this tool's caller how to ask for less."""
+    return NARROWING_HINTS.get(tool, _GENERIC_HINT)
+
+
+def ceiling_for_context(context_tokens: object) -> int:
+    """Bytes one result may claim of a context window, or the safe default.
+
+    A window we cannot read is not a licence for an unbounded result, so an
+    absent, malformed or non-positive token count returns the default rather
+    than no ceiling at all.
+    """
+    if type(context_tokens) is not int or context_tokens <= 0:
+        return DEFAULT_CEILING_BYTES
+    scaled = int(context_tokens * BYTES_PER_TOKEN * CONTEXT_SHARE)
+    return max(MIN_CEILING_BYTES, min(MAX_CEILING_BYTES, scaled))
+
+
+def resolve_ceiling(env: dict[str, str] | None = None) -> int:
+    """The ceiling for this dispatch: explicit override, else context, else default.
+
+    Reads the environment on every call rather than caching, so a redeploy that
+    changes the override takes effect without restarting the engine server.
+    """
+    source = os.environ if env is None else env
+    raw = (source.get(CEILING_ENV) or "").strip()
+    if raw:
+        try:
+            override = int(raw)
+        except ValueError:
+            override = 0
+        if override > 0:
+            return max(MIN_CEILING_BYTES, min(MAX_CEILING_BYTES, override))
+    tokens = (source.get(CONTEXT_TOKENS_ENV) or "").strip()
+    try:
+        return ceiling_for_context(int(tokens) if tokens else None)
+    except ValueError:
+        return DEFAULT_CEILING_BYTES
+
+
+def _head(text: str, budget: int) -> str:
+    """The first ``budget`` bytes of ``text`` as UTF-8, cut on a character."""
+    if budget <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= budget:
+        return text
+    return encoded[:budget].decode("utf-8", errors="ignore")
+
+
+def bound_tool_text(text: str, *, tool: str, limit: int) -> str | None:
+    """Return the truncation envelope for an oversized result, else ``None``.
+
+    ``None`` means the result was within the ceiling and must be passed through
+    byte-for-byte -- bounding is not reformatting, and a result that fits is
+    never rewritten.
+
+    The envelope is itself JSON and itself under ``limit``: the marker fields
+    are budgeted first and the verbatim head gets whatever is left. A head of
+    zero bytes still returns the marker, because "your result did not fit"
+    is information the agent needs even when none of the content survives.
+    """
+    if not isinstance(text, str):
+        return None
+    original = len(text.encode("utf-8"))
+    if limit <= 0 or original <= limit:
+        return None
+    marker = {
+        "truncated": True,
+        "tool": tool,
+        "original_bytes": original,
+        "ceiling_bytes": limit,
+        "note": _MARKER_NOTE,
+        "hint": narrowing_hint(tool),
+        "content": "",
+    }
+    overhead = len(json.dumps(marker, ensure_ascii=False).encode("utf-8"))
+    # JSON-escaping can grow the head past its raw byte budget, so shrink until
+    # the ENCODED envelope fits. Escapes cost at most 6 bytes per character.
+    budget = limit - overhead
+    while budget > 0:
+        marker["content"] = _head(text, budget)
+        marker["returned_bytes"] = len(marker["content"].encode("utf-8"))
+        rendered = json.dumps(marker, ensure_ascii=False)
+        if len(rendered.encode("utf-8")) <= limit:
+            return rendered
+        budget //= 2
+    marker["content"] = ""
+    marker["returned_bytes"] = 0
+    return json.dumps(marker, ensure_ascii=False)
