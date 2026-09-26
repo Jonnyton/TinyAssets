@@ -110,6 +110,53 @@ available provider against the exact commit. The reviewer is never the
 author; blocking findings must be resolved before landing/rollout.
 Inconvenience or disagreement does not activate this fallback.
 
+**A blocking review verdict is a REQUIRED CHECK (live 2026-09-26).** A verdict
+posted as a PR comment is advisory: auto-merge reads required checks, not
+comments. PR #3989 auto-merged at the exact head its Tier 2 reviewer had
+BLOCKED. So `pr-scope-guard` — already required — now fails unless the PR body
+carries an exact-head receipt, whenever the PR
+
+* touches a release-critical path (`.github/workflows/`, `deploy/`, `Dockerfile`,
+  the two test ledgers, `scripts/ci_required_tests.py`,
+  `scripts/drain_review_gate.py`) or an authority path (`AUTHORITY_RE`), **or**
+* carries the `infra-change` label, **or**
+* declares `Tier 2` in its title.
+
+```
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: <the PR's current 40-hex head>
+Drain-Review-Artifact: https://github.com/<owner>/<repo>/pull/<this PR>#issuecomment-<id>
+```
+
+Mechanics worth knowing before you plan work:
+
+- **Only `APPROVE`.** `BLOCK`, `DENY`, lower-case `approve`, or `APPROVE` with
+  trailing prose all fail, and an `APPROVE` stacked beside a `BLOCK` fails.
+- **The artifact must be a real comment on THIS PR** — a top-level comment, a
+  submitted review, or an inline review comment — authored by a repository
+  owner, member or collaborator. It is checked against the API, so an invented
+  comment id, an approval on a different PR, and a drive-by commenter all fail.
+  A `docs/…md` artifact still satisfies the older drain-branch receipt but not
+  this one.
+- **Stamping the body re-runs the check** (`edited` is a trigger), so a verdict
+  unblocks a PR with no push. **Any push voids the receipt** — the head must
+  match exactly, so batch your fixes and re-stamp once.
+- **Two content proofs stand down the requirement**, and only when they account
+  for the PR's whole release-critical/authority footprint: a deletion-only
+  quarantine-ledger edit, and an authority file whose AST is unchanged
+  (`scripts/authority_behavior_check.py`). Neither stands down a Tier 2 title.
+- **Fails closed.** An unreadable file list or comment inventory denies.
+- **Self-stamping is not prevented.** The receipt lives in the PR body, which
+  the author can edit, and this repository has one account with write access, so
+  "stamper differs from author" would be unsatisfiable. What the receipt makes
+  impossible is the #3989 accident: a BLOCK cannot merge, a receipt for an older
+  head cannot merge, and a verdict never published on the PR cannot merge. The
+  honesty note in `.github/workflows/pr-scope-guard.yml` states the residual
+  gap (a stale approval comment can be re-cited under a fresh head line).
+
+Measured blast radius: of the 60 most recently merged PRs, 29 would have needed
+a receipt (24 by path, 15 by label, 22 by Tier 2 title).
+
 **High-risk PRs stay draft until exact-head approval.** Auth, storage,
 migration, concurrency, public-surface, and data-loss-risk PRs open as drafts
 so auto-enrollment cannot merge them ahead of review. Ready only after an

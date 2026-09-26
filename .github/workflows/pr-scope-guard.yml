@@ -13,6 +13,14 @@ name: PR scope guard
 # via the `infra-change` label. This is a scope-declaration gate, not a security
 # control — see the honesty note at the bottom of this file.
 #
+# Since 2026-09-26 it carries a second, separable job: making a BLOCKING REVIEW
+# VERDICT enforceable. PR #3989 auto-merged at the exact head its Tier 2
+# reviewer had BLOCKED, because a verdict lives in a PR comment and auto-merge
+# reads only required checks. A PR that is release-critical, authority-touching,
+# `infra-change`-labelled or Tier 2 by title now needs an exact-head
+# `Drain-Review-Verdict: APPROVE` receipt in its body, pointing at a real
+# comment on itself by a trusted author.
+#
 # MUST run unconditionally (no `paths:` filter). A required status check that is
 # path-filtered never reports on PRs outside those paths, and the PR then hangs
 # forever on "Expected — waiting for status". `lint`/actionlint is path-filtered
@@ -73,7 +81,11 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_OID: ${{ github.event.pull_request.head.sha }}
           BASE_OID: ${{ github.event.pull_request.base.sha }}
+          # Title and body are author-controlled text. They are read through the
+          # environment and never interpolated into this script, so a title
+          # containing shell metacharacters is data, not code.
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         shell: bash
         run: |
           set -euo pipefail
@@ -130,19 +142,28 @@ jobs:
           HITS="$(printf '%s\n' "$CHANGED" | grep -E "$SENSITIVE_RE" || true)"
           HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 
-          # The files below DEFINE the required-tests gate (and this guard's
-          # own receipt checker). The gate executes the PR's checkout, so a PR
-          # editing them can neuter the check while its name stays green. A
-          # label is a declaration, not authorization — editing these demands
-          # the same exact-head review receipt drain PRs carry (Codex gate
-          # review 2026-08-02, finding 2). This runs from the TRUSTED base
-          # checkout, so a PR cannot weaken the rule that judges it.
-          # This workflow protects ITSELF. Without it, a later PR could narrow or
-          # delete AUTHORITY_RE with only an `infra-change` label -- permanently
-          # weakening exact-head enforcement for every PR after it. A gate that
-          # anyone can quietly disable is not a gate.
-          GATE_RE='^(\.github/workflows/tests\.yml$|\.github/workflows/pr-scope-guard\.yml$|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$)'
-          GATE_HITS="$(printf '%s\n' "$CHANGED" | grep -E "$GATE_RE" || true)"
+          # A label is a declaration, not authorization. Every release-critical
+          # path above now demands an exact-head review receipt as well.
+          #
+          # Until 2026-09-26 only a narrow GATE_RE subset did -- tests.yml,
+          # pr-scope-guard.yml, the two ledgers, ci_required_tests.py and
+          # drain_review_gate.py -- on the reasoning that a PR editing the gate
+          # can neuter the check judging it (Codex gate review 2026-08-02,
+          # finding 2). That reasoning was right and is preserved: every file
+          # GATE_RE named matches SENSITIVE_RE, so the receipt requirement on
+          # them is unchanged, and this workflow still protects ITSELF.
+          # `tests/test_drain_review_gate.py` pins that containment so a later
+          # narrowing of SENSITIVE_RE cannot quietly drop one.
+          #
+          # What changed is the rest: PR #3989 auto-merged at the exact head its
+          # Tier 2 reviewer had BLOCKED. It touched `deploy/` and carried
+          # `infra-change`, which satisfied this guard without a receipt, and a
+          # verdict posted as a PR comment does not hold a PR -- only a failing
+          # REQUIRED check does. So the receipt is now demanded whenever the PR
+          # touches a release-critical or authority path, carries the
+          # `infra-change` declaration, or declares Tier 2 in its title. The
+          # decision itself lives in scripts/drain_review_gate.py so every
+          # branch of it is unit tested.
 
           # AUTHORITY paths carry the same receipt requirement, for a different
           # reason: a bug here is privilege escalation or credential disclosure,
@@ -209,6 +230,12 @@ jobs:
           # receipt stands down only when the code is PROVABLY unchanged. It runs
           # from this trusted base checkout and only ever ast.parse()s the head
           # blob -- parsing never executes it.
+          # EXEMPT_FIRED records that a CONTENT PROOF -- not a declaration --
+          # cleared a hit. It is what lets the two exemptions below outrank the
+          # `infra-change` label, which only declares something ABOUT these
+          # paths. A Tier 2 title is never outranked: that declares the change
+          # as a whole needs a blocking review.
+          EXEMPT_FIRED=0
           if [ -n "$AUTHORITY_HITS" ]; then
             git fetch --no-tags --depth=1 origin "$HEAD_OID" >/dev/null 2>&1 || true
             # Explicit array, not bare word-splitting: each hit is its own argv
@@ -218,12 +245,14 @@ jobs:
                  --base "$BASE_OID" --head "$HEAD_OID" "${AUTHORITY_ARR[@]}"; then
               echo "authority hits are comment/docstring-only -- receipt not required"
               AUTHORITY_HITS=""
+              EXEMPT_FIRED=1
             fi
           fi
 
-          if [ -n "$AUTHORITY_HITS" ]; then
-            GATE_HITS="$(printf '%s\n%s\n' "$GATE_HITS" "$AUTHORITY_HITS" | sed '/^$/d')"
-          fi
+          # The receipt footprint: every release-critical path plus every
+          # authority path that survived the AST proof, deduplicated. HITS may
+          # list a file twice (the rename projection emits both names).
+          RECEIPT_HITS="$(printf '%s\n%s\n' "$HITS" "$AUTHORITY_HITS" | sed '/^$/d' | sort -u)"
 
           # Exception: a DELETION-ONLY ledger edit is the maintenance the gate
           # itself forces (stale quarantine entries fail the run) and only
@@ -236,7 +265,7 @@ jobs:
           # (Codex review 2026-08-02, finding 1 — this exact fail-open). The
           # count is trusted metadata and is always present. Anything that is
           # not a clean numeric 0 keeps the receipt requirement.
-          if [ "$GATE_HITS" = ".github/known-failing-tests.txt" ]; then
+          if [ "$RECEIPT_HITS" = ".github/known-failing-tests.txt" ]; then
             # Compare CONTENT, not diff metadata. GitHub reports additions: 0
             # for binary files and for pure renames alike, so a NUL-poisoned
             # ledger or a pre-planted file renamed into place both read as
@@ -247,7 +276,7 @@ jobs:
             # identical content reads as a no-op — and the link target is not
             # a gate-protected path, so a later PR edits it freely. The tree
             # gives the true blob mode and size; the blob endpoint gives the
-            # bytes of that exact blob. Every failure below leaves GATE_HITS
+            # bytes of that exact blob. Every failure below leaves RECEIPT_HITS
             # intact, i.e. requires a receipt.
             HEAD_LEDGER="$RUNNER_TEMP/head-ledger.txt"
             : > "$HEAD_LEDGER"
@@ -272,34 +301,94 @@ jobs:
                 --ledger-head-size "${LEDGER_SIZE}" \
                 --branch "${HEAD_REF}" --head "${HEAD_OID}" --body-file "$HEAD_LEDGER"; then
               echo "scope guard: ledger edit removes entries only — receipt not required"
-              GATE_HITS=""
+              RECEIPT_HITS=""
+              EXEMPT_FIRED=1
             else
               echo "ledger edit adds entries, or the head blob was not a trustworthy regular file — receipt required"
             fi
           fi
 
-          if [ -n "$GATE_HITS" ]; then
-            printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-gate.md"
-            if ! python scripts/drain_review_gate.py \
-                --branch "${HEAD_REF}" \
-                --head "${HEAD_OID}" \
-                --body-file "$RUNNER_TEMP/pr-body-gate.md" \
-                --require-receipt; then
-              {
-                echo "### PR scope guard"
-                echo ""
-                echo "**Blocked — this PR edits gate-defining or authority-critical files:**"
-                # shellcheck disable=SC2016  # the $ is sed's end-of-line anchor, not a variable
-                printf '%s\n' "$GATE_HITS" | sed 's/^/- `/; s/$/`/'
-                echo ""
-                echo "These files need an exact-head review receipt in the PR body"
-                echo "(Drain-Review-Verdict: APPROVE / Drain-Review-Head: <head sha> /"
-                echo "Drain-Review-Artifact: <path-or-url>). Re-stamp after every push."
-              } >> "$GITHUB_STEP_SUMMARY"
-              echo "scope guard: BLOCKED — gate-defining files without exact-head review receipt"
-              exit 1
-            fi
+          # A content proof only outranks the label when it accounts for the
+          # PR's ENTIRE release-critical/authority footprint. One unproven hit
+          # left over and the receipt stands.
+          FOOTPRINT_EXEMPT=0
+          if [ "$EXEMPT_FIRED" -eq 1 ] && [ -z "$RECEIPT_HITS" ]; then
+            FOOTPRINT_EXEMPT=1
           fi
+
+          # The receipt's artifact must be a comment ON THIS PR, and that comment
+          # must EXIST and come from a trusted author. Without this the artifact
+          # was any string matching a URL shape — an invented comment id, or a
+          # link to an approval on a different PR, both satisfied it.
+          #
+          # Read from the API, so it is GitHub's `author_association` deciding
+          # trust rather than anything the PR controls. Three sources, because a
+          # verdict legitimately lands in any of them: a top-level comment, a
+          # submitted review, an inline review comment.
+          #
+          # A failed read REMOVES the inventory rather than failing the step. A
+          # PR that needs no receipt must not be blocked by an unrelated API
+          # blip; a PR that needs one then finds no inventory and is denied.
+          COMMENTS_FILE="$RUNNER_TEMP/pr-comments.ndjson"
+          rm -f "$COMMENTS_FILE"
+          for ENDPOINT in "issues/${PR}/comments" "pulls/${PR}/comments" "pulls/${PR}/reviews"; do
+            if ! gh api --paginate "repos/${REPO}/${ENDPOINT}" \
+                --jq '.[] | {url: .html_url, association: .author_association}' \
+                >> "$COMMENTS_FILE" 2>/dev/null; then
+              echo "::warning::could not read ${ENDPOINT} — a receipt requirement fails closed"
+              rm -f "$COMMENTS_FILE"
+              break
+            fi
+          done
+
+          printf '%s\n' "$RECEIPT_HITS" | sed '/^$/d' > "$RUNNER_TEMP/receipt-hits.txt"
+          printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-gate.md"
+          # Seeded with the mode flag so the array is never empty, which `set -u`
+          # would otherwise make an error on expansion.
+          RECEIPT_ARGS=(--blocking-review)
+          if [ "$FOOTPRINT_EXEMPT" -eq 1 ]; then
+            RECEIPT_ARGS+=(--review-footprint-exempt)
+          fi
+          # Every trigger, every exemption and the receipt parse itself are one
+          # decision in one unit-tested place. stderr carries the reason, so it
+          # can be shown on the PR whether the answer is allow or deny.
+          if ! python scripts/drain_review_gate.py \
+              "${RECEIPT_ARGS[@]}" \
+              --branch "${HEAD_REF}" \
+              --head "${HEAD_OID}" \
+              --body-file "$RUNNER_TEMP/pr-body-gate.md" \
+              --review-title "${PR_TITLE:-}" \
+              --review-labels "${LABELS:-}" \
+              --review-hits-file "$RUNNER_TEMP/receipt-hits.txt" \
+              --review-repo "${REPO}" \
+              --review-pr "${PR}" \
+              --review-comments-file "$COMMENTS_FILE" \
+              2> "$RUNNER_TEMP/receipt-why.txt"; then
+            {
+              echo "### PR scope guard"
+              echo ""
+              echo "**Blocked — no exact-head blocking-review receipt.**"
+              echo ""
+              sed 's/^/> /' "$RUNNER_TEMP/receipt-why.txt"
+              echo ""
+              echo "Add three lines to the PR BODY, stamped by the reviewer:"
+              echo ""
+              echo '```'
+              echo "Drain-Review-Verdict: APPROVE"
+              echo "Drain-Review-Head: ${HEAD_OID}"
+              echo "Drain-Review-Artifact: https://github.com/${REPO}/pull/${PR}#issuecomment-<id>"
+              echo '```'
+              echo ""
+              echo "The artifact must link a comment, review or review comment on"
+              echo "THIS PR by a repository owner, member or collaborator. Only"
+              echo "\`APPROVE\` counts — a BLOCK verdict can never satisfy this."
+              echo "Re-stamp after every push: the head SHA must match exactly."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "scope guard: BLOCKED — no exact-head blocking-review receipt"
+            cat "$RUNNER_TEMP/receipt-why.txt" || true
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/receipt-why.txt" || true
 
           echo "### PR scope guard" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -384,3 +473,22 @@ jobs:
 # stop is the failure that actually happened: infrastructure changing SILENTLY,
 # as a side effect of a branch's history, while the PR title and CI both say
 # something narrower. It converts an invisible diff into a deliberate one.
+#
+# The same honesty applies to the review receipt. The receipt lives in the PR
+# BODY, which the PR author can edit, so an author who is also a trusted
+# reviewer can stamp their own PR. That is not closed here, and deliberately:
+# this repository has exactly one account with write access, so a rule of
+# "stamper must differ from author" would be unsatisfiable — a wall, not a gate
+# (hard rule 4: an executable gate needs an autonomous default). What the
+# receipt DOES make impossible is the accident that happened: a BLOCK verdict
+# cannot satisfy it, a receipt naming any head but the current one cannot
+# satisfy it, and a verdict that was never published as a comment on this PR by
+# a trusted author cannot satisfy it. The day a second writer exists, requiring
+# a different author is a two-line change in scripts/drain_review_gate.py.
+#
+# One residual gap, stated rather than papered over: the receipt pins the HEAD,
+# but the comment it cites is not timestamp-checked, so a stale approval comment
+# can be re-cited under a new head line. Binding the comment's `created_at`
+# against the head commit's date was considered and rejected — commit dates come
+# from the committer's clock, and a client clock running ahead would make the
+# gate unsatisfiable until real time caught up.

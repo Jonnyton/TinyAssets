@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -358,3 +362,515 @@ def test_required_scope_check_fails_closed_on_unreviewed_drain_head() -> None:
     assert "--branch \"${HEAD_REF}\"" in text
     assert "--head \"${HEAD_OID}\"" in text
     assert "--body-file \"$RUNNER_TEMP/pr-body.md\"" in text
+
+
+# ---------------------------------------------------------------------------
+# Blocking-review receipt (2026-09-26). PR #3989 auto-merged at the exact head
+# its Tier 2 reviewer had BLOCKED: the verdict was a PR comment, and only a
+# failing REQUIRED check holds a PR.
+# ---------------------------------------------------------------------------
+
+REPO = "Jonnyton/TinyAssets"
+PR = 4242
+ARTIFACT_URL = f"https://github.com/{REPO}/pull/{PR}#issuecomment-5841421637"
+TRUSTED_COMMENTS = ((ARTIFACT_URL, "OWNER"),)
+
+
+def _receipt_body(*, head: str = HEAD, url: str = ARTIFACT_URL, verdict: str = "APPROVE") -> str:
+    return (
+        "## Review\n\n"
+        f"Drain-Review-Verdict: {verdict}\n"
+        f"Drain-Review-Head: {head}\n"
+        f"Drain-Review-Artifact: {url}\n"
+    )
+
+
+def _run_blocking(
+    tmp_path: Path,
+    *,
+    title: str = "fix: a thing",
+    labels: str = "",
+    hits: tuple[str, ...] = (),
+    body: str = "",
+    head: str = HEAD,
+    repo: str = REPO,
+    pr: int = PR,
+    comments: tuple[tuple[str, str], ...] | None = TRUSTED_COMMENTS,
+    comments_raw: str | None = None,
+    footprint_exempt: bool = False,
+    branch: str = "fix/ordinary",
+    hits_file_missing: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    body_path = tmp_path / "body.md"
+    body_path.write_text(body, encoding="utf-8")
+    hits_path = tmp_path / "hits.txt"
+    if not hits_file_missing:
+        hits_path.write_text("".join(f"{h}\n" for h in hits), encoding="utf-8")
+    comments_path = tmp_path / "comments.ndjson"
+    if comments_raw is not None:
+        comments_path.write_text(comments_raw, encoding="utf-8")
+    elif comments is not None:
+        # Exactly what `gh api --jq '.[] | {url, association}'` emits: one
+        # compact JSON object per line.
+        comments_path.write_text(
+            "".join(
+                json.dumps({"url": url, "association": assoc}) + "\n" for url, assoc in comments
+            ),
+            encoding="utf-8",
+        )
+    cmd = [
+        sys.executable,
+        str(SCRIPT),
+        "--blocking-review",
+        "--branch",
+        branch,
+        "--head",
+        head,
+        "--body-file",
+        str(body_path),
+        "--review-title",
+        title,
+        "--review-labels",
+        labels,
+        "--review-hits-file",
+        str(hits_path),
+        "--review-repo",
+        repo,
+        "--review-pr",
+        str(pr),
+        "--review-comments-file",
+        str(comments_path),
+    ]
+    if footprint_exempt:
+        cmd.append("--review-footprint-exempt")
+    return subprocess.run(cmd, text=True, capture_output=True, check=False)
+
+
+@pytest.mark.parametrize(
+    "kwargs,why",
+    [
+        ({"title": "deploy: rotate the image tag (Tier 2)"}, "Tier 2 in the title"),
+        ({"title": "Tier 2: harness the provider"}, "Tier 2 leading the title"),
+        ({"title": "a tier-2 change"}, "hyphenated"),
+        ({"title": "a TIER 2 change"}, "upper case"),
+        ({"labels": "bug,infra-change"}, "the infra-change declaration"),
+        ({"hits": (".github/workflows/deploy-prod.yml",)}, "a release-critical path"),
+        ({"hits": ("tinyassets/auth/provider.py",)}, "an authority path"),
+    ],
+)
+def test_receipt_is_required_for_every_trigger(
+    tmp_path: Path, kwargs: dict[str, object], why: str
+) -> None:
+    # The PR #3989 shape: no receipt in the body, so the required check fails.
+    completed = _run_blocking(tmp_path, **kwargs)  # type: ignore[arg-type]
+
+    assert completed.returncode == 2, why
+    assert completed.stdout.strip() == "deny"
+    assert "blocking-review receipt is required" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "kwargs,why",
+    [
+        ({}, "ordinary PR: no label, no hits, no Tier 2 title"),
+        ({"title": "Tier 0: docs"}, "Tier 0 is unaffected"),
+        ({"title": "C27: tier 3 rollout"}, "Tier 3 is unaffected"),
+        ({"title": "subtier2 naming"}, "'tier2' inside a word is not a declaration"),
+        ({"title": "Tier 20 of 30"}, "Tier 20 is not Tier 2"),
+        ({"labels": "bug,documentation"}, "unrelated labels"),
+        # The workflow seds blank lines out, but an empty footprint must read as
+        # empty however it is spelled — never as one unnamed hit.
+        ({"hits": ("", "   ")}, "a blank hits file is not a hit"),
+    ],
+)
+def test_tier0_and_tier1_prs_outside_the_paths_are_unaffected(
+    tmp_path: Path, kwargs: dict[str, object], why: str
+) -> None:
+    completed = _run_blocking(tmp_path, **kwargs)  # type: ignore[arg-type]
+
+    assert completed.returncode == 0, why
+    assert completed.stdout.strip() == "receipt-not-required"
+
+
+def test_valid_receipt_unblocks_a_tier2_pr(tmp_path: Path) -> None:
+    completed = _run_blocking(
+        tmp_path, title="deploy: a thing (Tier 2)", body=_receipt_body()
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "allow"
+    # The reason is still reported, so the PR says WHY a receipt was needed.
+    assert "the title declares Tier 2" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "body,why",
+    [
+        (_receipt_body(verdict="BLOCK"), "a BLOCK verdict can never satisfy the gate"),
+        (_receipt_body(verdict="DENY"), "nor any other word"),
+        (_receipt_body(verdict="approve"), "nor lower-case approve"),
+        (_receipt_body(verdict="APPROVE with reservations"), "nor APPROVE plus prose"),
+        (_receipt_body(head="b" * 40), "a receipt for another head is stale"),
+        (_receipt_body(head=HEAD.upper()), "the head must be lower-case hex"),
+        ("", "no receipt at all"),
+        (
+            _receipt_body() + f"Drain-Review-Verdict: BLOCK\nDrain-Review-Head: {HEAD}\n",
+            "an APPROVE cannot be stacked next to a BLOCK",
+        ),
+    ],
+)
+def test_mutating_the_verdict_or_head_fails_closed(tmp_path: Path, body: str, why: str) -> None:
+    completed = _run_blocking(tmp_path, title="deploy: a thing (Tier 2)", body=body)
+
+    assert completed.returncode == 2, why
+    assert completed.stdout.strip() == "deny"
+
+
+@pytest.mark.parametrize(
+    "url,why",
+    [
+        ("docs/audits/drain-review.md", "a docs path is not a comment on this PR"),
+        (
+            f"https://github.com/{REPO}/pull/{PR + 1}#issuecomment-5841421637",
+            "a comment on a DIFFERENT PR",
+        ),
+        (
+            f"https://github.com/someone/else/pull/{PR}#issuecomment-5841421637",
+            "a comment in a different repository",
+        ),
+        (f"https://github.com/{REPO}/pull/{PR}#issuecomment-1", "a comment id that does not exist"),
+        (f"https://github.com/{REPO}/pull/{PR}", "the PR itself, with no comment anchor"),
+        (
+            f"https://github.com/{REPO}/commit/{'c' * 40}",
+            "a commit URL",
+        ),
+        (
+            f"https://github.com/{REPO}/pull/{PR}#issuecomment-5841421637 (approved)",
+            "trailing prose on the artifact line",
+        ),
+        (
+            f"https://evil.example/{REPO}/pull/{PR}#issuecomment-5841421637",
+            "a look-alike host",
+        ),
+    ],
+)
+def test_artifact_must_name_a_real_comment_on_this_pr(tmp_path: Path, url: str, why: str) -> None:
+    completed = _run_blocking(
+        tmp_path, title="deploy: a thing (Tier 2)", body=_receipt_body(url=url)
+    )
+
+    assert completed.returncode == 2, why
+    assert completed.stdout.strip() == "deny"
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    ["issuecomment-5841421637", "pullrequestreview-991234", "discussion_r778899"],
+)
+def test_a_verdict_may_live_in_a_comment_review_or_review_comment(
+    tmp_path: Path, anchor: str
+) -> None:
+    url = f"https://github.com/{REPO}/pull/{PR}#{anchor}"
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(url=url),
+        comments=((url, "OWNER"),),
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "allow"
+
+
+def test_repo_casing_in_the_artifact_url_is_tolerated(tmp_path: Path) -> None:
+    # GitHub resolves owner/repo case-insensitively; refusing a stamper who
+    # typed a different casing would be a wall, not a gate.
+    url = f"https://github.com/jonnyton/tinyassets/pull/{PR}#issuecomment-5841421637"
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(url=url),
+        comments=((url.replace("jonnyton/tinyassets", REPO), "OWNER"),),
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "allow"
+
+
+@pytest.mark.parametrize(
+    "association",
+    ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", "MANNEQUIN", ""],
+)
+def test_an_untrusted_commenter_cannot_supply_the_artifact(
+    tmp_path: Path, association: str
+) -> None:
+    # Anyone can comment on a public repo's PR. Trust comes from GitHub's
+    # author_association, read from the API, never from the comment body.
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(),
+        comments=((ARTIFACT_URL, association),),
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout.strip() == "deny"
+
+
+@pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
+def test_write_side_associations_may_supply_the_artifact(
+    tmp_path: Path, association: str
+) -> None:
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(),
+        comments=((ARTIFACT_URL, association),),
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "allow"
+
+
+@pytest.mark.parametrize(
+    "comments_raw,why",
+    [
+        (None, "the comment API read failed, so the workflow removed the file"),
+        ("", "an empty inventory cannot corroborate anything"),
+        ("not json at all\n", "unparseable inventory"),
+        (
+            json.dumps({"url": ARTIFACT_URL, "association": "OWNER"}) + "\n{oops",
+            "a trailing partial object means we did not read the whole inventory",
+        ),
+        (
+            json.dumps({"url": ARTIFACT_URL}) + "\n",
+            "a row with no association cannot be trusted",
+        ),
+        (
+            json.dumps([{"url": ARTIFACT_URL, "association": "OWNER"}]) + "\n",
+            "an array where objects were expected",
+        ),
+    ],
+)
+def test_an_uncorroborated_receipt_fails_closed(
+    tmp_path: Path, comments_raw: str | None, why: str
+) -> None:
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(),
+        comments=None,
+        comments_raw=comments_raw,
+    )
+
+    assert completed.returncode == 2, why
+    assert completed.stdout.strip() == "deny"
+
+
+def test_pretty_printed_inventory_still_parses(tmp_path: Path) -> None:
+    # raw_decode, not a line split: if gh ever stops emitting compact objects
+    # the gate must keep reading them rather than silently see an empty set.
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(),
+        comments=None,
+        comments_raw=json.dumps({"url": ARTIFACT_URL, "association": "OWNER"}, indent=2) + "\n",
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "allow"
+
+
+def test_an_unreadable_hits_file_fails_closed(tmp_path: Path) -> None:
+    # The gate could not see its own path list. That must not read as "no
+    # release-critical paths touched".
+    completed = _run_blocking(tmp_path, hits_file_missing=True)
+
+    assert completed.returncode == 2
+    assert completed.stdout.strip() == "deny"
+    assert "could not be read" in completed.stderr
+
+
+def test_a_proven_inert_footprint_outranks_the_label_but_not_a_tier2_title(
+    tmp_path: Path,
+) -> None:
+    # A deletion-only quarantine ledger edit, or an AST-identical authority
+    # file, must stay label-exempt: the gate itself forces that maintenance and
+    # a content proof beats a declaration ABOUT those paths. A Tier 2 title is
+    # the author declaring the whole change needs review, which no path proof
+    # can answer.
+    exempt = _run_blocking(tmp_path, labels="infra-change", footprint_exempt=True)
+    still_tier2 = _run_blocking(
+        tmp_path,
+        title="tests: drop a stale quarantine entry (Tier 2)",
+        labels="infra-change",
+        footprint_exempt=True,
+    )
+    unproven_leftover = _run_blocking(
+        tmp_path,
+        labels="infra-change",
+        hits=("deploy/install-host-uptime-services.sh",),
+        footprint_exempt=False,
+    )
+
+    assert exempt.returncode == 0
+    assert exempt.stdout.strip() == "receipt-not-required"
+    assert still_tier2.returncode == 2
+    assert unproven_leftover.returncode == 2
+
+
+def test_receipt_requirement_survives_a_rename_duplicated_hit(tmp_path: Path) -> None:
+    # The file list projects both the new and previous name, so the same path
+    # can appear twice. That must read as one reason, not crash or double-count.
+    completed = _run_blocking(
+        tmp_path,
+        hits=("tinyassets/auth/provider.py", "tinyassets/auth/provider.py", ""),
+    )
+
+    assert completed.returncode == 2
+    assert completed.stderr.count("tinyassets/auth/provider.py") == 1
+
+
+# The exact list the workflow's GATE_RE protected before 2026-09-26, when the
+# receipt requirement widened to every release-critical path. Each of these can
+# neuter the check that judges it, so losing the receipt on any of them is a
+# silent regression — SENSITIVE_RE must keep covering all of them.
+_FORMER_GATE_PATHS = (
+    ".github/workflows/tests.yml",
+    ".github/workflows/pr-scope-guard.yml",
+    ".github/known-failing-tests.txt",
+    ".github/heavy-test-files.txt",
+    "scripts/ci_required_tests.py",
+    "scripts/drain_review_gate.py",
+)
+
+
+def _workflow_regex(name: str) -> str:
+    text = POLICY_WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(rf"^\s*{name}='(?P<pattern>.+)'\s*$", text, re.MULTILINE)
+    assert match, f"{name} is gone from {POLICY_WORKFLOW.name}"
+    return match.group("pattern")
+
+
+def test_every_formerly_gate_defining_path_still_demands_a_receipt() -> None:
+    sensitive = re.compile(_workflow_regex("SENSITIVE_RE"))
+
+    for path in _FORMER_GATE_PATHS:
+        assert sensitive.match(path), f"{path} lost its receipt requirement"
+
+
+def test_authority_paths_still_demand_a_receipt() -> None:
+    authority = re.compile(_workflow_regex("AUTHORITY_RE"), re.IGNORECASE)
+
+    for path in (
+        "tinyassets/auth/provider.py",
+        "tinyassets/credential_vault.py",
+        "tinyassets/providers/router.py",
+        "tinyassets/api/permissions.py",
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/auth/x.py",
+    ):
+        assert authority.match(path), f"{path} lost its receipt requirement"
+
+
+def _extract(pattern: str) -> str:
+    """The workflow's own lines, so this test cannot drift from what runs."""
+    text = POLICY_WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(pattern, text, re.MULTILINE)
+    assert match, f"{pattern!r} is gone from {POLICY_WORKFLOW.name}"
+    return match.group(0).strip()
+
+
+@pytest.mark.parametrize(
+    "hits,authority,exempt_fired,expected_hits,expected_exempt",
+    [
+        ("", "", "0", [], "0"),
+        ("deploy/x.sh", "", "0", ["deploy/x.sh"], "0"),
+        # The file list projects both the new and the previous name on a rename,
+        # so the same path arrives twice and must collapse to one.
+        ("deploy/x.sh\ndeploy/x.sh", "", "0", ["deploy/x.sh"], "0"),
+        (
+            "deploy/x.sh",
+            "tinyassets/auth/p.py",
+            "0",
+            ["deploy/x.sh", "tinyassets/auth/p.py"],
+            "0",
+        ),
+        # AST proof cleared AUTHORITY_HITS and nothing else was release-critical.
+        ("", "", "1", [], "1"),
+        # AST proof cleared one authority file but a release-critical path
+        # remains: the proof does not cover the footprint, so no exemption.
+        ("deploy/x.sh", "", "1", ["deploy/x.sh"], "0"),
+    ],
+)
+def test_receipt_footprint_is_the_deduplicated_union(
+    tmp_path: Path,
+    hits: str,
+    authority: str,
+    exempt_fired: str,
+    expected_hits: list[str],
+    expected_exempt: str,
+) -> None:
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - CI runners all have bash
+        pytest.skip("bash is required to exercise the workflow's own lines")
+
+    script = "\n".join(
+        [
+            "set -euo pipefail",
+            # Inputs arrive through the environment: a hits list is multi-line,
+            # and Windows argv quoting mangles an embedded newline.
+            _extract(r'^\s*RECEIPT_HITS="\$\(printf .*$'),
+            _extract(r"^\s*FOOTPRINT_EXEMPT=0\n(?:.*\n)*?\s*fi$"),
+            _extract(r"^\s*printf '%s\\n' \"\$RECEIPT_HITS\" \| sed .*receipt-hits\.txt\"$"),
+            'echo "FOOTPRINT_EXEMPT=${FOOTPRINT_EXEMPT}"',
+        ]
+    )
+    script_path = tmp_path / "fragment.sh"
+    script_path.write_text(script, encoding="utf-8")
+
+    completed = subprocess.run(
+        [bash, str(script_path)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HITS": hits,
+            "AUTHORITY_HITS": authority,
+            "EXEMPT_FIRED": exempt_fired,
+            "RUNNER_TEMP": str(tmp_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    written = (tmp_path / "receipt-hits.txt").read_text(encoding="utf-8").splitlines()
+    assert written == expected_hits
+    assert completed.stdout.strip() == f"FOOTPRINT_EXEMPT={expected_exempt}"
+
+
+def test_scope_guard_wires_the_blocking_review_decision() -> None:
+    text = POLICY_WORKFLOW.read_text(encoding="utf-8")
+
+    # Re-trigger events: stamping the BODY must re-run the check without a push,
+    # and labelling must too.
+    for event in ("edited", "labeled", "unlabeled", "synchronize", "opened", "reopened"):
+        assert event in text, event
+    assert "PR_TITLE: ${{ github.event.pull_request.title }}" in text
+    assert "--blocking-review" in text
+    for flag in (
+        '--review-title "${PR_TITLE:-}"',
+        '--review-labels "${LABELS:-}"',
+        '--review-hits-file "$RUNNER_TEMP/receipt-hits.txt"',
+        '--review-repo "${REPO}"',
+        '--review-pr "${PR}"',
+        '--review-comments-file "$COMMENTS_FILE"',
+    ):
+        assert flag in text, flag
+    # The inventory is read from the API, for all three places a verdict lands.
+    for endpoint in ('"issues/${PR}/comments"', '"pulls/${PR}/comments"', '"pulls/${PR}/reviews"'):
+        assert endpoint in text, endpoint
+    assert "author_association" in text
+    # A failed comment read must not fail an unrelated PR, but must leave no
+    # inventory behind for one that needs a receipt.
+    assert 'rm -f "$COMMENTS_FILE"' in text
