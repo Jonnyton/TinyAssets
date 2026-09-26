@@ -74,7 +74,8 @@ def test_an_expired_catalogue_offers_nothing_to_pick(tmp_path):
     # Every row is inert and the list says why, rather than offering a choice it
     # cannot honour.
     rows = result["ui"]["model-menu"]["children"]
-    assert all(row["disabled"] for row in rows if row["cls"] == "model-menu-item")
+    choices = [row for row in rows if row["cls"] == "model-menu-item"]
+    assert choices and all(row["disabled"] for row in choices)
     assert any("needs a refresh" in row["text"] for row in rows)
     assert result["requests"] == [] and result["writes"] == []
 
@@ -89,7 +90,9 @@ def test_saved_unavailable_choice_remains_visible_but_not_applicable(tmp_path):
     rows = result["ui"]["model-menu"]["children"]
     # It is still shown as the current choice, ticked, and it is not pickable.
     current = next(row for row in rows if row["checked"] == "true")
-    assert "first" in current["text"] and current["disabled"] is False
+    assert "first" in current["text"], "the saved choice must still read as current"
+    assert current["disabled"] is True, "...and must not be offered as a fresh pick"
+    assert "unavailable" in current["text"]
     # ...and it also appears under "needs access" with its reason.
     assert any("Needs access" in row["text"] for row in rows)
     assert any("source revoked" in row["text"] for row in rows)
@@ -228,7 +231,7 @@ __FUNCTIONS__
  const ui=Object.fromEntries(ids.map(id=>[id,{text:$(id).textContent,disabled:$(id).disabled,
    hidden:$(id).hidden,
    children:$(id).children.map(c=>({text:rowText(c),value:c.value,disabled:c.disabled,
-     cls:c.className,checked:c["aria-checked"]}))}]));
+     cls:c.className,checked:c["aria-checked"]||""}))}]));
  console.log(JSON.stringify({choice:modelChoiceForNextTurn,draft:ModelPicker.draft,
    snapshot:ModelPicker.snapshot,stale:ModelPicker.stale,busy:ModelPicker.busy,requests,
    expired,refreshed,connects,writes,confirmations,recovery:ModelPicker.recovery,dialogOpen:$("model-dialog").open,
@@ -266,32 +269,41 @@ def add(name):
     return "ModelPicker.addFallback(ModelPicker.key(" + json.dumps(ref(name)) + "));"
 
 
+def pick(name):
+    """Apply a model the way a user does: click its row in the dropdown."""
+    return "await ModelPicker.choose(ModelPicker.key(" + json.dumps(ref(name)) + "));"
+
+
 def test_selection_order_is_copied_and_actual_receipt_is_separate(tmp_path):
     result = run_picker(
         tmp_path,
         choose("first")
         + add("second")
         + add("third")
-        + """
-      ModelPicker.move(1,-1);ModelPicker.use();
-      ModelPicker.draft.saved_default.model_id="changed after use";
-      ModelPicker.observe("Answered by another source · reported model");
-    """,
+        + "ModelPicker.move(1,-1);await ModelPicker.menuOpen();"
+        + pick("first")
+        + 'ModelPicker.draft.saved_default.model_id="changed after applying";'
+        + 'ModelPicker.observe("Answered by another source, reported model");',
     )
-    assert result["choice"]["saved_default"] == ref("first")
-    assert result["choice"]["fallbacks"] == [ref("third"), ref("second")]
-    assert "first" in result["ui"]["btn-models"]["text"]
+    # What went to the server is a COPY: editing the draft afterwards cannot
+    # rewrite the request that already left.
+    body = result["requests"][0]["body"]["policy"]
+    assert body["saved_default"] == ref("first")
+    assert body["fallbacks"] == [ref("third"), ref("second")]
+    # The answering-model receipt is separate from the choice, and stays separate.
     assert "reported model" in result["ui"]["model-actual"]["text"]
-    assert "first" in result["ui"]["model-next"]["text"]
-    assert result["snapshot"]["preferences"]["policy"] is None
-    assert result["requests"] == []
+    # The button follows what the SERVER confirmed, not what was clicked, so with
+    # this fixture's automatic reply it reads Automatic. That the label follows a
+    # confirmed save is pinned by
+    # test_one_choice_is_the_default_and_creates_no_tab_local_override.
+    assert result["ui"]["btn-models"]["text"].startswith("Model: ")
 
 
 def test_configured_source_claims_are_visible_without_disabling_permitted_choice(tmp_path):
     doc = catalogue()
     doc["options"][0]["availability_basis"] = "owner_configured_contract"
-    result = run_picker(tmp_path, choose("first") + "ModelPicker.use();", doc)
-    assert result["choice"]["saved_default"] == ref("first")
+    result = run_picker(tmp_path, choose("first"), doc)
+    assert result["draft"]["saved_default"] == ref("first")
     text = result["ui"]["model-inventory"]["children"][0]["text"]
     assert "availability, privacy and charges" in text and "not independently verified" in text
     other = result["ui"]["model-inventory"]["children"][1]["text"]
@@ -300,10 +312,12 @@ def test_configured_source_claims_are_visible_without_disabling_permitted_choice
 
 def test_remove_last_fallback_preserves_explicit_empty_list(tmp_path):
     result = run_picker(
-        tmp_path, choose("first") + add("second") + "ModelPicker.move(0,0);ModelPicker.use();"
+        tmp_path, choose("first") + add("second") + "ModelPicker.move(0,0);"
     )
-    assert result["choice"]["fallbacks"] == []
-    assert result["choice"]["mode"] == "explicit"
+    # Removing the last fallback leaves an EXPLICIT choice with an empty list,
+    # not a silent fall back to Automatic.
+    assert result["draft"]["fallbacks"] == []
+    assert result["draft"]["mode"] == "explicit"
 
 
 def test_duplicates_primary_and_repeated_fallback_are_not_added(tmp_path):
@@ -311,23 +325,26 @@ def test_duplicates_primary_and_repeated_fallback_are_not_added(tmp_path):
     assert result["draft"]["fallbacks"] == [ref("second")]
 
 
-def test_automatic_replaces_whole_current_order_and_saved_default_clears_override(tmp_path):
+def test_automatic_replaces_the_whole_current_order(tmp_path):
+    """Picking Automatic is not "clear the default" - it replaces the whole order.
+
+    The "saved default clears the override" half of this test was DELETED: there is
+    no tab-local override to clear now that one choice is the default.
+    """
     result = run_picker(
-        tmp_path,
-        choose("first")
-        + add("second")
-        + """
-      ModelPicker.use();ModelPicker.select("");ModelPicker.use();
-    """,
+        tmp_path, choose("first") + add("second") + 'ModelPicker.select("");'
     )
-    assert result["choice"] == {
+    assert result["draft"] == {
         "version": 1,
         "mode": "automatic",
         "saved_default": None,
         "fallbacks": [],
     }
-    result = run_picker(tmp_path, choose("first") + "ModelPicker.use();ModelPicker.useSaved();")
-    assert result["choice"] is None
+    # ...and choosing it from the dropdown saves exactly that.
+    applied = run_picker(tmp_path, choose("first") + add("second")
+                         + 'await ModelPicker.menuOpen();await ModelPicker.choose("");')
+    assert applied["requests"][0]["body"]["policy"]["mode"] == "automatic"
+    assert applied["requests"][0]["body"]["policy"]["fallbacks"] == []
 
 
 @pytest.mark.parametrize(
@@ -339,8 +356,14 @@ def test_unavailable_model_visible_but_cannot_be_selected_or_authorize_cost(tmp_
     doc["options"][0]["in_candidate_catalog"] = False
     result = run_picker(tmp_path, choose("first"), doc)
     assert result["draft"]["mode"] == "automatic"
-    assert all(row["value"] != json.dumps(ref("first"), separators=(",", ":"))
-               for row in result["ui"]["model-primary"]["children"])
+    # It is not among the rows a click can apply...
+    rows = result["ui"]["model-menu"]["children"]
+    pickable = [row for row in rows
+                if row["cls"] == "model-menu-item" and not row["disabled"]]
+    assert all("first" not in row["text"] for row in pickable)
+    # ...it is listed under "needs access" with its reason, and the inventory
+    # keeps the same reason.
+    assert any(failure.replace("_", " ") in row["text"] for row in rows)
     assert failure.replace("_", " ") in result["ui"]["model-inventory"]["children"][0]["text"]
     assert result["requests"] == []
 
@@ -350,18 +373,33 @@ def test_complete_catalogue_and_opaque_labels_are_preserved(tmp_path):
     doc["options"] *= 24
     doc["options"][0] = {**doc["options"][0], "reference": ref('<img onerror="bad"> / モデル')}
     result = run_picker(tmp_path, "", doc)
-    assert len(result["ui"]["model-primary"]["children"]) == 73
-    assert '<img onerror="bad">' in result["ui"]["model-primary"]["children"][1]["text"]
+    rows = result["ui"]["model-menu"]["children"]
+    choices = [row for row in rows if row["cls"] == "model-menu-item"]
+    # Automatic plus every one of the models: nothing is dropped to keep the list
+    # short. Derived from the document, never a literal count.
+    assert len(choices) == 1 + len(doc["options"])
+    # An opaque label is carried as TEXT, never parsed.
+    assert any('<img onerror="bad">' in row["text"] for row in choices)
 
 
 @pytest.mark.parametrize("state", ["legacy_single_provider", "none"])
-def test_unpowered_or_legacy_can_save_auto_but_cannot_invent_override_authority(tmp_path, state):
+def test_unpowered_or_legacy_can_still_choose_automatic_but_not_a_named_model(tmp_path, state):
+    """Without accepted-manifest authority Automatic saves and a named model does not."""
     doc = catalogue()
     doc["choice_authority"] = state
-    result = run_picker(tmp_path, "ModelPicker.use();", doc)
-    assert result["choice"] is None
-    assert result["ui"]["btn-model-use"]["disabled"]
-    assert not result["ui"]["btn-model-save"]["disabled"]
+    saved = run_picker(tmp_path, 'await ModelPicker.menuOpen();await ModelPicker.choose("");',
+                       doc=doc)
+    assert saved["requests"][0]["body"]["policy"]["mode"] == "automatic"
+    named = run_picker(
+        tmp_path,
+        "await ModelPicker.menuOpen();await ModelPicker.choose(ModelPicker.key("
+        + json.dumps(ref("first")) + "));",
+        doc=doc,
+    )
+    # Refused, and said where the founder is looking rather than swallowed.
+    assert named["requests"] == []
+    assert any("needs model access" in row["text"]
+               for row in named["ui"]["model-menu"]["children"])
 
 
 def test_save_exact_home_and_generation_never_grants_or_silently_switches(tmp_path):
@@ -415,20 +453,22 @@ def test_refresh_failure_retains_labelled_stale_rows_and_blocks_changes(tmp_path
         choose("first")
         + """
       MCP.getModelOptions=async()=>{throw new Error("offline");};
-      await ModelPicker.refresh();ModelPicker.use();await ModelPicker.save();
-    """,
+      await ModelPicker.refresh();await ModelPicker.menuOpen();
+    """
+        + pick("first"),
     )
     assert result["choice"] is None and result["requests"] == []
     assert "stale" in result["ui"]["model-inventory"]["children"][0]["text"]
-    assert result["ui"]["btn-model-use"]["disabled"]
+    choices = [row for row in result["ui"]["model-menu"]["children"]
+               if row["cls"] == "model-menu-item"]
+    assert choices and all(row["disabled"] for row in choices), (
+        "a stale list must offer nothing to apply")
 
 
-def test_expiry_disables_apply_without_altering_captured_choice(tmp_path):
-    result = run_picker(
-        tmp_path, choose("first") + "ModelPicker.use();expire();ModelPicker.select('');"
-    )
-    assert result["choice"]["saved_default"] == ref("first")
-    assert result["stale"] and result["ui"]["btn-model-save"]["disabled"]
+# test_expiry_disables_apply_without_altering_captured_choice was DELETED rather
+# than converted: its whole subject was the tab-local "Use in this chat" choice,
+# which no longer exists. Expiry blocking an apply is covered by
+# test_an_expired_catalogue_offers_nothing_to_pick above.
 
 
 def test_late_refresh_after_signout_cannot_repopulate_dialog(tmp_path):
@@ -446,9 +486,11 @@ def test_late_refresh_after_signout_cannot_repopulate_dialog(tmp_path):
 def test_refresh_home_change_clears_old_current_choice(tmp_path):
     result = run_picker(
         tmp_path,
-        choose("first") + "ModelPicker.use();doc.universe_id='home-b';await ModelPicker.refresh();",
+        choose("first") + "doc.universe_id='home-b';await ModelPicker.refresh();",
     )
+    # The previous home's draft does not carry into the new one.
     assert result["choice"] is None
+    assert result["draft"]["mode"] == "automatic"
     assert result["snapshot"]["universe_id"] == "home-b"
 
 
@@ -458,8 +500,11 @@ def test_native_dialog_close_returns_focus_and_connection_is_real_action(tmp_pat
     )
     assert result["focusReturned"] and not result["dialogOpen"] and result["connects"] == 1
     html, _ = render_app_html()
+    # The access sheet survives as a sheet; the BAR BUTTON now controls the
+    # dropdown, which is the founder's "just a list dropdown menu".
     assert '<dialog id="model-dialog"' in html
-    assert 'aria-controls="model-dialog"' in html
+    assert 'aria-controls="model-menu"' in html
+    assert 'aria-controls="model-dialog"' not in html
 
 
 def test_delayed_save_json_cannot_touch_another_login_snapshot(tmp_path):
@@ -483,7 +528,11 @@ def test_failed_first_read_does_not_invent_saved_automatic_default(tmp_path):
     result = run_picker(tmp_path, "", doc={"error": "model_options_unavailable"})
     assert result["snapshot"] is None
     assert result["ui"]["model-saved"]["text"] == "Saved default: Not loaded"
-    assert result["ui"]["btn-model-save"]["disabled"]
+    # The list offers nothing rather than an invented "Automatic" to apply.
+    choices = [row for row in result["ui"]["model-menu"]["children"]
+               if row["cls"] == "model-menu-item"]
+    assert all(row["disabled"] for row in choices)
+    assert result["requests"] == []
 
 
 def test_successful_read_without_saved_policy_truthfully_shows_automatic(tmp_path):

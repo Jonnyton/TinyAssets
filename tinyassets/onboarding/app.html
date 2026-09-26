@@ -2677,15 +2677,21 @@
       // their reason. A model is never silently absent.
       const usable=[],blocked=[];
       for(const row of this.rows()) (this.usable(row)?usable:blocked).push(row);
+      const isCurrent=key=>!!current&&this.key(current)===key;
       for(const row of usable){
         const key=this.key(row.reference);
-        this.menuRow(this.label(row.reference),!!current&&this.key(current)===key,
-          pickable?()=>this.choose(key):null);
+        this.menuRow(this.label(row.reference),isCurrent(key),pickable?()=>this.choose(key):null);
       }
-      // A saved choice whose model has gone away still shows as the current one:
-      // the universe is configured that way and hiding it would misreport it.
-      if(current&&!this.row(current))
-        this.menuRow(this.label(current),true,null,"— unavailable");
+      // The current choice is ALWAYS shown as current, at the top of the list,
+      // even when it can no longer be used - whether its model went away entirely
+      // or merely stopped being available. The universe is configured that way and
+      // a list that showed it unticked, or only down under "needs access", would
+      // misreport what the universe is set to.
+      if(current&&!usable.some(row=>isCurrent(this.key(row.reference)))){
+        const row=this.row(current);
+        const why=row ? "— currently unavailable" : "— unavailable";
+        this.menuRow(this.label(current),true,null,why);
+      }
       if(!this.fresh()) this.menuNote(this.busy?"Loading your models…":"This list needs a refresh.");
       else if(!usable.length) this.menuNote("No model is available to choose yet.");
       if(blocked.length){
@@ -2695,9 +2701,12 @@
           this.menuRow(this.label(row.reference),false,null,"— "+(reasons||"availability unconfirmed"));
         }
       }
-      this.menuRow("Model access and availability…",false,()=>{
+      // Not a model row: the way through to access, availability and fallback
+      // order. Classed apart so it is never counted as one of the choices.
+      const more=this.menuRow("Model access and availability…",false,()=>{
         this.menuClose({restoreFocus:false});this.open();
       });
+      more.className+=" model-menu-item--more";
     },
     // A click in the list IS the decision: apply it as the saved default now.
     async choose(key){
