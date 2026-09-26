@@ -32,6 +32,35 @@ VALID_CREDENTIAL_TYPES = frozenset(
     {"social", "llm_subscription", "llm_api_key", "vcs", "http"}
 )
 
+#: When the secret NOW STORED in an http record was stored. There is no expiry
+#: warning yet -- a key that died on the provider side was first noticed by a
+#: failed run -- and this is the field one needs.
+HTTP_DEPOSITED_AT = "deposited_at"
+
+
+def http_credential_record(*, destination: str, token: str) -> dict[str, Any]:
+    """The ONE shape of an http credential record, stamped with its write time.
+
+    Three paths put a secret in an http slot: the owner's deposit
+    (``api.http_connection.connect_http``), a rotation (``rotate_http``), and an
+    oauth2 refresh (``connection_oauth.tokens``). ``_merge_single_record``
+    REPLACES the whole slot for every non-subscription type, so a field only one
+    of them wrote would silently disappear on the next write by another. One
+    builder, so ``deposited_at`` means the same thing whichever path stored the
+    secret that is there now.
+
+    The token is passed straight through and never inspected, logged or returned.
+    """
+    from datetime import datetime, timezone
+
+    return {
+        "credential_type": "http",
+        "service": destination,
+        "destination": destination,
+        "token": token,
+        HTTP_DEPOSITED_AT: datetime.now(timezone.utc).isoformat(),
+    }
+
 # Map a deposited llm_api_key record's ``service`` to the provider-subprocess
 # env var that CLI providers read. Only CLI-subprocess providers are reachable
 # via the vault env overlay (claude-code / codex); the in-process HTTP free-tier
@@ -174,6 +203,52 @@ def _normalize_record(raw: Any) -> dict[str, Any]:
     ):
         _decode_codex_auth_json(record["auth_json_b64"])
     return record
+
+
+def http_deposit_refusal(
+    universe_dir: str | Path, *, destination: str, owner_user_id: str,
+) -> str:
+    """Why an owned http write for ``destination`` would be refused, or ``""``.
+
+    Read-only, and derived from the SAME rows :func:`write_credential_vault`
+    compares, so a surface that previews a write cannot disagree with the write
+    that follows. There is deliberately no second copy of the rule here — both
+    conditions below are the ones the writer raises ``PermissionError`` for.
+
+    It exists because a ROTATION is previewed before the owner is asked to paste
+    anything: a record left with no ownership row (deposited before http
+    ownership was tracked, or by an owner-less path) is refused by the write, and
+    admitting that card would put an unfulfillable tab in front of the owner
+    (Codex refute-review, P2 #4).
+    """
+    from tinyassets.storage import db_path
+
+    universe = Path(universe_dir).resolve(strict=False)
+    service = (destination or "").strip().lower()
+    owner = (owner_user_id or "").strip()
+    if not service or not owner:
+        return "incomplete_request"
+    conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
+    try:
+        _ensure_llm_deposit_owner_schema(conn)
+        rows = conn.execute(
+            "SELECT service, owner_user_id FROM llm_credential_deposit_owners "
+            "WHERE universe_id = ?",
+            (universe.name,),
+        ).fetchall()
+    finally:
+        conn.close()
+    if any(str(row[1]) != owner for row in rows):
+        return "foreign_owner"
+    owned = {str(row[0]) for row in rows}
+    if f"http:{service}" in owned:
+        return ""
+    on_disk = {
+        _service(record)
+        for record in load_credential_vault(universe)
+        if record.get("credential_type") == "http"
+    }
+    return "unowned_record" if service in on_disk else ""
 
 
 def _records_from_payload(payload: Any) -> list[dict[str, Any]]:
