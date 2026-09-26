@@ -53,8 +53,33 @@ dispatcher-birth test was satisfied by a `tinyassets.universe.costly` scope refu
 rather than the level check. It now carries that scope and asserts the level error
 text, with a positive sibling proving birth still works.
 
-**Cap: 3 rounds** (AGENTS.md). Round 3 is confirmation only; anything still open
-after it goes to the founder rather than a round 4.
+**Review round 3 (Codex, 2026-09-26, head `4f87c39a`): ADAPT — the cap.** Both
+round-2 holes confirmed closed (bare directory flipped with `failed == []`,
+`public_read` closed, `get_activity` refuses; reserved dirs and dotfiles still
+excluded; `host_path` matches creation and backfill; both writers reject split
+levels; no other production route producing them; docstring accurate). It also
+checked the five tests I asked it to for the wrong-reason failure mode and found
+none. Artifact `docs/audits/2026-09-26-pr4019-round3-review.md`.
+
+6. One new `DISAGREE_EVIDENCE`, in **my own round-2 fix**: registering
+   unconditionally destroyed registry data. `ensure_universe_registered` is an
+   UPSERT whose conflict clause sets `display_name=excluded.display_name,
+   metadata_json=excluded.metadata_json`, so an already-registered universe lost
+   its owner's display name (replaced by the raw id) and its registry metadata
+   (replaced by `{}`) — while the migration reported success. Fixed by
+   `visibility.register_if_absent()`, one guarded predicate used by both callers.
+
+   **The same defect was already in the boot backfill**, which registered every
+   discovered universe unconditionally on EVERY BOOT — so a universe its owner had
+   named lost that name at the next restart, silently. Pre-existing, worse than the
+   migration instance, and closed by the same change with its own two tests.
+
+**Cap reached.** AGENTS.md allows three rounds, so the round-3 fix is
+**unreviewed by the peer** and no round 4 was opened. Two findings stay open by
+choice, both agreed reasonable to defer by the reviewer:
+`docs/concerns/2026-09-26-visibility-test-double-assumes-public.md` and
+`docs/concerns/2026-09-26-content-readers-gate-on-the-legacy-bit.md`. The founder
+decides whether the last fix wants another look.
 
 - [x] 1. `DEFAULT_CREATE_VISIBILITY = "private"`; module docstring states the
   founder rule and the date.

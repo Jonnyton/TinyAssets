@@ -25,7 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
-| **P1** | [PR 4019 round 2 remaining gaps at 50802601](2026-09-26-pr4019-round2-remaining.md) — metadata-only activity disclosure and migration failure on an unregistered bare directory; pinned reproductions included | 2026-09-26 |
+| **P2** | [Private migration overwrites existing universe index data](2026-09-26-private-migration-overwrites-universe-index.md) ? final round-3 review: original holes closed, but registration now erases existing display names and registry metadata; escalated to founder | 2026-09-26 |
 | **P2** | [Six universe content readers gate on the legacy bit](2026-09-26-content-readers-gate-on-the-legacy-bit.md) — `get_activity`, `read_premise`, `read_canon`, `read_source`, `read_output`, `query_world` check only `public_read`, which `set_universe_visibility` opens for any level granting a visitor a capability, so `metadata_only` would serve content; latent while nothing selects that level | 2026-09-26 |
 | **P2** | [Visibility test double turns undeclared into public](2026-09-26-visibility-test-double-assumes-public.md) — `tests/conftest.py`'s autouse fixture resolves an undeclared universe to `PUBLIC` for every module but two, so nothing outside those two crosses the startup/default boundary now that boot declares `private`; a coverage hole, no regression attributed | 2026-09-26 |
 | **P2** | [Daemon logs are not shipped off-box](2026-09-26-daemon-logs-not-shipped.md) — `LOG_DEST` unset, so ship-logs errors every run; each deploy recreates the container and erases `docker logs` evidence | 2026-09-26 |

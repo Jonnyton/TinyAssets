@@ -197,10 +197,7 @@ def run(
     skip: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Plan, then (with ``apply``) flip every candidate to ``private``."""
-    from pathlib import Path as _Path
-
     from tinyassets.api import visibility as vis
-    from tinyassets.daemon_server import ensure_universe_registered
 
     summary = plan(base_path, skip=skip)
     summary["applied"] = bool(apply)
@@ -210,19 +207,21 @@ def run(
         for row in summary["candidates"]:
             uid = row["universe_id"]
             try:
-                # Register BEFORE declaring. `universe_rules` has an FK onto
-                # `universes`, so a bare on-disk directory with no DB rows — the
-                # exact record that most needs closing, since it is served by the
-                # legacy bit's default — made the write die with
-                # `FOREIGN KEY constraint failed` and stay readable (Codex
-                # cross-family review of PR #4019, round 2, reproduced; a second
-                # `--apply` repeated the failure). `backfill_universe_visibility`
-                # already registers first; this now matches it.
-                ensure_universe_registered(
-                    base_path,
-                    universe_id=uid,
-                    universe_path=_Path(base_path) / uid,
-                )
+                # Register BEFORE declaring, and ONLY IF ABSENT. `universe_rules`
+                # has an FK onto `universes`, so a bare on-disk directory with no
+                # DB rows — the record that most needs closing, since the legacy
+                # bit's default serves it — made the write die with
+                # `FOREIGN KEY constraint failed` and stay readable (Codex review
+                # round 2; a second `--apply` repeated the failure).
+                #
+                # Registering UNCONDITIONALLY then destroyed data, because
+                # `ensure_universe_registered` is an UPSERT that resets
+                # `display_name` to the raw id and `metadata_json` to `{}` when
+                # those are not passed (Codex review round 3). `register_if_absent`
+                # is the single guarded form both this script and the boot backfill
+                # now use — a migration that closes a read hole must not silently
+                # rename someone's universe to do it.
+                vis.register_if_absent(base_path, uid)
                 vis.set_universe_visibility(uid, "private", source="migration")
             except Exception as exc:  # noqa: BLE001 - one bad row must not stop the rest
                 logger.error("could not flip %s: %s", uid, exc, exc_info=True)

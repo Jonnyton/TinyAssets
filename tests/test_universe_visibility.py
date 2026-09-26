@@ -611,6 +611,52 @@ class TestBackfill:
         assert vis.declared_level_source("pub") == "backfill"
         assert not vis.level_was_chosen_by_owner("pub")
 
+    def test_backfill_does_not_wipe_an_owners_display_name_or_metadata(self, base):
+        """The boot backfill ran `ensure_universe_registered` unconditionally for
+        every discovered universe, and that helper's UPSERT resets `display_name`
+        to the raw id and `metadata_json` to `{}` when those are not passed. So a
+        universe its owner had named lost that name at the next restart, silently,
+        with the gate reporting success. Found by the Codex cross-family review of
+        PR #4019 (round 3) in the sibling migration script; the same shape was here.
+        """
+        from tinyassets.daemon_server import (
+            ensure_universe_registered,
+            get_universe,
+        )
+
+        (base / "named").mkdir()
+        ensure_universe_registered(
+            base,
+            universe_id="named",
+            universe_path=base / "named",
+            display_name="My learned name",
+            metadata={"keep": "valuable"},
+        )
+        assert vis.backfill_universe_visibility() == {"named": "private"}
+
+        row = get_universe(base, universe_id="named")
+        assert row["display_name"] == "My learned name", row
+        assert row["metadata"] == {"keep": "valuable"}, row
+        assert vis.universe_visibility("named") is vis.PRIVATE  # not a no-op
+
+    def test_the_startup_gate_does_not_wipe_it_either(self, base):
+        """The gate is what actually runs on every boot, so it gets its own test."""
+        from tinyassets.daemon_server import (
+            ensure_universe_registered,
+            get_universe,
+        )
+
+        (base / "named").mkdir()
+        ensure_universe_registered(
+            base, universe_id="named", universe_path=base / "named",
+            display_name="Kept", metadata={"k": 1},
+        )
+        vis.run_visibility_startup_gate()
+        vis.run_visibility_startup_gate()  # a second boot must not wipe it either
+        row = get_universe(base, universe_id="named")
+        assert row["display_name"] == "Kept"
+        assert row["metadata"] == {"k": 1}
+
     def test_backfill_is_idempotent(self, base):
         _make_universe(base, "pub")
         assert vis.backfill_universe_visibility() == {"pub": "private"}

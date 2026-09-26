@@ -739,6 +739,89 @@ class TestMigration:
         assert "SECRET" not in after, after
         assert json.loads(after)["error"] == "universe_access_denied"
 
+    def test_it_does_not_register_a_reserved_operational_directory(self, base):
+        """The registration fix must not turn non-universes into universes.
+
+        `run(apply=True)` now calls `ensure_universe_registered` on a discovered
+        directory, so the question is what "discovered" admits. It is
+        `_is_listable_universe_dir`, the same predicate the boot backfill and
+        `list` use — dotfiles and the reserved operational data dirs (`lance`,
+        `output`, `runs`, `wiki`) are excluded. Without this, a migration run would
+        mint a `universes` row for the wiki store.
+        """
+        from scripts.migrate_private_by_default import run
+        from tinyassets.api.universe import _TOP_LEVEL_OPERATIONAL_DATA_DIRS
+        from tinyassets.storage import _connect
+
+        for name in (*_TOP_LEVEL_OPERATIONAL_DATA_DIRS, ".hidden"):
+            (base / name).mkdir(exist_ok=True)
+        summary = run(base, apply=True)
+        touched = {
+            r["universe_id"]
+            for key in ("candidates", "flipped", "already_private", "kept")
+            for r in summary[key]
+        }
+        assert touched == set(), touched
+        with _connect(base) as conn:
+            rows = conn.execute("SELECT universe_id FROM universes").fetchall()
+        assert [r["universe_id"] for r in rows] == []
+
+    def test_it_does_not_overwrite_an_existing_registry_row(self, base):
+        """A migration that closes a read hole must not rename someone's universe.
+
+        `ensure_universe_registered` is an UPSERT whose conflict clause sets
+        `display_name=excluded.display_name, metadata_json=excluded.metadata_json`.
+        Registering an ALREADY-registered universe without passing those values
+        replaces the owner's display name with the raw id and the registry metadata
+        with `{}` — while the migration reports success. Codex cross-family review
+        of PR #4019, round 3, reproduced against my own round-2 fix.
+
+        The same shape was already in `backfill_universe_visibility`, which ran
+        unconditionally for every discovered universe on EVERY BOOT, so a named
+        universe lost its name at the next restart.
+        """
+        from scripts.migrate_private_by_default import run
+        from tinyassets.daemon_server import (
+            ensure_universe_registered,
+            get_universe,
+        )
+
+        (base / "u-named").mkdir()
+        ensure_universe_registered(
+            base,
+            universe_id="u-named",
+            universe_path=base / "u-named",
+            display_name="My learned name",
+            metadata={"keep": "valuable"},
+        )
+        summary = run(base, apply=True)
+        assert "u-named" in {r["universe_id"] for r in summary["flipped"]}
+        assert summary["failed"] == [], summary["failed"]
+
+        row = get_universe(base, universe_id="u-named")
+        assert row["display_name"] == "My learned name", row
+        assert row["metadata"] == {"keep": "valuable"}, row
+        # And the universe really was closed, so this is not passing by no-op.
+        assert vis.universe_visibility("u-named") is vis.PRIVATE
+
+    def test_the_registered_host_path_matches_the_other_writers(self, base):
+        """One definition of where a universe lives.
+
+        The boot backfill registers `base / uid` and the create path registers
+        `_universe_dir(uid)`; a migration writing a different `host_path` would be
+        a third answer to the same question.
+        """
+        from scripts.migrate_private_by_default import run
+        from tinyassets.storage import _connect
+
+        (base / "u-bare").mkdir()
+        run(base, apply=True)
+        with _connect(base) as conn:
+            row = conn.execute(
+                "SELECT host_path FROM universes WHERE universe_id = ?", ("u-bare",)
+            ).fetchone()
+        assert Path(row["host_path"]) == base / "u-bare"
+
     def test_a_consistent_private_row_is_left_alone(self, base):
         from scripts.migrate_private_by_default import plan
 
