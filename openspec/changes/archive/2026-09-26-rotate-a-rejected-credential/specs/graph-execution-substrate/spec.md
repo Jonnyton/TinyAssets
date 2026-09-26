@@ -1,5 +1,22 @@
 # graph-execution-substrate (delta)
 
+## MODIFIED Requirements
+
+### Requirement: Run failures map to a terminal status taxonomy
+
+The executor SHALL additionally classify a DELIVERED response that rejects the
+credential it presented as `credential_rejected`, actionable by the USER — a third
+effect class beside the existing `external_write_failed` / `external_write_refused`
+pair, not a refinement of either. What counts as such a response, and what the
+agent is told to do about it, belong to "A rejected credential is its own failure
+class" and "The action for a rejected credential is the replace card" rather than
+being restated here. All other clauses of this requirement are unchanged.
+
+#### Scenario: the taxonomy names the third effect class
+- **WHEN** a run's effect was delivered and the far side rejected the credential
+- **THEN** its failure class is `credential_rejected`, distinct from both
+  `external_write_failed` and `external_write_refused`
+
 ## ADDED Requirements
 
 ### Requirement: A rejected credential is its own failure class
