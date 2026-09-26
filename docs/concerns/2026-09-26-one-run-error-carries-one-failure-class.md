@@ -1,7 +1,7 @@
 # One run error carries one failure class, so a mixed run loses a repair
 
 **Filed:** 2026-09-26, from the Codex refute-review of PR #4021
-(`docs/audits/2026-09-26-pr-4021-credential-rotation-review.md`, P2 #7).
+(the Codex refute-review of PR #4021 — verdict and receipt in https://github.com/Jonnyton/TinyAssets/pull/4021#issuecomment-5850412279, full reviewer text in that PR's history (the audit file it was filed in was removed on landing, since the findings are resolved), P2 #7).
 **Severity:** P2. **Owner:** unassigned.
 
 ## The finding

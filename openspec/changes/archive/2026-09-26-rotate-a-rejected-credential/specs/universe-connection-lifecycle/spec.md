@@ -74,9 +74,7 @@ because the vault merge replaces the whole slot for this credential type.
 - **THEN** the record's `deposited_at` is the rotation's time, not the original
   deposit's
 
-## MODIFIED Requirements
-
-### Requirement: Guided reconnect preserves the universe
+### Requirement: Removal is not the repair path for a rejected key
 
 Removal remains the way to RETIRE a key: it deletes the secret, the connection
 and its grants, frees the destination name, and returns `removed_endpoints` and
