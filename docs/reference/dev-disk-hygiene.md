@@ -161,15 +161,29 @@ reports "branch kept as the recovery ref". `is_merged_into` is the repo's shared
 squash-merge oracle (`scripts/wt.py` and `scripts/worktree_status.py` both use
 it); a second definition here would be worse than the limit.
 
-### Windows notes
+### Links, and platform notes
 
-* `entry.is_dir(follow_symlinks=False)` returns **True** for a junction, so a
-  naive walk crosses into the target. Reparse points are detected via
-  `st_file_attributes` and the tree is refused. This is a *measurement* fix: both
-  of `tree_stats`'s returns are load-bearing (size ranks the escalation, newest
-  mtime is the idleness gate). `shutil.rmtree` does **not** delete through a
-  nested junction — `shutil._rmtree_islink` tests `IO_REPARSE_TAG_MOUNT_POINT`
-  (Python 3.14) and a probe on 2026-09-26 confirmed the target survived.
+**One rule for every link, on every platform: it contributes nothing to a size and
+is never descended into.** Two different mechanisms, one fact:
+
+* `entry.is_dir(follow_symlinks=False)` returns **True** for a Windows junction, so
+  a naive walk crosses into the target and counts its bytes (measured: 4,106 where
+  10 were inside).
+* A POSIX symlink is not descended into, but its **own** `lstat` size is the length
+  of its target path — 38 bytes in a WSL probe — which is not content in this tree
+  either. Counting it is what made the assertion `size == 10` red on Linux CI at
+  48.
+
+Both returns of `tree_stats` are load-bearing (size ranks the escalation, newest
+mtime is the idleness gate), so counting either would be a lie about a different
+directory. An earlier version raised `Undecidable` on any reparse point; that was
+unnecessary once nothing is counted or followed, and it cost real coverage — 2
+worktrees and 7 temp dirs permanently un-inventoriable, and it would have refused
+every POSIX tree holding a `.venv/bin` symlink. The remaining guard is at the
+deletion boundary: `remove_path` refuses a link handed to it directly. `shutil.rmtree`
+does **not** delete through a nested junction either — `shutil._rmtree_islink` tests
+`IO_REPARSE_TAG_MOUNT_POINT` (Python 3.14) and a 2026-09-26 probe confirmed the
+target survived removal of the parent.
 * Git writes loose objects read-only, so `shutil.rmtree` raises WinError 5 on any
   basetemp holding a checkout — which is most of them. The remover does one chmod
   sweep and retries; a failure after that reports **partial** removal, because

@@ -429,19 +429,49 @@ def test_tree_stats_does_not_follow_a_link_out_of_the_tree(tmp_path: Path, kind:
         )
         if made.returncode != 0 or not link.exists():
             pytest.skip(f"mklink /J unavailable: {made.stderr.strip()}")
-    reparse = dh.is_reparse_point(os.stat(link, follow_symlinks=False))
-    if reparse:
-        with pytest.raises(dh.Undecidable, match="reparse point"):
-            dh.tree_stats(inside)
-        ok, detail = dh.remove_path(link)
-        assert not ok and "reparse point" in detail
-    else:
-        size, _newest = dh.tree_stats(inside)
-        assert size == 10, f"the walk counted bytes behind the {kind}"
-        ok, _detail = dh.remove_path(link)
-        assert ok, "removing the link itself must succeed where it is not a reparse point"
+    assert dh.is_link(os.stat(link, follow_symlinks=False)), (
+        f"a {kind} must register as a link on this platform"
+    )
+    # One number on both platforms: 10 bytes of real content, and nothing for the
+    # link. A POSIX symlink's own lstat size is the length of its target path, so
+    # counting the entry at all made this 50 on Linux and 4106 before the guard.
+    size, _newest = dh.tree_stats(inside)
+    assert size == 10, f"the walk counted bytes behind or belonging to the {kind}"
+
+    ok, detail = dh.remove_path(link)
+    # The exact phrase, not a substring of it: rmtree's own error for a link root is
+    # "Cannot call rmtree on a symbolic link", which contains "link" and so satisfied
+    # a loose assertion even with the guard removed.
+    assert not ok, f"the remover must refuse a bare {kind}"
+    assert "refusing to delete a link" in detail, f"refused for the wrong reason: {detail}"
     assert (outside / "huge.bin").exists(), f"deleting a {kind} reached through it"
     assert outside.is_dir()
+
+
+def test_is_link_covers_both_mechanisms_without_a_filesystem() -> None:
+    """A unit test on the predicate, so the POSIX branch is covered on Windows too.
+
+    The filesystem test above can only exercise whichever link kind this host lets
+    it create — on Windows the symlink variant skips for want of privilege, which
+    left `S_ISLNK` unproven locally and a mutation removing it undetected.
+    """
+
+    class _Stat:
+        def __init__(self, mode: int, attrs: int = 0) -> None:
+            self.st_mode = mode
+            if attrs:
+                self.st_file_attributes = attrs
+
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    assert dh.is_link(_Stat(stat.S_IFLNK | 0o777)), "a POSIX symlink is a link"
+    assert dh.is_link(_Stat(stat.S_IFDIR, reparse)), "a Windows junction is a link"
+    assert dh.is_link(_Stat(stat.S_IFLNK, reparse)), "a Windows symlink is a link"
+    assert not dh.is_link(_Stat(stat.S_IFREG | 0o644)), "a plain file is not"
+    assert not dh.is_link(_Stat(stat.S_IFDIR, stat.FILE_ATTRIBUTE_DIRECTORY)), (
+        "a plain directory is not"
+    )
+    # is_reparse_point stays Windows-only; is_link is the platform-agnostic one.
+    assert not dh.is_reparse_point(_Stat(stat.S_IFLNK | 0o777))
 
 
 # --------------------------------------------------------------------------- #

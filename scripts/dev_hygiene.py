@@ -262,36 +262,49 @@ def free_gb(path: Path) -> float:
 
 
 def is_reparse_point(info: os.stat_result) -> bool:
-    """True for a Windows junction or symlink, false everywhere it cannot apply.
+    """True for a Windows reparse point (junction or symlink); False off Windows.
 
     ``entry.is_dir(follow_symlinks=False)`` returns **True** for a junction, so it
-    is not on its own a no-follow guard: a junction inside a temp tree would make
-    the walk — and ``shutil.rmtree`` after it — cross into whatever it points at.
-    Symlinks need privilege on this host and junctions do not, so the junction is
-    the case that actually occurs. On POSIX ``st_file_attributes`` is absent and
-    ``follow_symlinks=False`` already answers it.
+    is not on its own a no-follow guard. Symlinks need privilege on this host and
+    junctions do not, so the junction is the case that actually occurs here.
     """
     attrs = getattr(info, "st_file_attributes", 0)
     return bool(attrs & getattr(stat_mod, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
 
+def is_link(info: os.stat_result) -> bool:
+    """True for anything whose content lives somewhere else, on any platform.
+
+    One predicate for both mechanisms so the walk behaves identically everywhere:
+    a POSIX symlink (``S_ISLNK``) and a Windows junction or symlink (a reparse
+    point) are the same fact — "this entry names another directory".
+    """
+    return stat_mod.S_ISLNK(info.st_mode) or is_reparse_point(info)
+
+
 def tree_stats(root: Path, budget: int = MAX_TREE_ENTRIES) -> tuple[int, float]:
     """Return ``(total_bytes, newest_mtime)`` for a directory tree.
 
-    Raises ``Undecidable`` when the tree exceeds ``budget`` entries, cannot be
-    read, or contains a reparse point — an unmeasurable tree is kept rather than
-    guessed at.
+    Raises ``Undecidable`` when the tree exceeds ``budget`` entries or cannot be
+    read — an unmeasurable tree is kept rather than guessed at.
 
-    The reparse case is a *measurement* correctness fix, not a deletion-escape
-    fix. ``entry.is_dir(follow_symlinks=False)`` returns True for a Windows
-    junction, so the walk used to cross into the target and report its bytes as
-    reclaimable here; both returns are load-bearing (size drives the escalation
-    ranking, newest mtime is the worktree idleness gate). ``shutil.rmtree`` was
-    checked separately on 2026-09-26 and does **not** delete through a nested
-    junction — ``shutil._rmtree_islink`` tests ``IO_REPARSE_TAG_MOUNT_POINT``
-    (Python 3.14, ``shutil.py:660``), and a probe confirmed the target's contents
-    survived removal of the parent. Refusing the tree outright is still the right
-    answer: a tree we cannot size honestly is a tree we do not understand.
+    **One rule for every link, on every platform: it contributes nothing and is
+    never descended into.** ``entry.is_dir(follow_symlinks=False)`` returns True for
+    a Windows junction, so the walk used to cross into the target and count its
+    bytes here; and a POSIX symlink's own ``lstat`` size is the length of its target
+    path, which is not content inside this tree either. Both returns are
+    load-bearing — size ranks the escalation, newest mtime is the worktree idleness
+    gate — so counting either would be a lie about a different directory.
+
+    An earlier version raised ``Undecidable`` on any reparse point. That was
+    unnecessary once nothing is counted or followed, and it cost real coverage: it
+    made 2 worktrees and 7 temp dirs permanently un-inventoriable on this box, and
+    it would have refused every POSIX tree holding a ``.venv/bin`` symlink.
+    ``shutil.rmtree`` also does **not** delete through a nested junction —
+    ``shutil._rmtree_islink`` tests ``IO_REPARSE_TAG_MOUNT_POINT`` (Python 3.14),
+    and a 2026-09-26 probe confirmed the target's contents survive removal of the
+    parent — so the remaining link guard lives at the deletion boundary in
+    ``remove_path``, which refuses a link handed to it directly.
     """
     total = 0
     newest = 0.0
@@ -303,8 +316,8 @@ def tree_stats(root: Path, budget: int = MAX_TREE_ENTRIES) -> tuple[int, float]:
         raise AclLocked(f"access denied on {root}: {exc}") from exc
     except OSError as exc:
         raise Undecidable(f"cannot stat {root}: {exc}") from exc
-    if is_reparse_point(root_info):
-        raise Undecidable(f"{root} is itself a reparse point")
+    if is_link(root_info):
+        raise Undecidable(f"{root} is itself a link; this tool sizes real directories only")
     newest = root_info.st_mtime
     while stack:
         current = stack.pop()
@@ -316,8 +329,8 @@ def tree_stats(root: Path, budget: int = MAX_TREE_ENTRIES) -> tuple[int, float]:
                         raise Undecidable(f"{root} exceeds {budget} entries")
                     try:
                         info = entry.stat(follow_symlinks=False)
-                        if is_reparse_point(info):
-                            raise Undecidable(f"{root} contains a reparse point: {entry.path}")
+                        if is_link(info):
+                            continue  # counts nothing, and never descend through it
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(Path(entry.path))
                             newest = max(newest, info.st_mtime)
@@ -982,17 +995,16 @@ def remove_path(path: Path) -> tuple[bool, str]:
     before 3.12, so neither is used: a read-only-attribute failure gets one
     explicit chmod sweep and a single retry instead.
 
-    Refuses a reparse point outright. Not because ``shutil.rmtree`` would delete
-    through one — it would not; ``shutil._rmtree_islink`` recognises
-    ``IO_REPARSE_TAG_MOUNT_POINT`` and a 2026-09-26 probe confirmed a junction's
-    target survives removal of its parent — but because a path whose identity is a
-    link to somewhere else is not a path this tool has reasoned about. Candidates
-    reach here only after ``tree_stats`` vouched for the tree; this repeats the
-    check at the boundary where the tree could have changed since.
+    Refuses a **link** handed to it directly, on either platform. Not because
+    ``shutil.rmtree`` would delete through one — it would not;
+    ``shutil._rmtree_islink`` recognises ``IO_REPARSE_TAG_MOUNT_POINT`` and a
+    2026-09-26 probe confirmed a junction's target survives removal of its parent —
+    but because a path whose identity is a name for somewhere else is not a path
+    this tool reasoned about when it sized it.
     """
     try:
-        if is_reparse_point(os.stat(path, follow_symlinks=False)):
-            return False, "refusing to delete a reparse point (junction/symlink)"
+        if is_link(os.stat(path, follow_symlinks=False)):
+            return False, "refusing to delete a link (symlink/junction)"
     except OSError as exc:
         return False, f"{type(exc).__name__}: {exc}"
     try:
