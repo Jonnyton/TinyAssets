@@ -504,8 +504,32 @@ def test_journald_dropin_bounds_retention_in_bytes_and_time():
     assert settings["MaxRetentionSec"] == "14day"
     assert settings["SystemKeepFree"] == "2G"
     # Rate limiting drops messages to protect the journal, and a dropped line
-    # during an incident is the evidence this whole change exists to keep.
-    assert settings["RateLimitBurst"] == "0"
+    # during an incident is the evidence this change exists to keep -- so the
+    # ceiling is generous. But it must stay FINITE: disabling it outright left no
+    # bound on write/compression throughput during a storm, and the justification
+    # for doing so ("the Docker driver gates volume") named a limit that is not
+    # configured anywhere (cross-family review,
+    # output/codex-log-durability-review.md §7).
+    assert settings["RateLimitBurst"] != "0", (
+        "an unlimited burst trades an outage risk for evidence; keep a ceiling"
+    )
+    assert int(settings["RateLimitBurst"]) >= 10_000, (
+        "the ceiling must be far above normal volume or it becomes the drop"
+    )
+    assert settings["RateLimitIntervalSec"] != "0"
+
+
+def test_the_dropin_does_not_promise_retention_it_cannot_deliver():
+    """`MaxRetentionSec` is a maximum AGE, not a minimum guarantee: whichever of
+    the age and byte bounds is reached first wins, so 1 GiB can mean hours. The
+    comment used to claim the opposite, which is the kind of false reassurance
+    that gets a window trusted past what it holds."""
+    text = JOURNALD_DROPIN.read_text(encoding="utf-8")
+    assert "maximum age" in text.lower()
+    assert "not a minimum" in text.lower()
+    assert "whichever runs out first" in text.lower()
+    # And it must name the knob, since editing the box is reverted by the installer.
+    assert "SystemMaxUse is the knob" in text
 
 
 def test_installer_owns_the_journald_dropin():

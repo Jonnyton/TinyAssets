@@ -116,6 +116,9 @@ JOURNALD_DIR="$(realpath -m "${JOURNALD_DIR}")"
 SUDOERS_DIR="$(realpath -m "${SUDOERS_DIR}")"
 LOCK_DIR="$(realpath -m "${LOCK_DIR}")"
 JOURNALD_DROPIN="${JOURNALD_DIR}/${JOURNALD_DROPIN_NAME}"
+# Records the drop-in hash journald actually LOADED. Lives under the runtime
+# root rather than in journald.conf.d, so systemd never sees it.
+JOURNALD_STAMP="${RUNTIME_ROOT}/.journald-applied"
 
 if [[ "${ALLOW_TEST_ROOTS}" != "1" ]]; then
     [[ "${EUID}" -eq 0 ]] || fail "production installation must run as root"
@@ -140,6 +143,11 @@ for relative in "${RUNTIME_FILES[@]}" "${JOURNALD_DROPIN_SOURCE}"; do
     [[ -f "${source_file}" && ! -L "${source_file}" ]] \
         || fail "missing or unsafe runtime source: ${source_file}"
 done
+
+JOURNALD_HASH="$(
+    sha256sum "${SOURCE_ROOT}/${JOURNALD_DROPIN_SOURCE}" | awk '{print $1}'
+)"
+[[ -n "${JOURNALD_HASH}" ]] || fail "cannot hash the journald drop-in"
 
 mkdir -p "${LOCK_DIR}"
 lock_key="$(printf '%s' "${RUNTIME_ROOT}" | sha256sum | awk '{print $1}')"
@@ -210,7 +218,8 @@ on_exit() {
     rm -f -- \
         "${RUNTIME_ROOT}/.current.new.$$" \
         "${RUNTIME_ROOT}/.current.rollback.$$" \
-        "${JOURNALD_DIR}/.${JOURNALD_DROPIN_NAME}.new.$$"
+        "${JOURNALD_DIR}/.${JOURNALD_DROPIN_NAME}.new.$$" \
+        "${JOURNALD_STAMP}.new.$$"
     [[ -z "${SUDOERS_TEMP}" ]] || rm -f -- "${SUDOERS_TEMP}"
     rm -rf -- "${TRANSACTION_DIR}"
     exit "${rc}"
@@ -277,6 +286,16 @@ exact_file() { # exact_file <path> <expected-mode>
     [[ "$(stat -c '%a %u' "${path}")" == "${expected} ${EUID}" ]] || return 1
 }
 
+# True when journald is running the policy this source tree declares. Compares
+# the recorded HASH, not mtimes: reinstalling identical bytes must not look like
+# a new policy, and a policy whose restart failed must not look applied.
+journald_applied() {
+    local recorded
+    [[ -f "${JOURNALD_STAMP}" && ! -L "${JOURNALD_STAMP}" ]] || return 1
+    recorded="$(cat -- "${JOURNALD_STAMP}" 2>/dev/null)" || return 1
+    [[ "${recorded}" == "${JOURNALD_HASH}" ]]
+}
+
 current_release_is_exact() {
     local current_dir link_target relative mode installed_file unit timer
 
@@ -324,6 +343,15 @@ current_release_is_exact() {
     # the journal is where container output now lives (deploy/compose.yml).
     exact_file "${JOURNALD_DROPIN}" 644 || return 1
     cmp -s "${SOURCE_ROOT}/${JOURNALD_DROPIN_SOURCE}" "${JOURNALD_DROPIN}" || return 1
+    # Bytes on disk are not the same thing as policy in effect. journald reads
+    # this file at START, so an install whose restart failed leaves the correct
+    # bytes and the OLD policy -- and a byte-only gate would then report
+    # convergence forever, which is exactly what a cross-family review found
+    # (output/codex-log-durability-review.md §2; the first version of this even
+    # had a comment claiming the next install would retry, contradicted by its own
+    # code). The stamp is written only after a restart that succeeded, so "not
+    # applied" is drift the transaction below repairs.
+    journald_applied || return 1
 
     # The sudoers rule is part of what this script installs, and sudo itself
     # rejects it unless it is a regular file at 0440.
@@ -515,11 +543,26 @@ done
 # this restart, and the next install retries it (the gate compares bytes on
 # disk, so a failed restart still reads as converged -- which is why this logs
 # loudly rather than silently).
-if [[ "${JOURNALD_CHANGED}" -eq 1 ]]; then
+if [[ "${JOURNALD_CHANGED}" -eq 1 ]] || ! journald_applied; then
     if "${SYSTEMCTL_BIN}" restart systemd-journald; then
-        log "journald restarted to apply ${JOURNALD_DROPIN_NAME}"
+        # Stamp AFTER the restart, never before: it asserts "journald has loaded
+        # these bytes", and writing it on the strength of having copied a file
+        # would make the claim unfalsifiable.
+        if printf '%s\n' "${JOURNALD_HASH}" > "${JOURNALD_STAMP}.new.$$" \
+            && mv -f "${JOURNALD_STAMP}.new.$$" "${JOURNALD_STAMP}"
+        then
+            log "journald restarted and applied ${JOURNALD_DROPIN_NAME}"
+        else
+            rm -f -- "${JOURNALD_STAMP}.new.$$"
+            log "WARNING: journald restarted but the applied-stamp was not written"
+        fi
     else
-        log "WARNING: systemd-journald restart failed; drop-in applies on next restart"
+        # Drop any stale stamp, so the next install retries instead of inheriting
+        # a claim that this policy is live.
+        rm -f -- "${JOURNALD_STAMP}"
+        log "WARNING: systemd-journald restart FAILED; the drop-in is on disk but"
+        log "WARNING: journald still runs its previous policy. The next install"
+        log "WARNING: retries it, because the applied-stamp was not written."
     fi
 fi
 
