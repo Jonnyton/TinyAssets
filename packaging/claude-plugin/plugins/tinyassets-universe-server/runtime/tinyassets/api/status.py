@@ -36,11 +36,54 @@ from tinyassets.api.helpers import (
 from tinyassets.provider_admission import (
     admission_snapshot as _provider_admission_snapshot,
 )
-from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
+from tinyassets.providers.base import (
+    API_KEY_PROVIDER_ENV_VARS,
+    DEFAULT_ABSOLUTE_CAP_S,
+    api_key_providers_enabled,
+)
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
 
 _STATUS_SCHEMA_VERSION = 2
+# How old a still-progressing turn row may be and still mean "working now".
+# The coordinator wraps a served turn in ``asyncio.timeout(absolute_cap_s)``
+# (``agent_turn_coordinator._run``), so nothing can progress past that cap in
+# this process; the margin is the same one the router already allows a sync
+# wrapper for async overhead plus the in-band reap
+# (``providers.router._sync_call_timeout_s``). Older than this and the row is
+# what a killed container left behind, reported as ``stale`` rather than as
+# activity. NOT a cap on how long a turn may take: a granted turn runs until it
+# is finished, and the cap it is derived from is the one that already bounds it.
+_WORKING_TURN_MAX_AGE_S = DEFAULT_ABSOLUTE_CAP_S + 30.0
+
+
+def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
+    """Server-side "is this universe working" for one universe.
+
+    The web app used to decide its own working indicator from whether THIS page
+    had sent a message, so a turn started by answering a request, by a queued
+    line, by another tab or device, or one still running across a reload showed
+    nothing at all (founder, 2026-09-26: a turn ran for four minutes with no
+    indicator, so it read as if nothing happened).
+
+    An unreadable journal is reported as ``state: "unreadable"``, never as idle:
+    a surface that paints "nothing is happening" off a failed read is the silent
+    fallback this project refuses. Callers treat only the progressing states as
+    activity, so an unreadable or stale row shows no indicator either way.
+    """
+    from datetime import datetime, timezone
+
+    from tinyassets.storage.agent_turn_journal import AgentTurnJournal
+
+    try:
+        return AgentTurnJournal(udir.parent).universe_working_turn(
+            udir.name,
+            now=datetime.now(timezone.utc),
+            max_age_s=_WORKING_TURN_MAX_AGE_S,
+        )
+    except Exception as exc:  # noqa: BLE001 - an unreadable journal is reported, not guessed
+        _LOGGER.warning("agent turn activity unreadable: %s", type(exc).__name__)
+        return {"state": "unreadable", "reason": type(exc).__name__}
 
 
 def _policy_hash(payload: dict[str, Any]) -> str:
@@ -1673,6 +1716,16 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         resource_usage = for_authorized_status(_base_path(), uid)
         if resource_usage is not None:
             response["resource_usage"] = resource_usage
+
+    # Whether this universe is working RIGHT NOW, whatever started the turn — a
+    # typed message, an answered request, a queued line, another tab, another
+    # device, the connector. Gated the same way the conversation peek is (write
+    # access to this universe), and it carries no prompt, model or owner: only
+    # that a turn is progressing, since when, and its journal state. The key is
+    # PRESENT and null when the universe is idle, so a client can tell "idle"
+    # from "this build does not report it".
+    if universe_exists and permissions.universe_access_allows(uid, write=True):
+        response["active_turn"] = _universe_active_turn(udir)
 
     # persona — the universe brain speaking as itself. Its self-understanding
     # comes from its learned self-model (an OKF bundle the brain authors about
