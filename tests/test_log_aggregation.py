@@ -572,3 +572,36 @@ def test_the_withdrawn_docker_logs_claim_stays_withdrawn():
     assert "dual logging" in runbook.lower()
     # The surviving reason must not depend on it.
     assert "credential the box already holds" in runbook
+
+
+def test_retirement_checks_state_not_just_the_unit_file():
+    """Both the gate and the transaction must agree on what "retired" means.
+
+    They used to key independently on `[[ -e $SYSTEMD_DIR/$unit ]]`, which is the
+    unit FILE — so a surviving enablement symlink (the thing that actually keeps a
+    timer firing), a unit still loaded with no file, and a dangling link all
+    escaped (cross-family review, output/codex-log-durability-review.md §3).
+    """
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert "retired_unit_is_gone()" in text
+
+    predicate = text.split("retired_unit_is_gone() {", 1)[1].split("\n}", 1)[0]
+    # A dangling symlink: -e follows the link and is false for a broken one, so -L
+    # has to be asked separately or the link is invisible.
+    assert "! -L " in predicate
+    # Enablement links anywhere under the systemd tree, not just the unit path.
+    assert "find" in predicate and "! -path" in predicate
+    # systemd's own view, because a unit outlives its file.
+    assert "LoadState" in predicate and "not-found" in predicate
+
+    # One definition, two call sites — the gate and the transaction.
+    gate = text.split("current_release_is_exact() {", 1)[1]
+    gate = gate.split("\nif current_release_is_exact", 1)[0]
+    assert 'retired_unit_is_gone "${unit}" || return 1' in gate
+    transaction = text.split("\nif current_release_is_exact", 1)[1]
+    assert 'retired_unit_is_gone "${unit}" && continue' in transaction
+    # Removal must clear the links too, then make systemd forget the unit.
+    assert "retired enablement link removed" in transaction
+    assert transaction.index("retired unit removed") < transaction.index(
+        '"${SYSTEMCTL_BIN}" daemon-reload'
+    )
