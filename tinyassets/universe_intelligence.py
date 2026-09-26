@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import replace
 from pathlib import Path
 
 from tinyassets.api import interlocutor
@@ -639,7 +640,12 @@ def extract_learning(
         system=_LEARNING_SYSTEM,
         role="writer",
         universe_context=ctx,
-        config=_sandboxed_config(ctx),
+        # SECONDARY: the founder did not ask for this call, so its failure must
+        # not write the shared cooldown / reconnect state their NEXT turn reads.
+        # Live 2026-09-25 on a free source: this call's 429 cooled the source for
+        # 120s, and the founder's next message never reached a model. See
+        # ``ModelConfig.secondary_call``.
+        config=replace(_sandboxed_config(ctx), secondary_call=True),
         operation="converse",
         # Learning extraction runs AFTER the reply is already produced but BEFORE
         # `converse` returns it, so a synchronous tenacity backoff here (call.py's
@@ -796,6 +802,47 @@ def commit_learning(
     if canon_written:
         result["canon"] = canon_written
     return result
+
+
+def _learn_from_turn(
+    ctx: UniverseContext,
+    *,
+    universe_dir: Path,
+    universe_id: str,
+    founder_message: str,
+    reply: str,
+    actor_id: str,
+) -> bool:
+    """Persist what the founder taught this turn. Returns whether it ran.
+
+    The founder's reply is already earned when this runs, so nothing here may
+    reach them: a failure is logged and swallowed. Two kinds, logged differently
+    on purpose (live 2026-09-25) --
+
+    * the source had no capacity for a SECOND call this turn. Expected on a free
+      source and not a defect, so one INFO line, no traceback: the turn simply
+      taught nothing. The next turn extracts again.
+    * anything else is a bug in extraction or persistence and keeps its
+      traceback.
+
+    Neither writes the shared cooldown (``ModelConfig.secondary_call``), so a
+    skipped extraction costs the founder's next turn nothing.
+    """
+    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+
+    try:
+        proposed = extract_learning(founder_message, reply, ctx)
+        commit_learning(universe_dir, proposed, universe_id=universe_id, actor_id=actor_id)
+        return True
+    except (AllProvidersExhaustedError, ProviderAuthorityHeldError) as exc:
+        logger.info(
+            "converse: learning skipped for %s -- no capacity for a second call "
+            "this turn (%s: %s)", universe_id, type(exc).__name__, exc,
+        )
+        return False
+    except Exception:  # persistence must never break the conversation turn
+        logger.exception("converse: learning persistence failed for %s", universe_id)
+        return False
 
 
 def _coerce_ts(value: object) -> "float | None":
@@ -1146,9 +1193,8 @@ def converse(
     # matching write gate, placed here rather than at any one call site so a
     # future non-founder caller inherits it instead of having to remember it.
     if bound_tier == interlocutor.FOUNDER:
-        try:
-            proposed = extract_learning(founder_message, reply, ctx)
-            commit_learning(udir, proposed, universe_id=uid, actor_id=actor_id)
-        except Exception:  # persistence must never break the conversation turn
-            logger.exception("converse: learning persistence failed for %s", uid)
+        _learn_from_turn(
+            ctx, universe_dir=udir, universe_id=uid,
+            founder_message=founder_message, reply=reply, actor_id=actor_id,
+        )
     return reply

@@ -289,6 +289,24 @@ class ModelConfig:
     agent_request: AgentInferenceRequest | None = field(default=None, repr=False)
     """Internal tool inventory/completed history, never execution authority."""
 
+    secondary_call: bool = False
+    """This call is the platform's own bookkeeping beside a founder turn, not the
+    turn. Set for post-reply learning extraction; never for a served reply.
+
+    A secondary call is OPTIONAL by construction: nothing it produces is shown to
+    the founder and its failure ends only itself. So its failure is not allowed to
+    change what the founder's NEXT turn may do -- the router reads the shared
+    quota/cooldown gate for a secondary call (skipping a source known to be
+    cooling is restrictive, and cheap) but never WRITES it.
+
+    Live 2026-09-25: an answered free-model turn was followed by learning
+    extraction on the same source, which took a 429 carrying no ``Retry-After``
+    and so wrote our own fixed 120s window. Every answered turn bought the
+    founder a two-minute lockout from a request they never made. Cooling on a
+    secondary call converts "we spent one extra request" into "the user is
+    locked out", and the reply that just succeeded is better evidence about the
+    source than the extra call that did not."""
+
     def stream_timeout_profile(self) -> StreamTimeoutProfile:
         """Resolve the idle-watchdog profile, filling ``None`` knobs with the
         design defaults. Backward-compat: a config that only ever set the legacy
@@ -355,6 +373,17 @@ class ProviderResponse:
     Legacy ``model`` may contain a requested/default label. Such a label is not
     proof of the model that answered and must not be substituted here.
     """
+
+    provider_display: str = ""
+    """The owner's own name for the connection that answered, for display only.
+
+    ``provider`` is the routing identity (``api_key_http:provdef_ed0169c8...``),
+    which the founder saw on the "Answered by" line. This carries the label read
+    from their connection instead -- the installed acquisition preset's
+    ``display_name`` ("OpenRouter") when the connection was deposited by the
+    guided sign-in, else the destination they named it. Empty when nothing
+    resolves; a renderer then falls back to ``provider`` rather than invent one.
+    Never routing authority, never a model id, never substituted for either."""
 
     agent_reply: AgentReply | None = field(default=None, repr=False)
     """One inference's validated result; requested tools have not been executed."""

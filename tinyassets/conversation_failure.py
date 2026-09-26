@@ -122,8 +122,21 @@ _EFFECT_WORDS = {
 
 DETAIL_LIMIT = 200
 _REF = re.compile(r"[A-Za-z0-9_.:-]{1,64}\Z")
-_OPTIONAL = frozenset({"stage", "effects", "provider_detail", "ref"})
+_OPTIONAL = frozenset({"stage", "effects", "provider_detail", "ref", "retry_after_s"})
 _REQUIRED = frozenset({"version", "kind", "code"})
+
+#: A wait longer than this is not a wait, it is a different answer ("reconnect",
+#: "your daily cap resets tomorrow"), so it is dropped rather than rendered as a
+#: number nobody will sit through. One day, the longest window any source's
+#: Retry-After has meant here.
+MAX_WAIT_S = 86_400
+
+
+def wait_seconds(value: object) -> int | None:
+    """A whole positive bounded second count, or None. ``bool`` is not a wait."""
+    if type(value) is not int or value <= 0 or value > MAX_WAIT_S:
+        return None
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +148,12 @@ class TurnFailure:
     effects: str = "unknown"
     provider_detail: str = ""
     ref: str = ""
+    retry_after_s: int | None = None
+    """Measured seconds until this source is eligible again -- the source's own
+    ``Retry-After`` or the remaining window of our own cooldown gate. Never a
+    guess and never a deadline we invent for a class that has no window; absent
+    stays absent. Live 2026-09-25 the gate that refused the turn knew it had 120
+    seconds left and the founder was told "we could not identify why"."""
 
 
 def failure_code(value: object) -> str:
@@ -151,7 +170,7 @@ def clean_detail(value: object) -> str:
 
 def turn_failure(
     code: object, *, stage: object = None, effects: object = "unknown",
-    provider_detail: object = "", ref: object = "",
+    provider_detail: object = "", ref: object = "", retry_after_s: object = None,
 ) -> TurnFailure:
     """Build a record; any field outside its closed set degrades, never raises."""
     return TurnFailure(
@@ -162,6 +181,7 @@ def turn_failure(
         else effects if effects in EFFECTS else "unknown",
         provider_detail=clean_detail(provider_detail),
         ref=ref if isinstance(ref, str) and _REF.fullmatch(ref) else "",
+        retry_after_s=wait_seconds(retry_after_s),
     )
 
 
@@ -175,6 +195,15 @@ def _coerce(value: object) -> TurnFailure:
     return turn_failure(value)
 
 
+def _wait_words(seconds: int) -> str:
+    """The measured wait as one sentence. Rounded up: never say "send again now"."""
+    if seconds < 60:
+        return f"You can send again in about {seconds} seconds."
+    minutes = -(-seconds // 60)
+    unit = "minute" if minutes == 1 else "minutes"
+    return f"You can send again in about {minutes} {unit}."
+
+
 def failure_notice(value: object) -> str:
     """Compose the notice from the record's fields; no per-failure copy."""
     failure = _coerce(value)
@@ -182,6 +211,8 @@ def failure_notice(value: object) -> str:
         f"{_STAGE_WORDS.get(failure.stage, _NO_STAGE)} — {_CLASS_WORDS[failure.code]}.",
         _EFFECT_WORDS[failure.effects],
     ]
+    if failure.retry_after_s is not None:
+        parts.append(_wait_words(failure.retry_after_s))
     if failure.provider_detail:
         parts.append(f'Detail: "{failure.provider_detail}"')
     if failure.ref:
@@ -223,6 +254,11 @@ def normalize_turn_failure(value: object) -> dict | None:
         if not isinstance(value["ref"], str) or not _REF.fullmatch(value["ref"]):
             return None
         result["ref"] = value["ref"]
+    if "retry_after_s" in value:
+        wait = wait_seconds(value["retry_after_s"])
+        if wait is None:
+            return None
+        result["retry_after_s"] = wait
     return result
 
 

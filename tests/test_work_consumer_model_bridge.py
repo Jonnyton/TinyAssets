@@ -116,6 +116,9 @@ def test_selected_work_agent_changes_model_inside_same_journal_without_repeating
         ).fetchone()[0])
     assert detail["execution"] == {
         "provider": sessions[0]._work_candidates.order[0].connection_id,
+        # The owner's own name for the connection that answered, beside the
+        # routing identity (never instead of it).
+        "provider_display": "compute:synthetic",
         "model": "actual-work-model",
         "model_status": "reported",
     }
@@ -266,6 +269,7 @@ def test_public_selected_reusable_graph_uses_reserved_run_and_exact_reply_projec
     assert result["consumer_turn"]["state"] == "completed", (result, work_agent.errors)
     assert result["reply"] == "work completed"
     assert result["execution"] == {"provider": provider, "model": "actual-work-model",
+                                    "provider_display": "compute:synthetic",
                                     "model_status": "reported"}
     assert len(work_agent.wires) == 3 and len(work_agent.tools) == 1
     assert work_agent.latest().state == "completed"
