@@ -131,3 +131,32 @@ split, from the box, for the 2026-09-25 18:12-18:18 PT turns on
 count, so (1) gives the count and (2) gives durations only from logs. Per-round
 timing in the journal would make this measurable from data instead of grep — it
 is a storage-shape change, so it needs its own proposal.
+
+## Tried and REJECTED: eliding a `read_brain` body the prompt already quotes
+
+The live proof on `ef63af30` (2026-09-26) showed the reply arriving in under a minute
+instead of ~two, but turn `5c3daf87` still ran `rounds=3` with `tools=['read_brain']`:
+the free model re-read `founder.md` although the prompt quotes it verbatim and says so.
+
+PR #4006 made that re-read cheap instead of relying on obedience — `read_brain`
+returned a pointer to the prompt heading, with the quoted version's `sha256`, whenever
+the file was still byte-identical to what the prompt carried, and the full body the
+moment it differed. It measured a **72% cut** in the result (2,513 → 712 bytes on a
+~2 KB brain), repeated across every later round of the turn.
+
+**Closed unmerged, on the risk, not the mechanism.** The saving is ~1.8 KB per read
+against a ~34 KB block per round. What it risks is the BRAIN: `read_brain`'s contract
+is "read it first so an edit builds on what's there", so a turn holding a pointer
+instead of a body can write a shorter one and drop what was there — and continuous
+self-learning is founder law. The decisive point is that the same model was shown live
+to ignore a prompt statement about those very files, so "copy the text from the named
+heading" is exactly the instruction it will not follow.
+
+**The condition for revisiting it:** only together with a `write_brain` guard against
+a destructive shrink — the natural shape is threading `soul_edit`'s existing
+`expected_versions` compare-and-swap through `write_brain`, so an edit must name the
+version it read and a body that drops content is refused rather than trusted. Without
+that guard the elision is a data-loss path wearing an optimisation's clothes; with it,
+the 72% is worth re-measuring. Branch `perf/read-brain-is-cheap-when-already-inlined`
+is kept, and its tests already pin the digest comparison, the net-win rule and the
+"a pointer is never reachable as a body" property.
