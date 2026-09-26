@@ -74,6 +74,21 @@ feature. (Carried from PR #3842, which was closed without landing; the
 acceptance evidence for it is the export/remix proof below, and a theme or an
 independently coded lookalike does not satisfy it.)
 
+**Prototype to start from.** PR #3842's inert experience preview is the working
+starting point for the first proof above, on branch
+`tiny/u-01kxm1vszd/refine-experience-primitives`: an editable composition,
+desktop and phone layouts, a typed fixture action, unknown components preserved,
+sending no actions and granting no authority. Founder direction 2026-09-26 made
+this row a capability in its own right — **C33, "Design, share and switch your
+own app experience"** in
+[`consolidate-platform-resource-policy/capabilities.md`](../consolidate-platform-resource-policy/capabilities.md).
+Two things that row adds to the scope in this document: the experience may be any
+interactive UI the user can imagine (an office-building simulation is the
+founder's own example), including **opening sessions with other agents in their
+universe from inside it**; and a second user must be able to **switch to a shared
+experience on the fly and back**, so switching is part of the capability rather
+than a later nicety.
+
 Prefer a namespaced experience representation carried by the existing native
 composition/interchange pipeline. Shape review must settle the extension and
 renderer contract before adding fields or a new registry. Experience source and

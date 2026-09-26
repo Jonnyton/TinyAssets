@@ -31,7 +31,7 @@ cleared, and add one line to the completion record.
 | C15 | Resume an interrupted run on its admitted version | Interrupt a run, resume it, and it runs the admitted version, not the edited draft |
 | C22 | Get outputs back: download run files, and a notice when background work finishes | Download a file a run produced; a notice arrives when a background run ends |
 | C20 | Publish and remix any shape (workflow, agent, design) across users | User B remixes User A's published workflow into B's own universe; B's data is kept and nothing is inherited |
-| C28 | Deliver work between different owners' nodes | Two owners send and process, inspect both receipts, and verify rejection, duplicates and revocation |
+| C28 | Deliver work between different owners' nodes | Two owners send and process, inspect both receipts, and verify rejection, duplicates and revocation. Needs MULTI-USER live testing with two real accounts — e.g. owner A builds an intake node with conditions; owner B delivers a bug report to it through the app. There is no platform feedback inbox; see the C28 shape note below |
 | C17 | Concurrent edits do not silently overwrite | A stale-read patch is refused with the current version |
 | C18 | Version history and rollback | The agent lists versions and rolls back; the run uses the rolled-back version |
 | C30 | Stop a running turn | Stop mid-turn; the provider process ends within seconds and the turn is recorded as user-stopped |
@@ -41,12 +41,14 @@ cleared, and add one line to the completion record.
 | C24 | Cloud dependencies and previews for your own work | The agent installs an admitted dependency and produces a usable preview capture (compose it from C22) |
 | C25 | See status, usage and limits | The app explains actual storage, admissions and limits for this universe |
 | C32 | Everything works with no host online (cloud-only) | Authenticated uptime probes plus ordinary cloud-only use pass |
+| C33 | Design, share and switch your own app experience | A user redesigns their app UI through their universe — any interactive UI they can imagine, e.g. an office-building simulation, including opening sessions with other agents in their universe from within it — shares it, and a second user switches to it on the fly and back |
 
 ## Shape carried from closed PRs
 
 Directional decisions the acceptance column cannot hold. Each names the row it
-binds and where it came from; the row above is still the pass/fail bar, and
-these do not add one.
+binds and where it came from; the row above is still the pass/fail bar. Only C33
+adds a row — the founder added that capability on 2026-09-26; the rest bind to
+rows that already existed.
 
 ### C4 — export is the universe folder, not a second envelope
 
@@ -84,18 +86,57 @@ its migration lands. The condition is that feedback rows are keyed that way and
 are not added to `PRESERVED_TABLES`. A satellite store needs the satellite
 sweep. No hand-written table list — see the module docstring on why.
 
-### C20 / C28 — feedback is a published shape, not a platform inbox
+### C28 — feedback is a delivery between two owners' nodes
 
-PR #3747 built a single configured global reviewer
-(`TINYASSETS_FEEDBACK_REVIEWER`, one principal id read from server env) and was
-closed. **There is no global platform reviewer.** Feedback is a user-published
-shape that any owner can subscribe to: publishing it is C20, and delivery
-between two different owners' nodes is C28. Both already have acceptance rows
-above, so this needs no new capability — it needs the feedback surface to be
-composed from them rather than from a privileged inbox only the platform holds.
-This is the same rule as the first-party parity requirement in
+**There is no platform feedback inbox.** Founder, 2026-09-26, correcting the
+direction on this row. PR #3747 built one configured global reviewer
+(`TINYASSETS_FEEDBACK_REVIEWER`, a principal id read from server env) and was
+closed; the shape is not a smaller version of that.
+
+Feedback flows through the **general user-to-user channels**, with no surface
+built for feedback specifically:
+
+- Any user builds a node that **accepts deliverables under conditions they build
+  into it**. The conditions are the author's, not the platform's.
+- The founder's own account builds a bug and feedback intake node **exactly like
+  any user would** — same primitives, same authoring contracts, no reserved path.
+- The same mechanism serves shared projects, or any other reason users connect
+  nodes between universes. Feedback is one use of it, not its purpose.
+
+That is C28 (deliver work between different owners' nodes), and it **should
+already be possible** with what is built. So the work here is not a feature: it
+is **multi-user live testing** — two real accounts, an intake node with
+author-set conditions on one, a delivery from the other through the app. The C28
+acceptance row above now carries that case.
+
+Same rule as the first-party parity requirement in
 [`composable-ui-experiences/design.md`](../composable-ui-experiences/design.md):
-the platform does not get a path a user cannot author.
+the platform does not get a path a user cannot author. A platform-held inbox
+would have been exactly that path.
+
+### C33 — the app experience is the user's to design, share and switch
+
+New row above, founder 2026-09-26. The app UI is not a platform layout with user
+themes on top: a user **redesigns their app experience through their universe**,
+and it can be any interactive UI they can imagine — an office-building
+simulation, a command centre, something nobody has named — including **opening
+sessions with other agents in their universe from inside it**. Then they share
+it, and another user **switches to it on the fly and back**. Switching is part of
+the capability, not a later nicety; an experience you cannot leave is a
+replacement, not a choice.
+
+**Start from the prototype, not from scratch.** PR #3842 was closed, but its
+inert experience preview is the working starting point — editable composition,
+desktop/phone layouts, typed fixture actions, unknown components preserved, and
+it sends no actions and grants no authority. Branch
+`tiny/u-01kxm1vszd/refine-experience-primitives`; design in
+[`composable-ui-experiences/`](../composable-ui-experiences/design.md).
+
+**The no-privileged-path line holds** and is what makes this row reachable at
+all: the platform's own app experiences use the same authoring contracts as
+users, so a user's redesign is not a lesser tier of the same surface. That
+requirement is in `composable-ui-experiences/design.md` under "Composition
+model"; do not weaken it to ship a first-party layout faster.
 
 ### C24 — the network this row needs
 
