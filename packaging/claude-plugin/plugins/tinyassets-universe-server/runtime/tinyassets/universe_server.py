@@ -2799,6 +2799,11 @@ def converse(
     from tinyassets.providers.execution_receipt import WriterExecutionReceipt
 
     execution_receipt = WriterExecutionReceipt()
+    # Whether this turn's lesson ended settled -- recorded in-turn with write_brain,
+    # or extracted without failing. The cursor is advanced HERE, after the exchange
+    # is stored, because "settled through turn N" cannot name a turn the store does
+    # not have yet (change `deferred-learning-never-blocks-the-reply`).
+    lesson_settled: list[bool] = []
     try:
         reply = _converse_impl(
             uid,
@@ -2808,6 +2813,7 @@ def converse(
             conversation_history=conversation_history,
             input_method=input_method,
             response_observer=execution_receipt.observe,
+            learning_observer=lesson_settled.append,
             **({} if model_choice is None else {"model_choice": model_choice}),
         )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
@@ -2848,6 +2854,13 @@ def converse(
         record_exchange(
             memory_universe_dir, memory_session, message, str(reply), execution=execution,
         )
+        # Only now can the cursor name this turn. Settled -> the lesson is done and
+        # the next turn owes nothing for it; unsettled (a failed extraction) -> it
+        # stays owed, which is the retry state the deferred path will drain.
+        if lesson_settled and lesson_settled[0]:
+            from tinyassets.conversation_store import settle_learned_cursor
+
+            settle_learned_cursor(memory_universe_dir, memory_session)
     except Exception:  # noqa: BLE001 - the reply is already earned; memory is best-effort
         logger.warning("converse: conversation memory could not record the turn", exc_info=True)
     payload = {"reply": reply, "universe_id": uid}

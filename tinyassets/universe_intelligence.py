@@ -926,8 +926,35 @@ def _conversation_history_block(
         return ""
 
 
-def _call_writer(turn_input, *, system, universe_context, config, response_observer=None):
+def _completed_tool_names(http_turn) -> set:
+    """Which engine tools this turn actually COMPLETED, from its own journal.
+
+    Read from the journal rather than guessed, and read here rather than in the
+    engine handler, because the engine MCP surface serves a different request: a
+    contextvar set on this worker is invisible there, and deriving the same session
+    key in both places would be a two-sided key mismatch waiting to happen.
+    """
+    names: set = set()
+    turn = getattr(http_turn, "turn", None)
+    for previous in getattr(turn, "rounds", ()) or ():
+        for tool in getattr(previous, "tools", ()) or ():
+            if getattr(tool, "state", "") != "completed":
+                continue
+            name = getattr(getattr(tool, "request", None), "name", "")
+            if name:
+                names.add(name)
+    return names
+
+
+def _call_writer(
+    turn_input, *, system, universe_context, config, response_observer=None,
+    tools_observer=None,
+):
     """Run one served writer turn; retry ONCE immediately only if nothing ran.
+
+    ``tools_observer``, when given, is called with the set of engine tool names
+    this turn completed — how the caller learns whether the turn recorded its own
+    lesson instead of spending another round-trip discovering it.
 
     Streamed attempts now classify their own outcome (idle-timeout /
     interactive-deadline / rate-limit) and the router no longer cools the sole
@@ -999,11 +1026,46 @@ def _call_writer(turn_input, *, system, universe_context, config, response_obser
 
     finally:
         if http_turn is not None:
+            if tools_observer is not None:
+                try:
+                    tools_observer(_completed_tool_names(http_turn))
+                except Exception:  # noqa: BLE001 - evidence never breaks the turn
+                    logger.warning("could not read this turn's completed tools")
             try:
                 http_turn.close_quiescent()
             except Exception:
                 logger.exception("could not close quiescent interactive agent progress")
 
+
+#: Engine tools whose completion proves the turn recorded its own lesson. Only the
+#: governed brain-write handle counts: `write`/`edit` can touch a brain file too,
+#: but they are not the governed path and their target is not checked here, so
+#: treating them as evidence would settle a cursor on an unrelated file write.
+_BRAIN_RECORDING_TOOLS = frozenset({"write_brain"})
+
+#: Appended ONLY when this conversation has a lesson the universe has not recorded
+#: yet. Why it exists (measured 2026-09-25): `converse` used to spend a THIRD model
+#: round-trip on learning extraction AFTER the reply text already existed, on every
+#: turn, on the founder's clock. The turn is already holding everything that call
+#: would look at — the founder's message, its own reply, `write_brain`, and its
+#: brain files — so it can record the lesson inside the round-trips it is already
+#: paying for, and then the extra call is skipped.
+#:
+#: It grants NOTHING new: `write_brain` is already founder-allowlisted, already
+#: governed by soul.edit, and the honesty floor and "only clear, direct, stable
+#: facts my founder actually gave me" rule in the brain section above still decide
+#: what may be written. The only new information is whether it has done it yet.
+_UNRECORDED_LESSON = (
+    "NOT YET RECORDED: what my founder taught me in this conversation is not in my "
+    "brain files yet. If this turn contains a clear, durable fact they actually "
+    "gave me — who they are, who I am, where I came from, my form / projects / how "
+    "I am organised — I write it with write_brain BEFORE I finish answering, "
+    "reading the current section first and making the SMALLEST edit that adds it "
+    "without dropping what is there. If they taught me nothing durable this turn "
+    "(a question, a greeting, a joke, a hypothetical, something ambiguous or "
+    "contradicting what I know), I write NOTHING and simply answer — inventing a "
+    "fact to record is worse than recording none. My honesty floor governs this."
+)
 
 #: Trusted persona directive appended ONLY when there is recent history to
 #: continue (see converse). Makes the one-brain-everywhere promise legible: the
@@ -1060,6 +1122,7 @@ def converse(
     input_method: str = "unknown",
     response_observer=None,
     model_choice: dict | None = None,
+    learning_observer=None,
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -1070,10 +1133,24 @@ def converse(
     universe by construction — it does not pass through the MCP transport auth
     gate.
 
-    The universe is the SOLE writer of its own brain (Codex ADAPT 2026-07-02): in
-    a SECOND, separate step it persists what the founder EXPLICITLY taught it this
-    turn into its governed soul. Persistence never breaks the reply — a failure is
-    logged and the founder still gets their answer. Returns the reply text.
+    The universe is the SOLE writer of its own brain (Codex ADAPT 2026-07-02), and
+    it now records what the founder taught it INSIDE this turn where it can: a turn
+    whose conversation has an unrecorded lesson is told so and writes it with
+    ``write_brain`` during the round-trips it is already paying for. Only when the
+    turn did NOT record does the separate extraction call still run, synchronously,
+    exactly as before — so a turn that recorded its own lesson skips a whole model
+    round-trip, a turn that did not is no slower than it was, and no lesson is ever
+    lost (change ``deferred-learning-never-blocks-the-reply``; measured
+    2026-09-25: that call was a third round-trip on the founder's clock, every
+    turn). Persistence never breaks the reply — a failure is logged, the founder
+    still gets their answer, and the cursor stays unsettled so the lesson is still
+    owed. Returns the reply text.
+
+    ``learning_observer`` is called with whether this turn's lesson ended SETTLED —
+    recorded in-turn, or extracted without failing. The caller advances the
+    conversation's learned cursor, not this function: the exchange is not stored
+    until after this returns, so settling here could only ever mark the PREVIOUS
+    turn. Omitted → nothing is reported and behaviour is unchanged.
 
     ``tier`` is a CEILING on the interlocutor tier of the party being answered,
     never an assertion of it. The real tier is resolved from authenticated
@@ -1205,11 +1282,23 @@ def converse(
     if history_block:
         system = system + "\n\n" + _CROSS_SURFACE_CONTINUITY
     system = system + "\n\n" + _turn_input_method_context(input_method)
+    # Tell the turn whether it still owes a lesson, so it can record it in-turn
+    # instead of the platform spending another whole round-trip finding out. Only
+    # for a granted turn with the governed write tool actually wired: a turn that
+    # cannot call write_brain must not be told to.
+    # Gated on the governed write tool actually being wired and the turn being
+    # granted: a turn that cannot call write_brain must never be told to. Not gated
+    # on the learned cursor — THIS turn's lesson is unrecorded by construction,
+    # because the exchange is not even stored until after this function returns.
+    if granted and turn_config.engine_mcp_enabled:
+        system = system + "\n\n" + _UNRECORDED_LESSON
+    recorded: set = set()
     reply = _call_writer(
         turn_input,
         system=system,
         universe_context=ctx,
         config=turn_config,
+        tools_observer=recorded.update,
         **({} if response_observer is None else {"response_observer": response_observer}),
     )
     # Only a FOUNDER teaches the universe.
@@ -1223,9 +1312,26 @@ def converse(
     # The read gate lives in `_build_persona_system_prompt` above; this is the
     # matching write gate, placed here rather than at any one call site so a
     # future non-founder caller inherits it instead of having to remember it.
+    #
+    # And it runs only when the turn did NOT record its own lesson. That is read
+    # from this turn's OWN journal (a completed `write_brain`), never guessed and
+    # never taken from the engine surface's separate request. When it did record,
+    # the founder is spared a whole round-trip; when it did not, this is exactly
+    # the call it always was, so no lesson is lost either way.
     if bound_tier == interlocutor.FOUNDER:
-        _learn_from_turn(
-            ctx, universe_dir=udir, universe_id=uid,
-            founder_message=founder_message, reply=reply, actor_id=actor_id,
-        )
+        if recorded & _BRAIN_RECORDING_TOOLS:
+            settled = True
+        else:
+            # Settled even when nothing was written: extraction ran and found
+            # nothing durable, which is a finished lesson, not an owed one. A
+            # FAILED extraction returns False, and then the lesson is still owed.
+            settled = _learn_from_turn(
+                ctx, universe_dir=udir, universe_id=uid,
+                founder_message=founder_message, reply=reply, actor_id=actor_id,
+            )
+        if learning_observer is not None:
+            try:
+                learning_observer(bool(settled))
+            except Exception:  # noqa: BLE001 - the reply is already earned
+                logger.warning("converse: learning outcome could not be reported")
     return reply

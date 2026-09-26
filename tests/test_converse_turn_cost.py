@@ -84,6 +84,7 @@ def turn(agent, monkeypatch, signed_in):
     monkeypatch.setattr(daemon_server, "get_founder_home", _GET_FOUNDER_HOME)
     signed_in("owner")
     calls: list[dict] = []
+    state = SimpleNamespace(agent=agent, uid=uid, calls=calls, tool_name="read_brain")
 
     class Proxy:
         def close(self):
@@ -120,7 +121,11 @@ def turn(agent, monkeypatch, signed_in):
                         "id": f"call-{len(calls)}",
                         "type": "function",
                         "function": {
-                            "name": "read_brain",
+                            # read_brain by default: a READ is not evidence that
+                            # the turn recorded its lesson, so the extraction
+                            # still runs. A test that wants the recorded case sets
+                            # `turn.tool_name = "write_brain"`.
+                            "name": state.tool_name,
                             "arguments": '{"section": "founder.md"}',
                         },
                     }],
@@ -140,7 +145,7 @@ def turn(agent, monkeypatch, signed_in):
             }
 
     monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: Proxy())
-    return SimpleNamespace(agent=agent, uid=uid, calls=calls)
+    return state
 
 
 def _converse(turn, message="what's a good name for a cat?"):
@@ -170,13 +175,37 @@ def test_one_tool_step_costs_a_whole_extra_round_trip(turn):
     assert writers[1]["body_bytes"] > writers[0]["body_bytes"]
 
 
-def test_extract_learning_is_a_third_round_trip_inside_the_founders_wait(turn):
-    """The reply text exists, and then the founder waits for bookkeeping anyway.
+def test_a_turn_that_records_its_own_lesson_pays_for_two_round_trips(turn):
+    """The saving, pinned as CONDITIONAL — which is the honest shape of it.
 
-    Pinned as a MEASUREMENT, not as desired behaviour: moving it out of the
-    request needs a provider lease that outlives the request (the lease is
-    revoked in ``universe_server._register_structured_tool``'s ``finally``), which
-    is an authority change, not an orchestration one.
+    A turn whose tool step was the governed brain write has already recorded what
+    it was taught, so the extraction call is skipped: two round-trips, not three.
+    A turn that recorded nothing still pays three (the test below), so no lesson is
+    lost and no turn is slower than it was
+    (`openspec/changes/deferred-learning-never-blocks-the-reply/`).
+    """
+    turn.agent.requested_rounds = 1
+    turn.tool_name = "write_brain"
+    reply, total = _converse(turn)
+    assert reply == FINAL_REPLY
+    assert [row["kind"] for row in turn.calls] == ["writer_round_1", "writer_round_2"]
+    assert "extract_learning" not in [row["kind"] for row in turn.calls]
+    # And the founder waits on two round-trips of source latency, not three. Wire
+    # time, not wall clock: this rig's local overhead is a real fraction of a
+    # 0.2s synthetic latency and is not what the saving is about.
+    waited = sum(row["t_end"] - row["t_start"] for row in turn.calls)
+    assert 2 * WIRE_LATENCY_S <= waited < 3 * WIRE_LATENCY_S
+    assert total >= waited
+
+
+def test_extract_learning_is_a_third_round_trip_inside_the_founders_wait(turn):
+    """A turn that recorded NOTHING still pays the third round-trip, as before.
+
+    Pinned as a MEASUREMENT, not as desired behaviour: taking this call off the
+    founder's clock entirely needs a provider lease that outlives the request (the
+    lease is revoked in ``universe_server._register_structured_tool``'s
+    ``finally``), which is an authority change, not an orchestration one — its own
+    change, designed against the cursor-settle rate this one produces.
     """
     turn.agent.requested_rounds = 1
     reply, total = _converse(turn)
