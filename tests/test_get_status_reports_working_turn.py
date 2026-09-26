@@ -72,9 +72,10 @@ def test_a_running_turn_is_reported_with_its_state_and_age(founder_home):
 
 
 def test_a_wedged_row_is_reported_stale_and_not_as_work(founder_home):
-    from tinyassets.api.status import _WORKING_TURN_MAX_AGE_S
+    from tinyassets.api.status import _working_turn_max_age_s
 
-    _start_turn(founder_home, state="native_started", age_s=_WORKING_TURN_MAX_AGE_S + 120)
+    bound = _working_turn_max_age_s(founder_home)
+    _start_turn(founder_home, state="native_started", age_s=bound + 120)
     row = json.loads(get_status())["active_turn"]
     assert row is not None and row["stale"] is True, (
         "a row a killed container left behind must stay visible, and must not be "

@@ -29,15 +29,42 @@ from tinyassets.storage.agent_turn_journal import (
 )
 
 
-def test_the_bound_is_the_cap_the_coordinator_already_enforces():
-    """A round number here would be a second, drifting definition of the cap."""
-    from tinyassets.api.status import _WORKING_TURN_MAX_AGE_S
+def test_the_bound_is_the_cap_the_coordinator_will_actually_enforce(tmp_path):
+    """The bound follows the GRANTED turn's cap, not the library default.
+
+    Codex refuted the first version of this on #4020: it used the library's 600s
+    default, while the granted founder turn -- the only kind the app produces --
+    gets 3600s with a per-universe override. A 630s bound called a healthy turn
+    dead after ten and a half minutes, hiding the indicator for exactly the long
+    turns it was added for.
+    """
+    from tinyassets.api.status import _WORKING_TURN_REAP_MARGIN_S, _working_turn_max_age_s
     from tinyassets.providers.base import DEFAULT_ABSOLUTE_CAP_S
+    from tinyassets.universe_intelligence import _SERVED_ABSOLUTE_CAP_S, served_absolute_cap_s
 
-    assert _WORKING_TURN_MAX_AGE_S == DEFAULT_ABSOLUTE_CAP_S + 30.0 == _CAP
+    assert _SERVED_ABSOLUTE_CAP_S > DEFAULT_ABSOLUTE_CAP_S, (
+        "if these ever converge this test is no longer proving anything")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert _working_turn_max_age_s(plain) == _SERVED_ABSOLUTE_CAP_S + _WORKING_TURN_REAP_MARGIN_S
+    assert _working_turn_max_age_s(plain) == _CAP
+
+    # The SAME resolver the coordinator uses, so if a raised per-universe cap ever
+    # becomes reachable it raises this bound with it rather than having that
+    # universe's longer turns called dead. (`UniverseConfig` carries no
+    # `absolute_cap_s` field today, so the knob is inert for a config.yaml
+    # universe -- which is exactly why the bound must not be a literal either.)
+    class _Raised:
+        absolute_cap_s = 7200.0
+
+    assert served_absolute_cap_s(_Raised()) == 7200.0
+    class _Nonsense:
+        absolute_cap_s = "later"
+
+    assert served_absolute_cap_s(_Nonsense()) == _SERVED_ABSOLUTE_CAP_S
 
 
-_CAP = 630.0  # the status projection's own bound; pinned to the real one just above
+_CAP = 3630.0  # the status projection's own bound; pinned to the real one just above
 
 
 @pytest.fixture
@@ -159,6 +186,35 @@ def test_no_database_and_no_turn_table_are_both_simply_idle(tmp_path):
     assert empty.universe_working_turn("home", now=_now(), max_age_s=_CAP) is None
     assert not (tmp_path / "nothing-here").exists(), (
         "an observational read must not bring a database into being")
+
+
+def test_the_read_creates_no_tables_in_a_database_that_lacks_them(tmp_path):
+    """Codex on #4020 reproduced this: the read created five ledger tables.
+
+    The first version went through ``SQLiteProviderWorkAuthorityStore.connection()``,
+    which runs ``executescript(_SCHEMA)`` on every open. An observational status
+    read must not initialize storage, and a schema write can take BEGIN IMMEDIATE
+    against a turn that is running right now.
+    """
+    import sqlite3
+
+    from tinyassets.storage import db_path
+
+    base = tmp_path / "bare"
+    base.mkdir()
+    path = db_path(base)
+    with sqlite3.connect(path) as seed:
+        seed.execute("CREATE TABLE sentinel (only_this TEXT)")
+    before = {row[0] for row in sqlite3.connect(path).execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert before == {"sentinel"}
+
+    assert AgentTurnJournal(base).universe_working_turn(
+        "home", now=_now(), max_age_s=_CAP) is None
+
+    after = {row[0] for row in sqlite3.connect(path).execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert after == before, f"the read created {sorted(after - before)}"
 
 
 def test_a_non_positive_bound_and_a_naive_clock_are_refused(journal):

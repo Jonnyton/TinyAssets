@@ -429,9 +429,13 @@ class AgentTurnJournal:
         NOT the same identifier a served request's caller presents, so matching
         on it would silently answer "idle" during a live turn.
 
-        Read-only in the sense that matters here: it creates neither the
-        database nor the turn schema. A base path with no database, or a
-        database with no turn table, has no turn to report.
+        Genuinely observational: it opens its OWN connection in sqlite's
+        non-creating ``mode=rw`` and runs no DDL, so it creates no database, no
+        directory and no table. The ledger store's ``connection()`` is not used
+        here -- it runs ``executescript(_SCHEMA)`` on every open, and Codex
+        reproduced a read against a database lacking those tables CREATING five
+        of them (#4020). A missing database, or one with no turn table, has no
+        turn to report.
 
         A row older than ``max_age_s`` is returned with ``stale`` true rather
         than dropped. A served turn is wrapped in ``asyncio.timeout`` by the
@@ -444,9 +448,18 @@ class AgentTurnJournal:
             raise ValueError("max_age_s must be positive")
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("now must be timezone-aware")
-        if not db_path(self._ledger.base_path).exists():
+        path = db_path(self._ledger.base_path)
+        if not path.exists():
             return None
-        with self._ledger.connection() as conn:
+        # ``mode=rw`` opens an existing database and REFUSES to create one, which
+        # closes the window between the check above and the open. Read-write, not
+        # ``mode=ro``: a WAL database whose -shm file is absent cannot be opened
+        # read-only at all, and that is the state a freshly restarted box is in.
+        conn = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True,
+                               timeout=30.0, isolation_level=None)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 30000")
             if not conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_turns'"
             ).fetchone():
@@ -456,6 +469,8 @@ class AgentTurnJournal:
                 "WHERE universe_id = ? ORDER BY created_at DESC",
                 (uid,),
             ).fetchall()
+        finally:
+            conn.close()
         newest: dict[str, object] | None = None
         for row in rows:
             if row["state"] not in WORKING_STATES:

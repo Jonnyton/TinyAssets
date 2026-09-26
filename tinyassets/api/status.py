@@ -36,25 +36,37 @@ from tinyassets.api.helpers import (
 from tinyassets.provider_admission import (
     admission_snapshot as _provider_admission_snapshot,
 )
-from tinyassets.providers.base import (
-    API_KEY_PROVIDER_ENV_VARS,
-    DEFAULT_ABSOLUTE_CAP_S,
-    api_key_providers_enabled,
-)
+from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
 
 _STATUS_SCHEMA_VERSION = 2
-# How old a still-progressing turn row may be and still mean "working now".
-# The coordinator wraps a served turn in ``asyncio.timeout(absolute_cap_s)``
-# (``agent_turn_coordinator._run``), so nothing can progress past that cap in
-# this process; the margin is the same one the router already allows a sync
-# wrapper for async overhead plus the in-band reap
-# (``providers.router._sync_call_timeout_s``). Older than this and the row is
-# what a killed container left behind, reported as ``stale`` rather than as
-# activity. NOT a cap on how long a turn may take: a granted turn runs until it
-# is finished, and the cap it is derived from is the one that already bounds it.
-_WORKING_TURN_MAX_AGE_S = DEFAULT_ABSOLUTE_CAP_S + 30.0
+# Async overhead plus the in-band reap, on top of the turn's own cap: the same
+# margin the router already allows a sync wrapper over the streaming cap
+# (``providers.router._sync_call_timeout_s``).
+_WORKING_TURN_REAP_MARGIN_S = 30.0
+
+
+def _working_turn_max_age_s(udir: Path) -> float:
+    """How old a still-progressing turn row may be and still mean "working now".
+
+    Resolved from the cap the COORDINATOR will actually enforce for this
+    universe, not from the library default. The first version of this used
+    ``DEFAULT_ABSOLUTE_CAP_S`` (600s) and Codex refuted it on #4020: the granted
+    founder turn -- the only kind the app produces -- gets 3600s with a
+    per-universe override (``universe_intelligence.served_absolute_cap_s``), so a
+    630s bound called a healthy turn dead after ten and a half minutes and hid
+    the indicator for exactly the long turns it was added for.
+
+    Erring generous is the right direction here. A NON-granted turn keeps the
+    library default, so its wedged row stays reported as activity for longer than
+    strictly necessary; the cost of that is a stale indicator on a dead row,
+    against the cost of hiding live work, which is the bug being fixed.
+    """
+    from tinyassets.config import load_universe_config
+    from tinyassets.universe_intelligence import served_absolute_cap_s
+
+    return served_absolute_cap_s(load_universe_config(udir)) + _WORKING_TURN_REAP_MARGIN_S
 
 
 def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
@@ -79,7 +91,7 @@ def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
         return AgentTurnJournal(udir.parent).universe_working_turn(
             udir.name,
             now=datetime.now(timezone.utc),
-            max_age_s=_WORKING_TURN_MAX_AGE_S,
+            max_age_s=_working_turn_max_age_s(udir),
         )
     except Exception as exc:  # noqa: BLE001 - an unreadable journal is reported, not guessed
         _LOGGER.warning("agent turn activity unreadable: %s", type(exc).__name__)
