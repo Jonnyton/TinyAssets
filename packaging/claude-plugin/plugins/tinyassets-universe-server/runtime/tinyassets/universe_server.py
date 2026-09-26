@@ -1549,6 +1549,14 @@ def write_graph(
             "agent",
             "agent_binding",
             "source_channel",
+            # Supported above and dispatched, but absent from this list until
+            # 2026-09-26 -- so an agent that guessed a write target was told a set
+            # that omitted the cross-user delivery ones, and a prompt naming them
+            # read as routing to an unsupported target.
+            "receiver",
+            "output_link",
+            "run_file",
+            "model_preferences",
         ),
     )
 
