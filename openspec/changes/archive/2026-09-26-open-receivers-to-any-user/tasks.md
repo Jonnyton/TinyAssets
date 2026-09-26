@@ -53,11 +53,25 @@
   17 pre-existing modules).
 - [x] 4.4 Round-1 cross-family Codex review: ADAPT, 7 findings, all folded.
 
-## 5. Owed after landing (lead)
+## 5. Landing
 
-- [ ] 5.1 `python scripts/deployed_sha.py --assert-contains <sha>` — merged is not
-  deployed.
+Merged as squash `c2c11fe0` on 2026-09-26; CI green on the merged head (18 pass,
+0 failures, including `required-tests`).
+
+- [ ] 5.1 `python scripts/deployed_sha.py --assert-contains c2c11fe0` — merged is
+  not deployed. Lead-owned, running 2026-09-26.
 - [ ] 5.2 `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
   --assert-handles` — the canonical handle set is unchanged, so it must report the
-  same six plus optional `get_status`.
-- [ ] 5.3 Sync the two spec deltas into `openspec/specs/` and archive this change.
+  same six plus optional `get_status`. Lead-owned, running 2026-09-26.
+- [x] 5.3 Synced both spec deltas into `openspec/specs/` and archived this change.
+  The delta files were REWRITTEN from the stored specs first, because they were
+  authored before the cross-family review changed two behaviours (update now keeps
+  unspecified exposure fields; reserved attribution names are refused in a stored
+  contract at acceptance too) — an archived delta that describes a rejected shape is
+  a misleading record. `graph-execution-substrate` gained 3 requirements,
+  `live-mcp-connector-surface` 2, and its existing
+  "Graph handles expose structured cross-user delivery controls" had discovery added
+  to its control enumeration rather than a second definition of that fact.
+- [x] 5.4 Filed the concurrent-copy residual as
+  `docs/concerns/2026-09-26-rate-limited-sender-can-still-copy-concurrent-files.md`
+  (P2) so it outlives this change directory.
