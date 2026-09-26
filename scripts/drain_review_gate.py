@@ -79,13 +79,10 @@ def review_allows_merge(
     if not _SHA_RE.fullmatch(head):
         return False
 
-    lines = body.splitlines()
-    verdicts = [line for line in lines if line.startswith("Drain-Review-Verdict:")]
-    reviewed_heads = [line for line in lines if line.startswith("Drain-Review-Head:")]
+    lines = visible_receipt_lines(body)
     artifacts = [line for line in lines if line.startswith("Drain-Review-Artifact:")]
     if not (
-        verdicts == ["Drain-Review-Verdict: APPROVE"]
-        and reviewed_heads == [f"Drain-Review-Head: {head}"]
+        _attests_approval(lines, head)
         and len(artifacts) == 1
         and _ARTIFACT_RE.fullmatch(artifacts[0]) is not None
     ):
@@ -96,6 +93,96 @@ def review_allows_merge(
     return artifact_names_trusted_comment(
         artifacts[0], repo=repo, pr=pr, trusted_comment_urls=trusted_comment_urls
     )
+
+
+def _attests_approval(lines: list[str], head: str) -> bool:
+    """Exactly one APPROVE verdict and exactly one head line naming `head`.
+
+    ONE definition of what an approval looks like, used for the PR body and for
+    the cited comment alike. Exact single-element list comparison, so a second
+    verdict line, a `BLOCK` beside an `APPROVE`, or a head line for any other
+    commit all refuse.
+    """
+    verdicts = [line for line in lines if line.startswith("Drain-Review-Verdict:")]
+    reviewed_heads = [line for line in lines if line.startswith("Drain-Review-Head:")]
+    return (
+        verdicts == ["Drain-Review-Verdict: APPROVE"]
+        and reviewed_heads == [f"Drain-Review-Head: {head}"]
+    )
+
+
+def comment_attests_approval(comment_body: str, head: str) -> bool:
+    """Does this comment PUBLISH an approval of `head`, visibly?
+
+    Comment identity was not enough. Cross-family review 2026-09-26, finding 6:
+    the gate accepted any trusted-author comment as the artifact, so a body
+    receipt citing an OWNER comment that said `VERDICT: BLOCK` for this exact
+    head passed. Checking the comment's own attestation is what makes the
+    artifact evidence rather than a bookmark — and it closes the stale-comment
+    gap too (finding 7), because the comment must name the CURRENT head, which
+    needs no clock.
+    """
+    return _attests_approval(visible_receipt_lines(comment_body), head)
+
+
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_DETAILS_RE = re.compile(r"<details\b.*?</details\s*>", re.DOTALL | re.IGNORECASE)
+_FENCE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})")
+
+
+def visible_receipt_lines(text: str) -> list[str]:
+    """Lines a human reading the rendered markdown actually sees as prose.
+
+    A receipt is an attestation, so it has to be legible to whoever reads the
+    PR. Cross-family review 2026-09-26, finding 4: `splitlines()` alone saw an
+    approval that GitHub renders as nothing at all --
+
+        VERDICT: BLOCK. Do not merge.
+        <!--
+        Drain-Review-Verdict: APPROVE
+        Drain-Review-Head: <the exact head>
+        -->
+
+    and it equally saw the approval in a fenced "here is what NOT to do"
+    example. Both directions matter: the same rule is why a PR that DOCUMENTS
+    the receipt format in a fenced block can still be stamped, instead of its
+    own example colliding with the real receipt.
+
+    Removed, in order: HTML comments (invisible), `<details>` blocks (collapsed
+    -- an approval nobody can see without clicking is not published), and fenced
+    code blocks (illustration, not assertion). An UNCLOSED construct hides
+    everything after it in GitHub's render, so it does here too. Leading
+    whitespace and blockquote markers need no special handling: `startswith`
+    already refuses an indented or quoted line.
+    """
+    text = _DETAILS_RE.sub("", _HTML_COMMENT_RE.sub("", text))
+    # Whatever opener is left was never closed, and GitHub swallows the rest of
+    # the body from there, so a receipt may not hide in it either.
+    lowered = text.lower()
+    unclosed = [at for at in (lowered.find("<!--"), lowered.find("<details")) if at != -1]
+    if unclosed:
+        text = text[: min(unclosed)]
+
+    lines: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines():
+        match = _FENCE_RE.match(line)
+        if fence is None:
+            if match is not None:
+                fence = match.group("fence")
+            else:
+                lines.append(line)
+            continue
+        # Inside a fence: a closing fence is the same character, at least as
+        # long, and nothing else on the line.
+        if (
+            match is not None
+            and match.group("fence")[0] == fence[0]
+            and len(match.group("fence")) >= len(fence)
+            and not line.strip().strip(fence[0])
+        ):
+            fence = None
+    return lines
 
 
 def artifact_names_trusted_comment(
@@ -131,13 +218,20 @@ def artifact_names_trusted_comment(
     return match["url"].lower() in trusted_comment_urls
 
 
-def parse_trusted_comments(stream: str) -> frozenset[str] | None:
-    """URLs of trusted-author comments, from a stream of JSON objects.
+def published_approval_urls(stream: str, *, head: str) -> frozenset[str] | None:
+    """URLs of comments that PUBLISH a trusted approval of `head`.
 
     The workflow reads the PR's issue comments, reviews and review comments and
     appends each object to one file (`gh api --jq '.[] | {...}'` emits one
-    compact object per line). Filtering happens HERE, not in a jq expression,
-    so the trust list is unit tested rather than buried in a shell string.
+    compact object per line, with the body's newlines JSON-escaped). Both
+    filters happen HERE, not in a jq expression, so they are unit tested rather
+    than buried in a shell string:
+
+    * `author_association` must be trusted — GitHub computes it at read time, so
+      it is not something a comment body can claim about itself;
+    * the comment must itself attest `APPROVE` at this exact head. A trusted
+      author's comment saying `VERDICT: BLOCK` is not an approval, and before
+      this filter existed the gate accepted one as the artifact.
 
     Returns `None` on anything unparseable — a partially understood inventory
     must deny, never silently shrink to a set that a receipt cannot match and
@@ -161,9 +255,14 @@ def parse_trusted_comments(stream: str) -> frozenset[str] | None:
             return None
         url = obj.get("url")
         association = obj.get("association")
+        body = obj.get("body")
         if not isinstance(url, str) or not isinstance(association, str):
             return None
-        if association in _TRUSTED_ASSOCIATIONS:
+        if not isinstance(body, str):
+            # The projection uses `(.body // "")`, so an absent body means the
+            # inventory is not the shape this gate reads. Refuse it.
+            return None
+        if association in _TRUSTED_ASSOCIATIONS and comment_attests_approval(body, head):
             urls.add(url.lower())
     return frozenset(urls)
 
@@ -313,7 +412,7 @@ def _blocking_review(args: argparse.Namespace) -> int:
 
     body = _read_text(args.body_file)
     comments = _read_text(args.review_comments_file)
-    trusted = None if comments is None else parse_trusted_comments(comments)
+    trusted = None if comments is None else published_approval_urls(comments, head=args.head)
     if body is not None and review_allows_merge(
         branch=args.branch,
         head=args.head,

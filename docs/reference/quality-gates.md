@@ -122,22 +122,41 @@ carries an exact-head receipt, whenever the PR
 * carries the `infra-change` label, **or**
 * declares `Tier 2` in its title.
 
+Satisfying it takes **two steps, both required**. First the reviewer POSTS the
+verdict as a comment on the PR, carrying these two lines as plain visible text:
+
 ```
 Drain-Review-Verdict: APPROVE
 Drain-Review-Head: <the PR's current 40-hex head>
+```
+
+Then the PR BODY cites that comment:
+
+```
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: <the same head>
 Drain-Review-Artifact: https://github.com/<owner>/<repo>/pull/<this PR>#issuecomment-<id>
 ```
 
 Mechanics worth knowing before you plan work:
 
 - **Only `APPROVE`.** `BLOCK`, `DENY`, lower-case `approve`, or `APPROVE` with
-  trailing prose all fail, and an `APPROVE` stacked beside a `BLOCK` fails.
+  trailing prose all fail, and an `APPROVE` stacked beside a `BLOCK` fails — in
+  the body and in the comment alike.
 - **The artifact must be a real comment on THIS PR** — a top-level comment, a
   submitted review, or an inline review comment — authored by a repository
-  owner, member or collaborator. It is checked against the API, so an invented
-  comment id, an approval on a different PR, and a drive-by commenter all fail.
+  owner, member or collaborator, **and that comment must itself carry the
+  APPROVE lines for the current head**. Checked against the API, so an invented
+  comment id, an approval on a different PR, a drive-by commenter, a citation of
+  the reviewer's BLOCK comment, and a citation of a pre-push approval all fail.
   A `docs/…md` artifact still satisfies the older drain-branch receipt but not
   this one.
+- **An approval nobody can read is not published.** Lines inside a fenced code
+  block, an HTML comment, or a `<details>` block do not count, in either place —
+  and an unclosed one hides everything after it, exactly as GitHub renders it.
+  The same rule is why a PR that DOCUMENTS this format in a fenced example can
+  still be stamped: its example is ignored, so it does not collide with the real
+  receipt.
 - **Stamping the body re-runs the check** (`edited` is a trigger), so a verdict
   unblocks a PR with no push. **Any push voids the receipt** — the head must
   match exactly, so batch your fixes and re-stamp once.
@@ -151,8 +170,8 @@ Mechanics worth knowing before you plan work:
   "stamper differs from author" would be unsatisfiable. What the receipt makes
   impossible is the #3989 accident: a BLOCK cannot merge, a receipt for an older
   head cannot merge, and a verdict never published on the PR cannot merge. The
-  honesty note in `.github/workflows/pr-scope-guard.yml` states the residual
-  gap (a stale approval comment can be re-cited under a fresh head line).
+  honesty note in `.github/workflows/pr-scope-guard.yml` states what is and is
+  not closed.
 
 Measured blast radius: of the 60 most recently merged PRs, 29 would have needed
 a receipt (24 by path, 15 by label, 22 by Tier 2 title).

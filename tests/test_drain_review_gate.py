@@ -376,7 +376,18 @@ ARTIFACT_URL = f"https://github.com/{REPO}/pull/{PR}#issuecomment-5841421637"
 TRUSTED_COMMENTS = ((ARTIFACT_URL, "OWNER"),)
 
 
+def _attestation(head: str = HEAD, verdict: str = "APPROVE") -> str:
+    """What the reviewer POSTS as a comment: the verdict, bound to the head."""
+    return (
+        f"## Tier 2 review: {verdict}\n\n"
+        "I read the diff and ran the tests.\n\n"
+        f"Drain-Review-Verdict: {verdict}\n"
+        f"Drain-Review-Head: {head}\n"
+    )
+
+
 def _receipt_body(*, head: str = HEAD, url: str = ARTIFACT_URL, verdict: str = "APPROVE") -> str:
+    """What the stamper puts in the PR BODY: the same claim, plus the citation."""
     return (
         "## Review\n\n"
         f"Drain-Review-Verdict: {verdict}\n"
@@ -395,7 +406,7 @@ def _run_blocking(
     head: str = HEAD,
     repo: str = REPO,
     pr: int = PR,
-    comments: tuple[tuple[str, str], ...] | None = TRUSTED_COMMENTS,
+    comments: tuple[tuple[str, ...], ...] | None = TRUSTED_COMMENTS,
     comments_raw: str | None = None,
     footprint_exempt: bool = False,
     branch: str = "fix/ordinary",
@@ -410,11 +421,21 @@ def _run_blocking(
     if comments_raw is not None:
         comments_path.write_text(comments_raw, encoding="utf-8")
     elif comments is not None:
-        # Exactly what `gh api --jq '.[] | {url, association}'` emits: one
-        # compact JSON object per line.
+        # Exactly what `gh api --jq '.[] | {url, association, body}'` emits: one
+        # compact JSON object per line, the body's newlines JSON-escaped. A row
+        # may omit the body, in which case it attests APPROVE at this head — so
+        # a test about URL identity or association is not also a body test.
         comments_path.write_text(
             "".join(
-                json.dumps({"url": url, "association": assoc}) + "\n" for url, assoc in comments
+                json.dumps(
+                    {
+                        "url": row[0],
+                        "association": row[1],
+                        "body": row[2] if len(row) > 2 else _attestation(head),
+                    }
+                )
+                + "\n"
+                for row in comments
             ),
             encoding="utf-8",
         )
@@ -714,11 +735,275 @@ def test_pretty_printed_inventory_still_parses(tmp_path: Path) -> None:
         title="deploy: a thing (Tier 2)",
         body=_receipt_body(),
         comments=None,
-        comments_raw=json.dumps({"url": ARTIFACT_URL, "association": "OWNER"}, indent=2) + "\n",
+        comments_raw=json.dumps(
+            {"url": ARTIFACT_URL, "association": "OWNER", "body": _attestation()}, indent=2
+        )
+        + "\n",
     )
 
     assert completed.returncode == 0
     assert completed.stdout.strip() == "allow"
+
+
+HIDDEN_RECEIPT_BODIES = {
+    "html comment": (
+        "VERDICT: BLOCK. Do not merge.\n\n"
+        "<!--\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+        "-->\n"
+    ),
+    "unclosed html comment": (
+        "VERDICT: BLOCK. Do not merge.\n\n"
+        "<!--\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+    ),
+    "fenced 'what NOT to do' example": (
+        "Never write this:\n\n"
+        "```\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+        "```\n"
+    ),
+    "tilde fence": (
+        "~~~text\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+        "~~~\n"
+    ),
+    "unclosed fence": (
+        "```\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+    ),
+    "details block": (
+        "<details><summary>receipt format</summary>\n\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+        "\n</details>\n"
+    ),
+    "unclosed details block": (
+        "<details><summary>receipt format</summary>\n\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("why", sorted(HIDDEN_RECEIPT_BODIES))
+def test_an_approval_a_reader_cannot_see_is_not_a_receipt(tmp_path: Path, why: str) -> None:
+    """Cross-family review 2026-09-26, finding 4.
+
+    `splitlines()` alone saw an approval inside an HTML comment, which GitHub
+    renders as nothing, under a visible `VERDICT: BLOCK. Do not merge.` It saw
+    fenced and `<details>` examples the same way.
+    """
+    completed = _run_blocking(
+        tmp_path, title="deploy: a thing (Tier 2)", body=HIDDEN_RECEIPT_BODIES[why]
+    )
+
+    assert completed.returncode == 2, why
+    assert completed.stdout.strip() == "deny"
+
+
+def test_a_pr_may_document_the_receipt_format_and_still_be_stamped(tmp_path: Path) -> None:
+    """The same rule, from the other side — and this PR needed it.
+
+    A PR whose body EXPLAINS the receipt format carries a fenced example. If the
+    example counted, the real receipt beside it would be a second verdict line
+    and the exact-one comparison would refuse the honest stamp. Ignoring hidden
+    lines is what keeps a self-documenting PR stampable.
+    """
+    body = (
+        "This gate needs three lines in the body:\n\n"
+        "```\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        "Drain-Review-Head: <the PR's current 40-hex head>\n"
+        "Drain-Review-Artifact: <comment URL>\n"
+        "```\n\n" + _receipt_body()
+    )
+
+    completed = _run_blocking(tmp_path, title="gate: a thing (Tier 2)", body=body)
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "allow"
+
+
+@pytest.mark.parametrize(
+    "prefix,why",
+    [
+        ("<!-- reviewer notes: nothing to see -->\n\n", "a CLOSED html comment"),
+        (
+            "<details><summary>test output</summary>\n\n115 passed\n\n</details>\n\n",
+            "a CLOSED details block, which is how evidence is usually folded",
+        ),
+        ("```\nsome unrelated code\n```\n\n", "a CLOSED fence"),
+        ("~~~\nsome unrelated code\n~~~\n\n", "a CLOSED tilde fence"),
+    ],
+)
+def test_hidden_content_before_a_real_receipt_does_not_hide_the_receipt(
+    tmp_path: Path, prefix: str, why: str
+) -> None:
+    """The benign direction, and the reason the strippers are not just truncation.
+
+    Truncating at the first `<!--` or `<details` would ALSO delete an honest
+    receipt that happens to follow a closed one. Two mutations survived until
+    this test existed: deleting `_HTML_COMMENT_RE.sub` and deleting
+    `_DETAILS_RE.sub` both stayed green, because the unclosed-opener truncation
+    caught the abuse case on its own while over-blocking this one.
+    """
+    completed = _run_blocking(
+        tmp_path, title="deploy: a thing (Tier 2)", body=prefix + _receipt_body()
+    )
+
+    assert completed.returncode == 0, why
+    assert completed.stdout.strip() == "allow"
+
+
+def test_a_closed_html_comment_in_the_attestation_comment_is_tolerated(tmp_path: Path) -> None:
+    # Same rule on the comment side: a reviewer folding their evidence into a
+    # details block must not lose their own verdict.
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(),
+        comments=(
+            (
+                ARTIFACT_URL,
+                "OWNER",
+                "<details><summary>harness</summary>\n\nran it\n\n</details>\n\n"
+                + _attestation(),
+            ),
+        ),
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "allow"
+
+
+@pytest.mark.parametrize(
+    "comment_body,why",
+    [
+        (
+            _attestation(verdict="BLOCK"),
+            "a trusted author's BLOCK is not an approval, however it is cited",
+        ),
+        (
+            "## Tier 2 review: APPROVE\n\nLooks good to me.\n",
+            "prose approval with no machine-readable attestation",
+        ),
+        (
+            _attestation(head="b" * 40),
+            "an approval of a DIFFERENT head — the stale-comment gap",
+        ),
+        (
+            "<!--\nDrain-Review-Verdict: APPROVE\n" + f"Drain-Review-Head: {HEAD}\n-->\n",
+            "an attestation hidden in an HTML comment is not published",
+        ),
+        (
+            "```\nDrain-Review-Verdict: APPROVE\n" + f"Drain-Review-Head: {HEAD}\n```\n",
+            "a fenced example in a comment is not an attestation",
+        ),
+        (
+            _attestation() + f"Drain-Review-Verdict: BLOCK\nDrain-Review-Head: {HEAD}\n",
+            "an APPROVE stacked with a BLOCK in the same comment",
+        ),
+        ("", "an empty comment body"),
+    ],
+)
+def test_the_cited_comment_must_itself_publish_the_approval(
+    tmp_path: Path, comment_body: str, why: str
+) -> None:
+    """Cross-family review 2026-09-26, finding 6 (and 7).
+
+    Comment identity was not enough: any trusted-author comment satisfied the
+    artifact, so a body receipt citing an OWNER comment that said
+    `VERDICT: BLOCK` for the exact head got through. The comment must attest
+    APPROVE at the CURRENT head — which also closes the stale-comment gap
+    without consulting any clock.
+    """
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(),
+        comments=((ARTIFACT_URL, "OWNER", comment_body),),
+    )
+
+    assert completed.returncode == 2, why
+    assert completed.stdout.strip() == "deny"
+
+
+def test_the_body_and_the_comment_must_agree_on_the_head(tmp_path: Path) -> None:
+    # Both halves name the same head, and it is the PR's current head: allow.
+    # Change either half alone and it refuses.
+    agreeing = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(),
+        comments=((ARTIFACT_URL, "OWNER", _attestation(HEAD)),),
+    )
+    body_stale = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(head="b" * 40),
+        comments=((ARTIFACT_URL, "OWNER", _attestation(HEAD)),),
+    )
+    comment_stale = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(),
+        comments=((ARTIFACT_URL, "OWNER", _attestation("b" * 40)),),
+    )
+
+    assert agreeing.returncode == 0
+    assert agreeing.stdout.strip() == "allow"
+    assert body_stale.returncode == 2
+    assert comment_stale.returncode == 2
+
+
+def test_a_second_trusted_comment_can_carry_the_approval(tmp_path: Path) -> None:
+    # A review thread normally holds several comments, most of them not the
+    # verdict. The gate must find the one that attests, not demand the PR have
+    # exactly one comment.
+    other = f"https://github.com/{REPO}/pull/{PR}#issuecomment-1111111111"
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(),
+        comments=(
+            (other, "OWNER", "Round 1: BLOCK, see below.\n"),
+            (ARTIFACT_URL, "OWNER", _attestation()),
+        ),
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "allow"
+
+
+def test_citing_the_wrong_comment_of_two_fails(tmp_path: Path) -> None:
+    # The accidental-citation case from finding 6: the approval exists, but the
+    # body points at the BLOCK comment instead.
+    blocked = f"https://github.com/{REPO}/pull/{PR}#issuecomment-1111111111"
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(url=blocked),
+        comments=(
+            (blocked, "OWNER", _attestation(verdict="BLOCK")),
+            (ARTIFACT_URL, "OWNER", _attestation()),
+        ),
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout.strip() == "deny"
 
 
 def test_an_unreadable_hits_file_fails_closed(tmp_path: Path) -> None:
@@ -888,13 +1173,88 @@ def test_receipt_footprint_is_the_deduplicated_union(
     assert completed.stdout.strip() == f"FOOTPRINT_EXEMPT={expected_exempt}"
 
 
+@pytest.mark.parametrize(
+    "grep_rc,expect_rc,why",
+    [
+        (0, 0, "matches found"),
+        (1, 0, "no match is a normal answer"),
+        (2, 1, "grep failed to execute: must NOT read as 'nothing matched'"),
+        (141, 1, "killed by a signal"),
+    ],
+)
+def test_a_grep_failure_never_reads_as_no_release_critical_paths(
+    tmp_path: Path, grep_rc: int, expect_rc: int, why: str
+) -> None:
+    """Cross-family review 2026-09-26, finding 3.
+
+    `grep -E "$SENSITIVE_RE" || true` swallowed an execution error as well as
+    "no match", so an injected exit 2 produced an empty hit list — fail-OPEN on
+    the exact question this gate answers. Runs the workflow's own `classify`
+    lines against a stub grep.
+    """
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - CI runners all have bash
+        pytest.skip("bash is required to exercise the workflow's own lines")
+
+    # A shell FUNCTION, not a stub on PATH: a Windows `C:/...` directory cannot
+    # go in a bash PATH (the drive colon is the separator), and the first
+    # attempt silently ran the real grep and passed for the wrong reason.
+    # Functions take precedence over PATH lookup inside the same shell.
+    script = "\n".join(
+        [
+            "set -euo pipefail",
+            "grep() {",
+            f"  if [ {grep_rc} -eq 0 ]; then echo 'deploy/x.sh'; fi",
+            f"  return {grep_rc}",
+            "}",
+            _extract(r"^\s*classify\(\) \{\n(?:.*\n)*?^\s*\}$"),
+            _extract(r'^\s*HITS="\$\(classify .*$'),
+            'echo "HITS=${HITS}"',
+        ]
+    )
+    script_path = tmp_path / "grep-fragment.sh"
+    script_path.write_text(script, encoding="utf-8", newline="\n")
+
+    completed = subprocess.run(
+        [bash, str(script_path)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "CHANGED": "deploy/x.sh\ndocs/readme.md",
+            "SENSITIVE_RE": "^deploy/",
+        },
+    )
+
+    assert completed.returncode == expect_rc, f"{why}: {completed.stderr}"
+    if expect_rc == 0:
+        # And the hits it reports are grep's output, not something invented.
+        expected = "deploy/x.sh" if grep_rc == 0 else ""
+        assert completed.stdout.strip() == f"HITS={expected}", why
+    else:
+        assert "failing closed" in completed.stderr
+
+
 def test_scope_guard_wires_the_blocking_review_decision() -> None:
     text = POLICY_WORKFLOW.read_text(encoding="utf-8")
 
     # Re-trigger events: stamping the BODY must re-run the check without a push,
-    # and labelling must too.
-    for event in ("edited", "labeled", "unlabeled", "synchronize", "opened", "reopened"):
-        assert event in text, event
+    # and labelling must too. Asserted as the LIST, not as substrings: `labeled`
+    # is a substring of `unlabeled`, so deleting `labeled` alone survived a
+    # per-event `in text` check (cross-family review 2026-09-26).
+    types = re.search(r"^\s*types: \[(?P<types>[^\]]*)\]", text, re.MULTILINE)
+    assert types, "the pull_request_target types list is gone"
+    declared = {t.strip() for t in types.group("types").split(",")}
+    assert declared == {
+        "opened",
+        "reopened",
+        "synchronize",
+        "ready_for_review",
+        "edited",
+        "labeled",
+        "unlabeled",
+    }, declared
     assert "PR_TITLE: ${{ github.event.pull_request.title }}" in text
     assert "--blocking-review" in text
     for flag in (
@@ -909,7 +1269,15 @@ def test_scope_guard_wires_the_blocking_review_decision() -> None:
     # The inventory is read from the API, for all three places a verdict lands.
     for endpoint in ('"issues/${PR}/comments"', '"pulls/${PR}/comments"', '"pulls/${PR}/reviews"'):
         assert endpoint in text, endpoint
-    assert "author_association" in text
+    # The PROJECTION, not the word: `assert "author_association" in text` also
+    # matched the comment prose explaining it, so replacing `.author_association`
+    # with the literal "OWNER" — which would trust every commenter — stayed green
+    # (cross-family review 2026-09-26). The body must be projected too, or the
+    # gate cannot tell an approval from a BLOCK.
+    assert (
+        "--jq '.[] | {url: .html_url, association: .author_association, "
+        'body: (.body // "")}\'' in text
+    ), "the inventory must carry GitHub's own association AND the comment body"
     # A failed comment read must not fail an unrelated PR, but must leave no
     # inventory behind for one that needs a receipt. Asserted as the ORDERED
     # sequence inside the loop: the bare string also appears before the loop,

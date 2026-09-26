@@ -97,9 +97,18 @@ either. On 2026-09-26 PR #3989 auto-merged at the exact head its Tier 2 reviewer
 had BLOCKED. It carried `infra-change`, which satisfied the scope guard for
 `deploy/` without a receipt, and a verdict posted as a PR comment is invisible to
 auto-merge. For classes 4 and 5 the receipt's artifact must additionally name a
-comment that **exists on that PR** and whose `author_association` is `OWNER`,
-`MEMBER` or `COLLABORATOR` — read from the API, so trust comes from GitHub and
-not from anything the PR says.
+comment that **exists on that PR**, whose `author_association` is `OWNER`,
+`MEMBER` or `COLLABORATOR`, and **which itself attests `APPROVE` at the current
+head** — all read from the API, so trust comes from GitHub and not from anything
+the PR says. Neither attestation counts if it sits inside a fenced block, an HTML
+comment or a `<details>` block: an approval a reader cannot see is not published.
+
+Both of those came out of the cross-family review of the change that added them.
+Checking only that the cited comment EXISTED let a receipt cite an `OWNER`
+comment reading `VERDICT: BLOCK` for that exact head, and parsing the PR body
+line-by-line let an approval hide in an HTML comment under a visible
+"VERDICT: BLOCK. Do not merge." Requiring the comment to name the current head
+is also what closes a re-cited pre-push approval, with no clock involved.
 
 Two content proofs stand down classes 2-4, and only when they cover the PR's
 whole release-critical/authority footprint: a deletion-only quarantine-ledger

@@ -139,7 +139,24 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          HITS="$(printf '%s\n' "$CHANGED" | grep -E "$SENSITIVE_RE" || true)"
+          # `|| true` here USED to swallow an execution error as well as "no
+          # match": grep exits 1 for no match and 2+ for a real failure, and a
+          # failure read as an empty hit list means "no release-critical paths
+          # touched" — fail-open on the exact question this gate answers. Found
+          # by cross-family review 2026-09-26 (finding 3) by injecting exit 2.
+          classify() {
+            local rc=0
+            if [ -n "$2" ]; then
+              printf '%s\n' "$CHANGED" | grep "$2" -E "$1" || rc=$?
+            else
+              printf '%s\n' "$CHANGED" | grep -E "$1" || rc=$?
+            fi
+            if [ "$rc" -gt 1 ]; then
+              echo "::error::grep exited ${rc} classifying paths — failing closed" >&2
+              return 1
+            fi
+          }
+          HITS="$(classify "$SENSITIVE_RE" "")" || exit 1
           HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 
           # A label is a declaration, not authorization. Every release-critical
@@ -217,7 +234,7 @@ jobs:
           # carriers and classifies receipt settlement; storage/ persists and mints
           # receipts, claims and invocation reservations. Both now covered.
           AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|providers/router\.py$|storage/provider_work_authority\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
-          AUTHORITY_HITS="$(printf '%s\n' "$CHANGED" | grep -Ei "$AUTHORITY_RE" || true)"
+          AUTHORITY_HITS="$(classify "$AUTHORITY_RE" "-i")" || exit 1
 
           # GROUNDED, not regex-only. A path match says WHERE an edit landed,
           # never WHETHER it can escalate a privilege. PR #2561's entire
@@ -316,10 +333,14 @@ jobs:
             FOOTPRINT_EXEMPT=1
           fi
 
-          # The receipt's artifact must be a comment ON THIS PR, and that comment
-          # must EXIST and come from a trusted author. Without this the artifact
-          # was any string matching a URL shape — an invented comment id, or a
-          # link to an approval on a different PR, both satisfied it.
+          # The receipt's artifact must be a comment ON THIS PR that a trusted
+          # author published, AND that comment must itself attest
+          # `Drain-Review-Verdict: APPROVE` / `Drain-Review-Head: <this head>`.
+          # Without the URL check the artifact was any string matching a URL
+          # shape; without the BODY check, cross-family review 2026-09-26
+          # (finding 6) got a receipt past the gate by citing an OWNER comment
+          # that said `VERDICT: BLOCK` for that exact head. The body check is
+          # also what closes the stale-comment gap, with no clock involved.
           #
           # Read from the API, so it is GitHub's `author_association` deciding
           # trust rather than anything the PR controls. Three sources, because a
@@ -333,7 +354,7 @@ jobs:
           rm -f "$COMMENTS_FILE"
           for ENDPOINT in "issues/${PR}/comments" "pulls/${PR}/comments" "pulls/${PR}/reviews"; do
             if ! gh api --paginate "repos/${REPO}/${ENDPOINT}" \
-                --jq '.[] | {url: .html_url, association: .author_association}' \
+                --jq '.[] | {url: .html_url, association: .author_association, body: (.body // "")}' \
                 >> "$COMMENTS_FILE" 2>/dev/null; then
               echo "::warning::could not read ${ENDPOINT} — a receipt requirement fails closed"
               rm -f "$COMMENTS_FILE"
@@ -371,18 +392,33 @@ jobs:
               echo ""
               sed 's/^/> /' "$RUNNER_TEMP/receipt-why.txt"
               echo ""
-              echo "Add three lines to the PR BODY, stamped by the reviewer:"
+              echo "**Two steps, both required.**"
               echo ""
-              echo '```'
-              echo "Drain-Review-Verdict: APPROVE"
-              echo "Drain-Review-Head: ${HEAD_OID}"
-              echo "Drain-Review-Artifact: https://github.com/${REPO}/pull/${PR}#issuecomment-<id>"
-              echo '```'
+              echo "1. The reviewer POSTS the verdict as a comment on this PR,"
+              echo "   containing these two lines as plain visible text:"
+              echo ""
+              echo '   ```'
+              echo "   Drain-Review-Verdict: APPROVE"
+              echo "   Drain-Review-Head: ${HEAD_OID}"
+              echo '   ```'
+              echo ""
+              echo "2. The PR BODY then cites that comment:"
+              echo ""
+              echo '   ```'
+              echo "   Drain-Review-Verdict: APPROVE"
+              echo "   Drain-Review-Head: ${HEAD_OID}"
+              echo "   Drain-Review-Artifact: https://github.com/${REPO}/pull/${PR}#issuecomment-<id>"
+              echo '   ```'
               echo ""
               echo "The artifact must link a comment, review or review comment on"
-              echo "THIS PR by a repository owner, member or collaborator. Only"
-              echo "\`APPROVE\` counts — a BLOCK verdict can never satisfy this."
-              echo "Re-stamp after every push: the head SHA must match exactly."
+              echo "THIS PR whose author is a repository owner, member or"
+              echo "collaborator AND which carries the APPROVE lines above. Only"
+              echo "\`APPROVE\` counts — a BLOCK verdict can never satisfy this,"
+              echo "in the body or in the comment. Lines inside a fenced block,"
+              echo "an HTML comment or a \`<details>\` block do not count: an"
+              echo "approval nobody can read is not published."
+              echo "Re-stamp after every push: the head SHA must match exactly,"
+              echo "in BOTH places."
               # Both complaints at once. The receipt is checked before the label
               # declaration below, so reporting only this one sends a legitimate
               # PR round the loop twice: stamp, still red, then add the label.
@@ -495,13 +531,21 @@ jobs:
 # (hard rule 4: an executable gate needs an autonomous default). What the
 # receipt DOES make impossible is the accident that happened: a BLOCK verdict
 # cannot satisfy it, a receipt naming any head but the current one cannot
-# satisfy it, and a verdict that was never published as a comment on this PR by
-# a trusted author cannot satisfy it. The day a second writer exists, requiring
-# a different author is a two-line change in scripts/drain_review_gate.py.
+# satisfy it, and a verdict that was never published as a visible comment on
+# this PR by a trusted author cannot satisfy it. The day a second writer exists,
+# requiring a different author is a two-line change in
+# scripts/drain_review_gate.py.
 #
-# One residual gap, stated rather than papered over: the receipt pins the HEAD,
-# but the comment it cites is not timestamp-checked, so a stale approval comment
-# can be re-cited under a new head line. Binding the comment's `created_at`
-# against the head commit's date was considered and rejected — commit dates come
-# from the committer's clock, and a client clock running ahead would make the
-# gate unsatisfiable until real time caught up.
+# The first version of this gate checked only that the cited comment EXISTED and
+# came from a trusted author. Cross-family review 2026-09-26 got a receipt past
+# it by citing an OWNER comment whose text was `VERDICT: BLOCK` for that exact
+# head, and separately by hiding the body receipt inside an HTML comment under a
+# visible "VERDICT: BLOCK. Do not merge." Both are closed: the cited comment
+# must itself attest APPROVE at the current head, and neither attestation counts
+# when it sits in a fence, an HTML comment or a <details> block.
+#
+# Requiring the comment to name the current head is also what closes the stale
+# approval, and it needs no clock. Binding the comment's `created_at` against the
+# head commit's date was considered and rejected — commit dates come from the
+# committer's clock, and a client clock running ahead would make the gate
+# unsatisfiable until real time caught up.
