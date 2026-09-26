@@ -45,11 +45,10 @@ UNIT_FILES=(
 # Deleting a unit from the repo leaves the enabled copy in /etc/systemd/system
 # running forever, which is how tinyassets-ship-logs.timer came to log
 # `ERROR: LOG_DEST is required` hourly for months while shipping nothing
-# (docs/ops/log-aggregation-runbook.md). Retired 2026-09-26: it
-# collected logs with `docker logs`, which cannot read a container using the
-# fluentd driver that deploy/compose.yml has given the daemon since Row K, so
-# the unit could not have worked even with a destination configured. The nightly
-# backup's logs tier replaces it on a credential the box already holds.
+# (docs/ops/log-aggregation-runbook.md). Retired 2026-09-26: it required a
+# LOG_DEST destination plus a credential nobody had set, and the nightly backup's
+# logs tier now ships off-box on a credential the box already holds, so there is
+# nothing left for this unit to do.
 #
 # Order matters: timer before service, so the timer cannot fire the service
 # between the two removals.
@@ -304,6 +303,31 @@ exact_file() { # exact_file <path> <expected-mode>
     [[ "$(stat -c '%a %u' "${path}")" == "${expected} ${EUID}" ]] || return 1
 }
 
+# True when NOTHING of a retired unit is left on the host. Three states, because
+# a cross-family review found the file check alone lets two of them through
+# (output/codex-log-durability-review.md 3):
+#
+#   * the unit file itself, including a DANGLING symlink -- `-e` follows the link
+#     and reports false for a broken one, so `-L` has to be asked separately;
+#   * any enablement symlink under *.wants/ or *.requires/, which keeps systemd
+#     starting the unit and is what actually makes a retired timer still fire;
+#   * systemd's own view: a unit can remain loaded and even active after its file
+#     is gone, and only a daemon-reload plus a stop clears that.
+retired_unit_is_gone() {  # retired_unit_is_gone <unit>
+    local unit="$1" load_state
+    [[ ! -e "${SYSTEMD_DIR}/${unit}" && ! -L "${SYSTEMD_DIR}/${unit}" ]] || return 1
+    # Any *.wants/ or *.requires/ link naming this unit, anywhere under the
+    # systemd tree. -L catches the dangling ones a plain -e would miss.
+    if find "${SYSTEMD_DIR}" -name "${unit}" ! -path "${SYSTEMD_DIR}/${unit}" ! -type d \
+        -print -quit 2>/dev/null | grep -q .
+    then
+        return 1
+    fi
+    load_state="$("${SYSTEMCTL_BIN}" show --property=LoadState --value "${unit}" 2>/dev/null)" \
+        || return 1
+    [[ "${load_state}" == "not-found" ]]
+}
+
 # True when journald is running the policy this source tree declares. Compares
 # the recorded HASH, not mtimes: reinstalling identical bytes must not look like
 # a new policy, and a policy whose restart failed must not look applied.
@@ -363,7 +387,7 @@ current_release_is_exact() {
     # the removal happen at all -- this gate returns 0 on an otherwise-converged
     # host and exits before the first mutation.
     for unit in "${RETIRED_UNITS[@]}"; do
-        [[ ! -e "${SYSTEMD_DIR}/${unit}" ]] || return 1
+        retired_unit_is_gone "${unit}" || return 1
     done
 
     # The journald drop-in decides how much of the host journal survives, and
@@ -521,7 +545,7 @@ done
 # cannot load -- and a `not-found` unit is exactly the state the gate above
 # treats as converged, so the mess would be permanent.
 for unit in "${RETIRED_UNITS[@]}"; do
-    [[ -e "${SYSTEMD_DIR}/${unit}" ]] || continue
+    retired_unit_is_gone "${unit}" && continue
     load_state="$("${SYSTEMCTL_BIN}" show --property=LoadState --value "${unit}")" \
         || fail "cannot inspect retired unit load state: ${unit}"
     case "${load_state}" in
@@ -533,9 +557,23 @@ for unit in "${RETIRED_UNITS[@]}"; do
         *) fail "unsafe load state for retired unit ${unit}: ${load_state}" ;;
     esac
     rm -f -- "${SYSTEMD_DIR}/${unit}" || fail "cannot remove retired unit: ${unit}"
+    # `disable` removes the links it knows about, but a link left by a previous
+    # hand-install -- or one whose target is already gone -- outlives it, and that
+    # link is what keeps systemd starting the unit.
+    while IFS= read -r link; do
+        [[ -n "${link}" ]] || continue
+        rm -f -- "${link}" || fail "cannot remove retired enablement link: ${link}"
+        log "retired enablement link removed: ${link}"
+    done < <(
+        find "${SYSTEMD_DIR}" -name "${unit}" ! -path "${SYSTEMD_DIR}/${unit}" \
+            ! -type d -print 2>/dev/null
+    )
     UNITS_MUTATED=1
     log "retired unit removed: ${unit}"
 done
+# One reload after the removals, so systemd forgets the units rather than keeping
+# them loaded with no file behind them.
+"${SYSTEMCTL_BIN}" daemon-reload
 
 # journald retention. Installed atomically like the units; journald is only
 # restarted when the bytes actually changed, for the same reason the idempotence

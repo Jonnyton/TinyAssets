@@ -975,3 +975,64 @@ def test_prune_script_subprocess_emits_deletions():
     assert deleted == ["tinyassets-data-2026-04-01T02-00-00Z.tar.gz"], (
         f"Expected only Apr 01 pruned; got: {deleted}"
     )
+
+
+@pytest.mark.parametrize(
+    "parked",
+    [
+        "tinyassets-logs-1-forensics-hold.tar.gz",
+        "tinyassets-manual-logs-2026-09-26T09-00-00Z.tar.gz",
+        "volume-content-archive-workflow-data-2026-07-15.tar.gz",
+    ],
+)
+def test_a_parked_bundle_is_not_swept_by_either_pruner(parked):
+    r"""A name taken deliberately must survive automation.
+
+    The rclone tier pattern `^tinyassets-logs-\d.*` also matched
+    `tinyassets-logs-1-forensics-hold`, and the GitHub pruner matched by PREFIX --
+    so a manual bundle named like a nightly one was deleted on schedule, and this
+    runbook used to instruct exactly that name (cross-family review,
+    output/codex-log-durability-review.md 6).
+
+    Asserted through the GitHub pruner's real predicate, not against its prefix
+    tuple: the tuple is configuration, `is_prunable_tag` is the decision.
+    """
+    from backup_prune import TIER_PATTERNS
+
+    sys.path.insert(0, str(REPO / "scripts"))
+    from backup_ship_gh import is_prunable_tag
+
+    assert not any(re.match(p, parked) for p in TIER_PATTERNS), (
+        f"{parked} is selectable by the rclone pruner"
+    )
+    tag = parked[: -len(".tar.gz")]
+    assert not is_prunable_tag(tag), (
+        f"{parked} is selectable by the GitHub release pruner"
+    )
+
+
+def test_the_generated_nightly_name_is_still_pruned():
+    """The other direction: tightening the grammar must not strand the real thing
+    the tier produces, or log bundles accumulate forever."""
+    from backup_prune import TIER_PATTERNS
+
+    sys.path.insert(0, str(REPO / "scripts"))
+    from backup_ship_gh import is_prunable_tag
+
+    generated = "tinyassets-logs-2026-09-26T03-00-00Z.tar.gz"
+    assert any(re.match(p, generated) for p in TIER_PATTERNS), generated
+    assert is_prunable_tag(generated[: -len(".tar.gz")]), generated
+    # The state tiers must keep their existing plain-prefix behaviour.
+    for state in ("tinyassets-brain-2026-09-26T03-00-00Z", "workflow-data-2026-07-15"):
+        assert is_prunable_tag(state), state
+    # And the grammar must be the one backup.sh actually generates.
+    assert 'TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"' in BACKUP_SH.read_text(encoding="utf-8")
+
+
+def test_the_runbook_does_not_instruct_a_self_deleting_manual_name():
+    runbook = REPO / "docs" / "ops" / "log-aggregation-runbook.md"
+    text = runbook.read_text(encoding="utf-8")
+    assert "tinyassets-manual-logs-" in text
+    assert "/tmp/tinyassets-logs-manual" not in text, (
+        "that name is inside the pruned prefix and gets deleted on schedule"
+    )

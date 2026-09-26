@@ -285,6 +285,29 @@ PRUNABLE_TAG_PREFIXES: tuple[str, ...] = (
     "workflow-brain-", "workflow-data-2",
 )
 
+# A prefix alone is too coarse for the logs tier. `tinyassets-logs-` also matches
+# a deliberately parked bundle -- `tinyassets-logs-1-forensics-hold`, or the
+# manual bundle an operator takes before a deploy -- and prefix matching would
+# delete it on schedule (cross-family review,
+# output/codex-log-durability-review.md §6). So this tier is additionally pinned
+# to the exact grammar deploy/backup.sh generates. The state tiers keep plain
+# prefix matching: they have pruned real releases for months, and a stricter rule
+# there could strand legacy names instead of protecting them.
+_TIMESTAMPED_LOGS_TAG = re.compile(
+    r"^tinyassets-logs-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$"
+)
+
+
+def is_prunable_tag(tag: str) -> bool:
+    """True when retention owns this release.
+
+    Anything this returns False for is a permanent artifact: no automation
+    deletes it, which is the documented contract for a parked archive.
+    """
+    if tag.startswith("tinyassets-logs-"):
+        return bool(_TIMESTAMPED_LOGS_TAG.match(tag))
+    return tag.startswith(PRUNABLE_TAG_PREFIXES)
+
 
 def _release_age_key(rel: dict[str, Any]) -> str:
     """Age key for retention ordering. GitHub sets a release's
@@ -349,9 +372,7 @@ def prune_releases(
                 continue
         releases = [
             release for release in listed
-            if str(release.get("tag_name", "")).startswith(
-                PRUNABLE_TAG_PREFIXES
-            )
+            if is_prunable_tag(str(release.get("tag_name", "")))
         ]
         releases.sort(key=_release_age_key)
         victims = releases[:-keep] if len(releases) > keep else []

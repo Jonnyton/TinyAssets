@@ -315,9 +315,17 @@ def test_installer_owns_the_journald_dropin():
     assert "restart systemd-journald" in text
 
 
-def test_log_retention_window_covers_the_offsite_bundle_window():
-    """The journal has to hold at least as much history as the nightly bundle
-    claims to ship, or the bundle is silently shorter than advertised."""
+def test_log_retention_age_cap_is_not_below_the_offsite_bundle_window():
+    """The journal's AGE cap must not be the thing that truncates the bundle.
+
+    This is a necessary condition, not a sufficient one, and the original version
+    of this test treated it as sufficient: `MaxRetentionSec` is a maximum age, so
+    the byte cap can still evict inside the bundle's window (cross-family review,
+    output/codex-log-durability-review.md §7). What the pair of caps actually
+    promises is documented in the drop-in and asserted by
+    `test_the_dropin_does_not_promise_retention_it_cannot_deliver`; what remains
+    checkable here is that the age cap alone is not the binding constraint.
+    """
     dropin = JOURNALD_DROPIN.read_text(encoding="utf-8")
     retention_days = int(
         next(
@@ -342,12 +350,15 @@ def test_log_retention_window_covers_the_offsite_bundle_window():
 # ship-logs retirement
 # ---------------------------------------------------------------------------
 #
-# Retired 2026-09-26. It could not have worked as deployed: it read logs with
-# `docker logs`, and Docker refuses that on a container using the fluentd driver
-# that compose.yml has given the daemon since Row K. So the hourly
-# `ERROR: LOG_DEST is required` was not one missing setting away from shipping
-# anything. The nightly backup's logs tier replaces it on a credential the box
-# already holds (deploy/backup.sh).
+# Retired 2026-09-26. It logged `ERROR: LOG_DEST is required` hourly for months,
+# and configuring it meant a destination plus a credential nobody had set; the
+# nightly backup's logs tier now ships off-box on a credential the box already
+# has, so nothing is left for the unit to do.
+#
+# An earlier version of this comment also claimed `docker logs` cannot read a
+# fluentd-driver container, making the unit unworkable in principle. That claim is
+# WITHDRAWN -- Docker's dual logging keeps a readable local cache by default -- and
+# it was never verified against this droplet. Retirement does not depend on it.
 
 
 @pytest.mark.parametrize(
@@ -537,3 +548,27 @@ def test_the_installer_cannot_report_an_unapplied_journald_policy_as_converged()
     )
     # It must not live where systemd would try to parse it.
     assert '${RUNTIME_ROOT}/.journald-applied' in text
+
+
+def test_the_withdrawn_docker_logs_claim_stays_withdrawn():
+    """A retired mechanism's stated reason has to be one a reader can check.
+
+    I justified the retirement partly on "`docker logs` cannot read a
+    fluentd-driver container", which a cross-family review challenged with
+    Docker's dual-logging behaviour (a readable local cache is kept alongside a
+    non-reading driver by default). I could not re-verify it against this droplet,
+    so it is withdrawn rather than repeated — an unverified premise in a durable
+    comment is the thing that misleads the next lane.
+    """
+    for path in (INSTALLER, RUNBOOK, REPO_ROOT / "deploy" / "DEPLOY.md"):
+        text = path.read_text(encoding="utf-8")
+        assert "Docker refuses" not in text, path
+        assert "cannot read a container using the fluentd" not in text, (
+            f"{path} still asserts the withdrawn claim"
+        )
+    # And the withdrawal itself is recorded where an operator would look.
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+    assert "withdrawn" in runbook.lower()
+    assert "dual logging" in runbook.lower()
+    # The surviving reason must not depend on it.
+    assert "credential the box already holds" in runbook

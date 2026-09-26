@@ -29,9 +29,17 @@ earlier and they no longer existed anywhere
 **`tinyassets-ship-logs` is retired** (2026-09-26). It required `LOG_DEST` — a
 destination plus a credential nobody had set — and logged
 `ERROR: LOG_DEST is required` hourly for months. Setting it would not have
-helped: it collected with `docker logs`, which Docker refuses on a container
-using the fluentd driver. The installer removes the units from the host
-(`RETIRED_UNITS` in `deploy/install-host-uptime-services.sh`).
+helped much: the nightly backup's logs tier now ships a redacted window off-box on
+a credential the box already holds, which is what that destination was for. The
+installer removes the units from the host (`RETIRED_UNITS` in
+`deploy/install-host-uptime-services.sh`).
+
+> An earlier version of this page said `docker logs` cannot read a container using
+> the fluentd driver, so ship-logs could never have worked. **That claim is
+> withdrawn**: Docker keeps a readable local cache alongside a non-reading driver
+> (dual logging) unless it is disabled, so `docker logs` may well work. It was not
+> re-verified against this droplet before being written down. The retirement stands
+> on the reason above, which does not depend on it.
 
 ---
 
@@ -201,7 +209,8 @@ would otherwise age out):
 
 ```bash
 python3 /opt/tinyassets-host-uptime/current/scripts/backup_log_tier.py \
-  --out /tmp/tinyassets-logs-manual.tar.gz --since '6 hours ago'
+  --out /tmp/tinyassets-manual-logs-$(date -u +%Y-%m-%dT%H-%M-%SZ).tar.gz \
+  --since '6 hours ago'
 ```
 
 Exit 3 means "no journal to read" — a skipped tier, not a failure. Then ship it
@@ -210,8 +219,15 @@ with the same credential the nightly backup uses:
 ```bash
 GH_TOKEN="${GH_TOKEN}" python3 \
   /opt/tinyassets-host-uptime/current/scripts/backup_ship_gh.py \
-  /tmp/tinyassets-logs-manual.tar.gz
+  /tmp/tinyassets-manual-logs-<stamp>.tar.gz
 ```
+
+> **Use the `tinyassets-manual-logs-` prefix, not `tinyassets-logs-`.** Retention
+> is by prefix, so a manual bundle named like a nightly one is a nightly one as far
+> as both pruners are concerned, and gets deleted on schedule — the earlier version
+> of this page told you to create exactly such a name. Anything outside the pruned
+> prefixes is a permanent artifact that no automation deletes, which is what you
+> want for a bundle you took deliberately. Delete it yourself when done.
 
 ---
 

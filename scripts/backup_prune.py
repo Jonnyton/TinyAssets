@@ -31,7 +31,16 @@ TIER_PATTERNS = (
     # but omitting the pattern would have made log bundles the one thing at the
     # destination that accumulates forever, since unmatched names are never
     # deleted.
-    r"^tinyassets-logs-\d.*\.tar\.gz$",
+    #
+    # Pinned to the EXACT grammar backup.sh generates
+    # (`date -u +%Y-%m-%dT%H-%M-%SZ`) rather than the `\d.*` shape the two tiers
+    # above use. `\d.*` also matches a deliberately parked name like
+    # `tinyassets-logs-1-forensics-hold.tar.gz`, and a cross-family review
+    # reproduced that being selected for deletion under normal retention
+    # (output/codex-log-durability-review.md §6). The looser patterns above are
+    # left alone on purpose: they have pruned real archives for months, and
+    # tightening them here could silently strand legacy names instead.
+    r"^tinyassets-logs-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.tar\.gz$",
 )
 
 

@@ -663,9 +663,9 @@ No extra vendor and no extra credential.
 
 `tinyassets-ship-logs.timer` was retired on 2026-09-26 and the installer removes
 it from the host. It had logged `ERROR: LOG_DEST is required` hourly for months,
-and it could not have worked once configured either: it read logs with
-`docker logs`, which Docker refuses on a container using the fluentd driver that
-this row gave the daemon.
+and configuring it meant a destination plus a credential nobody had set. The
+nightly backup's logs tier covers off-box shipping on a credential the box already
+holds, so there is nothing left for it to do.
 
 ## What this deploy does NOT include (future rows)
 
