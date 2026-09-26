@@ -135,7 +135,13 @@ def _settle(journal: AgentTurnJournal, owner: str, universe: str, turn_id: str):
 
 
 def _settle_tool(journal: AgentTurnJournal, owner: str, universe: str, turn):
-    """Settle the one tool call a ``tools_pending`` turn stopped on."""
+    """Settle the one tool call a ``tools_pending`` turn stopped on.
+
+    One call, not all of them: ``finish_tool``'s frontier is
+    ``held_tool_<failure>`` whenever a failure is set, whatever other calls are
+    still outstanding, so settling the FIRST non-completed call terminalizes the
+    whole turn. It reads like it handles one of N and leaves the rest; it does not.
+    """
     tools = turn.rounds[-1].tools
     target = next(tool for tool in tools if tool.state != "completed")
     generation = turn.generation

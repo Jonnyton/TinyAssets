@@ -313,6 +313,81 @@ def test_effects_evidence_has_one_definition_for_both_callers(journal):
     assert turn_effects(None) == ("none", None, None)
 
 
+def test_a_never_dispatched_call_still_reports_that_nothing_ran(journal):
+    """The one invariant that makes the ``start_tool`` hack safe.
+
+    A ``planned`` call has to be STARTED before ``finish_tool`` will settle it, so
+    the sweep writes a ``started`` row for a call that was never dispatched. That
+    is only honest because the row it writes next is ``not_sent``, which the
+    effects summary does not count: the settled turn must report ``none``, not
+    ``unknown``. If it ever reported ``unknown``, the transient ``started`` row
+    would be leaking into the founder's notice as "actions may already have
+    occurred" for a call that provably never left the process (review-gate on
+    #4031 probed this and found nothing asserting it).
+    """
+    from tinyassets.agent_turn_coordinator import turn_effects
+
+    turn = _tools_planned(journal)
+    _home(journal)
+    assert [tool.state for tool in turn.rounds[-1].tools] == ["planned"]
+    _age(journal, turn.turn_id)
+
+    reconcile_orphaned_turns(journal._ledger.base_path, boot=BootTurns())
+
+    stored = journal.get("owner", "home", turn.turn_id)
+    assert stored.state == "held_tool_not_sent"
+    assert [tool.state for tool in stored.rounds[-1].tools] == ["not_sent"]
+    assert turn_effects(stored)[0] == "none", (
+        "a call that never left the process must not be reported as maybe-run")
+    assert "Nothing ran." in _thread(journal)[0].text
+    assert _thread(journal)[0].failure.effects == "none"
+
+
+def test_exactly_one_process_may_write_the_turn_journal(journal):
+    """Pin the assumption the created-after-boot disjunct rests on.
+
+    With two writers, a lone restart of one gives it a ``started_at`` newer than
+    the other's in-flight rows, so the sweep would settle a turn that is genuinely
+    RUNNING. Nothing in the code prevents that; these two facts do, so a future
+    ``workers=N`` or a writable sibling mount fails HERE instead of quietly
+    reaping live turns (review-gate on #4031).
+    """
+    import ast
+    import pathlib
+
+    import yaml
+
+    from tinyassets import universe_server
+
+    source = pathlib.Path(universe_server.__file__).read_text(encoding="utf-8")
+    calls = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "run"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "uvicorn"
+    ]
+    assert calls, "the ASGI launch moved; re-point this assertion at it"
+    for call in calls:
+        keywords = {keyword.arg for keyword in call.keywords}
+        assert "workers" not in keywords, (
+            "a multi-worker daemon makes two writers of agent_turns; see "
+            "tinyassets/storage/agent_turn_boot.py")
+
+    compose = yaml.safe_load(
+        (pathlib.Path(universe_server.__file__).parents[1] / "deploy" / "compose.yml")
+        .read_text(encoding="utf-8")
+    )
+    writable = {
+        name for name, service in (compose.get("services") or {}).items()
+        for volume in (service.get("volumes") or [])
+        if "tinyassets-data" in str(volume) and not str(volume).endswith(":ro")
+    }
+    assert writable == {"daemon"}, (
+        f"{sorted(writable)} can write the data volume; only the daemon may")
+
+
 def test_a_missing_database_is_no_work_and_creates_nothing(tmp_path):
     absent = tmp_path / "never-served"
     assert reconcile_orphaned_turns(absent, boot=BootTurns()) == []
