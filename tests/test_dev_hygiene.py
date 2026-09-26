@@ -1,0 +1,1008 @@
+"""Safety proofs for scripts/dev_hygiene.py.
+
+The tool deletes things, so every test here is a proof about one *refusal*: what
+it keeps, and why. The removal cases exist to show the refusals are not simply a
+tool that never acts.
+
+Each guard was mutation-checked by hand on 2026-09-26 — the mutation table is in
+PR #<this PR>'s body. A test that cannot go red is decoration.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import os
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+_REPO = Path(__file__).resolve().parent.parent
+_SCRIPTS = _REPO / "scripts"
+
+
+def _load() -> object:
+    """Import scripts/dev_hygiene.py by path (scripts/ is not a package).
+
+    Registered in ``sys.modules`` before execution: Python 3.14's ``dataclasses``
+    resolves ``cls.__module__`` through ``sys.modules`` and raises on a module
+    that is not there yet.
+    """
+    sys.path.insert(0, str(_SCRIPTS))
+    name = "dev_hygiene_under_test"
+    spec = importlib.util.spec_from_file_location(name, _SCRIPTS / "dev_hygiene.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+dh = _load()
+
+HOUR = 3600.0
+NOW = 1_700_000_000.0
+
+
+# --------------------------------------------------------------------------- #
+# helpers
+# --------------------------------------------------------------------------- #
+
+
+def age(path: Path, hours: float, now: float = NOW) -> None:
+    """Backdate every entry in a tree so the collector sees it as stale."""
+    stamp = now - hours * HOUR
+    targets = [path]
+    if path.is_dir():
+        targets += [Path(p) / n for p, ds, fs in os.walk(path) for n in list(ds) + list(fs)]
+    for target in sorted(targets, key=lambda p: -len(str(p))):
+        os.utime(target, (stamp, stamp))
+
+
+def make_basetemp(root: Path, name: str, *, hours: float, payload: int = 1024) -> Path:
+    """A directory with pytest's numbered-dir shape, backdated by ``hours``."""
+    base = root / name
+    (base / "test_something0").mkdir(parents=True)
+    (base / "test_something0" / "data.bin").write_bytes(b"x" * payload)
+    age(base, hours)
+    return base
+
+
+def git(repo: Path, *args: str, check: bool = True) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if check and proc.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)} failed in {repo}: {proc.stderr}")
+    return proc.stdout
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """A clone of a bare origin, on ``main``, with one commit pushed.
+
+    Short path segments on purpose: Windows MAX_PATH plus a worktree plus
+    ``.git/worktrees/<name>`` is enough to break a longer layout.
+    """
+    origin = tmp_path / "o"
+    origin.mkdir()
+    git(origin, "init", "--bare", "--initial-branch=main")
+    clone = tmp_path / "c"
+    git(tmp_path, "clone", str(origin), "c")
+    git(clone, "config", "user.email", "t@example.invalid")
+    git(clone, "config", "user.name", "t")
+    (clone / ".gitignore").write_text("output/\n.ruff_cache/\n_PURPOSE.md\n", encoding="utf-8")
+    (clone / "a.txt").write_text("base\n", encoding="utf-8")
+    git(clone, "add", "-A")
+    git(clone, "commit", "-m", "base")
+    git(clone, "push", "-u", "origin", "main")
+    return clone
+
+
+def add_lane(repo: Path, name: str, *, merged: bool, push: bool = True) -> Path:
+    """Create a branch with one commit, optionally landed on origin/main, and
+    check it out as a worktree. Returns the worktree path."""
+    git(repo, "checkout", "-q", "-b", name)
+    (repo / f"{name}.txt").write_text(name, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", f"work on {name}")
+    if push:
+        git(repo, "push", "-q", "-u", "origin", name)
+    git(repo, "checkout", "-q", "main")
+    if merged:
+        git(repo, "merge", "-q", "--no-ff", "-m", f"merge {name}", name)
+        git(repo, "push", "-q", "origin", "main")
+    git(repo, "fetch", "-q", "--all")
+    worktree = repo.parent / f"w{abs(hash(name)) % 997}"
+    git(repo, "worktree", "add", "-q", str(worktree), name)
+    return worktree
+
+
+def no_pr(_branch: str, _cwd: Path) -> None:
+    """Default PR oracle for tests: gh cannot answer. Never authorizes removal."""
+    return None
+
+
+def worktree_items(repo: Path, **kwargs):
+    kwargs.setdefault("now", time.time() + 48 * HOUR)  # past the idle gate
+    kwargs.setdefault("idle_hours", 24.0)
+    kwargs.setdefault("pr_state_fn", no_pr)
+    return dh.collect_worktrees(repo, **kwargs)
+
+
+def by_path(items, path: Path):
+    wanted = str(Path(path).resolve()).lower()
+    for item in items:
+        if str(Path(item.path).resolve()).lower() == wanted:
+            return item
+    raise AssertionError(f"{path} not in report: {[i.path for i in items]}")
+
+
+# --------------------------------------------------------------------------- #
+# (a) pytest basetemp directories
+# --------------------------------------------------------------------------- #
+
+
+def test_stale_pytest_basetemp_is_removed(tmp_path: Path) -> None:
+    root = tmp_path / "t"
+    root.mkdir()
+    stale = make_basetemp(root, "ta-pt-old", hours=10)
+    item = by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), stale)
+    assert item.verdict == "REMOVE"
+    assert item.reason == "stale_pytest_basetemp"
+    assert item.size_bytes >= 1024
+
+
+def test_recent_basetemp_is_kept(tmp_path: Path) -> None:
+    """A basetemp a live pytest session may still own is never removed."""
+    root = tmp_path / "t"
+    root.mkdir()
+    fresh = make_basetemp(root, "ta-pt-live", hours=1)
+    item = by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), fresh)
+    assert item.verdict == "KEEP"
+    assert item.reason == "in_use_or_recent"
+
+
+def test_unrecognized_shape_is_kept_even_with_a_matching_prefix(tmp_path: Path) -> None:
+    """The guard that saved this box's stale-tree audit oracles.
+
+    Several ``ta-*`` directories under the real temp root are whole repo
+    checkouts kept deliberately (`ta-base-tree`, `ta-baseline-*`). A prefix match
+    must never be enough; the pytest numbered-dir shape is the proof.
+    """
+    root = tmp_path / "t"
+    root.mkdir()
+    oracle = root / "ta-baseline-deadbeef"
+    (oracle / "tinyassets" / "storage").mkdir(parents=True)
+    (oracle / "tinyassets" / "storage" / "core.py").write_text("real code\n", encoding="utf-8")
+    (oracle / "AGENTS.md").write_text("pinned tree\n", encoding="utf-8")
+    age(oracle, 500)
+    item = by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), oracle)
+    assert item.verdict == "KEEP"
+    assert item.reason == "unrecognized_shape"
+    assert oracle.exists()
+
+
+def test_unknown_name_is_not_even_a_candidate(tmp_path: Path) -> None:
+    """Anything outside the prefix allowlist is invisible to the tool."""
+    root = tmp_path / "t"
+    root.mkdir()
+    other = root / "MyImportantExport"
+    other.mkdir()
+    (other / "test_x0").mkdir()  # pytest-shaped, but the name is not ours
+    age(other, 500)
+    items = dh.collect_basetemps(root, min_age_hours=6, now=NOW)
+    assert [i.path for i in items] == []
+
+
+def test_empty_basetemp_is_removable(tmp_path: Path) -> None:
+    """``pytest --basetemp=X`` wipes and recreates X, so an empty X holds nothing."""
+    root = tmp_path / "t"
+    root.mkdir()
+    empty = root / "ta-pt-empty"
+    empty.mkdir()
+    age(empty, 48)
+    assert by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), empty).verdict == "REMOVE"
+
+
+def test_acl_locked_basetemp_is_kept_and_points_at_the_elevated_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """68 real directories on this box deny the interactive user everything.
+
+    Those are not "unknown shape" — they are a known class needing an elevated
+    clear, so they must be reported as such rather than silently lumped in.
+    """
+    root = tmp_path / "t"
+    root.mkdir()
+    locked = root / "ta-pt-locked"
+    locked.mkdir()
+    age(locked, 500)
+    real_scandir = os.scandir
+
+    def deny(path):
+        if Path(path) == locked:
+            raise PermissionError(13, "Access is denied")
+        return real_scandir(path)
+
+    monkeypatch.setattr(dh.os, "scandir", deny)
+    item = by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), locked)
+    assert item.verdict == "KEEP"
+    assert item.reason == "acl_locked_needs_elevation"
+    assert "clear_sandbox_temp_dirs.ps1" in item.detail
+
+
+def test_basetemp_containing_cwd_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "t"
+    root.mkdir()
+    live = make_basetemp(root, "ta-pt-here", hours=500)
+    inner = live / "test_something0"
+    monkeypatch.chdir(inner)
+    item = by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), live)
+    assert (item.verdict, item.reason) == ("KEEP", "contains_cwd")
+
+
+def test_tree_stats_refuses_an_oversized_tree(tmp_path: Path) -> None:
+    """Fail closed: a tree too big to inventory is kept, not guessed at."""
+    root = tmp_path / "big"
+    root.mkdir()
+    for i in range(5):
+        (root / f"f{i}").write_bytes(b"x")
+    with pytest.raises(dh.Undecidable):
+        dh.tree_stats(root, budget=2)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "junction"])
+def test_tree_stats_does_not_follow_a_link_out_of_the_tree(tmp_path: Path, kind: str) -> None:
+    """Sizing must stay inside the tree it was asked about.
+
+    Both link kinds are exercised because on Windows a symlink needs privilege
+    this host does not grant while a **junction** needs none — and ``os.walk``
+    happily descends into a junction. A symlink-only test passes by skipping here
+    and proves nothing about the mechanism that actually exists on this box.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "huge.bin").write_bytes(b"y" * 4096)
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    (inside / "small.bin").write_bytes(b"z" * 10)
+    link = inside / "link"
+    if kind == "symlink":
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation needs privilege on this host")
+    else:
+        if os.name != "nt":
+            pytest.skip("junctions are Windows-only")
+        made = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True, text=True
+        )
+        if made.returncode != 0 or not link.exists():
+            pytest.skip(f"mklink /J unavailable: {made.stderr.strip()}")
+    with pytest.raises(dh.Undecidable, match="reparse point"):
+        dh.tree_stats(inside)
+    # Second lock: shutil.rmtree recurses through a junction, so the remover must
+    # refuse the link itself rather than delete the target's contents.
+    ok, detail = dh.remove_path(link)
+    assert not ok and "reparse point" in detail
+    assert (outside / "huge.bin").exists(), f"deleting a {kind} reached through it"
+
+
+# --------------------------------------------------------------------------- #
+# (b) git worktrees
+# --------------------------------------------------------------------------- #
+
+
+def test_remove_path_clears_read_only_git_objects(tmp_path: Path) -> None:
+    """The most likely real-world failure: a basetemp holding a git checkout.
+
+    Git writes loose objects read-only (mode 444), and ``shutil.rmtree`` raises
+    ``PermissionError`` / WinError 5 on them. Most of this repo's tests build real
+    checkouts, so without the chmod retry the tool would silently fail to reclaim
+    the very directories it exists for — observed on 24 of this lane's own scratch
+    dirs on 2026-09-26.
+    """
+    base = tmp_path / "ta-pt-gitobjects"
+    objects = base / "t0" / "c" / ".git" / "objects" / "3e"
+    objects.mkdir(parents=True)
+    blob = objects / "68286098058b9813e3b87f2eff7991dffa06c2"
+    blob.write_bytes(b"x" * 64)
+    blob.chmod(stat.S_IREAD)
+    with pytest.raises(PermissionError):
+        blob.write_bytes(b"still writable")  # setup check: it really is read-only
+    ok, detail = dh.remove_path(base)
+    assert ok, detail
+    assert not base.exists()
+
+
+def test_merged_clean_worktree_is_removed(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "REMOVE"
+    assert item.reason == "merged_and_clean"
+    assert item.branch == "landed"
+
+
+def test_dirty_worktree_is_kept(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "in-progress.txt").write_text("half-written\n", encoding="utf-8")
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "KEEP"
+    assert item.reason == "dirty"
+    assert lane.exists()
+
+
+def test_unmerged_branch_is_kept(repo: Path) -> None:
+    lane = add_lane(repo, "open", merged=False)
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "KEEP"
+    assert item.reason in {"unmerged_pr_state_unknown", "unpushed_commits"}
+
+
+def test_worktree_with_commits_on_no_remote_is_kept(repo: Path) -> None:
+    """The 111-unpushed-commit case this found on the real box."""
+    lane = add_lane(repo, "local", merged=False, push=False)
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "KEEP"
+    assert item.reason == "unpushed_commits"
+    assert "1 commit(s) on no remote" in item.detail
+
+
+def test_worktree_with_unique_ignored_content_is_kept(repo: Path) -> None:
+    """Hard Rule 13 as a test: a clean ``git status`` is not a licence to delete.
+
+    ``git worktree remove`` decides cleanliness with ``git status --porcelain``,
+    which omits ignored files entirely — which is how a checkout that looked like
+    stale cruft came to hold 4,711 lines of unique research on 2026-08-26.
+    """
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "output").mkdir()
+    (lane / "output" / "research.md").write_text("exists nowhere else\n", encoding="utf-8")
+    assert git(lane, "status", "--porcelain").strip() == "", "setup: git must see this as clean"
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "KEEP"
+    assert item.reason == "ignored_content_exists_nowhere_else"
+    assert "output/" in item.detail
+
+
+def test_disposable_ignored_content_does_not_block_removal(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / ".ruff_cache").mkdir()
+    (lane / ".ruff_cache" / "x.json").write_text("{}", encoding="utf-8")
+    (lane / "_PURPOSE.md").write_text("Purpose: a lane\n", encoding="utf-8")
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "REMOVE", f"blocked by {item.reason}: {item.detail}"
+
+
+def test_primary_checkout_is_never_removed(repo: Path) -> None:
+    add_lane(repo, "landed", merged=True)
+    item = by_path(worktree_items(repo), repo)
+    assert item.verdict == "KEEP"
+    assert item.reason == "primary_checkout"
+
+
+def test_recently_active_worktree_is_kept(repo: Path) -> None:
+    """A clean, merged lane a live session still has open stays put."""
+    lane = add_lane(repo, "landed", merged=True)
+    item = by_path(worktree_items(repo, now=time.time(), idle_hours=24.0), lane)
+    assert item.verdict == "KEEP"
+    assert item.reason == "recently_active"
+
+
+def test_detached_head_worktree_is_kept(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    git(lane, "checkout", "-q", "--detach")
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "KEEP"
+    assert item.reason == "detached_head"
+
+
+def test_undecidable_git_status_keeps(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail closed: a git query that cannot be answered keeps the worktree."""
+    lane = add_lane(repo, "landed", merged=True)
+
+    def broken(_worktree):
+        raise dh.Undecidable("git status -> rc=128")
+
+    monkeypatch.setattr(dh, "dirty_paths", broken)
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "KEEP"
+    assert item.reason == "status_undecidable"
+
+
+def test_pr_closed_with_everything_pushed_is_removable(repo: Path) -> None:
+    lane = add_lane(repo, "abandoned", merged=False)
+    item = by_path(worktree_items(repo, pr_state_fn=lambda _b, _c: True), lane)
+    assert item.verdict == "REMOVE"
+    assert item.reason == "pr_closed_branch_fully_pushed"
+
+
+def test_pr_open_is_kept(repo: Path) -> None:
+    lane = add_lane(repo, "inflight", merged=False)
+    item = by_path(worktree_items(repo, pr_state_fn=lambda _b, _c: False), lane)
+    assert item.verdict == "KEEP"
+    assert item.reason == "unmerged_pr_open"
+
+
+def test_another_repo_next_door_is_never_inventoried(repo: Path, tmp_path: Path) -> None:
+    """Only ``git worktree list`` of THIS repo defines the scope."""
+    other = tmp_path / "other-project"
+    other.mkdir()
+    git(other, "init", "-q", "--initial-branch=main")
+    (other / "theirs.txt").write_text("not ours\n", encoding="utf-8")
+    paths = {str(Path(i.path).resolve()).lower() for i in worktree_items(repo)}
+    assert str(other.resolve()).lower() not in paths
+    assert other.exists()
+
+
+def test_budget_marks_the_rest_not_inventoried(repo: Path) -> None:
+    add_lane(repo, "landed", merged=True)
+    items = worktree_items(repo, deadline=time.monotonic() - 1)
+    assert items, "an exhausted budget must still report every entry"
+    assert all(i.verdict == "KEEP" and i.reason == "not_inventoried" for i in items)
+
+
+def test_apply_removes_a_merged_worktree_and_leaves_the_kept_one(repo: Path) -> None:
+    """End-to-end: the remover runs through git and the refusals hold."""
+    gone = add_lane(repo, "landed", merged=True)
+    kept = add_lane(repo, "open", merged=False)
+    report = dh.Report(items=worktree_items(repo))
+    dh.apply_removals(report, repo, keep_gb=8.0, log_path=None)
+    assert not gone.exists(), "a merged, clean, idle lane should be gone"
+    assert kept.exists(), "an unmerged lane must survive"
+    assert "landed" not in git(repo, "branch", "--list", "landed")
+
+
+def test_is_disposable_ignored_classification() -> None:
+    for disposable in (
+        ".venv/",
+        "__pycache__/",
+        ".claude/hooks/__pycache__/",
+        "_PURPOSE.md",
+        "x/y.pyc",
+        ".agents/supervisor/",
+        ".ruff_cache/",
+    ):
+        assert dh.is_disposable_ignored(disposable), disposable
+    for unique in (
+        "output/",
+        "universes/",
+        "data-room/cap-table.xlsx",
+        ".secrets/",
+        ".env",
+        "mobile/android/",
+        ".claude/agent-memory/",
+        "notes.md",
+    ):
+        assert not dh.is_disposable_ignored(unique), unique
+
+
+# --------------------------------------------------------------------------- #
+# (c) Docker build cache
+# --------------------------------------------------------------------------- #
+
+
+def test_docker_class_is_skipped_when_the_engine_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        dh, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "cannot find the pipe")
+    )
+    (item,) = dh.collect_docker_cache(keep_gb=8.0)
+    assert (item.verdict, item.reason) == ("KEEP", "docker_engine_not_running")
+
+
+def test_docker_prune_touches_build_cache_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never volumes, never images, never ``system prune``, never ``-a``."""
+    seen: list[list[str]] = []
+
+    def fake(args, **_kwargs):
+        seen.append(list(args))
+        return subprocess.CompletedProcess(args, 0, "Total reclaimed space: 3GB", "")
+
+    monkeypatch.setattr(dh, "run", fake)
+    item = dh.Item(
+        "docker",
+        "build-cache",
+        3 * 1024**3,
+        "REMOVE",
+        "docker_build_cache",
+        "",
+        prune_flag="--reserved-space",
+    )
+    ok, _detail = dh.prune_docker(item, keep_gb=8.0)
+    assert ok
+    (argv,) = seen
+    assert argv[:3] == ["docker", "builder", "prune"]
+    assert "--reserved-space" in argv and str(8 * 1024**3) in argv
+    forbidden = {"volume", "system", "image", "-a", "--all", "--volumes", "container"}
+    assert not forbidden.intersection(argv), argv
+
+
+def test_docker_prune_refuses_without_a_probed_flag() -> None:
+    """A wrong keep flag makes the prune a silent no-op, so an unprobed one refuses."""
+    item = dh.Item("docker", "build-cache", 1, "REMOVE", "docker_build_cache", "")
+    ok, detail = dh.prune_docker(item, keep_gb=8.0)
+    assert not ok
+    assert "keep-budget flag" in detail
+
+
+def test_docker_keep_flag_is_probed_not_guessed() -> None:
+    assert (
+        dh.docker_keep_flag("--reserved-space bytes\n--max-used-space bytes") == "--reserved-space"
+    )
+    assert dh.docker_keep_flag("--keep-storage bytes") == "--keep-storage"
+    with pytest.raises(dh.Undecidable):
+        dh.docker_keep_flag("--filter filter\n--force")
+
+
+def test_parse_docker_size() -> None:
+    assert dh.parse_docker_size("1.5GB (100%)") == int(1.5 * 1024**3)
+    assert dh.parse_docker_size("0B") == 0
+    assert dh.parse_docker_size("912.3MB") == int(912.3 * 1024**2)
+
+
+def test_build_cache_row_is_the_only_row_read() -> None:
+    text = "\n".join(
+        [
+            json.dumps({"Type": "Images", "Reclaimable": "40GB (90%)"}),
+            json.dumps({"Type": "Local Volumes", "Reclaimable": "12GB (100%)"}),
+            json.dumps({"Type": "Build Cache", "Reclaimable": "3.5GB"}),
+        ]
+    )
+    assert dh._build_cache_reclaimable(text) == int(3.5 * 1024**3)
+    assert (
+        dh._build_cache_reclaimable(json.dumps({"Type": "Images", "Reclaimable": "40GB"})) is None
+    )
+
+
+# --------------------------------------------------------------------------- #
+# (d) repo scratch
+# --------------------------------------------------------------------------- #
+
+
+def test_stale_ignored_scratch_is_removed(repo: Path) -> None:
+    (repo / ".gitignore").write_text("codex-tmp/\noutput/\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "ignore scratch")
+    scratch = repo / "codex-tmp"
+    scratch.mkdir()
+    (scratch / "junk.txt").write_text("x", encoding="utf-8")
+    age(scratch, 24 * 30, now=time.time())
+    item = by_path(dh.collect_repo_scratch(repo, min_age_days=7, now=time.time()), scratch)
+    assert (item.verdict, item.reason) == ("REMOVE", "stale_repo_scratch")
+
+
+def test_tracked_path_with_a_scratch_name_is_kept(repo: Path) -> None:
+    """A tracked file named like scratch is not scratch. Found on the real box."""
+    tracked = repo / ".codex-plan.txt"
+    tracked.write_text("a real plan\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".codex-*.txt\n", encoding="utf-8")
+    git(repo, "add", "-A", "-f")
+    git(repo, "commit", "-q", "-m", "track the plan")
+    age(tracked, 24 * 365, now=time.time())
+    item = by_path(dh.collect_repo_scratch(repo, min_age_days=7, now=time.time()), tracked)
+    assert (item.verdict, item.reason) == ("KEEP", "not_git_ignored")
+    assert tracked.exists()
+
+
+def test_recent_scratch_is_kept(repo: Path) -> None:
+    (repo / ".gitignore").write_text("codex-tmp/\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "ignore")
+    scratch = repo / "codex-tmp"
+    scratch.mkdir()
+    (scratch / "live.txt").write_text("x", encoding="utf-8")
+    item = by_path(dh.collect_repo_scratch(repo, min_age_days=7, now=time.time()), scratch)
+    assert (item.verdict, item.reason) == ("KEEP", "recent")
+
+
+def test_protected_repo_dirs_are_not_candidates(repo: Path) -> None:
+    """``output/``, ``universes/``, ``.secrets/``, ``data-room/`` are never scratch."""
+    for name in ("output", "universes", ".secrets", "data-room", ".codex-worktrees", "logs"):
+        (repo / name).mkdir()
+    (repo / ".gitignore").write_text(
+        "output/\nuniverses/\n.secrets/\ndata-room/\nlogs/\n.codex-worktrees/\n", encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "ignore state dirs")
+    paths = {
+        Path(i.path).name for i in dh.collect_repo_scratch(repo, min_age_days=0, now=time.time())
+    }
+    assert paths.isdisjoint(
+        {"output", "universes", ".secrets", "data-room", ".codex-worktrees", "logs"}
+    )
+
+
+# --------------------------------------------------------------------------- #
+# modes, logging, escalation
+# --------------------------------------------------------------------------- #
+
+
+def test_dry_run_is_the_default_and_removes_nothing(tmp_path: Path, repo: Path, capsys) -> None:
+    root = tmp_path / "t"
+    root.mkdir()
+    stale = make_basetemp(root, "ta-pt-old", hours=500)
+    rc = dh.main(["--repo", str(repo), "--temp-root", str(root), "--classes", "basetemp"])
+    assert rc == 0
+    assert stale.exists(), "the default mode must not delete"
+    assert "would remove" in capsys.readouterr().out
+
+
+def test_apply_removes_and_logs_path_size_and_reason(tmp_path: Path, repo: Path) -> None:
+    root = tmp_path / "t"
+    root.mkdir()
+    stale = make_basetemp(root, "ta-pt-old", hours=500, payload=2048)
+    log = tmp_path / "hygiene.log"
+    rc = dh.main(
+        [
+            "--apply",
+            "--repo",
+            str(repo),
+            "--temp-root",
+            str(root),
+            "--classes",
+            "basetemp",
+            "--log",
+            str(log),
+        ]
+    )
+    assert rc == 0
+    assert not stale.exists()
+    line = log.read_text(encoding="utf-8").strip()
+    assert str(stale) in line
+    assert "stale_pytest_basetemp" in line
+    assert "KB" in line or "MB" in line, f"size missing from the log line: {line}"
+
+
+def test_if_low_disk_gates_the_apply(
+    tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "t"
+    root.mkdir()
+    stale = make_basetemp(root, "ta-pt-old", hours=500)
+    monkeypatch.setattr(dh, "free_gb", lambda _p: 500.0)
+    rc = dh.main(
+        [
+            "--apply",
+            "--if-low-disk",
+            "40",
+            "--repo",
+            str(repo),
+            "--temp-root",
+            str(root),
+            "--classes",
+            "basetemp",
+            "--no-log",
+        ]
+    )
+    assert rc == 0
+    assert stale.exists(), "plenty of free space must leave the disposable set alone"
+
+
+def test_if_low_disk_applies_when_actually_low(
+    tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "t"
+    root.mkdir()
+    stale = make_basetemp(root, "ta-pt-old", hours=500)
+    monkeypatch.setattr(dh, "free_gb", lambda _p: 2.0)
+    rc = dh.main(
+        [
+            "--apply",
+            "--if-low-disk",
+            "40",
+            "--escalate-below",
+            "40",
+            "--repo",
+            str(repo),
+            "--temp-root",
+            str(root),
+            "--classes",
+            "basetemp",
+            "--no-log",
+        ]
+    )
+    assert rc == 3, "still below the floor after the pass => escalate"
+    assert not stale.exists()
+
+
+def test_escalation_names_what_it_refused_to_remove(
+    tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    root = tmp_path / "t"
+    root.mkdir()
+    oracle = root / "ta-baseline-keepme"
+    (oracle / "src").mkdir(parents=True)
+    (oracle / "src" / "big.bin").write_bytes(b"x" * 50_000)
+    age(oracle, 500, now=time.time())
+    monkeypatch.setattr(dh, "free_gb", lambda _p: 1.0)
+    rc = dh.main(
+        [
+            "--apply",
+            "--escalate-below",
+            "40",
+            "--repo",
+            str(repo),
+            "--temp-root",
+            str(root),
+            "--classes",
+            "basetemp",
+            "--no-log",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert rc == 3
+    assert "ESCALATION" in out
+    assert str(oracle) in out, "the escalation must be a concrete list, not a number"
+    assert "unrecognized_shape" in out
+
+
+def test_json_mode_is_machine_readable(tmp_path: Path, repo: Path, capsys) -> None:
+    root = tmp_path / "t"
+    root.mkdir()
+    make_basetemp(root, "ta-pt-old", hours=500)
+    rc = dh.main(["--repo", str(repo), "--temp-root", str(root), "--classes", "basetemp", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["applied"] is False
+    assert payload["reclaimable_bytes"] > 0
+    assert {i["verdict"] for i in payload["items"]} <= {"REMOVE", "KEEP"}
+
+
+def test_per_class_cap_bounds_one_pass(tmp_path: Path, repo: Path) -> None:
+    """An automatic pass can never do something enormous.
+
+    Same bound as ``daemon_image_retention.MAX_REMOVALS`` on the droplet: a logic
+    bug costs N items and lands in the log before the next pass runs.
+    """
+    root = tmp_path / "t"
+    root.mkdir()
+    made = [make_basetemp(root, f"ta-pt-{i}", hours=500, payload=100 * (i + 1)) for i in range(5)]
+    report = dh.Report(items=dh.collect_basetemps(root, min_age_hours=6, now=NOW))
+    dh.apply_removals(report, repo, keep_gb=8.0, log_path=None, max_removals=2)
+    survivors = [p for p in made if p.exists()]
+    assert len(survivors) == 3, [p.name for p in made if p.exists()]
+    # Largest first, so a capped pass reclaims the most it can.
+    assert not made[4].exists() and not made[3].exists()
+    deferred = [i for i in report.items if i.reason == "deferred_to_next_pass"]
+    assert len(deferred) == 3
+
+
+def test_summary_file_carries_the_escalation_for_the_hook(
+    tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SessionStart hook reads this rather than paying for its own scan."""
+    root = tmp_path / "t"
+    root.mkdir()
+    oracle = root / "ta-baseline-keepme"
+    oracle.mkdir()
+    (oracle / "real.py").write_bytes(b"x" * 4096)
+    age(oracle, 500, now=time.time())
+    summary = tmp_path / "summary.json"
+    monkeypatch.setattr(dh, "free_gb", lambda _p: 3.0)
+    rc = dh.main(
+        [
+            "--apply",
+            "--escalate-below",
+            "40",
+            "--repo",
+            str(repo),
+            "--temp-root",
+            str(root),
+            "--classes",
+            "basetemp",
+            "--no-log",
+            "--quiet",
+            "--summary-out",
+            str(summary),
+        ]
+    )
+    assert rc == 3
+    payload = json.loads(summary.read_text(encoding="utf-8"))
+    assert payload["applied"] is True
+    assert payload["free_after_gb"] == 3.0
+    assert "ESCALATION" in payload["escalation"]
+    assert str(oracle) in payload["escalation"]
+    assert "NOT inventoried in this pass: worktree, docker, scratch" in payload["escalation"]
+
+
+def test_acl_locked_measurement_is_its_own_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Access-denied is a known class with an elevated fix, not a generic shrug."""
+    root = tmp_path / "t"
+    root.mkdir()
+    target = make_basetemp(root, "ta-pt-locked", hours=500)
+    real_stat = os.stat
+
+    def deny(path, *a, **kw):
+        if Path(path) == target:
+            raise PermissionError(13, "Access is denied")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(dh.os, "stat", deny)
+    item = by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), target)
+    assert item.reason == "acl_locked_needs_elevation"
+    assert "clear_sandbox_temp_dirs.ps1 -Apply" in item.detail
+    assert target.exists()
+
+
+def test_unknown_class_is_a_usage_error(repo: Path) -> None:
+    assert dh.main(["--repo", str(repo), "--classes", "everything"]) == 2
+
+
+def test_non_repo_target_refuses(tmp_path: Path) -> None:
+    assert dh.main(["--repo", str(tmp_path)]) == 2
+
+
+# --------------------------------------------------------------------------- #
+# the automatic wiring: .claude/hooks/dev_hygiene_hook.py
+# --------------------------------------------------------------------------- #
+
+
+def _load_hook():
+    name = "dev_hygiene_hook_under_test"
+    path = _REPO / ".claude" / "hooks" / "dev_hygiene_hook.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+hook = _load_hook()
+
+
+@pytest.fixture
+def fake_project(tmp_path: Path) -> Path:
+    """A directory shaped enough for the hook: it only needs the script present."""
+    project = tmp_path / "p"
+    (project / "scripts").mkdir(parents=True)
+    (project / "scripts" / "dev_hygiene.py").write_text("# stub\n", encoding="utf-8")
+    return project
+
+
+def _run_hook(monkeypatch: pytest.MonkeyPatch, payload: dict, *, rc: int, stdout: str = ""):
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, rc, stdout, "")
+
+    monkeypatch.setattr(hook.subprocess, "run", fake_run)
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(payload)))
+    return calls
+
+
+def test_hook_injects_the_escalation_when_the_pass_escalates(
+    monkeypatch: pytest.MonkeyPatch, fake_project: Path, capsys
+) -> None:
+    calls = _run_hook(
+        monkeypatch,
+        {"hook_event_name": "SessionStart", "cwd": str(fake_project)},
+        rc=3,
+        stdout="[dev-hygiene] ESCALATION: 2.0 GB free\n  60.0 MB  C:/x  [dirty] lane",
+    )
+    assert hook.main() == 0
+    out = capsys.readouterr().out
+    injected = json.loads(out)["hookSpecificOutput"]
+    assert injected["hookEventName"] == "SessionStart"
+    assert "ESCALATION" in injected["additionalContext"]
+    assert "C:/x" in injected["additionalContext"], "the founder needs the concrete list"
+    (command,) = calls
+    assert "--apply" in command
+    assert "basetemp,scratch" in command, "a session start must not pay for the git walk"
+    assert "--escalate-below" in command
+
+
+def test_hook_is_silent_when_there_is_nothing_to_say(
+    monkeypatch: pytest.MonkeyPatch, fake_project: Path, capsys
+) -> None:
+    _run_hook(monkeypatch, {"hook_event_name": "SessionStart", "cwd": str(fake_project)}, rc=0)
+    assert hook.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_hook_never_fails_a_session_when_the_pass_dies(
+    monkeypatch: pytest.MonkeyPatch, fake_project: Path, capsys
+) -> None:
+    def explode(command, **_kwargs):
+        raise subprocess.TimeoutExpired(command, 45)
+
+    monkeypatch.setattr(hook.subprocess, "run", explode)
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(json.dumps({"hook_event_name": "SessionStart", "cwd": str(fake_project)})),
+    )
+    assert hook.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_hook_ignores_other_events_and_the_disable_switch(
+    monkeypatch: pytest.MonkeyPatch, fake_project: Path
+) -> None:
+    calls = _run_hook(monkeypatch, {"hook_event_name": "Stop", "cwd": str(fake_project)}, rc=3)
+    assert hook.main() == 0
+    assert calls == [], "only SessionStart runs a pass"
+
+    calls = _run_hook(
+        monkeypatch, {"hook_event_name": "SessionStart", "cwd": str(fake_project)}, rc=3
+    )
+    monkeypatch.setenv("TINYASSETS_DEV_HYGIENE_DISABLE", "1")
+    assert hook.main() == 0
+    assert calls == []
+
+
+def test_hook_surfaces_a_recent_full_pass_escalation(
+    monkeypatch: pytest.MonkeyPatch, fake_project: Path, capsys
+) -> None:
+    """The hourly task's finding reaches the founder at the next session start."""
+    logs = fake_project / ".claude" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "dev-hygiene-full.json").write_text(
+        json.dumps(
+            {
+                "finished_at": "2026-09-26T10:00:00+0000",
+                "finished_epoch": time.time() - 600,
+                "escalation": (
+                    "[dev-hygiene] ESCALATION: 3.0 GB free\n  1.0 GB  C:/wf-lane  [dirty] lane"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    _run_hook(monkeypatch, {"hook_event_name": "SessionStart", "cwd": str(fake_project)}, rc=0)
+    assert hook.main() == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "C:/wf-lane" in context
+    assert "Full hygiene pass" in context
+
+
+def test_hook_ignores_a_stale_full_pass_escalation(
+    monkeypatch: pytest.MonkeyPatch, fake_project: Path, capsys
+) -> None:
+    """A finding from days ago is noise, not news — the task runs hourly."""
+    logs = fake_project / ".claude" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "dev-hygiene-full.json").write_text(
+        json.dumps(
+            {
+                "finished_at": "2026-09-20T10:00:00+0000",
+                "finished_epoch": time.time() - 5 * 86400,
+                "escalation": "[dev-hygiene] ESCALATION: ancient",
+            }
+        ),
+        encoding="utf-8",
+    )
+    _run_hook(monkeypatch, {"hook_event_name": "SessionStart", "cwd": str(fake_project)}, rc=0)
+    assert hook.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_hook_does_nothing_without_the_script(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = _run_hook(monkeypatch, {"hook_event_name": "SessionStart", "cwd": str(tmp_path)}, rc=3)
+    assert hook.main() == 0
+    assert calls == []
+
+
+def test_hook_floor_is_env_overridable(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert hook._floor_gb() == hook.DEFAULT_FLOOR_GB
+    monkeypatch.setenv("TINYASSETS_DEV_HYGIENE_FLOOR_GB", "75")
+    assert hook._floor_gb() == 75.0
+    monkeypatch.setenv("TINYASSETS_DEV_HYGIENE_FLOOR_GB", "not-a-number")
+    assert hook._floor_gb() == hook.DEFAULT_FLOOR_GB, "a bad value must not break a session start"
