@@ -24,7 +24,7 @@ Orient: `python scripts/docview.py headings PLAN.md`, one section, then
    the rest. Mutation tables only for data-loss or cross-user guards.
 4. Review only floor-class changes and gate files: one cross-family round
    (`peer-agents`), floor and correctness findings only, `AGREE`/`DISAGREE_EVIDENCE`.
-5. No lane cap: fold colliding lanes into one; serialize merges.
+5. No lane cap: fold colliding or superseded lanes into one; serialize merges.
 6. Done = sha asserted deployed, one real-user app pass, spec synced.
 7. Same error three times, or the same finding twice: hand off, do not patch.
 8. A new rule deletes an old one; a rule a script can enforce gets no line.

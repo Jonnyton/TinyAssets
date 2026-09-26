@@ -30,11 +30,8 @@ For big briefs, write the brief to a file with your Write tool and pass `--promp
 ## A dispatched peer must not dispatch
 
 **State this in every brief.** A peer given a review brief will, left to itself,
-farm the review out rather than do it: on 2026-08-27 two dispatched Codex
-reviews each spawned their own `peer_agent.py claude` children (four in total),
-created three worktrees, and ran full local `pytest -m "not slow"` sweeps. After
-34 minutes neither had written a single byte to its `--out` file, and both had
-to be killed. The work was recursive, not deep.
+farm the review out rather than do it -- two dispatched reviews once spawned four
+children and three worktrees and wrote nothing in 34 minutes. Recursive, not deep.
 
 Put a constraints block in the brief itself -- the CLI has no flag for it:
 
@@ -45,19 +42,23 @@ HARD CONSTRAINTS ON HOW YOU WORK:
 - Do NOT run the full suite. No scripts/ci_required_tests.py, no
   `pytest -m "not slow"`. Run at most the one test file you need.
 - Budget ~10 minutes. Read the diff and the cited files and reason.
+- Lanes are not capped, but they are RECONCILED: if this brief collides with
+  another open lane (shared files or overlapping intent), or the design direction
+  it assumes has changed, say so and stop rather than working around it. The lead
+  folds colliding or superseded lanes into one, or rebases the briefs onto the new
+  direction, so every objective keeps moving. Merges stay serialized.
 ```
 
 Two more habits that fell out of the same incident:
 
 - **One dispatch at a time.** Two concurrent reviews multiplied the spawn storm
   and made it much harder to tell which tree of processes belonged to what.
-- **Set `--timeout` to what you will actually wait** (900s reads better than
-  the 1800s default). A peer that has produced nothing at the halfway mark is
-  not about to; check `Get-CimInstance Win32_Process` command lines before
-  waiting out the rest.
+- **Set `--timeout` to what you will actually wait** (900s over the 1800s
+  default). A peer with nothing at the halfway mark is not about to produce;
+  check its `Get-CimInstance Win32_Process` command line instead of waiting.
 - **A `nohup ... &` dispatch from the Bash tool is not reliably backgrounded** --
-  one such dispatch looked dead (exit 0, no output) and was still running 30
-  minutes later, duplicating a review. Use the tool's own background mode.
+  it can read as dead (exit 0, no output) and still be running. Use the tool's own
+  background mode.
 
 ## Output contract
 
