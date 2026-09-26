@@ -405,11 +405,15 @@ class AgentTurnCoordinator:
         return replace(boundary.exhaustion, scope="model"), True
 
     def _free_source_refusal(self, boundary, *, window):
-        """Is this the zero-cost refusal whose cooldown the router withholds?
+        """Is this the refusal whose cooldown the router withholds?
 
-        Mirrors the router's capacity handler, including its "a selection with
-        proven ceilings exists" condition — which only an engine-inference round
-        has, so a native round is never one of these (the router cooled it).
+        Mirrors the router's capacity handler. Neither side reads the owner's
+        ceilings any more (2026-09-25): the same refusal must mean the same thing
+        for every account, and a price branch here made a paid source's 429 a
+        dead end its free neighbour never hit. What still narrows this to
+        engine-inference rounds is the EXECUTION KIND, a fact about the source —
+        a native round runs on one subscription, so its account IS the source and
+        the router already cooled it.
 
         ``window`` decides whether the source's own ``Retry-After`` may rule the
         sibling out. Deliberately asymmetric between the two callers:
@@ -428,7 +432,6 @@ class AgentTurnCoordinator:
             return False
         return free_sibling_retry(
             scope=boundary.observed_scope, failure_class=boundary.failure_class,
-            cost_caps=self.plan.source_cost_caps(self.context.model_selection.connection_id),
             retry_after_s=boundary.retry_after_s if window else None,
             turn_budget_s=(
                 self.config.stream_timeout_profile().absolute_cap_s if window else None

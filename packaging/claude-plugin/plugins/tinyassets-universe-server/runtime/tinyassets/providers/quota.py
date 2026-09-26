@@ -21,6 +21,13 @@ COOLDOWN_UNAVAILABLE = 120    # exit-code-1 / rate-limit => 2 min
 COOLDOWN_TIMEOUT = 120        # hung subprocess => 2 min
 COOLDOWN_OTHER = 30           # generic error => 30 sec
 
+#: Ceiling on ANY cooldown, including one a source asked for by ``Retry-After``.
+#: That header is remote input: unbounded, ``Retry-After: 99999999`` takes a
+#: source out for ~3.2 years, which is a source-supplied denial of its owner's
+#: own universe. One day is longer than any real rate-limit window and short
+#: enough that a buggy or hostile header costs at most a day.
+MAX_COOLDOWN_S = 86_400
+
 
 @dataclass
 class _RateWindow:
