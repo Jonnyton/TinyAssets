@@ -95,6 +95,11 @@ CREATE TABLE IF NOT EXISTS conversation_backfill (
     session_id TEXT PRIMARY KEY,
     ts         REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS conversation_learned (
+    session_id    TEXT PRIMARY KEY,
+    settled_turn  INTEGER NOT NULL,
+    ts            REAL    NOT NULL
+);
 """
 
 #: Same-process writers (the daemon serves both the Slack ingress and the MCP
@@ -862,11 +867,156 @@ def has_prior_turns(universe_dir: "str | Path", session_id: str) -> bool:
     return row is not None
 
 
+# ── the learned cursor (change: deferred-learning-never-blocks-the-reply) ──────
+# "The last founder turn in this session whose lesson is settled." Pending work is
+# the founder turns after it, which this store already holds verbatim -- so this is
+# a CURSOR, not a queue: one row per session, idempotent to advance, and a burst of
+# quick turns is one pending span rather than one job each.
+#
+# It exists because `converse` used to spend a THIRD model round-trip on learning
+# extraction after the reply text already existed, on every turn, on the founder's
+# clock (measured 2026-09-25; production 2026-09-26 UTC: two recall turns at 3
+# rounds each). A turn that records its own lesson with `write_brain` settles this
+# cursor and skips that call; a turn that does not still runs it synchronously, so
+# no lesson is ever lost.
+#
+# It advances ONLY on a recorded write. A crash, a refusal or a skipped write leaves
+# it behind, which is the retry state -- never the reverse.
+
+
+def learned_cursor(universe_dir: "str | Path", session_id: str) -> int:
+    """The last settled founder turn for this session, or 0 when nothing is.
+
+    Never raises: a missing db, an old schema or an unreadable row all read as
+    "nothing settled", which costs a synchronous extraction rather than a lesson.
+    """
+    if not session_id:
+        return 0
+    db_path = _db_path(universe_dir)
+    if not db_path.exists():
+        return 0
+    try:
+        conn = _connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT settled_turn FROM conversation_learned WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - a cursor read must never cost the turn
+        logger.warning("conversation memory: learned cursor unreadable", exc_info=True)
+        return 0
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def latest_turn_no(universe_dir: "str | Path", session_id: str) -> int:
+    """The highest recorded turn number for this session, or 0."""
+    if not session_id:
+        return 0
+    db_path = _db_path(universe_dir)
+    if not db_path.exists():
+        return 0
+    try:
+        conn = _connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT MAX(turn_no) FROM conversation_turns WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return 0
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def settle_learned_cursor(
+    universe_dir: "str | Path",
+    session_id: str,
+    *,
+    through_turn: int | None = None,
+    from_turn: int | None = None,
+) -> int:
+    """Advance the cursor to ``through_turn`` (default: the latest turn). Returns it.
+
+    MONOTONIC and idempotent: it never moves backwards, so a second settle for the
+    same span is a no-op and two workers cannot un-settle each other. Returns the
+    cursor value in force afterwards, or 0 if nothing could be written -- a failure
+    here must leave the lesson owed, not claim it was learned.
+
+    CONTIGUOUS: a watermark cannot say "turn N is settled but N-1 is not", so it must
+    never CLAIM an earlier unsettled turn. A turn whose extraction FAILED leaves the
+    cursor behind; if the next turn then settled to the latest row, the cursor would
+    jump PAST the failed one and no drain would ever retry it (PR #4001 review --
+    inert while nothing reads the cursor, but the rows written now already carry that
+    meaning). ``from_turn`` is where the caller believes the cursor stands, i.e. the
+    latest turn BEFORE the exchange it is settling; the advance is refused when the
+    cursor is behind that. Refusing costs a redundant extraction later; claiming
+    would cost the lesson.
+    """
+    if not session_id:
+        return 0
+    target = latest_turn_no(universe_dir, session_id) if through_turn is None else int(
+        through_turn
+    )
+    if target <= 0:
+        return 0
+    settled = learned_cursor(universe_dir, session_id)
+    if from_turn is not None and settled != int(from_turn):
+        logger.info(
+            "conversation memory: lesson for %s not claimed -- cursor at %d, this "
+            "turn began at %d, so an earlier turn is still owed",
+            session_id, settled, int(from_turn),
+        )
+        return settled
+    db_path = _db_path(universe_dir)
+    try:
+        with _lock_for(db_path):
+            conn = _connect(db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO conversation_learned (session_id, settled_turn, ts) "
+                        "VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET "
+                        "settled_turn = MAX(settled_turn, excluded.settled_turn), "
+                        "ts = excluded.ts",
+                        (session_id, target, time.time()),
+                    )
+                row = conn.execute(
+                    "SELECT settled_turn FROM conversation_learned WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+    except Exception:  # noqa: BLE001 - never claim a lesson was learned
+        logger.warning("conversation memory: learned cursor not advanced", exc_info=True)
+        return 0
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def start_learned_cursor(universe_dir: "str | Path", session_id: str) -> int:
+    """Settle an EXISTING conversation's cursor at its latest turn, once.
+
+    A conversation that predates the cursor must not have its whole history
+    re-extracted the first time this runs -- that would be a spend surprise on the
+    founder's own credential. Only ever called for a session that has history and
+    no cursor yet; a session with a cursor is untouched.
+    """
+    if not session_id or learned_cursor(universe_dir, session_id):
+        return 0
+    return settle_learned_cursor(universe_dir, session_id)
+
+
 __all__ = [
     "backfill_once",
     "has_prior_turns",
     "is_backfilled",
+    "latest_turn_no",
+    "learned_cursor",
     "load_recent",
     "record_turn",
+    "settle_learned_cursor",
+    "start_learned_cursor",
     "sync_tail",
 ]
