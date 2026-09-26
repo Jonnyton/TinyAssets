@@ -47,7 +47,8 @@ universe; a caller who does not own the universe reads and changes nothing.
 
 - `approve` keeps every existing refusal: the agent still cannot grant
   itself workspace consent or approve `source_code`.
-- `get_policy`/`set_policy` stay off the served surface. The policy store
-  has no reader today (see design D3), so serving it would hand the agent a
-  control that changes nothing.
+- `get_policy`/`set_policy` stay off the served surface -- and, as of
+  2026-09-25, do not exist at all: the store had no reader, so they were
+  deleted rather than served or rewired (see design D3). The owner loses no
+  setting that was ever enforced.
 - Answering, dismissing and un-muting stay person-only.
