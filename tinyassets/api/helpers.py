@@ -68,43 +68,33 @@ def _universe_dir(universe_id: str) -> Path:
 
 
 def _owned_universe_dir_name(base: Path, name: str) -> str:
-    """The DIRECTORY a pointer resolves to, or ``""``.
+    """``name`` if it is a universe here -- an owned id WITH a directory -- else ``""``.
 
-    ``owned_universe_id`` answers a different question -- which ACL id a name
-    means -- and handing that answer to a caller who is about to open a path
-    breaks on a case-sensitive filesystem: a directory ``U-Mine/`` owned by ACL
-    id ``u-mine`` would resolve to ``u-mine/``, which does not exist there. A
-    pointer names a directory, so the answer is the directory's own spelling.
-
-    Requires BOTH: the directory exists, and somebody owns it.
+    A pointer (`.active_universe`, ``UNIVERSE_SERVER_DEFAULT_UNIVERSE``, a
+    directory listing) has to satisfy both halves before a resolver hands it
+    back: an ownership row names it, and the directory is really there. The
+    answer is always ``name`` itself, never a re-spelling -- a universe id is
+    simultaneously a path component and an authority key, and any function that
+    returns one spelling to a caller who needs the other breaks it (see
+    `daemon_server.owned_universe_id` for both directions this failed in).
     """
     from tinyassets.daemon_server import owned_universe_id
 
     candidate = (name or "").strip()
-    if not candidate:
+    if not candidate or not base.is_dir():
         return ""
-    if not base.is_dir():
+    # Path-traversal guarded like `_universe_dir`: a pointer is caller-influenced
+    # (a marker file, an env var), so `../outside` must not even be stat'ed as a
+    # candidate universe.
+    try:
+        resolved = (base / candidate).resolve()
+        if not resolved.is_relative_to(base.resolve()) or resolved == base.resolve():
+            return ""
+    except OSError:
         return ""
-    # A dotted name is refused by the loop's own skip below and again by
-    # `owned_universe_id`. It is NOT re-checked here: a third copy of the rule
-    # cannot be driven red by any test, which makes it decoration rather than a
-    # guard.
-    # AN EXACT MATCH WINS. Scanning sorted children and taking the first
-    # case-folded hit means that with both `U-Mine/` and `u-mine/` present on a
-    # case-sensitive filesystem, the exact pointer `u-mine` opens `U-Mine`.
-    # Case-folding exists to find a directory restored under a different case,
-    # never to prefer one over the name the caller actually gave.
-    folded = candidate.casefold()
-    fallback = ""
-    for child in sorted(base.iterdir()):
-        if not child.is_dir() or child.name.startswith("."):
-            continue
-        if child.name == candidate:
-            return child.name if owned_universe_id(base, child.name) else ""
-        if not fallback and child.name.casefold() == folded:
-            if owned_universe_id(base, child.name):
-                fallback = child.name
-    return fallback
+    if not resolved.is_dir():
+        return ""
+    return candidate if owned_universe_id(base, candidate) else ""
 
 
 def _default_universe() -> str:

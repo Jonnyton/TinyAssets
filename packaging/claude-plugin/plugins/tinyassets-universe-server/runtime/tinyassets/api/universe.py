@@ -1751,23 +1751,11 @@ def _is_listable_universe_dir(path: Path, owned: set[str]) -> bool:
     return (
         path.is_dir()
         and not path.name.startswith(".")
-        and _name_is_owned(path.name, owned)
+        # EXACT, not case-folded. A universe id is both a path component and an
+        # authority key, and resolving those to different spellings breaks one of
+        # them -- see `daemon_server.owned_universe_id` for the two ways it broke.
+        and path.name in owned
     )
-
-
-def _name_is_owned(name: str, owned: set[str]) -> bool:
-    """Whether an ownership row names ``name``, comparing case-folded BOTH ways.
-
-    Folding only the directory name would match a lowercase ACL id against a
-    restored ``U-Mine/`` and miss the mirror case -- a ``u-mine/`` directory
-    whose row was written as ``U-Mine``. The owned set is per-host small (one
-    entry per universe), so the symmetric scan costs nothing and removes the
-    asymmetry rather than documenting it.
-    """
-    if name in owned:
-        return True
-    folded = name.casefold()
-    return any(folded == owned_id.casefold() for owned_id in owned)
 
 
 def _action_list_universes(**_kwargs: Any) -> str:
@@ -5667,7 +5655,45 @@ def _action_create_universe(
     if udir.exists():
         return json.dumps({"error": f"Universe '{uid}' already exists."})
 
+    founder = ""
     try:
+        # THE OWNER IS CLAIMED BEFORE THE DIRECTORY EXISTS. Creation used to
+        # mkdir and seed here and grant ownership ~90 lines below, which left a
+        # window where the directory was on disk and owned by nobody. That was
+        # merely untidy while an unowned directory was still readable; now that
+        # a universe nobody owns grants no capability (`visibility_permits`), the
+        # window is a functional hole -- the creator's own reads inside it would
+        # be refused, and `first_contact`'s seeding reads through the same gate.
+        # `first_contact` already claims the home before materializing; explicit
+        # creation now does the same (Codex review 2026-09-26).
+        founder = permissions.current_actor_id()
+        # NO UNOWNED UNIVERSE, EVER (founder rule 2026-08-28). This used to fall
+        # through to `founder_id: ""` -- it created the universe, granted nobody,
+        # bound nobody, and returned success. The question "whose is this?" then
+        # had no answer, and that question is what every multi-tenant guarantee
+        # is built on. The public MCP surface already refuses at the door
+        # (`_universe_birth_refusal`) and `ensure_founder_home` needs
+        # `create_universe` scope, so no production path reaches here
+        # unauthenticated today -- and "no caller does that today" is precisely
+        # the reasoning that has been wrong twice already in this repo.
+        #
+        # Refusing BEFORE the mkdir means a refusal leaves nothing behind at all,
+        # rather than relying on rollback to remove a bare directory.
+        if not permissions.is_authenticated_request() or not (founder or "").strip():
+            raise PermissionError(
+                "a universe must belong to someone: refusing to create one with no "
+                "authenticated owner"
+            )
+        from tinyassets.daemon_server import grant_universe_access
+
+        grant_universe_access(
+            base,
+            universe_id=uid,
+            actor_id=founder,
+            permission="admin",
+            granted_by=founder,
+        )
+
         udir.mkdir(parents=True, exist_ok=True)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
         loop_branch_def_id = str(branch_def_id or "").strip()
@@ -5738,43 +5764,17 @@ def _action_create_universe(
         _visibility.set_universe_visibility(uid, create_level)
         result["visibility"] = create_level
 
-        founder = permissions.current_actor_id()
-        # NO UNOWNED UNIVERSE, EVER (founder rule 2026-08-28; enforced here
-        # 2026-08-29). This used to fall through to `founder_id: ""` — it created
-        # the universe, granted nobody, bound nobody, and returned success. The
-        # question "whose is this?" then had no answer, and that question is what
-        # every multi-tenant guarantee is built on.
-        #
-        # The public MCP surface already refuses at the door (`_universe_birth_refusal`),
-        # and `ensure_founder_home` needs `create_universe` scope, so no production
-        # path reaches here unauthenticated today. That made this a LATENT hole rather
-        # than a live one — and "no caller does that today" is precisely the reasoning
-        # that has been wrong twice already in this repo. An invariant the founder
-        # states should be structurally true, not true by luck.
-        #
-        # Raising rolls back the partial create through the outer handler, so a
-        # refusal never leaves a bare directory behind.
-        if not permissions.is_authenticated_request() or not (founder or "").strip():
-            raise PermissionError(
-                "a universe must belong to someone: refusing to create one with no "
-                "authenticated owner"
-            )
-        from tinyassets.daemon_server import grant_universe_access, set_founder_home
-
-        grant_universe_access(
-            base,
-            universe_id=uid,
-            actor_id=founder,
-            permission="admin",
-            granted_by=founder,
-        )
+        # The admin grant was written BEFORE the directory existed (top of this
+        # try), because a universe nobody owns now grants no capability. What is
+        # left here is the HOME binding, which needs the completed directory to
+        # decide whether an existing home is living.
         # Bind this as the founder's home when they don't already have a
         # LIVING one — no binding, or a binding to a removed/incomplete dir.
         # "Living" means COMPLETE (soul.md present), not a bare/partial dir,
         # so a broken home rebinds to this fresh one (Codex 2026-07-15).
         # Explicit later creates by a founder with a living home do NOT
         # reassign home.
-        from tinyassets.daemon_server import get_founder_home
+        from tinyassets.daemon_server import get_founder_home, set_founder_home
 
         _home = get_founder_home(base, founder)
         if not _home or not (base / _home / "soul.md").is_file():
@@ -5802,6 +5802,26 @@ def _action_create_universe(
                 shutil.rmtree(udir)
         except OSError:
             pass
+        # ...and the grant written before it, so a failed create leaves neither a
+        # bare directory nor an ownership row for a universe that never existed.
+        # An owner left holding an admin grant on a nonexistent universe has to be
+        # TOLD, whatever the create failed with: it is the one piece of state this
+        # rollback cannot clean up, and it silently blocks the id.
+        revoke_failed = ""
+        try:
+            from tinyassets.daemon_server import revoke_universe_access
+
+            if founder:
+                revoke_universe_access(base, universe_id=uid, actor_id=founder)
+        except Exception as revoke_exc:  # noqa: BLE001 - the create already failed
+            logger.exception("rollback: could not revoke the create grant for %s", uid)
+            revoke_failed = str(revoke_exc)
+        if revoke_failed:
+            return json.dumps({"error": (
+                f"Failed to create universe: {exc}. The ownership grant could NOT "
+                f"be taken back ({revoke_failed}); '{uid}' is claimed but not "
+                "created."
+            )})
         if isinstance(exc, OSError):
             return json.dumps({"error": f"Failed to create universe: {exc}"})
         raise

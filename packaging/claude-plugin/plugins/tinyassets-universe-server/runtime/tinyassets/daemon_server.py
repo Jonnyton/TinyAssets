@@ -5025,26 +5025,31 @@ def owned_universe_ids(base_path: str | Path) -> set[str]:
 def owned_universe_id(base_path: str | Path, name: str) -> str:
     """The owned universe id ``name`` refers to, or ``""`` when nobody owns it.
 
-    ONE definition, case-folded. A directory restored from a backup as
-    ``U-Mine`` is the ACL's ``u-mine`` on a case-insensitive filesystem, and two
-    readers comparing it differently is how a directory ended up protected from
-    a cut and invisible in every list at the same time.
+    EXACT MATCH, deliberately. An earlier revision resolved case-insensitively so
+    that a directory restored from a backup as ``U-Mine`` would still be the
+    ownership row's ``u-mine``. That is a trap, because a universe id is TWO
+    things at once: a path component (`_universe_dir`) and an authority key
+    (`universe_access_permission` matches it with exact SQL). Resolving them to
+    different spellings breaks whichever one gets the other's answer --
+    returning the row's spelling opens a path that does not exist on a
+    case-sensitive filesystem, and returning the directory's spelling denies an
+    owner's write and, worse, makes `universe_is_private` find no rows, so the
+    other spelling reads as a PUBLIC universe (Codex review, 2026-09-26, P0).
 
-    A dotted name is never a universe, whatever the ACL says: ``.deleting/`` is
+    Requiring the two to be identical is the only arrangement in which they
+    cannot disagree. A directory restored under a different case is therefore
+    unowned: invisible, never deleted, and named by
+    `scripts/universe_ownership_inventory.py` as at-risk so the missing row gets
+    written rather than guessed at.
+
+    A dotted name is never a universe, whatever a row says: ``.deleting/`` is
     account deletion's staging directory, and a row naming it must not make it
     readable.
     """
     candidate = (name or "").strip()
     if not candidate or candidate.startswith("."):
         return ""
-    owned = owned_universe_ids(base_path)
-    if candidate in owned:
-        return candidate
-    folded = candidate.casefold()
-    for owned_id in sorted(owned):
-        if owned_id.casefold() == folded:
-            return owned_id
-    return ""
+    return candidate if candidate in owned_universe_ids(base_path) else ""
 
 
 def universe_is_private(base_path: str | Path, *, universe_id: str) -> bool:

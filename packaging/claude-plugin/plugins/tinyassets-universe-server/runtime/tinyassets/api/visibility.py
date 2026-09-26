@@ -237,6 +237,12 @@ def visibility_permits(universe_id: str, capability: str) -> bool:
     from tinyassets.api import permissions
 
     # Ceiling: legacy read gate. New layer only narrows from here.
+    #
+    # A UNIVERSE NOBODY OWNS GRANTS NOTHING, and that check lives in the ceiling
+    # (`permissions.universe_access_allows`), not here -- do not re-add it. The
+    # ceiling is also what the wiki, runs and automations readers call directly,
+    # so one definition there covers every by-id reader; a second copy here would
+    # be the "two definitions of one fact" that has to drift eventually.
     if not permissions.universe_access_allows(universe_id, write=False):
         return False
     if _reader_has_grant(universe_id):

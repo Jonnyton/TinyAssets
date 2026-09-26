@@ -56,6 +56,9 @@ def _make_universe(
     uid = "test-universe"
     udir = tmp_path / uid
     udir.mkdir(parents=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, uid)
     (udir / "activity.log").write_bytes(b"L" * log_bytes)
     out = udir / "output"
     out.mkdir()
@@ -175,6 +178,9 @@ def test_get_status_missing_log_and_output_still_reports_zero_not_error(tmp_path
     uid = "empty-universe"
     udir = tmp_path / uid
     udir.mkdir()
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, uid)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     _cfg = _minimal_cfg()

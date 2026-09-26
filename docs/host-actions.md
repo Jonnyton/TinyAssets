@@ -135,11 +135,20 @@ migration happened, and the page reads like an accident. The site does **not**
 filter them, deliberately: hiding rows while claiming to show "what is public"
 is exactly the dishonesty the public-read boundary exists to prevent.
 
-Your call, because the fix writes to live universe records. Suggested shape is
-in `docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`:
-create maintenance holding records private, flip the seven existing ones (do
-not delete — they are migration backups), and decide whether an unpublished
-universe should default to `public` at all.
+**The ask shrank on 2026-09-26.** A universe now exists because an ownership row
+names it, and none of those seven directories has one — so they stop being listed
+and stop being readable by id, with **no write to any live universe record** and
+nothing deleted. What is left for you is smaller:
+
+- **Should `visibility` default to `public` at all** for a universe nobody
+  published? That is the remaining judgement, and it is independent of the seven
+  rows.
+
+Before that deploy an agent runs `python scripts/universe_ownership_inventory.py`
+(read-only) against the live root and shows you the result: exact ownership
+matching means a universe with no row would also go dark, and `paper-notes` is
+the candidate to check. Detail in
+`docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`.
 
 ## Decide: should a deposit serve the universe by itself?
 

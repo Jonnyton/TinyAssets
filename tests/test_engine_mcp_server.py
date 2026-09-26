@@ -427,6 +427,10 @@ def _seed_brain_universe(monkeypatch, tmp_path, uid="u-brain"):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = tmp_path / uid
     seed_okf_bundle(udir, purpose="help the founder", loop_branch_def_id="")
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02): the
+    # persona assembler refuses content on a universe nobody owns.
+    own_universe(tmp_path, uid)
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-brain")
     monkeypatch.setattr(s, "_GRAPH_ID", uid)
     mock_engine_admission(monkeypatch, {uid})
@@ -1230,7 +1234,15 @@ def test_read_graph_connections_target_lists_own_http_connections_end_to_end(
     monkeypatch.setattr(s, "_GRAPH_ID", "u-not-mine")
     mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     other = json.loads(s.read_graph(target="connections"))
-    assert other.get("connections") == [] and other.get("count") == 0
+    # The PROPERTY is that none of another universe's connections come back.
+    # `u-not-mine` is a name nobody owns, and since 2026-09-02 that is not a
+    # universe at all, so the read is now REFUSED rather than answered with an
+    # empty list -- a stronger version of the same guarantee. Asserting the
+    # property plus whichever shape carries it, rather than pinning the weaker
+    # one this test was written against.
+    assert not other.get("connections"), other
+    assert other.get("count", 0) == 0, other
+    assert other.get("error") == "not_found", other
 
 
 def test_read_graph_branches_target_lists_own_workflows_end_to_end(monkeypatch, tmp_path):

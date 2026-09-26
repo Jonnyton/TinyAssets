@@ -11,28 +11,44 @@ How a universe is created, identified, seeded with an OKF soul bundle, taught vi
 A universe SHALL be a directory under the data root that an ownership row names:
 a `universe_acl` grant of any permission, or a `founder_home` binding. A home
 binding SHALL count alongside an ACL grant, because first contact binds the home
-before any grant is written. Ownership resolution SHALL case-fold both the
-directory name and the row's id, so a directory restored under a different case
-is still the universe its row names; where a caller's pointer matches a directory
-exactly, that directory's own spelling SHALL be the answer. A name beginning with
-`.` SHALL never resolve as a universe whatever a row says.
+before any grant is written. Ownership SHALL be matched EXACTLY — a universe id
+is simultaneously a path component and an authority key matched with exact SQL,
+so no resolver may answer with a spelling other than the one it was given. A
+directory whose ownership row differs from its name in case is therefore not a
+universe: hidden, never deleted, and reported as at-risk by
+`scripts/universe_ownership_inventory.py` so the missing row is written rather
+than guessed. A name beginning with `.` SHALL never resolve as a universe
+whatever a row says.
 
-Every reader of "which universes exist" SHALL apply this predicate: enumeration,
-the direct-id readers (`inspect`, `switch_universe`) including the `available`
-list they publish on a miss, the visibility backfill and readiness enumeration,
-the branch-dependents scan, and the default/home resolvers. A configuration
-pointer — the host-global `.active_universe` marker or
+Every reader SHALL apply this predicate — both the readers of "which universes
+exist" and the readers of one universe's content or metadata by explicit id:
+enumeration, `inspect`, `switch_universe`, the `available` list those two publish
+on a miss, the visibility backfill and readiness enumeration, the
+branch-dependents scan, the platform work probe, the default/home resolvers, and
+`visibility_permits` itself, through which `read_page` (via the wiki gate) and
+explicit-id `get_status` reach a universe. A capability SHALL NOT be granted on a
+universe nobody owns: withholding discovery does not retract a
+`visibility_level` already declared, so a gate on visibility alone leaves an
+already-declared directory readable by id.
+
+A configuration pointer — the host-global `.active_universe` marker or
 `UNIVERSE_SERVER_DEFAULT_UNIVERSE` — SHALL NOT by itself make a directory a
 universe; an unowned configured default SHALL answer only when no universe is
 owned at all (a fresh install naming what it is about to create). The `available`
 list SHALL additionally apply the `discover_existence` visibility gate.
 
+Creation SHALL claim the owner BEFORE the directory exists, and SHALL revoke that
+grant if any later create step fails, reporting a revoke failure to the caller
+because a grant on a universe that does not exist silently holds the id. An
+unauthenticated create SHALL be refused before anything is written.
+
 When the ownership store cannot be read, a direct-id reader SHALL refuse with a
-store-unavailable error rather than "not found", and an enumeration SHALL return
-nothing. The filesystem path index (`sync_universes_from_filesystem`) SHALL
-remain unfiltered, because a restored directory must be indexed before anything
-can grant on it; indexed SHALL NOT imply owned. An unowned directory SHALL become
-invisible and unreadable, and SHALL NOT be deleted by any reader.
+store-unavailable error rather than "not found", an enumeration SHALL return
+nothing, and a capability predicate SHALL deny. The filesystem path index
+(`sync_universes_from_filesystem`) SHALL remain unfiltered, because a restored
+directory must be indexed before anything can grant on it; indexed SHALL NOT
+imply owned. An unowned directory SHALL become invisible and unreadable, and
+SHALL NOT be deleted by any reader.
 
 #### Scenario: an unowned directory is invisible and unreadable
 - **WHEN** a directory under the data root has no `universe_acl` grant and no `founder_home` binding
@@ -45,6 +61,20 @@ invisible and unreadable, and SHALL NOT be deleted by any reader.
 #### Scenario: a not-found answer publishes only owned, discoverable universes
 - **WHEN** a caller asks for an id that does not exist
 - **THEN** the `available` list contains only directories somebody owns whose declared level permits `discover_existence` for that caller
+
+#### Scenario: an unowned universe grants no capability by explicit id
+- **WHEN** a directory nobody owns carries a `visibility_level=public` row written by an earlier backfill, and a caller asks for its page content or its status by explicit id
+- **THEN** both are refused, because `visibility_permits` requires an ownership row before any capability
+
+#### Scenario: a directory whose row differs only in case is not a universe
+- **WHEN** a directory named `U-Mine` is named by an ownership row reading `u-mine`
+- **THEN** it is not owned, is not enumerated, is not readable, and remains on disk
+
+#### Scenario: creation claims the owner before the directory
+- **WHEN** an authenticated founder creates a universe
+- **THEN** the admin grant exists before the directory is made, so the creator's own seeding reads are permitted
+- **AND** an unauthenticated create is refused before any directory or grant is written
+- **AND** a failure in a later create step revokes the grant, reporting a revoke failure to the caller
 
 #### Scenario: a pointer is not a grant
 - **WHEN** `.active_universe` or `UNIVERSE_SERVER_DEFAULT_UNIVERSE` names an unowned directory while at least one universe is owned

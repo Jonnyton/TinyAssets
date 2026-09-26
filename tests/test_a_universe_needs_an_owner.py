@@ -24,9 +24,22 @@ this directory?** ``universe_acl`` grants and ``founder_home`` bindings are the
 union, because first contact binds the home before any grant is written and a
 universe with a live founder must not depend on which landed first.
 
-Routed here: the listing, both direct-id readers (``inspect``, ``switch``),
-the ``available`` list both of them publish on a miss, the visibility
-backfill/startup enumeration, and both default/home resolvers.
+Ownership is matched EXACTLY, never case-folded: a universe id is both a path
+component and an authority key (``universe_access_permission`` matches it with
+exact SQL), so a resolver answering with a different spelling than it was given
+breaks one of the two. See
+``TestOneDefinition.test_a_directory_whose_row_differs_only_in_case_is_NOT_owned``.
+
+Routed here: the listing, both direct-id readers (``inspect``, ``switch``), the
+``available`` list both of them publish on a miss, the visibility
+backfill/startup enumeration, both default/home resolvers, the branch-dependents
+scan, the platform work probe, and -- the half a first pass missed --
+``visibility_permits`` itself, which is the gate every by-id CONTENT and METADATA
+reader passes through (``read_page`` via the wiki gate, explicit-id
+``get_status``). Hiding a directory from discovery does NOT retract a
+``visibility_level=public`` row the old boot backfill already wrote, and
+production's maintenance directories are in exactly that state
+(``docs/host-actions.md``).
 
 NOT routed, deliberately:
   * ``sync_universes_from_filesystem`` -- a path INDEX, not the definition. A
@@ -436,126 +449,103 @@ class TestOneDefinition:
 
         assert owned_universe_ids(base) == {"u-acl", "u-home"}
 
-    def test_a_directory_restored_under_a_different_case_is_still_owned(
+    def test_a_directory_whose_row_differs_only_in_case_is_NOT_owned(
         self, base, signed_in,
     ):
-        """The prune matched case-insensitively while the listing compared
-        exactly, so a restored ``U-Mine`` was protected from the cut and
-        invisible in every list at the same time."""
-        owner = signed_in("workos|founder")
-        udir = base / "U-Mine"
-        udir.mkdir()
-        (udir / "soul.md").write_text("# restored\n", encoding="utf-8")
-        ensure_universe_registered(base, universe_id="U-Mine", universe_path=udir)
-        grant_universe_access(
-            base, universe_id="u-mine", actor_id=owner.user_id,
-            permission="admin", granted_by=owner.user_id,
-        )
-        vis.set_universe_visibility("U-Mine", "public")
+        """Exact match, deliberately, and this is the assertion that says why.
 
-        assert owned_universe_id(base, "U-Mine") == "u-mine"
-        assert _listed_ids(base) == ["U-Mine"]
-
-    def test_a_pointer_resolves_to_the_directory_not_the_acl_spelling(
-        self, base, signed_in,
-    ):
-        """A pointer names a DIRECTORY, so the answer is the directory's own
-        spelling. Returning the ACL id hands the caller a path that does not
-        exist on a case-sensitive filesystem.
-
-        Two directions, because the resolver has two branches. Here the pointer
-        matches no directory exactly and the case-folded fallback answers.
+        An earlier revision resolved case-insensitively so a directory restored
+        as ``U-Mine`` would still be the row's ``u-mine``. A universe id is TWO
+        things -- a path component and an authority key that
+        ``universe_access_permission`` matches with exact SQL -- so resolving
+        them to different spellings breaks whichever one gets the other's
+        answer. Requiring them identical is the only arrangement in which they
+        cannot disagree. The directory is hidden, NOT deleted, and
+        scripts/universe_ownership_inventory.py names it so the row gets written.
         """
         owner = signed_in("workos|founder")
         udir = base / "U-Mine"
         udir.mkdir()
+        (udir / "soul.md").write_text("# restored universe\n", encoding="utf-8")
         ensure_universe_registered(base, universe_id="U-Mine", universe_path=udir)
         grant_universe_access(
             base, universe_id="u-mine", actor_id=owner.user_id,
             permission="admin", granted_by=owner.user_id,
         )
 
-        assert helpers._owned_universe_dir_name(base, "u-mine") == "U-Mine"
-        assert (base / helpers._owned_universe_dir_name(base, "u-mine")).is_dir()
+        assert owned_universe_id(base, "U-Mine") == ""
+        assert helpers._owned_universe_dir_name(base, "U-Mine") == ""
+        assert _listed_ids(base) == []
+        assert udir.is_dir() and (udir / "soul.md").is_file()
 
-    def test_an_exact_pointer_answers_its_own_spelling_not_the_rows(
+    def test_the_spelling_a_resolver_returns_is_the_spelling_it_was_given(
         self, base, signed_in,
     ):
-        """The EXACT-match branch. The pointer names a directory that exists,
-        and the ownership row spells the id differently -- the answer is still
-        the directory, because the caller is about to open it."""
+        """No re-spelling, in either direction. Returning the row's spelling
+        opens a path that does not exist on a case-sensitive filesystem;
+        returning the directory's spelling denies the owner's write AND makes
+        ``universe_is_private`` find no rows, so the other spelling reads as a
+        PUBLIC universe."""
+        from tinyassets.daemon_server import (
+            universe_access_permission,
+            universe_is_private,
+        )
+
         owner = signed_in("workos|founder")
-        udir = base / "u-mine"
-        udir.mkdir()
-        ensure_universe_registered(base, universe_id="u-mine", universe_path=udir)
+        _owned_universe(base, "u-mine", owner.user_id)
+
+        resolved = helpers._owned_universe_dir_name(base, "u-mine")
+        assert resolved == "u-mine"
+        # The value a resolver hands back is usable as BOTH, which is the point.
+        assert (base / resolved).is_dir()
+        assert universe_is_private(base, universe_id=resolved) is True
+        assert universe_access_permission(
+            base, universe_id=resolved, actor_id=owner.user_id,
+        ) == "admin"
+
+    def test_a_pointer_to_a_row_with_no_directory_resolves_to_nothing(
+        self, base, signed_in,
+    ):
+        owner = signed_in("workos|founder")
         grant_universe_access(
-            base, universe_id="U-Mine", actor_id=owner.user_id,
+            base, universe_id="u-gone", actor_id=owner.user_id,
             permission="admin", granted_by=owner.user_id,
         )
 
-        assert owned_universe_id(base, "u-mine") == "U-Mine"  # the ROW's spelling
-        assert helpers._owned_universe_dir_name(base, "u-mine") == "u-mine"
-        assert (base / helpers._owned_universe_dir_name(base, "u-mine")).is_dir()
+        assert helpers._owned_universe_dir_name(base, "u-gone") == ""
 
-    def test_a_dotted_pointer_is_refused_by_the_definition_itself(
+    def test_a_traversal_pointer_is_refused_even_when_a_row_names_it(
         self, base, signed_in,
     ):
-        """``owned_universe_id`` carries the authoritative dot guard: its scan
-        is over ROWS, which have no directory to skip, so without it a row
-        naming ``.deleting`` would make the staging directory an owned id."""
-        owner = signed_in("workos|founder")
-        grant_universe_access(
-            base, universe_id=".deleting", actor_id=owner.user_id,
-            permission="admin", granted_by=owner.user_id,
-        )
+        """A pointer is caller-influenced -- a marker file, an env var -- so
+        ``../outside`` must not be resolvable as a universe.
 
-        assert ".deleting" in owned_universe_ids(base)  # the row is really there
-        assert owned_universe_id(base, ".deleting") == ""
+        Two things had to be got right for this to test the PATH guard rather
+        than something else:
 
-    def test_an_exact_match_wins_over_a_case_folded_one(self, base, signed_in):
-        """With both spellings present, the exact pointer must open the exact
-        directory -- case-folding finds a restored directory, it never prefers
-        one over the name the caller gave.
-
-        Only reachable on a case-SENSITIVE filesystem; Windows folds the two
-        ``mkdir`` calls into one directory, so the state under test cannot
-        exist there.
+        * the row is GRANTED, because ``grant_universe_access`` does not validate
+          the id -- without a row the ownership check refuses the traversal on
+          its own and the guard is never reached;
+        * the name must not begin with ``.``, because ``../outside`` is caught by
+          `owned_universe_id`'s dot guard first. ``sub/../../outside`` resolves to
+          the same place and reaches the path guard, which is the one thing
+          standing between a caller and a directory outside the data root.
         """
-        if not _filesystem_is_case_sensitive(base):
-            pytest.skip("two spellings cannot coexist on a case-insensitive filesystem")
-
         owner = signed_in("workos|founder")
-        for uid in ("U-Mine", "u-mine"):
-            (base / uid).mkdir()
-            ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
-            grant_universe_access(
-                base, universe_id=uid, actor_id=owner.user_id,
-                permission="admin", granted_by=owner.user_id,
-            )
-
-        assert helpers._owned_universe_dir_name(base, "u-mine") == "u-mine"
-        assert helpers._owned_universe_dir_name(base, "U-Mine") == "U-Mine"
-
-    def test_a_lowercase_directory_with_a_mixed_case_row_is_owned(
-        self, base, signed_in,
-    ):
-        """The MIRROR of the restore case, and the reason ownership folds both
-        sides. Folding only the directory name matches a lowercase row against
-        ``U-Mine/`` and misses a ``u-mine/`` directory whose row was written
-        ``U-Mine`` -- the same universe, invisible."""
-        owner = signed_in("workos|founder")
-        udir = base / "u-mine"
-        udir.mkdir()
-        (udir / "soul.md").write_text("# mine\n", encoding="utf-8")
-        ensure_universe_registered(base, universe_id="u-mine", universe_path=udir)
+        (base.parent / "outside").mkdir(exist_ok=True)
+        escapes = "sub/../../outside"
         grant_universe_access(
-            base, universe_id="U-Mine", actor_id=owner.user_id,
+            base, universe_id=escapes, actor_id=owner.user_id,
             permission="admin", granted_by=owner.user_id,
         )
 
-        assert us._name_is_owned("u-mine", {"U-Mine"}) is True
-        assert owned_universe_id(base, "u-mine") == "U-Mine"
-        assert _listed_ids(base) == ["u-mine"]
+        assert escapes in owned_universe_ids(base)  # the row is really there
+        assert (base / escapes).resolve() == (base.parent / "outside").resolve()
+        assert helpers._owned_universe_dir_name(base, escapes) == ""
+        # ...and the shapes the other guards catch, for completeness.
+        assert helpers._owned_universe_dir_name(base, "../outside") == ""
+        assert helpers._owned_universe_dir_name(base, ".") == ""
+        assert helpers._owned_universe_dir_name(base, "") == ""
 
     def test_a_dotted_name_is_never_a_universe(self, base, signed_in):
         """Whatever the ACL says. ``.deleting/`` is account deletion's staging
@@ -672,3 +662,285 @@ class TestTheIndexIsNotTheDefinition:
 
         assert archive.is_dir()
         assert (archive / "soul.md").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# 6. The half a first pass missed: readers of CONTENT and METADATA by id.
+#
+# Filtering enumeration hides a directory. It does NOT retract the
+# `visibility_level=public` row the old boot backfill already wrote, and
+# production's seven maintenance directories are in exactly that state
+# (`docs/host-actions.md`). So the graveyard went from browsable to
+# unlisted-but-readable, which is the same leak wearing a hat.
+#
+# `visibility_permits` is where the check belongs: the ONE gate every by-id
+# content/metadata reader already passes through.
+# --------------------------------------------------------------------------- #
+
+
+class TestAnUnownedUniverseGrantsNothing:
+    def _already_declared_public(self, base: Path, name: str) -> Path:
+        """A directory in the state production's archives are ALREADY in: on
+        disk, `visibility_level=public`, and nobody owns it."""
+        from tinyassets.daemon_server import ensure_universe_registered
+
+        d = _bare_directory(base, name)
+        ensure_universe_registered(base, universe_id=name, universe_path=d)
+        vis.set_universe_visibility(name, "public")
+        return d
+
+    @pytest.mark.parametrize(
+        "capability", ["discover_existence", "read_metadata", "read_content"],
+    )
+    def test_no_capability_survives_on_an_unowned_universe(
+        self, base, signed_in, capability,
+    ):
+        signed_in("workos|stranger")
+        self._already_declared_public(base, ARCHIVE)
+
+        assert vis.visibility_permits(ARCHIVE, capability) is False
+
+    def test_every_capability_survives_on_an_owned_one(self, base, signed_in):
+        owner = signed_in("workos|founder")
+        _owned_universe(base, "u-mine", owner.user_id, level="public")
+
+        for capability in ("discover_existence", "read_metadata", "read_content"):
+            assert vis.visibility_permits("u-mine", capability) is True, capability
+
+    def test_read_page_cannot_reach_an_unowned_universes_wiki(
+        self, base, signed_in, tmp_path, monkeypatch,
+    ):
+        """The reported P0. `read_page` forwards straight to the wiki gate, which
+        asked only about visibility -- so an archive already declared `public`
+        answered with its page body to any authenticated caller."""
+        import tinyassets.api.wiki as wiki_mod
+
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(tmp_path / "wiki"))
+        signed_in("workos|stranger")
+        self._already_declared_public(base, ARCHIVE)
+
+        out = json.loads(
+            wiki_mod.wiki(action="read", universe_id=ARCHIVE, page="index")
+        )
+
+        assert "error" in out, out
+        assert "content" not in out
+
+    def test_read_page_still_works_on_an_owned_universe(
+        self, base, signed_in, tmp_path, monkeypatch,
+    ):
+        """The other half of the same guard: a real universe's pages stay as
+        readable as before."""
+        import tinyassets.api.wiki as wiki_mod
+
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(tmp_path / "wiki"))
+        owner = signed_in("workos|founder")
+        _owned_universe(base, "u-mine", owner.user_id, level="public")
+
+        out = json.loads(
+            wiki_mod.wiki(action="read", universe_id="u-mine", page="index")
+        )
+
+        assert out.get("error") not in {
+            "universe_access_denied", "authentication_required",
+        }, out
+
+    def test_explicit_id_get_status_cannot_describe_an_unowned_universe(
+        self, base, signed_in,
+    ):
+        """`get_status` gated on `udir.is_dir()` plus visibility, so it described
+        an archive's phase, word count and activity dates by id."""
+        from tinyassets.universe_server import get_status
+
+        signed_in("workos|stranger")
+        self._already_declared_public(base, ARCHIVE)
+
+        out = json.loads(get_status(universe_id=ARCHIVE))
+
+        assert "word_count" not in out, out
+        daemon = out.get("daemon")
+        assert not (isinstance(daemon, dict) and "phase" in daemon), out
+
+    def test_the_platform_work_probe_ignores_an_unowned_universe(
+        self, base, signed_in,
+    ):
+        """A boolean leaks no ids, which is why this was first judged out of
+        scope -- wrongly. A stale `work_targets.json` in an archive made the
+        platform report work, and the activity canary then skips its
+        healthy-idleness handling and alarms on a merely quiet platform."""
+        import tinyassets.api.status as status_mod
+
+        owner = signed_in("workos|founder")
+        _owned_universe(base, "u-mine", owner.user_id)
+        archive = _bare_directory(base, ARCHIVE)
+        (archive / "work_targets.json").write_text(
+            json.dumps([{"lifecycle": "active"}]), encoding="utf-8",
+        )
+
+        assert status_mod._platform_has_work() is False
+
+        (base / "u-mine" / "work_targets.json").write_text(
+            json.dumps([{"lifecycle": "active"}]), encoding="utf-8",
+        )
+        assert status_mod._platform_has_work() is True
+
+    def test_an_unreadable_ownership_store_grants_no_capability(
+        self, base, signed_in, monkeypatch,
+    ):
+        """A capability predicate has only a boolean to return, so an unreadable
+        authority must answer no. A permissive default there is how a gate stops
+        being one."""
+        owner = signed_in("workos|founder")
+        _owned_universe(base, "u-mine", owner.user_id, level="public")
+
+        import tinyassets.daemon_server as ds
+
+        monkeypatch.setattr(
+            ds, "owned_universe_id",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("locked")),
+        )
+
+        assert vis.visibility_permits("u-mine", "read_content") is False
+
+
+# --------------------------------------------------------------------------- #
+# 7. The creation window. Requiring an owner to READ makes the old ordering a
+#    functional hole, not merely untidy.
+# --------------------------------------------------------------------------- #
+
+
+class TestTheOwnerIsClaimedFirst:
+    def test_the_grant_exists_before_the_directory_does(
+        self, base, signed_in, monkeypatch,
+    ):
+        """Creation used to mkdir and seed, then grant ~90 lines later. Inside
+        that window the directory was owned by nobody -- and a universe nobody
+        owns now grants no capability, so the creator's own seeding reads would
+        have been refused."""
+        from tinyassets.daemon_server import owned_universe_ids
+
+        seen: list[bool] = []
+        real_mkdir = Path.mkdir
+
+        def _spy(self, *a, **k):
+            if self.parent == base:
+                seen.append(self.name in owned_universe_ids(base))
+            return real_mkdir(self, *a, **k)
+
+        owner = signed_in("workos|founder")
+        monkeypatch.setattr(Path, "mkdir", _spy)
+        out = json.loads(us._action_create_universe(text="a seed."))
+        monkeypatch.undo()
+
+        uid = out.get("universe_id")
+        assert uid, out
+        assert seen and all(seen), (
+            "the universe directory was created before any ownership row named it"
+        )
+        assert owned_universe_id(base, uid) == uid
+        assert out.get("founder_id") == owner.user_id
+
+    def test_a_created_universe_is_immediately_readable_by_its_owner(
+        self, base, signed_in,
+    ):
+        """End to end: the thing the window would have broken."""
+        signed_in("workos|founder")
+        out = json.loads(us._action_create_universe(text="a seed."))
+        uid = out["universe_id"]
+
+        assert vis.visibility_permits(uid, "read_metadata") is True
+        assert json.loads(
+            us._action_inspect_universe(universe_id=uid)
+        )["universe_id"] == uid
+
+    def test_an_unauthenticated_create_leaves_nothing_behind(self, base, nobody):
+        """The refusal comes back as an error envelope, not an exception --
+        ``PermissionError`` is a subclass of ``OSError``, so it takes the
+        rollback's OSError branch. Asserting the envelope rather than a raise,
+        because the envelope is what a caller actually receives.
+
+        Refusing before the mkdir is what makes "nothing behind" literal: no
+        directory to clean up and no grant to revoke, rather than a rollback
+        that has to succeed."""
+        before = sorted(p.name for p in base.iterdir())
+
+        out = json.loads(us._action_create_universe(universe_id="u-orphan", text="x"))
+
+        assert "must belong to someone" in out.get("error", ""), out
+        assert sorted(p.name for p in base.iterdir()) == before
+        assert owned_universe_ids(base) == set()
+
+    def test_a_failed_create_takes_the_grant_back(self, base, signed_in, monkeypatch):
+        """The grant is written first, so rollback has to revoke it -- otherwise
+        a failed create silently claims the id forever."""
+        signed_in("workos|founder")
+
+        def _boom(*_a, **_k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(us, "_normalize_escaped_text", _boom)
+
+        out = json.loads(us._action_create_universe(universe_id="u-doomed", text="x"))
+
+        assert "error" in out, out
+        assert owned_universe_id(base, "u-doomed") == ""
+        assert not (base / "u-doomed").exists()
+
+
+# --------------------------------------------------------------------------- #
+# 8. Each enumeration filter tested on its own.
+#
+# With ownership required by the shared access gate, the enumeration-side filters
+# in the listing and the `available` list are a SECOND line rather than the only
+# one -- a whole-surface test cannot tell them apart from the gate. These pin
+# them directly, so loosening either goes red on its own.
+# --------------------------------------------------------------------------- #
+
+
+class TestTheEnumerationFiltersStandAlone:
+    def test_the_listing_predicate_requires_membership(self, base, signed_in):
+        signed_in("workos|founder")
+        (base / "u-mine").mkdir()
+        (base / ARCHIVE).mkdir()
+        (base / ".hidden").mkdir()
+        (base / "a-file.txt").write_text("x", encoding="utf-8")
+
+        owned = {"u-mine"}
+        assert us._is_listable_universe_dir(base / "u-mine", owned) is True
+        assert us._is_listable_universe_dir(base / ARCHIVE, owned) is False
+        assert us._is_listable_universe_dir(base / ".hidden", {".hidden"}) is False
+        assert us._is_listable_universe_dir(base / "a-file.txt", {"a-file.txt"}) is False
+
+    def test_the_available_list_filters_by_ownership_not_only_by_the_gate(
+        self, base, signed_in, monkeypatch,
+    ):
+        """The visibility gate is forced permissive, so the ownership filter is
+        the only thing that can withhold the archive."""
+        owner = signed_in("workos|founder")
+        _owned_universe(base, "u-mine", owner.user_id)
+        _bare_directory(base, ARCHIVE)
+
+        monkeypatch.setattr(vis, "visibility_permits", lambda *_a, **_k: True)
+
+        assert us._available_universe_ids() == ["u-mine"]
+
+    def test_the_listing_says_the_store_is_down_rather_than_showing_nothing(
+        self, base, signed_in, monkeypatch,
+    ):
+        """Silently listing zero universes on a broken store tells a founder
+        their universes are gone. An empty list is a fact about the data; this is
+        a fact about the daemon, and they read identically unless it says so."""
+        owner = signed_in("workos|founder")
+        _owned_universe(base, "u-mine", owner.user_id)
+
+        import tinyassets.daemon_server as ds
+
+        monkeypatch.setattr(
+            ds, "owned_universe_ids",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("database is locked")),
+        )
+
+        out = json.loads(us._action_list_universes())
+        assert out["universes"] == []
+        assert "unavailable" in out.get("note", "").lower(), out
+        assert "locked" in out.get("note", ""), out
