@@ -6,6 +6,7 @@ set -euo pipefail
 SOURCE_ROOT="${TINYASSETS_SOURCE_ROOT:-/opt/tinyassets}"
 RUNTIME_ROOT="${TINYASSETS_RUNTIME_ROOT:-/opt/tinyassets-host-uptime}"
 SYSTEMD_DIR="${TINYASSETS_SYSTEMD_DIR:-/etc/systemd/system}"
+JOURNALD_DIR="${TINYASSETS_JOURNALD_DIR:-/etc/systemd/journald.conf.d}"
 SUDOERS_DIR="${TINYASSETS_SUDOERS_DIR:-/etc/sudoers.d}"
 LOCK_DIR="${TINYASSETS_LOCK_DIR:-/run/lock}"
 SOURCE_SHA="${TINYASSETS_SOURCE_SHA:-}"
@@ -25,7 +26,6 @@ TIMERS=(
     tinyassets-backup.timer
     tinyassets-prune.timer
     tinyassets-disk-watch.timer
-    tinyassets-ship-logs.timer
 )
 SERVICES=(
     tinyassets-watchdog.service
@@ -33,7 +33,6 @@ SERVICES=(
     tinyassets-backup.service
     tinyassets-prune.service
     tinyassets-disk-watch.service
-    tinyassets-ship-logs.service
 )
 UNIT_FILES=(
     tinyassets-watchdog.service tinyassets-watchdog.timer
@@ -41,12 +40,26 @@ UNIT_FILES=(
     tinyassets-backup.service tinyassets-backup.timer
     tinyassets-prune.service tinyassets-prune.timer
     tinyassets-disk-watch.service tinyassets-disk-watch.timer
-    tinyassets-ship-logs.service tinyassets-ship-logs.timer
+)
+# Units this installer must REMOVE from the host, not merely stop shipping.
+# Deleting a unit from the repo leaves the enabled copy in /etc/systemd/system
+# running forever, which is how tinyassets-ship-logs.timer came to log
+# `ERROR: LOG_DEST is required` hourly for months while shipping nothing
+# (docs/ops/log-aggregation-runbook.md). Retired 2026-09-26: it
+# collected logs with `docker logs`, which cannot read a container using the
+# fluentd driver that deploy/compose.yml has given the daemon since Row K, so
+# the unit could not have worked even with a destination configured. The nightly
+# backup's logs tier replaces it on a credential the box already holds.
+#
+# Order matters: timer before service, so the timer cannot fire the service
+# between the two removals.
+RETIRED_UNITS=(
+    tinyassets-ship-logs.timer
+    tinyassets-ship-logs.service
 )
 RUNTIME_FILES=(
     deploy/daemon-watchdog.sh
     deploy/backup.sh
-    deploy/ship-logs.sh
     scripts/__init__.py
     scripts/_canary_common.py
     scripts/watchdog.py
@@ -57,11 +70,19 @@ RUNTIME_FILES=(
     scripts/rotate_run_transcripts.py
     scripts/backup_ship_gh.py
     scripts/backup_prune.py
+    scripts/backup_log_tier.py
+    scripts/redact_log_bundle.py
     tinyassets/__init__.py
     tinyassets/ttl_memo.py
     tinyassets/storage/__init__.py
     tinyassets/storage/rotation.py
 )
+# journald drop-in. This is the retention policy for the host journal, which
+# deploy/compose.yml makes the durable home of every container's output, so the
+# installer owns it the same way it owns the units: converged on every install,
+# checked by the idempotence gate, never left to a one-time bootstrap.
+JOURNALD_DROPIN_SOURCE="deploy/journald-tinyassets.conf"
+JOURNALD_DROPIN_NAME="tinyassets.conf"
 # Release root plus deploy/, scripts/, tinyassets/, and tinyassets/storage/.
 EXPECTED_RELEASE_DIRECTORY_COUNT=5
 
@@ -71,6 +92,7 @@ if [[ "${PRINT_MANIFEST}" == "1" ]]; then
         printf 'deploy/%s\n' "${unit}"
     done
     printf '%s\n' "${RUNTIME_FILES[@]}"
+    printf '%s\n' "${JOURNALD_DROPIN_SOURCE}"
     exit 0
 fi
 
@@ -95,20 +117,26 @@ done
 [[ "${ACTIVE_WAIT_SECONDS}" =~ ^[0-9]+$ ]] || fail "TINYASSETS_ACTIVE_WAIT_SECONDS must be a non-negative integer"
 [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]] || fail "TINYASSETS_LOCK_WAIT_SECONDS must be a non-negative integer"
 
-for path in "${SOURCE_ROOT}" "${RUNTIME_ROOT}" "${SYSTEMD_DIR}" "${SUDOERS_DIR}" "${LOCK_DIR}"; do
+for path in "${SOURCE_ROOT}" "${RUNTIME_ROOT}" "${SYSTEMD_DIR}" "${JOURNALD_DIR}" \
+    "${SUDOERS_DIR}" "${LOCK_DIR}"
+do
     [[ "${path}" == /* ]] || fail "all roots must be absolute: ${path}"
 done
 
 SOURCE_ROOT="$(realpath -e "${SOURCE_ROOT}")"
 RUNTIME_ROOT="$(realpath -m "${RUNTIME_ROOT}")"
 SYSTEMD_DIR="$(realpath -m "${SYSTEMD_DIR}")"
+JOURNALD_DIR="$(realpath -m "${JOURNALD_DIR}")"
 SUDOERS_DIR="$(realpath -m "${SUDOERS_DIR}")"
 LOCK_DIR="$(realpath -m "${LOCK_DIR}")"
+JOURNALD_DROPIN="${JOURNALD_DIR}/${JOURNALD_DROPIN_NAME}"
 
 if [[ "${ALLOW_TEST_ROOTS}" != "1" ]]; then
     [[ "${EUID}" -eq 0 ]] || fail "production installation must run as root"
     [[ "${RUNTIME_ROOT}" == "/opt/tinyassets-host-uptime" ]] || fail "unsafe production runtime root"
     [[ "${SYSTEMD_DIR}" == "/etc/systemd/system" ]] || fail "unsafe production systemd root"
+    [[ "${JOURNALD_DIR}" == "/etc/systemd/journald.conf.d" ]] \
+        || fail "unsafe production journald drop-in root"
     [[ "${SUDOERS_DIR}" == "/etc/sudoers.d" ]] || fail "unsafe production sudoers root"
     [[ "${LOCK_DIR}" == "/run/lock" ]] || fail "unsafe production lock root"
 else
@@ -121,7 +149,7 @@ for unit in "${UNIT_FILES[@]}"; do
     [[ -f "${source_file}" && ! -L "${source_file}" ]] \
         || fail "missing or unsafe unit source: ${source_file}"
 done
-for relative in "${RUNTIME_FILES[@]}"; do
+for relative in "${RUNTIME_FILES[@]}" "${JOURNALD_DROPIN_SOURCE}"; do
     source_file="${SOURCE_ROOT}/${relative}"
     [[ -f "${source_file}" && ! -L "${source_file}" ]] \
         || fail "missing or unsafe runtime source: ${source_file}"
@@ -177,6 +205,10 @@ rollback() {
         rm -rf -- "${RELEASE_DIR}"
         mv -- "${RELEASE_BACKUP}" "${RELEASE_DIR}"
     fi
+    # Retirement is deliberately NOT rolled back. Everything else here restores
+    # a working previous state; putting a retired unit back would restore a timer
+    # whose whole problem is that it runs. It is also idempotent, so the next
+    # install removes it again with nothing to undo.
     "${SYSTEMCTL_BIN}" daemon-reload >/dev/null 2>&1 || true
     [[ "${TIMERS_PAUSED}" -eq 0 ]] || restore_timers
 }
@@ -195,7 +227,8 @@ on_exit() {
     done
     rm -f -- \
         "${RUNTIME_ROOT}/.current.new.$$" \
-        "${RUNTIME_ROOT}/.current.rollback.$$"
+        "${RUNTIME_ROOT}/.current.rollback.$$" \
+        "${JOURNALD_DIR}/.${JOURNALD_DROPIN_NAME}.new.$$"
     [[ -z "${SUDOERS_TEMP}" ]] || rm -f -- "${SUDOERS_TEMP}"
     rm -rf -- "${TRANSACTION_DIR}"
     exit "${rc}"
@@ -304,6 +337,20 @@ current_release_is_exact() {
         exact_file "${SYSTEMD_DIR}/${unit}" 644 || return 1
         cmp -s "${SOURCE_ROOT}/deploy/${unit}" "${SYSTEMD_DIR}/${unit}" || return 1
     done
+
+    # A retired unit still present on the host is drift, and it is the drift
+    # with the longest half-life: nothing else in this transaction would ever
+    # touch a unit the repo no longer mentions. Checking it HERE is what makes
+    # the removal happen at all -- this gate returns 0 on an otherwise-converged
+    # host and exits before the first mutation.
+    for unit in "${RETIRED_UNITS[@]}"; do
+        [[ ! -e "${SYSTEMD_DIR}/${unit}" ]] || return 1
+    done
+
+    # The journald drop-in decides how much of the host journal survives, and
+    # the journal is where container output now lives (deploy/compose.yml).
+    exact_file "${JOURNALD_DROPIN}" 644 || return 1
+    cmp -s "${SOURCE_ROOT}/${JOURNALD_DROPIN_SOURCE}" "${JOURNALD_DROPIN}" || return 1
 
     # The sudoers rule is part of what this script installs, and sudo itself
     # rejects it unless it is a regular file at 0440.
@@ -440,6 +487,47 @@ for unit in "${UNIT_FILES[@]}"; do
     UNITS_MUTATED=1
 done
 
+# Retire the units the repo no longer ships. `disable --now` before the unlink,
+# because removing the file first leaves the enablement symlinks in
+# timers.target.wants pointing at nothing and systemd then reports a unit it
+# cannot load -- and a `not-found` unit is exactly the state the gate above
+# treats as converged, so the mess would be permanent.
+for unit in "${RETIRED_UNITS[@]}"; do
+    [[ -e "${SYSTEMD_DIR}/${unit}" ]] || continue
+    load_state="$("${SYSTEMCTL_BIN}" show --property=LoadState --value "${unit}")" \
+        || fail "cannot inspect retired unit load state: ${unit}"
+    case "${load_state}" in
+        loaded|masked)
+            "${SYSTEMCTL_BIN}" disable --now "${unit}" \
+                || fail "cannot disable retired unit: ${unit}"
+            ;;
+        not-found) ;;
+        *) fail "unsafe load state for retired unit ${unit}: ${load_state}" ;;
+    esac
+    rm -f -- "${SYSTEMD_DIR}/${unit}" || fail "cannot remove retired unit: ${unit}"
+    UNITS_MUTATED=1
+    log "retired unit removed: ${unit}"
+done
+
+# journald retention. Installed atomically like the units; journald is only
+# restarted when the bytes actually changed, for the same reason the idempotence
+# gate exists -- a restart per deploy is churn, and journald drops whatever is in
+# flight across one.
+JOURNALD_CHANGED=0
+if ! cmp -s "${SOURCE_ROOT}/${JOURNALD_DROPIN_SOURCE}" "${JOURNALD_DROPIN}" \
+    || [[ -L "${JOURNALD_DROPIN}" ]] \
+    || [[ "$(stat -c %a "${JOURNALD_DROPIN}" 2>/dev/null || echo none)" != "644" ]]
+then
+    mkdir -p "${JOURNALD_DIR}" || fail "cannot create journald drop-in dir ${JOURNALD_DIR}"
+    install -m 0644 "${SOURCE_ROOT}/${JOURNALD_DROPIN_SOURCE}" \
+        "${JOURNALD_DIR}/.${JOURNALD_DROPIN_NAME}.new.$$" \
+        || fail "cannot stage journald drop-in"
+    mv -f "${JOURNALD_DIR}/.${JOURNALD_DROPIN_NAME}.new.$$" "${JOURNALD_DROPIN}" \
+        || fail "cannot install journald drop-in"
+    JOURNALD_CHANGED=1
+    log "journald drop-in installed: ${JOURNALD_DROPIN}"
+fi
+
 SUDOERS_TEMP="$(mktemp "${SUDOERS_DIR}/.tinyassets-watchdog.XXXXXX")"
 install -m 0440 "${SUDOERS_CANDIDATE}" "${SUDOERS_TEMP}"
 "${VISUDO_BIN}" -cf "${SUDOERS_TEMP}" >/dev/null
@@ -470,6 +558,19 @@ for timer in "${TIMERS[@]}"; do
     "${SYSTEMCTL_BIN}" is-enabled "${timer}" >/dev/null
     "${SYSTEMCTL_BIN}" is-active "${timer}" >/dev/null
 done
+
+# Apply the journald policy. Not fatal: journald keeps running on its previous
+# configuration if this fails, so the timers converged above are worth more than
+# this restart, and the next install retries it (the gate compares bytes on
+# disk, so a failed restart still reads as converged -- which is why this logs
+# loudly rather than silently).
+if [[ "${JOURNALD_CHANGED}" -eq 1 ]]; then
+    if "${SYSTEMCTL_BIN}" restart systemd-journald; then
+        log "journald restarted to apply ${JOURNALD_DROPIN_NAME}"
+    else
+        log "WARNING: systemd-journald restart failed; drop-in applies on next restart"
+    fi
+fi
 
 TIMERS_PAUSED=0
 SUCCESS=1

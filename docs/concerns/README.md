@@ -25,7 +25,6 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
-| **P2** | [Daemon logs are not shipped off-box](2026-09-26-daemon-logs-not-shipped.md) — `LOG_DEST` unset, so ship-logs errors every run; each deploy recreates the container and erases `docker logs` evidence | 2026-09-26 |
 | **P1** | [A served founder turn pays for 3+ whole round-trips](2026-09-25-converse-turn-round-trip-cost.md) — measured: ~70 KB per round-trip, three times, for one trivial message; 63 KB of it is the tool block (61% one tool's manual) and the learning call cannot leave the request without an authority change | 2026-09-25 |
 | **P2** | [Codex stdout-EOF test assumes POSIX fds](2026-09-26-codex-stdout-eof-test-assumes-posix-fds.md) — `test_stdout_eof_with_a_live_child_ends_the_child_and_leaks_no_task` is red on a Windows dev box in isolation and is NOT in the known-failing list, so every lane re-diagnoses it; the invariant is real, the EOF mechanism is POSIX-only | 2026-09-26 |
 | **P2** | [Two things the learned cursor still needs](2026-09-26-learned-cursor-prerequisites-for-a-reader.md) — inert today: `start_learned_cursor` has no caller, so every existing conversation reads 0 and a stage-2 drain would re-extract its whole history on the founder's own credential; the sibling soft-zero defect is fixed in #4004 | 2026-09-26 |

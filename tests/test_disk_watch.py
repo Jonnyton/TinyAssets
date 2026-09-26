@@ -9,8 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from disk_watch import check  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SHIP_LOGS_SERVICE = REPO_ROOT / "deploy" / "tinyassets-ship-logs.service"
-SHIP_LOGS_TIMER = REPO_ROOT / "deploy" / "tinyassets-ship-logs.timer"
 DISK_WATCH_SERVICE = REPO_ROOT / "deploy" / "tinyassets-disk-watch.service"
 DISK_WATCH_TIMER = REPO_ROOT / "deploy" / "tinyassets-disk-watch.timer"
 
@@ -138,57 +136,6 @@ def test_unknown_store_is_visible_without_stopping_rotation(monkeypatch, capsys)
     monkeypatch.setattr(disk_watch.Docker, "json", unavailable)
     assert disk_watch.main() == 1
     assert "UNKNOWN" in capsys.readouterr().err
-
-
-# ---------------------------------------------------------------------------
-# Sentinel: tinyassets-ship-logs.service
-# ---------------------------------------------------------------------------
-
-
-def test_ship_logs_service_exists():
-    assert SHIP_LOGS_SERVICE.exists(), "tinyassets-ship-logs.service must exist in deploy/"
-
-
-def test_ship_logs_service_is_oneshot():
-    text = SHIP_LOGS_SERVICE.read_text(encoding="utf-8")
-    assert "Type=oneshot" in text
-
-
-def test_ship_logs_service_invokes_ship_logs_sh():
-    text = SHIP_LOGS_SERVICE.read_text(encoding="utf-8")
-    assert "ship-logs.sh" in text
-
-
-def test_ship_logs_service_sources_env_file():
-    text = SHIP_LOGS_SERVICE.read_text(encoding="utf-8")
-    assert "EnvironmentFile=/etc/tinyassets/env" in text
-
-
-# ---------------------------------------------------------------------------
-# Sentinel: tinyassets-ship-logs.timer
-# ---------------------------------------------------------------------------
-
-
-def test_ship_logs_timer_exists():
-    assert SHIP_LOGS_TIMER.exists(), "tinyassets-ship-logs.timer must exist in deploy/"
-
-
-def test_ship_logs_timer_is_hourly():
-    text = SHIP_LOGS_TIMER.read_text(encoding="utf-8")
-    assert "hourly" in text.lower() or "OnCalendar=*:00:00" in text, (
-        "ship-logs timer must fire hourly"
-    )
-
-
-def test_ship_logs_timer_has_install_section():
-    text = SHIP_LOGS_TIMER.read_text(encoding="utf-8")
-    assert "[Install]" in text
-    assert "WantedBy=timers.target" in text
-
-
-def test_ship_logs_timer_persistent():
-    text = SHIP_LOGS_TIMER.read_text(encoding="utf-8")
-    assert "Persistent=true" in text
 
 
 # ---------------------------------------------------------------------------
