@@ -609,3 +609,39 @@ def test_the_fluentd_drop_gap_has_a_concern_file():
         "the runbook must point at the concern file, so the gap is findable from "
         "the doc someone reads mid-incident"
     )
+
+
+def test_the_installer_cannot_report_an_unapplied_journald_policy_as_converged():
+    """journald reads its config at START, so bytes on disk are not policy in
+    effect.
+
+    The first version installed the drop-in, tolerated a failed restart, and had a
+    gate comparing only bytes — so every later install said "already current"
+    while journald ran the old policy, forever (cross-family review,
+    output/codex-log-durability-review.md §2). The applied-stamp is what makes
+    "installed but not applied" a state the transaction repairs.
+    """
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert "JOURNALD_STAMP" in text
+    assert "journald_applied()" in text
+
+    gate = text.split("current_release_is_exact() {", 1)[1]
+    gate = gate.split("\nif current_release_is_exact", 1)[0]
+    assert "journald_applied || return 1" in gate, (
+        "the gate exits before the first mutation, so a property it does not "
+        "check is one the installer never converges"
+    )
+
+    # The stamp must be written only AFTER a successful restart, and dropped when
+    # the restart fails — otherwise it asserts something unfalsifiable.
+    apply_block = text.split('|| ! journald_applied; then', 1)[1]
+    apply_block = apply_block.split("\nTIMERS_PAUSED=0", 1)[0]
+    restart_at = apply_block.index("restart systemd-journald")
+    write_at = apply_block.index("${JOURNALD_STAMP}.new.")
+    assert restart_at < write_at, "the stamp is written before the restart is known"
+    assert 'rm -f -- "${JOURNALD_STAMP}"' in apply_block, (
+        "a failed restart must drop any stale stamp, or the next install inherits "
+        "a claim that this policy is live"
+    )
+    # It must not live where systemd would try to parse it.
+    assert '${RUNTIME_ROOT}/.journald-applied' in text
