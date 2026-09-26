@@ -193,6 +193,12 @@ BACKUP_DEST=
 # ships daemon + cloudflared stdout to the Better Stack ingest.
 # BETTERSTACK_SOURCE_TOKEN=
 
+# "journald-only" above became true on 2026-09-26. Before that the default was
+# the `logs` container's json-file, which a container recreate deletes, so a
+# deploy erased the history. Nothing to configure: the driver lives in
+# deploy/compose.yml and the retention in deploy/journald-tinyassets.conf,
+# installed with the host-uptime units.
+
 
 # Override the data-dir root. Default (unset) resolves to /data inside
 # the container (matches compose.yml volume mount). Only override for

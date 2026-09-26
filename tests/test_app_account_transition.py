@@ -105,8 +105,13 @@ _HARNESS = r"""
 // ---- the page's own module-scope state, declared exactly as the page does ----
 let queueScope="", queueOwner="", uploadsRestored=false, queueRestored=false;
 let historyLoaded=false, inflightRestored=false, hasMessages=false;
-let retainedItems=[], modelChoiceForNextTurn=null, statusTimer=null;
+let retainedItems=[], modelChoiceForNextTurn=null, statusTimer=null, workingTimer=null;
 let queuePersisted=true;
+// The working indicator's own state, declared as the page declares it. Its
+// rendering is a collaborator here (see tests/test_app_working_indicator.py for
+// the harness that runs the page's own version); what matters at THIS boundary is
+// that the account switch drops it.
+let serverTurn=null;
 const sendQueue=[];
 const renderedConsumerTurns=new Set();
 const renderedConsumerFounders=new Set();
@@ -143,6 +148,9 @@ function appendMessage(role,text){
 function appendFailureNotice(text){ return appendMessage("platform",text); }
 function answerExecutionDetail(){ return null; }
 function setStatusLine(s){ LOG.push(["status",s]); }
+function readServerTurn(){}
+function renderWorking(){ LOG.push(["working",serverTurn?"on":"off"]); }
+function unmarkQueued(){}
 function autoGrow(){}
 function copyModelChoice(v){ return v===undefined?null:v; }
 function turnInputMethod(v){ return v||"typed"; }

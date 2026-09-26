@@ -17,6 +17,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -534,6 +535,12 @@ class Host:
                 f"host command timed out after {timeout_seconds}s: "
                 f"{args[0]} {args[1] if len(args) > 1 else ''}"
             ) from exc
+        # Kept for callers that need the command's diagnostics as well as its
+        # stdout. `run` returns stdout only, because most callers json.loads it;
+        # stashing stderr here lets the guarded-mutation path surface both without
+        # changing this signature (and therefore without breaking the test doubles
+        # that implement it).
+        self.last_stderr = result.stderr
         if check and result.returncode:
             detail = result.stderr.strip().splitlines()
             bounded = detail[-1][:240] if detail else f"exit {result.returncode}"
@@ -2109,6 +2116,31 @@ def fence_status(
             state.get("previous_revision", "") if current_run_matches else ""
         ),
     }
+
+
+def _echo_guarded_output(stdout: str, stderr: str) -> None:
+    """Put a guarded mutation's own output in the workflow log.
+
+    `Host.run` captures the wrapped command, so the only trace a guarded mutation
+    left was `output_present: true` in this script's JSON verdict. On 2026-09-26
+    `Install host services` reported success in five seconds having printed not one
+    `[host-uptime-install]` line: no "converged N timers", no "already current", and
+    none of the installer's warnings. Every workflow that wraps a host mutation in
+    `guard-host-mutation` was equally blind, so "the installer did X in production"
+    was not a claim any of their logs could support.
+
+    Written to STDERR on purpose. This script's stdout is one JSON line that callers
+    parse; interleaving a command's output into it would make that unparseable the
+    first time an installer printed a brace. Both streams land in the same workflow
+    log, which is where the visibility was wanted.
+    """
+    for label, text in (("stdout", stdout), ("stderr", stderr)):
+        body = (text or "").strip()
+        if not body:
+            continue
+        print(f"[fence] guarded mutation {label}:", file=sys.stderr)
+        for line in body.splitlines():
+            print(f"[fence]   {line}", file=sys.stderr)
 
 
 def guard_host_mutation(host: Host, *, state_path: Path) -> dict[str, Any]:
@@ -5143,6 +5175,7 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
             ],
             timeout_seconds=args.command_timeout + 5,
         )
+        _echo_guarded_output(output, getattr(host, "last_stderr", ""))
         return {
             **guard_evidence,
             "mutation_completed": True,

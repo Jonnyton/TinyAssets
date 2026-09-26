@@ -165,6 +165,15 @@
     .chip button:hover{color:var(--ink)}
     .status-line{min-height:1.15rem;padding:0 1rem .4rem;font-size:.78rem;color:var(--ink-dim);text-align:center}
     .status-line--voice{padding-top:0}
+    /* There is ONE working indicator and it is `.status-line` above. #4020 added
+       a second, louder banner as well; the founder had both on screen at once and
+       said so: "there are now 2 indicators at once that my universe is thinking,
+       i preferred only the original one at the bottom" (2026-09-26). The banner is
+       gone; what it knew (server-reported turn state) now drives that one line. */
+    /* A line waiting behind an in-flight turn. It is the founder's own message
+       and stays their bubble; the mark says the universe has not seen it yet. */
+    .msg--queued{opacity:.72;border:1px dashed var(--accent-ink)}
+    .msg-queued-note{display:block;margin-top:.35rem;font-size:.72rem;opacity:.9}
     /* connect */
     .connect-body{padding:1.25rem;overflow-y:auto;max-width:46rem;margin:0 auto;width:100%}
     .provider-head{display:flex;align-items:baseline;gap:.5rem;margin-bottom:.35rem}
@@ -1469,7 +1478,7 @@
   const views={signin:$("view-signin"),chat:$("view-chat"),account:$("view-account")};
   let viewGeneration=0;
   function showView(n){ viewGeneration++; for(const k in views) views[k].hidden=(k!==n); }
-  let hasMessages=false, statusTimer=null;
+  let hasMessages=false, statusTimer=null, workingTimer=null;
 
   function formatMessageTimestamp(epochSeconds, locale, timeZone){
     if(typeof epochSeconds!=="number" || !Number.isFinite(epochSeconds) || epochSeconds<0) return null;
@@ -1490,7 +1499,36 @@
     }
   }
 
-  function appendMessage(role,text,extra,instant){
+  // ---- Queued bubbles --------------------------------------------------
+  //
+  // A line the founder has sent but the universe has NOT seen yet: it is waiting
+  // behind an in-flight turn. It stays the founder's own bubble (from their side
+  // it is sent), marked so the thread does not claim the universe read it.
+  function isQueuedBubble(node){
+    return !!node && String(node.className||"").split(" ").indexOf("msg--queued")>=0;
+  }
+  function firstQueuedBubble(thread){
+    return Array.from((thread&&thread.children)||[]).find(isQueuedBubble)||null;
+  }
+  function markQueued(el){
+    if(!el) return el;
+    el.className=String(el.className||"")+" msg--queued";
+    const note=document.createElement("span");
+    note.className="msg-queued-note";
+    note.textContent="Queued — your universe sees this when its current turn ends.";
+    el.appendChild(note); el.queuedNote=note;
+    return el;
+  }
+  // Its turn has started (or it was dropped, and claiming it still waits would
+  // be a lie): the mark comes off wherever the bubble already sits.
+  function unmarkQueued(el){
+    if(!el) return;
+    el.className=String(el.className||"").split(" msg--queued").join("");
+    if(el.queuedNote&&el.queuedNote.remove) el.queuedNote.remove();
+    el.queuedNote=null;
+  }
+
+  function appendMessage(role,text,extra,instant,queued){
     if(!hasMessages){ const e=$("thread-empty"); if(e) e.remove(); hasMessages=true; }
     const thread=$("thread"), el=document.createElement("div");
     el.className="msg msg--"+role;
@@ -1516,11 +1554,115 @@
     const body=document.createElement("span"); body.className="msg-body";
     body.textContent=text; el.appendChild(body);
     if(extra) el.appendChild(extra);
-    thread.appendChild(el); thread.scrollTop=thread.scrollHeight;
+    if(queued) markQueued(el);
+    // The thread is ordered the way the AGENT will see it, not the order the
+    // clicks happened in: anything the universe has not seen yet stays at the
+    // bottom. The founder answered a rail card while an earlier turn was still
+    // running; that "Approved:" bubble was appended at click time and the
+    // earlier turn's reply — composed before the click arrived — landed BELOW
+    // it, so the thread read as though the agent had ignored the approval
+    // (founder, 2026-09-26).
+    const waiting=queued?null:firstQueuedBubble(thread);
+    if(waiting&&thread.insertBefore) thread.insertBefore(el,waiting);
+    else thread.appendChild(el);
+    thread.scrollTop=thread.scrollHeight;
     return el;
   }
   function setStatusLine(t){ $("status-line").textContent=t||""; }
   function setVoiceStatusLine(t){ $("voice-status-line").textContent=t||""; }
+  // ---- The working indicator -------------------------------------------
+  //
+  // Whether the universe is working is a fact about the UNIVERSE, not about this
+  // page. It used to be a fact about this page: `sendTurn` set a 0.78rem grey
+  // line and its `finally` cleared it, and nothing else ever set it. So a turn
+  // started by answering a request, by a queued line, from another window or
+  // device, or one still running across a reload showed NOTHING — a turn that
+  // ran from 20:18 to 20:22 UTC read as "nothing happened" (founder,
+  // 2026-09-26).
+  //
+  // Two sources, one indicator. The local one is instant and owns this page's
+  // own turn; the server one (`get_status` → `active_turn`) is what covers every
+  // other way a turn starts and what survives a reload. Neither is a cap on how
+  // long a turn may take: a granted turn runs until it is finished. What IS
+  // bounded is a claim this page can no longer check — a row the server itself
+  // marks `stale`, or one this page has not refreshed in three working-rate
+  // polls, stops being painted rather than leaving a tab thinking forever.
+  const TURN_WORKING_STATES=["ready","inference_started","native_started","tools_pending"];
+  // 30s is a fine beat for a host dot; it is far too slow to clear a working
+  // indicator for a tab that did not start the turn, where half a minute of
+  // stale "thinking" reads as a hang. Faster only while a turn is believed live,
+  // which is exactly when the box is already busy with something far larger.
+  // Declared HERE, with the indicator that reads them, rather than beside the
+  // heartbeat that arms them: serverTurnLive() below would be in their const
+  // temporal-dead-zone if they were declared further down the file.
+  const STATUS_IDLE_MS=30000, STATUS_WORKING_MS=10000;
+  let statusBeatMs=STATUS_IDLE_MS;
+  let serverTurn=null;
+  function readServerTurn(payload){
+    const row=payload&&payload.active_turn;
+    // `active_turn` absent (an older daemon) leaves whatever this page already
+    // believed; an explicit null, a stale row, or a non-working state is an
+    // answer, and the answer is "not working".
+    if(!payload||!Object.prototype.hasOwnProperty.call(payload,"active_turn")) return;
+    if(!row||typeof row!=="object"||row.stale===true||
+       TURN_WORKING_STATES.indexOf(row.state)<0){ serverTurn=null; return; }
+    const age=(typeof row.age_s==="number"&&Number.isFinite(row.age_s)&&row.age_s>0)?row.age_s:0;
+    // Anchored to THIS page's clock. The row's own stamp is the server's, and a
+    // device with a skewed clock would otherwise report a nonsense elapsed time.
+    serverTurn={turn_id:String(row.turn_id||""),state:String(row.state),
+      startedMs:Date.now()-age*1000,observedAt:Date.now()};
+  }
+  function serverTurnLive(){
+    return !!serverTurn && (Date.now()-serverTurn.observedAt)<3*STATUS_WORKING_MS;
+  }
+  // When the work the indicator is about started, by this page's clock; 0 = the
+  // universe is not working as far as this page can tell.
+  function workingSince(){
+    const local=turnStartedAt||0, server=serverTurnLive()?serverTurn.startedMs:0;
+    if(local&&server) return Math.min(local,server);
+    return local||server||0;
+  }
+  function workingElapsed(sinceMs){
+    const seconds=Math.floor((Date.now()-sinceMs)/1000);
+    if(seconds<5) return "";                  // a number that flickers says nothing
+    if(seconds<60) return "for "+seconds+"s";
+    return "for "+Math.floor(seconds/60)+"m "+(seconds%60)+"s";
+  }
+  // Is the status line currently OURS to rewrite or clear? Only the server-driven
+  // sentence is; a queue count, an attachment notice or a failure line belongs to
+  // whoever wrote it and is never touched here.
+  let serverStatusLine=false;
+  function renderWorking(){
+    // ONE indicator, and it is the original line under the composer. #4020 added a
+    // second, louder banner alongside it and the founder had both at once: "there
+    // are now 2 indicators at once that my universe is thinking, i preferred only
+    // the original one at the bottom" (2026-09-26).
+    //
+    // A turn THIS page started has already written that line in sendTurn /
+    // sendVoiceTurn / queueTurn, and those know things this does not - the number
+    // of messages waiting behind the turn, whether the queue failed to save. So
+    // this speaks ONLY for a turn the page would otherwise say nothing at all
+    // about: another window, a request answered somewhere else, or one still
+    // running across a reload. That is the whole reason the server field exists,
+    // and it is also what keeps the two from fighting over one element.
+    //
+    // The flag is dropped on the way out: a local turn has taken the line, so our
+    // sentence is no longer on screen and we must not later "clear" what that path
+    // wrote (a queue count outlives the turn it was queued behind).
+    if(turnStartedAt){ serverStatusLine=false; return; }
+    if(!serverTurnLive()){
+      // Ours to clear, or nobody's. A line another path wrote stays.
+      if(serverStatusLine){ serverStatusLine=false; setStatusLine(""); }
+      return;
+    }
+    serverStatusLine=true;
+    const elapsed=workingElapsed(workingSince());
+    // Said because this page did NOT start it: without it the founder is looking
+    // at a turn they have no other evidence of.
+    const detail=[elapsed,"started in another window, by a request you answered, "+
+      "or before this page loaded"].filter(Boolean).join(" · ");
+    setStatusLine("Your universe is thinking... " + detail);
+  }
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The universe's actual
   // words still come from MCP.converse through sendVoiceTurn below.
@@ -3068,10 +3210,15 @@
     // dropped from this page's queue rather than sent, and its saved row is
     // left on disk for a page that can prove it.
     if((next.owner&&next.owner!==queueOwner)||(next.scope&&next.scope!==queueScope)){
+      // Dropped, not sent. Leaving the bubble marked "queued" would claim it is
+      // still waiting for a turn it will never get.
+      unmarkQueued(next.bubble);
       return flushSendQueue();
     }
-    if(claimedElsewhere(next)){ saveQueue(); return flushSendQueue(); }
+    if(claimedElsewhere(next)){ unmarkQueued(next.bubble); saveQueue(); return flushSendQueue(); }
     saveQueue();
+    // Its turn starts now: from here it is a sent message like any other.
+    unmarkQueued(next.bubble);
     // A rejection before sendTurn's own try/finally (a missing node) must not
     // strand what is still queued: note it and move on (Codex round 2, P2).
     sendTurn(next.message, next.display, next.opts)
@@ -3095,14 +3242,20 @@
     // and the composer clears, exactly as an immediate send; it waits its turn
     // on the wire and is not drawn again when it goes out.
     const queuedAt=Date.now();
-    if(!opts.echoed) appendMessage("founder", display || message, null, queuedAt/1000);
+    // Drawn as QUEUED: the founder's own bubble, at the bottom of the thread,
+    // saying the universe has not seen it yet. The in-flight turn's reply is
+    // still to come and lands ABOVE it (appendMessage), which is the order the
+    // agent will actually read them in.
+    const bubble=opts.echoed
+      ? null : appendMessage("founder", display || message, null, queuedAt/1000, true);
     input.value=""; input.style.height="auto";
     // Stamped with the account and home that queued it, the same pair a saved
     // row carries, so a line can never go out under a different identity than
     // the one that wrote it.
-    sendQueue.push({message, display, owner:queueOwner, scope:queueScope,
+    sendQueue.push({message, display, owner:queueOwner, scope:queueScope, bubble,
       opts: Object.assign({}, opts, {echoed:true,sentAt:queuedAt}), ts: queuedAt});
     setStatusLine("Your universe is thinking... " + sendQueue.length + " waiting");
+    renderWorking();
     saveQueue();   // last: a failed save replaces the status line with why
   }
 
@@ -3128,6 +3281,7 @@
     const myTurn={}; activeTurn=myTurn;
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
+    renderWorking();
     let delivered=false;
     // An outcome the transport could not confirm: the turn may be running right
     // now. Nothing queued behind it is flushed automatically (see the finally).
@@ -3177,6 +3331,10 @@
         // Nothing newer holds the composer, so THIS turn is what wedged it -
         // leaving it disabled would strand whoever is signed in now.
         $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
+        // This page's own turn is over. The indicator may still be up on the
+        // server's word (another window's turn, or the queued line going out
+        // next); renderWorking re-asks rather than assuming this was the only one.
+        renderWorking();
       }
       // Lines queued behind this turn belong to the account and home that
       // queued them; they are not flushed into a different one. Neither the
@@ -3227,6 +3385,7 @@
     const myTurn={}; activeTurn=myTurn;
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
+    renderWorking();
     let delivered=false, unconfirmed=false;
     const voiceSentAt=Date.now();
     // The same fence as the typed turn: account AND home at the moment of
@@ -3277,6 +3436,10 @@
       if(mine){
         activeTurn=null;
         $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
+        // This page's own turn is over. The indicator may still be up on the
+        // server's word (another window's turn, or the queued line going out
+        // next); renderWorking re-asks rather than assuming this was the only one.
+        renderWorking();
       }
       // Queued lines and the voice session belong to the account and home
       // that are on screen now; a turn that outlived its own is not theirs.
@@ -3489,6 +3652,10 @@
       if(name) $("universe-name").textContent=name;
       if(ModelPicker.snapshot&&s.universe_id&&ModelPicker.snapshot.universe_id!==s.universe_id) ModelPicker.reset();
       setQueueScope(s.universe_id || s.universe);
+      // The universe's own working state, whatever started the turn. This is the
+      // only thing that tells a tab which did not send about a live turn, and
+      // the only thing left after a reload.
+      readServerTurn(s); renderWorking(); pulseHeartbeat();
       restoreQueue();   // no-op once done, or until the scope is known
       restoreUploadRecords();   // same rule, and it makes no request of its own
       // A held message waits for the same thing the queue does. If the history
@@ -3508,9 +3675,28 @@
       const dot=$("dot"); dot.className="dot dot--err";
       dot.title=(err&&err.transport) ? ("status unavailable \u2014 "+err.message)
                                      : "status unavailable";
+      // A failed poll is not evidence that the turn ended, so nothing believed
+      // about it is discarded here. It ages out on its own (serverTurnLive), so
+      // a dead connection cannot leave the indicator claiming work forever.
+      renderWorking();
     }
   }
-  function startHeartbeat(){ pollStatus(); clearInterval(statusTimer); statusTimer=setInterval(pollStatus,30000); }
+  // The working-rate beat and its constants are declared with the indicator that
+  // reads them (see TURN_WORKING_STATES).
+  function pulseHeartbeat(){
+    const want=serverTurnLive()?STATUS_WORKING_MS:STATUS_IDLE_MS;
+    if(want===statusBeatMs||!statusTimer) return;
+    statusBeatMs=want; clearInterval(statusTimer);
+    statusTimer=setInterval(pollStatus,want);
+  }
+  function startHeartbeat(){
+    statusBeatMs=STATUS_IDLE_MS; clearInterval(statusTimer);
+    statusTimer=setInterval(pollStatus,statusBeatMs);
+    // The indicator's own clock. It repaints elapsed time and, with nothing
+    // working, costs one hidden-check per second.
+    clearInterval(workingTimer); workingTimer=setInterval(renderWorking,1000);
+    pollStatus();
+  }
 
   // The status says which engine this universe THINKS on (active_host.llm_endpoint_bound)
   // and whether anything is serving its background work (no_serving_runtime). A mind
@@ -3764,7 +3950,10 @@
     if(input){ input.value=""; if(input.style) input.style.height="auto"; }
     const send=$("btn-send"); if(send) send.disabled=false;
     activeTurn=null; turnStartedAt=0; liveInflight=null;
-    setStatusLine("");
+    // The working indicator is this screen's state as much as the composer is:
+    // the previous account's turn must not be reported to whoever signs in next.
+    serverTurn=null; serverStatusLine=false;
+    setStatusLine(""); renderWorking();
   }
   function clearAccountScopedState(){
     queueScope=""; queueOwner="";
@@ -3775,7 +3964,8 @@
     clearComposerState();
     clearThread();
   }
-  function enterSignedOut(){ clearInterval(statusTimer); MCP.endLogin(); Voice.stop(false);
+  function enterSignedOut(){ clearInterval(statusTimer); clearInterval(workingTimer); workingTimer=null;
+    MCP.endLogin(); Voice.stop(false);
     // Pending attachments belong to the account that picked them. They are
     // dropped, never released (release needs that same login and home) and
     // never carried into whoever signs in next.
@@ -5944,6 +6134,10 @@
       const r = await MCP.getConversation();
       if(!stillOwner()) return;
       setQueueScope(r && (r.universe_id || r.universe));
+      // A reload mid-turn: the exchange is not in history yet (it is stored on
+      // completion), so history alone shows nothing at all for a turn that is
+      // still running. The same read already carries whether it IS running.
+      readServerTurn(r); renderWorking();
       const conv = r && r.recent_conversation;
       turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
       if(!turns.length){ restoreInflight(turns); return; }

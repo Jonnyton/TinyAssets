@@ -93,7 +93,14 @@ def _render() -> dict:
                 },
                 "image": IMAGE,
                 "labels": {"org.tinyassets.component": "daemon"},
-                "logging": {"driver": "fluentd"},
+                "logging": {
+                    "driver": "fluentd",
+                    "options": {
+                        "fluentd-address": "127.0.0.1:24224",
+                        "fluentd-async": "true",
+                        "tag": "{{.Name}}",
+                    },
+                },
                 "mem_limit": "4294967296",
                 "memswap_limit": "4294967296",
                 "networks": {"default": None},
@@ -113,11 +120,26 @@ def _render() -> dict:
                 "container_name": "tinyassets-tunnel",
                 "image": "cloudflare/cloudflared:2026.3.0@sha256:" + "6" * 64,
                 "restart": "unless-stopped",
+                "logging": {
+                    "driver": "fluentd",
+                    "options": {
+                        "fluentd-address": "127.0.0.1:24224",
+                        "fluentd-async": "true",
+                        "tag": "{{.Name}}",
+                    },
+                },
             },
             "logs": {
                 "container_name": "tinyassets-logs",
                 "image": "timberio/vector:0.40.0-alpine@sha256:" + "7" * 64,
                 "restart": "unless-stopped",
+                # Measured 2026-09-26 against Compose v5.1.4 rather than on the
+                # droplet: this change INTRODUCES the directive, so production
+                # cannot yet have rendered it. Reproduce with
+                #   docker compose -f deploy/compose.yml config --format json
+                # and read services.logs.logging. The rest of this capture
+                # remains the 2026-08-30 droplet measurement.
+                "logging": {"driver": "journald", "options": {"tag": "tinyassets-logs"}},
                 "volumes": [
                     {
                         "type": "bind",
@@ -363,3 +385,67 @@ def test_a_literal_daemon_image_is_refused_from_the_source(tmp_path: Path):
     result = _validate(tmp_path, _render(), source)
     assert result.returncode == 1
     assert "interpolate" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# where the logs come to rest (2026-09-26)
+# ---------------------------------------------------------------------------
+
+
+def test_a_logs_service_without_the_journald_driver_is_refused(tmp_path: Path):
+    """json-file is Docker's DEFAULT, so this is what drift looks like: not a
+    wrong value, an absent one. The sidecar's stdout is the only host-side copy
+    of every container's output, and a container-scoped driver is deleted when
+    this script force-recreates the service."""
+    config = _render()
+    del config["services"]["logs"]["logging"]
+    result = _validate(tmp_path, config, _source())
+    assert result.returncode == 1
+    assert "logs.logging.driver is None" in result.stderr
+
+
+def test_a_logs_service_on_json_file_is_refused(tmp_path: Path):
+    config = _render()
+    config["services"]["logs"]["logging"] = {
+        "driver": "json-file",
+        "options": {"max-size": "10m", "max-file": "3"},
+    }
+    result = _validate(tmp_path, config, _source())
+    assert result.returncode == 1
+    assert "expected 'journald'" in result.stderr
+
+
+def test_a_logs_service_without_a_journal_tag_is_refused(tmp_path: Path):
+    """Without the tag journald records a truncated container id that changes on
+    every recreate, so the query meant to read ACROSS recreates cannot be
+    written -- the driver alone does not buy the property."""
+    config = _render()
+    config["services"]["logs"]["logging"] = {"driver": "journald"}
+    result = _validate(tmp_path, config, _source())
+    assert result.returncode == 1
+    assert "logs.logging.options.tag" in result.stderr
+
+
+def test_a_forwarding_service_that_stops_forwarding_is_refused(tmp_path: Path):
+    """Nothing else here constrains the daemon's own driver, so losing it would
+    mean the sidecar receives nothing and the journal holds nothing -- with every
+    other check still green."""
+    for service in ("daemon", "cloudflared"):
+        config = _render()
+        config["services"][service]["logging"] = {"driver": "local"}
+        result = _validate(tmp_path, config, _source())
+        assert result.returncode == 1, service
+        assert f"{service}.logging.driver is 'local'" in result.stderr
+
+
+def test_the_logs_sidecar_may_not_forward_to_its_own_listener(tmp_path: Path):
+    """A `logs` container on the fluent anchor would ship its own stdout into the
+    listener that produced it."""
+    config = _render()
+    config["services"]["logs"]["logging"] = {
+        "driver": "fluentd",
+        "options": {"fluentd-address": "127.0.0.1:24224", "tag": "tinyassets-logs"},
+    }
+    result = _validate(tmp_path, config, _source())
+    assert result.returncode == 1
+    assert "expected 'journald'" in result.stderr
