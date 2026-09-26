@@ -60,5 +60,7 @@ but the legacy picker still admits learned-only rows; the validator still permit
 private account-bearing selectors to be published. Exact unversioned separator
 and tie examples are fixed, but version removal can still erase a namespace.
 The reopened checkboxes reflect those residuals, not a claim the fixes did nothing.
-Evidence: [Codex round-2 review](../../../docs/reviews/2026-09-26-learned-catalog-round-2.md).
+Evidence: the round-2 verdict summary is a comment on PR #4028; the two findings
+still open carry their own evidence inline in `docs/concerns/`. Review transcripts
+are not kept in the repo (founder process cut, 2026-09-26).
 Latency and client-visible read degradation are recorded as nonblocking concerns.

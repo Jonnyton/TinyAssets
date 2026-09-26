@@ -11,4 +11,9 @@ Optional learning can be retried; no required user data is lost. Consider moving
 the best-effort write off the reply event loop and exposing read degradation in
 the advisory result. These are not additional floor blockers.
 
-Full evidence: [round-2 review](../reviews/2026-09-26-learned-catalog-round-2.md).
+Measured by Codex round 2 on PR #4028 with a direct `BEGIN EXCLUSIVE` probe on
+Windows / Python 3.14: `_catalog_candidates` 0.779 s and `record_verified_model`
+0.807 s. Both failures are logged; the read returned no contributions and the write
+returned `False`. Existing rows survived. Best-effort WRITE loss is acceptable; a
+silently shorter model LIST after a failed read is not currently reported to the
+user, which is the open part.
