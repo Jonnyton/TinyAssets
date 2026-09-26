@@ -61,6 +61,13 @@ The `converse` operation (`tinyassets.universe_intelligence.converse`) SHALL res
 - **WHEN** `converse` runs for a universe with no learned name
 - **THEN** the assembled first-person prompt has the universe acknowledge it is newly born and still learning, rather than inventing a name
 
+#### Scenario: quoted grounding is declared current so recall costs no round-trip
+- **WHEN** at least one grounding file is inlined into the assembled prompt
+- **THEN** the grounding section states that each quoted heading is that file's current and complete contents for this turn, so the turn answers from the prompt instead of spending another model round-trip fetching the same text
+- **AND** the statement forbids no tool and preserves reading a file before editing it
+- **WHEN** no grounding file was inlined, or the tier filter permitted only a subset
+- **THEN** no such statement is made about contents that are absent, and it never names a withheld file
+
 #### Scenario: a missing universe fails loudly
 - **WHEN** `converse` is called for a universe directory that does not exist
 - **THEN** it raises rather than fabricating a reply

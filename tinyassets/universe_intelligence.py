@@ -44,6 +44,34 @@ logger = logging.getLogger(__name__)
 # back, so the universe re-asked what it had already recorded (founder report).
 _GROUNDING_FILES = ("identity.md", "founder.md", "origin.md", "body.md", "orgchart.md")
 
+# Header for the grounding section, emitted ONLY when at least one file was
+# actually inlined, so it never claims contents that are not there.
+#
+# Why it exists (measured 2026-09-25, tests/test_converse_turn_cost.py). A served
+# founder turn is an agentic loop: EVERY extra tool step is another whole model
+# round-trip that re-sends the entire system prompt plus the engine tool-schema
+# block -- 63 KB of tool definitions alone on the current served set. The
+# grounding files are already quoted verbatim below, so a turn that answers "do
+# you remember my favourite colour?" by fetching one of them again pays a full
+# round-trip for text it is already holding, and on a slow source that is tens of
+# seconds of the founder's wait. The files were inlined but never DECLARED as
+# current, and the only nearby statements about them ("read it first so an edit
+# builds on what's there", ``read_brain``) read as fetch-first.
+#
+# This adds no restriction: the turn keeps every tool and may read anything,
+# including these files. It only removes the reason to re-fetch what is quoted.
+# Scoped deliberately to the sections actually shown -- it never says this is the
+# whole brain, so the tier filter above stays invisible to a non-founder turn.
+_GROUNDING_IS_CURRENT = (
+    "Each heading below is one of my own brain files, and the text under it is "
+    "that file's CURRENT and COMPLETE contents as of this turn. So I already know "
+    "everything quoted here: I answer straight from it instead of fetching it "
+    "again, because fetching it costs my founder a whole extra round-trip and "
+    "returns exactly this text. I do still re-read a file right before I EDIT it, "
+    "so my edit builds on what is there, and I read anything NOT quoted here "
+    "whenever I need it."
+)
+
 #: The persona half of the untrusted envelope. Content another USER authored
 #: reaches the universe wrapped as ``{"untrusted": true, "source": ...,
 #: "notice": ..., "content": ...}`` (``engine_mcp_server._untrusted``); this is
@@ -423,7 +451,10 @@ def _build_persona_system_prompt(
         for fname in grounding_files
         if (body := _read_bundle_body(universe_dir, fname))
     ]
-    grounding = "\n\n".join(grounding_parts) or "(nothing learned yet — I am new.)"
+    grounding = (
+        _GROUNDING_IS_CURRENT + "\n\n" + "\n\n".join(grounding_parts)
+        if grounding_parts else "(nothing learned yet — I am new.)"
+    )
 
     identity_line = (
         f"You are {name}."
