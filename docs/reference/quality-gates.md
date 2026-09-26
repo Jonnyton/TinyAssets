@@ -110,20 +110,18 @@ available provider against the exact commit. The reviewer is never the
 author; blocking findings must be resolved before landing/rollout.
 Inconvenience or disagreement does not activate this fallback.
 
-**A blocking review verdict is a REQUIRED CHECK (live 2026-09-26).** A verdict
-posted as a PR comment is advisory: auto-merge reads required checks, not
-comments. PR #3989 auto-merged at the exact head its Tier 2 reviewer had
-BLOCKED. So `pr-scope-guard` — already required — now fails unless the PR body
-carries an exact-head receipt, whenever the PR
+**The exact-head receipt must be a PUBLISHED APPROVAL (live 2026-09-26).** A
+verdict posted as a PR comment is advisory: auto-merge reads required checks, not
+comments. PR #3989 auto-merged at the exact head its Tier 2 reviewer had BLOCKED.
+`pr-scope-guard` already demanded an exact-head receipt on gate-defining and
+authority paths; what changed is that the receipt now has to cite a real approval
+instead of pointing anywhere. **WHO needs a receipt did not change** — widening it
+to every release-critical path, the `infra-change` label and a Tier 2 title was
+built and cut, because measured against the 60 most recently merged PRs it would
+have made 29 of them wait for a stamp.
 
-* touches a release-critical path (`.github/workflows/`, `deploy/`, `Dockerfile`,
-  the two test ledgers, `scripts/ci_required_tests.py`,
-  `scripts/drain_review_gate.py`) or an authority path (`AUTHORITY_RE`), **or**
-* carries the `infra-change` label, **or**
-* declares `Tier 2` in its title.
-
-Satisfying it takes **two steps, both required, and each receipt goes at the TOP
-of its text** — only blank lines may precede it.
+Satisfying it takes **two steps, and each receipt goes at the TOP of its text** —
+only blank lines may precede it.
 
 First the reviewer POSTS the verdict as a comment on the PR. These are its first
 two non-blank lines, with the reasoning below them:
@@ -144,16 +142,14 @@ Drain-Review-Artifact: https://github.com/<owner>/<repo>/pull/<this PR>#issuecom
 Mechanics worth knowing before you plan work:
 
 - **Only `APPROVE`.** `BLOCK`, `DENY`, lower-case `approve`, or `APPROVE` with
-  trailing prose all fail, and an `APPROVE` stacked beside a `BLOCK` fails — in
-  the body and in the comment alike.
+  trailing prose all fail, in the body and in the comment alike.
 - **The artifact must be a real comment on THIS PR** — a top-level comment, a
-  submitted review, or an inline review comment — authored by a repository
-  owner, member or collaborator, **and that comment must itself carry the
-  APPROVE lines for the current head**. Checked against the API, so an invented
-  comment id, an approval on a different PR, a drive-by commenter, a citation of
-  the reviewer's BLOCK comment, and a citation of a pre-push approval all fail.
-  A `docs/…md` artifact still satisfies the older drain-branch receipt but not
-  this one.
+  submitted review, or an inline review comment — authored by a repository owner,
+  member or collaborator, **and that comment must itself carry the APPROVE lines
+  for the current head**. Checked against the API, so an invented comment id, an
+  approval on a different PR, a drive-by commenter, a citation of the reviewer's
+  BLOCK comment, and a citation of a pre-push approval all fail. A `docs/…md`
+  artifact still satisfies the older drain-branch receipt but not this one.
 - **Only the top is read.** Nothing above a receipt can hide it, because nothing
   can precede the first line of a document; and nothing below it can void it. A
   receipt in a fenced block, an HTML comment, a `<details>`, a blockquote or a
@@ -162,23 +158,20 @@ Mechanics worth knowing before you plan work:
   review rounds broke in both directions — hidden approvals it accepted, honest
   ones it refused after a heading or a code example.
 - **Stamping the body re-runs the check** (`edited` is a trigger), so a verdict
-  unblocks a PR with no push. **Any push voids the receipt** — the head must
-  match exactly, so batch your fixes and re-stamp once.
+  unblocks a PR with no push. **Any push voids the receipt** — the head must match
+  exactly, so batch your fixes and re-stamp once.
 - **Two content proofs stand down the requirement**, and only when they account
-  for the PR's whole release-critical/authority footprint: a deletion-only
-  quarantine-ledger edit, and an authority file whose AST is unchanged
-  (`scripts/authority_behavior_check.py`). Neither stands down a Tier 2 title.
-- **Fails closed.** An unreadable file list or comment inventory denies.
-- **Self-stamping is not prevented.** The receipt lives in the PR body, which
-  the author can edit, and this repository has one account with write access, so
+  for the whole footprint: a deletion-only quarantine-ledger edit, and an
+  authority file whose AST is unchanged (`scripts/authority_behavior_check.py`).
+- **Fails closed.** An unreadable file list, a failed `grep`, or an unreadable or
+  partial comment inventory all deny.
+- **Self-stamping is not prevented.** The receipt lives in the PR body, which the
+  author can edit, and this repository has one account with write access, so
   "stamper differs from author" would be unsatisfiable. What the receipt makes
   impossible is the #3989 accident: a BLOCK cannot merge, a receipt for an older
   head cannot merge, and a verdict never published on the PR cannot merge. The
-  honesty note in `.github/workflows/pr-scope-guard.yml` states what is and is
-  not closed.
-
-Measured blast radius: of the 60 most recently merged PRs, 29 would have needed
-a receipt (24 by path, 15 by label, 22 by Tier 2 title).
+  honesty note in `.github/workflows/pr-scope-guard.yml` states what is and is not
+  closed.
 
 **High-risk PRs stay draft until exact-head approval.** Auth, storage,
 migration, concurrency, public-surface, and data-loss-risk PRs open as drafts

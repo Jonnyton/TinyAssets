@@ -197,14 +197,6 @@ Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/e
   missing primitive**: redesign, do not patch. Small live slices; a failure
   seen live becomes a regression test; the proof is a rendered conversation.
   A dispatched review gates landing, not progress.
-- **A Tier 2 verdict is enforced, not advisory** (live 2026-09-26). `Tier 2` in
-  the title, the `infra-change` label, or a release-critical/authority path makes
-  the required `Diff scope declared` check demand an exact-head receipt in the PR
-  BODY: `Drain-Review-Verdict: APPROVE` / `Drain-Review-Head: <head>` /
-  `Drain-Review-Artifact: <comment URL on this PR>`. Only `APPROVE` passes, every
-  push voids it, and stamping the body re-runs the check with no push. PR #3989
-  auto-merged at the exact head its reviewer had BLOCKED, because a comment is
-  not a check. Details in `docs/reference/quality-gates.md`.
 - **Carry each item to verified completion, and work in parallel** (founder,
   2026-09-24; corrects a misreading of 2026-09-15 as "one patch at a time").
   A capability is finished when it is deployed, succeeds through the real app,

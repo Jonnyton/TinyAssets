@@ -38,12 +38,6 @@ _COMMENT_ARTIFACT_RE = re.compile(
     r"#(?:issuecomment-[0-9]+|pullrequestreview-[0-9]+|discussion_r[0-9]+))"
 )
 
-_INFRA_LABEL = "infra-change"
-
-# `Tier 2` anywhere in the title, however spaced or hyphenated. `(?![0-9])`
-# keeps a hypothetical `Tier 20` out; the leading class stops `subtier2`.
-_TIER2_TITLE_RE = re.compile(r"(?:^|[^0-9A-Za-z])tier[ _-]?2(?![0-9])", re.IGNORECASE)
-
 # `author_association` as GitHub computes it at read time — trusted metadata,
 # not something a comment body can claim. CONTRIBUTOR and NONE are excluded:
 # anyone can comment on a public repo's PR, and the receipt must not be
@@ -240,33 +234,28 @@ def published_approval_urls(stream: str, *, head: str) -> frozenset[str] | None:
 
 def blocking_review_reason(
     *,
-    labels: str,
-    title: str,
     hits: Iterable[str],
     footprint_exempt: bool = False,
 ) -> str | None:
     """Why this PR needs a blocking-review receipt, or `None` if it does not.
 
-    PR #3989 auto-merged at the exact head its Tier 2 reviewer had BLOCKED: a
-    verdict posted as a comment is advisory, and only a failing REQUIRED check
-    holds a PR. These three triggers are what that PR would have matched.
+    Gate-defining and authority paths only — **exactly the set that already
+    needed one**. A Tier 2 title and the `infra-change` label were built as
+    additional triggers and then CUT: measured against the 60 most recently
+    merged PRs they would have made 29 of them wait for a stamp, and the founder's
+    direction is that the process is already bloated. PR #3989's fix does not need
+    a wider net; it needs a receipt that cannot be satisfied by a refusal, which
+    is `comment_attests_approval`.
 
-    `footprint_exempt` says the gate PROVED the PR's entire release-critical /
-    authority footprint cannot change behaviour — a deletion-only quarantine
-    ledger edit, or an authority file whose AST is unchanged. A content proof
-    outranks the `infra-change` label, which is only a declaration ABOUT those
-    paths. It does NOT outrank a Tier 2 title: that is the author declaring the
-    change as a whole needs a blocking review, which no path proof can answer.
+    `footprint_exempt` says the gate PROVED the whole footprint cannot change
+    behaviour — a deletion-only quarantine ledger edit, or an authority file whose
+    AST is unchanged.
     """
-    if _TIER2_TITLE_RE.search(title):
-        return "the title declares Tier 2"
     if footprint_exempt:
         return None
     listed = sorted({hit.strip() for hit in hits if hit.strip()})
     if listed:
-        return "it touches release-critical or authority paths: " + ", ".join(listed)
-    if _INFRA_LABEL in {label.strip() for label in labels.split(",")}:
-        return f"it carries the `{_INFRA_LABEL}` label"
+        return "it edits gate-defining or authority-critical files: " + ", ".join(listed)
     return None
 
 
@@ -371,8 +360,6 @@ def _blocking_review(args: argparse.Namespace) -> int:
         return 2
 
     reason = blocking_review_reason(
-        labels=args.review_labels,
-        title=args.review_title,
         hits=hits_text.splitlines(),
         footprint_exempt=args.review_footprint_exempt,
     )
@@ -439,10 +426,6 @@ def main() -> int:
         help="Decide the blocking-review receipt requirement for a PR: prints "
         "receipt-not-required / allow (exit 0) or deny (exit 2), with the "
         "reason on stderr. Requires --review-*.",
-    )
-    parser.add_argument("--review-title", default="", help="PR title, for the Tier 2 declaration.")
-    parser.add_argument(
-        "--review-labels", default="", help="Comma-joined PR label names."
     )
     parser.add_argument(
         "--review-hits-file",

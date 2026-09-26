@@ -415,9 +415,7 @@ def _receipt_body(*, head: str = HEAD, url: str = ARTIFACT_URL, verdict: str = "
 def _run_blocking(
     tmp_path: Path,
     *,
-    title: str = "fix: a thing",
-    labels: str = "",
-    hits: tuple[str, ...] = (),
+    hits: tuple[str, ...] = ("scripts/drain_review_gate.py",),
     body: str = "",
     head: str = HEAD,
     repo: str = REPO,
@@ -465,10 +463,6 @@ def _run_blocking(
         head,
         "--body-file",
         str(body_path),
-        "--review-title",
-        title,
-        "--review-labels",
-        labels,
         "--review-hits-file",
         str(hits_path),
         "--review-repo",
@@ -484,99 +478,59 @@ def _run_blocking(
 
 
 @pytest.mark.parametrize(
-    "kwargs,why",
+    "hit,why",
     [
-        ({"title": "deploy: rotate the image tag (Tier 2)"}, "Tier 2 in the title"),
-        ({"title": "Tier 2: harness the provider"}, "Tier 2 leading the title"),
-        ({"title": "a tier-2 change"}, "hyphenated"),
-        ({"title": "a TIER 2 change"}, "upper case"),
-        ({"labels": "bug,infra-change"}, "the infra-change declaration"),
-        ({"hits": (".github/workflows/deploy-prod.yml",)}, "a release-critical path"),
-        ({"hits": ("tinyassets/auth/provider.py",)}, "an authority path"),
+        (".github/workflows/tests.yml", "the required-tests workflow"),
+        (".github/workflows/pr-scope-guard.yml", "this guard itself"),
+        (".github/known-failing-tests.txt", "the quarantine ledger"),
+        ("scripts/ci_required_tests.py", "the aggregator"),
+        ("scripts/drain_review_gate.py", "this policy script"),
+        ("tinyassets/auth/provider.py", "an authority path"),
+        ("tinyassets/credential_vault.py", "the credential vault"),
     ],
 )
-def test_receipt_is_required_for_every_trigger(
-    tmp_path: Path, kwargs: dict[str, object], why: str
+def test_a_gate_or_authority_path_without_a_receipt_is_denied(
+    tmp_path: Path, hit: str, why: str
 ) -> None:
-    # The PR #3989 shape: no receipt in the body, so the required check fails.
-    completed = _run_blocking(tmp_path, **kwargs)  # type: ignore[arg-type]
+    # No receipt in the body, so the required check fails. This is the set that
+    # ALREADY needed a receipt before 2026-09-26; what changed is what a receipt
+    # has to be, not who needs one.
+    completed = _run_blocking(tmp_path, hits=(hit,))
 
     assert completed.returncode == 2, why
     assert completed.stdout.strip() == "deny"
     assert "blocking-review receipt is required" in completed.stderr
+    assert hit in completed.stderr, "the reason must name the file"
 
 
 @pytest.mark.parametrize(
-    "kwargs,why",
+    "hits,why",
     [
-        ({}, "ordinary PR: no label, no hits, no Tier 2 title"),
-        ({"title": "Tier 0: docs"}, "Tier 0 is unaffected"),
-        ({"title": "C27: tier 3 rollout"}, "Tier 3 is unaffected"),
-        ({"title": "subtier2 naming"}, "'tier2' inside a word is not a declaration"),
-        ({"title": "Tier 20 of 30"}, "Tier 20 is not Tier 2"),
-        ({"labels": "bug,documentation"}, "unrelated labels"),
+        ((), "an ordinary PR touches no gate-defining or authority path"),
         # The workflow seds blank lines out, but an empty footprint must read as
         # empty however it is spelled — never as one unnamed hit.
-        ({"hits": ("", "   ")}, "a blank hits file is not a hit"),
+        (("", "   "), "a blank hits file is not a hit"),
     ],
 )
-def test_tier0_and_tier1_prs_outside_the_paths_are_unaffected(
-    tmp_path: Path, kwargs: dict[str, object], why: str
+def test_a_pr_outside_those_paths_needs_no_receipt(
+    tmp_path: Path, hits: tuple[str, ...], why: str
 ) -> None:
-    completed = _run_blocking(tmp_path, **kwargs)  # type: ignore[arg-type]
+    # WHO needs a receipt is unchanged from before 2026-09-26. A Tier 2 title and
+    # the `infra-change` label were built as extra triggers and CUT: they would
+    # have made 29 of the 60 most recently merged PRs wait for a stamp.
+    completed = _run_blocking(tmp_path, hits=hits)
 
     assert completed.returncode == 0, why
     assert completed.stdout.strip() == "receipt-not-required"
 
 
-def test_a_tier2_title_needs_a_receipt_even_with_only_docs_changes(tmp_path: Path) -> None:
-    """A Tier 2 declaration is about the CHANGE, not about which paths it hits.
-
-    The three triggers are independent by design. A PR touching nothing but
-    `docs/` produces an empty hits file and carries no label, so the title is
-    the only thing demanding a receipt — and it must be enough on its own, or
-    "Tier 2" would mean nothing unless the author also happened to edit a
-    release-critical path.
-    """
-    docs_only: dict[str, object] = {"hits": (), "labels": ""}
-
-    blocked = _run_blocking(
-        tmp_path, title="docs: rewrite the authority model guide (Tier 2)", **docs_only
-    )
-    stamped = _run_blocking(
-        tmp_path,
-        title="docs: rewrite the authority model guide (Tier 2)",
-        body=_receipt_body(),
-        **docs_only,
-    )
-    # The discriminator: the SAME docs-only PR without the declaration sails
-    # through. Without this row the test would pass even if every PR needed a
-    # receipt, which would prove nothing about the title.
-    undeclared = _run_blocking(
-        tmp_path, title="docs: rewrite the authority model guide", **docs_only
-    )
-
-    assert blocked.returncode == 2
-    assert blocked.stdout.strip() == "deny"
-    # And for the right reason: the title, not a path or a label.
-    assert blocked.stderr.strip().endswith("because the title declares Tier 2")
-
-    assert stamped.returncode == 0
-    assert stamped.stdout.strip() == "allow"
-
-    assert undeclared.returncode == 0
-    assert undeclared.stdout.strip() == "receipt-not-required"
-
-
-def test_valid_receipt_unblocks_a_tier2_pr(tmp_path: Path) -> None:
-    completed = _run_blocking(
-        tmp_path, title="deploy: a thing (Tier 2)", body=_receipt_body()
-    )
+def test_a_valid_receipt_unblocks_the_pr(tmp_path: Path) -> None:
+    completed = _run_blocking(tmp_path, body=_receipt_body())
 
     assert completed.returncode == 0
     assert completed.stdout.strip() == "allow"
     # The reason is still reported, so the PR says WHY a receipt was needed.
-    assert "the title declares Tier 2" in completed.stderr
+    assert "gate-defining or authority-critical files" in completed.stderr
 
 
 @pytest.mark.parametrize(
@@ -597,7 +551,7 @@ def test_valid_receipt_unblocks_a_tier2_pr(tmp_path: Path) -> None:
     ],
 )
 def test_mutating_the_verdict_or_head_fails_closed(tmp_path: Path, body: str, why: str) -> None:
-    completed = _run_blocking(tmp_path, title="deploy: a thing (Tier 2)", body=body)
+    completed = _run_blocking(tmp_path, body=body)
 
     assert completed.returncode == 2, why
     assert completed.stdout.strip() == "deny"
@@ -633,7 +587,7 @@ def test_mutating_the_verdict_or_head_fails_closed(tmp_path: Path, body: str, wh
 )
 def test_artifact_must_name_a_real_comment_on_this_pr(tmp_path: Path, url: str, why: str) -> None:
     completed = _run_blocking(
-        tmp_path, title="deploy: a thing (Tier 2)", body=_receipt_body(url=url)
+        tmp_path, body=_receipt_body(url=url)
     )
 
     assert completed.returncode == 2, why
@@ -650,7 +604,6 @@ def test_a_verdict_may_live_in_a_comment_review_or_review_comment(
     url = f"https://github.com/{REPO}/pull/{PR}#{anchor}"
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(url=url),
         comments=((url, "OWNER"),),
     )
@@ -665,7 +618,6 @@ def test_repo_casing_in_the_artifact_url_is_tolerated(tmp_path: Path) -> None:
     url = f"https://github.com/jonnyton/tinyassets/pull/{PR}#issuecomment-5841421637"
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(url=url),
         comments=((url.replace("jonnyton/tinyassets", REPO), "OWNER"),),
     )
@@ -685,7 +637,6 @@ def test_an_untrusted_commenter_cannot_supply_the_artifact(
     # author_association, read from the API, never from the comment body.
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(),
         comments=((ARTIFACT_URL, association),),
     )
@@ -700,7 +651,6 @@ def test_write_side_associations_may_supply_the_artifact(
 ) -> None:
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(),
         comments=((ARTIFACT_URL, association),),
     )
@@ -734,7 +684,6 @@ def test_an_uncorroborated_receipt_fails_closed(
 ) -> None:
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(),
         comments=None,
         comments_raw=comments_raw,
@@ -749,7 +698,6 @@ def test_pretty_printed_inventory_still_parses(tmp_path: Path) -> None:
     # the gate must keep reading them rather than silently see an empty set.
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(),
         comments=None,
         comments_raw=json.dumps(
@@ -882,7 +830,7 @@ def test_a_receipt_below_the_top_of_the_body_is_not_read(tmp_path: Path, why: st
     not the verdict.
     """
     completed = _run_blocking(
-        tmp_path, title="deploy: a thing (Tier 2)", body=HIDDEN_RECEIPT_BODIES[why]
+        tmp_path, body=HIDDEN_RECEIPT_BODIES[why]
     )
 
     assert completed.returncode == 2, why
@@ -895,7 +843,6 @@ def test_the_same_hiding_place_in_the_cited_comment_is_refused(tmp_path: Path, w
     # either. The body carries an honest receipt; only the comment is suspect.
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(),
         comments=((ARTIFACT_URL, "OWNER", HIDDEN_RECEIPT_BODIES[why]),),
     )
@@ -937,7 +884,6 @@ def test_anything_may_follow_the_receipt(tmp_path: Path, why: str) -> None:
     """
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body() + TRAILING_CONTENT[why],
         comments=((ARTIFACT_URL, "OWNER", _attestation() + TRAILING_CONTENT[why]),),
     )
@@ -967,7 +913,7 @@ def test_the_body_needs_all_three_lines_and_denies_cleanly_without_them(
     # Cleanly, not by IndexError: the artifact is read positionally, so the
     # count check has to happen before the subscript. A crash would still fail
     # the step, but the gate must say why.
-    completed = _run_blocking(tmp_path, title="deploy: a thing (Tier 2)", body=body)
+    completed = _run_blocking(tmp_path, body=body)
 
     assert completed.returncode == 2, why
     assert completed.stdout.strip() == "deny", why
@@ -987,7 +933,6 @@ def test_a_contradiction_below_the_receipt_is_not_read(tmp_path: Path) -> None:
     trailing_block = f"\nDrain-Review-Verdict: BLOCK\nDrain-Review-Head: {HEAD}\n"
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body() + trailing_block,
         comments=((ARTIFACT_URL, "OWNER", _attestation() + trailing_block),),
     )
@@ -1007,7 +952,7 @@ def test_a_contradiction_below_the_receipt_is_not_read(tmp_path: Path) -> None:
 def test_only_blank_lines_may_precede_the_receipt(tmp_path: Path, prefix: str, why: str) -> None:
     # Blank lines cannot hide anything, and an editor or a paste often adds one.
     completed = _run_blocking(
-        tmp_path, title="deploy: a thing (Tier 2)", body=prefix + _receipt_body()
+        tmp_path, body=prefix + _receipt_body()
     )
 
     assert completed.returncode == 0, why
@@ -1024,7 +969,7 @@ def test_only_blank_lines_may_precede_the_receipt(tmp_path: Path, prefix: str, w
 def test_trailing_whitespace_does_not_void_a_receipt(tmp_path: Path, line: str, why: str) -> None:
     # Trailing whitespace hides nothing, so refusing it would only be a trap.
     body = f"{line}\nDrain-Review-Head: {HEAD}\nDrain-Review-Artifact: {ARTIFACT_URL}\n"
-    completed = _run_blocking(tmp_path, title="deploy: a thing (Tier 2)", body=body)
+    completed = _run_blocking(tmp_path, body=body)
 
     assert completed.returncode == 0, why
     assert completed.stdout.strip() == "allow"
@@ -1084,7 +1029,6 @@ def test_the_cited_comment_must_itself_publish_the_approval(
     """
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(),
         comments=((ARTIFACT_URL, "OWNER", comment_body),),
     )
@@ -1098,19 +1042,16 @@ def test_the_body_and_the_comment_must_agree_on_the_head(tmp_path: Path) -> None
     # Change either half alone and it refuses.
     agreeing = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(),
         comments=((ARTIFACT_URL, "OWNER", _attestation(HEAD)),),
     )
     body_stale = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(head="b" * 40),
         comments=((ARTIFACT_URL, "OWNER", _attestation(HEAD)),),
     )
     comment_stale = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(),
         comments=((ARTIFACT_URL, "OWNER", _attestation("b" * 40)),),
     )
@@ -1128,7 +1069,6 @@ def test_a_second_trusted_comment_can_carry_the_approval(tmp_path: Path) -> None
     other = f"https://github.com/{REPO}/pull/{PR}#issuecomment-1111111111"
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(),
         comments=(
             (other, "OWNER", "Round 1: BLOCK, see below.\n"),
@@ -1146,7 +1086,6 @@ def test_citing_the_wrong_comment_of_two_fails(tmp_path: Path) -> None:
     blocked = f"https://github.com/{REPO}/pull/{PR}#issuecomment-1111111111"
     completed = _run_blocking(
         tmp_path,
-        title="deploy: a thing (Tier 2)",
         body=_receipt_body(url=blocked),
         comments=(
             (blocked, "OWNER", _attestation(verdict="BLOCK")),
@@ -1168,31 +1107,20 @@ def test_an_unreadable_hits_file_fails_closed(tmp_path: Path) -> None:
     assert "could not be read" in completed.stderr
 
 
-def test_a_proven_inert_footprint_outranks_the_label_but_not_a_tier2_title(
-    tmp_path: Path,
-) -> None:
-    # A deletion-only quarantine ledger edit, or an AST-identical authority
-    # file, must stay label-exempt: the gate itself forces that maintenance and
-    # a content proof beats a declaration ABOUT those paths. A Tier 2 title is
-    # the author declaring the whole change needs review, which no path proof
-    # can answer.
-    exempt = _run_blocking(tmp_path, labels="infra-change", footprint_exempt=True)
-    still_tier2 = _run_blocking(
-        tmp_path,
-        title="tests: drop a stale quarantine entry (Tier 2)",
-        labels="infra-change",
-        footprint_exempt=True,
-    )
+def test_a_proven_inert_footprint_stands_the_receipt_down(tmp_path: Path) -> None:
+    # A deletion-only quarantine ledger edit, or an AST-identical authority file,
+    # is exempt: the gate itself forces that maintenance and the proof is about
+    # content, not a declaration. But only when it covers the WHOLE footprint —
+    # one unproven hit left over and the receipt stands.
+    exempt = _run_blocking(tmp_path, hits=(), footprint_exempt=True)
     unproven_leftover = _run_blocking(
         tmp_path,
-        labels="infra-change",
-        hits=("deploy/install-host-uptime-services.sh",),
+        hits=("scripts/ci_required_tests.py",),
         footprint_exempt=False,
     )
 
     assert exempt.returncode == 0
     assert exempt.stdout.strip() == "receipt-not-required"
-    assert still_tier2.returncode == 2
     assert unproven_leftover.returncode == 2
 
 
@@ -1208,11 +1136,11 @@ def test_receipt_requirement_survives_a_rename_duplicated_hit(tmp_path: Path) ->
     assert completed.stderr.count("tinyassets/auth/provider.py") == 1
 
 
-# The exact list the workflow's GATE_RE protected before 2026-09-26, when the
-# receipt requirement widened to every release-critical path. Each of these can
-# neuter the check that judges it, so losing the receipt on any of them is a
-# silent regression — SENSITIVE_RE must keep covering all of them.
-_FORMER_GATE_PATHS = (
+# Each of these can neuter the check that judges it from the PR's own checkout,
+# so losing the receipt on any one is a silent regression. Pinned by name because
+# a widening of this set was built and then cut, and the cut must not have
+# dropped one on the way back.
+_GATE_DEFINING_PATHS = (
     ".github/workflows/tests.yml",
     ".github/workflows/pr-scope-guard.yml",
     ".github/known-failing-tests.txt",
@@ -1229,11 +1157,35 @@ def _workflow_regex(name: str) -> str:
     return match.group("pattern")
 
 
-def test_every_formerly_gate_defining_path_still_demands_a_receipt() -> None:
+def test_every_gate_defining_path_demands_a_receipt() -> None:
+    gate = re.compile(_workflow_regex("GATE_RE"))
     sensitive = re.compile(_workflow_regex("SENSITIVE_RE"))
 
-    for path in _FORMER_GATE_PATHS:
-        assert sensitive.match(path), f"{path} lost its receipt requirement"
+    for path in _GATE_DEFINING_PATHS:
+        assert gate.match(path), f"{path} lost its receipt requirement"
+        # And still needs the scope declaration, which is the older, wider rule.
+        assert sensitive.match(path), f"{path} left the release-critical set"
+
+
+def test_ordinary_release_critical_paths_need_no_receipt() -> None:
+    """The cut, asserted: `deploy/` and a random workflow declare, not stamp.
+
+    Widening the receipt to every release-critical path would have made 29 of the
+    60 most recently merged PRs wait for a stamp. These paths are release-critical
+    — they need the `infra-change` label — but they do not need a review receipt,
+    exactly as before 2026-09-26.
+    """
+    gate = re.compile(_workflow_regex("GATE_RE"))
+    sensitive = re.compile(_workflow_regex("SENSITIVE_RE"))
+
+    for path in (
+        "deploy/install-host-uptime-services.sh",
+        ".github/workflows/deploy-prod.yml",
+        "Dockerfile",
+        ".dockerignore",
+    ):
+        assert sensitive.match(path), f"{path} should still be release-critical"
+        assert not gate.match(path), f"{path} must NOT require a receipt"
 
 
 def test_authority_paths_still_demand_a_receipt() -> None:
@@ -1258,7 +1210,7 @@ def _extract(pattern: str) -> str:
 
 
 @pytest.mark.parametrize(
-    "hits,authority,exempt_fired,expected_hits,expected_exempt",
+    "gate_hits,authority,exempt_fired,expected_hits,expected_exempt",
     [
         ("", "", "0", [], "0"),
         ("deploy/x.sh", "", "0", ["deploy/x.sh"], "0"),
@@ -1274,14 +1226,14 @@ def _extract(pattern: str) -> str:
         ),
         # AST proof cleared AUTHORITY_HITS and nothing else was release-critical.
         ("", "", "1", [], "1"),
-        # AST proof cleared one authority file but a release-critical path
+        # AST proof cleared one authority file but a gate-defining path
         # remains: the proof does not cover the footprint, so no exemption.
-        ("deploy/x.sh", "", "1", ["deploy/x.sh"], "0"),
+        ("scripts/ci_required_tests.py", "", "1", ["scripts/ci_required_tests.py"], "0"),
     ],
 )
 def test_receipt_footprint_is_the_deduplicated_union(
     tmp_path: Path,
-    hits: str,
+    gate_hits: str,
     authority: str,
     exempt_fired: str,
     expected_hits: list[str],
@@ -1312,7 +1264,7 @@ def test_receipt_footprint_is_the_deduplicated_union(
         check=False,
         env={
             **os.environ,
-            "HITS": hits,
+            "GATE_HITS": gate_hits,
             "AUTHORITY_HITS": authority,
             "EXEMPT_FIRED": exempt_fired,
             "RUNNER_TEMP": str(tmp_path),
@@ -1475,7 +1427,12 @@ def test_scope_guard_wires_the_blocking_review_decision() -> None:
         "labeled",
         "unlabeled",
     }, declared
-    assert "PR_TITLE: ${{ github.event.pull_request.title }}" in text
+    # WHO needs a receipt is unchanged: the title and the labels are not inputs
+    # to the decision. Those triggers were built and cut, so no plumbing for them
+    # may come back without a deliberate edit here.
+    assert "PR_TITLE" not in text, "the Tier 2 title trigger was cut"
+    assert "--review-title" not in text, "the Tier 2 title trigger was cut"
+    assert "--review-labels" not in text, "the infra-change trigger was cut"
     # The mode flag must REACH python, not merely exist in the file. Deleting
     # the array expansion from the invocation survived a bare
     # `"--blocking-review" in text` check (cross-family review round 2).
@@ -1486,8 +1443,6 @@ def test_scope_guard_wires_the_blocking_review_decision() -> None:
     ), "the blocking-review mode flag must be passed to the policy script"
     assert 'RECEIPT_ARGS+=(--review-footprint-exempt)' in text
     for flag in (
-        '--review-title "${PR_TITLE:-}"',
-        '--review-labels "${LABELS:-}"',
         '--review-hits-file "$RUNNER_TEMP/receipt-hits.txt"',
         '--review-repo "${REPO}"',
         '--review-pr "${PR}"',
