@@ -1,12 +1,13 @@
 ## MODIFIED Requirements
 
 ### Requirement: Learning is a separate tolerant model-extracted step with field-specific filtering, and reply delivery survives failures
-Learning SHALL be a step separate from the reply, and it SHALL NOT run on the
-founder's reply clock: `converse` SHALL NOT make a learning provider call between
-the reply existing and returning it. A lesson SHALL be settled either by the
-universe recording it inside a LATER turn it is already paying for, or by the
-deferred extraction (`deferred-turn-learning`), whose prompt asks for durable facts
-explicitly stated in the founder's pending message span.
+Learning SHALL be a step separate from the reply. A turn that recorded what it was
+taught IN-TURN, settling its conversation's learned cursor
+(`deferred-turn-learning`), SHALL NOT then make a separate learning provider call.
+A turn whose cursor is still unsettled when it ends SHALL run that separate call
+after the reply turn, as before, whose prompt asks for durable facts explicitly
+stated in the founder's latest message — so no lesson is lost and no turn is slower
+than before.
 Parsing SHALL tolerate fenced JSON or an embedded top-level object and return
 an empty proposal when no dict can be recovered. `commit_learning` SHALL
 string-coerce `name`, treat non-dict `soul` as empty, accept only governed soul
@@ -20,10 +21,13 @@ be logged. Any other extraction/commit exception SHALL be logged, and no learnin
 failure SHALL prevent reply delivery or leave a lesson silently lost — an
 unsettled cursor is the record that it is still owed.
 
-#### Scenario: the reply does not wait for learning
-- **WHEN** a founder turn's writer call produces the reply
-- **THEN** `converse` returns it with no further model round-trip
-- **AND** the lesson is left pending against the conversation's learned cursor
+#### Scenario: a turn that recorded its lesson does not pay for a second pass
+- **WHEN** a founder turn recorded what it was taught and its cursor is settled at turn end
+- **THEN** `converse` returns the reply with no further model round-trip
+
+#### Scenario: a turn that recorded nothing keeps the guaranteed pass
+- **WHEN** the cursor is still unsettled when the turn ends
+- **THEN** the separate learning provider call runs after the reply turn, as before
 
 #### Scenario: tolerant parsing and field-specific filtering
 - **WHEN** extraction returns fenced or embedded JSON with mixed valid and invalid fields

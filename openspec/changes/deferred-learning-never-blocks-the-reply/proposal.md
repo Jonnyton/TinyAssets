@@ -29,22 +29,28 @@ platform's fallback stops being on the founder's clock.
   ("the last founder turn whose lesson is settled"), so "what have I not learned
   yet?" is derivable from turns the store already holds verbatim. No queue table,
   no migration of existing rows.
-- **Stage 1, the common path: the universe records the lesson inside its NEXT
-  turn, at zero extra cost.** A turn with an unsettled watermark is told so, and
-  it already holds `write_brain`, the previous turn in its history, and its brain
-  files. Recording advances the watermark. This removes the round-trip
-  permanently rather than moving it.
-- **Stage 2, the fallback: a deferred extraction, off the founder's clock.** A
-  watermark unsettled past a bound (turns or minutes) is extracted by the daemon's
-  existing periodic maintenance worker under a NEW `converse_learning` operation.
-  Rare by construction, because stage 1 handles the ordinary case.
-- **Foreground budget priority is structural, not arithmetic.** The deferred
-  extraction is refused while that universe has ANY in-flight foreground
-  reservation, and it reserves only if a full foreground turn's worth of allowance
-  remains after it. It also keeps `secondary_call=True`, so it can never write the
-  shared cooldown.
-- **`converse` no longer calls the extractor.** `_learn_from_turn` is removed from
-  the reply path; the reply returns as soon as it exists.
+- **The turn records the lesson IN-TURN, at zero extra cost.** A turn whose cursor
+  is unsettled is told so; it already holds `write_brain` and the exchange, so it
+  records inside the round-trips it is already paying for, and that advances the
+  cursor. Not "in the next turn" — a founder who never sends another message would
+  lose the fact (lead, 2026-09-26).
+- **The existing synchronous pass stays as the fallback.** If the cursor is still
+  unsettled when the turn ends, `extract_learning` runs exactly as it does today.
+  So a turn that recorded its own lesson is faster, a turn that did not is no
+  slower, and **no lesson is ever lost** — continuous self-learning is a founder
+  law, so the guaranteed pass does not go away before something equally guaranteed
+  replaces it.
+- **The deferred, unattended path is a SEPARATE change.** It is designed against the
+  cursor-settle rate this change produces, not against a guess. Its authority
+  decision (D1) is settled here so it inherits it.
+- **Foreground budget priority is structural, not arithmetic** — the constraint the
+  deferred change inherits: refused while that universe has ANY in-flight
+  foreground reservation, and reserved only if a full foreground turn's allowance
+  remains after it. `secondary_call=True` stays, so it can never write the shared
+  cooldown.
+- **`converse` calls the extractor only when the cursor is unsettled**, so the
+  common case returns as soon as the reply exists and the guaranteed case is
+  unchanged.
 - **No lease outlives its request.** Deliberately NOT the design. Authority at
   drain time is RE-DERIVED from durable ownership the way `background_branch_run`
   already does, so a binding the owner has since revoked fails closed instead of
@@ -61,9 +67,9 @@ platform's fallback stops being on the founder's clock.
 
 ### Modified Capabilities
 - `universe-personification-and-relay`: the as-built requirement currently reads
-  "After the reply turn, `converse` SHALL run a separate provider call". That
-  becomes: the reply SHALL NOT wait on learning, and learning SHALL be settled
-  either in a later turn or by the deferred path — with the tolerant parsing,
+  "After the reply turn, `converse` SHALL run a separate provider call"
+  unconditionally. That becomes: the separate call runs when the turn did NOT
+  record its own lesson, and is skipped when it did — with the tolerant parsing,
   field filtering and never-break-the-reply guarantees preserved verbatim.
 
 ## Impact

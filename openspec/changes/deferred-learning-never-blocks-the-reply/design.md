@@ -27,8 +27,11 @@ And a founder rule: every account behaves the same — no plan or tier branches.
 ## Goals / Non-Goals
 
 **Goals:**
-- The reply returns as soon as it exists. No learning work on the founder's clock.
-- The founder's next turn still knows what they just taught (read-your-writes).
+- A turn that recorded its own lesson returns its reply immediately. No turn is
+  ever slower than it is today.
+- No lesson is ever lost — continuous self-learning is a founder law, so the
+  guaranteed pass survives until something equally guaranteed replaces it.
+- The founder's next turn knows what they just taught (read-your-writes).
 - The foreground turn keeps budget priority, structurally.
 - Identical on every account, every provider, every universe.
 
@@ -68,34 +71,47 @@ time. That is already solved in this repo the same way: `background_branch_run`
 derives the owner from durable ownership, not from a request. The deferred path
 inherits that precedent rather than inventing one.
 
-### D2 — Stage 1 removes the call; stage 2 is the rare fallback
+### D2 — Stage 1 records IN-TURN; the existing pass is the fallback, still synchronous
 
-The uncomfortable part of any deferred design is the platform spending the user's
-provider budget with no user present. So spend it as rarely as possible.
+**Re-scoped by the lead, 2026-09-26, and the correction matters.** My first draft
+had stage 1 recording the lesson in the NEXT turn. That loses the fact outright if
+the founder never sends another message, and "observable" is not "kept":
+continuous self-learning is a founder law, so no lesson may be at risk of never
+being written. It also would not have removed the call — it moved it.
+
+The shape is therefore:
 
 ```
-turn N:  reply returned immediately           watermark: turn N unsettled
-turn N+1: prompt says "you have an unrecorded  ← ZERO extra calls
-          lesson from last turn"; the turn
-          already holds write_brain, the
-          previous turn in history, and its
-          brain files. It writes → watermark
-          advances.
-   |
-   └─ still unsettled after K turns or T minutes
-        → stage 2: deferred extraction on the maintenance worker
+turn N ─ the turn itself is told: "you have not yet recorded what your founder
+         taught you THIS turn". It already holds write_brain and the exchange,
+         so it records IN-TURN, inside the round-trips it is already paying for,
+         and that advances the cursor.
+           │
+           ├─ cursor settled when the turn ends  → reply returns immediately.
+           │                                        ZERO extra round-trips. The
+           │                                        common case once the prompt
+           │                                        asks for it.
+           │
+           └─ cursor NOT settled when the turn ends → the existing post-reply
+                                                      extract_learning runs,
+                                                      synchronously, exactly as
+                                                      today. Nothing is lost,
+                                                      ever.
 ```
 
-Stage 1 is where the saving is permanent: the round-trip disappears rather than
-moving. It is also more faithful — the universe writes with the whole turn in
-context and edits rather than overwrites, which is what "the universe is the sole
-writer of its own brain" already asks for.
+So the latency win is conditional and self-limiting: a turn that recorded its own
+lesson pays nothing extra; a turn that did not pays exactly what it pays today.
+No turn is ever slower than now, and no lesson is ever dropped.
 
-Stage 1's known failure mode is real and is why stage 2 exists: on 2026-08-22 the
+This also makes stage 2 a genuinely measurable proposition rather than a guess:
+the cursor-settle RATE from stage 1 is the number that says how often the fallback
+still fires, and stage 2 (the deferred, unattended path with D1 authority) is
+designed against that rate instead of against my estimate of it.
+
+Stage 1's own risk is unchanged and is why the fallback stays: on 2026-08-22 the
 universe recited founder-taught facts in chat without writing them, which is why
-the `brain_section` instruction was added in the first place. The difference now is
-that the watermark makes the failure OBSERVABLE (an unsettled cursor) instead of
-silent, and stage 2 is a measurable backstop rather than an every-turn tax.
+the `brain_section` instruction exists at all. The difference is that the fallback
+now runs only when the in-turn write did not happen, instead of on every turn.
 
 ### D3 — Foreground priority is structural
 
@@ -123,26 +139,30 @@ that runs twice advances the same cursor to the same place.
 A burst of quick turns therefore drains as ONE extraction over the pending span
 rather than one per turn — strictly fewer calls than today, and better grounded.
 
-### D5 — Cadence
+### D5 — Cadence (stage 2 only)
 
-The existing maintenance thread ticks every 300 s, which is too slow to be the only
-answer for a founder who types again in ten seconds. Two cheap additions:
-
-* the drain gets its own short tick (a no-op when every cursor is settled — one
-  indexed read);
-* a turn whose own session has an unsettled cursor is told about it in stage 1, so
-  the read-your-writes case is answered by the turn itself and never waits for a
-  tick.
+Read-your-writes is no longer a cadence question: stage 1 records inside the turn
+that learned the fact, so the founder's next turn sees it whatever the tick does,
+and the synchronous fallback covers the turn that did not record. Cadence therefore
+only governs stage 2, once it exists, and its job is narrower: settle the leftovers
+that the fallback also failed to settle (a 429'd extractor, a crash between reply
+and write). The existing maintenance thread's 300 s tick is adequate for that, plus
+a no-op fast path when every cursor is settled — one indexed read.
 
 ## Risks / Trade-offs
 
-- **Stage 1 does not write, so a lesson sits unrecorded.** → the watermark makes it
-  visible and stage 2 settles it; a metric on cursor age is the thing to watch
-  live, and it is the first number to report after deploy.
-- **The founder's next turn misses what they just taught.** → stage 1 puts the
-  previous turn in front of the model with an explicit instruction to record it,
-  and the turn's own history already contains the exchange, so the answer does not
-  depend on the brain file being written yet.
+- **Stage 1 does not write, so nothing is saved.** → the existing synchronous pass
+  runs at the end of that same turn, exactly as today. The only cost is that the
+  turn is no faster than now. Nothing is lost, which is the whole reason the
+  fallback stays (lead, 2026-09-26).
+- **The in-turn instruction makes the turn write things it should not.** → the
+  wording adds no new authority: `write_brain` is already founder-allowlisted and
+  already governed by the same honesty floor and the same "only clear, direct,
+  stable facts my founder actually gave me" rule the `brain_section` states. What
+  changes is that the turn is told whether it has already done it.
+- **The prompt grows.** → one short block, and only for a turn with an unsettled
+  cursor. The per-round budget ratchet
+  (`tests/test_converse_turn_cost.py`) is what keeps that honest.
 - **The daemon spends the user's budget with no user present.** → rare by
   construction (stage 2 only), pinned to one operation, one prompt shape, one
   effect, refused while any foreground reservation is in flight, floored, and
@@ -162,19 +182,31 @@ cursor starts at its latest turn, so history is not re-extracted — deliberate:
 re-extracting months of turns would be a spend surprise). Rollback is the revert;
 the cursor table becoming unused is harmless.
 
-The behaviour change is observable in one number: a one-tool turn drops from 3
-model round-trips to 2. `tests/test_converse_turn_cost.py` asserts 3 today, so
-that assertion flipping IS the deliverable.
+The behaviour change is observable in one number, now CONDITIONAL: a one-tool turn
+whose in-turn write settled the cursor costs 2 model round-trips instead of 3, and a
+turn that did not record still costs 3. `tests/test_converse_turn_cost.py` asserts 3
+unconditionally today, so it gains the settled case as a second scenario rather than
+flipping outright.
+
+## Resolved (lead, 2026-09-26)
+
+- **D1 CONFIRMED.** Re-derive authority at drain time from durable ownership; do
+  not lengthen the lease.
+- **Stage 1 alone: OVERRULED as I scoped it.** Removing the guaranteed pass is not
+  acceptable, and recording "in the NEXT turn" loses the fact if the founder never
+  sends one. Stage 1 records IN-TURN and the existing synchronous pass remains the
+  fallback whenever the cursor is unsettled at turn end (D2).
+- **This change is stage 1 + the fallback.** Stage 2 — the deferred, unattended
+  path under D1 authority — is its own change, designed against the cursor-settle
+  rate stage 1 produces.
 
 ## Open Questions
 
-- **K and T for stage 2** (turns / minutes before the fallback fires). Proposal: 1
-  turn or 10 minutes, tuned after the live cursor-age number exists. Deliberately
-  not guessed harder than that — my own memory of this repo says a text heuristic
-  tuned on invented rows fails on the real distribution.
-- **Should stage 2 exist at deploy, or should stage 1 ship alone and be measured
-  first?** Shipping stage 1 alone is smaller, needs NO authority change at all, and
-  its failure mode is observable rather than silent. That would split this into two
-  changes and get the founder's latency win with nothing to review on authority.
-  **Recommendation: yes — ship stage 1 first.** Flagged for the lead: it changes
-  the scope of this change directory.
+- **Does the in-turn instruction actually get obeyed?** That is the whole bet, and
+  it is not answerable locally: 2026-08-22 says the universe can be told to write
+  and not write. The cursor-settle rate is the measurement, and it is the first
+  number to report after deploy. If it is low, stage 2 is not optional and the
+  latency win is small — which is exactly why the fallback stays.
+- **Stage 2's trigger bound** (how long an unsettled cursor may sit before the
+  unattended path fires) is deliberately left to that change, when the settle rate
+  exists. Guessing it now would be tuning a threshold on invented data.

@@ -1,42 +1,37 @@
 ## Tasks
 
-Held at the design gate: the lead reviews design.md before any code, because D1
-settles how unattended provider authority is derived. Task 1 is the question that
-may re-scope everything below it.
+Re-scoped by the lead, 2026-09-26: D1 confirmed; stage 1 alone overruled. This
+change is the IN-TURN recording plus the existing synchronous fallback, so no
+lesson is ever lost and no turn is ever slower than today. Stage 2 (the deferred,
+unattended path under D1 authority) is its own change, designed against the
+cursor-settle rate this produces.
 
-- [ ] 1. Lead decision on design.md Open Question 2: ship STAGE 1 ALONE first (no
-  authority change at all, the latency win lands, the failure mode becomes
-  observable), and make stage 2 its own change — or keep both stages here. Record
-  the answer in design.md before starting task 2.
-- [ ] 2. The learned cursor: additive table beside `conversation_backfill`, read +
+- [ ] 1. The learned cursor: additive table beside `conversation_backfill`, read +
   advance, starting at the latest turn for an existing conversation so history is
   never re-extracted. Idempotent advance.
-- [ ] 3. Remove `_learn_from_turn` from the reply path in `converse`, and leave the
-  turn's pending span recorded against the cursor instead.
-- [ ] 4. Flip `tests/test_converse_turn_cost.py`: a one-tool turn is TWO model
-  round-trips, and nothing runs between the reply existing and `converse`
-  returning. That assertion flipping is the deliverable.
-- [ ] 5. Stage 1: a turn whose cursor is unsettled is told so and given the earlier
-  exchange, with no extra round-trip; recording advances the cursor.
-- [ ] 6. Test stage 1 end to end on the real converse path: unsettled cursor ->
-  the turn is told -> an in-turn brain write -> cursor advanced -> no extra call.
+- [ ] 2. Settle the cursor when the universe writes its own brain through the
+  served brain-write handle, so recording is what advances it — never the reply,
+  never the request completing.
+- [ ] 3. Tell the turn: a short block, only when the cursor is unsettled, saying the
+  lesson is unrecorded and that the exchange is in front of it. No extra model
+  call, no new authority — the brain-write gate and honesty floor are untouched.
+- [ ] 4. `converse` runs the existing `_learn_from_turn` ONLY when the cursor is
+  unsettled at turn end, and skips it entirely when the turn already recorded.
+- [ ] 5. Test the settled path on the real converse path: an in-turn brain write ->
+  cursor advanced -> `converse` returns with NO third round-trip.
+- [ ] 6. Test the unsettled path: no in-turn write -> the synchronous extraction
+  still runs, exactly as today, and the lesson is persisted.
 - [ ] 7. Test the cursor's failure semantics: a failed or skipped write leaves it
-  unsettled, a crash never advances it, a burst is one span, and a double drain
-  advances to the same place.
-
-Stage 2 (only if task 1 keeps it here):
-
-- [ ] 8. `converse_learning` as a known operation whose authority is RE-DERIVED at
-  drain time from durable ownership, failing closed on a revoked binding, a changed
-  home or a deleted universe. No lease outlives its request.
-- [ ] 9. The foreground floor: refused while the universe has any in-flight
-  foreground reservation, and refused if reserving would leave less than one
-  foreground turn's allowance; still `secondary_call=True` and never sleeping.
-- [ ] 10. The drain tick on the existing maintenance worker: a no-op when every
-  cursor is settled, bounded per tick, and it can never raise into the loop.
-- [ ] 11. Test the authority and the floor by driving the REAL drain: revoked
-  binding refuses, in-flight foreground reservation defers, floor refuses, a 429
-  leaves the shared cooldown untouched, and the operation cannot be substituted.
+  unsettled, a crash never advances it, and a double advance is idempotent.
+- [ ] 8. Test that a founder who never sends another message still has their lesson
+  persisted — the regression the lead caught in the first draft.
+- [ ] 9. `tests/test_converse_turn_cost.py`: keep the 3-round-trip assertion for the
+  unsettled turn and add the 2-round-trip assertion for the settled one, so the
+  saving is pinned as conditional rather than claimed as unconditional.
+- [ ] 10. Mutation-check each new guard: skipping the cursor read, advancing on the
+  reply instead of the write, and dropping the fallback must each turn a test red.
+- [ ] 11. One path for every account: no plan, tier, provider, source or universe
+  branch in the cursor, the prompt block or the fallback decision — asserted.
 - [ ] 12. Sync the delta specs into `openspec/specs/`, archive in this same lane,
-  and report the first live cursor-age number after deploy (the metric that says
-  whether stage 2 fires at all).
+  and report the first live cursor-settle rate after deploy — the number stage 2 is
+  designed against.

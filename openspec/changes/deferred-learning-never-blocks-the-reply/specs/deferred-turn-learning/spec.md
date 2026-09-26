@@ -1,16 +1,20 @@
 ## ADDED Requirements
 
-### Requirement: The founder's reply never waits on learning
+### Requirement: A turn that recorded its own lesson does not pay for a second pass
 
-`converse` SHALL return the reply as soon as the writer turn produces it. No
-learning extraction, persistence or bookkeeping call SHALL run between the reply
-existing and `converse` returning it, because the HTTP response is the delivery and
-anything before it is the founder's wall clock.
+When a founder turn has recorded what it was taught — settling its conversation's
+learned cursor — `converse` SHALL return the reply with no further model
+round-trip. When the cursor is NOT settled at turn end, the existing synchronous
+extraction SHALL still run, so no lesson is ever lost. No turn SHALL become slower
+than it was before this requirement.
 
-#### Scenario: a served turn makes no bookkeeping round-trip
-- **WHEN** a founder turn completes its writer call, with or without tool steps
+#### Scenario: the settled turn returns immediately
+- **WHEN** a founder turn records its lesson in-turn and its cursor is settled at turn end
 - **THEN** `converse` returns the reply without any further model round-trip
-- **AND** the number of model round-trips for a turn with one tool step is exactly two
+
+#### Scenario: the unsettled turn keeps the guaranteed pass
+- **WHEN** the cursor is still unsettled when the turn ends
+- **THEN** the existing extraction runs synchronously, as before, and the lesson is persisted
 
 #### Scenario: learning still never breaks a turn
 - **WHEN** any part of the learning path fails, at any stage
@@ -38,22 +42,36 @@ the retry state — and never the reverse.
 - **WHEN** the cursor is created for a conversation that already has history
 - **THEN** it starts at the latest turn, so past turns are never re-extracted
 
-### Requirement: The turn records its own lesson first, at no extra cost
+### Requirement: The turn records its own lesson in-turn, at no extra cost
 
-A founder turn whose conversation has an unsettled cursor SHALL be told so, and
-SHALL be able to record the lesson with the brain-write tool it already holds,
-inside the turn it is already paying for. This path SHALL NOT add a model call.
+A founder turn SHALL be told whether it has yet recorded what it was taught, and
+SHALL record it with the brain-write tool it already holds, inside the round-trips
+it is already paying for. Telling it SHALL add no model call and SHALL grant no new
+authority: the brain-write gate, the honesty floor and the "only clear, direct,
+stable facts the founder actually gave me" rule are unchanged.
+
+Recording SHALL NOT be deferred to a later turn, because a founder who never sends
+another message would lose the fact.
 
 #### Scenario: the turn is told what it has not recorded
 - **WHEN** a founder turn is assembled for a conversation with an unsettled cursor
-- **THEN** the turn is told a lesson from the earlier turn is unrecorded, and that earlier exchange is available to it
+- **THEN** the turn is told the lesson is unrecorded and has the exchange available to it
 - **AND** no extra model round-trip is made to tell it
 
 #### Scenario: recording in-turn settles the cursor
 - **WHEN** the turn writes the founder-taught fact to its brain
-- **THEN** the cursor advances and nothing further is owed for that span
+- **THEN** the cursor advances and nothing further is owed for that turn
 
-### Requirement: The deferred fallback runs off the founder's clock, with re-derived authority
+#### Scenario: nothing waits for a turn that may never come
+- **WHEN** the founder sends no further message after a turn
+- **THEN** that turn's lesson is already recorded, or was persisted by the synchronous fallback before the turn ended
+
+### Requirement: The deferred path, when it exists, re-derives its authority
+
+DEFERRED to its own change (lead, 2026-09-26): this change ships the in-turn
+recording plus the existing synchronous fallback, and stage 2 is designed against
+the cursor-settle rate this produces. The requirement is stated here because it is
+the constraint that change inherits, and because D1 is settled.
 
 A cursor unsettled past its bound SHALL be settled by a deferred extraction that
 runs outside any founder request. Its authority SHALL be RE-DERIVED at that moment
