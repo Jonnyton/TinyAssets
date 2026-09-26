@@ -202,6 +202,76 @@ on_exit() {
 }
 trap on_exit EXIT
 
+# ---------------------------------------------------------------------------
+# Idempotence gate -- runs BEFORE the first mutation on purpose.
+#
+# Every merge used to run the whole transaction below, stopping every timer and
+# restarting them at the end, even when it installed byte-identical files. That
+# is not free. daemon-watchdog.timer declares OnBootSec=2min, an elapse long
+# past on a host that has been up for days, so systemd fires
+# daemon-watchdog.service the instant the timer is started again. That run
+# lands seconds after the deploy recreated the daemon container, while the
+# fresh container has not written a heartbeat yet -- and daemon-watchdog.sh
+# restarts the daemon when the heartbeat is stale. Result: every merge killed
+# in-flight user turns TWICE, once for the deploy's own recreate and once for a
+# watchdog tick this script provoked.
+#
+# So: a merge that installs nothing must change nothing. Content is the test,
+# not the commit sha -- releases are named with SOURCE_SHA, so a byte-identical
+# bundle from a new merge is a new directory name and would otherwise always
+# look like work to do.
+# ---------------------------------------------------------------------------
+current_release_is_exact() {
+    local current_dir relative mode installed_file unit timer
+    [[ -L "${RUNTIME_ROOT}/current" ]] || return 1
+    current_dir="$(cd -- "${RUNTIME_ROOT}" && readlink -f -- current)" || return 1
+    [[ -n "${current_dir}" && -d "${current_dir}" ]] || return 1
+
+    for relative in "${RUNTIME_FILES[@]}"; do
+        mode=644
+        [[ "${relative}" == *.sh ]] && mode=755
+        installed_file="${current_dir}/${relative}"
+        [[ -f "${installed_file}" && ! -L "${installed_file}" ]] || return 1
+        cmp -s "${SOURCE_ROOT}/${relative}" "${installed_file}" || return 1
+        [[ "$(stat -c %a "${installed_file}")" == "${mode}" ]] || return 1
+    done
+    # Same exactness the repair path below demands: no extra files, no extra
+    # directories, nothing that is neither.
+    [[ "$(find "${current_dir}" -type f -print | wc -l)" -eq "${#RUNTIME_FILES[@]}" ]] \
+        || return 1
+    [[ "$(find "${current_dir}" -type d -print | wc -l)" \
+        -eq "${EXPECTED_RELEASE_DIRECTORY_COUNT}" ]] || return 1
+    if find "${current_dir}" ! -type f ! -type d -print -quit | grep -q .; then
+        return 1
+    fi
+
+    for unit in "${UNIT_FILES[@]}"; do
+        [[ -f "${SYSTEMD_DIR}/${unit}" && ! -L "${SYSTEMD_DIR}/${unit}" ]] || return 1
+        cmp -s "${SOURCE_ROOT}/deploy/${unit}" "${SYSTEMD_DIR}/${unit}" || return 1
+    done
+
+    # The sudoers rule is part of what this script installs, so a drifted or
+    # missing one still needs the transaction.
+    [[ -f "${SUDOERS_DIR}/tinyassets-watchdog" ]] || return 1
+    printf '%s ALL=(root) NOPASSWD:/usr/bin/systemctl restart tinyassets-daemon.service\n' \
+        "${TINYASSETS_USER}" \
+        | cmp -s - "${SUDOERS_DIR}/tinyassets-watchdog" || return 1
+
+    # A disabled or dead timer is drift the transaction must repair, even when
+    # every file already matches.
+    for timer in "${TIMERS[@]}"; do
+        "${SYSTEMCTL_BIN}" is-enabled "${timer}" >/dev/null 2>&1 || return 1
+        "${SYSTEMCTL_BIN}" is-active "${timer}" >/dev/null 2>&1 || return 1
+    done
+    return 0
+}
+
+if current_release_is_exact; then
+    log "already current: runtime, units, sudoers and timers all match; nothing touched"
+    SUCCESS=1
+    exit 0
+fi
+
 TIMERS_PAUSED=1
 for timer in "${TIMERS[@]}"; do
     load_state="$(

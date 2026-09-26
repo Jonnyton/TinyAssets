@@ -66,6 +66,54 @@ def _is_wsl_bash() -> bool:
     return probe.returncode == 0
 
 
+def _require_meaningful_mode_checks(where: Path) -> None:
+    """Skip unless this host can exercise the installer's mode comparison.
+
+    Two preconditions, both real and both satisfied on Linux CI:
+
+    * ``flock`` must exist. Git Bash ships none, and the installer refuses to
+      start without it.
+    * ``stat -c %a`` must report real mode bits **on the filesystem the test
+      installs into**. Under WSL the Windows drive is DrvFs, which answers
+      ``777`` for every file whatever ``chmod`` did. The installer compares
+      installed modes to decide whether a release is already exact, so there
+      that comparison can never match -- for a reason that has nothing to do
+      with the installer.
+
+    ``where`` must be the test's own ``tmp_path``: probing anywhere else
+    measures the wrong filesystem. An earlier version of this probed the
+    directory holding this file, which under WSL reported DrvFs even when
+    ``tmp_path`` was real ext4, and skipped tests that would have run.
+    """
+    if not _BASH:
+        pytest.skip("bash unavailable")
+    probe = where / ".mode-probe"
+    probe.write_text("x\n", encoding="utf-8")
+    try:
+        quoted = shlex.quote(_bash_path(probe))
+        result = subprocess.run(
+            [
+                _BASH,
+                "-lc",
+                f"command -v flock >/dev/null || exit 3; "
+                f"chmod 644 {quoted} && stat -c %a {quoted}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    finally:
+        probe.unlink(missing_ok=True)
+    if result.returncode == 3:
+        pytest.skip("flock is unavailable, so the installer refuses to start")
+    if result.stdout.strip() != "644":
+        pytest.skip(
+            "the install filesystem does not report real mode bits "
+            f"(stat -c %a said {result.stdout.strip()!r}); DrvFs under WSL"
+        )
+
+
 def _bash_path(path: Path) -> str:
     """Absolute path for bash — WITHOUT following symlinks.
 
@@ -840,6 +888,81 @@ def test_repeat_install_repairs_disabled_current_timer(tmp_path):
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     assert (state / f"{TIMERS[0]}.active").exists()
     assert (state / f"{TIMERS[0]}.enabled").exists()
+
+
+def test_repeat_install_with_identical_content_stops_no_timer(tmp_path):
+    """The second daemon restart per merge came from here.
+
+    Stopping ``daemon-watchdog.timer`` and starting it again is not free: the
+    timer declares ``OnBootSec=2min``, an elapse long past on a host up for
+    days, so systemd fires ``daemon-watchdog.service`` the instant the timer
+    starts. That run lands seconds after the deploy recreated the daemon, while
+    the fresh container has not written a heartbeat -- and the watchdog restarts
+    the daemon on a stale heartbeat. So every merge killed in-flight user turns
+    twice: once for the deploy's own recreate, once for a watchdog tick this
+    script provoked.
+
+    A merge that installs nothing must therefore touch nothing. The second run
+    here carries a DIFFERENT source sha with byte-identical content, which is
+    the real case: releases are named with the sha, so without a content
+    comparison every merge looks like work to do.
+    """
+    _require_meaningful_mode_checks(tmp_path)
+    env = _install_env(tmp_path)
+    first = _run_installer(env)
+    assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
+    log_path = tmp_path / "systemctl.log"
+    first_log = log_path.read_text(encoding="utf-8")
+    # The first install really did the transaction -- otherwise this test would
+    # pass by never installing anything at all. (It stops no timer: on a fresh
+    # host the units do not exist yet, so the pause loop sees `not-found`. The
+    # stop only has something to stop from the SECOND install onwards, which is
+    # exactly the case this test is about.)
+    assert "run:daemon-reload" in first_log
+    assert "run:enable --now" in first_log
+    release_before = _assert_current_release(tmp_path / "runtime")
+
+    log_path.unlink()
+    second = _run_installer(
+        {**env, "INSTALL_RUN_ID": "second", "TINYASSETS_SOURCE_SHA": "b" * 40}
+    )
+
+    assert second.returncode == 0, f"{second.stdout}\n{second.stderr}"
+    assert "already current" in second.stdout
+    second_log = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+    for forbidden in ("second:stop", "second:daemon-reload", "second:enable --now"):
+        assert forbidden not in second_log, second_log
+    # Nothing moved, and the live release is still the one already installed.
+    assert _assert_current_release(tmp_path / "runtime") == release_before
+
+
+def test_repeat_install_with_changed_content_still_stops_timers(tmp_path):
+    """The gate above must not make the installer inert. A real change still
+    takes the full transaction -- otherwise a watchdog edit would never reach
+    the host."""
+    _require_meaningful_mode_checks(tmp_path)
+    source = _copy_source(tmp_path)
+    env = _install_env(tmp_path, source)
+    assert _run_installer(env).returncode == 0
+    (source / "scripts" / "watchdog.py").write_text(
+        "WATCH = 2\n", encoding="utf-8", newline="\n"
+    )
+    log_path = tmp_path / "systemctl.log"
+    log_path.unlink()
+
+    result = _run_installer({**env, "INSTALL_RUN_ID": "second"})
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "already current" not in result.stdout
+    second_log = log_path.read_text(encoding="utf-8")
+    assert "second:stop" in second_log
+    assert "second:daemon-reload" in second_log
+    # Not _assert_current_release: a real change leaves the previous release in
+    # place (KEEP_RELEASES), so there is more than one and that helper insists
+    # on exactly one.
+    runtime = tmp_path / "runtime"
+    release = runtime / _bash_readlink(runtime / "current")
+    assert (release / "scripts" / "watchdog.py").read_text(encoding="utf-8") == "WATCH = 2\n"
 
 
 def test_repeat_install_repairs_corrupt_content_addressed_release(tmp_path):
