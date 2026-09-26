@@ -221,19 +221,66 @@ trap on_exit EXIT
 # bundle from a new merge is a new directory name and would otherwise always
 # look like work to do.
 # ---------------------------------------------------------------------------
+# Content alone is NOT the test. Cross-family review of the first draft of this
+# gate (#3989 round 1) reproduced four drifts that the transaction below repairs
+# and a content-only gate declared "already current" forever:
+#
+#   * the sudoers file at 0666 instead of 0440, and the same file replaced by a
+#     SYMLINK with identical content. `[[ -f ]]` follows a symlink, so both
+#     passed. Either silently disables tinyassets-watchdog's `sudo -n systemctl
+#     restart` path (scripts/watchdog.py:185) -- sudo refuses a rule that is
+#     group/world-writable or not a regular file, so the daemon loses its
+#     recovery lever with nothing in the logs;
+#   * daemon-watchdog.service at 0666. That unit runs as root, so a
+#     world-writable copy is a local-root foothold;
+#   * `current` repointed at a directory OUTSIDE releases/. Content matched, so
+#     the gate blessed a pointer the installer never wrote.
+#
+# So every property the transaction converges has to be a property the gate
+# checks: content, mode, owner, regular-file-ness, and the pointer's shape. A
+# missed property is not a missed optimisation -- it is drift that now persists
+# forever, which is strictly worse than the redundant work this gate removes.
+exact_file() { # exact_file <path> <expected-mode>
+    local path="$1" expected="$2"
+    # A symlink is never acceptable, whatever it points at: the installer writes
+    # regular files, and -f alone would follow the link and compare the target.
+    #
+    # Belt and braces, stated because it is not obvious: the mode test below
+    # ALSO rejects a symlink on its own, since GNU stat does not dereference and
+    # a symlink's own mode is always 777. Mutation-checked -- removing only this
+    # line leaves the symlink case caught, and removing only the mode line does
+    # too; both have to go before it slips through. Keep both anyway: the
+    # redundancy is free, and relying on 777-never-being-expected would be a
+    # coincidence rather than a rule.
+    [[ -f "${path}" && ! -L "${path}" ]] || return 1
+    # Mode AND owner in one stat: `install -m` resets both, so a file the
+    # transaction would rewrite must not read as already-exact. Owner drift has
+    # no test -- chown to another uid needs root, which the harness does not
+    # have. The expected values are pinned from the other side instead: if they
+    # did not match what the transaction writes, the gate would never fire and
+    # test_repeat_install_with_identical_content_stops_no_timer would fail.
+    [[ "$(stat -c '%a %u' "${path}")" == "${expected} ${EUID}" ]] || return 1
+}
+
 current_release_is_exact() {
-    local current_dir relative mode installed_file unit timer
+    local current_dir link_target relative mode installed_file unit timer
+
+    # The pointer itself, before anything it points at. Require the relative
+    # `releases/<id>` form the installer writes: that rejects an absolute path,
+    # a `..` escape and a nested path in one test, so "exact" cannot be
+    # satisfied by a tree outside the managed root.
     [[ -L "${RUNTIME_ROOT}/current" ]] || return 1
-    current_dir="$(cd -- "${RUNTIME_ROOT}" && readlink -f -- current)" || return 1
-    [[ -n "${current_dir}" && -d "${current_dir}" ]] || return 1
+    link_target="$(readlink -- "${RUNTIME_ROOT}/current")" || return 1
+    [[ "${link_target}" =~ ^releases/[A-Za-z0-9._-]+$ ]] || return 1
+    current_dir="${RUNTIME_ROOT}/${link_target}"
+    [[ -d "${current_dir}" && ! -L "${current_dir}" ]] || return 1
 
     for relative in "${RUNTIME_FILES[@]}"; do
         mode=644
         [[ "${relative}" == *.sh ]] && mode=755
         installed_file="${current_dir}/${relative}"
-        [[ -f "${installed_file}" && ! -L "${installed_file}" ]] || return 1
+        exact_file "${installed_file}" "${mode}" || return 1
         cmp -s "${SOURCE_ROOT}/${relative}" "${installed_file}" || return 1
-        [[ "$(stat -c %a "${installed_file}")" == "${mode}" ]] || return 1
     done
     # Same exactness the repair path below demands: no extra files, no extra
     # directories, nothing that is neither.
@@ -245,20 +292,23 @@ current_release_is_exact() {
         return 1
     fi
 
+    # Units are installed 0644 and are read by root systemd.
     for unit in "${UNIT_FILES[@]}"; do
-        [[ -f "${SYSTEMD_DIR}/${unit}" && ! -L "${SYSTEMD_DIR}/${unit}" ]] || return 1
+        exact_file "${SYSTEMD_DIR}/${unit}" 644 || return 1
         cmp -s "${SOURCE_ROOT}/deploy/${unit}" "${SYSTEMD_DIR}/${unit}" || return 1
     done
 
-    # The sudoers rule is part of what this script installs, so a drifted or
-    # missing one still needs the transaction.
-    [[ -f "${SUDOERS_DIR}/tinyassets-watchdog" ]] || return 1
+    # The sudoers rule is part of what this script installs, and sudo itself
+    # rejects it unless it is a regular file at 0440.
+    exact_file "${SUDOERS_DIR}/tinyassets-watchdog" 440 || return 1
     printf '%s ALL=(root) NOPASSWD:/usr/bin/systemctl restart tinyassets-daemon.service\n' \
         "${TINYASSETS_USER}" \
         | cmp -s - "${SUDOERS_DIR}/tinyassets-watchdog" || return 1
 
     # A disabled or dead timer is drift the transaction must repair, even when
-    # every file already matches.
+    # every file already matches. Both halves are load-bearing: `enable --now`
+    # converges enabled AND active, so a timer that is enabled but stopped is
+    # still not what this script leaves behind.
     for timer in "${TIMERS[@]}"; do
         "${SYSTEMCTL_BIN}" is-enabled "${timer}" >/dev/null 2>&1 || return 1
         "${SYSTEMCTL_BIN}" is-active "${timer}" >/dev/null 2>&1 || return 1
