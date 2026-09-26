@@ -359,6 +359,27 @@ def _read_bundle_body(universe_dir: Path, filename: str) -> str:
         return ""
 
 
+def inlined_grounding_bodies(
+    universe_dir: Path, *, universe_id: str, tier: str
+) -> dict[str, str]:
+    """``{filename: body}`` for exactly the grounding files this prompt QUOTES.
+
+    One definition of "what the prompt inlined", because two would be the bug: the
+    engine's ``read_brain`` elides a body only when this said the prompt already has
+    it, and a second, drifting copy of the filter or the reader would elide a file the
+    prompt never carried. Authorization is still decided here, before any file is
+    read: the tier filter runs first and a body that reads as empty is not quoted.
+    """
+    permitted = interlocutor.permitted_grounding_files(
+        universe_id, _GROUNDING_FILES, tier=tier
+    )
+    return {
+        fname: body
+        for fname in permitted
+        if (body := _read_bundle_body(universe_dir, fname))
+    }
+
+
 def _build_persona_system_prompt(
     universe_dir: Path,
     *,
@@ -443,14 +464,8 @@ def _build_persona_system_prompt(
     # file is read into the prompt. For the founder this is the full set; for a
     # non-founder tier it is `tier ∩ declared visibility`, minus the founder's
     # own person-dossier grounding.
-    grounding_files = interlocutor.permitted_grounding_files(
-        universe_id, _GROUNDING_FILES, tier=tier
-    )
-    grounding_parts = [
-        f"## {fname}\n{body}"
-        for fname in grounding_files
-        if (body := _read_bundle_body(universe_dir, fname))
-    ]
+    inlined = inlined_grounding_bodies(universe_dir, universe_id=universe_id, tier=tier)
+    grounding_parts = [f"## {fname}\n{body}" for fname, body in inlined.items()]
     grounding = (
         _GROUNDING_IS_CURRENT + "\n\n" + "\n\n".join(grounding_parts)
         if grounding_parts else "(nothing learned yet — I am new.)"
@@ -1328,6 +1343,22 @@ def converse(
         from tinyassets.universe_tools import harness_prompt
 
         system = system + "\n\n" + harness_prompt(udir)
+        # Tell the engine surface which brain bodies this prompt already carries, so
+        # `read_brain` can answer "nothing new" cheaply instead of re-sending text the
+        # turn is holding. Live 2026-09-26: a free model re-read founder.md anyway
+        # despite the prompt saying it was current, and every later round then carried
+        # that body twice. Recorded only for a turn that HAS the engine tools, keyed
+        # on the same verified principal + universe the tools are bound to.
+        try:
+            from tinyassets.inlined_brain import record as record_inlined
+
+            record_inlined(
+                turn_config.engine_mcp_actor_id,
+                turn_config.engine_mcp_graph_id,
+                inlined_grounding_bodies(udir, universe_id=uid, tier=bound_tier),
+            )
+        except Exception:  # noqa: BLE001 - not knowing costs a full read, never a turn
+            logger.warning("converse: could not record this turn's quoted brain files")
     if history_block:
         system = system + "\n\n" + _CROSS_SURFACE_CONTINUITY
     system = system + "\n\n" + _turn_input_method_context(input_method)

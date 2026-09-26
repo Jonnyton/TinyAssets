@@ -2919,6 +2919,15 @@ def read_brain() -> str:
     This is your project folder / harness. Whatever you save here with
     ``write_brain`` is what you wake up already knowing next turn — read it first
     so an edit builds on what's there instead of blanking it.
+
+    A file whose CURRENT contents are already quoted verbatim in this turn's prompt
+    comes back as a pointer to that heading instead of a second copy, under
+    ``already_in_your_prompt``, with its ``sha256`` and length so an edit can still be
+    exact. It changes back to a full body the moment the file differs from what the
+    prompt carried — a same-turn ``write_brain``, or anything else — so the answer is
+    never stale. To EDIT such a file, copy its text from the heading named here and
+    change only what you are adding: it is above you in full, and a shorter body would
+    drop what is there.
     """
     import json
 
@@ -2944,7 +2953,15 @@ def read_brain() -> str:
         # round-trip stays clean: write_brain re-wraps managed frontmatter, so
         # echoing a frontmatter-laden read back would otherwise NEST it (Codex
         # brain-loop review 2026-08-22).
+        from tinyassets.inlined_brain import digest, is_already_quoted
+
         brain = {}
+        # Files whose body is NOT repeated because this turn's prompt already quotes
+        # the same bytes. Kept in a separate map on purpose: an agent that echoes
+        # `brain[section]` straight back into write_brain must not be able to pick up
+        # a pointer and write it as the file's contents. An elided section is simply
+        # absent from `brain`.
+        already: dict[str, dict[str, object]] = {}
         for section, fname in _BRAIN_SECTIONS.items():
             # A brain file symlinked out of the universe would disclose an external
             # file's contents to the agent — refuse to read through it (Codex
@@ -2959,7 +2976,29 @@ def read_brain() -> str:
                 _meta, body = _split_frontmatter(raw)
             except Exception:  # noqa: BLE001 - a malformed file still reads as-is
                 body = raw
-            brain[section] = body.strip()
+            body = body.strip()
+            # The comparison is against the RAW file text, which is what the prompt
+            # quoted; `body` here has frontmatter stripped, so it is not the same
+            # string. A mismatch (a same-turn write, an external edit) falls through
+            # to the full body, which is the previous behaviour.
+            brain[section] = body
+            if body and is_already_quoted(_ACTOR_ID, _GRAPH_ID, fname, raw):
+                already[section] = {
+                    "heading": f"## {fname}",
+                    "sha256": digest(raw),
+                    "chars": len(body),
+                }
+        # Elide only if it actually SAVES, counting the shared note and every pointer.
+        # The first version of this elided each quoted file unconditionally and
+        # measured BIGGER than the plain read on small brain files -- an optimisation
+        # that can pessimise is not one, so the decision is arithmetic rather than a
+        # claim. All-or-nothing keeps the note's cost paid once and paid for.
+        elided_chars = sum(len(brain[section]) for section in already)
+        pointer_chars = sum(len(json.dumps(entry)) for entry in already.values())
+        if elided_chars <= pointer_chars:
+            already = {}
+        for section in already:
+            del brain[section]
         try:
             governed = set(read_governed_files(udir))
         except SoulEditError:
@@ -2973,6 +3012,7 @@ def read_brain() -> str:
             "brain": brain,
             "self_model": self_model,
             "editable_sections": editable,
+            **({"already_in_your_prompt": already} if already else {}),
         })
     finally:
         _current_identity.reset(token)
