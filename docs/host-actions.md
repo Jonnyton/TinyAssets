@@ -12,7 +12,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
-## Codex credits are exhausted, so every authority-path PR costs founder time (2026-09-25)
+## Codex is usage-limited, so a cross-family pass is OWED on what lands meanwhile (2026-09-25)
 
 `codex exec` answers only:
 
@@ -22,21 +22,28 @@ whose next step is *"the founder logs into Cloudflare."*
 `codex login status` still reports "Logged in using ChatGPT", so this is a
 credit balance, not an auth failure, and no agent can fix it.
 
-What it costs: `pr-scope-guard` requires an exact-head **cross-family** review
-receipt for any behavioural change to an authority path
-(`scripts/authority_behavior_check.py`), and Codex is the only other model
-family in this harness. With it down, the only route left is the founder
-reviewing by hand and stamping the receipt -- which is what happened on PR #3981
-(`tinyassets/providers/router.py`). The gate still works; it just spends founder
-time it was designed not to spend, on every PR touching `router.py`,
-`provider_assignment*`, `storage/` or the other listed paths. The receipt is
-head-pinned, so each follow-up push needs a fresh one.
+**The standing arrangement while it lasts** (founder directive): the
+cross-family pass is POSTPONED, not skipped. An authority-path PR lands on a
+**Claude Tier 2 review plus a lead-stamped receipt** in its place, and the
+cross-family pass is **owed** afterwards for anything that landed that way. The
+founder neither reviews nor stamps; do not record it as though they did.
+
+Owing a cross-family pass after the 2026-09-27 17:15 reset:
+
+- **PR #3981** (`tinyassets/providers/router.py`) -- free-model sibling retry.
+
+Background: `pr-scope-guard` requires an exact-head review receipt for any
+behavioural change to an authority path (`AUTHORITY_RE` in
+`.github/workflows/pr-scope-guard.yml`, checked by
+`scripts/authority_behavior_check.py`). The receipt is head-pinned, so every
+push needs a fresh review -- batch fixes into one push rather than pushing
+incrementally.
 
 The ask: top up Codex credits at https://chatgpt.com/codex/settings/usage, or
-tell us to wait for the 2026-09-27 17:15 reset and to keep bringing
-authority-path work to you. Do not have an agent write the
-`Drain-Review-Verdict: APPROVE` receipt itself -- the gate exists because a PR
-can neuter its own checks, and a self-issued receipt is the failure it names.
+let the 2026-09-27 17:15 reset land and we run the owed passes then. Either way
+an agent must never write the `Drain-Review-Verdict: APPROVE` receipt for its
+own work -- the gate exists because a PR can neuter its own checks from its own
+checkout, and a self-issued receipt is the failure it names.
 
 ## Delete the platform's model-credential repository secrets (2026-09-24)
 
