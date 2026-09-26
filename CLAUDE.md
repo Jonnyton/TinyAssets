@@ -2,28 +2,16 @@
 
 ## Claude Code
 
-`AGENTS.md` is how to work here. This file is only harness quirks.
+`AGENTS.md` is how to work here. This file is only harness quirks, and there are
+two.
 
-### Merging and deploying
-
-**Background-job sessions cannot merge or push to `main`** — that restriction is
+**Background-job sessions cannot merge or push to `main`** — the restriction is
 injected into that session type and cannot be lifted from inside one. Check which
-session type you are in before claiming you cannot merge; an interactive session
-repeating "this session cannot merge" is misapplying the rule. Interactive
-sessions merge normally; `gh pr merge --auto` works from either.
+type you are before claiming you cannot merge; an interactive session repeating
+"this session cannot merge" is misapplying the rule. `gh pr merge --auto` works
+from either.
 
-### Cross-family dispatch
-
-Codex CLI is a second model family already in the harness, not something only a
-human can start. Dispatch it as a background subprocess on its own budget via
-the `peer-agents` skill — wrapping it in a Claude teammate to relay burns a
-Claude context to do nothing.
-
-### Session start
-
-Read `AGENTS.md` (imported above) and let the sync gate report whether the
-checkout is behind. There is no startup ritual beyond that.
-
-### Skills
-
-Skills are in `.claude/skills/`, mirrored from the canonical `.agents/skills/`.
+**Codex CLI is already in this harness**, so the other model family is a
+background subprocess you start yourself via the `peer-agents` skill — not
+something only a human can run, and not something to wrap in a Claude teammate to
+relay.

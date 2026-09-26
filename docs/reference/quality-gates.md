@@ -47,19 +47,16 @@ edge that only bites multi-tenant, concurrent or crash cases is tracked.
 
 ## Landing
 
-- **Small, live slices.** A PR deploys and is testable on its own; over 1,500
-  added non-test lines needs a stated reason. A new capability ships dark on the
-  founder's universe first.
-- **Floor-class PRs stay draft until exact-head approval** so auto-enrollment
-  cannot merge them ahead of review; any head-changing push converts back to
-  draft. Mechanism: `scripts/drain_review_gate.py`
-  ([`executable-gates.md`](executable-gates.md)).
+- **Small, live slices.** A PR deploys and is testable on its own; a new
+  capability ships dark on the founder's universe first.
+- **Open floor-class PRs as drafts** so auto-enrollment cannot merge them ahead
+  of review. That is a convention, not a gate: `scripts/drain_review_gate.py`
+  mechanically requires an exact-head receipt only on the `AUTHORITY_RE` and
+  gate-defining paths listed in [`executable-gates.md`](executable-gates.md).
 - **Locally run the relevant tests, including affected heavy files.** Required PR
   CI runs the suite MINUS `.github/heavy-test-files.txt`, and `heavy-tests` does
   not run on pull requests at all, so nothing else covers them before merge.
   Required checks: [`executable-gates.md`](executable-gates.md).
-- **Live failures become evals.** A failure seen in the real app becomes a
-  regression test or checklist row before the fix lands.
 
 ## Proof
 

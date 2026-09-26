@@ -24,9 +24,8 @@ bounded search for external code examples that informs one implementation
 decision inside an already-authorized lane.
 
 A scout source map is task-scoped implementation evidence covered by normal
-code review; it does not require its own opposite-provider research review. If
-the scout would broaden scope or change accepted design, stop implementation
-and promote the finding into this workflow and its cross-provider gate. This
+code review. If the scout would broaden scope or change accepted design, promote
+the finding into this workflow rather than deciding it inline. This
 skill may invoke the scout for adjacent implementations, but remains
 responsible for durable implications, authority changes, and review.
 
@@ -239,49 +238,19 @@ Add a `Worktree Landing Packet` to the report and mirror its essentials into
 - fold-back path: PR/merge target, STATUS row retirement, and follow-up row or
   `ideas/PIPELINE.md` update if work remains.
 
-If the cross-provider review gate blocks build work, still land the
-implementation lane into the git/worktree discipline immediately. The review
-gate is part of the lane, not a reason to keep the lane invisible.
+Research does not gate build work. Land the implementation lane into the
+git/worktree discipline immediately, and let review scope follow `AGENTS.md`
+§ *Working Norms*: a review is owed for floor-class changes and gate-defining
+files, one round, dispatched once the PR is open. Record the `initial_provider`
+in the durable artifact so a later reader knows whose finding it was.
 
-Required shape for an unreviewed but implementation-bound concept:
+### 8. Review Scope Lives In AGENTS.md
 
-- create the opposite-provider review row as claimable work;
-- create or reserve the implementation branch/worktree lane with status
-  `pending` and a Depends cell naming the review artifact/verdict;
-- do not advance implementation beyond research/design stubs until the review
-  verdict is `approve` or `adapt`;
-- if worktree tooling exists and the repo is in a safe state, materialize the
-  branch/worktree immediately with only the research artifact, queue metadata,
-  and blocked handoff; otherwise record it in the change and the report so
-  the worktree manager can materialize it later;
-- make the reviewer responsible for unblocking, adapting, deferring, or
-  rejecting the implementation lane in their review artifact and shared queue
-  edits.
-
-If the user explicitly approves the direction before review, record the
-approval in `PLAN.md` or a design note as appropriate, but still keep runtime,
-push, live rollout, and acceptance-test advancement blocked until the
-opposite-provider review lands.
-
-### 8. Require Cross-Provider Research Review
-
-If a finding may lead to implementation, git push, live rollout, or acceptance
-testing, it needs an independent research review from a different provider
-before build work starts.
-
-- Record the `initial_provider` in the durable artifact.
-- If Codex made the initial finding, Claude must research and review it.
-- If Claude made the initial finding, Codex must research and review it.
-- If another provider made the initial finding, name a different reviewer
-  provider explicitly in the change; prefer the Codex/Claude pair when
-  available.
-- The reviewer must re-check primary sources, inspect the relevant TinyAssets
-  context, and leave a durable review artifact with a verdict:
-  `approve`, `adapt`, `defer`, or `reject`.
-- Any build/push/live/test work row must depend on the review artifact.
-
-This is a research gate, not a rubber stamp. The reviewer should be able to
-change the plan before implementation starts.
+A research finding needs no review of its own to be built. When one IS owed
+(floor-class change or gate-defining file, per `AGENTS.md` § *Working Norms*),
+dispatch it to the other family via `peer-agents` and keep the verdict artifact
+with the change: it is a real gate, not a rubber stamp, and the reviewer may
+change the plan.
 
 ### 9. Create A Pickup Packet
 
@@ -357,7 +326,7 @@ For a substantial study, produce:
 5. adjacent research summary;
 6. adopted/adapted/avoided/deferred implications;
 7. recommended implementation roadmap;
-8. cross-provider review gate;
+8. review verdict, when one is owed;
 9. pickup packet;
 10. worktree landing packet;
 11. open questions and verification gaps.
@@ -375,7 +344,6 @@ and link to the durable artifact.
 - The output distinguishes evidence from inference.
 - Suggested integration slices preserve MCP-chatbot-first users.
 - Suggested integration slices preserve community evolvability.
-- Findings that could lead to build work have an opposite-provider review gate.
 - Adopt/adapt concepts have a pickup packet in `openspec/changes/` or `ideas/PIPELINE.md`.
 - Cross-cutting findings include "applies when touching" cues for future builders.
 - Skill changes, if any, were synced to provider mirrors and validated.

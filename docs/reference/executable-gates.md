@@ -9,8 +9,8 @@ but enforces nothing buys confidence it has not earned.
 
 | Rule | Mechanism | Runs where |
 |---|---|---|
-| Rulebook byte ratchet + always-loaded context budget | `scripts/check_context_budget.py` → `context-budget` invariant | pre-commit hook **and** `invariants.yml` CI |
-| Cross-provider rule-file drift | `scripts/check_cross_provider_drift.py` → `cross-provider-drift` | same |
+| Rulebook byte ratchet + always-loaded context budget | `scripts/check_context_budget.py` → `context-budget` invariant, plus the pin-total and slack assertions in `tests/test_rulebook_ratchet.py` | `invariants.yml` CI and `required-tests`. NOT the pre-commit hook: it runs only the two checks below |
+| Cross-provider rule-file drift | `scripts/check_cross_provider_drift.py` → `cross-provider-drift` | pre-commit hook **and** `invariants.yml` CI |
 | Skill tree valid + mirrored | `scripts/validate_skills.py`, `mirror-parity` | same |
 | Plugin mirror ships the current code | `scripts/check_mirror_parity.py` — a canonical `tinyassets/**` file that diverges from its mirror copy **or has none** fails, by name. | pre-commit (staged set) **and** `invariants.yml` CI (whole tree) |
 | No CP-1252 mojibake in tracked text | `mojibake` invariant | same |
@@ -18,24 +18,10 @@ but enforces nothing buys confidence it has not earned.
 | Diff scope declared | `pr-scope-guard.yml` | required check |
 | Exact-head review receipt on gate-defining and authority-critical files | `scripts/drain_review_gate.py` | `pr-scope-guard.yml`, `auto-enroll-merge.yml` |
 | Public MCP surface + canonical handles | `scripts/mcp_public_canary.py --assert-handles` | `deploy-prod.yml`, and by hand after DNS/tunnel/connector edits |
-| **Merged is not deployed** (Hard Rule 14) | `scripts/deployed_sha.py --assert-contains <sha>` against bearer-protected `/mcp/pulse` | `deploy-prod.yml` after receipt publication; by hand with `TINYASSETS_WIKI_CANARY_TOKEN` — **never** a merge-required check |
+| **Merged is not deployed** (Hard Rule 14) | `scripts/deployed_sha.py --assert-contains <sha>` against bearer-protected `/mcp/pulse`. Three exit codes: 0 shipped, 1 not, **2 cannot tell** — collapsing 2 into 0 makes a network blip read as shipped, so any gate calling an external service needs the third state. | `deploy-prod.yml` after receipt publication; by hand with `TINYASSETS_WIKI_CANARY_TOKEN` — **never** a merge-required check |
 
 `.github/known-failing-tests.txt` is a one-way ratchet: a line excusing a test you
 broke is a visible, reviewable edit on a scope-guarded path.
-
-## Two shapes worth copying
-
-**Three exit codes, not two.** `scripts/deployed_sha.py` returns 0 shipped, 1 not
-shipped, **2 could not determine** — collapsing 2 into 0 makes a network blip read
-as "yes, it shipped", the failure Hard Rule 14 exists to prevent. Any gate talking
-to an external service needs that third state, and exits 2 rather than falling
-back to an anonymous read. (A commit descending from the served sha that changes
-no runtime input — `scripts/runtime_paths.py` — exits 0 as *runtime-equivalent*.)
-
-**A gate that cannot fail is decoration.** Mutation-check any guard against data
-loss or a cross-user leak: break what it guards, confirm red, restore. Doing that
-is what found the invariant framework downgrading crashed checks to `SKIPPED` — a
-broken gate reporting as fine.
 
 ## Cross-family review — partly enforced
 
@@ -77,7 +63,7 @@ finding is real, whether a shape should ship — no path regex reaches those.
 | `required-tests` | ~7 min | The behavioural gate. All tests minus the heavy files, `-m "not slow"`. |
 | `slow-tests` | ~1 min | The ONLY place `-m slow` race/stress tests run. |
 | `invariants` | ~15 s | Mechanical checks. Best signal per second here. |
-| `Diff scope declared` | ~10 s | Blast-radius guard. Caught PR #1491's seven-file diff behind a "two-file auth fix". |
+| `Diff scope declared` | ~10 s | Blast-radius guard: a small-looking PR carrying an unmerged lineage. |
 
 They run in parallel, so the wall clock is `required-tests` alone
 (`docs/decisions/ADR-003-required-test-aggregator.md`). `heavy-tests` is NOT

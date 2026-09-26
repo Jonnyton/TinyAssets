@@ -79,14 +79,14 @@ class Budget:
 # one fact means a reflow that removes words can still fail — a second authority
 # for the same thing, which is what the 2026-09-26 cut was removing.
 CONFIG: tuple[Budget, ...] = (
-    Budget("AGENTS.md", "hard", 15257, 0,
+    Budget("AGENTS.md", "hard", 13614, 0,
            "Cross-provider canonical. Move procedure to docs/reference/, not into here."),
-    Budget("CLAUDE.md", "hard", 1051, 0,
+    Budget("CLAUDE.md", "hard", 692, 0,
            "Claude Code router; harness quirks only, a thin layer over AGENTS.md."),
-    Budget("docs/reference/quality-gates.md", "hard", 3984, 0,
+    Budget("docs/reference/quality-gates.md", "hard", 3852, 0,
            "Review/merge/completion procedure. A new gate displaces an old one.",
            always_loaded=False),
-    Budget("docs/reference/executable-gates.md", "hard", 5997, 0,
+    Budget("docs/reference/executable-gates.md", "hard", 5530, 0,
            "Enforced vs judgement. Add a row only by deleting one.",
            always_loaded=False),
     Budget("docs/reference/delivery-flow.md", "hard", 1574, 0,
@@ -96,7 +96,36 @@ CONFIG: tuple[Budget, ...] = (
 
 # HARD ceiling for the combined always-loaded payload (AGENTS.md + CLAUDE.md +
 # anything they @import), pinned at the achieved post-cut total.
-COMBINED_HARD_BYTES = 16308
+COMBINED_HARD_BYTES = 14306
+
+
+@dataclass
+class Aggregate:
+    """A whole directory of rule files under one pin.
+
+    Per-file pins alone leave an offload hole: the next rule gets written into a
+    file nobody pinned, and the rulebook grows while every pin stays green. An
+    aggregate closes it -- new prose in the set has to be paid for out of the set.
+    """
+
+    label: str
+    pattern: str
+    max_bytes: int
+    exclude: tuple[str, ...] = ()
+    note: str = ""
+
+
+# `environment-variables.md` and `workos-authkit-integration.md` are excluded
+# deliberately: they catalog SYSTEM facts (every env var; one integration's
+# endpoints and claims) and grow when the product does, which is not rulebook
+# growth. Every other docs/reference file is procedure, and procedure is capped.
+AGGREGATES: tuple[Aggregate, ...] = (
+    Aggregate("docs/reference/*.md", "docs/reference/*.md", 26587,
+              exclude=("environment-variables.md", "workos-authkit-integration.md"),
+              note="Procedure docs. A new gate here displaces an old one."),
+    Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 83644,
+              note="Skills are rulebook too -- a rule moved into a skill is still a rule."),
+)
 
 
 @dataclass
@@ -221,8 +250,29 @@ def imported_files(root: Path, seeds: list[str]) -> list[str]:
     return order
 
 
+def measure_aggregate(agg: Aggregate, root: Path) -> Result:
+    """Total the matched set. An empty match is a violation, not a pass.
+
+    A glob that stops matching -- a rename, a moved directory -- would otherwise
+    read as "0 bytes, well under the pin", which is how a ratchet quietly stops
+    ratcheting.
+    """
+    paths = sorted(
+        p for p in root.glob(agg.pattern)
+        if p.is_file() and p.name not in agg.exclude
+    )
+    total = sum(len(p.read_bytes()) for p in paths)
+    lines = len(paths)  # the "lines" column carries the file count for a set
+    return Result(
+        agg.label, "hard", bool(paths), total, lines,
+        agg.max_bytes, 0, total > agg.max_bytes, False, agg.note,
+        always_loaded=False,
+    )
+
+
 def run(root: Path) -> tuple[list[Result], int, bool]:
     results = [measure(b, root) for b in CONFIG]
+    results += [measure_aggregate(a, root) for a in AGGREGATES]
 
     # Anything reachable by @import is always-loaded too, so it counts toward
     # the combined ceiling even though it has no budget line of its own.
