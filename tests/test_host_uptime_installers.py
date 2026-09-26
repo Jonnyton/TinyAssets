@@ -936,6 +936,135 @@ def test_repeat_install_with_identical_content_stops_no_timer(tmp_path):
     assert _assert_current_release(tmp_path / "runtime") == release_before
 
 
+# --- drift the gate must NOT bless -----------------------------------------
+#
+# Content alone is not the test. Each case below is a drift the transaction
+# repairs, so a gate that reads it as "already current" makes it permanent --
+# strictly worse than the redundant work the gate removes. Two of them disable
+# the daemon's own recovery lever and one is a local-root foothold, so these are
+# the floor, not polish. Found by cross-family review of #3989 round 1.
+
+
+def _sudoers_file(tmp_path: Path) -> Path:
+    return tmp_path / "sudoers" / "tinyassets-watchdog"
+
+
+def _installed_unit(tmp_path: Path, name: str) -> Path:
+    return tmp_path / "systemd" / name
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform
+        pytest.skip(f"symlink creation is unavailable here: {exc}")
+
+
+def _drift_sudoers_world_writable(tmp_path: Path) -> None:
+    _sudoers_file(tmp_path).chmod(0o666)
+
+
+def _drift_sudoers_becomes_a_symlink(tmp_path: Path) -> None:
+    path = _sudoers_file(tmp_path)
+    elsewhere = tmp_path / "sudoers-elsewhere"
+    elsewhere.write_bytes(path.read_bytes())  # byte-identical on purpose
+    elsewhere.chmod(0o440)
+    path.unlink()
+    _symlink_or_skip(path, elsewhere)
+
+
+def _drift_root_unit_world_writable(tmp_path: Path) -> None:
+    _installed_unit(tmp_path, "daemon-watchdog.service").chmod(0o666)
+
+
+def _drift_current_points_outside_releases(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    release = runtime / _bash_readlink(runtime / "current")
+    rogue = tmp_path / "rogue-release"
+    shutil.copytree(release, rogue)  # identical content, unmanaged location
+    (runtime / "current").unlink()
+    _symlink_or_skip(runtime / "current", rogue)
+
+
+def _drift_timer_stopped_but_still_enabled(tmp_path: Path) -> None:
+    (tmp_path / "state" / f"{TIMERS[0]}.active").unlink()
+
+
+def _repair_sudoers_is_an_exact_regular_file(tmp_path: Path) -> None:
+    path = _sudoers_file(tmp_path)
+    assert not path.is_symlink()
+    assert oct(path.stat().st_mode & 0o777) == "0o440"
+
+
+def _repair_unit_is_not_world_writable(tmp_path: Path) -> None:
+    unit = _installed_unit(tmp_path, "daemon-watchdog.service")
+    assert oct(unit.stat().st_mode & 0o777) == "0o644"
+
+
+def _repair_current_points_inside_releases(tmp_path: Path) -> None:
+    target = _bash_readlink(tmp_path / "runtime" / "current")
+    assert target.startswith("releases/"), target
+
+
+def _repair_timer_is_active_again(tmp_path: Path) -> None:
+    assert (tmp_path / "state" / f"{TIMERS[0]}.active").exists()
+
+
+@pytest.mark.parametrize(
+    "drift,repair",
+    [
+        pytest.param(
+            _drift_sudoers_world_writable,
+            _repair_sudoers_is_an_exact_regular_file,
+            id="sudoers-0666",
+        ),
+        pytest.param(
+            _drift_sudoers_becomes_a_symlink,
+            _repair_sudoers_is_an_exact_regular_file,
+            id="sudoers-symlink",
+        ),
+        pytest.param(
+            _drift_root_unit_world_writable,
+            _repair_unit_is_not_world_writable,
+            id="root-unit-0666",
+        ),
+        pytest.param(
+            _drift_current_points_outside_releases,
+            _repair_current_points_inside_releases,
+            id="current-outside-releases",
+        ),
+        pytest.param(
+            _drift_timer_stopped_but_still_enabled,
+            _repair_timer_is_active_again,
+            id="timer-enabled-but-stopped",
+        ),
+    ],
+)
+def test_the_gate_does_not_bless_drift_the_transaction_repairs(tmp_path, drift, repair):
+    """Install, break one property, install again: the second run must work.
+
+    Stated as "the transaction ran and the drift is gone", not merely "the gate
+    said no" -- a gate that declines but then fails to repair would pass the
+    first half of that and still leave the host wrong.
+    """
+    _require_meaningful_mode_checks(tmp_path)
+    env = _install_env(tmp_path)
+    first = _run_installer(env)
+    assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
+
+    drift(tmp_path)
+    log_path = tmp_path / "systemctl.log"
+    log_path.unlink()
+    second = _run_installer({**env, "INSTALL_RUN_ID": "second"})
+
+    assert second.returncode == 0, f"{second.stdout}\n{second.stderr}"
+    assert "already current" not in second.stdout, second.stdout
+    second_log = log_path.read_text(encoding="utf-8")
+    assert "second:daemon-reload" in second_log, second_log
+    assert "second:enable --now" in second_log, second_log
+    repair(tmp_path)
+
+
 def test_repeat_install_with_changed_content_still_stops_timers(tmp_path):
     """The gate above must not make the installer inert. A real change still
     takes the full transaction -- otherwise a watchdog edit would never reach
