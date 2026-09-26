@@ -926,8 +926,56 @@ def _conversation_history_block(
         return ""
 
 
-def _completed_tool_names(http_turn) -> set:
-    """Which engine tools this turn actually COMPLETED, from its own journal.
+def _wrote_its_brain(tool) -> bool:
+    """Whether THIS journaled `write_brain` call actually persisted something.
+
+    "The call returned" is not "the lesson was written", and the journal cannot
+    tell them apart: ``finish_tool`` records ``state = "completed"`` for ANY
+    returned result, ``is_error`` included, and every refusal in the engine's
+    ``write_brain`` is a RETURNED error JSON rather than a raise — no binding, a
+    section over the size cap, a name over the length cap, nothing to write, an
+    admission refusal, and `commit_learning` returning None ("nothing was
+    persisted — the edit was empty, ungrounded, or rejected").
+
+    A reviewer proved the cost on the real converse path (PR #4001, blocking):
+    a refused write skipped the extraction and reported the lesson SETTLED, so it
+    was recorded nowhere and nothing would retry it. So this matches the handler's
+    SUCCESS shape and nothing else — an error flag, an unparseable result, a
+    missing `written`, or an empty one all mean the lesson is still owed.
+    """
+    if getattr(tool, "state", "") != "completed" or getattr(tool, "is_error", None):
+        return False
+    raw = getattr(tool, "result_json", None)
+    if not raw:
+        return False
+    try:
+        from tinyassets.storage.agent_turn_records import load_result
+
+        result = load_result(raw)[0]
+    except Exception:  # noqa: BLE001 - an unreadable result is not a written brain
+        return False
+    if getattr(result, "isError", False):
+        return False
+    structured = getattr(result, "structuredContent", None)
+    bodies = [structured] if isinstance(structured, dict) else []
+    for block in getattr(result, "content", ()) or ():
+        text = getattr(block, "text", None)
+        if not text:
+            continue
+        try:
+            decoded = json.loads(text)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(decoded, dict):
+            bodies.append(decoded)
+    return any(
+        body.get("ok") is True and body.get("written")
+        for body in bodies
+    )
+
+
+def _brain_recording_tools(http_turn) -> set:
+    """Engine tools this turn completed AND proved wrote something.
 
     Read from the journal rather than guessed, and read here rather than in the
     engine handler, because the engine MCP surface serves a different request: a
@@ -938,10 +986,8 @@ def _completed_tool_names(http_turn) -> set:
     turn = getattr(http_turn, "turn", None)
     for previous in getattr(turn, "rounds", ()) or ():
         for tool in getattr(previous, "tools", ()) or ():
-            if getattr(tool, "state", "") != "completed":
-                continue
             name = getattr(getattr(tool, "request", None), "name", "")
-            if name:
+            if name in _BRAIN_RECORDING_TOOLS and _wrote_its_brain(tool):
                 names.add(name)
     return names
 
@@ -952,9 +998,10 @@ def _call_writer(
 ):
     """Run one served writer turn; retry ONCE immediately only if nothing ran.
 
-    ``tools_observer``, when given, is called with the set of engine tool names
-    this turn completed — how the caller learns whether the turn recorded its own
-    lesson instead of spending another round-trip discovering it.
+    ``tools_observer``, when given, is called with the set of brain-recording tool
+    names this turn PROVED wrote something (see :func:`_wrote_its_brain` — a
+    returned refusal is not a write) — how the caller learns whether the turn
+    recorded its own lesson instead of spending another round-trip discovering it.
 
     Streamed attempts now classify their own outcome (idle-timeout /
     interactive-deadline / rate-limit) and the router no longer cools the sole
@@ -1028,9 +1075,11 @@ def _call_writer(
         if http_turn is not None:
             if tools_observer is not None:
                 try:
-                    tools_observer(_completed_tool_names(http_turn))
+                    tools_observer(_brain_recording_tools(http_turn))
                 except Exception:  # noqa: BLE001 - evidence never breaks the turn
-                    logger.warning("could not read this turn's completed tools")
+                    # No evidence means the lesson is still owed, which costs the
+                    # extraction, never the lesson.
+                    logger.warning("could not read this turn's brain writes")
             try:
                 http_turn.close_quiescent()
             except Exception:

@@ -35,9 +35,12 @@ from types import SimpleNamespace
 import pytest
 
 from tests import test_interactive_http_agent as integration
-from tinyassets import daemon_server, universe_intelligence
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
+
+from tinyassets import daemon_server, engine_tool_client, universe_intelligence
 from tinyassets.api import interlocutor
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
 #: Captured at import: the `rig` fixture replaces this with a raising guard
@@ -85,6 +88,39 @@ def turn(agent, monkeypatch, signed_in):
     signed_in("owner")
     calls: list[dict] = []
     state = SimpleNamespace(agent=agent, uid=uid, calls=calls, tool_name="read_brain")
+
+    class Client:
+        """The engine handle, returning whatever `state.tool_result` says.
+
+        The shared rig returns plain text for every tool. That is fine for counting
+        round-trips, but a turn only skips the learning pass when its `write_brain`
+        RETURNED the handler's success shape — a returned refusal is not a write
+        (PR #4001 review) — so the recorded case has to say so.
+        """
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        def is_connected(self):
+            return True
+
+        async def list_tools_mcp(self, *, cursor=None):
+            return ListToolsResult(tools=[
+                Tool(name=name, inputSchema={"type": "object"})
+                for name in SERVED_ENGINE_MCP_TOOLS
+            ])
+
+        async def call_tool_mcp(self, name, arguments):
+            return CallToolResult(content=[TextContent(
+                type="text",
+                text=json.dumps({"ok": True, "written": {"updated_files": ["founder.md"]}})
+                if name == "write_brain" else "exact result",
+            )])
+
+    monkeypatch.setattr(engine_tool_client, "_make_client", lambda *_: Client())
 
     class Proxy:
         def close(self):

@@ -932,7 +932,11 @@ def latest_turn_no(universe_dir: "str | Path", session_id: str) -> int:
 
 
 def settle_learned_cursor(
-    universe_dir: "str | Path", session_id: str, *, through_turn: int | None = None
+    universe_dir: "str | Path",
+    session_id: str,
+    *,
+    through_turn: int | None = None,
+    from_turn: int | None = None,
 ) -> int:
     """Advance the cursor to ``through_turn`` (default: the latest turn). Returns it.
 
@@ -940,6 +944,16 @@ def settle_learned_cursor(
     same span is a no-op and two workers cannot un-settle each other. Returns the
     cursor value in force afterwards, or 0 if nothing could be written -- a failure
     here must leave the lesson owed, not claim it was learned.
+
+    CONTIGUOUS: a watermark cannot say "turn N is settled but N-1 is not", so it must
+    never CLAIM an earlier unsettled turn. A turn whose extraction FAILED leaves the
+    cursor behind; if the next turn then settled to the latest row, the cursor would
+    jump PAST the failed one and no drain would ever retry it (PR #4001 review --
+    inert while nothing reads the cursor, but the rows written now already carry that
+    meaning). ``from_turn`` is where the caller believes the cursor stands, i.e. the
+    latest turn BEFORE the exchange it is settling; the advance is refused when the
+    cursor is behind that. Refusing costs a redundant extraction later; claiming
+    would cost the lesson.
     """
     if not session_id:
         return 0
@@ -948,6 +962,14 @@ def settle_learned_cursor(
     )
     if target <= 0:
         return 0
+    settled = learned_cursor(universe_dir, session_id)
+    if from_turn is not None and settled != int(from_turn):
+        logger.info(
+            "conversation memory: lesson for %s not claimed -- cursor at %d, this "
+            "turn began at %d, so an earlier turn is still owed",
+            session_id, settled, int(from_turn),
+        )
+        return settled
     db_path = _db_path(universe_dir)
     try:
         with _lock_for(db_path):

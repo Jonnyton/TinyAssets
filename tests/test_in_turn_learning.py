@@ -22,10 +22,17 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from tests import test_interactive_http_agent as integration
-from tinyassets import conversation_store, daemon_server, universe_intelligence
+from tinyassets import (
+    conversation_store,
+    daemon_server,
+    engine_tool_client,
+    universe_intelligence,
+)
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
 #: Captured at import, before `rig` replaces it with a raising guard.
 _GET_FOUNDER_HOME = daemon_server.get_founder_home
@@ -49,9 +56,40 @@ def turn(agent, monkeypatch, signed_in):
         calls=[],
         # Which tool the writer turn asks for on its first round; None = answer at once.
         tool="write_brain",
+        # What the engine handle RETURNS. The default is the real success shape from
+        # `engine_mcp_server.write_brain`. The rig's own stub returns plain text for
+        # every tool, which is why a refused write was indistinguishable from a
+        # written one until PR #4001's review proved it: a returned refusal skipped
+        # the extraction and reported the lesson settled.
+        tool_result=json.dumps({"ok": True, "written": {"updated_files": ["founder.md"]}}),
+        tool_is_error=False,
         universe_dir=agent.served.context.universe_dir,
         uid=uid,
     )
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        def is_connected(self):
+            return True
+
+        async def list_tools_mcp(self, *, cursor=None):
+            return ListToolsResult(tools=[
+                Tool(name=name, inputSchema={"type": "object"})
+                for name in SERVED_ENGINE_MCP_TOOLS
+            ])
+
+        async def call_tool_mcp(self, name, arguments):
+            return CallToolResult(
+                content=[TextContent(type="text", text=state.tool_result)],
+                isError=state.tool_is_error,
+            )
+
+    monkeypatch.setattr(engine_tool_client, "_make_client", lambda *_: Client())
 
     class Proxy:
         def close(self):
@@ -152,6 +190,59 @@ def test_a_turn_that_records_nothing_keeps_the_guaranteed_pass(turn):
     assert settled == [True]  # extraction ran and found nothing durable
 
 
+def test_a_refused_write_brain_is_not_evidence_and_still_extracts(turn):
+    """PR #4001 blocking review, probe 1: the refusal the handler RETURNS.
+
+    Every refusal in `write_brain` -- no binding, a size cap, a name cap, nothing to
+    write, an admission refusal, `commit_learning` returning None -- is a returned
+    error JSON, not a raise, and the journal marks any returned result "completed".
+    At the reviewed head this skipped the extraction and reported settled=True, so
+    the lesson was recorded NOWHERE and nothing would retry it.
+    """
+    turn.tool_result = json.dumps({
+        "error": ("nothing was persisted — the edit was empty, ungrounded, or "
+                  "rejected (e.g. a section that is not governed-editable)."),
+    })
+    settled: list[bool] = []
+    assert _converse(turn, settled=settled) == FINAL_REPLY
+    assert _kinds(turn) == ["writer_1", "writer_2", "extract_learning"]
+    assert settled == [True]  # settled by the EXTRACTION, not by the refused write
+
+
+def test_an_is_error_write_brain_is_not_evidence_either(turn):
+    """Probe 2: the same text with isError set. Also 'completed' in the journal."""
+    turn.tool_result = json.dumps({"error": "engine MCP is not bound to a founder"})
+    turn.tool_is_error = True
+    settled: list[bool] = []
+    assert _converse(turn, settled=settled) == FINAL_REPLY
+    assert _kinds(turn) == ["writer_1", "writer_2", "extract_learning"]
+
+
+@pytest.mark.parametrize("result", [
+    '{"ok": true}',                       # no `written` at all
+    '{"ok": true, "written": {}}',         # an EMPTY written
+    '{"ok": true, "written": []}',
+    '{"written": {"updated_files": ["founder.md"]}}',   # no `ok`
+    '{"ok": "true", "written": {"updated_files": ["x"]}}',  # a STRING, not true
+    'not json at all',
+    '',
+])
+def test_only_the_handlers_exact_success_shape_counts(turn, result):
+    """Anything short of the success shape leaves the lesson owed."""
+    turn.tool_result = result
+    assert _converse(turn) == FINAL_REPLY
+    assert "extract_learning" in _kinds(turn)
+
+
+def test_a_real_written_result_is_evidence(turn):
+    """The other half: the shape the handler actually returns DOES skip the pass."""
+    turn.tool_result = json.dumps({"ok": True, "written": {"updated_files": ["founder.md"]}})
+    settled: list[bool] = []
+    assert _converse(turn, settled=settled) == FINAL_REPLY
+    assert _kinds(turn) == ["writer_1", "writer_2"]
+    assert settled == [True]
+
+
 def test_an_unrelated_tool_is_not_evidence_of_recording(turn):
     """Only the governed brain-write counts. read_brain is not a write."""
     turn.tool = "read_brain"
@@ -214,6 +305,35 @@ def test_settling_is_monotonic_and_idempotent(turn):
         universe_dir, SESSION, through_turn=1,
     ) == latest
     assert conversation_store.learned_cursor(universe_dir, SESSION) == latest
+
+
+def test_the_cursor_cannot_jump_past_a_turn_that_is_still_owed(turn):
+    """PR #4001 review: a watermark cannot say "N settled, N-1 not".
+
+    Turn N-1's extraction failed, so the cursor stayed behind. Turn N then settles.
+    Advancing to the latest row would claim N-1 too, and no drain would ever retry
+    it. Refusing costs a redundant extraction later; claiming costs the lesson.
+    """
+    universe_dir = turn.universe_dir
+    conversation_store.record_exchange(universe_dir, SESSION, "taught you X", "noted")
+    owed_at = conversation_store.latest_turn_no(universe_dir, SESSION)
+    # Turn N-1 is owed: nothing settled it.
+    assert conversation_store.learned_cursor(universe_dir, SESSION) == 0
+    conversation_store.record_exchange(universe_dir, SESSION, "taught you Y", "noted")
+    began_at = owed_at  # where the cursor SHOULD have stood when turn N began
+    settled = conversation_store.settle_learned_cursor(
+        universe_dir, SESSION, from_turn=began_at,
+    )
+    assert settled == 0, "turn N claimed the owed turn N-1"
+    assert conversation_store.learned_cursor(universe_dir, SESSION) == 0
+    # And once the earlier span IS settled, the next one advances normally.
+    assert conversation_store.settle_learned_cursor(
+        universe_dir, SESSION, through_turn=owed_at, from_turn=0,
+    ) == owed_at
+    latest = conversation_store.latest_turn_no(universe_dir, SESSION)
+    assert conversation_store.settle_learned_cursor(
+        universe_dir, SESSION, from_turn=owed_at,
+    ) == latest
 
 
 def test_an_existing_conversation_is_not_re_extracted(turn):
