@@ -28,20 +28,31 @@ from tinyassets.daemon_server import save_branch_definition
 from tinyassets.storage import deliveries
 from tinyassets.storage import receiver_links as store
 
-#: The receiving branch DECLARES both reserved attribution fields, each with a
-#: default, and its node renders them into the prompt. The default matters: without
-#: it a missing injection would be caught incidentally by required-input preflight
-#: rather than by the attribution assertion itself.
-ATTRIBUTED_SCHEMA = [
-    {"name": "topic", "type": "str", "description": "Incoming topic"},
-    {"name": "delivery_sender_id", "type": "str", "default_value": "nobody"},
-    {"name": "delivery_sender_universe_id", "type": "str", "default_value": "nowhere"},
-    {"name": "result", "type": "str"},
-    {"name": "extra", "type": "str"},
-]
+
+#: The receiving branch DECLARES both reserved attribution fields and its node
+#: renders them into the prompt.
+#:
+#: ``defaults=True`` (the default here) gives each field a ``default_value``, which
+#: matters for mutation sensitivity: a missing injection then produces a prompt
+#: carrying the placeholder rather than a required-input refusal, so the assertion
+#: that catches it is the rendered prompt itself and not an incidental preflight.
+#: ``defaults=False`` is the handbook's exact declaration, which is the shape a real
+#: agent will write -- see the test that uses it.
+def _attributed_schema(defaults=True):
+    attribution = [{"name": name, "type": "str"} for name in
+                   ("delivery_sender_id", "delivery_sender_universe_id")]
+    if defaults:
+        for field, placeholder in zip(attribution, ("nobody", "nowhere")):
+            field["default_value"] = placeholder
+    return [
+        {"name": "topic", "type": "str", "description": "Incoming topic"},
+        *attribution,
+        {"name": "result", "type": "str"},
+        {"name": "extra", "type": "str"},
+    ]
 
 
-def _seed_attributed(base):
+def _seed_attributed(base, defaults=True):
     """Re-save b-receiver so its node actually READS who sent the deliverable."""
     branch = BranchDefinition(
         branch_def_id="b-receiver",
@@ -63,7 +74,7 @@ def _seed_attributed(base):
         graph_nodes=[GraphNodeRef(id="entry", node_def_id="definition")],
         edges=[EdgeDefinition("START", "entry"), EdgeDefinition("entry", "END")],
         entry_point="entry",
-        state_schema=ATTRIBUTED_SCHEMA,
+        state_schema=_attributed_schema(defaults),
     )
     save_branch_definition(base, branch_def=branch.to_dict())
 
@@ -197,31 +208,58 @@ def test_closing_an_open_receiver_stops_a_sender_who_already_connected(
     """Exposure is revocable mid-flight: acceptance rechecks, not just connect."""
     base, auth = two_users
     auth("receiver")
-    receiver = _create(open_to_all=True, discoverable=True)
+    receiver = _create(open_to_all=True, discoverable=True, sender_rate_limit=3)
     auth("outsider")
     link = _connect(receiver)
     assert "link_id" in link, link
 
-    auth("receiver")
-    # update REPLACES the exposure declaration, exactly as it replaces
-    # allowed_senders: omitting the flags is how an owner closes it again.
-    closed = _create("update", receiver_id=receiver["receiver_id"], expected_generation=1)
-    assert closed["generation"] == 2, closed
-    assert closed["open_to_all"] is False
-    assert closed["discoverable"] is False
-
     auth("outsider")
-    assert _send(link)["error"]
+    assert "delivery_id" in _send(link, occurrence="before-any-edit")
+
+    auth("receiver")
+    # An unrelated edit KEEPS the exposure declaration. It must not silently close
+    # the receiver, and it must not reset a tightened rate limit back to the default
+    # -- that would silently LOOSEN a bound the owner chose.
+    edited = _create("update", receiver_id=receiver["receiver_id"],
+                     expected_generation=1, description="same terms, new words")
+    assert edited["generation"] == 2, edited
+    assert (edited["open_to_all"], edited["discoverable"]) == (True, True)
+    assert edited["sender_rate_limit"] == 3
+
+    # Closing is an EXPLICIT false, never an omission.
+    closed = _create("update", receiver_id=receiver["receiver_id"], expected_generation=2,
+                     open_to_all=False, discoverable=False)
+    assert closed["generation"] == 3, closed
+    assert (closed["open_to_all"], closed["discoverable"]) == (False, False)
+    auth("outsider")
     assert _discover("u-outsider")["receivers"] == []
+
+    # And the gate is rechecked at ACCEPTANCE, not only at connect. Any update bumps
+    # the generation, which invalidates a sender's link on its own, so proving the
+    # gate itself needs the flag cleared WITHOUT a generation change -- otherwise
+    # `receiver_generation_changed` would be the only thing this observed.
+    auth("receiver")
+    reopened = _create("update", receiver_id=receiver["receiver_id"],
+                       expected_generation=3, open_to_all=True)
+    auth("outsider")
+    fresh = _connect(reopened)
+    assert "link_id" in fresh, fresh
+    with store.transaction(base) as conn:
+        conn.execute(
+            "UPDATE graph_receivers SET open_to_all=0 WHERE receiver_id=?",
+            (receiver["receiver_id"],),
+        )
+    assert _send(fresh, occurrence="after-closing")["error"]
     with deliveries.transaction(base) as conn:
-        assert conn.execute("SELECT count(*) FROM graph_deliveries").fetchone()[0] == 0
-    assert provider_probe == []
+        assert conn.execute("SELECT count(*) FROM graph_deliveries").fetchone()[0] == 1
+    assert len(provider_probe) <= 1
 
 
 @pytest.mark.parametrize("payload", [
     {"open_to_all": "true"},
     {"open_to_all": 1},
-    {"discoverable": None},
+    {"discoverable": "false"},
+    {"discoverable": 0},
     {"sender_rate_limit": 0},
     {"sender_rate_limit": store.MAX_SENDER_RATE_LIMIT + 1},
     {"sender_rate_limit": True},
@@ -229,11 +267,34 @@ def test_closing_an_open_receiver_stops_a_sender_who_already_connected(
     {"allowed_senders": ["*"]},
 ])
 def test_a_near_miss_exposure_value_is_refused_not_coerced(two_users, payload):
-    """A truthy string must never open a private node, and "*" is still not a name."""
+    """A truthy string must never open a private node, and "*" is still not a name.
+
+    `0` and `"false"` are refused too: an owner who meant to close something is told
+    their value was not understood, rather than having it read as the closed default
+    and appearing to have worked.
+    """
     _, auth = two_users
     auth("receiver")
     response = _create(**payload)
     assert response["error"] == "invalid_delivery_request", response
+
+
+def test_an_omitted_exposure_field_means_keep_not_close(two_users):
+    """The sentinel's definition: null/absent is "unspecified", never "closed"."""
+    _, auth = two_users
+    auth("receiver")
+    # Absent on create -> the private default.
+    created = _create(sender_rate_limit=5)
+    assert (created["open_to_all"], created["discoverable"]) == (False, False)
+    assert created["sender_rate_limit"] == 5
+    opened = _create("update", receiver_id=created["receiver_id"], expected_generation=1,
+                     open_to_all=True, discoverable=True)
+    # Explicit null on update -> keep, for every one of the three.
+    kept = _create("update", receiver_id=created["receiver_id"], expected_generation=2,
+                   open_to_all=None, discoverable=None, sender_rate_limit=None)
+    assert (kept["open_to_all"], kept["discoverable"]) == (True, True)
+    assert kept["sender_rate_limit"] == 5
+    assert opened["generation"] == 2 and kept["generation"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +376,72 @@ def test_discovery_is_attributable_and_bounded(two_users):
 # ---------------------------------------------------------------------------
 
 
+def test_the_handbook_recipe_works_with_no_default_on_the_attribution_field(
+    two_users, provider_probe,
+):
+    """The chapter's EXACT declaration, which had no `default_value` and did not work.
+
+    `project_receiver_entry` preflights presence using the advertised contract plus
+    schema defaults, so a node consuming `delivery_sender_id` could not become a
+    receiver at all: the field is neither advertised (refused) nor defaulted. The
+    schema used by the other tests here has defaults and hid it. Found by the
+    cross-family review, 2026-09-26.
+    """
+    base, auth = two_users
+    _seed_attributed(base, defaults=False)
+    auth("receiver")
+    receiver = _create(open_to_all=True, discoverable=True)
+    assert "receiver_id" in receiver, receiver
+    # And the contract still does NOT advertise them.
+    assert [field["name"] for field in receiver["contract"]] == ["topic"]
+    auth("outsider")
+    sent = _send(_connect(receiver))
+    assert "delivery_id" in sent, sent
+    auth("receiver")
+    own = json.loads(server.read_graph(
+        target="delivery", graph_id="u-receiver", query=sent["delivery_id"],
+    ))
+    runs.wait_for(own["run_id"], timeout=10)
+    assert "from outsider at u-outsider" in provider_probe[0]
+
+
+@pytest.mark.parametrize("field", store.SENDER_ATTRIBUTION_FIELDS)
+def test_a_legacy_receiver_advertising_an_attribution_field_cannot_receive(
+    two_users, provider_probe, field,
+):
+    """The save-time guard only covers new receivers; acceptance closes the rest.
+
+    A receiver predating the guard could advertise a reserved name, and for a FILE
+    field `_run_inputs` would then replace the injected principal with the SENDER's
+    own file reference -- forged provenance. Written by reaching past the API to the
+    store, which is the only way such a row can exist. Refused loudly at acceptance,
+    so the invariant is structural rather than contingent on create-time validation.
+    """
+    base, auth = two_users
+    auth("receiver")
+    receiver = _create(open_to_all=True, discoverable=True)
+    auth("outsider")
+    link = _connect(receiver)
+    # Forge the row a pre-guard create could have produced.
+    with store.transaction(base) as conn:
+        contract = json.loads(conn.execute(
+            "SELECT contract_json FROM graph_receivers WHERE receiver_id=?",
+            (receiver["receiver_id"],),
+        ).fetchone()[0])
+        contract.append({"name": field, "type": "dict", "required": False,
+                         "description": "legacy"})
+        conn.execute(
+            "UPDATE graph_receivers SET contract_json=? WHERE receiver_id=?",
+            (json.dumps(contract), receiver["receiver_id"]),
+        )
+    refused = _send(link)
+    assert refused["error"] == "invalid_delivery_request", refused
+    assert field in refused["detail"]
+    with deliveries.transaction(base) as conn:
+        assert conn.execute("SELECT count(*) FROM graph_deliveries").fetchone()[0] == 0
+    assert provider_probe == []
+
+
 @pytest.mark.parametrize("field", store.SENDER_ATTRIBUTION_FIELDS)
 def test_a_receiver_cannot_advertise_an_attribution_field(two_users, field):
     """Keeping them out of the contract is WHY a sender cannot map onto them."""
@@ -327,20 +454,37 @@ def test_a_receiver_cannot_advertise_an_attribution_field(two_users, field):
 
 @pytest.mark.parametrize("field", store.SENDER_ATTRIBUTION_FIELDS)
 def test_a_sender_cannot_map_an_output_onto_an_attribution_field(two_users, field):
-    """The structural consequence, driven from the sender's side."""
-    _, auth = two_users
+    """The structural consequence, driven from the sender's side.
+
+    The reserved-field mapping is the ONLY reason this can be refused: `topic` is
+    covered, so the contract's `required - mapped` check is already satisfied and
+    only `mapped - accepted` can fire. The first version of this test mapped just
+    the reserved field and left `topic` unmapped, so it passed with the guard
+    deleted -- a surviving mutation the cross-family review found on 2026-09-26.
+    """
+    base, auth = two_users
     auth("receiver")
     receiver = _create(open_to_all=True, discoverable=True)
     auth("outsider")
+    payload = {
+        "branch_def_id": "b-outsider", "node_id": "entry",
+        "receiver_id": receiver["receiver_id"], "expected_generation": 1,
+        "mapping": {"result": "topic", "extra": field},
+    }
     response = json.loads(server.write_graph(
         target="output_link", operation="connect", graph_id="u-outsider",
-        payload_json=json.dumps({
-            "branch_def_id": "b-outsider", "node_id": "entry",
-            "receiver_id": receiver["receiver_id"], "expected_generation": 1,
-            "mapping": {"result": field},
-        }),
+        payload_json=json.dumps(payload),
     ))
     assert response["error"] == "invalid_delivery_request", response
+    with deliveries.transaction(base) as conn:
+        assert conn.execute("SELECT count(*) FROM graph_output_links").fetchone()[0] == 0
+    # Control: the SAME call with a legitimate second target connects, so the
+    # refusal above is attributable to the reserved name and nothing else.
+    payload["mapping"] = {"result": "topic"}
+    assert "link_id" in json.loads(server.write_graph(
+        target="output_link", operation="connect", graph_id="u-outsider",
+        payload_json=json.dumps(payload),
+    ))
 
 
 def test_a_retry_to_an_attributed_receiver_stays_the_same_delivery(
@@ -523,6 +667,13 @@ def test_a_receiver_table_that_predates_the_exposure_columns_migrates_closed(
     path = runs_db_path(base)
     path.parent.mkdir(parents=True, exist_ok=True)
     legacy = sqlite3.connect(path)
+    # Put the file in WAL mode HERE. `transaction()` sets it per connection, and
+    # switching a rollback-journal database to WAL needs an exclusive lock that
+    # ignores the busy timeout -- so several openers arriving at once on a
+    # never-opened file fail in `PRAGMA journal_mode=WAL` before reaching anything
+    # this test is about. Pre-existing, and not what the concurrency assertion below
+    # is asking; with the mode already set, the openers contend only on the migration.
+    legacy.execute("PRAGMA journal_mode=WAL")
     legacy.executescript(
         """CREATE TABLE graph_receivers (
             receiver_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
@@ -541,7 +692,40 @@ def test_a_receiver_table_that_predates_the_exposure_columns_migrates_closed(
     legacy.commit()
     legacy.close()
 
+    # Concurrent openers must serialize. `ALTER TABLE ADD COLUMN` has no
+    # `IF NOT EXISTS`, so running the migration outside the write lock lets both
+    # openers see the column missing and the loser raise `duplicate column name`
+    # (reproduced by the cross-family review, 2026-09-26). Threads rather than
+    # processes so they contend on one database file without a spawn cost.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def open_and_read():
+        with store.transaction(base) as conn:
+            return conn.execute(
+                "SELECT open_to_all, discoverable, sender_rate_limit FROM graph_receivers",
+            ).fetchone()["sender_rate_limit"]
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        limits = [future.result() for future in
+                  [pool.submit(open_and_read) for _ in range(6)]]
+    assert limits == [store.DEFAULT_SENDER_RATE_LIMIT] * 6
+
+    # The write-lock precondition is CHECKED, not just documented -- the race that
+    # violating it opens is timing-dependent, so the threaded assertion above is
+    # necessary but not sufficient on its own.
+    outside = sqlite3.connect(path)
+    try:
+        assert not outside.in_transaction
+        with pytest.raises(ValueError, match="write lock"):
+            store.migrate_in_transaction(outside)
+    finally:
+        outside.close()
+
     with store.transaction(base) as conn:
+        # The column exists exactly once, so no opener added a second one.
+        names = [str(row[1]) for row in conn.execute("PRAGMA table_info(graph_receivers)")]
+        for column in ("open_to_all", "discoverable", "sender_rate_limit"):
+            assert names.count(column) == 1, column
         row = conn.execute("SELECT * FROM graph_receivers").fetchone()
         assert row["open_to_all"] == 0
         assert row["discoverable"] == 0

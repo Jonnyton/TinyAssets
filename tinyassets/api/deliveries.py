@@ -159,6 +159,50 @@ def _reject_undeclared_references(values, file_fields):
     )
 
 
+def _refuse_reserved_contract_fields(receiver):
+    """A reserved attribution name may never be an ADVERTISED field, at any age.
+
+    The save-time guard in ``api/receiver_links.py`` only covers receivers created
+    after it shipped, which left the "a sender can never land a value here"
+    invariant contingent on validation rather than structural. A receiver predating
+    it could advertise a reserved name as a FILE input; injection would then write
+    the authenticated principal and ``storage/deliveries.py`` ``_run_inputs`` would
+    replace it with the sender's own file reference (cross-family review,
+    2026-09-26). Checked against the ADMITTED contract on every acceptance, so a
+    receiver in that state cannot receive until its owner renames the field --
+    loudly refused, never silently accepted with forged provenance.
+    """
+    advertised = {field["name"] for field in json.loads(receiver["contract_json"])}
+    collide = sorted(advertised & set(receiver_links.SENDER_ATTRIBUTION_FIELDS))
+    if collide:
+        raise ValueError(
+            "receiver advertises platform-supplied sender attribution as an input; "
+            "its owner must rename: " + ", ".join(collide)
+        )
+
+
+def _replayed_inputs(prior, link, outputs):
+    """Validate a retry against the STORED acceptance and carry it forward verbatim.
+
+    The comparison covers SENDER content only. Platform-supplied attribution is not
+    something the sender sent, so recomputing it in order to compare -- this
+    change's first shape -- both added fragility and broke retries of occurrences
+    accepted before attribution existed, since their stored inputs have no such key.
+    Returning the stored dict unchanged is what keeps the replay digest identical for
+    a pre-upgrade row and a post-upgrade one alike.
+
+    A changed payload still conflicts: here on the mapped comparison, and again in
+    ``accept_in_transaction``, whose digest also covers the raw request payload.
+    """
+    stored = json.loads(prior["inputs_json"])
+    sent = {target: outputs[source] for source, target
+            in json.loads(link["mapping_json"]).items() if source in outputs}
+    reserved = set(receiver_links.SENDER_ATTRIBUTION_FIELDS)
+    if sent != {name: value for name, value in stored.items() if name not in reserved}:
+        raise deliveries.OccurrenceConflict()
+    return stored
+
+
 def _sender_attribution(snapshot_json, link, values):
     """Fill the reserved attribution fields the RECEIVER's own snapshot declares.
 
@@ -195,6 +239,7 @@ def _sender_attribution(snapshot_json, link, values):
 
 
 def _structured_inputs(receiver, link, outputs, *, allow_files=False):
+    _refuse_reserved_contract_fields(receiver)
     if not isinstance(outputs, dict):
         raise ValueError("outputs must be an object")
     delivery_runtime.validate_output_envelopes(outputs, allow_file_references=allow_files)
@@ -300,21 +345,20 @@ def _transfer_files(base, *, principal, universe_id, link_id, occurrence_id, out
         if prior is not None:
             # Mirrors the authoritative replay branch structure so a changed replay
             # is refused before any reservation, allocation or byte is moved.
-            # Attribution is reproduced from the ADMITTED snapshot for the same
-            # reason it is below: it is part of what was stored, so omitting it here
-            # would make every retry to an attributed receiver read as changed.
-            mapped = _sender_attribution(
-                prior["snapshot_json"], link,
-                {target: outputs[field] for field, target in mapping.items()
-                 if field in outputs},
-            )
-            if mapped != json.loads(prior["inputs_json"]):
-                raise deliveries.OccurrenceConflict()
+            _replayed_inputs(prior, link, outputs)
             return _accepted_transfer(conn, prior["delivery_id"])
         _, resolved = receiver_links.resolve_link_in_transaction(
             conn, link_id=link_id, owner_id=principal, universe_id=universe_id,
         )
         receiver = dict(resolved)
+        _refuse_reserved_contract_fields(receiver)
+        # The per-sender bound BEFORE any byte is copied. This runs under the same
+        # two writers acceptance holds, so a sequential sender past its limit copies
+        # nothing at all; concurrent senders are bounded by requests already in
+        # flight rather than by the window, because the copy itself happens after
+        # this transaction closes. A capacity reservation spanning the copy would
+        # close that remainder and is not attempted here.
+        _enforce_sender_rate_limit(conn, receiver, sender_id=principal)
         values = {target: outputs[field] for field, target in mapping.items()}
         branch = BranchDefinition.from_dict(json.loads(receiver["snapshot_json"]))
         file_fields = _file_fields(receiver, values, branch)
@@ -446,18 +490,7 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
         else:
             # Replay uses the admitted contract/snapshot, not a later revision.
             receiver["snapshot_json"] = prior["snapshot_json"]
-            original = json.loads(prior["inputs_json"])
-            # Attribution was stored with the original acceptance and is therefore
-            # inside the replay digest. Reproducing it from the SAME link row and the
-            # SAME admitted snapshot is what keeps a retry byte-identical; computing
-            # the mapping alone made every retry to an attributed receiver conflict.
-            mapped = _sender_attribution(
-                prior["snapshot_json"], link,
-                {target: outputs[source] for source, target
-                 in json.loads(link["mapping_json"]).items() if source in outputs},
-            )
-            if mapped != original:
-                raise deliveries.OccurrenceConflict()
+            mapped = _replayed_inputs(prior, link, outputs)
         values = (_structured_inputs(receiver, link, outputs, allow_files=source is not None)
                   if prior is None else mapped)
         if prior is None and transfer is not None and not transfer["replay"]:

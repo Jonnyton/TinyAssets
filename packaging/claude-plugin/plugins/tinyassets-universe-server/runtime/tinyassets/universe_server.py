@@ -506,9 +506,9 @@ def read_graph(
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
-    Cross-user delivery: target=receivers lists receivers other owners opened to
-    discovery (optional query=search text over description/owner, limit caps the
-    result) — this is how you find a receiver_id you were never told;
+    Cross-user delivery: target=receivers searches receivers other owners opened to
+    discovery (optional query=text over description/owner; the result is capped by
+    limit, not exhaustive) — this is how you find a receiver_id you were never told;
     target=receiver with query=receiver_id reads one contract you may see;
     target=output_links lists your graph_id's links;
     target=delivery with query=delivery_id reads your side's safe receipt, which
@@ -920,9 +920,9 @@ def write_graph(
     It exposes a pinned selected entry only to those exact sender principals;
     an empty list permits nobody. open_to_all=true accepts ANY authenticated user
     (there is no "*" sender); discoverable=true lists it under read_graph
-    target=receivers. Both default false, and update REPLACES the whole exposure
-    declaration exactly as it replaces allowed_senders, so repeat them or the
-    receiver reverts to private. sender_rate_limit caps accepted deliveries per
+    target=receivers. Both default false on create; update KEEPS any exposure field
+    you omit, so closing one is an explicit false rather than an omission.
+    sender_rate_limit caps accepted deliveries per
     sending principal per hour (default 60, 1..100000) and refuses by name.
     input_keys cannot advertise delivery_sender_id or
     delivery_sender_universe_id: declare either in the receiving branch's

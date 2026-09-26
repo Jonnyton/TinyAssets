@@ -112,6 +112,33 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
+def migrate_in_transaction(conn):
+    """Add the exposure columns under the caller's WRITE LOCK, never outside it.
+
+    ``CREATE TABLE IF NOT EXISTS`` in ``_SCHEMA`` is idempotent, so it can run
+    before the transaction. ``ALTER TABLE ADD COLUMN`` has no ``IF NOT EXISTS``:
+    two openers checking outside the write lock both see the column missing and the
+    loser raises ``duplicate column name`` (reproduced by the 2026-09-26
+    cross-family review against a shared database). Serializing on BEGIN IMMEDIATE
+    means the second opener sees the first's committed column.
+
+    The precondition is CHECKED rather than commented, because the race that
+    violating it opens is timing-dependent -- a concurrency test does not reliably
+    catch the wrong placement, so hoping is not enough. Same reason and shape as
+    ``storage/deliveries._require_transaction``.
+    """
+    if not conn.in_transaction:
+        raise ValueError("receiver column migration requires the caller's write lock")
+    for table, column, declaration in _MIGRATIONS:
+        existing = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+    # After the columns they read, so an index can never run against a table
+    # mid-migration.
+    for statement in _MIGRATED_INDEXES:
+        conn.execute(statement)
+
+
 @contextmanager
 def transaction(base_path: str | Path) -> Iterator[sqlite3.Connection]:
     """Use the runs DB, not the author store used by legacy webhook tokens."""
@@ -123,13 +150,8 @@ def transaction(base_path: str | Path) -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(_SCHEMA)
-        for table, column, declaration in _MIGRATIONS:
-            existing = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
-            if column not in existing:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
-        for statement in _MIGRATED_INDEXES:
-            conn.execute(statement)
         conn.execute("BEGIN IMMEDIATE")
+        migrate_in_transaction(conn)
         yield conn
         conn.commit()
     except BaseException:
@@ -233,10 +255,19 @@ def save_receiver(
     description="",
     receiver_id=None,
     expected_generation=None,
-    open_to_all=False,
-    discoverable=False,
-    sender_rate_limit=DEFAULT_SENDER_RATE_LIMIT,
+    open_to_all=None,
+    discoverable=None,
+    sender_rate_limit=None,
 ):
+    """``None`` for an exposure field means KEEP: create defaults, update preserves.
+
+    Not "replace the whole exposure declaration like ``allowed_senders``", which was
+    the first shape and was wrong. ``allowed_senders`` is a REQUIRED argument, so
+    omitting it fails loudly; these are optional, so omitting them would silently
+    change policy -- and silently reset a deliberately tightened ``sender_rate_limit``
+    back to the default, which LOOSENS a bound. Closing an exposure is an explicit
+    ``false``. (Cross-family review, 2026-09-26.)
+    """
     for name in (owner_id, universe_id, branch_def_id):
         _name(name)
     if not isinstance(allowed_senders, list):
@@ -245,10 +276,12 @@ def save_receiver(
     if not isinstance(description, str):
         raise ValueError("description must be text")
     # Exposure is the owner's explicit act, so a near-miss value is refused rather
-    # than coerced: "1", "false" and None must not silently open a private node.
-    if type(open_to_all) is not bool or type(discoverable) is not bool:
-        raise ValueError("open_to_all and discoverable must be true or false")
-    if (
+    # than coerced: "1" and "false" must not silently open a private node. Only the
+    # None sentinel is accepted as "unspecified".
+    for label, value in (("open_to_all", open_to_all), ("discoverable", discoverable)):
+        if value is not None and type(value) is not bool:
+            raise ValueError(f"{label} must be true or false")
+    if sender_rate_limit is not None and (
         type(sender_rate_limit) is not int
         or not 1 <= sender_rate_limit <= MAX_SENDER_RATE_LIMIT
     ):
@@ -281,9 +314,10 @@ def save_receiver(
                     projection.source_sha256,
                     projection.snapshot_sha256,
                     time.time(),
-                    int(open_to_all),
-                    int(discoverable),
-                    sender_rate_limit,
+                    int(bool(open_to_all)),
+                    int(bool(discoverable)),
+                    DEFAULT_SENDER_RATE_LIMIT if sender_rate_limit is None
+                    else sender_rate_limit,
                 ),
             )
         else:
@@ -306,9 +340,10 @@ def save_receiver(
                     projection.snapshot_json,
                     projection.source_sha256,
                     projection.snapshot_sha256,
-                    int(open_to_all),
-                    int(discoverable),
-                    sender_rate_limit,
+                    row["open_to_all"] if open_to_all is None else int(open_to_all),
+                    row["discoverable"] if discoverable is None else int(discoverable),
+                    row["sender_rate_limit"] if sender_rate_limit is None
+                    else sender_rate_limit,
                     receiver_id,
                     expected_generation,
                 ),

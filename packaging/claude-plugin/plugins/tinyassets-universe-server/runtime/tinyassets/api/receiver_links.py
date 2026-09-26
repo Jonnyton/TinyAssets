@@ -113,9 +113,9 @@ def save_receiver(
     description="",
     receiver_id=None,
     expected_generation=None,
-    open_to_all=False,
-    discoverable=False,
-    sender_rate_limit=store.DEFAULT_SENDER_RATE_LIMIT,
+    open_to_all=None,
+    discoverable=None,
+    sender_rate_limit=None,
 ):
     principal = _principal(write=True)
     base = _base()
@@ -136,8 +136,18 @@ def save_receiver(
             "these receiver inputs are filled by the platform with the sender's "
             "identity and cannot be advertised: " + ", ".join(reserved)
         )
-    projection = project_receiver_entry(branch, node_id, contract_input_keys=input_keys)
     fields = {item["name"]: item for item in branch.state_schema}
+    # Attribution fields the receiver's own schema declares are ALWAYS supplied by
+    # acceptance, so projection's presence preflight has to count them as present
+    # while the contract below still excludes them. Without this, the documented
+    # recipe -- declare the field, read it in a node -- refused the receiver with
+    # MissingRequiredInputs, because the field is neither advertised nor defaulted.
+    # `contract_input_keys` is presence-preflight-only by contract (see
+    # `project_receiver_entry`), which is exactly the semantics needed here.
+    supplied = [key for key in store.SENDER_ATTRIBUTION_FIELDS if key in fields]
+    projection = project_receiver_entry(
+        branch, node_id, contract_input_keys=[*input_keys, *supplied],
+    )
     defaults = _state_schema_defaults(branch.state_schema)
     # Explicitly advertised input metadata, not the receiver's private defaults
     # or arbitrary schema metadata. A default may contain private startup inputs.

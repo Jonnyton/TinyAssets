@@ -93,11 +93,42 @@ of the receipt, which returned neither before (`_receipt` in
 `storage/deliveries.py`) — an owner literally could not see who sent them
 anything.
 
-Consequence, stated rather than hidden: `accept_in_transaction`'s replay digest
-covers `inputs`, so attribution now participates in it. A replay of an occurrence
-accepted before this deploy, against a receiver whose snapshot happens to declare
-a reserved name, conflicts loudly (`occurrence_conflict`). It cannot silently
-accept a second run.
+Two things the cross-family review (2026-09-26) corrected here.
+
+**The save-time refusal was not enough.** It only covers receivers created after it
+shipped. A receiver predating it could advertise a reserved name as a *file* input,
+and `storage/deliveries.py` `_run_inputs` would then replace the injected principal
+with the sender's own file reference — forged provenance past a guard that looked
+structural. `_refuse_reserved_contract_fields` now checks the ADMITTED contract on
+every acceptance, so such a receiver cannot receive at all until its owner renames
+the field. Loud refusal, never silent acceptance.
+
+**Replay compares sender content, and carries the stored record forward.**
+`accept_in_transaction`'s digest covers `inputs`, so attribution participates in
+it. The first shape recomputed attribution on the replay paths in order to compare
+— which broke retries of occurrences accepted *before* attribution existed, since
+their stored inputs have no such key, and a retry is the normal response to a
+timeout. `_replayed_inputs` instead compares only what the SENDER sent against the
+stored inputs minus the reserved names, and returns the stored dict unchanged. That
+is byte-identical for a pre-upgrade row and a post-upgrade one alike, and a changed
+payload still conflicts — on the mapped comparison, and again on the digest, which
+also covers the raw request payload.
+
+## 3a. Exposure on update: keep, not replace
+
+The first shape made `update` REPLACE the exposure declaration, arguing consistency
+with `allowed_senders`, which is also a full replace. That was wrong, and the
+review's counter-argument is the better one: `allowed_senders` is a REQUIRED
+argument, so omitting it fails loudly, while the exposure fields are optional with
+defaults, so omitting them would *silently* change policy — and silently reset a
+deliberately tightened `sender_rate_limit` back to 60, which LOOSENS a bound the
+owner chose. Fail-safe in one direction is not fail-safe.
+
+So `None`/absent means KEEP: create takes the private defaults, update preserves
+whatever is not mentioned. Closing an exposure is an explicit `false`, and `0` or
+`"false"` are refused rather than read as the closed default, so an owner who meant
+to close something is told their value was not understood instead of appearing to
+have succeeded.
 
 ## 4. Per-sender rate limit — usage, not structure
 
@@ -114,6 +145,16 @@ admission budget without limit.
 - Checked **before** `engine_admissions.admit_detail`, inside the acceptance
   transaction, and only on the `prior is None` branch: a replay of an
   already-accepted occurrence neither consumes budget nor is refused.
+- Also checked inside `_transfer_files`' own pre-flight transaction, because that
+  runs ABOVE every acceptance fence. Without it a sender past its limit could vary
+  occurrence ids and cause copy after copy that acceptance then refused, leaving
+  the committed custody objects behind (review finding, 2026-09-26). That
+  pre-flight holds the same two writers as acceptance, so a *sequential* sender
+  past its limit copies nothing at all. **Residual, stated:** the copy itself
+  happens after that transaction closes, so concurrent senders can still produce
+  one copy per in-flight request before the window reflects them. Closing that
+  remainder needs a capacity reservation spanning the copy, which this change does
+  not attempt.
 - Refusal is `receiver_sender_rate_limit_exceeded`, surfaced through the existing
   `invalid_delivery_request` detail channel. No silent drop.
 
@@ -151,6 +192,18 @@ Vendor-neutral, and deliberately *not* coached toward bug reports or any other
 use: the primitive is "a deliverable from someone else's universe arrives in
 mine", and naming a use would narrow what agents build with it.
 
+The review checked every literal in the chapter against the code and found two
+false ones, which is the point of checking. The chapter's own recipe — declare
+`{"name": "delivery_sender_id", "type": "str"}` — could not work, because
+`project_receiver_entry` preflights presence from the advertised contract plus
+schema defaults and the field is neither, so such a receiver was refused with
+`MissingRequiredInputs`. `save_receiver` now passes declared attribution names to
+projection as presence-only keys (that parameter is documented as
+presence-preflight-only) while the contract still excludes them, and the documented
+recipe is true. Separately, "lists every receiver" was wrong — the result is capped
+— and an agent that believes a capped list is exhaustive tells its user the wrong
+thing, so the chapter now says so.
+
 The chapter goes in the handbook rather than the resident description because its
 absence produces an *absent* call (the agent fetches, or reaches for a webhook and
 can be pointed) rather than a *wrong* one — the split rule recorded in
@@ -161,13 +214,23 @@ asserts the index and the handbook agree.
 
 ## Migration
 
-`graph_receivers` gains three columns. `links.transaction` runs
-`executescript(_SCHEMA)` before `BEGIN IMMEDIATE`, so the additive
-`PRAGMA table_info` + `ALTER TABLE ADD COLUMN` pass goes there, matching
-`tinyassets/automations.py:377-382`. No `CHECK` on the added columns — SQLite's
-`ADD COLUMN` cannot carry one, and a constraint present on fresh databases but
-absent on migrated ones is two definitions of one rule; the bounds are validated
-in `save_receiver` where they can name themselves.
+`graph_receivers` gains three columns via a `PRAGMA table_info` +
+`ALTER TABLE ADD COLUMN` pass, matching `tinyassets/automations.py:377-382`.
+
+It runs **inside** `BEGIN IMMEDIATE`, unlike `executescript(_SCHEMA)` above it.
+`CREATE TABLE IF NOT EXISTS` is idempotent; `ADD COLUMN` has no `IF NOT EXISTS`,
+so two openers checking outside the write lock both see the column missing and the
+loser raises `duplicate column name` — reproduced by the review against a shared
+database. And because that race is timing-dependent, a concurrency test does not
+reliably catch the wrong placement: `migrate_in_transaction` therefore *checks*
+`conn.in_transaction` and refuses, the same shape as
+`storage/deliveries._require_transaction`. The migrated index is created after the
+columns it reads, so it can never run against a table mid-migration.
+
+No `CHECK` on the added columns — SQLite's `ADD COLUMN` cannot carry one, and a
+constraint present on fresh databases but absent on migrated ones is two
+definitions of one rule; the bounds are validated in `save_receiver` where they can
+name themselves.
 
 The existing `INSERT INTO graph_receivers VALUES (?,?,...)` is **positional** and
 would silently mis-assign every column after a schema change, so it becomes an

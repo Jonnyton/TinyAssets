@@ -325,9 +325,10 @@ def read_graph(
 ) -> str:
     """Read your OWN universe's status or graph, without changing anything.
 
-    Native delivery: target=receivers lists receivers other owners opened to
-    discovery (query = optional search text) — that is how I learn a receiver_id
-    nobody told me; target=receiver query=receiver_id reads one contract shared
+    Native delivery: target=receivers searches receivers other owners opened to
+    discovery (query = optional search text; the result is capped, not exhaustive)
+    — that is how I learn a receiver_id nobody told me; target=receiver
+    query=receiver_id reads one contract shared
     with me; target=output_links lists my links; target=delivery query=delivery_id
     reads my side of the receipt, which on the receiving side names the sending
     principal and universe. Accepted does not mean processed successfully.
@@ -1520,9 +1521,11 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     * ``open_to_all`` and ``discoverable`` are independent. Open-but-unlisted is a
       receiver I hand the id to directly; listed-but-closed lets people read my
       terms and ask, while delivery still refuses.
-    * BOTH default to false, and ``operation="update"`` REPLACES the whole exposure
-      declaration the same way it replaces ``allowed_senders`` — if I edit the
-      contract and forget to repeat them, the receiver goes back to private.
+    * BOTH default to false on create. ``operation="update"`` KEEPS whatever I do not
+      mention, so editing a contract cannot silently change exposure or reset a
+      tightened ``sender_rate_limit``. Closing an exposure is an explicit
+      ``"open_to_all": false`` / ``"discoverable": false``, or ``operation="revoke"``
+      to stop every sender at once.
     * ``input_keys`` is the whole advertised contract. Everything else about the
       workflow — the rest of its steps, a decision step I run on what arrives, my
       other senders, my other deliveries — a sender never sees.
@@ -1541,11 +1544,13 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
 
     **Their side — send to someone else's receiver.**
 
-    1. FIND it: ``read_graph target="receivers"`` lists every receiver whose owner
-       marked it discoverable, with optional ``query`` search text over the
-       description and owner. Each row gives the ``receiver_id``, owner, generation,
-       contract and rate limit. This is the only way to learn an id nobody told me;
-       a receiver its owner left private never appears.
+    1. FIND it: ``read_graph target="receivers"`` searches receivers whose owners
+       marked them discoverable, with optional ``query`` text matched against the
+       description and the owner. Each row gives the ``receiver_id``, owner,
+       generation, contract and rate limit. The result is CAPPED (30 by default,
+       100 at most) and not a complete enumeration, so narrow the query rather than
+       telling the user the list is everything. This is the only way to learn an id
+       nobody told me; a receiver its owner left private never appears.
     2. READ its terms: ``read_graph target="receiver" query="<receiver_id>"``.
     3. CONNECT one of my own step's outputs to it::
 
@@ -2099,8 +2104,8 @@ def write_graph(
     Empty allowed_senders permits nobody. Create/update also take the optional
     exposure fields {open_to_all,discoverable,sender_rate_limit}: open_to_all=true
     accepts ANY authenticated user (there is no "*" sender) and discoverable=true
-    lists it under read_graph target=receivers. Both default false and update
-    REPLACES them, so repeat them or the receiver reverts to private. See the
+    lists it under read_graph target=receivers. Both default false on create;
+    update KEEPS what you omit, so closing one is an explicit false. See the
     handbook chapter "delivering". target=output_link connect takes
     {branch_def_id,node_id,receiver_id,expected_generation,mapping}; mapping maps
     your source outputs to advertised receiver inputs. Disconnect takes {link_id}.
