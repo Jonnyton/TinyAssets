@@ -154,39 +154,51 @@ def test_the_split_lost_no_guidance():
     assert sum(before.values()) == 4968  # provenance, stated in the fixture header
 
 
-def test_the_reader_finds_guidance_under_either_fastmcp_placement(monkeypatch):
+#: The two shapes a FastMCP version can hand us for the same docstring: 3.2.0 leaves
+#: the `Args:` block in `description`, 3.4.x extracts it into the parameter schema
+#: (and drops the `<param>:` labels). Both are built from the SAME source docstring
+#: and both are asserted, so neither host is the one this module happens to run on.
+@pytest.mark.parametrize("placement", ["in_description", "in_schema"])
+def test_the_reader_finds_guidance_under_either_fastmcp_placement(monkeypatch, placement):
     """`served_tool_guidance` reads the schema too, not only the description.
 
-    FastMCP 3.2.0 (local) leaves a docstring's `Args:` block in `description`;
-    3.4.x extracts it into the parameter schema. A reader that looks at one field
-    answers "is the agent told this?" differently per host — which is how two of
-    these tests went RED in Linux CI while passing on Windows. So simulate the
-    OTHER placement and assert the parameter documentation is still reached.
+    A reader that looks at one field answers "is the agent told this?" differently
+    per host — which is how two of these tests went RED in Linux CI while passing on
+    Windows. Constructed rather than skipped: the first version of this test
+    `pytest.skip`ped on the extracting version, i.e. it went quiet on exactly the
+    host (and the production runtime) whose behaviour it was written to cover.
     """
-    real = _description("write_graph")
-    if "Args:" not in real:  # pragma: no cover - already the extracting version
-        pytest.skip("this FastMCP already extracts Args into the schema")
-    head, _, args_block = real.partition("Args:")
-    extracted = types.SimpleNamespace(
-        name="write_graph",
-        description=head,
-        parameters={"properties": {"payload_json": {"description": "Args:" + args_block}}},
-    )
+    doc = _source_docstring()
+    head, _, args_block = doc.partition("Args:")
+    assert args_block, "write_graph lost its Args block"
+    if placement == "in_description":
+        tool = types.SimpleNamespace(
+            name="write_graph", description=doc, parameters={"properties": {}},
+        )
+    else:
+        tool = types.SimpleNamespace(
+            name="write_graph",
+            description=head,
+            parameters={"properties": {
+                # 3.4 keys each parameter and puts its prose in `description`,
+                # without the `<param>:` label the docstring carried.
+                "payload_json": {"description": "Args: " + args_block},
+            }},
+        )
     others = [
-        tool for tool in asyncio.run(engine.mcp.list_tools()) if tool.name != "write_graph"
+        other for other in asyncio.run(engine.mcp.list_tools()) if other.name != "write_graph"
     ]
 
     async def _list_tools():
-        return [extracted, *others]
+        return [tool, *others]
 
     monkeypatch.setattr(engine.mcp, "list_tools", _list_tools)
-    assert "Args:" not in _description("write_graph")  # the simulated placement
     reachable = engine.served_tool_guidance("write_graph")
-    # The whole Args block is now only in the schema, and the reader still has it.
+    # Wherever the Args block landed, the reader has it.
     assert "Args:" in reachable
     for parameter in ("payload_json", "expected_revision", "idempotency_key"):
         assert parameter in reachable
-    # And the chapters are still appended under the other placement.
+    # And the chapters are still appended under both placements.
     for name in CHAPTER_ORDER:
         probe = max(
             (line.strip() for line in engine.SERVED_TOOL_CHAPTERS["write_graph"][name]
