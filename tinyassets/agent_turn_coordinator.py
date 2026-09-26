@@ -381,11 +381,11 @@ class AgentTurnCoordinator:
     def _narrowed(self, boundary):
         """Exclude only the failed MODEL when excluding the account is a guess.
 
-        A source that reported the account, a class that is not a passing
-        window, or any source that can spend keeps the conservative exhaustion.
-        Only a zero-cost source with an ``unknown`` scope is narrowed, and only
-        a bounded number of times per turn. The replacement comes from the SAME
-        order under the SAME ceilings, so this can never reach a paid model.
+        A source that reported the account, or a class that is not a passing
+        window, keeps the conservative exhaustion. Any source with an
+        ``unknown`` scope is narrowed, for every account alike, and only a
+        bounded number of times per turn. The replacement comes from the SAME
+        order under the SAME per-attempt ceilings, which is what bounds money.
 
         Engine inference only. A native executor runs on ONE subscription, so a
         rate limit there is a fact about that account, not about a model within
