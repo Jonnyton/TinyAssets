@@ -46,8 +46,12 @@ def _served_workspace_docs() -> str:
     """
     import tinyassets.engine_mcp_server as server
 
-    doc = server.write_graph.__doc__ or ""
-    assert doc, "write_graph lost its docstring; the served surface IS the docs"
+    # REACHABLE, not resident (2026-09-26): the WORKSPACES section moved to the
+    # `workspaces` handbook chapter. This helper's whole point is to read only
+    # that section, which it still does — the section just arrives from the
+    # chapter now rather than from the always-resident description.
+    doc = server.served_tool_guidance("write_graph")
+    assert doc, "write_graph lost its guidance; the served surface IS the docs"
     start = doc.index("WORKSPACES.")
     return " ".join(doc[start:].split())
 

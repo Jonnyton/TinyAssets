@@ -100,7 +100,11 @@ def test_the_documented_oauth1a_names_are_the_ones_the_deposit_reads() -> None:
 
     import tinyassets.engine_mcp_server as engine
 
-    doc = engine.write_graph.__doc__ or ""
+    # REACHABLE, not resident (2026-09-26): field naming lives in the
+    # `connections` handbook chapter, which the resident index names as covering
+    # "naming each field the way the site names it". The wrong-name assertion
+    # below now spans the whole reachable text, so it got stronger.
+    doc = engine.served_tool_guidance("write_graph")
     for name in _OAUTH1A_FIELDS:
         assert name in doc, f"the docs never name {name!r}"
     assert "api_key_secret" not in doc, "the wrong name is back in the docs"
@@ -167,7 +171,9 @@ def test_the_served_docs_teach_the_labelled_shape() -> None:
     which is how the last six gates happened."""
     import tinyassets.engine_mcp_server as engine
 
-    doc = engine.write_graph.__doc__ or ""
+    # REACHABLE, not resident (2026-09-26): the labelled-field shape is in the
+    # `connections` chapter. The agent is pointed at it before it composes an ask.
+    doc = engine.served_tool_guidance("write_graph")
     assert "ONE FIELD PER CREDENTIAL" in doc
     assert '"help"' in doc and '"url"' in doc
     # And the instruction that keeps it agnostic.
@@ -193,7 +199,10 @@ def test_the_agent_is_told_to_research_the_service_not_recall_it() -> None:
     """
     import tinyassets.engine_mcp_server as engine
 
-    doc = engine.write_graph.__doc__ or ""
+    # REACHABLE, not resident (2026-09-26): "look it up first" is in the
+    # `connections` chapter, and the resident index says that chapter covers
+    # looking the service up rather than asking from memory.
+    doc = engine.served_tool_guidance("write_graph")
     assert "LOOK IT UP FIRST" in doc
     assert "WebFetch" in doc and "WebSearch" in doc
     # What the research is FOR, all four parts.

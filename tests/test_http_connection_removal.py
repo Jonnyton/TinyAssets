@@ -213,5 +213,8 @@ def test_remove_http_is_reachable_from_the_served_surface() -> None:
     # with a credential they wanted gone.
     import tinyassets.engine_mcp_server as engine
 
-    doc = engine.write_graph.__doc__ or ""
+    # REACHABLE, not resident (2026-09-26): removal lives in the `connections`
+    # handbook chapter, which the resident index names. Not knowing it exists
+    # costs a fetch, never a wrong effect.
+    doc = engine.served_tool_guidance("write_graph")
     assert "remove_http" in doc, "the served docs never mention remove_http"

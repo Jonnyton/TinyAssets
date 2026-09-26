@@ -62,12 +62,21 @@ WIRE_LATENCY_S = 0.20
 FINAL_REPLY = "Nebula is a good cat name."
 
 #: Ceiling on the engine tool DESCRIPTIONS re-sent on every round of every served
-#: founder turn (measured 2026-09-25: 56,328 chars across the 14 served handles,
-#: 38,513 of them one tool's manual). Not a target -- a ratchet. This text is
-#: re-transmitted per round-trip, so growing it makes every turn on every account
-#: slower. Adding real guidance for an agent is legitimate; doing it without
-#: noticing the per-round bill is what this catches.
-MAX_SERVED_TOOL_DESCRIPTION_CHARS = 58_000
+#: founder turn. Not a target -- a ratchet. This text is re-transmitted per
+#: round-trip, so growing it makes every turn on every account slower. Adding real
+#: guidance for an agent is legitimate; doing it without noticing the per-round
+#: bill is what this catches.
+#:
+#: 2026-09-25: 56,328 chars across the 14 served handles, 38,513 of them one
+#: handle's manual; ratchet 58,000.
+#: 2026-09-26: 28,562 after that manual moved into handbook chapters
+#: (`openspec/changes/engine-tool-manual-on-demand/`), so the block fell 63,383 ->
+#: 34,361 B, ~7.3k fewer tokens on every round-trip. (28,074 before the PR #4000
+#: review asked for the base64 rule to stay resident -- 488 chars back, because
+#: skipping it produces a wrong effectful call.) Ratchet lowered to 30,000:
+#: raising it again means stating the per-round latency cost, and ~28.5k is the
+#: level the reachable-not-resident rule holds the surface at.
+MAX_SERVED_TOOL_DESCRIPTION_CHARS = 30_000
 
 
 def _learning_call(system: str) -> bool:
