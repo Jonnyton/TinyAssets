@@ -180,6 +180,17 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
             model.model_id, True, model.input_modalities,
             pricing=Pricing("fresh", unmetered=True), availability_basis="executor_enumerated",
         ) for model in native_snapshot.catalogue.models)
+    # What the PLATFORM has seen work on this KIND of source, newest of each class.
+    # Without this the list is only what this owner typed into their own access
+    # grant, so a newly released model was invisible until someone shipped a patch
+    # (founder, 2026-09-26: "i cant seem to select fable as a user for the llm").
+    #
+    # These are NOT put through accepted_native_selection: they are candidates the
+    # platform can vouch exist, not ids this universe has granted access to. The
+    # existing access machinery marks them outside the accepted scope, so they
+    # surface as "needs access" and become selectable when the owner grants it.
+    # A catalog row is evidence, never permission.
+    models.extend(_catalog_candidates(base, "subscription", already=models))
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
     if provider is None or not provider.is_available():
@@ -188,6 +199,29 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
         member.provider, "native-subscription:" + member.provider, "subscription", "fresh",
         True, True,
         tuple(models), default_model_id="" if "" in declared else None,
+    )
+
+
+def _catalog_candidates(base, source_kind, *, already):
+    """Newest-per-class learned ids for one source KIND, minus what is already listed.
+
+    A UNION, never a filter: an id this universe already has is left exactly as it
+    was, whatever the catalog knows about newer siblings. A user happily using an
+    older model does not lose it because someone else verified a newer one
+    (founder: "if someone wants to use opus 4.6 that would only be on their list").
+    """
+    from tinyassets.storage.learned_models import LearnedModelCatalog
+
+    have = {model.model_id for model in already}
+    try:
+        rows = LearnedModelCatalog(base).newest_for_source_kind(source_kind)
+    except Exception:  # noqa: BLE001 - a missing catalog is simply nothing learned yet
+        return ()
+    return tuple(
+        Model(row.model_id, True, frozenset({"text"}),
+              pricing=Pricing("fresh", unmetered=True),
+              availability_basis="platform_verified_elsewhere")
+        for row in rows if row.model_id and row.model_id not in have
     )
 
 

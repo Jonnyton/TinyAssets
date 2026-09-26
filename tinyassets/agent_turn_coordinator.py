@@ -166,6 +166,32 @@ class AgentTurnCoordinator:
             terminal=terminal,
         ))
 
+    def _learn_verified_model(self, response):
+        """Record a model id that just answered, for every universe on this KIND.
+
+        Only reached from a committed success. It records exactly three facts --
+        source kind, model id, first-verified time -- and no user or universe id;
+        see ``tinyassets/storage/learned_models.py`` for why each is safe to share.
+
+        The id recorded is the one the source SAYS answered where it says so,
+        falling back to the configured id: a source that renames a model in its
+        reply is telling us the real id, and that is the one another user needs.
+        """
+        from tinyassets.storage.learned_models import record_verified_model
+
+        model_id = (getattr(response, "reported_model", "") or "").strip() \
+            or (getattr(response, "model", "") or "").strip()
+        if not model_id:
+            return
+        record_verified_model(
+            self.context.universe_dir.parent,
+            # A native agent runs a subscription CLI; the same value
+            # ``_native_models`` keys its ConnectionModels with, so the read and
+            # the write agree on what "kind" means without a second definition.
+            source_kind="subscription",
+            model_id=model_id,
+        )
+
     def effects_evidence(self):
         """What this turn's own ledger proves ran: ``(effects, stage, ref)``.
 
@@ -303,6 +329,12 @@ class AgentTurnCoordinator:
                             if self.turn.state == "native_started":
                                 self._finish_native_failure(exc)
                             raise
+                        # The call SUCCEEDED and the journal has committed it, so
+                        # this model id provably works on this kind of source.
+                        # Learn it for every universe with that kind. After the
+                        # commit and outside the try, so a catalog write can
+                        # neither be mistaken for a turn failure nor rewrite one.
+                        self._learn_verified_model(response)
                         return response
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")

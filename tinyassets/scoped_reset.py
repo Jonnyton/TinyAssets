@@ -92,6 +92,13 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     # Scoped reset's content-free coordination state.
     "scoped_reset_leases": "preserve",
     "scoped_reset_operations": "preserve",
+    # Platform-wide learned model evidence. Shared between users BY DESIGN and
+    # carrying no user, universe or connection column, so a per-subject reset has
+    # nothing here to remove -- and must not, because a row another user relies on
+    # is not this subject's to delete. The table is only created once something has
+    # been learned, which is why it must be classified rather than left to the
+    # unclassified-table gate.
+    "learned_models": "preserve",
 })
 
 FAULT_POINTS = (
