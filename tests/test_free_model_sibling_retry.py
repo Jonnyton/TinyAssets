@@ -26,7 +26,6 @@ from tinyassets.providers.model_capacity import (
     CapacitySignal,
     free_sibling_retry,
 )
-from tinyassets.providers.model_policy import Charge, confirmed_free_only
 
 rig = integration.rig
 reader = integration.reader
@@ -39,46 +38,40 @@ agent = integration.agent
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("caps", [
-    None,
-    (Charge("input_million_tokens_usd", 0, True),),
-    (("input_million_tokens_usd", 0), ("request_usd", 0)),
-])
-def test_zero_ceilings_are_free_only(caps):
-    assert confirmed_free_only(caps) is True
-
-
-@pytest.mark.parametrize("caps", [
-    (),
-    (Charge("input_million_tokens_usd", 1, True),),
-    (Charge("input_million_tokens_usd", 0, False),),
-    (("input_million_tokens_usd", 5),),
-    (("input_million_tokens_usd", True),),
-    "free",
-    [Charge("request_usd", 0, True)],
-])
-def test_anything_but_confirmed_zero_is_not_free_only(caps):
-    assert confirmed_free_only(caps) is False
+# The two `confirmed_free_only` unit tests that stood here went with the
+# function on 2026-09-25. It existed only to gate this policy on the owner's
+# price, which is the plan branch the founder's "all user accounts should be the
+# same" rule forbids; `tests/test_one_path_for_every_account.py` now pins that
+# the policy cannot read a ceiling at all.
 
 
 @pytest.mark.parametrize("failure", sorted(TRANSIENT_CAPACITY))
-def test_free_only_unknown_scope_may_try_a_sibling(failure):
-    assert free_sibling_retry(scope="unknown", failure_class=failure, cost_caps=None) is True
+def test_an_unknown_scope_transient_window_may_try_a_sibling(failure):
+    assert free_sibling_retry(scope="unknown", failure_class=failure) is True
 
 
-@pytest.mark.parametrize("scope,failure,caps", [
+@pytest.mark.parametrize("scope,failure", [
     # A source that reported the ACCOUNT is evidence; never retry past it.
-    ("account", "provider_rate_limited", None),
+    ("account", "provider_rate_limited"),
     # Exhausted credit is about money, not a transient window.
-    ("unknown", "provider_credit_exhausted", None),
+    ("unknown", "provider_credit_exhausted"),
     # Model-local needs no policy: the existing order already keeps siblings.
-    ("model", "provider_rate_limited", None),
-    # A source that can spend must keep the conservative treatment.
-    ("unknown", "provider_rate_limited", (Charge("request_usd", 1, True),)),
-    ("unknown", None, None),
+    ("model", "provider_rate_limited"),
+    ("unknown", None),
 ])
-def test_paid_proven_or_nontransient_capacity_keeps_the_conservative_policy(scope, failure, caps):
-    assert free_sibling_retry(scope=scope, failure_class=failure, cost_caps=caps) is False
+def test_proven_or_nontransient_capacity_keeps_the_conservative_policy(scope, failure):
+    """NARROWED 2026-09-25. This used to carry a fifth row -- "a source that can
+    spend must keep the conservative treatment", `("unknown",
+    "provider_rate_limited", (Charge("request_usd", 1, True),))` -- which is the
+    founder-rule violation itself: the same unknown-scope 429 continued to a
+    sibling on a free source and was cooled with no retry on a paid one.
+
+    Every reason that remains here is something the SOURCE reported, so each row
+    holds for every account. What a paid source loses by not being treated
+    conservatively is one more request, priced by the ceilings that constrain
+    every attempt regardless; what it gained was a dead end its free neighbour
+    never hit."""
+    assert free_sibling_retry(scope=scope, failure_class=failure) is False
 
 
 def test_capacity_signal_scope_stays_observed_evidence():
@@ -175,14 +168,17 @@ def test_sibling_retries_are_bounded_and_every_attempt_is_recorded(agent, monkey
 def test_only_engine_inference_narrows_an_unproven_account_exhaustion(kind, narrows):
     """A native executor runs on ONE subscription, so its account IS the source.
 
-    Its accepted ceilings are ``None`` -- which ``confirmed_free_only`` reads as
-    free-only, correctly, because the members are UNMETERED -- and its rate
-    limit carries no capacity scope, so it observes as ``unknown``. Both
-    narrowing conditions therefore hold for a source where narrowing means
-    nothing: unmetered-per-subscription is not free-per-model. Live proof this
-    matters: narrowing there replaced the account exclusion that was letting a
-    mixed universe fall through to its HTTP source, and two
+    Its rate limit carries no capacity scope, so it observes as ``unknown``, and
+    narrowing would mean nothing for a source where the account IS the source:
+    unmetered-per-subscription is not free-per-model. Live proof this matters:
+    narrowing there replaced the account exclusion that was letting a mixed
+    universe fall through to its HTTP source, and two
     ``test_mixed_agent_execution`` cases went red in CI.
+
+    The gate that stops it is ``execution_kind``, which describes the SOURCE, not
+    the owner's plan -- so this survives removing the price gate unchanged
+    (2026-09-25), and `test_one_path_for_every_account` pins that both kinds
+    behave the same way whatever the account pays.
     """
     from types import SimpleNamespace
 
@@ -196,9 +192,8 @@ def test_only_engine_inference_narrows_an_unproven_account_exhaustion(kind, narr
     turn.execution_kind = kind
     turn.free_sibling_retries = 0
     turn.context = SimpleNamespace(model_selection=ref)
-    # A plan whose ceilings for this source are free-only (None), which is
-    # exactly what a native member reports.
-    turn.plan = SimpleNamespace(source_cost_caps=lambda _connection: None)
+    # A plan object at all: the policy no longer asks it for ceilings.
+    turn.plan = SimpleNamespace()
     turn.config = ModelConfig(absolute_cap_s=120)
     boundary = CapacityBoundary(
         Exhaustion("account", ref), True, "provider_rate_limited", 60.0, "unknown",
@@ -341,7 +336,7 @@ def test_capacity_detail_passes_the_secret_scrub(agent, secret, body):
 ])
 def test_a_window_longer_than_the_turn_takes_the_cooldown_back(retry_after, budget, expected):
     assert free_sibling_retry(
-        scope="unknown", failure_class="provider_rate_limited", cost_caps=None,
+        scope="unknown", failure_class="provider_rate_limited",
         retry_after_s=retry_after, turn_budget_s=budget,
     ) is expected
 

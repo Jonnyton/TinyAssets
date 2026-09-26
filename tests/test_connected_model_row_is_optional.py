@@ -174,9 +174,16 @@ def test_the_finished_setup_card_does_not_carry_its_expansion_across_the_connect
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
 def test_a_still_unpowered_setup_keeps_its_expansion_across_a_refresh():
     """Only the transition resets it. A rail refresh mid-setup must not."""
+    # The user's open is a TAP: the browser flips `open`, then fires `toggle`.
+    # Setting the property alone stopped counting on 2026-09-26, when the renderer
+    # began deriving the element's state from the remembered tap instead of reading
+    # it back off a node that survives every refresh — a node whose stale `open` was
+    # why an unpowered account met the manual form already unfolded under the
+    # one-tap button. The assertion is unchanged: a refresh must not close it.
     out = _run_head(
         [_BLOCKING],
-        "railOpen='sys_connect_llm';$('connect-other').open=true;renderRail(railCache);"
+        "railOpen='sys_connect_llm';renderRail(railCache);"
+        "$('connect-other').open=true;$('connect-other').ontoggle();"
         "renderRail(" + json.dumps([_BLOCKING]) + ");",
     )
     assert out["tabs"][0]["hasPanel"] is True, "the setup collapsed mid-connect"

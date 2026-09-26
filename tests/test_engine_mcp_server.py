@@ -1798,8 +1798,12 @@ def test_served_guidance_teaches_the_code_node_and_promises_no_approval():
     to a browser approval that does not exist."""
     from tinyassets import engine_mcp_server as s
 
-    fn = s.write_graph.fn if hasattr(s.write_graph, "fn") else s.write_graph
-    doc = fn.__doc__ or ""
+    # REACHABLE, not resident (2026-09-26): the code-node contract moved into the
+    # `code_nodes` handbook chapter the resident index names. The negative
+    # assertions below -- no browser approval, no dead instructions -- now span
+    # the whole reachable text, which is where they belong: a dead instruction in
+    # a chapter would have misled the agent just as badly.
+    doc = s.served_tool_guidance("write_graph")
     assert "CODE NODES" in doc
     assert "def run(state, effects)" in doc
     assert "accept_statuses" in doc
@@ -1810,10 +1814,11 @@ def test_served_guidance_teaches_the_code_node_and_promises_no_approval():
     # The packet contract itself must survive the switch.
     for key in ('"sink": "authenticated_external_call"', "connection_id", "grant_id"):
         assert key in doc
-    # No docstring on this surface may promise a browser approval.
+    # Nothing on this surface may promise a browser approval -- including a
+    # handbook chapter, which the agent reads and would be misled by just as badly.
     whole = (s.__doc__ or "") + "".join(
-        ((getattr(f, "fn", f).__doc__) or "")
-        for f in (s.read_graph, s.write_graph, s.run_graph, s.get_status)
+        s.served_tool_guidance(name)
+        for name in ("read_graph", "write_graph", "run_graph", "get_status")
     )
     assert "approves the source in the browser" not in whole
     assert "approves it in the browser" not in whole

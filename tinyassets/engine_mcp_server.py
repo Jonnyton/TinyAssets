@@ -276,6 +276,10 @@ _PINNED_READ_TARGETS = frozenset({
     # Everything the agent holds here in one owner-only, secret-free read
     # (channels + access mode, consents, spend allowances, waiting asks).
     "access",
+    # The long-form guidance a handle keeps OUTSIDE its advertised description,
+    # because that description is re-sent on every round-trip of every turn.
+    # Static text: no universe state, no credential, nothing writable.
+    "handbook",
 })
 
 
@@ -417,6 +421,12 @@ def read_graph(
     if err is not None:
         return err
     normalized = (target or "status").strip().lower()
+    if normalized == "handbook":
+        # Static guidance, no universe state: it neither reads nor can write
+        # anything, so it returns before any identity is bound. It exists
+        # because the advertised description rides on EVERY round-trip of a
+        # served turn, and this text only matters to a turn about to use it.
+        return _handbook_read(query)
     if normalized in {"run_file", "run_file_limits"}:
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import read_graph as _read_file
@@ -989,6 +999,585 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
     del total_nodes, effect_nodes
 
 
+# ------------------------------------------------------------------------
+# write_graph handbook chapters -- the long-form guidance, served on demand.
+#
+# Moved OUT of write_graph's advertised description on 2026-09-26 and served
+# through ``read_graph target="handbook"``. Reason (measured 2026-09-25): the
+# engine tool-definition block is re-sent on EVERY model round-trip of EVERY
+# served founder turn, and this text was 28,935 of its 63,383 bytes -- 61% of
+# the block for one handle. A served turn is an agentic loop, so a turn with two
+# tool steps paid it three times.
+#
+# NOTHING was trimmed. These are the original lines, cut at source so every
+# escape survives, and ``served_tool_guidance`` puts them back together; a test
+# pins that against the pre-split digest.
+#
+# A chapter is guidance the agent can tell it needs BEFORE composing a call.
+# Guidance whose absence produces a WRONG call rather than an absent one stays
+# resident in the description -- see
+# openspec/specs/served-agent-tool-guidance/spec.md.
+# ------------------------------------------------------------------------
+_WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
+    **Outbound channel node — the channel-agnostic way to add Slack, a webhook, or
+    ANY HTTPS API with no service-specific code.** A node declaring
+    ``effects: ["authenticated_external_call"]`` fires ONE outbound HTTP call after
+    the run, reading its instruction from one of its ``output_keys``. Prereqs, done
+    once (they carry secrets, so NOT through this chat): the owner deposits the
+    credential IN THE APP. **ASK THEM FOR IT — do not send them hunting for a
+    form.** You know the exact endpoints you are about to call, so state them:
+
+        write_graph target="pending_request" operation="ask" payload_json={
+          "kind": "API",                      # the tab header they will see
+          "title": "GitHub key so I can open your pull request",
+          "body":  "why you need it, in one or two sentences",
+          "action": {"type": "connect_http", "destination": "github",
+                     "auth_scheme": "bearer",
+                     "endpoints": [{"host": "api.github.com",
+                                    "path_template": "/repos/o/r/pulls",
+                                    "methods": ["POST"]}, ...]},
+          "fields": [                         # REQUIRED -- see below
+            {"name": "token", "type": "secret",
+             "label": "Personal access token",
+             "help": "Settings -> Developer settings -> Personal access tokens",
+             "url": "https://github.com/settings/tokens"}]}
+
+    That opens a tab in their app with the exact grant spelled out; they paste
+    the key there and it goes straight to the vault under those endpoints. List
+    EVERY call the flow needs in ONE ask so they paste once (a GitHub pull
+    request needs the main ref, a branch ref, the file contents, and the pull).
+
+    **ONE FIELD PER CREDENTIAL, NAMED THE WAY THE SITE NAMES IT.** Never make
+    the owner work out what goes where. If a service needs four values, ask for
+    four, each labelled as that service labels it, each with the path to find it
+    and a link straight there::
+
+        "fields": [
+          {"name": "api_key", "type": "secret",
+           "label": "API Key",
+           "help": "Developer Portal -> your app -> Keys and tokens -> "
+                   "Consumer Keys -> API Key",
+           "url": "https://developer.x.com/en/portal/dashboard"},
+          {"name": "api_secret", "type": "secret",
+           "label": "API Key Secret", "help": "shown beside the API Key, once",
+           "url": "https://developer.x.com/en/portal/dashboard"},
+          ...
+        ]
+
+    The LABEL is the site's wording; the NAME is what the deposit reads. For
+    most schemes the name is yours to choose, but ``oauth1a`` has a fixed
+    four-value shape and the names must be exactly ``api_key``, ``api_secret``,
+    ``access_token``, ``access_token_secret`` -- label them however the service
+    words them, but name them these or the deposit refuses with "oauth1a secret
+    is missing". For ``basic``, name them ``username`` and ``password``.
+
+    ``label`` is the service's OWN name for it, not yours -- if the site says
+    "Consumer Key" then say "Consumer Key", because that is the words the owner
+    is looking at. ``help`` is the click path (400 chars). ``url`` is a plain
+    ``https://`` link to the page that issues it. Up to 16 fields.
+
+    **LOOK IT UP FIRST. Do not ask from memory.** You have WebFetch and
+    WebSearch. Before you raise a credential ask, read the service's OWN current
+    documentation and build the ask from what you find there:
+
+      * WHICH values it actually needs -- and which it does not. Do not ask for
+        a value the flow will never use; every extra box is work you are giving
+        the owner for nothing.
+      * WHAT THAT SITE CALLS EACH ONE, in its own words. If the page says
+        "Consumer Key" then the label is "Consumer Key", because that is the
+        text the owner is looking at while they fill your form.
+      * WHERE each one is found -- the actual click path, today, not the one
+        from a year ago.
+      * THE LINK to the page that issues it.
+
+    Portals get reorganised and auth schemes change; a click path you remember
+    is a click path that sends the owner somewhere that no longer exists. Read
+    it, then ask.
+
+    There is no built-in list of services and there is not going to be one. A
+    site nobody has heard of gets the same ask as a famous one, because the ask
+    is built the same way both times: by going and reading.
+
+    If the docs are unclear, say so in the ask rather than guessing at a label
+    -- "their page calls this either X or Y" is honest and the owner can resolve
+    it in a second. A confidently wrong label is worse than an uncertain one.
+
+    **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
+    a ``connect_http`` or ``extend_http`` ask and it means: everything this key
+    can do on this channel -- any path, any verb, and clone or push to any
+    repository it reaches on the channel's git host. One yes for that direct
+    channel access. Redirected downloads need the separate permission below.
+    A full ask carries NO ``endpoints`` and NO
+    ``scopes``; a full deposit names the channel's ``hosts`` instead, 1 to 4 of
+    them::
+
+        "action": {"type": "extend_http", "destination": "github",
+                   "access": "full"}
+
+        "action": {"type": "connect_http", "destination": "github",
+                   "auth_scheme": "bearer", "access": "full",
+                   "hosts": ["api.github.com"]}
+
+    Ask for exact endpoints ONLY when the owner asked for less. Three asks in
+    one afternoon for one key the owner had already decided to trust is the
+    failure this replaces: you are not being careful, you are making them
+    answer the same question in three shapes.
+
+    **If you ALREADY hold a key for that destination, do not ask for it again.**
+    Check ``read_graph target="connections"`` first. To widen an existing grant
+    the action is ``extend_http`` on the same destination — new endpoints only,
+    no ``auth_scheme``, and the tab has NO paste box because the key stays in
+    the vault::
+
+        "action": {"type": "extend_http", "destination": "github",
+                   "endpoints": [{"host": "api.github.com",
+                                  "path_template": "/repos/o/r/contents/{path+}",
+                                  "methods": ["GET", "PUT"],
+                                  "param_patterns": {"path": "[A-Za-z0-9._\\-/]{1,200}"}}]}
+
+    To follow redirected downloads, ask to extend the source GET-only endpoint
+    with ``"redirect_mode": "public_https_get"``. This explicitly allows bounded
+    public HTTPS follow-up downloads without sharing the key with another
+    origin. Omitted/``none`` stays no-follow, even for full channel access.
+    Use a separate endpoint extension, not ``access: full``; it preserves an
+    existing full grant and requires no new key. Let the owner approve the
+    generated disclosure before retrying the download. No mutating request or
+    GET with a body may follow redirects.
+
+    To TAKE BACK a credential, raise the SAME KIND OF ASK with
+    ``{"type": "remove_http", "destination": "<name>"}`` and NO fields --
+    nothing to paste, so the tab is a plain confirm. Answering it deletes the
+    secret, the connection and its grants, and frees that destination name to
+    deposit again. It is the right answer when the owner says "remove that
+    key", and when a key went to a destination they did not intend. Never ask
+    the owner to "just ignore" a wrong deposit::
+
+        "action": {"type": "remove_http", "destination": "github"}
+
+    Answering it returns ``removed_endpoints`` and ``removed_scopes`` -- what
+    that connection was allowed to reach, and the git scopes it carried. **If
+    you are ROTATING a key rather than retiring it, carry both into the new
+    ``connect_http`` ask.** Scopes live on the grant and die with it, so a
+    re-deposit that omits them yields a connection that looks healthy and fails
+    at the first checkout. Do not ask the owner what they were: you were just
+    told.
+
+    A ``connect_http`` ask for a destination that already has a key makes the
+    user paste a secret they already gave you — the one thing they must never
+    be asked to do twice.
+
+    **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
+    ``git_read:owner/name`` / ``git_write:owner/name``. That is what lets the
+    workspace sink clone or push that ONE repository; the HTTP methods still come
+    from the endpoints, never from this list. A git scope binds ONE git host: the
+    connection's endpoint host, or — when the service serves git somewhere other
+    than its API — the ``"git_host"`` the connect ask declares (a bare hostname).
+    Nothing is defaulted per service: if git lives on a different host from the
+    API endpoints you listed, say so with ``git_host`` or the clone goes to the
+    API host.
+
+    **A path_template can be a PATTERN, so ask for the JOB, not one file.** Any
+    segment may be a ``{name}`` placeholder, and the FINAL segment may be a
+    ``{name+}`` *rest* placeholder matching one or more remaining segments. Every
+    placeholder needs a regex in ``param_patterns``, which is what keeps the
+    grant tight::
+
+        {"host": "api.github.com",
+         "path_template": "/repos/o/r/contents/{path+}",
+         "methods": ["GET", "PUT"],
+         "param_patterns": {"path": "[A-Za-z0-9._\\-/]{1,200}"}}
+
+    That single endpoint reaches every file in that ONE repo, and still refuses
+    ``../`` traversal, another owner's repo, and any non-contents path. Without
+    it you would have to name each file up front — which you cannot do, because
+    you do not know which files a change touches until you have read the code,
+    and every new file would cost the user another approval.
+
+    So scope a grant to the work — not one file at a time. One ask may cover at
+    most six endpoints with two methods each. To patch a repo that is FOUR: the
+    main ref (``GET git/ref/heads/main``), a branch (``POST git/refs``),
+    ``contents/{path+}`` with ``GET``+``PUT``, and ``POST pulls``. Each ``PUT``
+    to contents is its own commit on the branch, so the git-data calls
+    (``git/blobs`` / ``git/trees`` / ``git/commits`` / ``PATCH
+    git/refs/heads/{branch+}``) are only needed when one atomic multi-file
+    commit truly matters — ask for those separately, and only then. Prefer the
+    narrowest PATTERN that covers the job over a list of exact paths that
+    cannot.
+    Read ``read_graph target="pending_requests"`` to see what is still waiting
+    and what they answered. You cannot answer your own ask, and you should not
+    try: that is theirs.
+
+    An ``extend_http`` ask is checked against the key you already hold when
+    you RAISE it. One that adds nothing comes back ``already_held`` with the
+    grant you have: act on it, do not ask again. One the answer would refuse
+    comes back ``ask_cannot_be_granted`` with the reason: fix the ask. The
+    owner never sees a tab that cannot be honoured. A git clone or push uses
+    the connection's git scopes and needs no HTTP endpoint on the git host.
+
+    **A deposited credential is DURABLE, and you are asking for ONGOING ACCESS
+    to a service — not for one-time permission to run one action.** It stays in
+    the vault for future use until the owner removes it, so ask once per service
+    for what you will need from it, and later ADD endpoints to that same
+    destination when the work needs more (re-ask with the old endpoints plus the
+    new ones; it extends in place). Do NOT promise to use a key "only this once"
+    or imply it will be discarded after the task: that is not what happens, and
+    saying it makes the owner think they will have to paste again. Say what the
+    key is FOR and what it may reach — the endpoint list already bounds it, and
+    that bound is the real promise.
+
+    Use ``{"type":"answer"}`` with your own ``fields`` for anything that is not a
+    credential - an approval, a choice, a missing detail. The tab is a general
+    way to ask, not a credential form.
+
+    They can still deposit by hand, from the rail in this same app - never send
+    them to a separate or external "browser flow". PREFER ASKING: a hand deposit
+    makes them author an endpoint policy you already know. If they do go by hand
+    and the service uses OAuth 1.0a (X/Twitter and similar), the form shows FOUR
+    LABELLED BOXES - API Key, API Key Secret, Access Token, Access Token Secret -
+    one value per box, never all four in one field. That deposit is
+    ``connect_http``: it stores the connection
+    + grant and pins the host/path/method allow-list. Then
+    ``source_channel operation=approve`` grants the destination consent (you can
+    do that part). The node's
+    delivery node is a ``prompt_template`` node (the model emits the packet) or
+    a ``source_code`` node (``run()`` returns the packet, as a dict or a
+    ``json.dumps`` string, under an output key - see CODE NODES below) and MUST
+    produce, under one of its ``output_keys``, a packet of EXACTLY this shape
+    (the effector rejects anything else — do NOT invent ``destination`` /
+    ``payload`` keys)::
+
+        {"sink": "authenticated_external_call",
+         "connection_id": "<the connection_id connect_http returned>",
+         "grant_id":      "<the grant_id connect_http returned>",
+         "verb":          "POST",          # the HTTP method
+         "request": {"method": "POST",      # if present, must equal verb
+                     "host": "<a host from the connection's allow-list>",
+                     "path": "<a path from the connection's allow-list>",
+                     "body": { ... }}}      # JSON body to send
+
+    Writing a file through an API that takes base64 (a contents API) -- the rule
+    itself is resident in my description, and here is how. Put text in a transform
+    and reference the
+    fetched bytes; the effector does the encoding and the byte-moving. Build TWO
+    nodes in ONE branch, each with ``effects: ["authenticated_external_call"]``:
+    ``fetch`` emits a GET packet for the file; ``write`` (listed after it)
+    emits a PUT packet whose body uses::
+
+        {"message": "docs: append a line",
+         "sha":     {"$ta.effect": "fetch.response.body.sha"},
+         "branch":  "<branch>",
+         "content": {"$ta.base64": {"$ta.concat": [
+                        {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
+                        "<the new line>\n"]}}}
+
+    To CHANGE a line instead of appending one, replace it inside the fetched
+    text - never re-type the file::
+
+        "content": {"$ta.base64": {"$ta.replace": {
+                       "in":  {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
+                       "old": "<the exact current line>\\n",
+                       "new": "<the exact new line>\\n"}}}
+
+    ``$ta.replace`` swaps ONE exact occurrence (set ``"count"`` for more) and
+    refuses when ``old`` is absent or occurs a different number of times, so a
+    typo cannot silently change the wrong place; ``old``/``new`` may include the
+    line's newline. ``$ta.effect`` reads an EARLIER node's ``response.body`` /
+    ``response.status`` in the same run - "earlier" means listed earlier in the
+    branch, so store ``fetch`` before ``write``; ``$ta.ref`` reads one of the
+    node's own declared ``input_keys`` from state; ``$ta.from_base64`` /
+    ``$ta.base64`` decode and encode (UTF-8 text files); ``$ta.concat`` joins.
+    The model writes only the new (and, for a change, the old) line - the rest
+    of the file never passes through it. For anything beyond an append or one
+    exact replacement, use a CODE NODE (below): three lines of Python over the
+    fetched body, deterministic, no operator to learn.
+
+    ``connection_id`` and ``grant_id`` are REQUIRED and must be the exact ids from
+    connect_http; ``verb`` is the HTTP method (it is matched against the connection's
+    granted scope). Give the node ``effects: ["authenticated_external_call"]``, one
+    ``output_key`` (e.g. ``delivery_receipt``) declared in the state schema, and a
+    ``prompt_template`` that instructs the model to emit ONLY that JSON packet with
+    the literal ids and body filled in — no prose, no code fences.
+
+"""
+
+_WRITE_GRAPH_CODE_NODES_CHAPTER = """\
+    CODE NODES. A node with ``source_code`` instead of ``prompt_template`` runs
+    deterministic Python in an OS sandbox - no network, no credentials, no
+    ambient filesystem - with your data and every earlier call's response. The
+    only file bytes it can read are the run's BOUND file inputs, through the
+    authorized read_run_file RPC (FILE INPUTS below). Use one whenever
+    the step is mechanical (change a line, parse a page, compute a body): the
+    model designs the branch once; nothing is re-typed at run time. Contract::
+
+        {"node_id": "edit", "input_keys": [], "output_keys": ["content", "sha"],
+         "source_code": "import base64\n"
+                        "def run(state, effects):\n"
+                        "    got = effects['fetch']['body']   # fetch's FULL response, parsed\n"
+                        "    text = base64.b64decode(got['content']).decode()\n"
+                        "    text = text.replace('old line\\n', 'new line\\n', 1)\n"
+                        "    new = base64.b64encode(text.encode()).decode()\n"
+                        "    return {'content': new, 'sha': got['sha']}\n"}
+
+    ``run(state, effects)``: ``state`` is the node's declared ``input_keys``;
+    ``effects`` is ``{node_id: {"status", "body"}}`` for the node's graph
+    ANCESTORS' calls (full bodies, JSON parsed; never headers). Return a dict
+    under your declared ``output_keys``; the next node's packet reads them with
+    ``{"$ta.ref": "content"}`` (declare them in its ``input_keys``). A code node
+    may itself declare ``effects`` and return the packet under an output key.
+    Effects fire the moment their node returns, in graph order: a refused
+    packet or a far-side error >= 400 FAILS the node and the run (later nodes
+    never run) unless the packet declares ``"accept_statuses": [404]`` for a
+    probe. A failing code node reports ``code_node_failed`` with its stderr -
+    fix ``run()`` with ``operation=patch`` and payload ``op=update_node``, then run again.
+    The same ``update_node`` op also edits a node's ``llm_policy`` in place:
+    a ``{"preferred": {"provider": "<name>"}}`` dict replaces the pin, explicit
+    ``null`` clears it, omitting the key leaves it unchanged. That is a routing
+    preference, not a provider grant (see ``connect_compute``).
+    ``effects`` and ``workspace`` are editable the same way, so an existing
+    workflow never has to be rebuilt to change what a node does: ``"effects":
+    ["authenticated_external_call"]`` (or ``["workspace"]``) declares the sink,
+    ``"effects": []`` (or ``null``) clears it, and omitting the key leaves it
+    unchanged; ``"workspace": "<ancestor checkout node id>"`` binds the checkout
+    and ``null`` clears it. ``op=add_node`` may likewise add an effect-bearing
+    node to an existing branch, on exactly the terms create accepts (one sink per
+    node; there is no limit on how many such nodes a branch may have).
+    A declaration is NOT consent and NOT a credential: every dispatch is still
+    checked against the connection grant bound to this universe, the
+    per-destination consent granted via ``source_channel``, and the workspace
+    admission + ancestor/lease rules. Editing fires nothing.
+    The same op also revises a node's ORDINARY SETTINGS in place, so a mis-wired
+    or slow workflow is repaired rather than rebuilt: ``description``, ``phase``,
+    ``model_hint``, ``reasoning_effort``, ``input_keys``, ``output_keys`` and
+    ``timeout_seconds``. Renaming an output is one batch with the state field and
+    the source that produces it — ``[{"op":"add_state_field","name":"revised",
+    "type":"str"}, {"op":"update_node","node_id":"edit","output_keys":["revised"],
+    "source_code":"..."}]`` — because a batch is all-or-nothing: one bad value and
+    NOTHING in it is written. ``timeout_seconds`` must be a finite number above 0
+    (and at most 1800 for a node that binds a ``workspace``). Any key you omit
+    keeps its current value. ``tools_allowed``, sub-branch invocation, approval and
+    authorship are not editable here at all.
+    Code runs only in the
+    universe that authored it: a public branch's code must be remixed
+    (``fork_from``) before it runs as yours. Stdlib only (``json re base64
+    difflib textwrap html csv datetime math`` ...); 512 MiB, the node's
+    ``timeout_seconds``; the source is at most 50 KB.
+
+    FILE INPUTS (user attachments, exact bytes). A file the user attached in the
+    app is already an exact six-field reference inside their message. To
+    process its bytes: declare ``io_manifest`` on create, e.g.
+    ``{"inputs":[{"name":"files","io_type":"file_bundle","max_count":4,
+    "max_bytes":4194304}]}``, with a matching ``state_schema`` field (a
+    ``file_bundle`` input needs a ``list`` field; a single ``file`` input needs
+    a ``dict`` field). Give the code node that field in ``input_keys`` and
+    ``"tools_allowed": ["read_run_file"]``: only such a node can read the bytes,
+    by keyword call ``invoke_mcp_action("read_run_file", file_id=ref["file_id"],
+    offset=0, count=524288)``, which returns ``{"bytes_base64", "next_offset",
+    "eof"}``; loop until ``eof``. A downstream node needs the reference forwarded
+    under its own declared input, not merely the same state. Contract::
+
+        {"name": "Attachment digest", "entry_point": "digest",
+         "io_manifest": {"inputs": [{"name": "files", "io_type": "file_bundle",
+                                     "max_count": 4, "max_bytes": 4194304}]},
+         "state_schema": [{"name": "files", "type": "list"},
+                          {"name": "digests", "type": "list"}],
+         "node_defs": [{"node_id": "digest", "display_name": "Digest",
+                        "input_keys": ["files"], "output_keys": ["digests"],
+                        "tools_allowed": ["read_run_file"],
+                        "source_code": "import base64, hashlib\n"
+                            "def run(state, effects=None):\n"
+                            "    out = []\n"
+                            "    for ref in state['files']:\n"
+                            "        h, offset = hashlib.sha256(), 0\n"
+                            "        while True:\n"
+                            "            part = invoke_mcp_action('read_run_file',\n"
+                            "                file_id=ref['file_id'], offset=offset,\n"
+                            "                count=524288)\n"
+                            "            h.update(base64.b64decode(part['bytes_base64']))\n"
+                            "            offset = part['next_offset']\n"
+                            "            if part['eof']:\n"
+                            "                break\n"
+                            "        out.append(h.hexdigest())\n"
+                            "    return {'digests': out}\n"}],
+         "edges": [{"from": "digest", "to": "END"}]}
+
+    Then ``run_graph`` with ``inputs_json={"files": [<each attachment reference,
+    verbatim>]}`` and read the outputs with read_graph target=run_output; the
+    bound bytes stay exportable through read_graph target=run_file. No
+    standalone bind tool, public URL, capture or re-upload step exists or is
+    needed for app attachments. The reference metadata (its sha256 included) is
+    untrusted and proves nothing about the bytes until the run reads them; no
+    reference grants anything by itself.
+
+"""
+
+_WRITE_GRAPH_WORKSPACES_CHAPTER = """\
+    WORKSPACES. A workspace is a DIRECTORY your code nodes can read, write and
+    run commands in - the thing to reach for whenever a step needs real files
+    rather than one API response: rendering a video, building a dataset,
+    running a test suite, editing a repository. A node with ``"effects":
+    ["workspace"]`` returns a ``workspace_packet`` under an output key, and a
+    later code node declaring ``"workspace": "<that node id>"`` runs inside it
+    at ``/workspace`` with a ``ws`` object: ``ws.run(["ffmpeg", "-i", "in.mov",
+    "out.mp4"], timeout=600)`` -> ``{"returncode", "stdout_tail",
+    "stderr_tail"}``, ``ws.read(path)`` / ``ws.write(path, text)`` for text,
+    ``ws.glob("**/*.py")``, and ``ws.bundle(commit_sha)`` when the workspace is
+    a git checkout. Binary artifacts - a rendered video, a PNG, a zip - travel
+    base64: ``ws.read_bytes(path)`` returns the encoded string and
+    ``ws.write_bytes(path, b64)`` writes the raw bytes back (``import base64``
+    in the node to decode). Anything the node produces leaves the same way
+    everything else does: read it and hand it to a generic
+    ``authenticated_external_call`` node on whatever connection you hold - the
+    workspace neither knows nor cares which platform that is.
+
+    EVERY workspace packet carries ``"sink": "workspace"``. That field is what
+    the runtime matches on, exactly as the channel node's packet carries
+    ``"sink": "authenticated_external_call"``; a packet without it is not seen
+    as a workspace packet at all and the node is refused
+    ``no_matching_packet``.
+
+    TWO WAYS TO GET ONE. An EMPTY one needs nothing at all - no connection, no
+    credential, no consent, because it is your own scratch space:
+    ``{"sink": "workspace", "op": "create", "storage": "scratch"}``
+    (``"universe"`` keeps it in your permanent space; name it with
+    ``"workspace_key": "<slug>"``, and re-using a name is refused rather than
+    overwriting what is there). A REPOSITORY one clones a git remote:
+    ``{"sink": "workspace", "op": "checkout", "connection_id": "<an http
+    connection to the forge>", "grant_id": "<that connection's grant_id>",
+    "repo": "owner/name", "ref": "main", "storage": "scratch"}`` - both ids are
+    REQUIRED and are the exact ones ``read_graph target="connections"`` reports.
+    The forge is whatever host that connection declares - GitHub,
+    GitLab, Gitea, self-hosted - not a fixed one. To publish, a node returns
+    ``{"sink": "workspace", "op": "push", "workspace": "<checkout node>",
+    "commit_sha": "<40 hex>", "branch_slug": "fix-readme"}`` - the branch lands
+    as ``tiny/<universe>/<slug>`` (never the default branch; open the PR with
+    the generic call), and a push against a created workspace is refused
+    because it has no remote. ``{"sink": "workspace", "op": "discard",
+    "workspace": "<node>"}`` drops any workspace early (no consent needed).
+    A checkout can add ``"provision": {"python": "requirements.lock", "node": true}``
+    (either family is optional). Python needs exact versions and SHA256 hashes
+    for the full wheel dependency closure; Node needs package.json and a v2/v3
+    package-lock.json using public npm registry tarballs. Provisioning needs
+    separate workspace_provision consent on the connection/repository. Missing
+    consent or invalid manifests preserve checkout with workspace_provision_refused;
+    download/install failure prevents publication with workspace_provision_failed.
+    Installation is offline: Python uses a fresh .venv (an existing .venv is not
+    overwritten), Node uses node_modules, and original manifests are preserved.
+    Dependency scripts may run offline; root package scripts do not. No arbitrary
+    OS package, browser binary or non-registry download is provided by this option.
+
+    A CHECKOUT needs TWO things per ``(connection, repo)``, once, both through
+    the request rail - a created workspace needs neither: the repository SCOPE
+    on that connection
+    (``"action": {"type": "extend_http", "destination": "github", "scopes":
+    ["git_read:owner/name", "git_write:owner/name"]}`` - no new endpoints
+    needed, and no key to paste; ``destination`` is that connection's own
+    label, whatever forge it points at)
+    and the typed CONSENT (``"action": {"type": "grant_workspace_consent",
+    "connection_id": "<from read_graph target='connections'>", "repo":
+    "owner/name", "consents": ["workspace_checkout", "workspace_push"]}``).
+    ``read_graph target="connections"`` shows both, so check what you hold
+    before asking. The
+    sandbox has no network and no credential; git talks to the host from a
+    worker you never see. Limits are usage, not shape: a 4 GiB lease, one
+    workspace job at a time per universe, 1000 commands and 1 MiB of returned
+    output per node; a timed-out command fails the node as
+    ``workspace_command_timeout``; every other refusal names its class
+    (``workspace_checkout_failed`` ... ``workspace_quota_exceeded``) and what
+    to do.
+
+"""
+
+#: Chapter name -> text, in the order the resident index names them.
+_WRITE_GRAPH_CHAPTERS: dict[str, str] = {
+    "connections": _WRITE_GRAPH_CONNECTIONS_CHAPTER,
+    "code_nodes": _WRITE_GRAPH_CODE_NODES_CHAPTER,
+    "workspaces": _WRITE_GRAPH_WORKSPACES_CHAPTER,
+}
+
+#: Every served handle that keeps chapters outside its description.
+SERVED_TOOL_CHAPTERS: dict[str, dict[str, str]] = {
+    "write_graph": _WRITE_GRAPH_CHAPTERS,
+}
+
+
+def served_tool_guidance(handle: str) -> str:
+    """Everything a served turn can READ about ``handle``, resident or fetched.
+
+    The single place that answers "is the agent told this?", because after the
+    2026-09-26 relocation the answer is no longer "is it in ``__doc__``".
+
+    Three sources, because the agent receives all three: the advertised
+    description, every PARAMETER description in the schema, and every handbook
+    chapter in the order the resident index names them. The parameter
+    descriptions matter for a reason found in CI rather than guessed: which of
+    description-vs-schema holds a docstring's ``Args:`` block depends on the
+    FastMCP version (3.2.0 leaves it in the description; 3.4.x extracts it into
+    the parameters), so a check that reads only one of them asserts a different
+    thing on each host. The agent is told the same either way.
+
+    A handle with no chapters returns its own text, so every served handle is a
+    valid argument. Raises for an unknown handle: a silent "" would let a test
+    assert guidance is reachable while asking about a name that does not exist.
+    """
+    import asyncio
+
+    chapters = SERVED_TOOL_CHAPTERS.get(handle, {})
+
+    async def _advertised() -> str:
+        for tool in await mcp.list_tools():
+            if tool.name != handle:
+                continue
+            parts = [tool.description or ""]
+            schema = tool.parameters if isinstance(tool.parameters, dict) else {}
+            for spec in (schema.get("properties") or {}).values():
+                described = isinstance(spec, dict) and spec.get("description")
+                if described:
+                    parts.append(str(spec["description"]))
+            return "\n".join(parts)
+        raise KeyError(f"no served handle named {handle!r}")
+
+    return asyncio.run(_advertised()) + "".join(chapters.values())
+
+
+def _handbook_read(query: str) -> str:
+    """Serve the chapter index, or one chapter verbatim. Never writes."""
+    import json
+
+    wanted = (query or "").strip()
+    index = {
+        name: sorted(chapters) for name, chapters in sorted(SERVED_TOOL_CHAPTERS.items())
+    }
+    if not wanted:
+        return json.dumps({
+            "handbook": index,
+            "read_one": 'read_graph target="handbook" query="<handle>.<chapter>"',
+            "note": (
+                "These chapters are the long-form half of each handle's guidance. "
+                "They are served here instead of riding on every model round-trip "
+                "of every turn. Read the chapter before composing a call it covers."
+            ),
+        })
+    handle, _, chapter = wanted.partition(".")
+    chapters = SERVED_TOOL_CHAPTERS.get(handle)
+    if chapters is None:
+        # Name what IS available: an empty answer would read as "this handle has
+        # no guidance", which is the opposite of true for a mistyped name.
+        return json.dumps({
+            "error": f"no handbook for {handle!r}",
+            "handbook": index,
+        })
+    if chapter not in chapters:
+        return json.dumps({
+            "error": f"no chapter {chapter!r} for {handle!r}",
+            "chapters": sorted(chapters),
+        })
+    return json.dumps({
+        "handle": handle,
+        "chapter": chapter,
+        "text": chapters[chapter],
+    })
+
+
 # ── Served EDIT surface (write_graph operation="patch", served-agent-build-run §2.2) ──
 # The "modify your workflow in place" half of build parity — a served universe can EDIT
 # its own branches, not only create-then-rebuild (the gap the 2026-08-24 live test
@@ -1473,466 +2062,34 @@ def write_graph(
       Everything else of yours deletes and is gone from
       ``read_graph target="branches"``.
 
-    **Outbound channel node — the channel-agnostic way to add Slack, a webhook, or
-    ANY HTTPS API with no service-specific code.** A node declaring
-    ``effects: ["authenticated_external_call"]`` fires ONE outbound HTTP call after
-    the run, reading its instruction from one of its ``output_keys``. Prereqs, done
-    once (they carry secrets, so NOT through this chat): the owner deposits the
-    credential IN THE APP. **ASK THEM FOR IT — do not send them hunting for a
-    form.** You know the exact endpoints you are about to call, so state them:
-
-        write_graph target="pending_request" operation="ask" payload_json={
-          "kind": "API",                      # the tab header they will see
-          "title": "GitHub key so I can open your pull request",
-          "body":  "why you need it, in one or two sentences",
-          "action": {"type": "connect_http", "destination": "github",
-                     "auth_scheme": "bearer",
-                     "endpoints": [{"host": "api.github.com",
-                                    "path_template": "/repos/o/r/pulls",
-                                    "methods": ["POST"]}, ...]},
-          "fields": [                         # REQUIRED -- see below
-            {"name": "token", "type": "secret",
-             "label": "Personal access token",
-             "help": "Settings -> Developer settings -> Personal access tokens",
-             "url": "https://github.com/settings/tokens"}]}
-
-    That opens a tab in their app with the exact grant spelled out; they paste
-    the key there and it goes straight to the vault under those endpoints. List
-    EVERY call the flow needs in ONE ask so they paste once (a GitHub pull
-    request needs the main ref, a branch ref, the file contents, and the pull).
-
-    **ONE FIELD PER CREDENTIAL, NAMED THE WAY THE SITE NAMES IT.** Never make
-    the owner work out what goes where. If a service needs four values, ask for
-    four, each labelled as that service labels it, each with the path to find it
-    and a link straight there::
-
-        "fields": [
-          {"name": "api_key", "type": "secret",
-           "label": "API Key",
-           "help": "Developer Portal -> your app -> Keys and tokens -> "
-                   "Consumer Keys -> API Key",
-           "url": "https://developer.x.com/en/portal/dashboard"},
-          {"name": "api_secret", "type": "secret",
-           "label": "API Key Secret", "help": "shown beside the API Key, once",
-           "url": "https://developer.x.com/en/portal/dashboard"},
-          ...
-        ]
-
-    The LABEL is the site's wording; the NAME is what the deposit reads. For
-    most schemes the name is yours to choose, but ``oauth1a`` has a fixed
-    four-value shape and the names must be exactly ``api_key``, ``api_secret``,
-    ``access_token``, ``access_token_secret`` -- label them however the service
-    words them, but name them these or the deposit refuses with "oauth1a secret
-    is missing". For ``basic``, name them ``username`` and ``password``.
-
-    ``label`` is the service's OWN name for it, not yours -- if the site says
-    "Consumer Key" then say "Consumer Key", because that is the words the owner
-    is looking at. ``help`` is the click path (400 chars). ``url`` is a plain
-    ``https://`` link to the page that issues it. Up to 16 fields.
-
-    **LOOK IT UP FIRST. Do not ask from memory.** You have WebFetch and
-    WebSearch. Before you raise a credential ask, read the service's OWN current
-    documentation and build the ask from what you find there:
-
-      * WHICH values it actually needs -- and which it does not. Do not ask for
-        a value the flow will never use; every extra box is work you are giving
-        the owner for nothing.
-      * WHAT THAT SITE CALLS EACH ONE, in its own words. If the page says
-        "Consumer Key" then the label is "Consumer Key", because that is the
-        text the owner is looking at while they fill your form.
-      * WHERE each one is found -- the actual click path, today, not the one
-        from a year ago.
-      * THE LINK to the page that issues it.
-
-    Portals get reorganised and auth schemes change; a click path you remember
-    is a click path that sends the owner somewhere that no longer exists. Read
-    it, then ask.
-
-    There is no built-in list of services and there is not going to be one. A
-    site nobody has heard of gets the same ask as a famous one, because the ask
-    is built the same way both times: by going and reading.
-
-    If the docs are unclear, say so in the ask rather than guessing at a label
-    -- "their page calls this either X or Y" is honest and the owner can resolve
-    it in a second. A confidently wrong label is worse than an uncertain one.
-
-    **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
-    a ``connect_http`` or ``extend_http`` ask and it means: everything this key
-    can do on this channel -- any path, any verb, and clone or push to any
-    repository it reaches on the channel's git host. One yes for that direct
-    channel access. Redirected downloads need the separate permission below.
-    A full ask carries NO ``endpoints`` and NO
-    ``scopes``; a full deposit names the channel's ``hosts`` instead, 1 to 4 of
-    them::
-
-        "action": {"type": "extend_http", "destination": "github",
-                   "access": "full"}
-
-        "action": {"type": "connect_http", "destination": "github",
-                   "auth_scheme": "bearer", "access": "full",
-                   "hosts": ["api.github.com"]}
-
-    Ask for exact endpoints ONLY when the owner asked for less. Three asks in
-    one afternoon for one key the owner had already decided to trust is the
-    failure this replaces: you are not being careful, you are making them
-    answer the same question in three shapes.
-
-    **If you ALREADY hold a key for that destination, do not ask for it again.**
-    Check ``read_graph target="connections"`` first. To widen an existing grant
-    the action is ``extend_http`` on the same destination — new endpoints only,
-    no ``auth_scheme``, and the tab has NO paste box because the key stays in
-    the vault::
-
-        "action": {"type": "extend_http", "destination": "github",
-                   "endpoints": [{"host": "api.github.com",
-                                  "path_template": "/repos/o/r/contents/{path+}",
-                                  "methods": ["GET", "PUT"],
-                                  "param_patterns": {"path": "[A-Za-z0-9._\\-/]{1,200}"}}]}
-
-    To follow redirected downloads, ask to extend the source GET-only endpoint
-    with ``"redirect_mode": "public_https_get"``. This explicitly allows bounded
-    public HTTPS follow-up downloads without sharing the key with another
-    origin. Omitted/``none`` stays no-follow, even for full channel access.
-    Use a separate endpoint extension, not ``access: full``; it preserves an
-    existing full grant and requires no new key. Let the owner approve the
-    generated disclosure before retrying the download. No mutating request or
-    GET with a body may follow redirects.
-
-    To TAKE BACK a credential, raise the SAME KIND OF ASK with
-    ``{"type": "remove_http", "destination": "<name>"}`` and NO fields --
-    nothing to paste, so the tab is a plain confirm. Answering it deletes the
-    secret, the connection and its grants, and frees that destination name to
-    deposit again. It is the right answer when the owner says "remove that
-    key", and when a key went to a destination they did not intend. Never ask
-    the owner to "just ignore" a wrong deposit::
-
-        "action": {"type": "remove_http", "destination": "github"}
-
-    Answering it returns ``removed_endpoints`` and ``removed_scopes`` -- what
-    that connection was allowed to reach, and the git scopes it carried. **If
-    you are ROTATING a key rather than retiring it, carry both into the new
-    ``connect_http`` ask.** Scopes live on the grant and die with it, so a
-    re-deposit that omits them yields a connection that looks healthy and fails
-    at the first checkout. Do not ask the owner what they were: you were just
-    told.
-
-    A ``connect_http`` ask for a destination that already has a key makes the
-    user paste a secret they already gave you — the one thing they must never
-    be asked to do twice.
-
-    **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
-    ``git_read:owner/name`` / ``git_write:owner/name``. That is what lets the
-    workspace sink clone or push that ONE repository; the HTTP methods still come
-    from the endpoints, never from this list. A git scope binds ONE git host: the
-    connection's endpoint host, or — when the service serves git somewhere other
-    than its API — the ``"git_host"`` the connect ask declares (a bare hostname).
-    Nothing is defaulted per service: if git lives on a different host from the
-    API endpoints you listed, say so with ``git_host`` or the clone goes to the
-    API host.
-
-    **A path_template can be a PATTERN, so ask for the JOB, not one file.** Any
-    segment may be a ``{name}`` placeholder, and the FINAL segment may be a
-    ``{name+}`` *rest* placeholder matching one or more remaining segments. Every
-    placeholder needs a regex in ``param_patterns``, which is what keeps the
-    grant tight::
-
-        {"host": "api.github.com",
-         "path_template": "/repos/o/r/contents/{path+}",
-         "methods": ["GET", "PUT"],
-         "param_patterns": {"path": "[A-Za-z0-9._\\-/]{1,200}"}}
-
-    That single endpoint reaches every file in that ONE repo, and still refuses
-    ``../`` traversal, another owner's repo, and any non-contents path. Without
-    it you would have to name each file up front — which you cannot do, because
-    you do not know which files a change touches until you have read the code,
-    and every new file would cost the user another approval.
-
-    So scope a grant to the work — not one file at a time. One ask may cover at
-    most six endpoints with two methods each. To patch a repo that is FOUR: the
-    main ref (``GET git/ref/heads/main``), a branch (``POST git/refs``),
-    ``contents/{path+}`` with ``GET``+``PUT``, and ``POST pulls``. Each ``PUT``
-    to contents is its own commit on the branch, so the git-data calls
-    (``git/blobs`` / ``git/trees`` / ``git/commits`` / ``PATCH
-    git/refs/heads/{branch+}``) are only needed when one atomic multi-file
-    commit truly matters — ask for those separately, and only then. Prefer the
-    narrowest PATTERN that covers the job over a list of exact paths that
-    cannot.
-    Read ``read_graph target="pending_requests"`` to see what is still waiting
-    and what they answered. You cannot answer your own ask, and you should not
-    try: that is theirs.
-
-    An ``extend_http`` ask is checked against the key you already hold when
-    you RAISE it. One that adds nothing comes back ``already_held`` with the
-    grant you have: act on it, do not ask again. One the answer would refuse
-    comes back ``ask_cannot_be_granted`` with the reason: fix the ask. The
-    owner never sees a tab that cannot be honoured. A git clone or push uses
-    the connection's git scopes and needs no HTTP endpoint on the git host.
-
-    **A deposited credential is DURABLE, and you are asking for ONGOING ACCESS
-    to a service — not for one-time permission to run one action.** It stays in
-    the vault for future use until the owner removes it, so ask once per service
-    for what you will need from it, and later ADD endpoints to that same
-    destination when the work needs more (re-ask with the old endpoints plus the
-    new ones; it extends in place). Do NOT promise to use a key "only this once"
-    or imply it will be discarded after the task: that is not what happens, and
-    saying it makes the owner think they will have to paste again. Say what the
-    key is FOR and what it may reach — the endpoint list already bounds it, and
-    that bound is the real promise.
-
-    Use ``{"type":"answer"}`` with your own ``fields`` for anything that is not a
-    credential - an approval, a choice, a missing detail. The tab is a general
-    way to ask, not a credential form.
-
-    They can still deposit by hand, from the rail in this same app - never send
-    them to a separate or external "browser flow". PREFER ASKING: a hand deposit
-    makes them author an endpoint policy you already know. If they do go by hand
-    and the service uses OAuth 1.0a (X/Twitter and similar), the form shows FOUR
-    LABELLED BOXES - API Key, API Key Secret, Access Token, Access Token Secret -
-    one value per box, never all four in one field. That deposit is
-    ``connect_http``: it stores the connection
-    + grant and pins the host/path/method allow-list. Then
-    ``source_channel operation=approve`` grants the destination consent (you can
-    do that part). The node's
-    delivery node is a ``prompt_template`` node (the model emits the packet) or
-    a ``source_code`` node (``run()`` returns the packet, as a dict or a
-    ``json.dumps`` string, under an output key - see CODE NODES below) and MUST
-    produce, under one of its ``output_keys``, a packet of EXACTLY this shape
-    (the effector rejects anything else — do NOT invent ``destination`` /
-    ``payload`` keys)::
-
-        {"sink": "authenticated_external_call",
-         "connection_id": "<the connection_id connect_http returned>",
-         "grant_id":      "<the grant_id connect_http returned>",
-         "verb":          "POST",          # the HTTP method
-         "request": {"method": "POST",      # if present, must equal verb
-                     "host": "<a host from the connection's allow-list>",
-                     "path": "<a path from the connection's allow-list>",
-                     "body": { ... }}}      # JSON body to send
-
     **Writing a file through an API that takes base64 (a contents API):
     NEVER generate base64 and NEVER re-type a file - both corrupt it (live
     2026-08-29: `422 not valid Base64`, then a file with 87 lines collapsed,
-    then a "repair" with 36 typos).** Put text in a transform and reference the
-    fetched bytes; the effector does the encoding and the byte-moving. Build TWO
-    nodes in ONE branch, each with ``effects: ["authenticated_external_call"]``:
-    ``fetch`` emits a GET packet for the file; ``write`` (listed after it)
-    emits a PUT packet whose body uses::
+    then a "repair" with 36 typos).** This one stays here rather than in the
+    handbook: skipping it produces a WRONG effectful call -- a corrupted file
+    written to somebody's repository -- not an absent one. The `connections`
+    chapter has the two-node shape that does it correctly.
 
-        {"message": "docs: append a line",
-         "sha":     {"$ta.effect": "fetch.response.body.sha"},
-         "branch":  "<branch>",
-         "content": {"$ta.base64": {"$ta.concat": [
-                        {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
-                        "<the new line>\n"]}}}
+    THE HANDBOOK. My long-form guidance for this handle is not repeated in
+    every round of every turn -- it is three chapters I read when I need one,
+    exactly as I read a skill's SKILL.md when a request matches it:
 
-    To CHANGE a line instead of appending one, replace it inside the fetched
-    text - never re-type the file::
+    * ``connections`` -- raising a credential ask (``target="pending_request"``),
+      naming each field the way the site names it, looking the service up before
+      asking rather than from memory, path patterns so one ask covers the job,
+      extending or taking back a key, and writing a file through an API that
+      takes base64.
+    * ``code_nodes`` -- a node that runs my own Python instead of a prompt: the
+      ``run(state, effects)`` contract, what ``effects`` exposes, and reading the
+      exact bytes of a file the user attached.
+    * ``workspaces`` -- a directory my code nodes share across a run, the
+      ``"sink": "workspace"`` packet every one of them carries, the two ways to
+      get a workspace, and a repository checkout.
 
-        "content": {"$ta.base64": {"$ta.replace": {
-                       "in":  {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
-                       "old": "<the exact current line>\\n",
-                       "new": "<the exact new line>\\n"}}}
-
-    ``$ta.replace`` swaps ONE exact occurrence (set ``"count"`` for more) and
-    refuses when ``old`` is absent or occurs a different number of times, so a
-    typo cannot silently change the wrong place; ``old``/``new`` may include the
-    line's newline. ``$ta.effect`` reads an EARLIER node's ``response.body`` /
-    ``response.status`` in the same run - "earlier" means listed earlier in the
-    branch, so store ``fetch`` before ``write``; ``$ta.ref`` reads one of the
-    node's own declared ``input_keys`` from state; ``$ta.from_base64`` /
-    ``$ta.base64`` decode and encode (UTF-8 text files); ``$ta.concat`` joins.
-    The model writes only the new (and, for a change, the old) line - the rest
-    of the file never passes through it. For anything beyond an append or one
-    exact replacement, use a CODE NODE (below): three lines of Python over the
-    fetched body, deterministic, no operator to learn.
-
-    ``connection_id`` and ``grant_id`` are REQUIRED and must be the exact ids from
-    connect_http; ``verb`` is the HTTP method (it is matched against the connection's
-    granted scope). Give the node ``effects: ["authenticated_external_call"]``, one
-    ``output_key`` (e.g. ``delivery_receipt``) declared in the state schema, and a
-    ``prompt_template`` that instructs the model to emit ONLY that JSON packet with
-    the literal ids and body filled in — no prose, no code fences.
-
-    CODE NODES. A node with ``source_code`` instead of ``prompt_template`` runs
-    deterministic Python in an OS sandbox - no network, no credentials, no
-    ambient filesystem - with your data and every earlier call's response. The
-    only file bytes it can read are the run's BOUND file inputs, through the
-    authorized read_run_file RPC (FILE INPUTS below). Use one whenever
-    the step is mechanical (change a line, parse a page, compute a body): the
-    model designs the branch once; nothing is re-typed at run time. Contract::
-
-        {"node_id": "edit", "input_keys": [], "output_keys": ["content", "sha"],
-         "source_code": "import base64\n"
-                        "def run(state, effects):\n"
-                        "    got = effects['fetch']['body']   # fetch's FULL response, parsed\n"
-                        "    text = base64.b64decode(got['content']).decode()\n"
-                        "    text = text.replace('old line\\n', 'new line\\n', 1)\n"
-                        "    new = base64.b64encode(text.encode()).decode()\n"
-                        "    return {'content': new, 'sha': got['sha']}\n"}
-
-    ``run(state, effects)``: ``state`` is the node's declared ``input_keys``;
-    ``effects`` is ``{node_id: {"status", "body"}}`` for the node's graph
-    ANCESTORS' calls (full bodies, JSON parsed; never headers). Return a dict
-    under your declared ``output_keys``; the next node's packet reads them with
-    ``{"$ta.ref": "content"}`` (declare them in its ``input_keys``). A code node
-    may itself declare ``effects`` and return the packet under an output key.
-    Effects fire the moment their node returns, in graph order: a refused
-    packet or a far-side error >= 400 FAILS the node and the run (later nodes
-    never run) unless the packet declares ``"accept_statuses": [404]`` for a
-    probe. A failing code node reports ``code_node_failed`` with its stderr -
-    fix ``run()`` with ``operation=patch`` and payload ``op=update_node``, then run again.
-    The same ``update_node`` op also edits a node's ``llm_policy`` in place:
-    a ``{"preferred": {"provider": "<name>"}}`` dict replaces the pin, explicit
-    ``null`` clears it, omitting the key leaves it unchanged. That is a routing
-    preference, not a provider grant (see ``connect_compute``).
-    ``effects`` and ``workspace`` are editable the same way, so an existing
-    workflow never has to be rebuilt to change what a node does: ``"effects":
-    ["authenticated_external_call"]`` (or ``["workspace"]``) declares the sink,
-    ``"effects": []`` (or ``null``) clears it, and omitting the key leaves it
-    unchanged; ``"workspace": "<ancestor checkout node id>"`` binds the checkout
-    and ``null`` clears it. ``op=add_node`` may likewise add an effect-bearing
-    node to an existing branch, on exactly the terms create accepts (one sink per
-    node; there is no limit on how many such nodes a branch may have).
-    A declaration is NOT consent and NOT a credential: every dispatch is still
-    checked against the connection grant bound to this universe, the
-    per-destination consent granted via ``source_channel``, and the workspace
-    admission + ancestor/lease rules. Editing fires nothing.
-    The same op also revises a node's ORDINARY SETTINGS in place, so a mis-wired
-    or slow workflow is repaired rather than rebuilt: ``description``, ``phase``,
-    ``model_hint``, ``reasoning_effort``, ``input_keys``, ``output_keys`` and
-    ``timeout_seconds``. Renaming an output is one batch with the state field and
-    the source that produces it — ``[{"op":"add_state_field","name":"revised",
-    "type":"str"}, {"op":"update_node","node_id":"edit","output_keys":["revised"],
-    "source_code":"..."}]`` — because a batch is all-or-nothing: one bad value and
-    NOTHING in it is written. ``timeout_seconds`` must be a finite number above 0
-    (and at most 1800 for a node that binds a ``workspace``). Any key you omit
-    keeps its current value. ``tools_allowed``, sub-branch invocation, approval and
-    authorship are not editable here at all.
-    Code runs only in the
-    universe that authored it: a public branch's code must be remixed
-    (``fork_from``) before it runs as yours. Stdlib only (``json re base64
-    difflib textwrap html csv datetime math`` ...); 512 MiB, the node's
-    ``timeout_seconds``; the source is at most 50 KB.
-
-    FILE INPUTS (user attachments, exact bytes). A file the user attached in the
-    app is already an exact six-field reference inside their message. To
-    process its bytes: declare ``io_manifest`` on create, e.g.
-    ``{"inputs":[{"name":"files","io_type":"file_bundle","max_count":4,
-    "max_bytes":4194304}]}``, with a matching ``state_schema`` field (a
-    ``file_bundle`` input needs a ``list`` field; a single ``file`` input needs
-    a ``dict`` field). Give the code node that field in ``input_keys`` and
-    ``"tools_allowed": ["read_run_file"]``: only such a node can read the bytes,
-    by keyword call ``invoke_mcp_action("read_run_file", file_id=ref["file_id"],
-    offset=0, count=524288)``, which returns ``{"bytes_base64", "next_offset",
-    "eof"}``; loop until ``eof``. A downstream node needs the reference forwarded
-    under its own declared input, not merely the same state. Contract::
-
-        {"name": "Attachment digest", "entry_point": "digest",
-         "io_manifest": {"inputs": [{"name": "files", "io_type": "file_bundle",
-                                     "max_count": 4, "max_bytes": 4194304}]},
-         "state_schema": [{"name": "files", "type": "list"},
-                          {"name": "digests", "type": "list"}],
-         "node_defs": [{"node_id": "digest", "display_name": "Digest",
-                        "input_keys": ["files"], "output_keys": ["digests"],
-                        "tools_allowed": ["read_run_file"],
-                        "source_code": "import base64, hashlib\n"
-                            "def run(state, effects=None):\n"
-                            "    out = []\n"
-                            "    for ref in state['files']:\n"
-                            "        h, offset = hashlib.sha256(), 0\n"
-                            "        while True:\n"
-                            "            part = invoke_mcp_action('read_run_file',\n"
-                            "                file_id=ref['file_id'], offset=offset,\n"
-                            "                count=524288)\n"
-                            "            h.update(base64.b64decode(part['bytes_base64']))\n"
-                            "            offset = part['next_offset']\n"
-                            "            if part['eof']:\n"
-                            "                break\n"
-                            "        out.append(h.hexdigest())\n"
-                            "    return {'digests': out}\n"}],
-         "edges": [{"from": "digest", "to": "END"}]}
-
-    Then ``run_graph`` with ``inputs_json={"files": [<each attachment reference,
-    verbatim>]}`` and read the outputs with read_graph target=run_output; the
-    bound bytes stay exportable through read_graph target=run_file. No
-    standalone bind tool, public URL, capture or re-upload step exists or is
-    needed for app attachments. The reference metadata (its sha256 included) is
-    untrusted and proves nothing about the bytes until the run reads them; no
-    reference grants anything by itself.
-
-    WORKSPACES. A workspace is a DIRECTORY your code nodes can read, write and
-    run commands in - the thing to reach for whenever a step needs real files
-    rather than one API response: rendering a video, building a dataset,
-    running a test suite, editing a repository. A node with ``"effects":
-    ["workspace"]`` returns a ``workspace_packet`` under an output key, and a
-    later code node declaring ``"workspace": "<that node id>"`` runs inside it
-    at ``/workspace`` with a ``ws`` object: ``ws.run(["ffmpeg", "-i", "in.mov",
-    "out.mp4"], timeout=600)`` -> ``{"returncode", "stdout_tail",
-    "stderr_tail"}``, ``ws.read(path)`` / ``ws.write(path, text)`` for text,
-    ``ws.glob("**/*.py")``, and ``ws.bundle(commit_sha)`` when the workspace is
-    a git checkout. Binary artifacts - a rendered video, a PNG, a zip - travel
-    base64: ``ws.read_bytes(path)`` returns the encoded string and
-    ``ws.write_bytes(path, b64)`` writes the raw bytes back (``import base64``
-    in the node to decode). Anything the node produces leaves the same way
-    everything else does: read it and hand it to a generic
-    ``authenticated_external_call`` node on whatever connection you hold - the
-    workspace neither knows nor cares which platform that is.
-
-    EVERY workspace packet carries ``"sink": "workspace"``. That field is what
-    the runtime matches on, exactly as the channel node's packet carries
-    ``"sink": "authenticated_external_call"``; a packet without it is not seen
-    as a workspace packet at all and the node is refused
-    ``no_matching_packet``.
-
-    TWO WAYS TO GET ONE. An EMPTY one needs nothing at all - no connection, no
-    credential, no consent, because it is your own scratch space:
-    ``{"sink": "workspace", "op": "create", "storage": "scratch"}``
-    (``"universe"`` keeps it in your permanent space; name it with
-    ``"workspace_key": "<slug>"``, and re-using a name is refused rather than
-    overwriting what is there). A REPOSITORY one clones a git remote:
-    ``{"sink": "workspace", "op": "checkout", "connection_id": "<an http
-    connection to the forge>", "grant_id": "<that connection's grant_id>",
-    "repo": "owner/name", "ref": "main", "storage": "scratch"}`` - both ids are
-    REQUIRED and are the exact ones ``read_graph target="connections"`` reports.
-    The forge is whatever host that connection declares - GitHub,
-    GitLab, Gitea, self-hosted - not a fixed one. To publish, a node returns
-    ``{"sink": "workspace", "op": "push", "workspace": "<checkout node>",
-    "commit_sha": "<40 hex>", "branch_slug": "fix-readme"}`` - the branch lands
-    as ``tiny/<universe>/<slug>`` (never the default branch; open the PR with
-    the generic call), and a push against a created workspace is refused
-    because it has no remote. ``{"sink": "workspace", "op": "discard",
-    "workspace": "<node>"}`` drops any workspace early (no consent needed).
-    A checkout can add ``"provision": {"python": "requirements.lock", "node": true}``
-    (either family is optional). Python needs exact versions and SHA256 hashes
-    for the full wheel dependency closure; Node needs package.json and a v2/v3
-    package-lock.json using public npm registry tarballs. Provisioning needs
-    separate workspace_provision consent on the connection/repository. Missing
-    consent or invalid manifests preserve checkout with workspace_provision_refused;
-    download/install failure prevents publication with workspace_provision_failed.
-    Installation is offline: Python uses a fresh .venv (an existing .venv is not
-    overwritten), Node uses node_modules, and original manifests are preserved.
-    Dependency scripts may run offline; root package scripts do not. No arbitrary
-    OS package, browser binary or non-registry download is provided by this option.
-
-    A CHECKOUT needs TWO things per ``(connection, repo)``, once, both through
-    the request rail - a created workspace needs neither: the repository SCOPE
-    on that connection
-    (``"action": {"type": "extend_http", "destination": "github", "scopes":
-    ["git_read:owner/name", "git_write:owner/name"]}`` - no new endpoints
-    needed, and no key to paste; ``destination`` is that connection's own
-    label, whatever forge it points at)
-    and the typed CONSENT (``"action": {"type": "grant_workspace_consent",
-    "connection_id": "<from read_graph target='connections'>", "repo":
-    "owner/name", "consents": ["workspace_checkout", "workspace_push"]}``).
-    ``read_graph target="connections"`` shows both, so check what you hold
-    before asking. The
-    sandbox has no network and no credential; git talks to the host from a
-    worker you never see. Limits are usage, not shape: a 4 GiB lease, one
-    workspace job at a time per universe, 1000 commands and 1 MiB of returned
-    output per node; a timed-out command fails the node as
-    ``workspace_command_timeout``; every other refusal names its class
-    (``workspace_checkout_failed`` ... ``workspace_quota_exceeded``) and what
-    to do.
+    I read one with ``read_graph target="handbook"
+    query="write_graph.<chapter>"``; ``read_graph target="handbook"`` with no
+    query lists every chapter there is. I read the chapter BEFORE composing a
+    call it covers instead of guessing and being refused.
 
     A branch is a stored graph SHAPE — building/editing one fires NO effects and
     issues NO provider authority. Actually RUNNING it (with side effects) is a

@@ -255,10 +255,14 @@ def normalize_turn_failure(value: object) -> dict | None:
             return None
         result["ref"] = value["ref"]
     if "retry_after_s" in value:
+        # DROP just this field, never the record. It is a convenience -- "you can
+        # send again in about N seconds" -- and rejecting the whole row over it
+        # cost the owner the entire notice: stage, class, effects and ref, all
+        # readable, all discarded because one number was out of range (review of
+        # #3988). Every other optional field already degrades this way.
         wait = wait_seconds(value["retry_after_s"])
-        if wait is None:
-            return None
-        result["retry_after_s"] = wait
+        if wait is not None:
+            result["retry_after_s"] = wait
     return result
 
 

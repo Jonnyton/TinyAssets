@@ -73,6 +73,140 @@ def test_a_runtime_literal_does_count(tmp_path):
     assert hits == ["https://api.github.com"]
 
 
+#: The file that owns the relocated-docstring exemption.
+OWNER = "tinyassets/engine_mcp_server.py"
+
+
+def _engine_copy(tmp_path, body: str, module):
+    """A file AT the owning path, so path-scoped exemptions apply to it.
+
+    The exemption is keyed on the repo-relative path, so a scoping test has to
+    write at that path rather than pass an arbitrary temp file -- which is exactly
+    the hole the PR #4000 review found: the first version of this test used
+    `relocated.py` and passed, because the file did not matter.
+    """
+    target = tmp_path / OWNER
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    module.REPO_ROOT = tmp_path
+    return target
+
+
+def test_a_relocated_docstring_is_exempt_in_the_file_that_owns_it(tmp_path):
+    """2026-09-26: `write_graph`'s chapters left its docstring for a module
+    constant so they stop riding on every model round-trip of every served turn.
+    The text did not change, so counting it now would make the rule unmeetable for
+    exactly the reason docstrings are exempt."""
+    module = _module()
+    name = sorted(module.DOCUMENTATION_CONSTANTS[OWNER])[0]
+    source = _engine_copy(
+        tmp_path,
+        '"""Agnostic, allegedly."""\n'
+        "\n"
+        f'{name} = """Ask for a GitHub key the way the site names it."""\n'
+        '_OTHER_CONSTANT = """A GitHub mention in an unlisted constant."""\n'
+        "\n"
+        "def f():\n"
+        '    return "https://api.github.com"\n',
+        module,
+    )
+    hits = [t for t in module.runtime_strings(source) if "github" in t.lower()]
+    assert "Ask for a GitHub key the way the site names it." not in hits
+    # An unlisted constant and a real runtime literal still count.
+    assert "A GitHub mention in an unlisted constant." in hits
+    assert "https://api.github.com" in hits
+
+
+def test_the_reviewer_probe_no_longer_hides_a_runtime_literal(tmp_path):
+    """The PR #4000 blocking finding, as a test.
+
+    The reviewer planted `tinyassets/zz_probe_effector.py` assigning an exempt
+    NAME to a GitHub URL inside a function and calling `urlopen` on it, plus a
+    Slack URL under another exempt name in a class -- and the gate reported clean
+    at 621. A copy-pasted name must never switch the rule off.
+    """
+    module = _module()
+    names = sorted(module.DOCUMENTATION_CONSTANTS[OWNER])
+    probe = tmp_path / "tinyassets" / "zz_probe_effector.py"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(
+        "import urllib.request\n"
+        "\n"
+        "\n"
+        "def call():\n"
+        f'    {names[0]} = "https://api.github.com/repos"\n'
+        f"    return urllib.request.urlopen({names[0]})\n"
+        "\n"
+        "\n"
+        "class Client:\n"
+        f'    {names[-1]} = "slack.com/api/chat.postMessage"\n',
+        encoding="utf-8",
+    )
+    module.REPO_ROOT = tmp_path
+    hits = [
+        text for text in module.runtime_strings(probe)
+        if "github" in text.lower() or "slack" in text.lower()
+    ]
+    assert "https://api.github.com/repos" in hits, "the function-level literal is hidden"
+    assert "slack.com/api/chat.postMessage" in hits, "the class-level literal is hidden"
+
+
+def test_the_exempt_name_counts_inside_a_function_or_class_in_the_owning_file(tmp_path):
+    """Module level is the claim, so `tree.body` has to be what enforces it."""
+    module = _module()
+    name = sorted(module.DOCUMENTATION_CONSTANTS[OWNER])[0]
+    source = _engine_copy(
+        tmp_path,
+        '"""Agnostic, allegedly."""\n'
+        "\n"
+        "\n"
+        "def f():\n"
+        f'    {name} = "https://api.github.com/inside-a-function"\n'
+        f"    return {name}\n"
+        "\n"
+        "\n"
+        "class C:\n"
+        f'    {name} = "slack.com/inside-a-class"\n',
+        module,
+    )
+    hits = [
+        text for text in module.runtime_strings(source)
+        if "github" in text.lower() or "slack" in text.lower()
+    ]
+    assert "https://api.github.com/inside-a-function" in hits
+    assert "slack.com/inside-a-class" in hits
+
+
+def test_a_second_module_assignment_to_the_name_revokes_the_exemption(tmp_path):
+    """Assigned twice is not a relocated docstring; it is a name being reused."""
+    module = _module()
+    name = sorted(module.DOCUMENTATION_CONSTANTS[OWNER])[0]
+    source = _engine_copy(
+        tmp_path,
+        '"""Agnostic, allegedly."""\n'
+        "\n"
+        f'{name} = """Chapter prose mentioning GitHub."""\n'
+        f'{name} = "https://api.github.com/second-assignment"\n',
+        module,
+    )
+    hits = [t for t in module.runtime_strings(source) if "github" in t.lower()]
+    assert "Chapter prose mentioning GitHub." in hits
+    assert "https://api.github.com/second-assignment" in hits
+
+
+def test_every_exempt_documentation_constant_still_exists():
+    """A stale name in the exemption list is an exemption nobody can audit."""
+    module = _module()
+    from tinyassets import engine_mcp_server
+
+    for name in module.DOCUMENTATION_CONSTANTS[OWNER]:
+        assert isinstance(getattr(engine_mcp_server, name), str)
+    assert (REPO_ROOT / OWNER).is_file()
+    # Every keyed path must exist, or the exemption points at nothing.
+    for rel in module.DOCUMENTATION_CONSTANTS:
+        assert (REPO_ROOT / rel).is_file(), rel
+
+
 def test_the_platform_acting_as_itself_is_listed_not_hidden():
     """Billing its own customers and shipping its own releases are not user
     capabilities. They are exempt BY NAME so the exemption can be argued with,

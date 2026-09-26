@@ -61,6 +61,13 @@ The `converse` operation (`tinyassets.universe_intelligence.converse`) SHALL res
 - **WHEN** `converse` runs for a universe with no learned name
 - **THEN** the assembled first-person prompt has the universe acknowledge it is newly born and still learning, rather than inventing a name
 
+#### Scenario: quoted grounding is declared current so recall costs no round-trip
+- **WHEN** at least one grounding file is inlined into the assembled prompt
+- **THEN** the grounding section states that each quoted heading is that file's current and complete contents for this turn, so the turn answers from the prompt instead of spending another model round-trip fetching the same text
+- **AND** the statement forbids no tool and preserves reading a file before editing it
+- **WHEN** no grounding file was inlined, or the tier filter permitted only a subset
+- **THEN** no such statement is made about contents that are absent, and it never names a withheld file
+
 #### Scenario: a missing universe fails loudly
 - **WHEN** `converse` is called for a universe directory that does not exist
 - **THEN** it raises rather than fabricating a reply
@@ -82,8 +89,13 @@ Every universe-intelligence engine turn SHALL run with `sandbox_workspace=True` 
 - **THEN** both turns use the fail-closed sandboxed config
 
 ### Requirement: Learning is a separate tolerant model-extracted step with field-specific filtering, and reply delivery survives failures
-After the reply turn, `converse` SHALL run a separate provider call whose prompt
-asks for durable facts explicitly stated in the founder's latest message.
+Learning SHALL be a step separate from the reply. A turn that recorded what it was
+taught IN-TURN, settling its conversation's learned cursor
+(`deferred-turn-learning`), SHALL NOT then make a separate learning provider call.
+A turn whose cursor is still unsettled when it ends SHALL run that separate call
+after the reply turn, as before, whose prompt asks for durable facts explicitly
+stated in the founder's latest message — so no lesson is lost and no turn is slower
+than before.
 Parsing SHALL tolerate fenced JSON or an embedded top-level object and return
 an empty proposal when no dict can be recovered. `commit_learning` SHALL
 string-coerce `name`, treat non-dict `soul` as empty, accept only governed soul
@@ -93,8 +105,17 @@ title/content. It SHALL NOT compare accepted non-generic name, soul, or canon
 facts with the founder message, so unsupported extractor output can pass. A
 `SoulEditError` while reading governed files SHALL become an empty governed set
 without logging at that catch; rejected soul edits and failed canon items SHALL
-be logged. Any other extraction/commit exception reaching `converse` SHALL be
-logged, and no learning failure SHALL prevent reply delivery.
+be logged. Any other extraction/commit exception SHALL be logged, and no learning
+failure SHALL prevent reply delivery or leave a lesson silently lost — an
+unsettled cursor is the record that it is still owed.
+
+#### Scenario: a turn that recorded its lesson does not pay for a second pass
+- **WHEN** a founder turn recorded what it was taught and its cursor is settled at turn end
+- **THEN** `converse` returns the reply with no further model round-trip
+
+#### Scenario: a turn that recorded nothing keeps the guaranteed pass
+- **WHEN** the cursor is still unsettled when the turn ends
+- **THEN** the separate learning provider call runs after the reply turn, as before
 
 #### Scenario: tolerant parsing and field-specific filtering
 - **WHEN** extraction returns fenced or embedded JSON with mixed valid and invalid fields
@@ -117,7 +138,7 @@ logged, and no learning failure SHALL prevent reply delivery.
 
 #### Scenario: persistence failure preserves the reply
 - **WHEN** extraction or commit raises beyond the field-specific handled failures
-- **THEN** `converse` logs the error and the founder still receives the reply
+- **THEN** the error is logged, the founder's reply is unaffected, and the cursor stays unsettled so the lesson is retried
 
 ### Requirement: The MCP converse handle is founder-only and fail-closed
 The MCP `converse` handle (`tinyassets.universe_server.converse`) SHALL be founder-only: it SHALL reject an unauthenticated request and reject any authenticated caller who is not the target universe's founder (write access), returning an explicit auth error rather than reaching the universe intelligence. It SHALL require a non-empty message, register with `anonymous_write_challenge=True`, and on any downstream failure return an honest error instead of fabricating a reply. As-built limitation: public "talk to a stranger's universe" access is a later, separately-gated slice.

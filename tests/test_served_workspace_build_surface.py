@@ -129,7 +129,9 @@ def test_the_docstring_and_the_gate_agree_on_the_sink_name() -> None:
     from tinyassets.effectors.workspace import EXTERNAL_WRITE_SINK_WORKSPACE
 
     assert EXTERNAL_WRITE_SINK_WORKSPACE == "workspace"
-    doc = server.write_graph.__doc__ or ""
+    # REACHABLE, not resident (2026-09-26): the workspace effect declaration is
+    # in the `workspaces` handbook chapter the resident index names.
+    doc = server.served_tool_guidance("write_graph")
     if not doc:
         import inspect
 

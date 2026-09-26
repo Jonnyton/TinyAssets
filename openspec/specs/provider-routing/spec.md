@@ -224,6 +224,18 @@ evidence about the credential whoever made it.
 - **WHEN** the shared cooldown for a source is already set and a secondary call is made
 - **THEN** the provider is not invoked and the attempt records `skip_class=quota_or_cooldown`
 
+#### Scenario: one guarded door writes the shared cooldown
+- **WHEN** any code path cools a source, including an after-the-fact cooling from the turn coordinator
+- **THEN** it passes through the single guarded write point, so the secondary-call rule cannot be bypassed by a new caller
+
+#### Scenario: a source cannot retire itself with a Retry-After
+- **WHEN** a source's `Retry-After` names a window longer than the bounded ceiling (one day)
+- **THEN** the applied cooldown is clamped to that ceiling, for both the per-attempt handler and the after-the-fact cooling, so remote input cannot make an owner's own source unusable indefinitely
+
+#### Scenario: the cooldown rule reads no price or plan
+- **WHEN** the same call is made on a free, paid, unproven or unselected source of any access method
+- **THEN** the decision depends only on whether the call was secondary, identically for every account
+
 #### Scenario: provider failures receive typed diagnostics and cooldowns
 - **WHEN** a provider raises a timeout, an unavailable error, another provider error, or an unexpected exception
 - **THEN** routing classifies the attempt as `timed_out`, conservatively classifies unavailable auth-like errors as `auth_invalid` and other unavailable errors as `endpoint_unreachable`, classifies other provider errors as `provider_error` and unexpected exceptions as `unknown`, and applies the corresponding bounded cooldown before trying the next eligible provider

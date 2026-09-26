@@ -13,19 +13,36 @@ TRANSIENT_CAPACITY = frozenset({"provider_rate_limited", "provider_overloaded"})
 
 
 def free_sibling_retry(
-    *, scope, failure_class, cost_caps, retry_after_s=None, turn_budget_s=None,
+    *, scope, failure_class, retry_after_s=None, turn_budget_s=None,
 ) -> bool:
-    """POLICY, not evidence: may a zero-cost source try a SIBLING model next?
+    """POLICY, not evidence: may this source try a SIBLING model next?
+
+    Decided by what the SOURCE reported and nothing else -- the same answer for
+    every account (founder, 2026-09-25: "all user accounts should be the same").
+    This used to also require confirmed-zero accepted ceilings, which put a plan
+    branch in the hot path: a free source's unknown-scope 429 continued to a
+    sibling and stayed hot, while a paid source's identical 429 was cooled with no
+    retry. Same contract, same status, same evidence, two answers depending on
+    what the owner pays.
 
     ``CapacitySignal.scope`` stays exactly what the source's contract reported.
-    When that is ``unknown`` the platform cannot tell a per-model window from an
-    account-wide one, so the conservative reading -- exclude the whole account,
-    and cool the source -- is the only safe one for a source that can spend.
+    When that is ``unknown`` the source has told us nothing about breadth, so
+    reading it as account-wide -- exclude every sibling, cool the connection -- is
+    a guess, and it is the guess that left a freshly connected universe with no
+    second candidate and no answer to its first message (live 2026-09-25). Being
+    wrong the other way costs ONE more refused request, bounded by the caller.
 
-    On a source whose accepted ceilings are all confirmed zero there is nothing
-    to protect: being wrong costs one more refused request. Being conservative,
-    however, is what left a freshly connected free universe with no second
-    candidate and no answer to its first message (live 2026-09-25).
+    Money is not bounded here, and does not need to be:
+
+    * the owner's accepted ceilings price EVERY attempt (the encoder constrains
+      each request body against them), so a sibling attempt costs what the first
+      one was already allowed to cost. A retry policy cannot raise a ceiling,
+      admit a model or widen a grant;
+    * the money case is source-reported and already refused above:
+      ``provider_credit_exhausted`` is deliberately absent from
+      ``TRANSIENT_CAPACITY`` because it is about money rather than waiting, and a
+      reported ``account`` scope is proven breadth. Both still stop, on a paid
+      source and a free one alike.
 
     A "yes" here also withholds the source's cooldown, because cooling the
     connection would skip the very sibling the turn is about to try. So the
@@ -46,11 +63,7 @@ def free_sibling_retry(
     This grants no authority, widens no grant and never admits a paid model: the
     sibling comes from the SAME order under the SAME ceilings.
     """
-    if not (
-        scope == "unknown"
-        and failure_class in TRANSIENT_CAPACITY
-        and _confirmed_free_only(cost_caps)
-    ):
+    if not (scope == "unknown" and failure_class in TRANSIENT_CAPACITY):
         return False
     if (
         _finite_positive(retry_after_s)
@@ -67,11 +80,6 @@ def _finite_positive(value) -> bool:
         and math.isfinite(value) and value > 0
     )
 
-
-def _confirmed_free_only(cost_caps) -> bool:
-    from tinyassets.providers.model_policy import confirmed_free_only
-
-    return confirmed_free_only(cost_caps)
 
 
 @dataclass(frozen=True, slots=True)

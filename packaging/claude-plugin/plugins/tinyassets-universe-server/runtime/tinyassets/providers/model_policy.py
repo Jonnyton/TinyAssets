@@ -178,40 +178,6 @@ def _charges(charges: tuple[Charge, ...]) -> dict[str, Charge]:
     return result
 
 
-def confirmed_free_only(caps: object) -> bool:
-    """True when the accepted ceilings admit ONLY confirmed zero-charge models.
-
-    ``None`` is this kernel's own free-only policy (see ``ModelPolicy.cost_caps``)
-    and ``_ineligibility`` enforces it as ``not_confirmed_free``. A ceiling of
-    exactly zero enforces the same thing through ``exceeds_cost_cap``.
-
-    Accepts either the kernel's ``Charge`` tuple or a selection's already
-    validated ``(component, micros)`` pairs, so the router and the turn
-    coordinator share ONE definition of "this source cannot spend". Anything
-    else -- an empty tuple, an unconfirmed charge, a bool masquerading as an
-    amount, a list -- is not proof of zero and answers False.
-    """
-    if caps is None:
-        return True
-    if type(caps) is not tuple or not caps:
-        return False
-    for item in caps:
-        if type(item) is Charge:
-            if not item.confirmed or item.amount_micros != 0:
-                return False
-        elif (
-            type(item) is tuple
-            and len(item) == 2
-            and type(item[0]) is str
-            and type(item[1]) is int
-        ):
-            if item[1] != 0:
-                return False
-        else:
-            return False
-    return True
-
-
 def _capacity_identity(connection: ConnectionModels) -> tuple[str, str, str]:
     if connection.authenticated_account_id:
         return (connection.provider_scope, "account", connection.authenticated_account_id)

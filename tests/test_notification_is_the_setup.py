@@ -290,6 +290,11 @@ $('rail-items'); const rail=$('request-rail'); rail.appendChild($('connect-panel
 const host=$('rail-items');
 Object.defineProperty(host,'textContent',{get(){return '';},set(v){this.replaceChildren();}});
 let railOpen=null, railCache=[], NATIVE=false, connectWasBlocking=null;
+// The module-level flags the sliced functions close over. `connectOtherOpen` joined
+// them on 2026-09-26: "Other ways to connect" is now CLOSED unless the user tapped
+// it, and the renderer derives the element's state from this rather than reading it
+// back off a node that survives every refresh.
+let connectOtherOpen=false;
 const CONNECT_REQUEST_ID="sys_connect_llm";
 const answered=[];
 const HostedModelConnect={setup:'empty',busy:false,request:null,primary:null,

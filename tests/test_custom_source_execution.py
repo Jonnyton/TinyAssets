@@ -14,7 +14,7 @@ import pytest
 from tests import test_custom_discovery_publication as publication
 from tests import test_interactive_http_agent as interactive
 from tests.test_selected_model_authority import _authorize
-from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.providers.discovery_snapshot import ModelDiscoveryUnavailable
@@ -161,11 +161,12 @@ def test_unknown_capacity_scope_tries_a_free_sibling_in_the_same_grant(running):
     )
 
 
-def test_unknown_capacity_scope_on_a_spending_source_stops_at_one_model(running):
-    """A source that can spend keeps the conservative account exclusion.
+def test_unknown_capacity_scope_on_a_spending_source_continues_within_its_ceilings(running):
+    """One rule for every account (founder, 2026-09-25): an unknown-scope window
+    narrows to the failed model on a metered source exactly as on a free one.
 
-    Being wrong about the scope costs a refused request on a free source and
-    real money on a metered one, so only the free source is narrowed.
+    Money stays bounded by the per-attempt ceilings, not by skipping the retry:
+    every sibling request still carries the source's own (non-zero) price cap.
     """
     running.source.document["contract"]["capacity"]["cases"][0]["scope"] = "unknown"
     running.agent.served.rig.api(descriptor=running.source.document)
@@ -179,9 +180,14 @@ def test_unknown_capacity_scope_on_a_spending_source_stops_at_one_model(running)
         agent_model_plan=replace(prepared.plan, source_policies=(metered,)),
     )
     running.response.failure_at = 1
-    with pytest.raises(AllProvidersExhaustedError):
-        interactive.run(running.agent)
-    assert len(running.agent.wires) == 1 and not running.agent.tools
+    interactive.run(running.agent)
+    assert len(running.agent.wires) > 1
+    # This rig's contract carries the ceiling in ``billing``; the router
+    # re-authorizes every sibling from the serving authority, so each attempt
+    # carries the same compiled ceiling and strict enforcement.
+    billed = [request["body"].get("billing") for _verb, request in running.agent.wires]
+    assert all(b and b.get("ceilings") and b["enforce"] == {"strict": True} for b in billed)
+    assert all(b == billed[0] for b in billed)
 
 
 def test_published_source_does_not_authorize_paid_model(running):

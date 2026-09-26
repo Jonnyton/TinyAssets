@@ -83,9 +83,19 @@ SPEC = {
 }
 
 
-def _descriptions(mcp):
-    return {tool.name: " ".join((tool.description or "").split())
-            for tool in asyncio.run(mcp.list_tools())}
+def _descriptions(mcp, *, with_chapters=False):
+    """The registered descriptions, optionally plus each handle's handbook chapters.
+
+    ``with_chapters`` is for the SERVED ENGINE surface only. Since 2026-09-26 the
+    long-form half of a served handle's guidance is reachable rather than resident
+    (`openspec/specs/served-agent-tool-guidance/spec.md`), so a test asking "is the
+    agent told this?" about that half has to read what the agent can reach. The
+    connector surface is unchanged and passes ``with_chapters=False``.
+    """
+    extra = engine.SERVED_TOOL_CHAPTERS if with_chapters else {}
+    return {tool.name: " ".join(
+        ((tool.description or "") + "".join(extra.get(tool.name, {}).values())).split()
+    ) for tool in asyncio.run(mcp.list_tools())}
 
 
 def check_recipe(descriptions):
@@ -115,7 +125,7 @@ def check_recipe(descriptions):
 
 @pytest.mark.parametrize("mcp", [engine.mcp, server.mcp], ids=["served_engine", "connector"])
 def test_registered_tool_descriptions_carry_the_attachment_recipe(mcp):
-    check_recipe(_descriptions(mcp))
+    check_recipe(_descriptions(mcp, with_chapters=mcp is engine.mcp))
 
 
 def serve(monkeypatch, base, *, actor, home):
