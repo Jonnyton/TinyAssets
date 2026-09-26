@@ -1885,7 +1885,16 @@ echo "$*" >> "$WATCHDOG_DOCKER_LOG"
 case "$1" in
   inspect)
     if [[ "$2" == "-f" ]]; then
-      echo "${WATCHDOG_CONTAINER_RUNNING:-true}"
+      case "$3" in
+        *State.StartedAt*)
+          # Default is far in the past: an OLD container, so the start-up grace
+          # does not apply unless a test asks for it.
+          echo "${WATCHDOG_CONTAINER_STARTED_AT:-2020-01-01T00:00:00.000000000Z}"
+          ;;
+        *)
+          echo "${WATCHDOG_CONTAINER_RUNNING:-true}"
+          ;;
+      esac
     fi
     exit 0
     ;;
@@ -1932,9 +1941,9 @@ exit 0
     return fake_bin
 
 
-def _run_watchdog(tmp_path: Path, trigger: str) -> tuple[
-    subprocess.CompletedProcess[str], list[str], list[str], Path, str
-]:
+def _run_watchdog(
+    tmp_path: Path, trigger: str, *, started_at: str | None = None
+) -> tuple[subprocess.CompletedProcess[str], list[str], list[str], Path, str]:
     """Run the real watchdog against mocked externals; return its command logs.
 
     State paths are under pytest's temp root. The unchanged script's service
@@ -1970,6 +1979,9 @@ def _run_watchdog(tmp_path: Path, trigger: str) -> tuple[
         "WATCHDOG_CONTAINER_RUNNING": (
             "false" if trigger == "stopped-container" else "true"
         ),
+        # Empty falls through to the stub's own far-past default (an old
+        # container), so the start-up grace stays off unless a test asks.
+        "WATCHDOG_CONTAINER_STARTED_AT": started_at or "",
         "WATCHDOG_VOLUME_MOUNT": _watchdog_arg(volume),
         "TINYASSETS_COMPOSE_FILE": compose_arg,
         "TINYASSETS_DAEMON_WATCHDOG_LOCK": _watchdog_arg(tmp_path / "wd.lock"),
@@ -2029,6 +2041,10 @@ def _run_watchdog(tmp_path: Path, trigger: str) -> tuple[
                 "inspect -f {{.State.Running}} tinyassets-daemon",
                 "compose -f {compose} ps",
                 "volume inspect tinyassets-data --format {{ .Mountpoint }}",
+                # A stale heartbeat asks how old the container is before acting
+                # (within_heartbeat_grace). This default container is old, so the
+                # answer does not spare it.
+                "inspect -f {{.State.StartedAt}} tinyassets-daemon",
             ],
         ),
     ],
@@ -2095,3 +2111,95 @@ def test_daemon_watchdog_restart_repertoire_is_same_service_only(
 
     # No invocation of the specifically shimmed relay tools.
     assert not relay_log.exists(), relay_log.read_text(encoding="utf-8")
+
+
+def _minutes_ago(minutes: float) -> str:
+    """Docker's RFC3339 `State.StartedAt` form, that many minutes in the past."""
+    started = time.gmtime(time.time() - minutes * 60)
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000000000Z", started)
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+def test_a_freshly_started_container_is_not_restarted_for_a_stale_heartbeat(tmp_path):
+    """The second daemon restart per merge.
+
+    Every deploy recreates the container, and the heartbeat lives on the DATA
+    VOLUME -- so the freshest file on disk is the one the PREVIOUS container
+    left behind. Seconds after a recreate that file is already stale, and the
+    watchdog read it as proof the new container was dead. Measured 2026-09-25:
+    deploy at ~23:02, watchdog restart at ~23:04, each killing an in-flight
+    user turn.
+
+    A container cannot refresh a heartbeat it has not had time to write, so
+    while it is younger than the threshold it is judged against, the heartbeat
+    says nothing about it.
+    """
+    result, systemctl_lines, docker_lines, _relay, _compose = _run_watchdog(
+        tmp_path, "stale-heartbeat", started_at=_minutes_ago(0.2)
+    )
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "restarting daemon container" not in result.stdout
+    assert "too young to have refreshed the heartbeat" in result.stdout
+    # Nothing was restarted, by either lever.
+    assert systemctl_lines == ["is-active --quiet tinyassets-daemon.service"]
+    assert [
+        line
+        for line in docker_lines
+        if line.split()[0] not in _WATCHDOG_READ_ONLY_DOCKER_VERBS
+    ] == []
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+def test_an_old_container_with_a_stale_heartbeat_is_still_restarted(tmp_path):
+    """The grace must not disarm auto-recovery. A genuine hang shows up as a
+    stale heartbeat in a container that has been up long enough to have written
+    one, and that still restarts. The harness default container is old, so this
+    states the age explicitly rather than leaning on it."""
+    result, systemctl_lines, docker_lines, _relay, _compose = _run_watchdog(
+        tmp_path, "stale-heartbeat", started_at=_minutes_ago(600)
+    )
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "restarting daemon container: heartbeat stale" in result.stdout
+    assert "too young" not in result.stdout
+    assert systemctl_lines == [
+        "is-active --quiet tinyassets-daemon.service",
+        "reset-failed tinyassets-daemon.service",
+        "restart tinyassets-daemon.service",
+    ]
+    assert "restart tinyassets-daemon" in docker_lines
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+def test_an_unreadable_container_start_time_does_not_grant_grace(tmp_path):
+    """Fail toward recovering. If `State.StartedAt` cannot be read or parsed the
+    watchdog cannot prove the container is young, and a watchdog that cannot
+    tell must still restart -- otherwise an unparseable answer would silence
+    auto-recovery for every hang."""
+    result, systemctl_lines, _docker, _relay, _compose = _run_watchdog(
+        tmp_path, "stale-heartbeat", started_at="not-a-timestamp"
+    )
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "restarting daemon container: heartbeat stale" in result.stdout
+    assert "too young" not in result.stdout
+    assert "restart tinyassets-daemon.service" in systemctl_lines
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+def test_a_freshly_started_container_still_restarts_when_it_is_not_running(tmp_path):
+    """The grace covers the heartbeat signal only. A container that is young AND
+    not running is still broken, and the not-running check runs before the
+    heartbeat is ever read."""
+    result, systemctl_lines, _docker, _relay, _compose = _run_watchdog(
+        tmp_path, "stopped-container", started_at=_minutes_ago(0.2)
+    )
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert (
+        "restarting daemon container: tinyassets-daemon container is not running"
+        in result.stdout
+    )
+    assert "too young" not in result.stdout
+    assert "restart tinyassets-daemon.service" in systemctl_lines

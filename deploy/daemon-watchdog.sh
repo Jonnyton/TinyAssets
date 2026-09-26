@@ -12,6 +12,9 @@ DATA_VOLUME="${TINYASSETS_DATA_VOLUME:-tinyassets-data}"
 # "<universe>/<file>" path under the data volume to pin a specific one.
 HEARTBEAT_RELATIVE="${TINYASSETS_HEARTBEAT_RELATIVE:-}"
 HEARTBEAT_MAX_AGE_SECONDS="${TINYASSETS_HEARTBEAT_MAX_AGE_SECONDS:-900}"
+# Headroom on top of the staleness threshold before a young container's
+# heartbeat is allowed to condemn it (see within_heartbeat_grace).
+HEARTBEAT_GRACE_MARGIN_SECONDS="${TINYASSETS_HEARTBEAT_GRACE_MARGIN_SECONDS:-120}"
 LOCK_FILE="${TINYASSETS_DAEMON_WATCHDOG_LOCK:-/run/tinyassets-daemon-watchdog.lock}"
 LOG_TAG="daemon-watchdog"
 
@@ -79,6 +82,42 @@ heartbeat_path() {
     printf '%s\n' "$freshest"
 }
 
+container_age_seconds() {
+    # Seconds since the container last started, or non-zero if unknowable.
+    local name="$1" started epoch
+    started="$(docker inspect -f '{{.State.StartedAt}}' "$name" 2>/dev/null || true)"
+    [[ -n "$started" ]] || return 1
+    epoch="$(date -u -d "$started" +%s 2>/dev/null || true)"
+    [[ -n "$epoch" ]] || return 1
+    printf '%s\n' "$(( $(date -u +%s) - epoch ))"
+}
+
+within_heartbeat_grace() {
+    # A container recreated moments ago has not written a heartbeat yet, and the
+    # heartbeat lives on the DATA VOLUME -- so the freshest file on disk is the
+    # one the PREVIOUS container left behind. Every deploy recreates the daemon,
+    # so without this the watchdog read that inherited file as proof the new
+    # container was dead and restarted it, killing an in-flight user turn a
+    # second time (measured 2026-09-25: deploy at ~23:02, watchdog restart at
+    # ~23:04). The container cannot refresh a heartbeat it has not had time to
+    # write.
+    #
+    # Only the heartbeat signal is graced. An inactive unit or a
+    # not-running container still restarts immediately, and both are checked
+    # before this. A real hang in an OLD container is still caught, because the
+    # window closes once the container is older than the threshold it is judged
+    # against.
+    #
+    # Unknowable age does NOT grant grace: a watchdog that cannot tell must
+    # still recover.
+    local name="$1" age grace
+    age="$(container_age_seconds "$name")" || return 1
+    grace=$(( HEARTBEAT_MAX_AGE_SECONDS + HEARTBEAT_GRACE_MARGIN_SECONDS ))
+    (( age < grace )) || return 1
+    log "heartbeat grace: ${name} started ${age}s ago (< ${grace}s), too young to have refreshed the heartbeat"
+    return 0
+}
+
 heartbeat_stale() {
     local path="$1"
     [[ -f "$path" ]] || return 1
@@ -123,6 +162,10 @@ main() {
     local hb_path=""
     if hb_path="$(heartbeat_path)"; then
         if heartbeat_stale "$hb_path"; then
+            if within_heartbeat_grace tinyassets-daemon; then
+                log "healthy: unit active, tinyassets-daemon running, heartbeat within start-up grace"
+                exit 0
+            fi
             restart_daemon "heartbeat stale"
             exit 0
         fi
