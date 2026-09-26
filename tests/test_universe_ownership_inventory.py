@@ -67,7 +67,10 @@ class TestTheGateAnswersTheDeployQuestion:
         _owned(base, "u-second", owner="workos|second")
 
         assert main(["--data-dir", str(base)]) == 0
-        assert "no at-risk directories" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "no directory carrying a universe signal is unowned" in out
+        # Even a wholly clean root must not be told it is safe to deploy.
+        assert "never that the deploy is safe" in out
 
     def test_an_unowned_universe_looking_directory_blocks(self, base, capsys):
         _owned(base, "u-mine")
@@ -113,14 +116,27 @@ class TestTheGateAnswersTheDeployQuestion:
         assert main(["--data-dir", str(base / "nope")]) == 2
 
     def test_an_unreadable_store_is_unknown_not_clear(self, base, monkeypatch, capsys):
+        """Driven through the REAL read path. Patching a `daemon_server` helper
+        proves nothing now: the inventory deliberately calls none of them, so a
+        test that mocked one would pass while the store was never consulted."""
         _owned(base, "u-mine")
 
-        import tinyassets.daemon_server as ds
+        import scripts.universe_ownership_inventory as inv
 
-        monkeypatch.setattr(
-            ds, "owned_universe_id",
-            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("locked")),
-        )
+        def _boom(*_a, **_k):
+            raise inv.OwnershipStoreUnreadable("database is locked")
+
+        monkeypatch.setattr(inv, "_read_ownership", _boom)
+
+        assert main(["--data-dir", str(base)]) == 2
+        assert "could not read the ownership store" in capsys.readouterr().err
+
+    def test_a_corrupt_store_is_unknown_not_clear(self, base, capsys):
+        """No mock at all: a real unreadable file on disk."""
+        from tinyassets.storage import db_path
+
+        _owned(base, "u-mine")
+        db_path(base).write_bytes(b"this is not a sqlite database" * 20)
 
         assert main(["--data-dir", str(base)]) == 2
 
@@ -185,17 +201,102 @@ class TestWhatTheReportSays:
         running this against a live root before a deploy."""
         _owned(base, "u-mine")
         (base / ARCHIVE).mkdir()
-        before = {
-            p.relative_to(base).as_posix(): p.stat().st_mtime_ns
-            for p in sorted(base.rglob("*"))
-            if p.is_file()
-        }
+        def snapshot() -> dict[str, int]:
+            # The `-wal` / `-shm` sidecars are EXCLUDED, and that exclusion is
+            # the honest limit of this assertion: SQLite materializes the shared
+            # -shm segment to read a WAL database at all, so any reader creates
+            # them and no read-only mode avoids it (`immutable=1` would, and is
+            # unsafe against a live daemon writing concurrently). They carry no
+            # data of their own. Everything else must be untouched.
+            return {
+                p.relative_to(base).as_posix(): p.stat().st_mtime_ns
+                for p in sorted(base.rglob("*"))
+                if p.is_file() and not p.name.endswith(("-wal", "-shm"))
+            }
 
+        before = snapshot()
         inventory(base)
+        assert snapshot() == before
 
-        after = {
-            p.relative_to(base).as_posix(): p.stat().st_mtime_ns
-            for p in sorted(base.rglob("*"))
-            if p.is_file()
-        }
-        assert after == before
+    def test_it_does_not_CREATE_the_store_on_a_root_that_has_none(self, base):
+        """The case the mtime snapshot above cannot see, because it snapshots a
+        root where `_owned` has already initialized the store -- which also
+        populates the process-local init cache, hiding the write (Codex review
+        round 2, P1).
+
+        `storage._connect` creates the database file and sets `journal_mode=WAL`,
+        and `owned_universe_id` -> `initialize_author_server` runs MIGRATIONS. A
+        command whose whole purpose is to be safe to point at a live production
+        root must do neither.
+        """
+        from tinyassets.storage import db_path
+
+        (base / "u-unknown").mkdir()
+        assert not db_path(base).is_file()  # premise: nothing has run here
+
+        report = inventory(base)
+
+        assert not db_path(base).is_file(), (
+            "the inventory created the ownership store it was asked to read"
+        )
+        assert sorted(p.name for p in base.iterdir()) == ["u-unknown"]
+        assert report["owned"] == 0
+
+    def test_it_does_not_migrate_an_existing_store(self, base, monkeypatch):
+        """`initialize_author_server` is never reached, so a store that predates
+        a column is not silently migrated by an inspection."""
+        _owned(base, "u-mine")
+
+        import tinyassets.daemon_server as ds
+
+        def _boom(*_a, **_k):
+            raise AssertionError("the inventory must not initialize the store")
+
+        monkeypatch.setattr(ds, "initialize_author_server", _boom)
+        monkeypatch.setattr(ds, "owned_universe_id", _boom)
+        monkeypatch.setattr(ds, "owned_universe_ids", _boom)
+        monkeypatch.setattr(ds, "list_universe_acl", _boom)
+
+        report = inventory(base)
+        assert report["owned"] == 1
+        assert _row(report, "u-mine")["acl_grants"] == ["workos|founder:admin"]
+
+    def test_an_unowned_unrecognised_directory_is_not_called_safe(self, base, capsys):
+        """The absence of a universe signal is no evidence. A legacy universe may
+        hold a shape nobody thought to list, so an unrecognised directory is
+        reported as needing a human look -- never as disposable, and never as
+        making the deploy safe."""
+        _owned(base, "u-mine")
+        (base / "who-knows").mkdir()
+        (base / "who-knows" / "mystery.bin").write_bytes(b"x")
+
+        assert main(["--data-dir", str(base)]) == 0
+        out = capsys.readouterr().out
+        assert "UNOWNED AND UNRECOGNISED" in out
+        assert "who-knows" in out
+        assert "NOT evidence they are disposable" in out
+        assert "never that the deploy is safe" in out
+        assert "expected" not in out.lower()
+
+    @pytest.mark.parametrize(
+        "marker", ["notes.json", "status.json", "identity.md", "activity.log"],
+    )
+    def test_a_legacy_universe_without_soul_md_still_blocks(self, base, marker):
+        """A universe predating `soul.md` still holds its notes, status or log.
+        Requiring the modern seed marker is how a real universe goes dark."""
+        _owned(base, "u-mine")
+        legacy = base / "u-legacy"
+        legacy.mkdir()
+        (legacy / marker).write_text("{}", encoding="utf-8")
+
+        report = inventory(base)
+        assert report["at_risk"] == ["u-legacy"], report
+
+    @pytest.mark.parametrize("subtree", ["wiki", "output", "canon"])
+    def test_a_universe_known_only_by_its_subtree_still_blocks(self, base, subtree):
+        _owned(base, "u-mine")
+        legacy = base / "u-legacy"
+        (legacy / subtree).mkdir(parents=True)
+
+        report = inventory(base)
+        assert report["at_risk"] == ["u-legacy"], report
