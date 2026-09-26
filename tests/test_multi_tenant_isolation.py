@@ -179,9 +179,20 @@ def test_concurrent_founders_each_get_own_universe(shared_base):
 
         # 5. Registry row landed too (get_universe_rules raises KeyError if the
         # concurrent ensure_universe_registered / rules write was lost to a
-        # race). Public-read stays default-true; ownership is the ACL, not this.
+        # race). Ownership is the ACL, not this bit.
+        #
+        # NARROWED 2026-09-26: this asserted `public_read is True`, reasoning
+        # "public-read stays default-true". That was true of the old creation
+        # default and is not what this test is about — it needs a landed rules
+        # row, and used the bit as the proxy for one. A universe is now born
+        # private (founder 2026-09-26), so the legacy ceiling is False at birth
+        # and the row is asserted directly instead.
         rules = get_universe_rules(shared_base, universe_id=uid)
-        assert rules["public_read"] is True, (sub, uid, rules)
+        assert rules["universe_id"] == uid, (sub, uid, rules)
+        assert rules["metadata"]["visibility_level"] == "private", (sub, uid, rules)
+        # The legacy bit stays CONSISTENT with the declared level, which is what
+        # makes it a correct ceiling for `visibility_permits`.
+        assert rules["public_read"] is False, (sub, uid, rules)
 
 
 def test_concurrent_status_reads_resolve_each_founder_to_own_home(shared_base):
@@ -215,6 +226,12 @@ def test_cross_founder_write_denied_and_private_read_isolated(shared_base):
     Founder B must be DENIED a write to founder A's universe (writes always
     need an owner grant, even on a public universe), and DENIED a read once A
     makes it private. Owner A retains both.
+
+    NARROWED 2026-09-26: the "public universe: B may read" step used to hold at
+    birth, because creation defaulted to public. A universe is now born private
+    (founder 2026-09-26), so A publishes it FIRST through the real owner verb —
+    which keeps every original assertion, including the public->private
+    transition, and adds the one this change is about (B is denied from birth).
     """
     from tinyassets.api import permissions
     from tinyassets.daemon_server import update_universe_rules
@@ -227,11 +244,25 @@ def test_cross_founder_write_denied_and_private_read_isolated(shared_base):
     # Founder B (authenticated, owns their own universe) — no grant on A's.
     auth_middleware(f"tok-{b_sub}")
     assert permissions.current_actor_id() == b_sub
+    # Born private: B is denied read AND write before A chooses anything.
+    assert permissions.universe_access_allows(uid_a, write=True) is False
+    assert permissions.universe_access_allows(uid_a, write=False) is False
+
+    # Owner A publishes, through the owner-only exposure verb.
+    auth_middleware(f"tok-{a_sub}")
+    from tinyassets.api.universe import _universe_impl
+
+    published = json.loads(
+        _universe_impl(action="set_visibility", universe_id=uid_a, visibility="public")
+    )
+    assert published.get("visibility") == "public", published
+
     # Public universe: B may READ but must NOT WRITE (write needs owner grant).
+    auth_middleware(f"tok-{b_sub}")
     assert permissions.universe_access_allows(uid_a, write=True) is False
     assert permissions.universe_access_allows(uid_a, write=False) is True
 
-    # Owner A makes their universe private.
+    # Owner A makes their universe private again.
     auth_middleware(f"tok-{a_sub}")
     update_universe_rules(shared_base, universe_id=uid_a, updates={"public_read": False})
 

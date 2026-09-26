@@ -880,7 +880,7 @@ def write_graph(
     name: str = "",
     description: str = "",
     tags: str = "",
-    visibility: str = "public",
+    visibility: str = "",
     text: str = "",
     graph_id: str = "",
     request_type: str = "general",
@@ -942,7 +942,14 @@ def write_graph(
             The founder's home universe is auto-created on first contact; use
             target=universe to create an additional universe (or the home when
             a create-scoped sign-in declined auto-birth).
-        operation: With target=goal, set_canonical. With target=agent,
+        operation: With target=universe, set_visibility changes who else may see
+            that universe, taking the level in `visibility` (private, unlisted,
+            metadata_only, public) and `graph_id` for the universe. Everything in
+            a universe is private until its owner uses this: no other user can
+            discover, inspect or read it, while the owner and anyone they granted
+            access keep full access either way. Refused without write authority
+            on that universe (owner-only).
+            With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update/bind_serving_provider/set_serving.
             With target=automation, create/list/get/pause/resume/delete — one
@@ -982,7 +989,10 @@ def write_graph(
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
-        visibility: Shared-goal visibility, usually public.
+        visibility: Shared-goal visibility, usually public. With
+            target=universe operation=set_visibility, the universe level to
+            declare instead (private, unlisted, metadata_only, public). Empty
+            means nobody stated one, which is never read as a request to publish.
         text: Request text to queue (or optional purpose with target=universe).
         graph_id: Optional target graph/universe identifier.
         goal_id: With target=goal operation=set_canonical, the Goal identifier.
@@ -1164,6 +1174,17 @@ def write_graph(
                 universe_id=graph_id,
                 branch_def_id=branch_id,
             )
+        # EXPOSURE, the other half of private-by-default (founder 2026-09-26).
+        # A universe is born `private`, and this is the owner's only way to change
+        # that. Before it existed, `set_universe_visibility` had no production
+        # caller outside the creation path and the boot backfill, so an owner
+        # could not publish their own universe at all.
+        if (operation or "").strip() == "set_visibility":
+            return _universe_impl(
+                action="set_visibility",
+                universe_id=graph_id,
+                visibility=visibility,
+            )
         # Opt-in birth on the canonical surface (2026-07-02): the founder's
         # explicit ask creates their universe. Routes through the ledgered
         # create (scope-gated costly; binds founder_home; seeds OKF bundle).
@@ -1242,7 +1263,12 @@ def write_graph(
             name
             or description
             or tags
-            or visibility != "public"
+            # `visibility` used to default to "public" on this signature, so the
+            # stray-parameter check had to spell that value out. It now defaults
+            # to empty precisely so `operation=set_visibility` can tell "the
+            # owner asked for public" from "nobody said" — an ambient "public"
+            # default on an exposure verb would publish a universe by accident.
+            or visibility not in ("", "public")
             or changes_json
         ):
             return json.dumps({"error": "request_validation_error"})
@@ -2961,6 +2987,7 @@ def universe(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
+    visibility: str = "",
 ) -> str:
     """Inspect and steer a workflow's universe.
 
@@ -2976,7 +3003,7 @@ def universe(
         action: One of — reads: list, inspect, read_output, query_world,
             get_activity, get_recent_events, get_ledger, read_premise,
             list_canon, read_canon, list_sources, read_source; writes: submit_request,
-            give_direction, set_premise, add_canon, add_canon_from_path,
+            give_direction, set_premise, set_visibility, add_canon, add_canon_from_path,
             create_universe, switch_universe; learning: soul.edit (teach the
             universe — inputs_json {changes: {governed file: new body},
             source, context, name?}; persists per its soul.edit.md policy);
@@ -3070,6 +3097,7 @@ def universe(
         enabled=enabled,
         tag=tag,
         anchor_json=anchor_json,
+        visibility=visibility,
     )
 
 

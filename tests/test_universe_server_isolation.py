@@ -101,7 +101,7 @@ def _make_universe(base: Path, uid: str) -> Path:
     from tinyassets.api.visibility import set_universe_visibility
 
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
-    set_universe_visibility(uid, "public")
+    set_universe_visibility(uid, "public", source="owner")
     return udir
 
 
@@ -118,7 +118,7 @@ def _make_private_universe(base: Path, uid: str) -> Path:
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
     # `private` sets public_read=False AND declares the explicit level, so the
     # legacy gate and the visibility layer agree (no inconsistent row).
-    set_universe_visibility(uid, "private")
+    set_universe_visibility(uid, "private", source="owner")
     return udir
 
 

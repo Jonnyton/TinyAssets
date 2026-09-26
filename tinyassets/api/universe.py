@@ -220,6 +220,27 @@ def _extract_set_premise(
     )
 
 
+def _extract_set_visibility(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """Ledger row for an owner's exposure decision.
+
+    Exposing a universe to other users is an authority change, so it is ledgered
+    like every other universe write — the ledger is how "the owner chose this"
+    stays auditable after the fact, independent of the provenance key.
+    """
+    requested = str(kwargs.get("visibility", "") or "")
+    return (
+        "visibility",
+        f"visibility -> {result.get('visibility', '') or requested}",
+        {
+            "visibility": result.get("visibility", ""),
+            "previous_visibility": result.get("previous_visibility", ""),
+            "requested": requested,
+        },
+    )
+
+
 def _extract_add_canon(
     kwargs: dict[str, Any], result: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
@@ -689,6 +710,7 @@ WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
     "set_premise": (_extract_set_premise, None),
+    "set_visibility": (_extract_set_visibility, None),
     "soul.edit": (_extract_soul_edit, None),
     "declare_universe_loop": (_extract_declare_universe_loop, None),
     "set_engine": (_extract_set_engine, None),
@@ -4622,6 +4644,67 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": f"Failed to write premise: {exc}"})
 
 
+def _action_set_universe_visibility(
+    universe_id: str = "", visibility: str = "", **_kwargs: Any
+) -> str:
+    """Change a universe's declared visibility — the owner's exposure decision.
+
+    A universe is born `private` (founder, 2026-09-26: nothing in a user's
+    universe is visible, accessible or interactable to another user unless its
+    owner exposed it). This is the only way it stops being private, and it is the
+    reason private-by-default is a boundary rather than a wall: before this
+    action existed, `set_universe_visibility` had no production caller outside
+    the creation path and the boot backfill, so an owner could not publish at
+    all.
+
+    Authority: registered in ``WRITE_ACTIONS``, so ``_universe_acl_error``
+    requires write access on this universe before the handler runs and the
+    dispatcher ledgers the decision. Nothing here re-implements that check —
+    a second definition of the same gate is how the two drift apart.
+    """
+    from tinyassets.api import visibility as _visibility
+
+    uid = _request_universe(universe_id)
+    if not _universe_dir(uid).is_dir():
+        return json.dumps({"error": f"Universe '{uid}' not found."})
+
+    requested = (visibility or "").strip()
+    if not requested:
+        return json.dumps({
+            "error": (
+                "visibility is required; expected one of "
+                f"{sorted(_visibility.LEVELS)}."
+            ),
+        })
+    previous = _visibility.declared_level_name(uid)
+    try:
+        resolved = _visibility.set_universe_visibility(
+            uid, requested, source=_visibility.LEVEL_SOURCE_OWNER
+        )
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({
+        "universe_id": uid,
+        "status": "updated",
+        "visibility": resolved.name,
+        "previous_visibility": previous,
+        "chosen_by": "owner",
+        "capabilities": {
+            cap: resolved.permits(cap) for cap in _visibility.CAPABILITIES
+        },
+        "note": (
+            f"'{uid}' is now {resolved.name}. "
+            + (
+                "Other users can see it to the extent that level allows; you "
+                "and anyone you granted access keep full access either way."
+                if resolved is not _visibility.PRIVATE
+                else "No other user can discover, inspect or read it. People "
+                "you granted access to keep full access."
+            )
+        ),
+    })
+
+
 _CANON_SAME_FILENAME_BEHAVIOR = (
     "A later ingest of the same canon-source filename replaces the stored "
     "source bytes and manifest entry when the content hash changes; identical "
@@ -5536,12 +5619,22 @@ def _action_create_universe(
     base = _base_path()
     # Creation-time visibility declaration: a new universe must be born with an
     # explicit level so undeclared rows stop being produced (undeclared fails
-    # closed). The creator may choose a level; default is the host-knob
-    # `DEFAULT_CREATE_VISIBILITY`. Validate up front so a bad value fails the
-    # create loudly rather than silently leaving the universe undeclared.
+    # closed). The creator may choose a level; otherwise the universe is born
+    # `private` (`DEFAULT_CREATE_VISIBILITY`, founder 2026-09-26). Validate up
+    # front so a bad value fails the create loudly rather than silently leaving
+    # the universe undeclared.
+    #
+    # The provenance matters as much as the level: a level this caller asked for
+    # is the OWNER's choice, the fallback is the platform's. The migration that
+    # closes the defaulted-public records reads exactly that distinction, so a
+    # universe born private-by-default must not claim its owner chose privacy.
     from tinyassets.api import visibility as _visibility
 
-    create_level = (visibility or "").strip() or _visibility.DEFAULT_CREATE_VISIBILITY
+    chosen_level = (visibility or "").strip()
+    create_level = chosen_level or _visibility.DEFAULT_CREATE_VISIBILITY
+    create_level_source = (
+        _visibility.LEVEL_SOURCE_OWNER if chosen_level else "default"
+    )
     if _visibility.parse_level(create_level) is None:
         return json.dumps({
             "error": (
@@ -5636,7 +5729,9 @@ def _action_create_universe(
         # through here), so no universe is ever produced undeclared. This is on
         # the critical path: a failure rolls the partial create back via the
         # outer except, keeping create atomic.
-        _visibility.set_universe_visibility(uid, create_level)
+        _visibility.set_universe_visibility(
+            uid, create_level, source=create_level_source
+        )
         result["visibility"] = create_level
 
         founder = permissions.current_actor_id()
@@ -6482,6 +6577,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "give_direction": _action_give_direction,
     "read_premise": _action_read_premise,
     "set_premise": _action_set_premise,
+    "set_visibility": _action_set_universe_visibility,
     "soul.edit": _action_soul_edit,
     "set_engine": _action_set_engine,
     "offer_engine": _action_offer_engine,
@@ -6587,6 +6683,7 @@ def _universe_impl(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
+    visibility: str = "",
     *,
     allow_named_universe_id: bool = False,
 ) -> str:
@@ -6662,6 +6759,7 @@ def _universe_impl(
         "tier": tier,
         "enabled": enabled,
         "tag": tag,
+        "visibility": visibility,
         "anchor_json": anchor_json,
     }
 

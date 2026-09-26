@@ -1,0 +1,561 @@
+"""Private by default: nothing in a universe reaches another user unmeant.
+
+Founder, 2026-09-26: "nodes in users universes should be private unless they make
+them other user accessible or visible or interactable in some way."
+
+Every test here drives a REAL caller — `_action_create_universe`,
+`_action_list_universes`, `_action_inspect_universe`, `get_status`, `wiki`, the
+`set_visibility` action and `write_graph` — not `visibility_permits` directly.
+The layered resolver was already strict before this change; what was wrong was
+what the two DECLARING paths wrote, and only an end-to-end caller shows that.
+
+This module is in `conftest._STRICT_VISIBILITY_MODULES`, so the repo-wide
+`_emulate_deployed_visibility_backfill` double is off here. It would not change
+these results — creation writes an EXPLICIT declaration and the double defers to
+the real resolver on those — but a test whose subject is the visibility boundary
+must not be reading a stand-in.
+
+**The mutation check** (openspec/changes/private-by-default-universes):
+`TestAnotherUserIsRefused` goes red if `DEFAULT_CREATE_VISIBILITY` is reverted to
+`"public"`. That is the assertion the change exists to make, so it is named and
+kept narrow.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+import tinyassets.api.status as status_mod
+import tinyassets.api.universe as us
+import tinyassets.api.visibility as vis
+import tinyassets.api.wiki as wiki_mod
+from tinyassets.api.wiki import _ensure_wiki_scaffold
+from tinyassets.auth.middleware import auth_middleware, clear_identity, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+
+OWNER = "user_01OWNER"
+STRANGER = "user_01STRANGER"
+
+
+class _StaticAuthProvider(AuthProvider):
+    def __init__(self, identity: Identity | None) -> None:
+        self.identity = identity
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self.identity if token == "ok" else None
+
+    def is_auth_required(self) -> bool:
+        return True
+
+    def register_client(self, metadata: dict) -> dict:
+        return {"client_id": "test-client", **metadata}
+
+    def create_authorization(self, *a, **k) -> str:
+        return "test-code"
+
+    def exchange_code(self, *a, **k) -> dict | None:
+        return None
+
+
+@pytest.fixture
+def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    root = tmp_path / "output"
+    root.mkdir()
+    wiki_root = tmp_path / "wiki"
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
+    monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+    _ensure_wiki_scaffold(wiki_root)
+    return root
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth():
+    set_provider(DevAuthProvider())
+    auth_middleware("dev")
+    yield
+    set_provider(DevAuthProvider())
+    auth_middleware("dev")
+
+
+def _authenticate(user_id: str) -> None:
+    """A real signed-in person, with the ordinary universe + wiki scopes.
+
+    Deliberately NOT anonymous: an anonymous refusal would prove only that the
+    transport auth gate fired. The claim under test is that a *legitimate other
+    user* of the platform is refused.
+    """
+    identity = Identity(
+        user_id=user_id,
+        username=user_id,
+        capabilities=[
+            "tinyassets.universe.read",
+            "tinyassets.universe.write",
+            "tinyassets.universe.admin",
+            "tinyassets.wiki.read",
+        ],
+    )
+    set_provider(_StaticAuthProvider(identity))
+    auth_middleware("ok")
+
+
+def _anonymous() -> None:
+    clear_identity()
+
+
+def _born(uid: str, *, owner: str = OWNER, visibility: str = "") -> dict:
+    """Create a universe through the real creation path, as ``owner``."""
+    _authenticate(owner)
+    out = json.loads(
+        us._action_create_universe(universe_id=uid, text="a purpose", visibility=visibility)
+    )
+    assert out.get("status") == "created", out
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# 1. Birth
+# --------------------------------------------------------------------------- #
+class TestBirth:
+    def test_a_universe_is_born_private(self, base):
+        out = _born("u-new")
+        assert out["visibility"] == "private"
+        assert vis.universe_visibility("u-new") is vis.PRIVATE
+
+    def test_birth_records_the_level_as_defaulted_not_chosen(self, base):
+        _born("u-new")
+        assert vis.declared_level_source("u-new") == "default"
+        assert not vis.level_was_chosen_by_owner("u-new")
+
+    def test_a_creator_may_still_state_a_level(self, base):
+        out = _born("u-open", visibility="public")
+        assert out["visibility"] == "public"
+        assert vis.level_was_chosen_by_owner("u-open")
+
+
+# --------------------------------------------------------------------------- #
+# 2. The owner keeps full access to their own private universe
+# --------------------------------------------------------------------------- #
+class TestTheOwnerIsUnaffected:
+    def test_the_owner_lists_their_own_private_universe(self, base):
+        _born("u-mine")
+        _authenticate(OWNER)
+        ids = {u["id"] for u in json.loads(us._action_list_universes())["universes"]}
+        assert "u-mine" in ids
+
+    def test_the_owner_inspects_their_own_private_universe(self, base):
+        _born("u-mine")
+        _authenticate(OWNER)
+        out = json.loads(us._action_inspect_universe(universe_id="u-mine"))
+        assert out.get("error") != "universe_access_denied", out
+        assert out["visibility"] == "private"
+
+    def test_the_owner_reads_their_own_private_universes_content(self, base):
+        _born("u-mine")
+        _authenticate(OWNER)
+        out = json.loads(wiki_mod.wiki(action="read", universe_id="u-mine", page="index"))
+        assert out.get("error") != "universe_access_denied", out
+
+    def test_the_owner_writes_their_own_private_universe(self, base):
+        _born("u-mine")
+        _authenticate(OWNER)
+        out = json.loads(us._action_set_premise(universe_id="u-mine", text="a new premise"))
+        assert out.get("status") == "updated", out
+
+    def test_a_grant_holder_is_not_limited_by_privacy(self, base):
+        """Privacy binds readers holding NO grant. Someone the owner let in is
+        not "another user" for this purpose."""
+        from tinyassets.daemon_server import grant_universe_access
+
+        _born("u-mine")
+        grant_universe_access(
+            base, universe_id="u-mine", actor_id=STRANGER, permission="read",
+            granted_by=OWNER,
+        )
+        _authenticate(STRANGER)
+        out = json.loads(us._action_inspect_universe(universe_id="u-mine"))
+        assert out.get("error") != "universe_access_denied", out
+        ids = {u["id"] for u in json.loads(us._action_list_universes())["universes"]}
+        assert "u-mine" in ids
+
+
+# --------------------------------------------------------------------------- #
+# 3. THE MUTATION TARGET — another authenticated user is refused
+# --------------------------------------------------------------------------- #
+class TestAnotherUserIsRefused:
+    """Revert `DEFAULT_CREATE_VISIBILITY` to `"public"` and every test in this
+    class goes red. That is the mutation check for this change.
+
+    `STRANGER` is a fully authenticated platform user with read/write/admin
+    universe scopes and wiki read scope — they simply hold no grant on this
+    universe. An anonymous caller would prove far less.
+    """
+
+    def test_discovery_is_refused(self, base):
+        _born("u-mine")
+        _authenticate(STRANGER)
+        out = json.loads(us._action_list_universes())
+        assert "u-mine" not in {u["id"] for u in out["universes"]}
+        assert out["count"] == 0
+        # And the refusal does not leak that something was withheld.
+        assert "u-mine" not in json.dumps(out)
+
+    def test_metadata_is_refused(self, base):
+        _born("u-mine")
+        _authenticate(STRANGER)
+        out = json.loads(us._action_inspect_universe(universe_id="u-mine"))
+        assert out["error"] == "universe_access_denied", out
+
+    def test_status_metadata_is_refused(self, base):
+        _born("u-mine")
+        _authenticate(STRANGER)
+        out = json.loads(status_mod.get_status("u-mine"))
+        assert out["error"] == "universe_access_denied", out
+
+    def test_content_is_refused(self, base):
+        _born("u-mine")
+        _authenticate(STRANGER)
+        out = json.loads(wiki_mod.wiki(action="read", universe_id="u-mine", page="index"))
+        assert out["error"] == "universe_access_denied", out
+        assert out["surface"] == "wiki"
+
+    def test_an_unauthenticated_reader_is_refused_too(self, base):
+        _born("u-mine")
+        _anonymous()
+        out = json.loads(us._action_inspect_universe(universe_id="u-mine"))
+        assert out["error"] == "universe_access_denied", out
+
+
+# --------------------------------------------------------------------------- #
+# 4. Exposure is the owner's explicit choice
+# --------------------------------------------------------------------------- #
+class TestExposure:
+    def test_an_explicitly_public_universe_is_readable_by_another_user(self, base):
+        _born("u-open", visibility="public")
+        _authenticate(STRANGER)
+        assert json.loads(
+            us._action_inspect_universe(universe_id="u-open")
+        ).get("error") != "universe_access_denied"
+        assert "u-open" in {
+            u["id"] for u in json.loads(us._action_list_universes())["universes"]
+        }
+        assert json.loads(
+            wiki_mod.wiki(action="read", universe_id="u-open", page="index")
+        ).get("error") != "universe_access_denied"
+
+    def test_the_owner_can_publish_a_private_universe_after_birth(self, base):
+        """Before this change `set_universe_visibility` had no production caller
+        outside creation and the boot backfill, so private-by-default would have
+        been a wall rather than a boundary."""
+        _born("u-mine")
+        _authenticate(OWNER)
+        out = json.loads(
+            us._action_set_universe_visibility(universe_id="u-mine", visibility="public")
+        )
+        assert out["status"] == "updated", out
+        assert out["visibility"] == "public"
+        assert out["previous_visibility"] == "private"
+        assert vis.universe_visibility("u-mine") is vis.PUBLIC
+
+        _authenticate(STRANGER)
+        assert "u-mine" in {
+            u["id"] for u in json.loads(us._action_list_universes())["universes"]
+        }
+
+    def test_publishing_records_the_owner_as_the_source(self, base):
+        _born("u-mine")
+        _authenticate(OWNER)
+        us._action_set_universe_visibility(universe_id="u-mine", visibility="public")
+        assert vis.declared_level_source("u-mine") == "owner"
+        assert vis.level_was_chosen_by_owner("u-mine")
+
+    def test_the_owner_can_take_it_back(self, base):
+        _born("u-mine", visibility="public")
+        _authenticate(OWNER)
+        us._action_set_universe_visibility(universe_id="u-mine", visibility="private")
+        _authenticate(STRANGER)
+        out = json.loads(us._action_inspect_universe(universe_id="u-mine"))
+        assert out["error"] == "universe_access_denied"
+
+    def test_an_omitted_level_is_never_read_as_publish(self, base):
+        """`write_graph.visibility` used to default to `"public"` on the
+        signature. An exposure verb reading that default would publish a
+        universe nobody asked to publish."""
+        _born("u-mine")
+        _authenticate(OWNER)
+        out = json.loads(us._action_set_universe_visibility(universe_id="u-mine"))
+        assert "error" in out
+        assert "visibility is required" in out["error"]
+        assert vis.universe_visibility("u-mine") is vis.PRIVATE
+
+    def test_an_unrecognized_level_is_refused_naming_the_known_set(self, base):
+        _born("u-mine")
+        _authenticate(OWNER)
+        out = json.loads(
+            us._action_set_universe_visibility(universe_id="u-mine", visibility="wide-open")
+        )
+        assert "error" in out
+        assert "unlisted" in out["error"] and "metadata_only" in out["error"]
+        assert vis.universe_visibility("u-mine") is vis.PRIVATE
+
+    def test_another_user_cannot_expose_someone_elses_universe(self, base):
+        _born("u-mine")
+        _authenticate(STRANGER)
+        out = json.loads(
+            us._universe_impl(
+                action="set_visibility", universe_id="u-mine", visibility="public"
+            )
+        )
+        assert out["error"] == "universe_access_denied", out
+        assert vis.universe_visibility("u-mine") is vis.PRIVATE
+
+    def test_a_read_only_grant_holder_cannot_expose_it_either(self, base):
+        """Reading someone's universe is not authority to publish it."""
+        from tinyassets.daemon_server import grant_universe_access
+
+        _born("u-mine")
+        grant_universe_access(
+            base, universe_id="u-mine", actor_id=STRANGER, permission="read",
+            granted_by=OWNER,
+        )
+        _authenticate(STRANGER)
+        out = json.loads(
+            us._universe_impl(
+                action="set_visibility", universe_id="u-mine", visibility="public"
+            )
+        )
+        assert out["error"] == "universe_access_denied", out
+        assert vis.universe_visibility("u-mine") is vis.PRIVATE
+
+
+# --------------------------------------------------------------------------- #
+# 5. The canonical public surface carries the verb
+# --------------------------------------------------------------------------- #
+class TestWriteGraphSurface:
+    def test_write_graph_exposes_the_owners_universe(self, base):
+        from tinyassets.universe_server import write_graph
+
+        _born("u-mine")
+        _authenticate(OWNER)
+        out = json.loads(
+            write_graph(
+                target="universe",
+                operation="set_visibility",
+                graph_id="u-mine",
+                visibility="metadata_only",
+            )
+        )
+        assert out["status"] == "updated", out
+        assert out["visibility"] == "metadata_only"
+        assert vis.universe_visibility("u-mine") is vis.METADATA_ONLY
+
+    def test_write_graph_without_a_level_does_not_publish(self, base):
+        from tinyassets.universe_server import write_graph
+
+        _born("u-mine")
+        _authenticate(OWNER)
+        out = json.loads(
+            write_graph(
+                target="universe", operation="set_visibility", graph_id="u-mine"
+            )
+        )
+        assert "error" in out
+        assert vis.universe_visibility("u-mine") is vis.PRIVATE
+
+    def test_the_verb_is_advertised_to_the_agent(self, base):
+        """An owner-facing capability the served agent is never told about is a
+        capability nobody uses. The docstring is the contract every MCP client
+        reads."""
+        from tinyassets.universe_server import write_graph
+
+        doc = write_graph.__doc__ or ""
+        assert "set_visibility" in doc
+        assert "private until its owner" in doc
+
+    def test_write_graph_still_admits_a_request_with_no_visibility(self, base):
+        """`visibility`'s signature default changed from `"public"` to `""`; the
+        request target's stray-parameter guard has to keep accepting both."""
+        from tinyassets.universe_server import write_graph
+
+        _born("u-mine")
+        _authenticate(OWNER)
+        for passed in ({}, {"visibility": "public"}):
+            out = json.loads(
+                write_graph(
+                    target="request",
+                    graph_id="u-mine",
+                    text="please do a thing",
+                    idempotency_key=f"idem-{len(passed)}-0123456789abcdef",
+                    **passed,
+                )
+            )
+            assert out.get("error") != "request_validation_error", out
+
+
+# --------------------------------------------------------------------------- #
+# 6. The migration over existing records
+# --------------------------------------------------------------------------- #
+class TestMigration:
+    """`scripts/migrate_private_by_default.py` — the one-shot the host runs.
+
+    The records it exists for are the ones live production held on 2026-09-02:
+    maintenance buckets and IdP-migration backups declared `public` by the old
+    backfill, never by a person
+    (observed live 2026-09-02; see openspec/changes/private-by-default-universes/).
+    """
+
+    @staticmethod
+    def _declare(base: Path, uid: str, level: str, source: str) -> None:
+        from tinyassets.daemon_server import ensure_universe_registered
+
+        (base / uid).mkdir(parents=True, exist_ok=True)
+        ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
+        vis.set_universe_visibility(uid, level, source=source)
+
+    def _fixture_estate(self, base: Path) -> None:
+        # What production looked like: buckets and legacy universes declared by
+        # the old backfill, plus one universe an owner actually published.
+        self._declare(base, "_removed_universes_20260829", "public", "backfill")
+        self._declare(base, "scratch", "public", "backfill")
+        self._declare(base, "u-legacy", "public", "default")
+        self._declare(base, "u-listed", "metadata_only", "default")
+        self._declare(base, "u-chosen", "public", "owner")
+        self._declare(base, "u-already", "private", "backfill")
+
+    def test_dry_run_lists_what_it_would_flip_and_writes_nothing(self, base):
+        from scripts.migrate_private_by_default import plan, run
+
+        self._fixture_estate(base)
+        listed = plan(base)
+        assert {r["universe_id"] for r in listed["candidates"]} == {
+            "_removed_universes_20260829", "scratch", "u-legacy", "u-listed",
+        }
+        assert {r["universe_id"] for r in listed["kept"]} == {"u-chosen"}
+        assert {r["universe_id"] for r in listed["already_private"]} == {"u-already"}
+
+        summary = run(base)  # apply defaults to False
+        assert summary["applied"] is False
+        assert summary["flipped"] == []
+        assert vis.universe_visibility("u-legacy") is vis.PUBLIC
+
+    def test_apply_flips_every_defaulted_declaration(self, base):
+        from scripts.migrate_private_by_default import run
+
+        self._fixture_estate(base)
+        summary = run(base, apply=True)
+        assert summary["failed"] == []
+        assert {r["universe_id"] for r in summary["flipped"]} == {
+            "_removed_universes_20260829", "scratch", "u-legacy", "u-listed",
+        }
+        for uid in ("_removed_universes_20260829", "scratch", "u-legacy", "u-listed"):
+            assert vis.universe_visibility(uid) is vis.PRIVATE, uid
+            assert vis.declared_level_source(uid) == "migration", uid
+
+    def test_apply_does_not_touch_a_level_its_owner_chose(self, base):
+        from scripts.migrate_private_by_default import run
+
+        self._fixture_estate(base)
+        run(base, apply=True)
+        assert vis.universe_visibility("u-chosen") is vis.PUBLIC
+        assert vis.declared_level_source("u-chosen") == "owner"
+
+    def test_a_universe_with_no_provenance_counts_as_defaulted(self, base):
+        """Every row written before 2026-09-26 has no `visibility_level_source`.
+        The migration must flip those, or it does nothing on real production
+        data."""
+        from scripts.migrate_private_by_default import plan
+        from tinyassets.storage import _connect
+
+        self._declare(base, "u-pre", "public", "owner")
+        with _connect(base) as conn:  # strip the key the old writer never wrote
+            conn.execute(
+                "UPDATE universe_rules SET metadata_json = ? WHERE universe_id = ?",
+                (json.dumps({vis.LEVEL_METADATA_KEY: "public"}), "u-pre"),
+            )
+        assert vis.declared_level_source("u-pre") == ""
+        assert {r["universe_id"] for r in plan(base)["candidates"]} == {"u-pre"}
+
+    def test_it_is_idempotent(self, base):
+        from scripts.migrate_private_by_default import run
+
+        self._fixture_estate(base)
+        run(base, apply=True)
+        again = run(base, apply=True)
+        assert again["candidates"] == []
+        assert again["flipped"] == []
+
+    def test_it_deletes_nothing(self, base):
+        from scripts.migrate_private_by_default import run
+
+        self._fixture_estate(base)
+        before = sorted(p.name for p in base.iterdir())
+        marker = base / "_removed_universes_20260829" / "backup.json"
+        marker.write_text('{"kept": true}', encoding="utf-8")
+        run(base, apply=True)
+        assert sorted(p.name for p in base.iterdir()) == before
+        assert marker.read_text(encoding="utf-8") == '{"kept": true}'
+
+    def test_skip_leaves_a_record_alone(self, base):
+        from scripts.migrate_private_by_default import run
+
+        self._fixture_estate(base)
+        summary = run(base, apply=True, skip=frozenset({"scratch"}))
+        assert {r["universe_id"] for r in summary["skipped"]} == {"scratch"}
+        assert vis.universe_visibility("scratch") is vis.PUBLIC
+
+    def test_it_reaches_an_unowned_maintenance_bucket(self, base):
+        """The candidates that matter most hold no ownership row, so the plan
+        cannot be built from the owned-universe discovery helper."""
+        from scripts.migrate_private_by_default import plan
+        from tinyassets.daemon_server import list_universe_acl
+
+        bucket = "_backup_subject_migration_20260829T055340Z"
+        self._declare(base, bucket, "public", "backfill")
+        assert list_universe_acl(base, universe_id=bucket) == []
+        assert bucket in {r["universe_id"] for r in plan(base)["candidates"]}
+
+
+# --------------------------------------------------------------------------- #
+# 7. The provenance record itself
+# --------------------------------------------------------------------------- #
+class TestProvenance:
+    def test_source_is_required(self, base):
+        """No default, on purpose: a silent `owner` would make the next
+        migration skip a universe nobody chose to expose."""
+        from tinyassets.daemon_server import ensure_universe_registered
+
+        (base / "u").mkdir()
+        ensure_universe_registered(base, universe_id="u", universe_path=base / "u")
+        with pytest.raises(TypeError):
+            vis.set_universe_visibility("u", "public")  # type: ignore[call-arg]
+
+    def test_an_unknown_source_is_refused(self, base):
+        from tinyassets.daemon_server import ensure_universe_registered
+
+        (base / "u").mkdir()
+        ensure_universe_registered(base, universe_id="u", universe_path=base / "u")
+        with pytest.raises(ValueError, match="unknown visibility level source"):
+            vis.set_universe_visibility("u", "public", source="the-owner-probably")
+
+    def test_an_unrecognized_recorded_source_reads_as_not_chosen(self, base):
+        from tinyassets.daemon_server import ensure_universe_registered
+        from tinyassets.storage import _connect
+
+        (base / "u").mkdir()
+        ensure_universe_registered(base, universe_id="u", universe_path=base / "u")
+        vis.set_universe_visibility("u", "public", source="owner")
+        with _connect(base) as conn:  # forge a junk provenance
+            conn.execute(
+                "UPDATE universe_rules SET metadata_json = ? WHERE universe_id = ?",
+                (
+                    json.dumps({
+                        vis.LEVEL_METADATA_KEY: "public",
+                        vis.LEVEL_SOURCE_METADATA_KEY: {"not": "a string"},
+                    }),
+                    "u",
+                ),
+            )
+        assert vis.declared_level_source("u") == ""
+        assert not vis.level_was_chosen_by_owner("u")

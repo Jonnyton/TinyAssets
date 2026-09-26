@@ -54,7 +54,7 @@ def _declare_public(base, uid, udir):
     from tinyassets.daemon_server import ensure_universe_registered
 
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
-    set_universe_visibility(uid, "public")
+    set_universe_visibility(uid, "public", source="owner")
 
 
 @pytest.fixture

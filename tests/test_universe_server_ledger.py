@@ -183,6 +183,10 @@ def test_write_actions_table_is_exhaustive() -> None:
     """
     expected = {
         "submit_request", "give_direction", "set_premise",
+        # An owner's exposure decision (founder 2026-09-26): it changes who else
+        # may see the universe, so it is gated at WRITE strength by the same
+        # central ACL check, and ledgered like every other write.
+        "set_visibility",
         "add_canon", "add_canon_from_path",
         "control_daemon", "switch_universe", "create_universe",
         "queue_cancel",

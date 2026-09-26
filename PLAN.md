@@ -39,6 +39,8 @@ These five rules govern what features, primitives, and architecture get built â€
 
 Isolation makes this safe. The floor is cross-user only, and every provider process is OS-jailed to its owner's universe, so powerful primitives (shell and file work included) are safe inside a universe. The platform never trades a universe's power for a shared-host safety it can get from the jail.
 
+Private by default: nothing in a universe is visible, accessible or interactable to other users unless its owner exposes it (founder, 2026-09-26). The platform never declares an open level on an owner's behalf â€” creation and the declaring migration both write `private`, and exposure is a separate explicit owner action. As-built: `openspec/specs/universe-visibility/spec.md`.
+
 Depth: lead memory `project_minimal_primitives_principle.md`.
 
 ### 2. Community-build over platform-build

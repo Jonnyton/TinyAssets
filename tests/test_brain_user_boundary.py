@@ -44,7 +44,7 @@ def _seed(tmp_path: Path) -> Path:
     udir.mkdir()
     seed_okf_bundle(udir, purpose="To help my founder bring their projects to life.")
     ensure_universe_registered(tmp_path, universe_id=UID, universe_path=udir)
-    vis.set_universe_visibility(UID, "public")
+    vis.set_universe_visibility(UID, "public", source="owner")
     return udir
 
 

@@ -406,7 +406,7 @@ def test_runtime_response_payloads_claim_only_live_advertised_handles(
         universe_id=universe_id,
         universe_path=universe_dir,
     )
-    set_universe_visibility(universe_id, "public")
+    set_universe_visibility(universe_id, "public", source="owner")
 
     exhaustion = AllProvidersExhaustedError(
         "all providers exhausted",

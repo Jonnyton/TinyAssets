@@ -49,7 +49,7 @@ def _declare_public(base: Path, uid: str, udir: Path) -> None:
     from tinyassets.daemon_server import ensure_universe_registered
 
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
-    set_universe_visibility(uid, "public")
+    set_universe_visibility(uid, "public", source="owner")
 
 
 def test_empty_universe_returns_zero_with_source_none(

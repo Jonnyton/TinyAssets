@@ -28,6 +28,16 @@ rejected the first cut):
      ``backfill_universe_visibility`` (the migration path), not by a fail-open
      fallback or an env opt-in to strictness.
 
+  3. **Private by default (founder, 2026-09-26).** "nodes in users universes
+     should be private unless they make them other user accessible or visible or
+     interactable in some way". The resolver above was already strict; the leak
+     was the two places that *declare*. Neither of them may declare an open
+     level on an owner's behalf any more: creation without an explicit level
+     declares ``private``, and the backfill declares ``private`` rather than
+     deriving from the legacy ``public_read`` bit (whose own default is ``True``,
+     which is what produced the wrong answer). Exposure is a separate, explicit
+     owner action — ``write_graph target=universe operation=set_visibility``.
+
 A reader holding a read/write/admin grant on a universe is never limited by
 public projection visibility.
 """
@@ -80,12 +90,24 @@ CLOSED = PRIVATE
 LEVEL_METADATA_KEY = "visibility_level"
 
 #: Default level the creation path records when the creator does not choose one.
-#: A host-decision knob (design 1.3): `public` preserves the platform's
-#: "public-draft by default" stance (Hard Rule #12) and today's `public_read=1`
-#: default; a creator may pass an explicit level to override. The delta spec
-#: mandates only that creation write an *explicit* level (so undeclared rows stop
-#: being produced), not a specific value.
-DEFAULT_CREATE_VISIBILITY = "public"
+#: ``private`` per the founder, 2026-09-26: nothing in a user's universe is
+#: visible, accessible or interactable to another user unless its owner exposed
+#: it. This was ``public`` until then, and because the public
+#: ``write_graph target=universe`` create never forwarded a visibility, that
+#: default decided the level of every universe born through the connector
+#: REPRODUCED as a P1 concern on 2026-08-06, re-verified live 2026-08-28 and
+#: 2026-09-03, resolved here). A creator may still pass an explicit level to
+#: override; see openspec/changes/private-by-default-universes/.
+DEFAULT_CREATE_VISIBILITY = "private"
+
+#: Rules-metadata key recording WHO decided the declared level.
+LEVEL_SOURCE_METADATA_KEY = "visibility_level_source"
+
+#: The recognized provenances for a declared level. ``owner`` is the only one
+#: that means a person chose it; every other value, and a missing key (every row
+#: written before 2026-09-26), means the platform supplied it.
+LEVEL_SOURCE_OWNER = "owner"
+LEVEL_SOURCES = frozenset({LEVEL_SOURCE_OWNER, "default", "migration", "backfill"})
 
 #: Page frontmatter keys a page may use to narrow its own content visibility.
 _PAGE_VISIBILITY_KEYS = ("visibility", "content_visibility")
@@ -302,18 +324,32 @@ def page_visible_in_listing(
     return page_content_permitted(page_meta, universe_id)
 
 
-def set_universe_visibility(universe_id: str, level: str) -> VisibilityLevel:
-    """Declare a universe's explicit visibility level.
+def set_universe_visibility(
+    universe_id: str, level: str, *, source: str
+) -> VisibilityLevel:
+    """Declare a universe's explicit visibility level and who decided it.
 
     Writes the level into the universe rules metadata (creating the rules row if
     needed) and keeps the legacy ``public_read`` bit consistent so older read
     paths that still consult it behave sensibly.
+
+    ``source`` is a REQUIRED keyword, one of :data:`LEVEL_SOURCES`, recording
+    whether an owner chose this level or the platform supplied it. It has no
+    default on purpose: a defaulted provenance is the same shape of bug as the
+    defaulted *level* this change exists to fix, and a silent
+    ``source="owner"`` would leave the next migration unable to tell a decision
+    from a fallback.
     """
     resolved = parse_level(level)
     if resolved is None:
         raise ValueError(
             f"unknown visibility level {level!r}; expected one of "
             f"{sorted(LEVELS)}"
+        )
+    if source not in LEVEL_SOURCES:
+        raise ValueError(
+            f"unknown visibility level source {source!r}; expected one of "
+            f"{sorted(LEVEL_SOURCES)}"
         )
     from tinyassets.daemon_server import (
         ensure_universe_rules,
@@ -335,31 +371,76 @@ def set_universe_visibility(universe_id: str, level: str) -> VisibilityLevel:
         universe_id=universe_id,
         updates={
             "public_read": any_anon_capability,
-            "metadata": {LEVEL_METADATA_KEY: resolved.name},
+            "metadata": {
+                LEVEL_METADATA_KEY: resolved.name,
+                LEVEL_SOURCE_METADATA_KEY: source,
+            },
         },
     )
     return resolved
 
 
+def declared_level_source(universe_id: str) -> str:
+    """The recorded provenance of a universe's declared level, or ``""``.
+
+    ``""`` means no provenance was recorded — which is every row written before
+    2026-09-26, and per :func:`level_was_chosen_by_owner` is read as "the
+    platform supplied it", never as an owner's choice.
+    """
+    rules = _read_rules(universe_id)
+    if not isinstance(rules, dict):
+        return ""
+    meta = rules.get("metadata")
+    if not isinstance(meta, dict):
+        return ""
+    recorded = meta.get(LEVEL_SOURCE_METADATA_KEY)
+    if not isinstance(recorded, str):
+        return ""
+    recorded = recorded.strip()
+    return recorded if recorded in LEVEL_SOURCES else ""
+
+
+def level_was_chosen_by_owner(universe_id: str) -> bool:
+    """Whether this universe's declared level is an owner's decision.
+
+    Fails toward "not chosen": an absent, unrecognized, or non-string
+    provenance is a level the platform supplied. The private-by-default
+    migration flips exactly the universes for which this is ``False``.
+    """
+    return declared_level_source(universe_id) == LEVEL_SOURCE_OWNER
+
+
 def backfill_universe_visibility(
     universe_ids: list[str] | None = None,
 ) -> dict[str, str]:
-    """Declare an explicit level for every universe lacking one.
+    """Declare ``private`` for every universe lacking an explicit level.
 
-    Idempotent. For each universe with no explicit ``visibility_level`` yet,
-    derive it from the current effective ``public_read`` bit (``True`` ->
-    ``public``, ``False`` -> ``private``) so **no universe changes visibility**
-    — it only becomes *declared*. This is the migration that keeps the strict
-    fail-closed default safe: after it runs, an undeclared state means genuine
-    corruption, and fails closed. :func:`run_visibility_startup_gate` runs this
-    at boot and refuses readiness if any undeclared row survives.
+    Idempotent. Each universe with no explicit ``visibility_level`` yet is
+    declared ``private`` with ``source="backfill"``. This is the migration that
+    keeps the strict fail-closed default safe: after it runs, an undeclared state
+    means genuine corruption, and fails closed.
+    :func:`run_visibility_startup_gate` runs this at boot and refuses readiness
+    if any undeclared row survives.
+
+    It used to derive the level from the current effective ``public_read`` bit
+    (``True`` -> ``public``) on the reasoning that "no universe changes
+    visibility — it only becomes declared". That reasoning was defensible and the
+    result was wrong: ``public_read``'s own default is ``True``, so preserving
+    current behaviour preserved a level nobody chose, and boot declared every
+    legacy directory and every maintenance bucket ``public`` (observed live on
+    2026-09-02: 12 of 12 universes public, 7 of them maintenance buckets and
+    IdP-migration backups; see openspec/changes/private-by-default-universes/).
+    Per the founder, 2026-09-26, the platform does not declare an open level on
+    an owner's behalf; the owner exposes their universe explicitly. A universe
+    whose ``public_read`` was already ``False`` was declared ``private`` before
+    and still is, so nothing regresses — what changes is that boot no longer
+    opens anything.
 
     Returns a map of universe_id -> declared level name for the ones written.
     """
     from tinyassets.daemon_server import (
         ensure_universe_registered,
         ensure_universe_rules,
-        get_universe_rules,
     )
 
     base = _base_path()
@@ -376,11 +457,8 @@ def backfill_universe_visibility(
         metadata = rules.get("metadata") if isinstance(rules, dict) else None
         if isinstance(metadata, dict) and metadata.get(LEVEL_METADATA_KEY):
             continue  # already declared -> leave as-is.
-        # Re-read to be certain of the current bit, then map to a level.
-        current = get_universe_rules(base, universe_id=uid)
-        level = PUBLIC if bool(current.get("public_read", True)) else PRIVATE
-        set_universe_visibility(uid, level.name)
-        written[uid] = level.name
+        set_universe_visibility(uid, PRIVATE.name, source="backfill")
+        written[uid] = PRIVATE.name
     return written
 
 
@@ -434,9 +512,10 @@ def run_visibility_startup_gate() -> dict[str, Any]:
     The strict fail-closed resolver means an *un-migrated* deployment would serve
     every legacy undeclared universe as ``CLOSED`` — a silent availability
     regression. Prose "run the backfill" instructions are a config-text guard,
-    not a runtime gate. This runs the idempotent, deterministic backfill (it
-    derives each level from ``public_read`` — safe derivation, not policy
-    invention) at boot, then verifies no undeclared universe remains. If one does
+    not a runtime gate. This runs the idempotent, deterministic backfill (which
+    declares ``private`` — the safe direction, and the only one the platform may
+    choose for an owner) at boot, then verifies no undeclared universe remains.
+    If one does
     (e.g. a corrupt/unreadable rules row the backfill could not declare), it
     raises loudly with the exact remediation rather than serving wrongly-closed
     universes.
