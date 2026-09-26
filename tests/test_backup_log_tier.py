@@ -472,3 +472,60 @@ def test_cli_writes_a_bundle(tmp_path):
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "latency_ms=1841" in _members(out)["container-tinyassets-logs.log"]
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        _shaped("gho", "_PLANTEDAAAABBBB", "CCCCDDDDEEEE1234"),
+        _shaped("github", "_pat_11PLANTED0", "AAAABBBBCCCCDDDD_EEEEFFFF"),
+        _shaped("sk-", "ant-api03-PLANTED", "AAAABBBBCCCCDDDDEEEE"),
+        _shaped("sk-", "or-v1-planted0123456789", "abcdef0123456789"),
+        _shaped("xox", "b-1111111111-2222222222222-", "PlantedSlackTokenValue00"),
+    ],
+)
+def test_a_secret_in_the_journal_never_reaches_the_shipped_bundle(tmp_path, planted):
+    """The load-bearing negative: a secret-shaped value present in the journal
+    window is absent from the bundle that leaves the droplet.
+
+    Asserted against the tarball's BYTES — every member's content plus every
+    member name — rather than against the redactor's own view, so a leak through
+    a file name or the manifest fails too. The bundle ships to GitHub release
+    assets (deploy/backup.sh section 5), so this boundary is the trust boundary.
+
+    Red-driven: with the loop in redact_log_bundle.redact_line disabled, each
+    parameter of this test fails.
+    """
+    journal = _FakeJournal(
+        output=(
+            "2026-09-26T01:08:00.123456+0000 daemon: latency_ms=1841\n"
+            f"2026-09-26T01:08:01.000000+0000 daemon: authorizing with {planted}\n"
+        )
+    )
+    out = tmp_path / "tinyassets-logs-2026-09-26T03-00-00Z.tar.gz"
+
+    code, report = backup_log_tier.build_bundle(
+        out,
+        sources=("container:tinyassets-logs",),
+        since="3 days ago",
+        binary=sys.executable,
+        runner=journal,
+    )
+    assert code == 0, report
+
+    with tarfile.open(out, "r:gz") as archive:
+        names = archive.getnames()
+        blob = b"".join(
+            archive.extractfile(name).read()
+            for name in names
+            if archive.extractfile(name) is not None
+        )
+    blob += "".join(names).encode("utf-8")
+
+    assert planted.encode("utf-8") not in blob, (
+        f"{planted!r} reached the shipped bundle"
+    )
+    # The bundle still has to be worth shipping: the surrounding evidence and the
+    # redaction marker survive, so this cannot pass by shipping nothing.
+    assert b"latency_ms=1841" in blob
+    assert REDACTED.encode("utf-8") in blob
