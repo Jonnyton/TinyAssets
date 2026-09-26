@@ -39,6 +39,13 @@ const els={ "thread":new El("div"), "thread-empty":new El("div"),
             "status-line":new El("div"), "composer-input":new El("textarea") };
 const $=id=>els[id];
 let hasMessages=false;
+// Collaborators of the real appendMessage / loadHistory that this scenario does
+// not exercise. The working indicator has its own harness
+// (tests/test_app_working_indicator.py) which runs the page's own versions.
+function markQueued(el){ return el; }
+function firstQueuedBubble(){ return null; }
+function readServerTurn(){}
+function renderWorking(){}
 const SCENARIO=__SCENARIO__;
 const chunkCalls=[];
 let queueScope=null, queueOwner="";

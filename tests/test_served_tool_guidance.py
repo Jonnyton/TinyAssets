@@ -53,8 +53,42 @@ PRE_SPLIT_WORDS_SHA256 = (
 INDEX_ANCHOR = "THE HANDBOOK."
 TAIL_ANCHOR = "A branch is a stored graph SHAPE"
 
-#: Chapter order as the resident index names them.
-CHAPTER_ORDER = ("connections", "code_nodes", "workspaces")
+#: Chapter order as the resident index names them. `delivering` was added
+#: 2026-09-26 with open receivers: an agent asked to let other users send its
+#: universe something reached for a public webhook because no chapter named the
+#: cross-user delivery primitive. Appended last, so the reconstruction order the
+#: tests below assert is unchanged.
+CHAPTER_ORDER = ("connections", "code_nodes", "workspaces", "delivering")
+
+#: The passage a LATER change deliberately DELETED, verbatim.
+#:
+#: The ratchet below is "relocation, not deletion", and it is right to fail on a
+#: deletion. So a deletion that is the POINT of a change is recorded here rather
+#: than by re-pinning the baseline fixture — re-pinning is how a preservation
+#: check quietly stops preserving anything, and it would also throw away the
+#: split's provenance.
+#:
+#: Written as the PASSAGE rather than a hand-typed word list, because a word list
+#: excuses a global deficit in those words wherever it happens (Codex
+#: refute-review, P2 #9): every allowance below is derived from this string, and
+#: `test_the_split_lost_no_guidance` additionally asserts the passage itself is
+#: gone and its distinctive word with it. Unrelated additions and deletions
+#: cannot balance out into a pass, because the anchor is the text.
+#:
+#: 2026-09-26, `openspec/changes/rotate-a-rejected-credential/`: it told the
+#: agent to repair a credential the far side had rejected by REMOVING it and
+#: depositing it again — the path the founder read as deletion and dismissed
+#: three times, leaving a connection dead for ten days. `rotate_http` replaces it
+#: in one card, so this had to go rather than sit beside its replacement
+#: contradicting it.
+REMOVED_PASSAGE = (
+    "**If you are ROTATING a key rather than retiring it, carry both into the "
+    "new ``connect_http`` ask.**"
+)
+#: A word that occurs ONLY in that passage, so its absence is a cheap, direct
+#: check that the passage went rather than merely being rephrased.
+REMOVED_PASSAGE_MARKER = "ROTATING"
+DELIBERATELY_REMOVED: Counter = Counter(REMOVED_PASSAGE.split())
 
 
 def _normalized(text: str) -> str:
@@ -138,19 +172,30 @@ def test_the_split_lost_no_guidance():
     Every word the docstring carried before the split still occurs at least as often
     across the docstring that remains plus every chapter. Relocation between them is
     allowed — that is the point — and so is added text; losing any of it is not.
+
+    The one exception is a later change that MEANT to delete a passage. Its
+    allowance is DERIVED from `REMOVED_PASSAGE` — so no deficit larger than that
+    passage can hide behind it — and this test then anchors the exemption to the
+    text: the passage is gone, and so is the word that occurred only in it. A word
+    list alone would excuse a global deficit in those words wherever it happened.
     """
     before = _pre_split_word_counts()
-    after = Counter(
-        (_source_docstring() + "".join(
-            engine.SERVED_TOOL_CHAPTERS["write_graph"][name] for name in CHAPTER_ORDER
-        )).split()
+    text = _source_docstring() + "".join(
+        engine.SERVED_TOOL_CHAPTERS["write_graph"][name] for name in CHAPTER_ORDER
     )
-    missing = {
+    after = Counter(text.split())
+    unexplained = {
         word: (count, after[word])
         for word, count in before.items()
-        if after[word] < count
+        if after[word] + DELIBERATELY_REMOVED[word] < count
     }
-    assert not missing, f"guidance words lost in relocation: {sorted(missing)[:20]}"
+    assert not unexplained, (
+        f"guidance words lost in relocation: {sorted(unexplained)[:20]}"
+    )
+    # The exemption is anchored to the TEXT, not to its words: it only covers a
+    # passage that is actually gone.
+    assert REMOVED_PASSAGE not in text
+    assert REMOVED_PASSAGE_MARKER not in text
     assert sum(before.values()) == 4968  # provenance, stated in the fixture header
 
 

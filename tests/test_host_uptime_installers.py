@@ -51,6 +51,11 @@ RUNTIME_FILES = (
     "tinyassets/storage/__init__.py",
     "tinyassets/storage/rotation.py",
 )
+# Not a RUNTIME_FILE: it is installed into /etc/systemd/journald.conf.d rather
+# than into the content-addressed release directory, but it is part of the same
+# manifest and the same transaction.
+JOURNALD_DROPIN_SOURCE = "deploy/journald-tinyassets.conf"
+JOURNALD_DROPIN_NAME = "tinyassets.conf"
 
 _BASH = shutil.which("bash")
 
@@ -697,7 +702,7 @@ def _popen_installer(env: dict[str, str]) -> subprocess.Popen[str]:
 
 def _copy_source(tmp_path: Path) -> Path:
     source = tmp_path / "source"
-    for relative in (*UNIT_FILES, *RUNTIME_FILES):
+    for relative in (*UNIT_FILES, *RUNTIME_FILES, JOURNALD_DROPIN_SOURCE):
         if relative in UNIT_FILES:
             source_file = REPO / "deploy" / relative
             target = source / "deploy" / relative
@@ -812,6 +817,7 @@ def _install_env(tmp_path: Path, source: Path | None = None) -> dict[str, str]:
         "TINYASSETS_SOURCE_ROOT": _bash_path(source),
         "TINYASSETS_RUNTIME_ROOT": _bash_path(tmp_path / "runtime"),
         "TINYASSETS_SYSTEMD_DIR": _bash_path(tmp_path / "systemd"),
+        "TINYASSETS_JOURNALD_DIR": _bash_path(tmp_path / "journald.conf.d"),
         "TINYASSETS_SUDOERS_DIR": _bash_path(tmp_path / "sudoers"),
         "TINYASSETS_LOCK_DIR": _bash_path(tmp_path / "locks"),
         "TINYASSETS_SOURCE_SHA": "a" * 40,

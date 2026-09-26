@@ -1040,6 +1040,12 @@ def _run(
         "response_bytes": int(response_bytes),
         "matched_output_key": matched_key,
         "connection_id": connection_id,
+        # Which CONNECTION this call used, by the name its owner gave it. A
+        # delivered 401 means the stored key for this destination is finished,
+        # and the card that replaces it needs the destination -- so the row the
+        # agent reads has to name it rather than leave it to be inferred from
+        # the url (which is the API host, not the connection's label).
+        "destination": destination,
         "grant_id": grant_id,
         "verb": verb,
         "url": url,
