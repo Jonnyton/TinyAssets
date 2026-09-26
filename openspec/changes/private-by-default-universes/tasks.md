@@ -3,6 +3,29 @@
 Owner: claude-code. One PR, Tier 2 (authority + live-record migration). One
 blocking cross-family review before landing.
 
+**Review round 1 (Codex, 2026-09-26, head `a9cb80c0`): ADAPT.** Three
+`DISAGREE_EVIDENCE` findings, all reproduced end-to-end, all fixed in this PR with
+a mutation-proven test each:
+
+1. A delegated `write` grant holder could publish someone else's universe and have
+   it recorded as the owner's choice. `WRITE_ACTIONS` membership gates at write
+   strength, and `_WRITE_PERMISSIONS` accepts `write` OR `admin`. Fixed: the
+   handler now requires `source_channel.universe_owner_actor` (the canonical
+   `admin` ACL predicate) on top of the central gate. Design D4.
+2. The migration classified an *undeclared* universe as "already private", because
+   the layered resolver reports `private` for undeclared — while the separate
+   legacy `public_read` gate (column default `1`) kept it readable. Fixed: an
+   undeclared universe, and a private declaration over an open legacy bit, are both
+   candidates; `--apply` verifies both gates after each write. Design D5.
+3. `metadata_only` disclosed raw `activity.log` lines through
+   `get_memory_scope_status`, which gated on the legacy bit alone. Reachable only
+   because this PR made the level selectable, so fixed here: the gate is now
+   `visibility_permits(uid, "read_content")`. Design D7.
+
+One `DISAGREE_CONCERN` (the repo-wide visibility test double) is filed as
+`docs/concerns/2026-09-26-visibility-test-double-assumes-public.md` rather than
+claimed as resolved — settling it is a mass fixture migration. Design D6a.
+
 - [x] 1. `DEFAULT_CREATE_VISIBILITY = "private"`; module docstring states the
   founder rule and the date.
 - [x] 2. `set_universe_visibility(universe_id, level, *, source)` — required

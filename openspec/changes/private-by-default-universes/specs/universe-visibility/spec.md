@@ -51,9 +51,11 @@ supplied, not chosen.
 
 The platform SHALL provide the owner of a universe a way to change its declared
 visibility level after birth, on the same surface they use for every other
-owner-only universe write. The change SHALL be refused to a caller without write
-authority on that universe, SHALL refuse an unrecognized level naming the
-recognized set, and SHALL record the owner as the provenance of the new level.
+owner-only universe write. Authority to expose a universe SHALL be OWNER
+authority, strictly narrower than authority to edit it: a principal holding only
+a `write` grant SHALL be refused. The change SHALL refuse an unrecognized level
+naming the recognized set, SHALL refuse a caller whose token lacks write scope,
+and SHALL record the owner as the provenance of the new level.
 
 #### Scenario: The owner publishes
 
@@ -63,6 +65,29 @@ recognized set, and SHALL record the owner as the provenance of the new level.
 
 #### Scenario: A non-owner attempts to expose someone else's universe
 
-- **WHEN** an authenticated principal with no write authority on a universe sets
-  its visibility
+- **WHEN** an authenticated principal with no authority on a universe sets its
+  visibility
 - **THEN** the call SHALL be refused and the declared level SHALL be unchanged.
+
+#### Scenario: A delegated writer attempts to publish
+
+- **GIVEN** a principal holding a `write` grant on someone else's universe
+- **WHEN** they set its visibility to `public`
+- **THEN** the call SHALL be refused, the declared level SHALL be unchanged, and
+  no owner provenance SHALL be recorded — editing a universe is not authority to
+  decide who else may see it.
+
+### Requirement: A level withholding content is enforced by every content reader
+
+A reader that serves a universe's raw content SHALL gate on the `read_content`
+capability, not on the legacy public-read bit alone. A level that withholds
+content SHALL withhold it from every such reader, so that an owner selecting that
+level is given the boundary it names.
+
+#### Scenario: Raw activity lines under a metadata-only level
+
+- **GIVEN** a universe its owner declared `metadata_only`
+- **WHEN** an authenticated principal holding no grant on it reads a surface that
+  returns raw log lines from that universe
+- **THEN** the content SHALL be withheld, even though the legacy public-read bit
+  is set to keep the level's metadata capabilities working.

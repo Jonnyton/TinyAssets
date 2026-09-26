@@ -80,6 +80,23 @@ def _reset_auth():
     auth_middleware("dev")
 
 
+_FULL_SCOPES = [
+    "tinyassets.universe.read",
+    "tinyassets.universe.write",
+    "tinyassets.universe.admin",
+    "tinyassets.wiki.read",
+    "tinyassets.extensions.read",
+]
+
+
+def _authenticate_with(user_id: str, capabilities: list[str]) -> None:
+    identity = Identity(
+        user_id=user_id, username=user_id, capabilities=capabilities,
+    )
+    set_provider(_StaticAuthProvider(identity))
+    auth_middleware("ok")
+
+
 def _authenticate(user_id: str) -> None:
     """A real signed-in person, with the ordinary universe + wiki scopes.
 
@@ -87,18 +104,7 @@ def _authenticate(user_id: str) -> None:
     transport auth gate fired. The claim under test is that a *legitimate other
     user* of the platform is refused.
     """
-    identity = Identity(
-        user_id=user_id,
-        username=user_id,
-        capabilities=[
-            "tinyassets.universe.read",
-            "tinyassets.universe.write",
-            "tinyassets.universe.admin",
-            "tinyassets.wiki.read",
-        ],
-    )
-    set_provider(_StaticAuthProvider(identity))
-    auth_middleware("ok")
+    _authenticate_with(user_id, list(_FULL_SCOPES))
 
 
 def _anonymous() -> None:
@@ -329,6 +335,89 @@ class TestExposure:
         assert out["error"] == "universe_access_denied", out
         assert vis.universe_visibility("u-mine") is vis.PRIVATE
 
+    def test_a_delegated_WRITER_cannot_publish_someone_elses_universe(self, base):
+        """Publication authority is OWNER, strictly narrower than write.
+
+        Codex cross-family review of PR #4019 reproduced this end-to-end against
+        the first cut: `WRITE_ACTIONS` membership makes the central gate demand
+        write access, and `permissions._WRITE_PERMISSIONS` accepts `write` OR
+        `admin` — so a collaborator granted only `write` published the owner's
+        private universe, got `chosen_by="owner"` back, and the migration then
+        classified that universe as owner-chosen and left it public.
+
+        Editing a universe and deciding who else may SEE it are different
+        authorities once a universe has collaborators.
+        """
+        from tinyassets.daemon_server import grant_universe_access
+
+        _born("u-mine")
+        grant_universe_access(
+            base, universe_id="u-mine", actor_id=STRANGER, permission="write",
+            granted_by=OWNER,
+        )
+        _authenticate(STRANGER)
+        # The writer really does hold write authority — the refusal below is the
+        # narrower owner gate, not a missing grant.
+        from tinyassets.api import permissions as _perms
+
+        assert _perms.universe_access_allows("u-mine", write=True) is True
+
+        out = json.loads(
+            us._universe_impl(
+                action="set_visibility", universe_id="u-mine", visibility="public"
+            )
+        )
+        assert out["error"] == "universe_access_denied", out
+        assert vis.universe_visibility("u-mine") is vis.PRIVATE
+        # And nothing was laundered into the provenance record.
+        assert vis.declared_level_source("u-mine") == "default"
+
+    def test_a_writer_cannot_publish_through_the_public_surface_either(self, base):
+        """The same refusal through `write_graph`, which is how it was reproduced."""
+        from tinyassets.daemon_server import grant_universe_access
+        from tinyassets.universe_server import write_graph
+
+        _born("u-mine")
+        grant_universe_access(
+            base, universe_id="u-mine", actor_id=STRANGER, permission="write",
+            granted_by=OWNER,
+        )
+        _authenticate(STRANGER)
+        out = json.loads(
+            write_graph(
+                target="universe", operation="set_visibility",
+                graph_id="u-mine", visibility="public",
+            )
+        )
+        assert out.get("error") == "universe_access_denied", out
+        assert out.get("chosen_by") != "owner"
+        assert vis.universe_visibility("u-mine") is vis.PRIVATE
+
+    def test_a_read_scoped_token_cannot_publish(self, base):
+        """Authority is two gates: the OAuth scope and the ownership predicate.
+
+        `set_visibility` derives `tinyassets.universe.write` from its
+        `WRITE_ACTIONS` membership, so even the owner's own token is refused when
+        it only carries read scope.
+        """
+        _born("u-mine")
+        _authenticate_with(OWNER, ["tinyassets.universe.read"])
+        out = json.loads(
+            us._universe_impl(
+                action="set_visibility", universe_id="u-mine", visibility="public"
+            )
+        )
+        assert out.get("auth_scope_required") is True, out
+        assert "tinyassets.universe.write" in out["error"]
+        assert vis.universe_visibility("u-mine") is vis.PRIVATE
+
+    def test_the_action_derives_a_write_scope(self, base):
+        from tinyassets.auth.provider import build_action_scope_registry
+
+        row = build_action_scope_registry()["universe.set_visibility"]
+        assert row.oauth_scope == "tinyassets.universe.write"
+        assert row.effect == "write"
+
 
 # --------------------------------------------------------------------------- #
 # 5. The canonical public surface carries the verb
@@ -477,6 +566,65 @@ class TestMigration:
         assert vis.declared_level_source("u-pre") == ""
         assert {r["universe_id"] for r in plan(base)["candidates"]} == {"u-pre"}
 
+    def test_an_undeclared_universe_is_a_candidate_not_already_private(self, base):
+        """The first cut read `declared_level_name() == "private"` as "already
+        closed" and skipped every undeclared universe. Codex reproduced that it is
+        NOT closed: `public_read` is a separate gate whose column default is 1, and
+        readers predating the visibility layer consult it alone. The migration
+        reported zero candidates while the universe stayed readable.
+        """
+        from scripts.migrate_private_by_default import plan, run
+        from tinyassets.daemon_server import (
+            ensure_universe_registered,
+            get_universe_rules,
+        )
+
+        (base / "u-undeclared").mkdir()
+        ensure_universe_registered(
+            base, universe_id="u-undeclared", universe_path=base / "u-undeclared"
+        )
+        assert not vis.is_declared("u-undeclared")
+        # The layered resolver says closed; the legacy bit says open.
+        assert vis.declared_level_name("u-undeclared") == "private"
+        assert get_universe_rules(base, universe_id="u-undeclared")["public_read"] is True
+
+        listed = plan(base)
+        assert "u-undeclared" in {r["universe_id"] for r in listed["candidates"]}
+        assert "u-undeclared" not in {
+            r["universe_id"] for r in listed["already_private"]
+        }
+
+        run(base, apply=True)
+        assert vis.is_declared("u-undeclared")
+        assert get_universe_rules(base, universe_id="u-undeclared")["public_read"] is False
+
+    def test_a_private_declaration_over_an_open_legacy_bit_is_repaired(self, base):
+        """An inconsistent row the layered resolver hides and the legacy path
+        honours. Both gates or neither."""
+        from scripts.migrate_private_by_default import plan, run
+        from tinyassets.daemon_server import get_universe_rules
+        from tinyassets.storage import _connect
+
+        self._declare(base, "u-inconsistent", "private", "backfill")
+        with _connect(base) as conn:  # forge the legacy bit back open
+            conn.execute(
+                "UPDATE universe_rules SET public_read = 1 WHERE universe_id = ?",
+                ("u-inconsistent",),
+            )
+        assert "u-inconsistent" in {r["universe_id"] for r in plan(base)["candidates"]}
+        run(base, apply=True)
+        assert get_universe_rules(
+            base, universe_id="u-inconsistent"
+        )["public_read"] is False
+
+    def test_a_consistent_private_row_is_left_alone(self, base):
+        from scripts.migrate_private_by_default import plan
+
+        self._declare(base, "u-settled", "private", "backfill")
+        listed = plan(base)
+        assert "u-settled" in {r["universe_id"] for r in listed["already_private"]}
+        assert "u-settled" not in {r["universe_id"] for r in listed["candidates"]}
+
     def test_it_is_idempotent(self, base):
         from scripts.migrate_private_by_default import run
 
@@ -520,6 +668,73 @@ class TestMigration:
 # --------------------------------------------------------------------------- #
 # 7. The provenance record itself
 # --------------------------------------------------------------------------- #
+class TestALevelOnlyPromisesWhatItEnforces:
+    """`metadata_only` withholds content, and a legacy reader did not honour it.
+
+    `set_universe_visibility` turns the legacy `public_read` bit on whenever a
+    level grants a public visitor ANY capability — correct as a ceiling for
+    `visibility_permits`, and a hole for a reader that consults that bit ALONE.
+    `get_memory_scope_status` returns raw `activity.log` lines and did exactly
+    that, so a `metadata_only` universe disclosed its literal log content to any
+    authenticated principal. Codex reproduced it against PR #4019's first cut.
+
+    The reader predates this change. What this change did was hand an owner a way
+    to SELECT `metadata_only`, which made a latent hole reachable on purpose — so
+    it is fixed here rather than filed.
+    """
+
+    @staticmethod
+    def _plant_secret(base: Path, uid: str) -> str:
+        secret = "retrieval.scope_mismatch SECRET_PRIVATE_ACTIVITY"
+        (base / uid / "activity.log").write_text(secret + "\n", encoding="utf-8")
+        return secret
+
+    def test_metadata_only_withholds_raw_activity_lines(self, base):
+        from tinyassets.api.runs import _action_get_memory_scope_status
+
+        _born("u-mine")
+        secret = self._plant_secret(base, "u-mine")
+        _authenticate(OWNER)
+        us._action_set_universe_visibility(
+            universe_id="u-mine", visibility="metadata_only"
+        )
+
+        _authenticate(STRANGER)
+        raw = _action_get_memory_scope_status({"universe_id": "u-mine"})
+        assert secret not in raw, raw
+        assert json.loads(raw)["error"] == "universe_access_denied"
+
+    def test_a_private_universe_withholds_them_too(self, base):
+        from tinyassets.api.runs import _action_get_memory_scope_status
+
+        _born("u-mine")
+        secret = self._plant_secret(base, "u-mine")
+        _authenticate(STRANGER)
+        raw = _action_get_memory_scope_status({"universe_id": "u-mine"})
+        assert secret not in raw, raw
+
+    def test_an_explicitly_public_universe_still_serves_them(self, base):
+        """The fix narrows; it must not close a level the owner DID open."""
+        from tinyassets.api.runs import _action_get_memory_scope_status
+
+        _born("u-open", visibility="public")
+        secret = self._plant_secret(base, "u-open")
+        _authenticate(STRANGER)
+        raw = _action_get_memory_scope_status({"universe_id": "u-open"})
+        assert json.loads(raw).get("error") is None, raw
+        assert secret in raw
+
+    def test_the_owner_always_sees_their_own(self, base):
+        from tinyassets.api.runs import _action_get_memory_scope_status
+
+        _born("u-mine")
+        secret = self._plant_secret(base, "u-mine")
+        _authenticate(OWNER)
+        raw = _action_get_memory_scope_status({"universe_id": "u-mine"})
+        assert json.loads(raw).get("error") is None, raw
+        assert secret in raw
+
+
 class TestProvenance:
     def test_source_is_required(self, base):
         """No default, on purpose: a silent `owner` would make the next

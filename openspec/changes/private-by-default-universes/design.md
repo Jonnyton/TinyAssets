@@ -38,6 +38,20 @@ re-running it after an owner has published something does not un-publish it.
 same shape of bug as the one being fixed, and a silent `source="owner"` would
 make the next migration unable to tell a decision from a fallback.
 
+**What the provenance does and does not mean.** `source="owner"` records that the
+level was set *through the owner's own authority* — the explicit `admin` ACL row
+on that universe. It is not evidence a human typed it: a universe's own agent
+acting on its owner's credential is indistinguishable here from the owner, and
+deliberately so, because that agent acts with the owner's authority by design
+(Codex cross-family review, C4). The key's job is to separate an owner-authorized
+decision from a *platform* default, which is exactly the distinction the migration
+needs. It is a bookkeeping signal, never an authorization input: nothing reads it
+to decide access, only to decide whether the migration should touch a row.
+
+That bound only holds because the verb is owner-gated. The first cut relied on
+`WRITE_ACTIONS` membership alone, and Codex reproduced a delegated *writer*
+publishing someone else's universe and getting `chosen_by="owner"` back — see D4.
+
 ## D3. Backfill: derive from nothing, not from `public_read`
 
 The old derivation was defensible when it was written: "no universe changes
@@ -61,11 +75,32 @@ first half of the founder's sentence and make the second half impossible, so the
 change adds one verb and no more:
 
 `write_graph target=universe operation=set_visibility`, taking the existing
-`visibility` parameter and `graph_id`. It is gated on
-`permissions.universe_access_allows(uid, write=True)` — the same gate that
-protects every other owner-only universe write — and records `source="owner"`.
-It reuses `set_universe_visibility`'s existing validation, so an unknown level
-is refused with the known set rather than silently ignored.
+`visibility` parameter and `graph_id`. It reuses `set_universe_visibility`'s
+existing validation, so an unknown level is refused with the known set rather
+than silently ignored.
+
+**Authority is OWNER, not write — and that took two goes.** The first cut relied
+on `WRITE_ACTIONS` membership alone, which makes `_universe_acl_error` demand
+`universe_access_allows(uid, write=True)`. That is necessary and not sufficient:
+`permissions._WRITE_PERMISSIONS` accepts `write` OR `admin`, so the Codex
+cross-family review granted a second principal only `write` and published the
+owner's private universe through the public `write_graph` handle — returning
+`status=updated` and `chosen_by="owner"`, after which the migration classified
+that universe as owner-chosen and left it public. Reproduced end-to-end, not
+theorised.
+
+Editing a universe and deciding who else may SEE it are different authorities
+once a universe has collaborators. So the handler adds the canonical
+per-universe ownership predicate, `source_channel.universe_owner_actor` — the
+explicit `admin` ACL row, the same signal `connect_llm`, `source_channel` and the
+pending-request rail already use. This is a **narrowing on top of** the central
+gate rather than a second copy of it: the ACL check still runs first and this can
+only ever refuse more. Both refusals return the same `universe_access_denied`
+envelope, so a delegated writer learns exactly what a reader learns.
+
+Two gates therefore stand between a caller and publication: the derived OAuth
+scope (`tinyassets.universe.write`, from `WRITE_ACTIONS` membership) and the
+ownership predicate. Both are asserted, and the ownership one is mutation-proven.
 
 Deliberately not built: per-page and per-branch exposure verbs. Pages already
 narrow themselves through frontmatter (`page_content_permitted`) and branches
@@ -82,6 +117,18 @@ Adding universe-level ones would be a second definition of the same fact.
   also keeps the legacy `public_read` ceiling consistent. The
   `_backup_subject_migration_*` and `_removed_universes_*` records stay exactly
   where they are — they are migration backups.
+- **An undeclared universe is a CANDIDATE, not "already closed".** The layered
+  resolver reports an undeclared universe as `private`, and the first cut read
+  that as "nothing to do". It is wrong, and Codex reproduced it: `public_read` is
+  a **separate** read gate, `permissions.universe_access_allows` consults it
+  alone, its column default is `1`, and readers that predate the visibility layer
+  go through that path — so the migration reported zero candidates while an
+  undeclared universe was still handing out content. Declaring it `private`
+  closes both gates at once. A row declared `private` whose legacy bit is still
+  open is a candidate for the same reason, and re-declaring is idempotent.
+  Generally: **do not infer that every read path fails closed from the layered
+  resolver's effective level.** Two gates exist; the migration has to satisfy
+  both, and `--apply` verifies both after each write.
 - **Enumerates from the rules store, not from the on-disk discovery helper.**
   `_discover_universe_ids` is being narrowed to *owned* directories by #4012, and
   the records that most need flipping (the maintenance buckets) are precisely the
@@ -120,7 +167,43 @@ That is why the mutation check works: reverting `DEFAULT_CREATE_VISIBILITY` to
 refusal assertion goes red. Backfill-level assertions live in
 `test_universe_visibility`, which opts out of the fixture entirely.
 
-## D7. What this does to `/commons`
+### D6a. What the review said about the double, and what is left open
+
+Codex agreed the part that matters for *this* change: explicit creation
+declarations bypass the double, and the two strict modules exercise the real
+resolver, so the new tests are not reading a stand-in. It did not attribute any
+concrete regression to the double.
+
+Its remaining objection stands and is not resolved here: renaming the assumption
+"an owner chose public" does not *establish* that several hundred legacy tests
+model publication. Settling it means explicit public fixtures or opt-in marking
+across those modules. That is a mass fixture rewrite with its own blast radius,
+and doing it inside an authority change would mix a behaviour fix with a harness
+migration. It is filed as its own concern
+(`docs/concerns/2026-09-26-visibility-test-double-assumes-public.md`) rather than
+claimed as done.
+
+## D7. A level only promises what some reader enforces
+
+`set_universe_visibility` turns the legacy `public_read` bit on whenever a level
+grants a public visitor **any** capability. That is right as a *ceiling* for
+`visibility_permits`, which ANDs the two — and wrong for any reader that consults
+that bit alone. `get_memory_scope_status` did, and it returns raw `activity.log`
+lines, so a `metadata_only` universe — whose entire point is that it withholds
+content — disclosed its literal log lines to any authenticated principal. Codex
+reproduced it.
+
+That reader predates this change. What this change did was give an owner a way to
+*select* `metadata_only`, turning a latent hole into a reachable one, so it is
+fixed here rather than filed: the gate becomes
+`visibility_permits(uid, "read_content")`, which is tighten-only and therefore
+subsumes the legacy check instead of replacing it.
+
+The general rule this leaves behind: **a level is a promise, and a promise with no
+enforcing reader is decoration.** Before offering a level on an owner-facing verb,
+find every reader of the capability it withholds.
+
+## D8. What this does to `/commons`
 
 `WebSite/shared/mcp/public-read-contract.js` already rejects any universe row
 whose `visibility` is not in the discoverable set, and `_action_list_universes`

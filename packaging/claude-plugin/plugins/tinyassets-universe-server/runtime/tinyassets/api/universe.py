@@ -4657,16 +4657,38 @@ def _action_set_universe_visibility(
     the creation path and the boot backfill, so an owner could not publish at
     all.
 
-    Authority: registered in ``WRITE_ACTIONS``, so ``_universe_acl_error``
-    requires write access on this universe before the handler runs and the
-    dispatcher ledgers the decision. Nothing here re-implements that check —
-    a second definition of the same gate is how the two drift apart.
+    Authority: OWNER-only, which is strictly narrower than write. Registration in
+    ``WRITE_ACTIONS`` makes ``_universe_acl_error`` demand write access and makes
+    the dispatcher ledger the decision — necessary, and not sufficient. That gate
+    accepts ``write`` OR ``admin`` (``permissions._WRITE_PERMISSIONS``), so relying
+    on it alone let a delegated *writer* publish someone else's universe and have
+    it recorded as the owner's choice (Codex cross-family review of PR #4019,
+    reproduced end-to-end: `status=updated`, `chosen_by=owner`, and the migration
+    then classified that universe as owner-chosen and left it public).
+
+    Exposing a universe to other users is not an editing operation, so it takes
+    the canonical per-universe ownership predicate — ``universe_owner_actor``,
+    the explicit ``admin`` ACL row, the same signal ``connect_llm``,
+    ``source_channel`` and the pending-request rail use. This is a narrowing on
+    top of the central gate, not a second copy of it: the ACL check still runs
+    first and this only ever refuses more.
     """
     from tinyassets.api import visibility as _visibility
+    from tinyassets.api.source_channel import universe_owner_actor
+    from tinyassets.principals import named_principal
 
     uid = _request_universe(universe_id)
     if not _universe_dir(uid).is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor or not universe_owner_actor(_base_path(), uid, actor):
+        # The SAME envelope the central ACL gate returns for a non-writer, so a
+        # delegated writer learns exactly what a reader learns.
+        return json.dumps(permissions.universe_access_error(
+            universe_id=uid, write=True, action="set_visibility",
+            surface="universe",
+        ))
 
     requested = (visibility or "").strip()
     if not requested:

@@ -95,12 +95,53 @@ def _declared_universe_ids(base_path: Any) -> list[str]:
     return ids
 
 
+def _legacy_bit_is_open(base_path: Any, universe_id: str) -> bool:
+    """Whether the legacy ``public_read`` bit still permits a read.
+
+    Read separately from the declared level because it is a SECOND read gate, not
+    a projection of the first: ``permissions.universe_access_allows`` consults it
+    alone, and readers that predate the visibility layer (e.g.
+    ``get_memory_scope_status``) go through that. Its column default is ``1``, so
+    an undeclared universe is open on that path even though the layered resolver
+    reports it ``private``. Missing row -> open, matching the permissive path.
+    """
+    from tinyassets.daemon_server import get_universe_rules
+
+    try:
+        return bool(get_universe_rules(base_path, universe_id=universe_id).get(
+            "public_read", True
+        ))
+    except KeyError:
+        return True  # no rules row at all -> the permissive path lets reads in.
+    except Exception:  # noqa: BLE001 - unreadable row: treat as needing the fix.
+        logger.warning(
+            "could not read public_read for %s; treating as open", universe_id,
+            exc_info=True,
+        )
+        return True
+
+
 def plan(base_path: Any, *, skip: frozenset[str] = frozenset()) -> dict[str, Any]:
     """Classify every universe without writing anything.
 
     Returns ``{"candidates": [...], "kept": [...], "already_private": [...],
     "skipped": [...]}`` where each row is
-    ``{"universe_id", "level", "source"}``.
+    ``{"universe_id", "level", "source", "reason"}``.
+
+    A universe is a candidate when ANY of these holds:
+
+      * it carries no explicit declaration. The layered resolver reports an
+        undeclared universe as ``private``, and an earlier cut of this script read
+        that as "already closed" and skipped it. **It is not closed**: the legacy
+        ``public_read`` bit is a separate gate, its default is ``1``, and readers
+        that predate the visibility layer consult it alone — so an undeclared
+        universe stayed readable and the migration reported zero candidates
+        (Codex cross-family review of PR #4019, reproduced). Declaring it
+        ``private`` closes both.
+      * its declared level exposes something and no owner chose it.
+      * it is declared ``private`` yet the legacy bit is still open — an
+        inconsistent row, which the layered resolver hides and the legacy path
+        honours. Re-declaring is idempotent and closes the bit.
     """
     from tinyassets.api import visibility as vis
 
@@ -112,18 +153,32 @@ def plan(base_path: Any, *, skip: frozenset[str] = frozenset()) -> dict[str, Any
     }
     for uid in _declared_universe_ids(base_path):
         level = vis.declared_level_name(uid)
+        declared = vis.is_declared(uid)
         source = vis.declared_level_source(uid) or "(unrecorded)"
-        row = {"universe_id": uid, "level": level, "source": source}
+        legacy_open = _legacy_bit_is_open(base_path, uid)
+        row = {
+            "universe_id": uid,
+            "level": level if declared else "(undeclared)",
+            "source": source,
+            "legacy_public_read": "open" if legacy_open else "closed",
+            "reason": "",
+        }
         if uid in skip:
             result["skipped"].append(row)
-        elif level not in _EXPOSED_LEVELS:
-            # Already private, or undeclared and therefore already served
-            # CLOSED. Either way there is nothing to flip.
-            result["already_private"].append(row)
-        elif vis.level_was_chosen_by_owner(uid):
-            result["kept"].append(row)
-        else:
+            continue
+        if not declared:
+            row["reason"] = "undeclared; the legacy read bit still decides"
             result["candidates"].append(row)
+        elif level in _EXPOSED_LEVELS and not vis.level_was_chosen_by_owner(uid):
+            row["reason"] = "exposed by a platform default, not by its owner"
+            result["candidates"].append(row)
+        elif level in _EXPOSED_LEVELS:
+            result["kept"].append(row)
+        elif legacy_open:
+            row["reason"] = "declared private but the legacy read bit is open"
+            result["candidates"].append(row)
+        else:
+            result["already_private"].append(row)
     return dict(result)
 
 
@@ -150,10 +205,16 @@ def run(
                 failed.append({**row, "error": str(exc)})
                 continue
             now = vis.declared_level_name(uid)
-            if now != "private":
+            if now != "private" or not vis.is_declared(uid):
                 # Fail loudly rather than reporting a write that did not take.
                 logger.error("flip of %s did not take: level is now %r", uid, now)
                 failed.append({**row, "error": f"level is still {now!r} after write"})
+                continue
+            if _legacy_bit_is_open(base_path, uid):
+                # Both gates or neither: a closed level over an open legacy bit is
+                # the exact inconsistency this migration exists to remove.
+                logger.error("flip of %s left public_read open", uid)
+                failed.append({**row, "error": "public_read still open after write"})
                 continue
             logger.info("%s: %s (%s) -> private", uid, row["level"], row["source"])
             flipped.append(row)
@@ -171,9 +232,12 @@ def _print_human(summary: dict[str, Any]) -> None:
             return
         for row in rows:
             extra = f"  ERROR: {row['error']}" if row.get("error") else ""
+            if row.get("reason"):
+                extra = f"  ({row['reason']}){extra}"
             print(
                 f"  {row['universe_id']:<48} level={row['level']:<14}"
-                f" source={row['source']}{extra}"
+                f" source={row['source']:<14}"
+                f" public_read={row.get('legacy_public_read', '?')}{extra}"
             )
 
     _rows("candidates", "WOULD FLIP to private" if not summary["applied"] else "FLIP candidates")
