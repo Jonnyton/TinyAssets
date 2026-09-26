@@ -80,6 +80,14 @@ and SHALL record the owner as the provenance of the new level.
   no owner provenance SHALL be recorded — editing a universe is not authority to
   decide who else may see it.
 
+#### Scenario: A level the platform does not enforce is not offered
+
+- **GIVEN** a level whose content boundary is not enforced by every reader
+- **WHEN** an owner asks this surface to declare it
+- **THEN** the call SHALL be refused as not offered, distinguishably from an
+  unknown level, and the declared level SHALL be unchanged — a surface SHALL NOT
+  offer a boundary the platform does not keep.
+
 ### Requirement: A level withholding content is enforced by every content reader
 
 A reader that serves a universe's raw content SHALL gate on the `read_content`

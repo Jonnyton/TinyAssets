@@ -943,12 +943,13 @@ def write_graph(
             target=universe to create an additional universe (or the home when
             a create-scoped sign-in declined auto-birth).
         operation: With target=universe, set_visibility changes who else may see
-            that universe, taking the level in `visibility` (private, unlisted,
-            metadata_only, public) and `graph_id` for the universe. Everything in
-            a universe is private until its owner uses this: no other user can
-            discover, inspect or read it, while the owner and anyone they granted
-            access keep full access either way. Refused without write authority
-            on that universe (owner-only).
+            that universe, taking `visibility` as `private` or `public` and
+            `graph_id` for the universe. Everything in a universe is private until
+            its owner uses this: no other user can discover, inspect or read it,
+            while the owner and anyone they granted access keep full access either
+            way. Owner-only — a collaborator holding write on the universe is
+            refused, because editing it is not authority to decide who else sees
+            it.
             With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update/bind_serving_provider/set_serving.
@@ -991,8 +992,8 @@ def write_graph(
         tags: Optional comma-separated shared-goal tags.
         visibility: Shared-goal visibility, usually public. With
             target=universe operation=set_visibility, the universe level to
-            declare instead (private, unlisted, metadata_only, public). Empty
-            means nobody stated one, which is never read as a request to publish.
+            declare instead — `private` or `public`. Empty means nobody stated
+            one, which is never read as a request to publish.
         text: Request text to queue (or optional purpose with target=universe).
         graph_id: Optional target graph/universe identifier.
         goal_id: With target=goal operation=set_canonical, the Goal identifier.

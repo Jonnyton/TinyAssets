@@ -26,6 +26,36 @@ One `DISAGREE_CONCERN` (the repo-wide visibility test double) is filed as
 `docs/concerns/2026-09-26-visibility-test-double-assumes-public.md` rather than
 claimed as resolved — settling it is a mass fixture migration. Design D6a.
 
+**Review round 2 (Codex, 2026-09-26, head `50802601`): ADAPT.** All three round-1
+reproductions confirmed closed. Two new `DISAGREE_EVIDENCE` findings, both fixed
+and mutation-proven; artifact `docs/audits/2026-09-26-pr4019-round2-review.md`:
+
+4. The migration could not close an **unregistered bare directory** — the record
+   that most needs closing, since with no rules row the legacy bit defaults open.
+   `universe_rules` has an FK onto `universes`, so declaring before registering
+   died with `FOREIGN KEY constraint failed` and the directory kept serving its
+   `activity.log`; a second `--apply` repeated the failure. Fixed:
+   `ensure_universe_registered` first, matching the boot backfill, plus
+   `initialize_author_server` in `plan()` so a data dir of bare directories does
+   not die on `no such table: universe_rules`.
+5. `metadata_only` still leaked raw content through `_action_get_activity`, a
+   sibling of the round-1 reader. Grepping the pattern found **six** such actions
+   sharing one gate (`_universe_acl_error`, legacy bit only). Fixed by the
+   reviewer's own second option — stop offering the unenforced levels:
+   `_OFFERED_VISIBILITY_LEVELS = {"private", "public"}` at both writers (the verb
+   AND birth, the latter reachable because the dispatcher now forwards
+   `visibility`), with a `level_not_enforced` refusal naming
+   `docs/concerns/2026-09-26-content-readers-gate-on-the-legacy-bit.md`. Design D7.
+   Gating all six is that concern's job, deliberately not this PR's.
+
+Round 2 also caught one of my own tests passing for the wrong reason: the
+dispatcher-birth test was satisfied by a `tinyassets.universe.costly` scope refusal
+rather than the level check. It now carries that scope and asserts the level error
+text, with a positive sibling proving birth still works.
+
+**Cap: 3 rounds** (AGENTS.md). Round 3 is confirmation only; anything still open
+after it goes to the founder rather than a round 4.
+
 - [x] 1. `DEFAULT_CREATE_VISIBILITY = "private"`; module docstring states the
   founder rule and the date.
 - [x] 2. `set_universe_visibility(universe_id, level, *, source)` — required

@@ -140,6 +140,63 @@ class TestBirth:
         assert out["visibility"] == "public"
         assert vis.level_was_chosen_by_owner("u-open")
 
+    def test_birth_offers_the_same_levels_the_verb_offers(self, base):
+        """Birth must not quietly accept a level the post-birth verb refuses.
+
+        This became reachable when the dispatcher started forwarding `visibility`
+        — which it has to, for `set_visibility` — so the deprecated
+        `universe(action="create_universe", visibility="metadata_only")` could
+        otherwise mint a universe whose content boundary five readers do not
+        enforce (docs/concerns/2026-09-26-content-readers-gate-on-the-legacy-bit.md).
+        """
+        _authenticate(OWNER)
+        for level in ("metadata_only", "unlisted"):
+            out = json.loads(
+                us._action_create_universe(
+                    universe_id=f"u-{level}", text="hi", visibility=level
+                )
+            )
+            assert "error" in out, (level, out)
+            assert "private" in out["error"] and "public" in out["error"], level
+            assert not (base / f"u-{level}").exists(), level  # no partial create
+
+    def test_birth_through_the_dispatcher_refuses_it_too(self, base):
+        """The dispatcher path, which is what made this reachable at all.
+
+        `create_universe` needs `tinyassets.universe.costly`, so the token carries
+        it — without it this test would pass on the SCOPE refusal and prove nothing
+        about the level. The assertion names the offered set for the same reason.
+        """
+        _authenticate_with(OWNER, [*_FULL_SCOPES, "tinyassets.universe.costly"])
+        out = json.loads(
+            us._universe_impl(
+                action="create_universe",
+                visibility="metadata_only",
+                allow_named_universe_id=True,
+                universe_id="u-via-dispatch",
+            )
+        )
+        assert "error" in out, out
+        assert out.get("auth_scope_required") is not True, out
+        assert "Invalid visibility 'metadata_only'" in out["error"], out
+        assert "private" in out["error"] and "public" in out["error"], out
+        assert not (base / "u-via-dispatch").exists()
+
+    def test_the_dispatcher_can_still_birth_an_offered_level(self, base):
+        """Guard against the test above passing because birth is broken outright."""
+        _authenticate_with(OWNER, [*_FULL_SCOPES, "tinyassets.universe.costly"])
+        out = json.loads(
+            us._universe_impl(
+                action="create_universe",
+                visibility="public",
+                allow_named_universe_id=True,
+                universe_id="u-via-dispatch-ok",
+            )
+        )
+        assert out.get("status") == "created", out
+        assert out["visibility"] == "public"
+        assert vis.level_was_chosen_by_owner("u-via-dispatch-ok")
+
 
 # --------------------------------------------------------------------------- #
 # 2. The owner keeps full access to their own private universe
@@ -296,15 +353,32 @@ class TestExposure:
         assert "visibility is required" in out["error"]
         assert vis.universe_visibility("u-mine") is vis.PRIVATE
 
-    def test_an_unrecognized_level_is_refused_naming_the_known_set(self, base):
+    def test_an_unrecognized_level_is_refused_naming_the_offered_set(self, base):
         _born("u-mine")
         _authenticate(OWNER)
         out = json.loads(
             us._action_set_universe_visibility(universe_id="u-mine", visibility="wide-open")
         )
         assert "error" in out
-        assert "unlisted" in out["error"] and "metadata_only" in out["error"]
+        assert out["reason"] == "unknown_level"
+        assert "private" in out["error"] and "public" in out["error"]
         assert vis.universe_visibility("u-mine") is vis.PRIVATE
+
+    def test_a_real_but_unenforced_level_is_refused_as_such(self, base):
+        """`metadata_only` and `unlisted` exist and are NOT offered here, because
+        six universe content readers still gate on the legacy `public_read` bit
+        alone (docs/concerns/2026-09-26-content-readers-gate-on-the-legacy-bit.md).
+        Offering a level whose boundary nothing enforces is a promise the platform
+        breaks, so the refusal says which kind of no this is."""
+        _born("u-mine")
+        _authenticate(OWNER)
+        for level in ("metadata_only", "unlisted"):
+            out = json.loads(
+                us._action_set_universe_visibility(universe_id="u-mine", visibility=level)
+            )
+            assert out["reason"] == "level_not_enforced", (level, out)
+            assert "is a real level" in out["detail"], (level, out)
+            assert vis.universe_visibility("u-mine") is vis.PRIVATE, level
 
     def test_another_user_cannot_expose_someone_elses_universe(self, base):
         _born("u-mine")
@@ -433,12 +507,12 @@ class TestWriteGraphSurface:
                 target="universe",
                 operation="set_visibility",
                 graph_id="u-mine",
-                visibility="metadata_only",
+                visibility="public",
             )
         )
         assert out["status"] == "updated", out
-        assert out["visibility"] == "metadata_only"
-        assert vis.universe_visibility("u-mine") is vis.METADATA_ONLY
+        assert out["visibility"] == "public"
+        assert vis.universe_visibility("u-mine") is vis.PUBLIC
 
     def test_write_graph_without_a_level_does_not_publish(self, base):
         from tinyassets.universe_server import write_graph
@@ -459,9 +533,16 @@ class TestWriteGraphSurface:
         reads."""
         from tinyassets.universe_server import write_graph
 
-        doc = write_graph.__doc__ or ""
+        # Whitespace-normalized: the docstring is hard-wrapped, so a phrase
+        # assertion against the raw text silently depends on where it wraps.
+        doc = " ".join((write_graph.__doc__ or "").split())
         assert "set_visibility" in doc
-        assert "private until its owner" in doc
+        # It must say the default AND that the verb is owner-only, because both
+        # are things the agent will otherwise get wrong on a user's behalf.
+        assert "private until its owner uses this" in doc
+        assert "Owner-only" in doc
+        # And it must not advertise a level the verb refuses.
+        assert "metadata_only" not in doc.split("set_visibility", 1)[1][:700]
 
     def test_write_graph_still_admits_a_request_with_no_visibility(self, base):
         """`visibility`'s signature default changed from `"public"` to `""`; the
@@ -617,6 +698,47 @@ class TestMigration:
             base, universe_id="u-inconsistent"
         )["public_read"] is False
 
+    def test_an_unregistered_bare_directory_is_closed_not_crashed(self, base):
+        """A universe directory with NO database rows at all.
+
+        `universe_rules` has an FK onto `universes`, so declaring before
+        registering died with `FOREIGN KEY constraint failed` — and this is the
+        record that most needs closing, because with no rules row the legacy bit
+        defaults open and serves its content. A second `--apply` just repeated the
+        failure. Codex cross-family review of PR #4019, round 2, reproduced with a
+        readable secret in `activity.log`.
+        """
+        from scripts.migrate_private_by_default import plan, run
+        from tinyassets.daemon_server import get_universe_rules
+
+        (base / "u-bare").mkdir()
+        (base / "u-bare" / "activity.log").write_text("SECRET\n", encoding="utf-8")
+
+        assert "u-bare" in {r["universe_id"] for r in plan(base)["candidates"]}
+        summary = run(base, apply=True)
+        assert summary["failed"] == [], summary["failed"]
+        assert "u-bare" in {r["universe_id"] for r in summary["flipped"]}
+        assert vis.is_declared("u-bare")
+        assert vis.universe_visibility("u-bare") is vis.PRIVATE
+        assert get_universe_rules(base, universe_id="u-bare")["public_read"] is False
+
+    def test_the_closed_bare_directory_stops_leaking_its_activity_log(self, base):
+        """The end of the reviewer's reproduction: the reader, not the row."""
+        from scripts.migrate_private_by_default import run
+
+        (base / "u-bare").mkdir()
+        (base / "u-bare" / "activity.log").write_text("SECRET\n", encoding="utf-8")
+        _authenticate(STRANGER)
+        assert "SECRET" in us._universe_impl(
+            action="get_activity", universe_id="u-bare"
+        ), "precondition: the unmigrated bare directory leaks"
+
+        run(base, apply=True)
+        _authenticate(STRANGER)
+        after = us._universe_impl(action="get_activity", universe_id="u-bare")
+        assert "SECRET" not in after, after
+        assert json.loads(after)["error"] == "universe_access_denied"
+
     def test_a_consistent_private_row_is_left_alone(self, base):
         from scripts.migrate_private_by_default import plan
 
@@ -694,10 +816,11 @@ class TestALevelOnlyPromisesWhatItEnforces:
 
         _born("u-mine")
         secret = self._plant_secret(base, "u-mine")
-        _authenticate(OWNER)
-        us._action_set_universe_visibility(
-            universe_id="u-mine", visibility="metadata_only"
-        )
+        # The owner verb does NOT offer this level (see
+        # `_OFFERED_VISIBILITY_LEVELS`); a dev/migration caller can still produce
+        # it, which is the residual exposure this test pins closed.
+        vis.set_universe_visibility("u-mine", "metadata_only", source="migration")
+        assert vis.universe_visibility("u-mine") is vis.METADATA_ONLY
 
         _authenticate(STRANGER)
         raw = _action_get_memory_scope_status({"universe_id": "u-mine"})

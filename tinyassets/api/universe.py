@@ -4644,6 +4644,24 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": f"Failed to write premise: {exc}"})
 
 
+#: The levels this owner-facing verb OFFERS — deliberately narrower than
+#: ``visibility.LEVELS``. A level is a promise, and a promise no reader enforces
+#: is decoration: six universe read actions that return raw content
+#: (``get_activity``, ``read_premise``, ``read_canon``, ``read_source``,
+#: ``read_output``, ``query_world``) are gated only by the legacy ``public_read``
+#: bit through ``_universe_acl_error``, and ``set_universe_visibility`` sets that
+#: bit for ANY level granting a visitor a capability. So `metadata_only` (which
+#: promises to withhold content) and `unlisted` (which promises to withhold
+#: metadata) would both be mis-served. Offering only the two the platform enforces
+#: end to end keeps this surface honest; the gap is
+#: `docs/concerns/2026-09-26-content-readers-gate-on-the-legacy-bit.md`, and when
+#: it closes the other two levels belong here.
+#:
+#: This is also exactly the binary the founder described on 2026-09-26 — private
+#: unless the owner makes it accessible — rather than a refinement nobody asked for.
+_OFFERED_VISIBILITY_LEVELS = frozenset({"private", "public"})
+
+
 def _action_set_universe_visibility(
     universe_id: str = "", visibility: str = "", **_kwargs: Any
 ) -> str:
@@ -4677,6 +4695,7 @@ def _action_set_universe_visibility(
     from tinyassets.api.source_channel import universe_owner_actor
     from tinyassets.principals import named_principal
 
+    offered = _OFFERED_VISIBILITY_LEVELS
     uid = _request_universe(universe_id)
     if not _universe_dir(uid).is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
@@ -4693,10 +4712,22 @@ def _action_set_universe_visibility(
     requested = (visibility or "").strip()
     if not requested:
         return json.dumps({
+            "error": f"visibility is required; expected one of {sorted(offered)}.",
+        })
+    if requested not in offered:
+        known = _visibility.parse_level(requested) is not None
+        return json.dumps({
             "error": (
-                "visibility is required; expected one of "
-                f"{sorted(_visibility.LEVELS)}."
+                f"visibility {requested!r} is not offered; expected one of "
+                f"{sorted(offered)}."
             ),
+            "reason": "level_not_enforced" if known else "unknown_level",
+            "detail": (
+                f"{requested!r} is a real level, but the platform does not yet "
+                "enforce its content boundary on every reader, so this surface "
+                "does not offer it (docs/concerns/"
+                "2026-09-26-content-readers-gate-on-the-legacy-bit.md)."
+            ) if known else "",
         })
     previous = _visibility.declared_level_name(uid)
     try:
@@ -5657,11 +5688,17 @@ def _action_create_universe(
     create_level_source = (
         _visibility.LEVEL_SOURCE_OWNER if chosen_level else "default"
     )
-    if _visibility.parse_level(create_level) is None:
+    # Birth offers the same levels the post-birth verb offers, and for the same
+    # reason (`_OFFERED_VISIBILITY_LEVELS`): a level whose content boundary no
+    # reader enforces must not be selectable. This became reachable when the
+    # dispatcher started forwarding `visibility`, which it needs to do for
+    # `set_visibility` — so the two writers are held to one list rather than
+    # birth quietly accepting more than the verb.
+    if create_level not in _OFFERED_VISIBILITY_LEVELS:
         return json.dumps({
             "error": (
                 f"Invalid visibility {create_level!r}; expected one of "
-                f"{sorted(_visibility.LEVELS)}."
+                f"{sorted(_OFFERED_VISIBILITY_LEVELS)}."
             ),
         })
     # universe-creation D2: universe_id is optional. When absent, generate one

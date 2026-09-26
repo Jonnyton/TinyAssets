@@ -203,6 +203,43 @@ The general rule this leaves behind: **a level is a promise, and a promise with 
 enforcing reader is decoration.** Before offering a level on an owner-facing verb,
 find every reader of the capability it withholds.
 
+So I did, and there are six more of the same shape. `_universe_acl_error` gates a
+non-write universe action on the legacy bit ALONE, and six actions that return raw
+content add nothing on top: `get_activity`, `read_premise`, `read_canon`,
+`read_source`, `read_output`, `query_world` (plus `runs._run_read_allowed` for run
+records). The actions that *do* add a capability gate — `inspect`
+(`read_metadata`), `list` (`discover_existence`), `wiki` (`read_content`) — are
+fine.
+
+Two responses were available: gate all six, or stop offering the levels whose
+promise they break. This change takes the second, for three reasons.
+
+1. **The verb must not promise what the platform does not keep.** `metadata_only`
+   withholds content and `unlisted` withholds metadata; both would be mis-served.
+   `_OFFERED_VISIBILITY_LEVELS = {"private", "public"}` — the two the platform
+   enforces end to end — and the refusal distinguishes "not offered because
+   unenforced" from "unknown", naming the concern.
+2. **It is what the founder actually said.** "Private unless they make them other
+   user accessible" is a binary. `metadata_only`/`unlisted` are refinements nobody
+   asked for, and they were unreachable in practice anyway: nothing in production
+   ever produced them, because the creation default and the backfill only wrote
+   `public` or `private`.
+3. **Six more gated actions is a different change.** Doing it right means a
+   `CONTENT_READ_ACTIONS` table beside `WRITE_ACTIONS` — one definition, not six
+   sprinkled checks — with a per-action judgement about whether its payload is
+   content or metadata (`get_ledger` and `list_canon` are genuinely arguable) and a
+   test each. Folding that into an authority change would make both harder to
+   review, which is how a review round creates the next round's findings.
+
+Filed as `docs/concerns/2026-09-26-content-readers-gate-on-the-legacy-bit.md`,
+naming every reader. When it closes, the other two levels belong in
+`_OFFERED_VISIBILITY_LEVELS` and the `level_not_enforced` branch comes out.
+
+Residual exposure, stated plainly: a dev/migration caller reaching
+`set_universe_visibility` directly can still declare `metadata_only`, and five of
+those six readers would serve its content. No production path does, and a test
+pins the sixth (`get_memory_scope_status`) closed.
+
 ## D8. What this does to `/commons`
 
 `WebSite/shared/mcp/public-read-contract.js` already rejects any universe row
