@@ -198,7 +198,29 @@ if ! rclone copyto --contimeout 60s --timeout 900s \
 fi
 log "  upload OK"
 
-# ----- 4b. logs tier — recent journal history, redacted (best-effort) ----
+# ----- 5. offsite upload (GH release assets) ----------------------------
+# Best-effort; failure is non-fatal so local backup still counts as done.
+# Activated only when GH_TOKEN is set. Ships every tier that was built.
+
+SHIP_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/backup_ship_gh.py"
+if [[ -n "${GH_TOKEN:-}" ]]; then
+    for ship_path in "${TAR_PATH}" "${BRAIN_PATH}"; do
+        log "shipping $(basename "${ship_path}") to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/tinyassets-backups})..."
+        set +e
+        python3 "${SHIP_SCRIPT}" "${ship_path}" 2>&1 | while IFS= read -r line; do
+            log "  gh-ship: ${line}"
+        done
+        ship_status=$?
+        set -e
+        if [[ "${ship_status}" -ne 0 ]]; then
+            log "WARN: GH offsite ship exited ${ship_status} for $(basename "${ship_path}") (local backup succeeded)"
+        fi
+    done
+else
+    log "GH_TOKEN not set — skipping offsite GH release upload"
+fi
+
+# ----- 5b. logs tier — recent journal history, redacted (best-effort) ----
 #
 # The third tier carries evidence rather than state: container output that used
 # to live only inside a container and died with every deploy that recreated it
@@ -211,6 +233,15 @@ log "  upload OK"
 # starve the brain archive, which is the irreplaceable tier. The script exits 3
 # for "no journal to read" so this can tell a skipped tier from a real failure,
 # and either way the backup's own exit code is unchanged.
+#
+# ORDER IS THE GUARANTEE, and it used to be wrong. This ran as section 4b, BEFORE
+# the offsite ship above, so a slow journal query could spend
+# `tinyassets-backup.service`'s TimeoutStartSec=30min and get the unit killed
+# before the brain tier ever reached GitHub -- "best-effort" in the comment,
+# load-bearing in the schedule (cross-family review,
+# output/codex-log-durability-review.md §5). Running last means the worst this
+# tier can now cost is itself. The script is also bounded per source (--lines,
+# --timeout) so it cannot sit here indefinitely even when it does run.
 
 LOGS_NAME="tinyassets-logs-${TS}.tar.gz"
 LOGS_PATH="/tmp/${LOGS_NAME}"
@@ -234,36 +265,22 @@ if [[ "${logs_tier_status}" -eq 0 && -f "${LOGS_PATH}" ]]; then
     else
         log "  logs upload OK"
     fi
+    if [[ -n "${GH_TOKEN:-}" ]]; then
+        log "shipping ${LOGS_NAME} to GitHub releases..."
+        set +e
+        python3 "${SHIP_SCRIPT}" "${LOGS_PATH}" 2>&1 | while IFS= read -r line; do
+            log "  gh-ship: ${line}"
+        done
+        logs_ship_status="${PIPESTATUS[0]}"
+        set -e
+        if [[ "${logs_ship_status}" -ne 0 ]]; then
+            log "WARN: GH ship exited ${logs_ship_status} for ${LOGS_NAME} (state tiers already shipped)"
+        fi
+    fi
 elif [[ "${logs_tier_status}" -eq 3 ]]; then
     log "WARN: no readable journal — logs tier skipped (state tiers unaffected)"
 else
     log "WARN: logs tier exited ${logs_tier_status} — skipped (state tiers unaffected)"
-fi
-
-# ----- 5. offsite upload (GH release assets) ----------------------------
-# Best-effort; failure is non-fatal so local backup still counts as done.
-# Activated only when GH_TOKEN is set. Ships every tier that was built.
-
-SHIP_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/backup_ship_gh.py"
-SHIP_PATHS=("${TAR_PATH}" "${BRAIN_PATH}")
-if [[ "${logs_tier_built}" -eq 1 ]]; then
-    SHIP_PATHS+=("${LOGS_PATH}")
-fi
-if [[ -n "${GH_TOKEN:-}" ]]; then
-    for ship_path in "${SHIP_PATHS[@]}"; do
-        log "shipping $(basename "${ship_path}") to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/tinyassets-backups})..."
-        set +e
-        python3 "${SHIP_SCRIPT}" "${ship_path}" 2>&1 | while IFS= read -r line; do
-            log "  gh-ship: ${line}"
-        done
-        ship_status=$?
-        set -e
-        if [[ "${ship_status}" -ne 0 ]]; then
-            log "WARN: GH offsite ship exited ${ship_status} for $(basename "${ship_path}") (local backup succeeded)"
-        fi
-    done
-else
-    log "GH_TOKEN not set — skipping offsite GH release upload"
 fi
 
 rm -f "${TAR_PATH}" "${BRAIN_PATH}" "${LOGS_PATH}"

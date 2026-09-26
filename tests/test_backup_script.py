@@ -851,7 +851,7 @@ def test_backup_sh_builds_the_logs_tier_without_risking_the_state_tiers():
     text = BACKUP_SH.read_text(encoding="utf-8")
     assert "tinyassets-logs-" in text, "logs-tier archive missing from backup.sh"
     assert "backup_log_tier.py" in text
-    section = text.split("# ----- 4b.", 1)[1].split("# ----- 5.", 1)[0]
+    section = text.split("# ----- 5b.", 1)[1].split("# ----- 6.", 1)[0]
     assert "logs_tier_status" in section
     # No `exit` anywhere in the tier: every failure path is a WARN.
     assert not re.search(r"^\s*exit\b", section, re.MULTILINE), (
@@ -859,10 +859,45 @@ def test_backup_sh_builds_the_logs_tier_without_risking_the_state_tiers():
         f"abort the run before the retention prune:\n{section}"
     )
     assert section.count("WARN") >= 3
-    # Shipped off-box only through the tier list, so a tier that was not built
-    # cannot be uploaded as a stale path.
-    assert 'if [[ "${logs_tier_built}" -eq 1 ]]; then' in text
-    assert 'SHIP_PATHS+=("${LOGS_PATH}")' in text
+    # Only shipped when it was actually built, so a skipped tier cannot upload a
+    # stale path from a previous run.
+    assert 'if [[ "${logs_tier_status}" -eq 0 && -f "${LOGS_PATH}" ]]; then' in text
+
+
+def test_the_logs_tier_runs_after_the_state_tiers_have_shipped():
+    """Order is the guarantee that "best-effort" is true.
+
+    As section 4b this ran BEFORE the offsite ship, so a slow journal query could
+    spend `tinyassets-backup.service`'s TimeoutStartSec=30min and get the unit
+    killed before the irreplaceable brain tier reached GitHub — best-effort in the
+    comment, load-bearing in the schedule (cross-family review,
+    output/codex-log-durability-review.md §5).
+    """
+    text = BACKUP_SH.read_text(encoding="utf-8")
+    state_ship = text.index("# ----- 5. offsite upload")
+    logs_tier = text.index("# ----- 5b. logs tier")
+    prune = text.index("# ----- 6. retention prune")
+    assert state_ship < logs_tier < prune, (
+        "the logs tier must sit between the state-tier offsite ship and the prune"
+    )
+    # The state ship loop must not depend on the logs tier having run.
+    ship_block = text[state_ship:logs_tier]
+    assert 'for ship_path in "${TAR_PATH}" "${BRAIN_PATH}"' in ship_block
+    assert "LOGS_PATH" not in ship_block, (
+        "the state-tier ship must not reference the logs tier at all"
+    )
+
+
+def test_the_logs_tier_cannot_spend_the_units_whole_timeout():
+    """A per-source bound in the collector, well inside the unit's own."""
+    unit = (REPO / "deploy" / "tinyassets-backup.service").read_text(encoding="utf-8")
+    assert "TimeoutStartSec=30min" in unit
+
+    sys.path.insert(0, str(REPO / "scripts"))
+    import backup_log_tier
+
+    assert backup_log_tier.DEFAULT_TIMEOUT_SECONDS < 30 * 60
+    assert backup_log_tier.DEFAULT_MAX_LINES > 0
 
 
 def test_backup_sh_removes_the_logs_archive_from_local_disk():

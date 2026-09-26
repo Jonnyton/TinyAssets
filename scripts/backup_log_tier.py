@@ -56,17 +56,39 @@ DEFAULT_SOURCES = (
 )
 DEFAULT_SINCE = "3 days ago"
 MANIFEST_NAME = "manifest.tsv"
-# journalctl's own cap on the bytes it will emit per invocation. A single runaway
-# day cannot make the bundle unshippable as a GitHub release asset.
+# Cap on the bytes written per source, so one runaway day cannot make the bundle
+# unshippable as a GitHub release asset.
 DEFAULT_MAX_BYTES = 64 * 1024 * 1024
+# Cap on what journalctl EMITS, which is the one that bounds memory: the query is
+# read into a string, so without this the process size is whatever the window
+# happens to hold. `--lines` returns the most recent N entries, so the cap also
+# picks the right end of the window (cross-family review,
+# output/codex-log-durability-review.md §5 and its closing note).
+DEFAULT_MAX_LINES = 50_000
+# Wall-clock bound per source. `tinyassets-backup.service` has
+# `TimeoutStartSec=30min` for the WHOLE unit, and this tier is the least valuable
+# thing in it, so it must not be able to spend that budget: a hung journal would
+# otherwise get the unit killed before the irreplaceable brain tier finishes
+# shipping.
+DEFAULT_TIMEOUT_SECONDS = 120
 
 
-def _journalctl_argv(source: str, *, since: str, binary: str) -> list[str]:
+def _journalctl_argv(
+    source: str, *, since: str, binary: str, max_lines: int
+) -> list[str]:
     """Translate a `kind:name` source into a journalctl invocation."""
     kind, _, name = source.partition(":")
     if not name:
         raise ValueError(f"source {source!r} must be 'container:<name>' or 'unit:<name>'")
-    common = [binary, "--no-pager", "--output=short-iso-precise", "--since", since]
+    common = [
+        binary,
+        "--no-pager",
+        "--output=short-iso-precise",
+        "--since",
+        since,
+        "--lines",
+        str(max_lines),
+    ]
     if kind == "container":
         # Docker's journald driver stamps CONTAINER_NAME per entry, so this match
         # spans every past generation of that container -- the whole reason the
@@ -100,17 +122,27 @@ def collect_source(
     since: str,
     binary: str,
     max_bytes: int,
+    max_lines: int = DEFAULT_MAX_LINES,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
     runner=subprocess.run,
 ) -> tuple[int, str]:
     """Write one redacted journal query to ``destination``.
 
-    Returns ``(lines_written, status)``. ``status`` is ``ok``, ``empty``, or
-    ``error:<detail>`` -- recorded in the manifest so a source that stopped
-    producing is visible in the bundle instead of merely absent.
+    Returns ``(lines_written, status)``. ``status`` is ``ok``, ``empty``,
+    ``truncated``, or ``error:<detail>`` -- recorded in the manifest so a source
+    that stopped producing is visible in the bundle instead of merely absent.
+
+    Bounded three ways, because this is the least valuable thing in a unit with a
+    30-minute timeout: ``max_lines`` caps what journalctl emits, ``timeout`` caps
+    how long it may take, and ``max_bytes`` caps what is written.
     """
-    argv = _journalctl_argv(source, since=since, binary=binary)
+    argv = _journalctl_argv(source, since=since, binary=binary, max_lines=max_lines)
     try:
-        completed = runner(argv, capture_output=True, text=True, errors="replace")
+        completed = runner(
+            argv, capture_output=True, text=True, errors="replace", timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        return 0, f"error:timeout after {timeout}s"
     except (OSError, ValueError) as exc:
         return 0, f"error:{type(exc).__name__}"
     if completed.returncode != 0:
@@ -120,26 +152,38 @@ def collect_source(
         reason = redact_line(detail[-1])[:160] if detail else "rc%d" % completed.returncode
         return 0, f"error:{reason}"
 
-    written = 0
-    data_lines = 0
-    truncated = False
+    # Redact first, then select which lines fit. Keeping the NEWEST is the whole
+    # point: journalctl emits oldest-first, so the original head-first budget
+    # discarded the most recent evidence -- exactly the lines an incident needs
+    # (cross-family review, output/codex-log-durability-review.md, closing note).
+    kept: list[str] = []
     budget = max_bytes
+    truncated = False
+    data_lines = 0
+    for raw in reversed((completed.stdout or "").splitlines()):
+        stripped = raw.strip()
+        if _NO_ENTRIES.match(stripped):
+            continue
+        line = redact_line(raw) + "\n"
+        budget -= len(line.encode("utf-8", errors="replace"))
+        if budget < 0:
+            truncated = True
+            break
+        kept.append(line)
+        if not _JOURNAL_MARKER.match(stripped):
+            data_lines += 1
+    kept.reverse()
+
     with destination.open("w", encoding="utf-8", errors="replace", newline="\n") as handle:
-        for raw in (completed.stdout or "").splitlines():
-            if _NO_ENTRIES.match(raw.strip()):
-                continue
-            line = redact_line(raw) + "\n"
-            budget -= len(line.encode("utf-8", errors="replace"))
-            if budget < 0:
-                handle.write(f"[backup-log-tier] truncated at {max_bytes} bytes\n")
-                truncated = True
-                break
-            handle.write(line)
-            written += 1
-            if not _JOURNAL_MARKER.match(raw.strip()):
-                data_lines += 1
+        if truncated:
+            handle.write(
+                f"[backup-log-tier] older lines dropped at {max_bytes} bytes; "
+                "this file holds the most recent of the window\n"
+            )
+        handle.writelines(kept)
+
     if truncated:
-        return written, "truncated"
+        return data_lines, "truncated"
     return data_lines, "ok" if data_lines else "empty"
 
 
@@ -150,6 +194,8 @@ def build_bundle(
     since: str = DEFAULT_SINCE,
     binary: str = "journalctl",
     max_bytes: int = DEFAULT_MAX_BYTES,
+    max_lines: int = DEFAULT_MAX_LINES,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
     runner=subprocess.run,
 ) -> tuple[int, list[str]]:
     """Write the bundle. Returns ``(exit_code, report_lines)``."""
@@ -170,6 +216,8 @@ def build_bundle(
                     since=since,
                     binary=binary,
                     max_bytes=max_bytes,
+                    max_lines=max_lines,
+                    timeout=timeout,
                     runner=runner,
                 )
             except ValueError as exc:
@@ -219,6 +267,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--journalctl", default="journalctl", help="journalctl binary")
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    parser.add_argument("--max-lines", type=int, default=DEFAULT_MAX_LINES)
+    parser.add_argument(
+        "--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS,
+        help="per-source wall-clock bound; the backup unit's own is 30 min",
+    )
     args = parser.parse_args(argv)
 
     code, report = build_bundle(
@@ -227,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
         since=args.since,
         binary=args.journalctl,
         max_bytes=args.max_bytes,
+        max_lines=args.max_lines,
+        timeout=args.timeout,
     )
     for line in report:
         print(f"[backup-log-tier] {line}")

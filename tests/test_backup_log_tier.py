@@ -123,28 +123,87 @@ def test_covers_the_canonical_secret_shapes():
     from tinyassets.providers.codex_provider import _SECRET_SHAPES
     from tinyassets.workspace_git import scrub_text
 
+    # (probe, the substring that must NOT survive). Asserting on the VALUE and
+    # not merely that the line CHANGED is the whole point: the first version of
+    # this test accepted any change, so `password=alpha,beta` passing as
+    # `password=[redacted],beta` looked redacted while disclosing `beta`
+    # (cross-family review, output/codex-log-durability-review.md §4).
     probes = [
-        "https://u:p@github.com/x/y",
-        "Authorization: Bearer zzzzzzzzzzzz",
-        _GH_FAKE,
-        _shaped("github", "_pat_11ABCDEFG0", "AAAABBBBCCCCDDDD_EEEEFFFF"),
-        "sk-abcdefghijkl",
-        "eyJhbGciOiJIUzI1NiJ9.payload.sig",
-        "bearer sometokenvalue",
-        "token: abcdefghijklmnop",
-        "api_key=abcdefghijklmnop",
-        "secret = abcdefghijklmnop",
-        "password:abcdefghijklmnop",
+        ("https://u:secretpw@github.com/x/y", "secretpw"),
+        ("Authorization: Bearer zzzzzzzzzzzz", "zzzzzzzzzzzz"),
+        (_GH_FAKE, _GH_FAKE),
+        (
+            _shaped("github", "_pat_11ABCDEFG0", "AAAABBBBCCCCDDDD_EEEEFFFF"),
+            _shaped("github", "_pat_11ABCDEFG0", "AAAABBBBCCCCDDDD_EEEEFFFF"),
+        ),
+        ("sk-abcdefghijkl", "sk-abcdefghijkl"),
+        ("eyJhbGciOiJIUzI1NiJ9.payload.sig", "eyJhbGciOiJIUzI1NiJ9"),
+        ("bearer sometokenvalue", "sometokenvalue"),
+        ("token: abcdefghijklmnop", "abcdefghijklmnop"),
+        ("api_key=abcdefghijklmnop", "abcdefghijklmnop"),
+        ("secret = abcdefghijklmnop", "abcdefghijklmnop"),
+        ("password:abcdefghijklmnop", "abcdefghijklmnop"),
     ]
-    for probe in probes:
+    for probe, secret in probes:
         canonical_changed = (
             scrub_text(probe) != probe or _SECRET_SHAPES.sub("[redacted]", probe) != probe
         )
         assert canonical_changed, f"probe {probe!r} is not a canonical secret shape"
-        assert redact_line(probe) != probe, (
-            f"{probe!r} is redacted by the in-process filters but survives the "
-            "log-bundle filter"
+        scrubbed = redact_line(probe)
+        assert secret not in scrubbed, (
+            f"{secret!r} survives the log-bundle filter in {probe!r} -> "
+            f"{scrubbed!r}; the in-process filters redact it"
         )
+
+
+@pytest.mark.parametrize(
+    "line, secret",
+    [
+        # The real collection path: Vector's console sink is `codec: json`
+        # (deploy/vector.yaml), so a daemon line reaches the journal as an
+        # ESCAPED JSON string. A pattern expecting a bare quote never fires.
+        (
+            '{"log": "{\\"api_key\\": \\"opaquevalue123456\\"}", "role":"daemon"}',
+            "opaquevalue123456",
+        ),
+        # A comma-bearing value must go WHOLE. Stopping at the comma left
+        # `password=[redacted],beta;gamma` -- redacted-looking, still disclosing.
+        ("password=alpha,beta;gamma&delta", "beta"),
+        # `_` is a word character, so a leading \b never matched here and the
+        # whole key survived.
+        ("prefix_sk-abcdefghijkl", "sk-abcdefghijkl"),
+        # argv style, no separator at all.
+        ("--password opaquevalue123456", "opaquevalue123456"),
+        ("--api-key opaquevalue123456", "opaquevalue123456"),
+        # Unescaped JSON, for completeness.
+        ('{"api_key": "opaquevalue123456", "model": "opus"}', "opaquevalue123456"),
+    ],
+)
+def test_the_four_reproduced_bypasses_stay_closed(line, secret):
+    """Regression cover for the leaks a cross-family review reproduced.
+
+    Every one of these passed the original test suite, because the planted
+    fixtures were bare token shapes that a standalone rule catches, and nothing
+    exercised a labelled value inside escaped JSON.
+    """
+    scrubbed = redact_line(line)
+    assert secret not in scrubbed, f"{secret!r} survives in {scrubbed!r}"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"log":"GET /mcp 200 in 41ms","role":"daemon"}',
+        "latency_ms=1841 attempt=2 provider=openrouter",
+        "graph_id=g-0193ac model=claude-opus-5 rounds=4",
+        "2026-09-26T01:08:00.123456+0000 converse: learning 3 facts",
+        "sha256:7a81fdd62e056321055a9e4bdec4073d752ecf68f4c192e676b85001721523c2",
+    ],
+)
+def test_widening_the_value_terminator_did_not_start_eating_evidence(line):
+    """The fix consumes more per match, so the opposite failure is now the risk:
+    a redactor that swallows the context is as useless as one that leaks."""
+    assert redact_line(line) == line
 
 
 def test_long_line_is_truncated_not_dropped():
@@ -180,9 +239,11 @@ class _FakeJournal:
         self.returncode = returncode
         self.stderr = stderr
         self.calls: list[list[str]] = []
+        self.kwargs: list[dict] = []
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
+        self.kwargs.append(dict(kwargs))
         return subprocess.CompletedProcess(
             argv, self.returncode, self.output, self.stderr
         )
@@ -319,6 +380,7 @@ def test_one_failing_source_still_ships_the_others(tmp_path):
     class Mixed(_FakeJournal):
         def __call__(self, argv, **kwargs):
             self.calls.append(list(argv))
+            self.kwargs.append(dict(kwargs))
             if "-u" in argv:
                 return subprocess.CompletedProcess(argv, 1, "", "no such unit")
             return subprocess.CompletedProcess(argv, 0, "kept line\n", "")
@@ -372,6 +434,7 @@ def test_one_empty_source_is_recorded_beside_a_live_one(tmp_path):
     class Mixed(_FakeJournal):
         def __call__(self, argv, **kwargs):
             self.calls.append(list(argv))
+            self.kwargs.append(dict(kwargs))
             payload = "-- No entries --\n" if "-u" in argv else "daemon: real line\n"
             return subprocess.CompletedProcess(argv, 0, payload, "")
 
@@ -414,7 +477,13 @@ def test_boot_markers_are_kept_but_are_not_evidence(tmp_path):
     assert "\t1\tok" in _members(out)["manifest.tsv"]
 
 
-def test_max_bytes_truncates_and_says_so(tmp_path):
+def test_max_bytes_keeps_the_newest_lines_and_says_so(tmp_path):
+    """Which END the budget keeps decides whether the bundle is usable.
+
+    journalctl emits oldest-first, so a head-first budget discards the most
+    recent evidence — the lines an incident actually needs. Found by a
+    cross-family review (output/codex-log-durability-review.md, closing note).
+    """
     out = tmp_path / "b.tar.gz"
     journal = _FakeJournal(output="".join(f"line {i}\n" for i in range(5000)))
     code, _ = backup_log_tier.build_bundle(
@@ -426,8 +495,50 @@ def test_max_bytes_truncates_and_says_so(tmp_path):
     )
     assert code == 0
     members = _members(out)
-    assert "truncated at 200 bytes" in members["container-tinyassets-logs.log"]
+    body = members["container-tinyassets-logs.log"]
+    assert "older lines dropped at 200 bytes" in body
     assert "\ttruncated" in members["manifest.tsv"]
+    # The newest line is present and the oldest is gone — not the reverse.
+    assert "line 4999" in body
+    assert "line 0\n" not in body
+    # And the kept lines are still in chronological order, not reversed.
+    kept = [ln for ln in body.splitlines() if ln.startswith("line ")]
+    assert kept == sorted(kept, key=lambda ln: int(ln.split()[1]))
+
+
+def test_journalctl_is_bounded_in_lines_and_wall_clock(tmp_path):
+    """This tier is the least valuable thing in a unit with TimeoutStartSec=30min,
+    so it must not be able to spend that budget or that much memory."""
+    journal = _FakeJournal(output="line\n")
+    backup_log_tier.build_bundle(
+        tmp_path / "b.tar.gz",
+        sources=("container:tinyassets-logs",),
+        binary=sys.executable,
+        runner=journal,
+    )
+    argv = journal.calls[0]
+    assert "--lines" in argv, "journalctl output is unbounded -> unbounded memory"
+    assert argv[argv.index("--lines") + 1] == str(backup_log_tier.DEFAULT_MAX_LINES)
+    assert journal.kwargs[0].get("timeout") == backup_log_tier.DEFAULT_TIMEOUT_SECONDS
+    assert backup_log_tier.DEFAULT_TIMEOUT_SECONDS < 30 * 60
+
+
+def test_a_hung_journalctl_is_a_skipped_tier_not_a_killed_backup(tmp_path):
+    class Hanging(_FakeJournal):
+        def __call__(self, argv, **kwargs):
+            self.calls.append(list(argv))
+            self.kwargs.append(dict(kwargs))
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
+
+    code, report = backup_log_tier.build_bundle(
+        tmp_path / "b.tar.gz",
+        sources=("container:tinyassets-logs",),
+        binary=sys.executable,
+        runner=Hanging(),
+    )
+    assert code == 3, report
+    assert any("timeout" in line for line in report)
+    assert not (tmp_path / "b.tar.gz").exists()
 
 
 def test_unknown_source_kind_is_an_argument_error(tmp_path):

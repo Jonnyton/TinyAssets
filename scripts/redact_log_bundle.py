@@ -25,6 +25,26 @@ extra shapes are ones the in-process redactors do not need because they never
 see a bare token on a line of their own -- Slack ``xoxb-``/``xapp-`` tokens,
 Cloudflare tunnel tokens, and ``KEY=value`` environment echoes.
 
+What this deliberately does NOT catch
+------------------------------------
+Stated because a filter whose limits are unwritten gets trusted past them. A
+cross-family review reproduced these; they are accepted, not overlooked:
+
+- **An unlabelled high-entropy blob.** A bare base64 or hex string with no
+  adjacent key name is indistinguishable from a content hash, a request id, a
+  digest or a model id, all of which appear constantly in this daemon's output.
+  A generic "long token" rule was already tried once in
+  ``codex_provider._SECRET_SHAPES`` and removed for exactly this reason.
+- **A secret split across two journal records.** This is a line filter by
+  construction, and the journal's unit of storage is the record.
+- **A value long enough to cross ``MAX_LINE_CHARS``.** Redaction runs BEFORE
+  truncation, so the visible part is redacted; but a single line carrying a
+  secret past the bound is truncated rather than inspected further.
+
+The mitigation for all three is upstream: the daemon should not log credential
+material, and ``providers/diagnostics.py`` / ``workspace_git.scrub_text`` are
+where that is enforced. This filter is the second line, not the first.
+
 Stdlib only -- this runs from the host-uptime runtime closure, which ships no
 third-party packages and not the ``tinyassets`` package.
 """
@@ -47,20 +67,48 @@ PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)(authorization\s*:\s*)([^\r\n]+)"), r"\1" + REDACTED),
     # `Bearer <token>` outside a header (codex_provider _SECRET_SHAPES)
     (re.compile(r"(?i)bearer\s+\S+"), REDACTED),
-    # key=value / key: value echoes. `[^\s,;&\"']+` rather than `\S+` so a
-    # token inside JSON or a query string does not swallow the rest of the line
-    # -- over-consuming here hides the surrounding context that makes a log
-    # line useful, and under-consuming leaks nothing (the value is still gone).
+    # A labelled value: `key=v`, `key: v`, `"key": "v"`, `\"key\": \"v\"`,
+    # `--key v`. Everything after the label up to a STRUCTURAL delimiter goes.
+    #
+    # Rewritten 2026-09-26 after a cross-family review reproduced four leaks in
+    # the first version (Codex, output/codex-log-durability-review.md §4). The
+    # important one was on the real collection path: Vector's console sink is
+    # `codec: json` (deploy/vector.yaml), so a daemon line reaches the journal as
+    # an ESCAPED JSON string -- `{"log": "{\"api_key\": \"secret\"}"}` -- and a
+    # pattern expecting a bare `"` never fires. Hence `(?:\\?["'])?` on both
+    # sides: it matches a plain quote, a backslash-escaped quote, or neither.
+    #
+    # The value terminator is the other half. The first version stopped at
+    # `,;&"'`, which turned `password=alpha,beta;gamma` into
+    # `password=[redacted],beta;gamma` -- a PARTIAL disclosure that still looked
+    # redacted. The set below stops only at whitespace, a closing brace/bracket,
+    # or an escaped quote, so a comma-bearing value is consumed whole. Structural
+    # JSON separators (`,` followed by a quoted key) still end it because the
+    # escaped-quote alternative matches first.
     (
         re.compile(
-            r"(?i)\b([A-Za-z0-9_.-]*(?:token|secret|api[_-]?key|password|passwd"
-            r"|credential|private[_-]?key)[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)"
-            r"[\"']?[^\s,;&\"']+"
+            r"""(?ix)
+            ( (?:--)?                              # optional argv flag prefix
+              (?:\\?["'])?                         # opening quote, escaped or not
+              [A-Za-z0-9_.-]*
+              (?: token|secret|api[_-]?key|password|passwd
+                | credential|private[_-]?key|auth|bearer )
+              [A-Za-z0-9_.-]*
+              (?:\\?["'])?                         # closing quote of the KEY
+              \s* [:=]? \s*                        # separator, or just space (argv)
+              (?:\\?["'])?                         # opening quote of the VALUE
+            )
+            (?! \s )                               # a label with no value is not a leak
+            (?: \\. | [^\s"'\\},\]] | ,(?!\s*\\?["']) )+
+            """
         ),
         r"\1" + REDACTED,
     ),
-    # OpenAI/Anthropic/OpenRouter-style keys: sk-, sk-ant-, sk-or-v1-
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), REDACTED),
+    # OpenAI/Anthropic/OpenRouter-style keys: sk-, sk-ant-, sk-or-v1-.
+    # No leading `\b`: the canonical `_SECRET_SHAPES` has none, and `prefix_sk-…`
+    # kept the whole key alive because `_` is a word character so `\b` never
+    # matched (same review, §4).
+    (re.compile(r"sk-[A-Za-z0-9_-]{8,}"), REDACTED),
     # JWT or any base64url JSON object header (codex_provider _SECRET_SHAPES)
     (re.compile(r"\beyJ[A-Za-z0-9_.-]{10,}"), REDACTED),
     # GitHub (workspace_git) and the rest of the token estate
