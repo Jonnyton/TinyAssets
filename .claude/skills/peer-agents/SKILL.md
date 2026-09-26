@@ -76,7 +76,7 @@ Useful flags: `--timeout SEC` (default 1800), `--effort minimal|low|medium|high|
 
 ## When to use which peer
 
-- **Cross-family review is the AGENTS.md rule:** research-derived findings and non-trivial changes need opposite-family review. If you are Kimi/Claude, dispatch review to codex; if you are Codex/OpenAI, dispatch to claude.
+- **Which changes need a review is not decided here.** `AGENTS.md` § *Working Norms* and `docs/reference/quality-gates.md` own the scope (floor-class changes and receipt-gated paths, one round, dispatched in parallel after the PR opens); this skill owns the mechanics. When one is owed: if you are Kimi/Claude, dispatch to codex; if you are Codex/OpenAI, dispatch to claude.
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
 - **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree. `--effort low` for small tasks.
 

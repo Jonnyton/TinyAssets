@@ -79,11 +79,11 @@ class Budget:
 # one fact means a reflow that removes words can still fail — a second authority
 # for the same thing, which is what the 2026-09-26 cut was removing.
 CONFIG: tuple[Budget, ...] = (
-    Budget("AGENTS.md", "hard", 15262, 0,
+    Budget("AGENTS.md", "hard", 15257, 0,
            "Cross-provider canonical. Move procedure to docs/reference/, not into here."),
-    Budget("CLAUDE.md", "hard", 1418, 0,
+    Budget("CLAUDE.md", "hard", 1051, 0,
            "Claude Code router; harness quirks only, a thin layer over AGENTS.md."),
-    Budget("docs/reference/quality-gates.md", "hard", 3724, 0,
+    Budget("docs/reference/quality-gates.md", "hard", 3984, 0,
            "Review/merge/completion procedure. A new gate displaces an old one.",
            always_loaded=False),
     Budget("docs/reference/executable-gates.md", "hard", 5997, 0,
@@ -96,7 +96,7 @@ CONFIG: tuple[Budget, ...] = (
 
 # HARD ceiling for the combined always-loaded payload (AGENTS.md + CLAUDE.md +
 # anything they @import), pinned at the achieved post-cut total.
-COMBINED_HARD_BYTES = 16680
+COMBINED_HARD_BYTES = 16308
 
 
 @dataclass

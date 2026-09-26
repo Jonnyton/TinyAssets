@@ -8,26 +8,29 @@ points here. Read it before a review, a merge, or a completion claim.
 ## Review sequencing — shape before hardening (founder, 2026-08-20)
 
 1. **One shape review**, on the first draft: architecture and approach
-   (fail-closed vs fail-open, one general primitive vs per-channel spaghetti, the
-   right authority model) plus holes that leak, exfiltrate or bypass even for a
-   single user. Rebuilds belong here.
+   (fail-closed vs fail-open, one general primitive vs per-channel spaghetti) plus
+   holes that leak, exfiltrate or bypass even for a single user. Rebuilds belong
+   here.
 2. **Ship live as an MVP** — flip the dark flags on, deploy — and **test as a real
    user** through the app or the chatbot connector. The live user path is the
    shape oracle.
-3. **Then harden what live use shows matters.** Concurrency, TOCTOU, durability,
-   timing side-channels, abuse-at-scale: tracked as `docs/concerns/` files and
-   re-judged after live use, not run as a pre-release gauntlet.
+3. **Then harden what live use shows matters.** Concurrency, durability,
+   abuse-at-scale: tracked as `docs/concerns/` files and re-judged after live use,
+   not run as a pre-release gauntlet.
 
 The split: a hole that bites ONE founder is the floor and is fixed pre-live; an
 edge that only bites multi-tenant, concurrent or crash cases is tracked.
 
 ## Review depth
 
-- **Cross-family review runs for the floor only** (the list is in `AGENTS.md`
-  § *Quality Gates*): one round, dispatched in parallel once the PR is open, on the
-  peer's own budget (`peer-agents`). Everything else — docs, tests, UI, refactors
-  under unchanged tests, anything dark or one-revert-reversible — ships with no
-  review.
+- **Cross-family review runs for floor-class changes** (the floor list is in
+  `AGENTS.md` § *Quality Gates*) **and for PRs a gate already receipt-gates** —
+  gate-defining or authority-critical paths and `drain/` branches, per
+  [`executable-gates.md`](executable-gates.md); those are blocked until an
+  exact-head receipt exists regardless of the floor. One round, dispatched in
+  parallel once the PR is open, on the peer's own budget (`peer-agents`).
+  Everything else — docs, UI, refactors under unchanged tests, anything dark or
+  one-revert-reversible — ships with no review.
 - **P2 findings go to `docs/concerns/`**, one file each, not into the PR.
 - **A finding must cite the PR head** (`file:line`); one against a retired
   architecture, an unbuilt capability or an unread file is dropped without a
@@ -37,11 +40,10 @@ edge that only bites multi-tenant, concurrent or crash cases is tracked.
   often caused by round N's fixes.
 - **Recurring findings mean a missing primitive.** A floor finding in two
   consecutive rounds, or 3+ follow-up PRs in one area within 7 days: stop
-  patching, name the primitive that deletes the class (one writer per fact,
-  user-composable instead of platform policy) and build that slice.
+  patching, name the primitive that deletes the class and build that slice.
 - **If the other family is rate-limited**, an independent same-family reviewer
   against the exact commit stands in and the cross-family check is owed.
-  Inconvenience or disagreement does not activate this.
+  Inconvenience does not activate this.
 
 ## Landing
 
@@ -52,8 +54,10 @@ edge that only bites multi-tenant, concurrent or crash cases is tracked.
   cannot merge them ahead of review; any head-changing push converts back to
   draft. Mechanism: `scripts/drain_review_gate.py`
   ([`executable-gates.md`](executable-gates.md)).
-- **Locally run the tests you touched.** CI is the full suite and is
-  authoritative; required checks are in [`executable-gates.md`](executable-gates.md).
+- **Locally run the relevant tests, including affected heavy files.** Required PR
+  CI runs the suite MINUS `.github/heavy-test-files.txt`, and `heavy-tests` does
+  not run on pull requests at all, so nothing else covers them before merge.
+  Required checks: [`executable-gates.md`](executable-gates.md).
 - **Live failures become evals.** A failure seen in the real app becomes a
   regression test or checklist row before the fix lands.
 

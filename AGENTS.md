@@ -17,7 +17,7 @@ Lowering a pin is always allowed; raising one is not.
 Keep a rule only if it (a) encodes project knowledge a current model cannot infer
 from the repo, (b) prevents irreversible or cross-user harm, or (c) states a
 founder principle. Generic practice, incident stories and restatements get
-deleted; git and `docs/audits/` hold the stories.
+deleted; git and `docs/audits/` hold them.
 
 ---
 
@@ -28,7 +28,7 @@ connector, daemon hosts installing the tray in under 5 minutes, contributors
 cloning and running cleanly, plus discovery, remix, converge, the paid-market
 inbox, and moderation. Take the task unblocking the largest currently-broken
 surface; treat every outage as equal severity, because tiering is what starves
-the quiet surfaces. Break ties by shared dependency impact.
+the quiet surfaces. Break ties by shared dependency.
 
 **Personal-desktop prohibition (founder, 2026-09-21).** `DESKTOP-KCPMGP3` is the
 founder's home PC, not infrastructure: never enroll it, route platform work to
@@ -97,7 +97,7 @@ acting on it, and correct the citation in place** — paths and line numbers rot
 faster than findings do. A contradicted claim gets fixed or filed before you
 respond.
 
-A pasted chat from any client is a bug report: extract the issues and fix them.
+A pasted client chat is a bug report: extract the issues and fix them.
 
 `python scripts/docview.py` (`stat`, `headings`, `section`, `lines`, `search`,
 `json`) reads large files — `PLAN.md`, `output/*/notes.json`, review artifacts.
@@ -140,10 +140,10 @@ Claude Code and Codex CLI work this repo, calling each other as peers via
 `peer-agents`. Neither runs a standing team.
 
 - **Review is cross-family and narrow.** One round, dispatched in parallel once
-  the PR is open, on the peer's own budget, for a floor-class change (below).
-  Everything else ships without a review. It gates landing, not your progress:
-  take the next lane. Findings off the floor become `docs/concerns/` files, never
-  extra PR rounds. Backstop: three rounds maximum, then take the rest to the
+  the PR is open, on the peer's own budget, for a floor-class change (below) or a
+  receipt-gated path. Everything else ships without a review. It gates landing,
+  not your progress: take the next lane. Findings off the floor become
+  `docs/concerns/` files, never extra rounds. Backstop: three rounds, then the
   founder.
 - **Work in parallel, about four lanes,** in isolated worktrees; serialize merges
   and production/live-account operations. Parallelism never relaxes tests.
@@ -203,9 +203,10 @@ Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/e
 
 ## Testing
 
-- `pytest` for the suite, `ruff check` before committing; every module has tests
-  and nodes never crash. **Run the tests you touched locally; CI runs the full
-  suite and is authoritative.** `actionlint` on workflow edits.
+- `pytest` for the suite, `ruff check` before committing; nodes never crash.
+  **Run the relevant tests locally, heavy ones included:** required PR CI excludes
+  `.github/heavy-test-files.txt` and `heavy-tests` skips PRs. `actionlint` on
+  workflow edits.
 - **No mandatory mutation tables.** Mutation-check only a guard against data loss
   or a cross-user leak: break what it guards, confirm red, restore. A gate that
   cannot fail is decoration.
@@ -235,8 +236,8 @@ Load-bearing invariants:
 - **CWD-independent resolvers only** -- `tinyassets.storage.data_dir()`,
   `wiki_path()`. Never `Path.cwd()` logic or a re-implemented precedence.
 - **Containers:** `TINYASSETS_DATA_DIR=/data` + bind-mount (`deploy/README.md`).
-- **No model credential in the daemon env** (Hard Rule 15): no model login, API
-  key or opt-in switch; the entrypoint strips any that appear.
+- **No model credential in the daemon env** (Hard Rule 15): no login, key or
+  opt-in switch; the entrypoint strips any that appear.
 - **Secrets are vault-first:** `set -a; source scripts/load_secrets.sh; set +a`.
   Never a committed plaintext file.
 

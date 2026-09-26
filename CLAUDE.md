@@ -24,14 +24,6 @@ Claude context to do nothing.
 Read `AGENTS.md` (imported above) and let the sync gate report whether the
 checkout is behind. There is no startup ritual beyond that.
 
-### Memory and skills
+### Skills
 
-Per-agent memory lives in `.claude/agent-memory/<name>/` — the named owner
-writes, everyone reads. Skills are in `.claude/skills/`, mirrored from the
-canonical `.agents/skills/`.
-
-### Verification
-
-In Claude Code the independent path is a Codex subprocess — a genuinely different
-model family, which a Claude teammate reviewing Claude's work never was. The live
-`ui-test` route remains the final proof for chatbot-facing behaviour.
+Skills are in `.claude/skills/`, mirrored from the canonical `.agents/skills/`.
