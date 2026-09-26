@@ -1167,6 +1167,23 @@ def test_every_gate_defining_path_demands_a_receipt() -> None:
         assert sensitive.match(path), f"{path} left the release-critical set"
 
 
+def test_raising_a_rulebook_pin_needs_a_receipt() -> None:
+    """The rulebook ratchet is a one-line bypass, so it is gate-defining.
+
+    `check_context_budget.py` and `test_rulebook_ratchet.py` pin how large the
+    always-loaded rule files may be. Raising a pin is the bypass direction and
+    takes one edit, so it needs the same receipt as editing the test gate itself.
+    They are deliberately NOT in SENSITIVE_RE: this adds a receipt requirement,
+    not a scope declaration, so no extra PR has to carry `infra-change`.
+    """
+    gate = re.compile(_workflow_regex("GATE_RE"))
+    sensitive = re.compile(_workflow_regex("SENSITIVE_RE"))
+
+    for path in ("scripts/check_context_budget.py", "tests/test_rulebook_ratchet.py"):
+        assert gate.match(path), f"{path} must require a receipt"
+        assert not sensitive.match(path), f"{path} must not newly need the label"
+
+
 def test_ordinary_release_critical_paths_need_no_receipt() -> None:
     """The cut, asserted: `deploy/` and a random workflow declare, not stamp.
 

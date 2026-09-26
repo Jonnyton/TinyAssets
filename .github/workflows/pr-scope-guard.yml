@@ -178,7 +178,13 @@ jobs:
           # founder's direction is that the process is already bloated. What
           # changed on 2026-09-26 is only WHAT a receipt has to be: see the
           # attestation requirement below and in scripts/drain_review_gate.py.
-          GATE_RE='^(\.github/workflows/tests\.yml$|\.github/workflows/pr-scope-guard\.yml$|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$)'
+          # `check_context_budget.py` and `test_rulebook_ratchet.py` are the
+          # rulebook ratchet: they pin how large the always-loaded rule files may
+          # be. RAISING a pin is the bypass direction and it is a one-line edit,
+          # so it needs the same receipt. The ratchet test arrives with #4025;
+          # naming it here first costs nothing, because a path that does not
+          # exist simply never matches.
+          GATE_RE='^(\.github/workflows/tests\.yml$|\.github/workflows/pr-scope-guard\.yml$|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$|scripts/check_context_budget\.py$|tests/test_rulebook_ratchet\.py$)'
           GATE_HITS="$(classify "$GATE_RE" "")" || exit 1
 
           # AUTHORITY paths carry the same receipt requirement, for a different

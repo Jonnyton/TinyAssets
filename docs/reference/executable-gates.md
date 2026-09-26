@@ -3,8 +3,7 @@
 Which of this project's rules are enforced by something that can fail, where
 that enforcement runs, and which rules are deliberately still judgement.
 
-Written 2026-08-25 during the harness reset; authority paths added 2026-08-26;
-the receipt itself became a published approval on 2026-09-26. The reset's rule was **every gate
+Written 2026-08-25 during the harness reset; authority paths added 2026-08-26. The reset's rule was **every gate
 is either executable or honestly labelled as judgement** — a rule that reads
 like a gate but enforces nothing is worse than no rule, because it buys
 confidence it has not earned.
@@ -20,7 +19,7 @@ confidence it has not earned.
 | No CP-1252 mojibake in tracked text | `mojibake` invariant | same |
 | Behavioural test gate on `main` | `required-tests` + `.github/known-failing-tests.txt` | required check |
 | Diff scope declared | `pr-scope-guard.yml` | required check |
-| Exact-head review receipt on gate-defining **and authority-critical** files, citing a published approval | `scripts/drain_review_gate.py` | `pr-scope-guard.yml`, `auto-enroll-merge.yml` |
+| Exact-head review receipt on gate-defining **and authority-critical** files | `scripts/drain_review_gate.py` | `pr-scope-guard.yml`, `auto-enroll-merge.yml` |
 | Public MCP surface + canonical handles | `scripts/mcp_public_canary.py --assert-handles` | `deploy-prod.yml`, and by hand after DNS/tunnel/connector edits |
 | **Merged is not deployed** (Hard Rule 14) | `scripts/deployed_sha.py --assert-contains <sha>` against bearer-protected `/mcp/pulse` | automatically in `deploy-prod.yml` after receipt publication; by hand only with `TINYASSETS_WIKI_CANARY_TOKEN` — **never** a merge-required check |
 
@@ -80,52 +79,11 @@ weaken the rule judging it:
    `drain_review_gate.py`. The "a PR can neuter its own judge" class.
 3. **Authority-critical files** (added 2026-08-26) — `tinyassets/auth/`,
    `credential_vault.py`, and `api/{permissions,interlocutor,visibility,engine_helpers}.py`.
+
 Class 3 exists because `AGENTS.md` *already* required exact-head approval for
 auth and public-surface changes and nothing enforced it. Making a stated rule
 executable is not new process; inventing a requirement because it feels safer
 would be.
-
-**Since 2026-09-26 the receipt must cite a PUBLISHED APPROVAL.** PR #3989
-auto-merged at the exact head its Tier 2 reviewer had BLOCKED, because a verdict
-lives in a PR comment and auto-merge reads only required checks. So the artifact
-must name a comment that **exists on that PR**, whose `author_association` is
-`OWNER`, `MEMBER` or `COLLABORATOR`, and **which itself attests `APPROVE` at the
-current head** — all read from the API, so trust comes from GitHub and not from
-anything the PR says. Checking only that the cited comment EXISTED let a receipt
-cite an `OWNER` comment reading `VERDICT: BLOCK` for that exact head. Requiring
-the comment to name the current head also closes a re-cited pre-push approval,
-with no clock involved.
-
-**WHO needs a receipt did not change.** Widening it to every release-critical
-path, the `infra-change` label and a Tier 2 title was built and then CUT: measured
-against the 60 most recently merged PRs it would have made 29 of them wait for a
-stamp, and the founder's direction is that the process is already bloated. A
-`deploy/` or `Dockerfile` change still only needs the scope DECLARATION, exactly as
-before.
-
-**Each receipt is read only at the TOP of its text**, with nothing but blank lines
-allowed in front of it. That is the entire anti-hiding rule, and it replaced a
-markdown scanner. Three cross-family review rounds broke that scanner in BOTH
-directions — approvals hidden in an HTML comment, a fence, a nested `<details>`, a
-lazily continued blockquote, a list-nested quote; and honest receipts wrongly
-refused after a heading, after a fence marker inside an HTML block, after a literal
-`<!--` in a code example. Each fix produced the next round's findings, which is the
-loop `AGENTS.md` names, and its answer is that recurring findings in one area mean
-the shape is wrong. Nothing can precede a document's first line, so a position with
-nothing in front of it needs no renderer. The trade: only the top is authoritative,
-so a contradicting line further down is not read — the direction that matters, a
-visible refusal on top with an approval hidden below, still fails.
-
-Two content proofs stand down classes 2 and 3, and only when they cover the PR's
-whole footprint: a deletion-only quarantine-ledger edit, and an authority file
-whose AST is unchanged (`scripts/authority_behavior_check.py`).
-
-**Self-stamping is not prevented, deliberately.** The receipt lives in the
-author-editable PR body, and this repository has exactly one account with write
-access, so "stamper differs from author" would be unsatisfiable — a wall, not a
-gate. What the receipt makes impossible is the #3989 accident: a BLOCK cannot
-merge, a receipt for an older head cannot merge, and a verdict never published on
-the PR cannot merge.
 
 **Scoped to where the repeat actually happened.** Every file in class 3 is named
 in an open finding in `docs/concerns/` — the write-ACL tier grant
@@ -135,12 +93,11 @@ them **landed** and were found later by cross-family review. The gap was never
 "no review" — it was review not bound to the merge, which is exactly what an
 exact-head receipt binds.
 
-**Class 3 stays narrow: ~7% of recent commits touch these paths.** A blanket
+**Deliberately narrow: ~7% of recent commits touch these paths.** A blanket
 receipt requirement across `tinyassets/` would be the process bloat this reset
 removed. The regex is mutation-tested: it matches all seven authority files and
-rejects ordinary product work, and lookalike filenames such as
-`visibility_helpers.py`; the generated `packaging/` mirror IS covered, because it
-ships the same authority code.
+rejects ordinary product work, the generated `packaging/` mirror, and lookalike
+filenames such as `visibility_helpers.py`.
 
 ### Still judgement
 
