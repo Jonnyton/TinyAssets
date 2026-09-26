@@ -83,3 +83,35 @@ resumed, including when the user sends a separate inspection question.
 - **WHEN** the user asks another question while older queued messages remain held
 - **THEN** finishing that question does not send the held messages
 - **AND** an explicit queue-resume control sends them only within the same owner, home and login
+
+### Requirement: Working state is the universe's, and waiting lines are ordered last
+The app's working indicator SHALL reflect server-reported turn state for the
+universe, whatever started the turn -- a typed message, an answered request, a
+queued line, another window, another device, or the connector -- and SHALL NOT
+depend on the current page having sent anything. `get_status` SHALL carry, gated
+on write access to the universe, whether a turn is progressing, since when, and
+its journal state, and no prompt, model or owner. A row past the cap the
+coordinator already enforces SHALL be reported as stale and SHALL NOT be painted
+as activity; a read that failed SHALL be reported as unreadable rather than as
+idle. A message queued behind an in-flight turn SHALL render in the order the
+agent will read it -- after that turn's reply -- and SHALL be marked as queued
+until its own turn starts.
+
+#### Scenario: A turn this page did not start
+- **WHEN** a turn is running for the universe and this page sent nothing
+- **THEN** the working indicator is shown, with how long, and that it started elsewhere
+- **AND** the status poll asks more often until the universe is idle again
+
+#### Scenario: A reload during a live turn
+- **WHEN** the page loads while a turn is still running, so history has no record of it
+- **THEN** the same read that returns history reports the turn and the indicator is shown
+
+#### Scenario: A row no client can still verify
+- **WHEN** the reported row is older than the served-turn cap, or the journal cannot be read
+- **THEN** it is reported rather than hidden, and it is not painted as activity
+- **AND** a status poll that fails neither clears the indicator nor claims it indefinitely
+
+#### Scenario: An answer given while an earlier turn is running
+- **WHEN** the user answers a request and the earlier turn's reply arrives afterwards
+- **THEN** the reply renders above the queued answer, which stays marked queued
+- **AND** the queued mark is removed when that answer's own turn starts

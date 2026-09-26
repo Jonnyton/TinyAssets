@@ -255,9 +255,10 @@ _SERVED_ACCESS_VERBS = {
         'source_channel action="revoke" payload={"channel_type": "<sink>", '
         '"destination": "<destination>"}'
     ),
-    "widen_add_or_remove_a_key": (
+    "widen_add_replace_or_remove_a_key": (
         'write_graph target="pending_request" operation="ask" with an extend_http, '
-        'connect_http or remove_http action; the owner answers it'
+        'connect_http, rotate_http (replace a key the far side rejected) or '
+        'remove_http action; the owner answers it'
     ),
     "withdraw_your_ask": (
         'write_graph target="pending_request" operation="withdraw" '
@@ -1155,12 +1156,24 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
         "action": {"type": "remove_http", "destination": "github"}
 
     Answering it returns ``removed_endpoints`` and ``removed_scopes`` -- what
-    that connection was allowed to reach, and the git scopes it carried. **If
-    you are ROTATING a key rather than retiring it, carry both into the new
-    ``connect_http`` ask.** Scopes live on the grant and die with it, so a
-    re-deposit that omits them yields a connection that looks healthy and fails
-    at the first checkout. Do not ask the owner what they were: you were just
-    told.
+    that connection was allowed to reach, and the git scopes it carried. Scopes
+    live on the grant and die with it, so a deliberate re-deposit that omits them
+    yields a connection that looks healthy and fails at the first checkout. Do
+    not ask the owner what they were: you were just told.
+
+    **A key that STOPPED WORKING is rotated, not removed.** When a call comes
+    back with failure class ``credential_rejected`` -- a delivered 401, or a 403
+    whose body says the key is invalid, revoked or expired -- the key itself is
+    finished. Do not retry it, do not widen the grant, and do not tell them in
+    prose to go and reconnect something. Raise ONE card::
+
+        "action": {"type": "rotate_http", "destination": "github"}
+
+    with one secret field (the ``external_write_errors`` row names the
+    destination). It replaces only the key: same connection, same endpoints, same
+    scopes, same consents, nothing to re-approve, one paste. Never use
+    ``remove_http`` for this -- an owner reads a removal card as deletion, and a
+    remove-then-connect pair makes them approve reach they already approved.
 
     A ``connect_http`` ask for a destination that already has a key makes the
     user paste a secret they already gave you — the one thing they must never

@@ -17,6 +17,7 @@ from mcp.types import CallToolResult
 
 from tinyassets.providers.agent_chat_codec import AgentReply, ToolRequest
 from tinyassets.storage import agent_turn_records as records
+from tinyassets.storage import db_path
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_records import (
     RoundInput,
@@ -29,6 +30,13 @@ from tinyassets.storage.current_home import check_current_home
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 _SCOPE = "owner_user_id = ? AND universe_id = ? AND turn_id = ?"
+# States in which a turn is still PROGRESSING: created, inferring, or waiting on
+# its own tool calls. Deliberately narrower than what blocks an offline reset --
+# a ``held_*`` turn is stopped, not working, so it is not something a surface may
+# report as activity. The reset blocker set below is this plus the two ambiguous
+# holds, expressed as the union so neither question has a second literal list.
+WORKING_STATES = frozenset({"ready", "inference_started", "native_started", "tools_pending"})
+_AMBIGUOUS_STATES = frozenset({"held_native_unknown", "held_tool_unknown"})
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS agent_turns (
       owner_user_id TEXT NOT NULL, universe_id TEXT NOT NULL, turn_id TEXT NOT NULL,
@@ -340,14 +348,7 @@ def reset_blockers(conn: sqlite3.Connection, owner: str, universe: str) -> list[
             (owner, universe),
         ):
             turn = _read(conn, (owner, universe, row[0]))
-            if turn is not None and turn.state in {
-                "ready",
-                "inference_started",
-                "native_started",
-                "held_native_unknown",
-                "tools_pending",
-                "held_tool_unknown",
-            }:
+            if turn is not None and turn.state in (WORKING_STATES | _AMBIGUOUS_STATES):
                 return ["active or ambiguous agent turn references exact home"]
         return []
     except (JournalUnavailable, sqlite3.DatabaseError):
@@ -416,6 +417,86 @@ class AgentTurnJournal:
             ensure_schema(conn)
             conn.execute("BEGIN")  # consistent root/round/tool snapshot; no claim or retry
             return _read(conn, scope)
+
+    def universe_working_turn(
+        self, universe: str, *, now: datetime, max_age_s: float
+    ) -> dict[str, object] | None:
+        """The newest still-progressing turn for ONE universe, or ``None``.
+
+        Universe-scoped on purpose. The question a surface asks is "is this
+        universe working", which is answered by the universe's own rows; the
+        journal's ``owner_user_id`` is a provider-capability principal and is
+        NOT the same identifier a served request's caller presents, so matching
+        on it would silently answer "idle" during a live turn.
+
+        Genuinely observational: it opens its OWN connection in sqlite's
+        non-creating ``mode=rw`` and runs no DDL, so it creates no database, no
+        directory and no table. The ledger store's ``connection()`` is not used
+        here -- it runs ``executescript(_SCHEMA)`` on every open, and Codex
+        reproduced a read against a database lacking those tables CREATING five
+        of them (#4020). A missing database, or one with no turn table, has no
+        turn to report.
+
+        A row older than ``max_age_s`` is returned with ``stale`` true rather
+        than dropped. A served turn is wrapped in ``asyncio.timeout`` by the
+        coordinator, so an older progressing row is one a killed process left
+        behind -- a caller must not paint it as activity, and hiding it would
+        make a wedged row unobservable.
+        """
+        uid = records.identity(universe)
+        if max_age_s <= 0:
+            raise ValueError("max_age_s must be positive")
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now must be timezone-aware")
+        path = db_path(self._ledger.base_path)
+        if not path.exists():
+            return None
+        # ``mode=rw`` opens an existing database and REFUSES to create one, which
+        # closes the window between the check above and the open. Read-write, not
+        # ``mode=ro``: a WAL database whose -shm file is absent cannot be opened
+        # read-only at all, and that is the state a freshly restarted box is in.
+        conn = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True,
+                               timeout=30.0, isolation_level=None)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 30000")
+            if not conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_turns'"
+            ).fetchone():
+                return None
+            rows = conn.execute(
+                "SELECT turn_id, state, created_at FROM agent_turns "
+                "WHERE universe_id = ? ORDER BY created_at DESC",
+                (uid,),
+            ).fetchall()
+        finally:
+            conn.close()
+        newest: dict[str, object] | None = None
+        for row in rows:
+            if row["state"] not in WORKING_STATES:
+                continue
+            started = row["created_at"]
+            if not isinstance(started, str) or not started.endswith("Z"):
+                continue
+            try:
+                when = datetime.fromisoformat(started[:-1] + "+00:00")
+            except ValueError:
+                continue
+            age = (now - when).total_seconds()
+            observed = {
+                "turn_id": row["turn_id"],
+                "state": row["state"],
+                "started_at": started,
+                "age_s": age,
+                "stale": age > max_age_s,
+            }
+            # Fresh beats stale whatever the order; among equals the newest row
+            # wins, which is the one the DESC scan reached first.
+            if newest is None or (newest["stale"] and not observed["stale"]):
+                newest = observed
+            if not observed["stale"]:
+                break
+        return newest
 
     @contextmanager
     def _mutation(self, owner, universe, turn_id, expected_generation):

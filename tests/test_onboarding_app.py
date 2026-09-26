@@ -1567,6 +1567,18 @@ function appendMessage(role,text,extra){
   return el;
 }
 function setStatusLine(t){ els["status-line"].textContent=t||""; }
+// The working indicator and the queued-bubble mark are collaborators these
+// scenarios do not exercise, stubbed the way healServing/autoGrow are. A
+// harness that DOES exercise them appends the page's own definitions after this
+// shim, and the later function declaration is the one that runs
+// (tests/test_app_working_indicator.py).
+function readServerTurn(){}
+function serverTurnLive(){ return false; }
+function renderWorking(){}
+function pulseHeartbeat(){}
+function markQueued(el){ return el; }
+function unmarkQueued(){}
+function firstQueuedBubble(){ return null; }
 function autoGrow(el){ el.style.height="auto"; }
 function sessionExpired(){ messages.push({role:"session-expired"}); }
 function showConnect(){ messages.push({role:"connect"}); }

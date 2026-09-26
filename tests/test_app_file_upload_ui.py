@@ -1589,6 +1589,9 @@ function offerResend(){ log.push({resend:true}); }
 function rememberInflight(){ log.push({remember:true}); }
 function forgetInflight(){ log.push({forget:true}); }
 function setStatusLine(text){ log.push({status:text}); }
+// The working indicator is a collaborator of sendTurn, logged rather than drawn:
+// tests/test_app_working_indicator.py runs the page's own version of it.
+function renderWorking(){ log.push({working:turnStartedAt>0}); }
 function renderConverse(a){ log.push({rendered:a&&a.reply}); }
 function sessionExpired(){ log.push({expired:true}); }
 function flushSendQueue(){ log.push({flushed:true}); }

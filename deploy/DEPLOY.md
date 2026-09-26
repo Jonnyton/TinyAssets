@@ -628,9 +628,19 @@ receives `daemon`, `cloudflared`, and worker stdout through Docker's
 asynchronous Fluent logging driver on host-loopback port 24224 and forwards
 events. Vector receives no Docker socket or container-control capability. Two paths:
 
-- **Default (no config):** Vector writes to its own stdout, which
-  `docker compose` + journald capture. Equivalent to not running the
-  sidecar, but the wiring exists for one-env-flip enable.
+- **Default (no config):** Vector writes to its own stdout, and the `logs`
+  container's `journald` logging driver puts that in the host journal. This is
+  the durable copy of every forwarded line — query it with
+  `journalctl CONTAINER_NAME=tinyassets-logs`, which reads across past
+  container recreates. Retention is `deploy/journald-tinyassets.conf`, a
+  drop-in the host-uptime installer owns (1G / 14 days, persistent).
+
+  Corrected 2026-09-26: this used to say "`docker compose` + journald capture".
+  It did not. `docker compose up -d` detaches, so a container's stdout goes to
+  its logging driver, not to the systemd unit that ran compose — and the driver
+  was Docker's json-file default, which lives in the container's own directory
+  and is deleted when the container is recreated. Every deploy recreates one.
+  Found 2026-09-26; see `docs/ops/log-aggregation-runbook.md`.
 - **With Better Stack:** set `BETTERSTACK_SOURCE_TOKEN` in
   `/etc/tinyassets/env`, `sudo systemctl restart tinyassets-daemon`.
   Vector starts shipping to `https://in.logs.betterstack.com` with
@@ -645,8 +655,9 @@ events. Vector receives no Docker socket or container-control capability. Two pa
 5. Verify in Better Stack dashboard — events should appear within ~30s.
 
 If the box dies, Better Stack retains the most recent logs for
-debugging the death itself. Without this, `journalctl` is box-local +
-lost on destroy.
+debugging the death itself. Without it the journal is box-local and lost on
+destroy — bounded but real: this change makes the evidence survive a container
+recreate, not the loss of the box.
 
 ## What this deploy does NOT include (future rows)
 
