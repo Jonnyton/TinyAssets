@@ -73,7 +73,15 @@ def test_acceptance_reserves_receiver_run_and_returns_only_safe_sender_receipt(d
         assert "private" not in json.dumps(receipt)
         private = _read(conn, receipt, principal="receiver", universe="u-receiver")
         assert private["run_id"]
-        assert {k: v for k, v in private.items() if k != "run_id"} == receipt
+        # The receiver's view is the sender's view plus EXACTLY these three: its own
+        # run id, and who sent it (added 2026-09-26 -- an open receiver's owner has
+        # to be able to see that, and nothing returned it before). Kept as an exact
+        # set difference so it still fails on any other receiver-private field.
+        receiver_only = {"run_id", "sender_id", "sender_universe_id"}
+        assert set(private) - set(receipt) == receiver_only
+        assert {k: v for k, v in private.items() if k not in receiver_only} == receipt
+        assert (private["sender_id"], private["sender_universe_id"]) == ("sender", "u-sender")
+        assert receiver_only.isdisjoint(receipt)
         row = conn.execute("SELECT * FROM runs WHERE run_id=?", (private["run_id"],)).fetchone()
         assert row["actor"] == "universe:u-receiver"
         assert row["owner_user_id"] == "receiver"

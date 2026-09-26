@@ -506,9 +506,13 @@ def read_graph(
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
-    Cross-user delivery: target=receiver with query=receiver_id reads the allowed
-    sender's contract; target=output_links lists your graph_id's links;
-    target=delivery with query=delivery_id reads your side's safe receipt.
+    Cross-user delivery: target=receivers searches receivers other owners opened to
+    discovery (optional query=text over description/owner; the result is capped by
+    limit, not exhaustive) — this is how you find a receiver_id you were never told;
+    target=receiver with query=receiver_id reads one contract you may see;
+    target=output_links lists your graph_id's links;
+    target=delivery with query=delivery_id reads your side's safe receipt, which
+    on the receiving side names the sending principal and universe.
     target=run_file reads exact owned run-bound binary chunks; run_file_limits
     reports technical intake/read/retention limits. No sender paths are exposed.
     Files the user attached in the app arrive inside their message as a delimited
@@ -628,11 +632,14 @@ def read_graph(
             return file_limits(universe_id=graph_id)
         return read_file(universe_id=graph_id, run_id=run_id, file_id=file_id,
                          offset=file_offset, count=file_max_bytes)
-    if normalized in {"receiver", "output_links", "delivery"}:
-        action = {"receiver": "inspect_receiver", "output_links": "list_output_links",
+    if normalized in {"receiver", "receivers", "output_links", "delivery"}:
+        action = {"receiver": "inspect_receiver", "receivers": "discover_receivers",
+                  "output_links": "list_output_links",
                   "delivery": "get_delivery"}[normalized]
         payload = ({"receiver_id": query} if normalized == "receiver"
-                   else {"delivery_id": query} if normalized == "delivery" else {})
+                   else {"delivery_id": query} if normalized == "delivery"
+                   else {"query": query, "limit": limit} if normalized == "receivers"
+                   else {})
         return _extensions_impl(action=action, universe_id=graph_id,
                                 payload_json=json.dumps(payload))
     if normalized == "status":
@@ -791,6 +798,10 @@ def read_graph(
             "agent",
             "agent_bindings",
             "agent_binding",
+            "receiver",
+            "receivers",
+            "output_links",
+            "delivery",
         ),
     )
 
@@ -904,9 +915,19 @@ def write_graph(
     """Create or queue TinyAssets graph state.
 
     Cross-user structured delivery: target=receiver operation=create takes
-    payload_json {branch_def_id,node_id,input_keys,allowed_senders,description}.
+    payload_json {branch_def_id,node_id,input_keys,allowed_senders,description}
+    plus the optional exposure fields {open_to_all,discoverable,sender_rate_limit}.
     It exposes a pinned selected entry only to those exact sender principals;
-    an empty list permits nobody. Update adds receiver_id and expected_generation;
+    an empty list permits nobody. open_to_all=true accepts ANY authenticated user
+    (there is no "*" sender); discoverable=true lists it under read_graph
+    target=receivers. Both default false on create; update KEEPS any exposure field
+    you omit, so closing one is an explicit false rather than an omission.
+    sender_rate_limit caps accepted deliveries per
+    sending principal per hour (default 60, 1..100000) and refuses by name.
+    input_keys cannot advertise delivery_sender_id or
+    delivery_sender_universe_id: declare either in the receiving branch's
+    state_schema and the platform fills it with the sender's identity.
+    Update adds receiver_id and expected_generation;
     revoke takes those two fields. target=output_link operation=connect takes
     {branch_def_id,node_id,receiver_id,expected_generation,mapping}, where mapping
     maps source output names to advertised receiver input names. Disconnect takes
@@ -1555,6 +1576,14 @@ def write_graph(
             "agent",
             "agent_binding",
             "source_channel",
+            # Supported above and dispatched, but absent from this list until
+            # 2026-09-26 -- so an agent that guessed a write target was told a set
+            # that omitted the cross-user delivery ones, and a prompt naming them
+            # read as routing to an unsupported target.
+            "receiver",
+            "output_link",
+            "run_file",
+            "model_preferences",
         ),
     )
 
@@ -3272,7 +3301,7 @@ def extensions(
       create_source, revoke_source, list_sources.
     - Structured cross-owner delivery: create_receiver, update_receiver,
       revoke_receiver, connect_output, disconnect_output, deliver_output,
-      inspect_receiver, list_output_links, get_delivery.
+      inspect_receiver, discover_receivers, list_output_links, get_delivery.
     - Judgments: compare_runs, get_node_output, judge_run, list_judgments,
       list_node_versions, rollback_node, suggest_node_edit.
     - Project memory: project_memory_get, project_memory_list,

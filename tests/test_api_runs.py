@@ -56,8 +56,8 @@ def test_module_exposes_expected_public_names():
 # ── _RUN_ACTIONS dispatch table ─────────────────────────────────────────────
 
 
-def test_run_actions_table_has_33_handlers():
-    assert len(_RUN_ACTIONS) == 33
+def test_run_actions_table_has_34_handlers():
+    assert len(_RUN_ACTIONS) == 34
 
 
 def test_run_actions_table_keys_are_expected_set():
@@ -75,6 +75,9 @@ def test_run_actions_table_keys_are_expected_set():
         "create_receiver", "update_receiver", "revoke_receiver",
         "connect_output", "disconnect_output", "deliver_output",
         "inspect_receiver", "list_output_links", "get_delivery",
+        # discover_receivers: any authenticated user searching the receivers whose
+        # owners marked them discoverable. A read, so it stays out of the write set.
+        "discover_receivers",
     }
     assert set(_RUN_ACTIONS.keys()) == expected
 

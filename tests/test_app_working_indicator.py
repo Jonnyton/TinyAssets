@@ -58,6 +58,7 @@ _DECLS = (
     # Introduced by the fix.
     r"const TURN_WORKING_STATES=[^\n]*;", r"let serverTurn=[^\n]*;",
     r"const STATUS_IDLE_MS=[^\n]*;", r"let statusBeatMs=[^\n]*;",
+    r"let serverStatusLine=[^\n]*;",
 )
 _FUNCS = (
     "formatMessageTimestamp", "appendMessage", "setStatusLine",
@@ -110,9 +111,8 @@ const document={ createElement:t=>new El(t),
   activeElement:null };
 const els={};
 for(const id of ["thread","thread-empty","status-line","composer-input","btn-send",
-                 "working-banner","working-text","working-note","dot","universe-name"])
+                 "dot","universe-name"])
   els[id]=new El("div");
-els["working-banner"].hidden=true;            // as shipped in the markup
 const $=id=>els[id];
 
 // A clock the scenario can move, so "this page has not refreshed the row in
@@ -191,10 +191,13 @@ function bubbles(){
           .map(c=>c.textContent).join("")),
   }));
 }
-function banner(){
-  return {hidden:els["working-banner"].hidden,
-          text:els["working-text"].textContent,
-          note:els["working-note"].textContent};
+// THE one indicator: the original status line under the composer. There is no
+// second element to check, by founder instruction -- so "shown" is a non-empty
+// line and "hidden" is an empty one, read off the same element every other status
+// message uses.
+function indicator(){
+  const line=els["status-line"].textContent||"";
+  return {shown:line!=="", line:line};
 }
 """
 
@@ -233,9 +236,9 @@ def html() -> str:
 
 _SERVER_TURN = r"""
 setQueueOwner("p-1");
-const before=banner();
+const before=indicator();
 await pollStatus();
-const after=banner();
+const after=indicator();
 // `typeof` so a tree without the fix reports a null beat and fails on the
 // assertion, instead of crashing on an undeclared identifier.
 console.log(JSON.stringify({before, after,
@@ -251,14 +254,15 @@ def test_a_turn_this_page_never_sent_still_shows_the_indicator(tmp_path, html):
                        "started_at": "2026-09-26T20:18:23.000000Z",
                        "age_s": 214.0, "stale": False},
     }, _SERVER_TURN)
-    assert out["before"]["hidden"] is True, "the indicator must start out of the way"
-    assert out["after"]["hidden"] is False, (
+    assert out["before"]["shown"] is False, "the indicator must start out of the way"
+    assert out["after"]["shown"] is True, (
         "a turn the server reports running showed nothing, which is the bug: the "
         "founder's view was blank for four minutes")
-    assert "thinking" in out["after"]["text"]
-    # How long, and that it did not come from this tab, are both said.
-    assert "for 3m 34s" == out["after"]["note"].split(" · ")[0]
-    assert "another window" in out["after"]["note"]
+    # The ORIGINAL sentence on the ORIGINAL line -- there is no second indicator.
+    assert out["after"]["line"].startswith("Your universe is thinking... ")
+    # How long, and that it did not come from this tab, are both said on it.
+    assert "for 3m 34s" in out["after"]["line"]
+    assert "another window" in out["after"]["line"]
     # ...and the page asks again sooner than the 30s host beat, so the indicator
     # clears promptly for a tab that cannot see the turn end locally.
     assert out["beat"] == 10000 and 10000 in out["armed"]
@@ -267,18 +271,18 @@ def test_a_turn_this_page_never_sent_still_shows_the_indicator(tmp_path, html):
 def test_an_idle_server_and_a_stale_row_are_both_left_unpainted(tmp_path, html):
     """Idle is idle; a row older than the served cap is a killed process's leftover."""
     idle = _run(tmp_path, html, {"activeTurn": None}, _SERVER_TURN)
-    assert idle["after"]["hidden"] is True and idle["beat"] == 30000
+    assert idle["after"]["shown"] is False and idle["beat"] == 30000
     # Same state, same shape -- only `stale` differs, so a pass here cannot come
     # from the state list or from the row being ignored wholesale.
     stale = _run(tmp_path, html, {
         "activeTurn": {"turn_id": "t-old", "state": "inference_started",
                        "age_s": 90000.0, "stale": True}}, _SERVER_TURN)
-    assert stale["after"]["hidden"] is True, (
+    assert stale["after"]["shown"] is False, (
         "a stale journal row was painted as live work; that is a tab thinking forever")
     fresh = _run(tmp_path, html, {
         "activeTurn": {"turn_id": "t-new", "state": "inference_started",
                        "age_s": 90000.0, "stale": False}}, _SERVER_TURN)
-    assert fresh["after"]["hidden"] is False, (
+    assert fresh["after"]["shown"] is True, (
         "only `stale` separates these two scenarios, so this one must still paint")
 
 
@@ -288,20 +292,20 @@ def test_a_held_or_unreadable_row_is_not_activity(tmp_path, html):
                 {"state": "unreadable", "reason": "DatabaseError"},
                 {"turn_id": "t", "state": "completed", "age_s": 1.0, "stale": False}):
         out = _run(tmp_path, html, {"activeTurn": row}, _SERVER_TURN)
-        assert out["after"]["hidden"] is True, f"{row['state']} was painted as working"
+        assert out["after"]["shown"] is False, f"{row['state']} was painted as working"
     # The positive control for the same loop: only `state` differs, so a page
     # that simply cannot paint at all does not pass this test by default.
     live = _run(tmp_path, html, {
         "activeTurn": {"turn_id": "t", "state": "tools_pending",
                        "age_s": 3.0, "stale": False}}, _SERVER_TURN)
-    assert live["after"]["hidden"] is False, (
+    assert live["after"]["shown"] is True, (
         "a turn waiting on its own tool calls is the universe working")
 
 
 _RELOAD = r"""
 setQueueOwner("p-1");
 await loadHistory();
-console.log(JSON.stringify({banner:banner(), bubbles:bubbles()}));
+console.log(JSON.stringify({indicator:indicator(), bubbles:bubbles()}));
 """
 
 
@@ -314,21 +318,21 @@ def test_a_reload_mid_turn_shows_the_indicator_history_cannot(tmp_path, html):
                               "age_s": 61.0, "stale": False},
     }, _RELOAD)
     assert [b["text"] for b in out["bubbles"]] == ["start the run", "started"]
-    assert out["banner"]["hidden"] is False, (
+    assert out["indicator"]["shown"] is True, (
         "a reload during a live turn left the page looking idle")
-    assert "for 1m 1s" in out["banner"]["note"]
+    assert "for 1m 1s" in out["indicator"]["line"]
 
 
 _STALLED_POLL = r"""
 setQueueOwner("p-1");
 await pollStatus();                       // the row is observed here
-const observed=banner();
+const observed=indicator();
 SCENARIO.statusError=true;
 await pollStatus();                       // ...and the connection drops
-const afterFailure=banner();
+const afterFailure=indicator();
 clockSkew=31000;                          // three working-rate polls later
 renderWorking();
-const abandoned=banner();
+const abandoned=indicator();
 console.log(JSON.stringify({observed, afterFailure, abandoned}));
 """
 
@@ -338,10 +342,10 @@ def test_a_failed_poll_neither_clears_nor_outlives_the_claim(tmp_path, html):
     out = _run(tmp_path, html, {
         "activeTurn": {"turn_id": "t-1", "state": "native_started",
                        "age_s": 20.0, "stale": False}}, _STALLED_POLL)
-    assert out["observed"]["hidden"] is False
-    assert out["afterFailure"]["hidden"] is False, (
+    assert out["observed"]["shown"] is True
+    assert out["afterFailure"]["shown"] is True, (
         "one failed status poll erased an indicator for a turn that is still running")
-    assert out["abandoned"]["hidden"] is True, (
+    assert out["abandoned"]["shown"] is False, (
         "a row this page can no longer refresh must stop being claimed, or a dead "
         "connection leaves the tab thinking forever")
 
@@ -350,10 +354,10 @@ _LOCAL_ONLY = r"""
 setQueueOwner("p-1");
 const turn=sendTurn("what is the status of the run?");
 await settle();
-const during=banner();
+const during=indicator();
 gates[0].resolve({reply:"Running."});
 await turn; await settle();
-const after=banner();
+const after=indicator();
 console.log(JSON.stringify({during, after, served:!!SCENARIO.activeTurn}));
 """
 
@@ -361,16 +365,19 @@ console.log(JSON.stringify({during, after, served:!!SCENARIO.activeTurn}));
 def test_this_pages_own_turn_paints_without_waiting_for_a_poll(tmp_path, html):
     """No `active_turn` in the payload at all: an older daemon, or simply no poll yet."""
     out = _run(tmp_path, html, {}, _LOCAL_ONLY)
-    assert out["during"]["hidden"] is False, "the page's own live turn must show at once"
-    assert out["after"]["hidden"] is True, "the indicator outlived the turn it was for"
+    assert out["during"]["line"] == "Your universe is thinking...", (
+        "the page's own live turn must show at once, on the same one line, and "
+        "WITHOUT the 'started in another window' detail -- the founder is looking "
+        "at their own send")
+    assert out["after"]["shown"] is False, "the indicator outlived the turn it was for"
 
 
 _ACCOUNT_BOUNDARY = r"""
 setQueueOwner("p-1");
 await pollStatus();
-const signedIn=banner();
+const signedIn=indicator();
 clearComposerState();
-const signedOut=banner();
+const signedOut=indicator();
 console.log(JSON.stringify({signedIn, signedOut}));
 """
 
@@ -379,8 +386,8 @@ def test_the_previous_accounts_turn_is_not_reported_to_the_next(tmp_path, html):
     out = _run(tmp_path, html, {
         "activeTurn": {"turn_id": "t-1", "state": "inference_started",
                        "age_s": 10.0, "stale": False}}, _ACCOUNT_BOUNDARY)
-    assert out["signedIn"]["hidden"] is False
-    assert out["signedOut"]["hidden"] is True, (
+    assert out["signedIn"]["shown"] is True
+    assert out["signedOut"]["shown"] is False, (
         "the indicator is screen state: it belongs to the account that is on screen")
 
 
@@ -397,14 +404,14 @@ await settle();
 sendTurn('Approved: "grant read access to the notes wiki"', undefined,
   {relay:true, keepComposer:true, inputMethod:"app_action"});
 const whileQueued=bubbles();
-const queuedBanner=banner();
+const queuedIndicator=indicator();
 // ...and only now does the earlier turn's reply come back.
 gates[0].resolve({reply:"Here is the summary of the run so far."});
 await first; await settle();
 const afterReply=bubbles();
 gates[1].resolve({reply:"Access granted; starting."});
 await settle();
-console.log(JSON.stringify({whileQueued, queuedBanner, afterReply, final:bubbles(),
+console.log(JSON.stringify({whileQueued, queuedIndicator, afterReply, final:bubbles(),
   sent:converseCalls}));
 """
 
@@ -420,7 +427,9 @@ def test_a_queued_answer_renders_after_the_reply_it_waited_behind(tmp_path, html
     assert queued["queued"] is True and "Queued" in queued["note"], (
         "a line the universe has not seen yet must not read as delivered")
     assert out["whileQueued"][0]["queued"] is False
-    assert out["queuedBanner"]["hidden"] is False
+    # One line, and it is the queueing path's own -- which knows the count, and
+    # which the server-driven sentence must not overwrite.
+    assert out["queuedIndicator"]["line"] == "Your universe is thinking... 1 waiting"
 
     # THE BUG: the reply was composed before the click arrived, so it belongs
     # ABOVE the queued line. It used to be appended below it, which read as the
@@ -463,3 +472,56 @@ def test_two_queued_lines_keep_their_own_order_under_the_reply(tmp_path, html):
         "kick off the run", "kicked off", "first answer", "second answer"], (
         "the reply goes above BOTH waiting lines, and they keep the order they "
         "will be read in")
+
+
+# ---------------------------------------------------------------------------
+# Exactly ONE indicator on screen. Founder, 2026-09-26: "there are now 2
+# indicators at once that my universe is thinking, i preferred only the original
+# one at the bottom."
+# ---------------------------------------------------------------------------
+
+
+def test_the_page_has_no_second_working_indicator(html):
+    """The louder banner #4020 added is gone, element and styles both."""
+    assert 'id="working-banner"' not in html, "the second indicator is still in the markup"
+    for leftover in ("working-dot", "working-text", "working-note", "working-pulse"):
+        assert leftover not in html, f"{leftover} outlived the banner it belonged to"
+    # ...and the one that remains is the original line, untouched.
+    assert 'id="status-line" class="status-line"' in html
+    assert ".status-line{min-height:1.15rem" in html, (
+        "the surviving indicator must be the ORIGINAL line, not a restyled one")
+
+
+_LOCAL_AND_SERVER = r"""
+setQueueOwner("p-1");
+await pollStatus();                        // the server already reports a turn
+const serverOnly=indicator();
+const turn=sendTurn("and one from this tab");
+await settle();
+const both=indicator();
+renderWorking();                           // the 1s repaint tick, mid-turn
+const afterTick=indicator();
+gates[0].resolve({reply:"done"});
+await turn; await settle();
+console.log(JSON.stringify({serverOnly, both, afterTick, after:indicator()}));
+"""
+
+
+def test_a_local_turn_and_a_server_turn_do_not_both_speak(tmp_path, html):
+    """One element, one sentence, and the local path wins because it knows more."""
+    out = _run(tmp_path, html, {
+        "activeTurn": {"turn_id": "t-1", "state": "inference_started",
+                       "age_s": 30.0, "stale": False}}, _LOCAL_AND_SERVER)
+    assert "another window" in out["serverOnly"]["line"]
+    # The page's own send takes the line, and the server sentence does not ride
+    # along behind it or get appended to it.
+    assert out["both"]["line"] == "Your universe is thinking...", out["both"]["line"]
+    # The repaint tick is where a second writer would show up, since it runs while
+    # both sources say "working". It must leave the local line exactly as it is.
+    assert out["afterTick"]["line"] == "Your universe is thinking...", (
+        "the elapsed-time tick overwrote the line the sending path owns")
+    # The local turn ending hands the ONE line back to the server-driven sentence
+    # rather than going quiet: the server still says this universe is working, and
+    # from this page's knowledge that is true. Still one sentence, not two.
+    assert "another window" in out["after"]["line"], out["after"]["line"]
+    assert out["after"]["line"].count("thinking") == 1

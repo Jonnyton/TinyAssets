@@ -30,7 +30,7 @@ const $=id=>registry[id]||(registry[id]=new Element(id));
 const document={createElement:()=>new Element(),createComment:()=>new Element()};
 const host=$('view-chat'),body=new Element();host.appendChild(body);
 for(const id of ['thread','request-rail'])body.appendChild($(id));
-for(const id of ['attachments','working-banner','model-bar','composer','status-line'])host.appendChild($(id));
+for(const id of ['attachments','model-bar','composer','status-line'])host.appendChild($(id));
 $('composer-input').value='private unsent draft';$('composer').appendChild($('composer-input'));
 const original=[...host.children],bodyOriginal=[...body.children];
 let me={principal_id:'alice',universe_id:'u-alice',setup:'connected'},rows=[],calls=[];

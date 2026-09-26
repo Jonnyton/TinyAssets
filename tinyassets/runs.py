@@ -5223,6 +5223,13 @@ def _collect_external_write_errors(
                     "sink": sink,
                     "error": f"far side answered HTTP {status}: {preview}".rstrip(": "),
                     "error_kind": "far_side_error",
+                    # WHICH connection answered. A `credential_rejected` run is
+                    # fixed by one card naming this destination, and without it
+                    # here the agent has only the url -- the API host, not the
+                    # label the owner deposited the key under. Non-secret: the
+                    # owner chose it and read it on the deposit tab.
+                    **({"destination": str(ev["destination"])}
+                       if str(ev.get("destination") or "").strip() else {}),
                 })
                 continue
             # A refusal before the wire that carries only an error_kind (the
@@ -7156,6 +7163,13 @@ ACTIONABLE_BY: dict[str, str] = {
     # allow-list or SSRF refusal, its soul's own limits. Only the founder can
     # change that, and the request rail is the channel.
     "external_write_refused": "user",
+    # user — the stored key itself is finished: expired, revoked at the provider,
+    # or no longer accepted. Neither a retry (same dead key) nor a widening (the
+    # grant was never the problem) can change it; only a new secret can, and only
+    # the owner has one. Live 2026-09-16: this landed in `external_write_failed`
+    # -> "chatbot", so the universe retried twice and then said "please
+    # reconnect" in chat prose, and the connection stayed dead for ten days.
+    "credential_rejected": "user",
     # user — opaque/internal; chatbot escalates raw error for human judgment
     "unknown": "user",
     "error": "user",
@@ -7256,6 +7270,105 @@ _EXTERNAL_WRITE_REFUSED_WORDS = (
     "not allowed", "scope", "authority refused",
 )
 
+CREDENTIAL_REJECTED_ACTION = (
+    "The far side REJECTED the key stored for this connection - it is expired, "
+    "revoked, or no longer accepted. Retrying sends the same dead key and "
+    "widening the grant changes nothing: the only fix is a new secret, and only "
+    "the owner has one. Do not retry, and do not answer them in prose about "
+    "reconnecting something. Raise the ONE card that fixes it, now, in this turn: "
+    'write_graph target="pending_request" operation="ask" with '
+    '{"action": {"type": "rotate_http", "destination": "<the destination on the '
+    'external_write_errors row>"}} and one secret field labelled the way that '
+    "service labels its key. It keeps the connection, its endpoints and its "
+    "scopes - only the key changes, and they paste once. Then continue when it "
+    "is answered."
+)
+
+#: A DELIVERED response's status, exactly as ``first_effect_failure`` and
+#: ``_collect_external_write_errors`` write it. This phrase exists for no other
+#: case, which is what separates "the far side rejected our key" from a refusal
+#: the platform made before the wire (those carry a bracketed `[kind]` instead).
+_DELIVERED_STATUS_RE = re.compile(r"far side answered http (\d{3})")
+
+#: Generic credential vocabulary -- no service or vendor name appears here, and
+#: nothing else in the body is read.
+_CREDENTIAL_NOUN = r"(?:tokens?|credentials?|api[ _-]?keys?|bearer|authorization|auth|grant)"
+_CREDENTIAL_DEAD = r"(?:invalid|expired|revoked|unauthori[sz]ed|bad|rejected)"
+#: At most ONE intervening word, in either order. One word is what the real
+#: strings need (`expired_access_token`, `revoked_access_token`, `bad
+#: credentials`, `invalid api key`, `token_revoked`, and `invalid or expired
+#: token` -- whose `expired token` is adjacent). Two words would admit `invalid
+#: repository for token`, which is a permission problem, not a dead key.
+_CREDENTIAL_GAP = r"[ _\-]+(?:[a-z0-9]+[ _\-]+)?"
+#: `_` is a word character, so `\b` cannot bracket `invalid_token`. These
+#: lookarounds treat `_` and `-` as separators, which is what an API error code
+#: actually uses.
+_CREDENTIAL_DEAD_RE = re.compile(
+    rf"(?<![a-z]){_CREDENTIAL_DEAD}(?![a-z]){_CREDENTIAL_GAP}(?<![a-z]){_CREDENTIAL_NOUN}(?![a-z])"
+    rf"|(?<![a-z]){_CREDENTIAL_NOUN}(?![a-z]){_CREDENTIAL_GAP}(?<![a-z]){_CREDENTIAL_DEAD}(?![a-z])"
+)
+#: The COPULAR form, which a one-word gap cannot reach and a wider gap must not
+#: be used for. Verbatim from a real 403 body (AWS, "Unknown/Missing Access Key
+#: or Session Token"): *"The security token included in the request is
+#: invalid."* -- five words between `token` and `invalid`, which the compact rule
+#: deliberately will not span (Codex refute-review, P1 #3).
+#:
+#: The extra reach is safe here in a way it is not for the compact rule, because
+#: a copula binds its predicate to its SUBJECT: `<credential noun> ... is
+#: invalid` says the credential is invalid, where `invalid <2 words> token` may
+#: be saying something else is invalid. Bounded by characters and stopped at a
+#: sentence break so it cannot cross clauses.
+_CREDENTIAL_DEAD_COPULA_RE = re.compile(
+    rf"(?<![a-z]){_CREDENTIAL_NOUN}(?![a-z])[^.;!?]{{0,48}}?"
+    r"(?:is|was|are|were|has been|have been)[ _\-]+"
+    r"(?:(?:no longer|not)[ _\-]+valid|invalid|expired|revoked|rejected"
+    r"|unauthori[sz]ed)(?![a-z])"
+)
+#: A hard cap on one row's body: the persisted error row previews 160 characters
+#: and the raised message 200, each plus a ` [kind]` tail.
+_CREDENTIAL_BODY_WINDOW = 220
+
+
+def _credential_body(lower: str, match: re.Match) -> str:
+    """The body of the delivered row ``match`` names, and no other row's.
+
+    A summary carries up to five rows joined by ``"; "``, and a body preview can
+    itself contain a semicolon -- so the row boundary is taken as the start of the
+    NEXT delivered-status phrase (or the end of the string), then capped. Codex
+    refute-review, P1 #2: a fixed 220-character window let a short-bodied 403
+    borrow ``invalid_token`` out of a following 404 and classify as a dead key.
+
+    A body long enough to be cut by the producer's own 160/200-character preview
+    can still lose its marker past that cut. That is a MISS, which leaves the row
+    in its existing class -- the safe direction, and not fixable from the string.
+    """
+    rest = lower[match.end():]
+    following = _DELIVERED_STATUS_RE.search(rest)
+    end = following.start() if following else len(rest)
+    return rest[:min(end, _CREDENTIAL_BODY_WINDOW)]
+
+
+def _credential_rejected(lower: str) -> bool:
+    """Whether a row of this summary is a delivered response saying the secret
+    we presented is finished.
+
+    A 401 means it unconditionally (RFC 7235: the request lacked valid
+    authentication credentials, and no retry of the same secret fixes that). A
+    403 counts only when the body names the credential ITSELF as invalid,
+    revoked or expired -- most 403s say "this key may not do that", which is a
+    widening or a provider-side permission, and asking the owner to replace a
+    working key would be the wrong ask.
+    """
+    for match in _DELIVERED_STATUS_RE.finditer(lower):
+        status = match.group(1)
+        if status == "401":
+            return True
+        if status == "403":
+            body = _credential_body(lower, match)
+            if _CREDENTIAL_DEAD_RE.search(body) or _CREDENTIAL_DEAD_COPULA_RE.search(body):
+                return True
+    return False
+
 
 def _classify_external_write(lower: str) -> str:
     """Split the "external write failed - ..." summary into the founder's
@@ -7269,6 +7382,12 @@ def _classify_external_write(lower: str) -> str:
     for kind in _EXTERNAL_WRITE_REFUSED_KINDS:
         if f"[{kind}]" in lower:
             return "external_write_refused"
+    # BEFORE the refusal-word net below, which is a heuristic over the whole
+    # line: a revoked token's own body says "revoked", so a dead key classified
+    # as an authority refusal and the agent was told to raise `extend_http` --
+    # widening a grant that was never the problem (live 2026-09-16).
+    if _credential_rejected(lower):
+        return "credential_rejected"
     if any(word in lower for word in _EXTERNAL_WRITE_REFUSED_WORDS):
         return "external_write_refused"
     return "external_write_failed"
@@ -7281,6 +7400,8 @@ def external_write_suggested_action(failure_class: str) -> str:
         return EFFECT_BUDGET_EXHAUSTED_ACTION
     if failure_class == "external_write_refused":
         return EXTERNAL_WRITE_REFUSED_ACTION
+    if failure_class == "credential_rejected":
+        return CREDENTIAL_REJECTED_ACTION
     if failure_class == "external_write_failed":
         return EXTERNAL_WRITE_FAILED_ACTION
     return ""

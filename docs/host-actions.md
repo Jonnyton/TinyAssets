@@ -25,39 +25,6 @@ whenever a PR declares `infra-change` or a Tier 2 title, so a BLOCK holds the PR
 the way a failing required check does. That changes a gate file, so it's yours to
 approve. Say yes and an agent builds it.
 
-## Codex is usage-limited, so a cross-family pass is OWED on what lands meanwhile (2026-09-25)
-
-`codex exec` answers only:
-
-> ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage
-> to purchase more credits or try again at Sep 27th, 2026 5:15 PM.
-
-`codex login status` still reports "Logged in using ChatGPT", so this is a
-credit balance, not an auth failure, and no agent can fix it.
-
-**The standing arrangement while it lasts** (founder directive): the
-cross-family pass is POSTPONED, not skipped. An authority-path PR lands on a
-**Claude Tier 2 review plus a lead-stamped receipt** in its place, and the
-cross-family pass is **owed** afterwards for anything that landed that way. The
-founder neither reviews nor stamps; do not record it as though they did.
-
-Owing a cross-family pass after the 2026-09-27 17:15 reset:
-
-- **PR #3981** (`tinyassets/providers/router.py`) -- free-model sibling retry.
-
-Background: `pr-scope-guard` requires an exact-head review receipt for any
-behavioural change to an authority path (`AUTHORITY_RE` in
-`.github/workflows/pr-scope-guard.yml`, checked by
-`scripts/authority_behavior_check.py`). The receipt is head-pinned, so every
-push needs a fresh review -- batch fixes into one push rather than pushing
-incrementally.
-
-The ask: top up Codex credits at https://chatgpt.com/codex/settings/usage, or
-let the 2026-09-27 17:15 reset land and we run the owed passes then. Either way
-an agent must never write the `Drain-Review-Verdict: APPROVE` receipt for its
-own work -- the gate exists because a PR can neuter its own checks from its own
-checkout, and a self-issued receipt is the failure it names.
-
 ## Delete the platform's model-credential repository secrets (2026-09-24)
 
 The platform has no LLM (AGENTS.md Hard Rule 15), and after the retire-platform-llm-logins

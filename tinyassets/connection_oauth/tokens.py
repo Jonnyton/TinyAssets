@@ -258,12 +258,14 @@ class ConnectionTokens:
         raise LookupError("credential reference is unavailable")
 
     def _write(self, destination: str, bundle: TokenBundle) -> None:
-        from tinyassets.credential_vault import write_credential_vault
+        from tinyassets.credential_vault import (
+            http_credential_record,
+            write_credential_vault,
+        )
 
         write_credential_vault(
             self._universe_dir,
-            [{"credential_type": "http", "service": destination,
-              "destination": destination, "token": encode(bundle)}],
+            [http_credential_record(destination=destination, token=encode(bundle))],
             owner_user_id=self._owner, universe_id=self._universe_dir.name,
         )
 
@@ -345,8 +347,9 @@ class ConnectionTokens:
                 fresh = refresh(current)
             except OAuthError as exc:
                 raise self._failed(exc.detail or exc.code) from None
-            record = [{"credential_type": "http", "service": destination,
-                       "destination": destination, "token": encode(fresh)}]
+            from tinyassets.credential_vault import http_credential_record
+
+            record = [http_credential_record(destination=destination, token=encode(fresh))]
             # Still holding the vault: only a storage fault can stop this write,
             # so it is retried until the deadline rather than given up once.
             while True:
