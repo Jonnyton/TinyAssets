@@ -5424,6 +5424,19 @@
   let railOpen = null;      // request_id of the expanded tab
   let connectWasBlocking = null;  // was the connect request sticky last render?
   let railCache = [];
+  // Did the USER open "Other ways to connect"? Kept here rather than read back
+  // off the <details>, because the setup panel node is PARKED and reused across
+  // every rail refresh: once anything had opened it, the element stayed open and
+  // no later render closed it again (render only ever set open = true). Live
+  // 2026-09-26 on an unpowered free account, the primary one-tap button came up
+  // with the API key / Model URL / Model id form already unfolded beneath it,
+  // which is three ways to do the same thing in front of a first-time user.
+  //
+  // So the element's state is now DERIVED from this flag on every render, and the
+  // flag only changes when the user taps the summary. Same shape as
+  // `connectWasBlocking` + `railOpen`: remember the intent, reset it on the
+  // transition, never infer it from the DOM.
+  let connectOtherOpen = false;
 
   function railFieldControl(field, reqId){
     const id = "f_" + reqId + "_" + field.name;
@@ -5481,6 +5494,7 @@
       if(railOpen === setup.request_id) railOpen = null;
       const other = $("connect-other");
       if(other) other.open = false;
+      connectOtherOpen = false;
     }
     connectWasBlocking = blocking;
   }
@@ -5577,8 +5591,21 @@
         b.textContent=this.labels[shape];
         host.appendChild(b);
       });
-      $("connect-other").hidden=!known.length;
-      if(open) $("connect-other").open=true;
+      const other=$("connect-other");
+      other.hidden=!known.length;
+      // The user's own tap is the only thing that opens this, so it is the only
+      // thing that may record the intent. Wired HERE, next to the state it feeds
+      // and idempotently, rather than in page init: a listener wired somewhere the
+      // renderer's own tests cannot reach is a listener nothing proves runs.
+      if(!other.dataset.taWired){
+        other.dataset.taWired="1";
+        other.addEventListener("toggle",()=>{ connectOtherOpen=!!other.open; });
+      }
+      // CLOSED unless the user opened it, or there is no primary path at all (in
+      // which case these fields ARE the path and hiding them hides the only way
+      // through). Assigned both ways on purpose: the parked node would otherwise
+      // carry a stale `open` into every later render.
+      other.open=!!open || connectOtherOpen;
       this.select(known.includes(this.shape)?this.shape:(known[0]||""));
     },
     select(shape){
