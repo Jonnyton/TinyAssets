@@ -74,6 +74,24 @@ none. Artifact `docs/audits/2026-09-26-pr4019-round3-review.md`.
    named lost that name at the next restart, silently. Pre-existing, worse than the
    migration instance, and closed by the same change with its own two tests.
 
+**CI found a seventh finding the local set-comparison could not.** `required-tests`
+on head `e21ee9c9` reported 8 failing, 25 known-broken on main, and **1 NEW**:
+`test_universe_treasury_status_is_read_only`, `KeyError: 'read_only'` — green in
+isolation, red in the full suite. The test patched `universe_api._base_path` alone,
+which redirects one module's namespace while
+`permissions.universe_access_allows` (the gate `_universe_impl` runs for every
+action) keeps its own `helpers._base_path`. The ACL preflight therefore read the
+ambient data dir and the handler read `tmp_path`, so the test passed only while a
+leaked universe there was publicly readable. Fixed with
+`monkeypatch.setenv("TINYASSETS_DATA_DIR", ...)`, the one precedence every resolver
+honours. Its read-only assertion was a file-mtime proxy that was true for the same
+accidental reason, and is now the property (rows of pre-existing tables unchanged,
+schema migrations allowed), mutation-checked.
+
+**Read the CI summary's "NEW failures" line.** It does the differential against
+main that a local Windows run cannot, and it named the one failure among eight that
+belonged to this change.
+
 **Cap reached.** AGENTS.md allows three rounds, so the round-3 fix is
 **unreviewed by the peer** and no round 4 was opened. Two findings stay open by
 choice, both agreed reasonable to defer by the reviewer:
