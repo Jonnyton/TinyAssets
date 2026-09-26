@@ -48,26 +48,35 @@ def test_declared_models_are_not_labelled_verified_available(tmp_path):
     assert "full model list not yet verified" in rows[1]["text"]
 
 
-def test_reopen_reuses_fresh_catalogue_and_switch_closes_dialog(tmp_path):
-    result = run_picker(tmp_path, choose("first") + """
-      ModelPicker.use();
-      if($("model-dialog").open) throw new Error('switch did not close');
+def test_choosing_closes_the_dropdown_and_reuses_the_fresh_catalogue(tmp_path):
+    """One click applies and closes; reopening does not re-read the catalogue."""
+    result = run_picker(tmp_path, """
+      await ModelPicker.menuOpen();
+      await ModelPicker.choose(ModelPicker.key(""" + json.dumps(ref("first")) + """));
+      if(!$("model-menu").hidden) throw new Error('the list stayed open after a choice');
       MCP.getModelOptions=async()=>{throw new Error('unnecessary refresh');};
-      await ModelPicker.open();
+      await ModelPicker.menuOpen();
     """)
-    assert result["dialogOpen"]
-    assert not result["stale"] and not result["busy"]
-    assert result["choice"]["saved_default"] == ref("first")
+    assert result["ui"]["model-menu"]["hidden"] is False
+    assert not result["busy"]
+    # The choice went to the SAVED default, not to a tab-local override.
+    assert result["choice"] is None
+    assert result["requests"][0]["body"]["policy"]["saved_default"] == ref("first")
     assert result["ui"]["btn-models"]["text"].startswith("Model: ")
 
 
-def test_reopen_expired_catalogue_still_requires_refresh(tmp_path):
+def test_an_expired_catalogue_offers_nothing_to_pick(tmp_path):
     result = run_picker(tmp_path, """
       expire();MCP.getModelOptions=async()=>{throw new Error('offline');};
-      await ModelPicker.open();ModelPicker.use();
+      await ModelPicker.menuOpen();
     """)
     assert result["stale"] and result["choice"] is None
-    assert result["ui"]["btn-model-use"]["disabled"]
+    # Every row is inert and the list says why, rather than offering a choice it
+    # cannot honour.
+    rows = result["ui"]["model-menu"]["children"]
+    assert all(row["disabled"] for row in rows if row["cls"] == "model-menu-item")
+    assert any("needs a refresh" in row["text"] for row in rows)
+    assert result["requests"] == [] and result["writes"] == []
 
 
 def test_saved_unavailable_choice_remains_visible_but_not_applicable(tmp_path):
@@ -77,31 +86,51 @@ def test_saved_unavailable_choice_remains_visible_but_not_applicable(tmp_path):
         "version": 1, "mode": "explicit", "saved_default": ref("first"), "fallbacks": [],
     }
     result = run_picker(tmp_path, "", doc)
-    options = result["ui"]["model-primary"]["children"]
-    assert options[1]["disabled"] and "source revoked" in options[1]["text"]
-    assert result["ui"]["btn-model-use"]["disabled"]
+    rows = result["ui"]["model-menu"]["children"]
+    # It is still shown as the current choice, ticked, and it is not pickable.
+    current = next(row for row in rows if row["checked"] == "true")
+    assert "first" in current["text"] and current["disabled"] is False
+    # ...and it also appears under "needs access" with its reason.
+    assert any("Needs access" in row["text"] for row in rows)
+    assert any("source revoked" in row["text"] for row in rows)
 
 
-def test_setting_default_removes_temporary_override_after_confirmed_save(tmp_path):
+def test_one_choice_is_the_default_and_creates_no_tab_local_override(tmp_path):
+    """The founder's whole ask: clicking a model IS setting it. Nothing else to do.
+
+    "Use in this chat" is gone, so there is no way for the UI to leave a tab-local
+    override behind -- `modelChoiceForNextTurn` stays null and every turn reads the
+    saved preference, which is what the server already did for a null choice.
+    """
     policy = {"version": 1, "mode": "explicit", "saved_default": ref("second"), "fallbacks": []}
     result = run_picker(
         tmp_path,
-        choose("first") + "ModelPicker.use();" + choose("second") + "await ModelPicker.save();",
+        "await ModelPicker.menuOpen();"
+        + "await ModelPicker.choose(ModelPicker.key(" + json.dumps(ref("second")) + "));",
         response={"universe_id": "home-a", "generation": 3, "policy": policy, "updated_at": "now"},
     )
-    assert result["choice"] is None
+    assert result["choice"] is None, "a dropdown click must not create a tab-local override"
     assert result["snapshot"]["preferences"]["policy"] == policy
     assert "second" in result["ui"]["btn-models"]["text"]
-    assert not result["dialogOpen"]
+    # Exactly one write, and it is the same preferences POST the old "Set as
+    # default" button made -- the server contract is unchanged.
+    assert len(result["requests"]) == 1
+    assert result["requests"][0]["method"] == "POST"
+    assert result["requests"][0]["body"]["policy"]["saved_default"] == ref("second")
 
 
-def test_failed_default_save_preserves_temporary_choice(tmp_path):
+def test_a_refused_save_leaves_the_saved_default_alone_and_says_so(tmp_path):
     result = run_picker(
-        tmp_path, choose("first") + "ModelPicker.use();await ModelPicker.save();",
+        tmp_path,
+        "await ModelPicker.menuOpen();"
+        + "await ModelPicker.choose(ModelPicker.key(" + json.dumps(ref("first")) + "));",
         response={"error": "model_preferences_conflict"},
     )
-    assert result["choice"]["saved_default"] == ref("first")
+    # The conflict did not become a silent success: the snapshot keeps the
+    # generation it read, and the status line carries the reason.
     assert result["snapshot"]["preferences"]["generation"] == 2
+    assert "changed elsewhere" in result["ui"]["model-status"]["text"]
+    assert result["choice"] is None
 
 
 def test_sign_in_hint_warns_without_disabling_manual_choice(tmp_path):
@@ -111,9 +140,11 @@ def test_sign_in_hint_warns_without_disabling_manual_choice(tmp_path):
     rows = result["ui"]["model-inventory"]["children"]
     assert "sign-in failure" in rows[0]["text"]
     assert "reconnect" in rows[0]["text"]
-    primary = result["ui"]["model-primary"]["children"]
-    warned = next(row for row in primary if "sign-in failure" in row["text"])
-    assert warned["disabled"] is False
+    # A sign-in warning is a note in the inventory, not a reason to withhold the
+    # model from the list: it is still pickable so the owner can retry it.
+    rows = result["ui"]["model-menu"]["children"]
+    pickable = [row for row in rows if row["cls"] == "model-menu-item" and not row["disabled"]]
+    assert any("first" in row["text"] for row in pickable)
     assert result["requests"] == [] and result["writes"] == []
 
 
@@ -134,18 +165,37 @@ def run_picker(tmp_path, steps, doc=None, response=None):
     program = r"""
 const elements=new Map();
 class Element {
-  constructor(){this.children=[];this.textContent="";this.value="";this.disabled=false;this.events={};this.open=false;}
+  constructor(){this.children=[];this.textContent="";this.value="";this.disabled=false;this.events={};
+    this.open=false;this.hidden=false;this.className="";
+    // The dropdown groups its rows by class and walks them for keyboard focus, so
+    // the shim models classList rather than pretending it away.
+    this.classList={contains:name=>String(this.className||"").split(" ").includes(name),
+                    add:name=>{this.className=(this.className+" "+name).trim();},
+                    remove:name=>{this.className=String(this.className||"").split(" ")
+                      .filter(n=>n!==name).join(" ");}};}
   replaceChildren(){this.children=[];}
-  appendChild(child){this.children.push(child);return child;}
+  appendChild(child){this.children.push(child);child.parent=this;return child;}
   setAttribute(key,value){this[key]=value;}
+  getAttribute(key){return this[key];}
   addEventListener(key,fn){this.events[key]=fn;}
+  // Real containment, because the outside-click close asks the question honestly.
+  contains(node){
+    for(let at=node;at;at=at.parent) if(at===this) return true;
+    return false;
+  }
+  click(){if(this.events.click)this.events.click();}
   focus(){focused=this;}
   showModal(){this.open=true;}
   close(){this.open=false;if(this.events.close)this.events.close();}
 }
 let focused=null;
 const $=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
-const document={createElement:()=>new Element()};
+// A document-level listener is how a dropdown closes on an outside click, so the
+// shim carries one instead of the picker avoiding it.
+const documentEvents={};
+const document={createElement:()=>new Element(),
+  addEventListener:(key,fn)=>{documentEvents[key]=fn;},
+  get activeElement(){return focused;}};
 let modelChoiceForNextTurn=null,requests=[],expired=false,refreshed=0,connects=0;
 let confirmed=true,confirmations=[],writes=[];
 const confirm=text=>{confirmations.push(text);return confirmed;};
@@ -169,12 +219,16 @@ let fetch=async(url,options)=>{
 };
 __FUNCTIONS__
 (async()=>{
- ModelPicker.init();await ModelPicker.open();
+ ModelPicker.init();await ModelPicker.menuOpen();await ModelPicker.open();
  __STEPS__
- const ids=["btn-models","model-next","model-status","model-actual","model-primary",
-   "btn-model-use","btn-model-save","model-fallbacks","model-inventory","model-saved"];
+ const ids=["btn-models","model-next","model-status","model-actual","model-menu",
+   "model-fallbacks","model-inventory","model-saved"];
+ const rowText=c=>c.children.length
+   ? c.children.map(g=>g.textContent).join("").trim() : c.textContent;
  const ui=Object.fromEntries(ids.map(id=>[id,{text:$(id).textContent,disabled:$(id).disabled,
-   children:$(id).children.map(c=>({text:c.textContent,value:c.value,disabled:c.disabled}))}]));
+   hidden:$(id).hidden,
+   children:$(id).children.map(c=>({text:rowText(c),value:c.value,disabled:c.disabled,
+     cls:c.className,checked:c["aria-checked"]}))}]));
  console.log(JSON.stringify({choice:modelChoiceForNextTurn,draft:ModelPicker.draft,
    snapshot:ModelPicker.snapshot,stale:ModelPicker.stale,busy:ModelPicker.busy,requests,
    expired,refreshed,connects,writes,confirmations,recovery:ModelPicker.recovery,dialogOpen:$("model-dialog").open,
