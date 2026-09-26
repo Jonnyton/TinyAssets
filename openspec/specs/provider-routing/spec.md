@@ -195,6 +195,35 @@ The provider runtime SHALL distinguish imported/registered providers, quota or c
 - **WHEN** a registered provider is still in cooldown during routing
 - **THEN** the provider is not invoked and its diagnostic records `skip_class=quota_or_cooldown` plus integer seconds remaining
 
+### Requirement: A secondary call never writes shared source health
+A provider call the owner did not ask for -- the platform's own bookkeeping
+beside a served turn, marked `ModelConfig.secondary_call` and currently only
+post-reply learning extraction -- SHALL NOT write any shared routing health
+state: no `QuotaTracker` cooldown for any failure class, and no source reconnect
+mark. It SHALL still READ the cooldown gate, so it skips a source already
+cooling rather than spending a request on it, and it SHALL still report its own
+real failure class in `attempts`. Withholding a cooldown is restrictive by
+construction: it admits no model, widens no grant and raises no ceiling, so it
+can only ever make the router try an already-authorized source more. A
+successful secondary call may still record success, because a completed call is
+evidence about the credential whoever made it.
+
+#### Scenario: learning extraction is rate-limited after an answered turn
+- **WHEN** a served reply succeeds and the post-reply learning call on the same source takes a rate-limit refusal
+- **THEN** no cooldown is written, the owner's next turn still finds the source eligible, and the learning failure is logged rather than raised or shown
+
+#### Scenario: a secondary call meets a credential refusal
+- **WHEN** a secondary call's attempt fails authentication
+- **THEN** the source is not marked as needing a reconnect, so it is not removed from the owner's next served model plan
+
+#### Scenario: a served turn's own failure is unaffected
+- **WHEN** an unmarked (served or run) call fails or is rate-limited
+- **THEN** the bounded cooldown and reconnect mark are applied exactly as before
+
+#### Scenario: a secondary call respects a window someone else measured
+- **WHEN** the shared cooldown for a source is already set and a secondary call is made
+- **THEN** the provider is not invoked and the attempt records `skip_class=quota_or_cooldown`
+
 #### Scenario: provider failures receive typed diagnostics and cooldowns
 - **WHEN** a provider raises a timeout, an unavailable error, another provider error, or an unexpected exception
 - **THEN** routing classifies the attempt as `timed_out`, conservatively classifies unavailable auth-like errors as `auth_invalid` and other unavailable errors as `endpoint_unreachable`, classifies other provider errors as `provider_error` and unexpected exceptions as `unknown`, and applies the corresponding bounded cooldown before trying the next eligible provider

@@ -35,6 +35,35 @@ notice rather than raw provider text, exception strings, attempts or credentials
 - **THEN** the retained notice expresses that uncertainty without inventing a diagnosis
 - **AND** it does not claim that the turn performed no actions
 
+### Requirement: A measured gate is a cause, and carries its wait
+A failure record SHALL classify from MEASURED evidence, never from a guess. When
+any provider on the chain was actually tried, that attempt's own cause decides the
+class and a skipped provider beside it explains nothing. When NOTHING was tried,
+a skip whose class was measured rather than guessed -- the router's own
+quota/cooldown gate, or a fired timer -- IS the cause, so a turn refused by our
+own cooldown window is never reported as an unidentifiable failure. A skip class
+derived from a substring guess stays unknown.
+
+A record MAY carry `retry_after_s`, a whole bounded positive second count, and
+the composed notice SHALL name that wait. It comes only from measurement -- the
+source's own retry-after, else the remaining window of our gate, taking the
+soonest across several gated providers -- and only for a class whose remedy is
+actually waiting. Absent stays absent; a legacy stored record without the field
+stays readable.
+
+#### Scenario: the chain was only ever gated
+- **WHEN** a turn's single attempt is a skip from the router's own cooldown gate
+- **THEN** the record's class is `quota_or_cooldown`, the notice says the source was in a usage-limit or cooldown window and how long remains, and it does not say the cause could not be identified
+- **AND** the record still reports that nothing was sent and nothing ran
+
+#### Scenario: a tried provider outranks a gate beside it
+- **WHEN** one provider failed and another was skipped by the cooldown gate
+- **THEN** the class comes from the attempt that was tried, even when that attempt's own class is unknown
+
+#### Scenario: waiting is not the remedy
+- **WHEN** the class is a sign-in problem, a setup gap or a platform fault
+- **THEN** no wait is recorded or rendered, so the owner is not sent away to wait out something waiting cannot fix
+
 #### Scenario: Exception contains a secret-like sentinel
 - **WHEN** a failing provider includes private payload text in its exception or attempts
 - **THEN** that text does not enter durable failure metadata or the platform notice

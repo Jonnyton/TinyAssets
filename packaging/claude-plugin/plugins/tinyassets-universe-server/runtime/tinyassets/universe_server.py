@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -2151,6 +2152,13 @@ _PLATFORM_FAULT_TELLS = (
 )
 
 
+#: Classes whose remedy is time. Only these carry a measured wait into the
+#: notice; for anything else a number would send the owner away to wait out a
+#: problem waiting does not fix.
+_WAITING_CLASSES = frozenset({
+    "quota_or_cooldown", "provider_rate_limited", "provider_overloaded",
+})
+
 #: The ``skip_class`` values set by explicit measurement, never by a substring
 #: guess: a cooldown window or a timer fired. `endpoint_unreachable` is the
 #: no-tell fallback of `classify_unavailable` (providers/diagnostics.py) -- it
@@ -2216,17 +2224,31 @@ def _attempt_class(exc: BaseException) -> str | None:
     subprocess provider. Reading only the first is how an `auth_invalid`
     attempt produced a notice saying the cause was unknown.
 
-    Skips are ignored: a provider that was never tried explains nothing about
-    why the turn failed. And a `skip_class` is only promoted when it was
-    evidenced: measured classes (`_MEASURED_SKIP_CLASSES`) always, `auth_invalid`
-    only with narrow credential evidence in the attempt's text
-    (`_AUTH_EVIDENCE_TELLS`), the default bucket never. An honest "we could not
-    identify why" beats a confident wrong sentence.
+    A `skip_class` is only promoted when it was evidenced: measured classes
+    (`_MEASURED_SKIP_CLASSES`) always, `auth_invalid` only with narrow credential
+    evidence in the attempt's text (`_AUTH_EVIDENCE_TELLS`), the default bucket
+    never. An honest "we could not identify why" beats a confident wrong sentence.
+
+    A skip beside a real failure still explains nothing: whatever happened to the
+    provider that was TRIED is the turn's cause, even when its own class came out
+    unknown, and reporting the gate instead would report a cooldown as the
+    diagnosis forever. So skips are consulted ONLY when nothing on the chain was
+    tried at all -- and then only the measured classes.
+
+    That one case is real and was live on 2026-09-25: a free-model universe's next
+    message produced a single attempt, `skipped quota_or_cooldown`, from the
+    router's own cooldown map with the remaining seconds attached, and the founder
+    was told "we could not identify why". Nothing was unknown there; we had
+    refused our own call and knew for how long. `not_in_registry` and the other
+    unmeasured buckets stay unknown.
     """
     try:
-        for attempt in reversed(getattr(exc, "attempts", None) or []):
+        attempts = getattr(exc, "attempts", None) or []
+        tried = False
+        for attempt in reversed(attempts):
             if getattr(attempt, "status", "") != "failed":
                 continue
+            tried = True
             streamed = getattr(attempt, "failure_class", None)
             if streamed:
                 return str(streamed)
@@ -2235,9 +2257,46 @@ def _attempt_class(exc: BaseException) -> str | None:
                 return coarse
             if coarse == "auth_invalid" and _auth_evidence(attempt):
                 return coarse
+        if tried:
+            return None
+        for attempt in reversed(attempts):
+            if getattr(attempt, "status", "") != "skipped":
+                continue
+            coarse = str(getattr(attempt, "skip_class", None) or "")
+            if coarse in _MEASURED_SKIP_CLASSES:
+                return coarse
     except Exception:  # noqa: BLE001 - never break a failure path
         return None
     return None
+
+
+def _attempt_wait_s(exc: BaseException) -> int | None:
+    """The measured seconds until this chain is eligible again, or None.
+
+    Precedence: the source's own ``Retry-After`` on a failed attempt (its number
+    about itself), then the remaining window of OUR cooldown gate on a skipped
+    one. Across several gated providers the SOONEST wins -- the turn needs one
+    provider, so the first to become eligible is when sending again can work.
+    Nothing here invents a number: absent stays absent.
+    """
+    from tinyassets.conversation_failure import wait_seconds
+    from tinyassets.providers.diagnostics import dominant_retry_after_s
+
+    try:
+        attempts = getattr(exc, "attempts", None) or []
+        for value in (getattr(exc, "retry_after", None), dominant_retry_after_s(attempts)):
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                return wait_seconds(int(math.ceil(value)))
+        gated = [
+            remaining
+            for attempt in attempts
+            if getattr(attempt, "status", "") == "skipped"
+            and type(remaining := getattr(attempt, "cooldown_remaining_s", None)) is int
+            and remaining > 0
+        ]
+        return wait_seconds(min(gated)) if gated else None
+    except Exception:  # noqa: BLE001 - never break a failure path for a number
+        return None
 
 
 def _served_failure_diagnosis(exc: BaseException) -> dict[str, Any]:
@@ -2499,6 +2558,12 @@ def _served_failure_record(exc: BaseException, *, held: bool = False):
             code, stage=stage, effects=effects,
             provider_detail="" if code == "setup_required" else _provider_detail(exc),
             ref=ref if isinstance(ref, str) and ref else uuid.uuid4().hex[:16],
+            # Only for a class whose answer actually IS waiting. A wait beside
+            # "reconnect your provider" would send the owner away for two
+            # minutes from something no amount of time fixes.
+            retry_after_s=(
+                _attempt_wait_s(exc) if code in _WAITING_CLASSES else None
+            ),
         )
     except Exception:  # noqa: BLE001 - a malformed diagnostic is not another failure
         return turn_failure("unknown", ref=uuid.uuid4().hex[:16])
