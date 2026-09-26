@@ -125,9 +125,11 @@ def comment_attests_approval(comment_body: str, head: str) -> bool:
     return _attests_approval(visible_receipt_lines(comment_body), head)
 
 
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-_DETAILS_RE = re.compile(r"<details\b.*?</details\s*>", re.DOTALL | re.IGNORECASE)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->")
 _FENCE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})")
+_QUOTE_RE = re.compile(r"^ {0,3}>")
+_DETAILS_OPEN_RE = re.compile(r"<details\b", re.IGNORECASE)
+_DETAILS_CLOSE_RE = re.compile(r"</details\b", re.IGNORECASE)
 
 
 def visible_receipt_lines(text: str) -> list[str]:
@@ -148,40 +150,91 @@ def visible_receipt_lines(text: str) -> list[str]:
     the receipt format in a fenced block can still be stamped, instead of its
     own example colliding with the real receipt.
 
-    Removed, in order: HTML comments (invisible), `<details>` blocks (collapsed
-    -- an approval nobody can see without clicking is not published), and fenced
-    code blocks (illustration, not assertion). An UNCLOSED construct hides
-    everything after it in GitHub's render, so it does here too. Leading
-    whitespace and blockquote markers need no special handling: `startswith`
-    already refuses an indented or quoted line.
-    """
-    text = _DETAILS_RE.sub("", _HTML_COMMENT_RE.sub("", text))
-    # Whatever opener is left was never closed, and GitHub swallows the rest of
-    # the body from there, so a receipt may not hide in it either.
-    lowered = text.lower()
-    unclosed = [at for at in (lowered.find("<!--"), lowered.find("<details")) if at != -1]
-    if unclosed:
-        text = text[: min(unclosed)]
+    ONE ordered pass, because a regex per construct got the PRECEDENCE wrong.
+    Round two of the same review broke the first attempt three ways: a nested
+    `<details>` closed the outer one, because the substitution was not recursive;
+    a lazy blockquote continuation (an unprefixed line under a `>` line, which
+    CommonMark renders inside the quote) read as prose; and -- the one that
+    matters most, because over-blocking is a wall -- a literal `<!--` inside a
+    closed fence truncated the body and discarded the honest receipt below it.
 
+    So the order is the renderer's order:
+
+    1. **A fence is literal.** Nothing inside one is markup, so an `<!--`,
+       `<details>` or `>` in a code example changes no state.
+    2. **An unterminated HTML comment** spans lines, and the remainder after
+       `-->` keeps being scanned.
+    3. **`<details>` by DEPTH**, so an inner pair cannot close the outer
+       element. Collapsed is not visible: an approval behind a toggle is not
+       published.
+    4. **Blockquote, with lazy continuation** -- once quoted, everything up to
+       the next blank line is quoted, which is exactly how a "someone proposed
+       this, I disagree" quote renders.
+
+    An UNCLOSED fence, comment or `<details>` swallows the rest of the body, as
+    GitHub does. Indented and `>`-prefixed lines need nothing extra: the caller's
+    `startswith` already refuses them.
+
+    Not a markdown implementation, and not trying to be: these are the four
+    constructs that HIDE text. The threat model is the #3989 accident, stated in
+    the workflow's honesty note, not an adversary with commit rights.
+    """
     lines: list[str] = []
     fence: str | None = None
-    for line in text.splitlines():
-        match = _FENCE_RE.match(line)
-        if fence is None:
-            if match is not None:
-                fence = match.group("fence")
-            else:
-                lines.append(line)
+    in_comment = False
+    details_depth = 0
+    in_quote = False
+
+    for raw in text.splitlines():
+        if fence is not None:
+            match = _FENCE_RE.match(raw)
+            if (
+                match is not None
+                and match.group("fence")[0] == fence[0]
+                and len(match.group("fence")) >= len(fence)
+                and not raw.strip().strip(fence[0])
+            ):
+                fence = None
             continue
-        # Inside a fence: a closing fence is the same character, at least as
-        # long, and nothing else on the line.
-        if (
-            match is not None
-            and match.group("fence")[0] == fence[0]
-            and len(match.group("fence")) >= len(fence)
-            and not line.strip().strip(fence[0])
-        ):
-            fence = None
+
+        line = raw
+        if in_comment:
+            closed_at = line.find("-->")
+            if closed_at == -1:
+                continue
+            line = line[closed_at + 3 :]
+            in_comment = False
+
+        # Before any HTML handling: an opener here makes the rest literal.
+        match = _FENCE_RE.match(line)
+        if match is not None:
+            fence = match.group("fence")
+            continue
+
+        line = _HTML_COMMENT_RE.sub("", line)
+        opened_at = line.find("<!--")
+        if opened_at != -1:
+            in_comment = True
+            line = line[:opened_at]
+
+        opens = len(_DETAILS_OPEN_RE.findall(line))
+        closes = len(_DETAILS_CLOSE_RE.findall(line))
+        # A line carrying a tag is markup, not an attestation, so it is hidden
+        # either way; depth decides every line between them.
+        hidden = details_depth > 0 or opens > 0 or closes > 0
+        details_depth = max(0, details_depth + opens - closes)
+        if hidden:
+            continue
+
+        if in_quote:
+            if line.strip():
+                continue
+            in_quote = False
+        if _QUOTE_RE.match(line):
+            in_quote = True
+            continue
+
+        lines.append(line)
     return lines
 
 

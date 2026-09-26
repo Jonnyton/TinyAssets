@@ -795,6 +795,45 @@ HIDDEN_RECEIPT_BODIES = {
         f"Drain-Review-Head: {HEAD}\n"
         f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
     ),
+    # Round 2 of the same review: a NESTED details closed the outer one,
+    # because the substitution was not recursive. The receipt is still behind
+    # the outer toggle.
+    "nested details block": (
+        "<details><summary>outer</summary>\n"
+        "<details>inner</details>\n\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+        "</details>\n"
+    ),
+    "details in capitals": (
+        "<DETAILS><SUMMARY>x</SUMMARY>\n\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+        "</DETAILS>\n"
+    ),
+    # CommonMark lazy continuation: an unprefixed line under a `>` line is
+    # still inside the quote, so this renders as somebody ELSE's approval being
+    # quoted and disagreed with.
+    "lazy blockquote continuation": (
+        "> Someone else proposed this; I disagree:\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+    ),
+    "explicitly quoted receipt": (
+        "> Drain-Review-Verdict: APPROVE\n"
+        f"> Drain-Review-Head: {HEAD}\n"
+        f"> Drain-Review-Artifact: {ARTIFACT_URL}\n"
+    ),
+    "four-backtick fence closed with three": (
+        "````\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+        "```\n"
+    ),
 }
 
 
@@ -847,6 +886,14 @@ def test_a_pr_may_document_the_receipt_format_and_still_be_stamped(tmp_path: Pat
         ),
         ("```\nsome unrelated code\n```\n\n", "a CLOSED fence"),
         ("~~~\nsome unrelated code\n~~~\n\n", "a CLOSED tilde fence"),
+        # Round 2 finding: HTML truncation ran BEFORE fence recognition, so a
+        # literal `<!--` inside a code example discarded the honest receipt
+        # below it. Over-blocking is a wall, so this direction is blocking too.
+        ("```html\n<!-- a comment, as an example -->\n```\n\n", "a literal comment in a fence"),
+        ("```\n<!-- unterminated, inside a fence\n```\n\n", "an unterminated one in a fence"),
+        ("```html\n<details><summary>x</summary>\n```\n\n", "a literal details tag in a fence"),
+        ("> the reviewer said it looks fine\n\n", "a blockquote CLOSED by a blank line"),
+        ("text with an <!-- inline --> comment\n\n", "a same-line comment"),
     ],
 )
 def test_hidden_content_before_a_real_receipt_does_not_hide_the_receipt(
@@ -911,6 +958,17 @@ def test_a_closed_html_comment_in_the_attestation_comment_is_tolerated(tmp_path:
         (
             "```\nDrain-Review-Verdict: APPROVE\n" + f"Drain-Review-Head: {HEAD}\n```\n",
             "a fenced example in a comment is not an attestation",
+        ),
+        (
+            "<details><summary>outer</summary>\n<details>inner</details>\n\n"
+            f"Drain-Review-Verdict: APPROVE\nDrain-Review-Head: {HEAD}\n</details>\n",
+            "nested details in the comment, behind the outer toggle",
+        ),
+        (
+            "> Someone else proposed this; I disagree:\n"
+            f"Drain-Review-Verdict: APPROVE\nDrain-Review-Head: {HEAD}\n",
+            "a lazily-continued blockquote: a quoted approval is not this "
+            "reviewer's approval",
         ),
         (
             _attestation() + f"Drain-Review-Verdict: BLOCK\nDrain-Review-Head: {HEAD}\n",
@@ -1256,7 +1314,15 @@ def test_scope_guard_wires_the_blocking_review_decision() -> None:
         "unlabeled",
     }, declared
     assert "PR_TITLE: ${{ github.event.pull_request.title }}" in text
-    assert "--blocking-review" in text
+    # The mode flag must REACH python, not merely exist in the file. Deleting
+    # the array expansion from the invocation survived a bare
+    # `"--blocking-review" in text` check (cross-family review round 2).
+    assert "RECEIPT_ARGS=(--blocking-review)" in text
+    assert re.search(
+        r'python scripts/drain_review_gate\.py \\\n\s*"\$\{RECEIPT_ARGS\[@\]\}" \\',
+        text,
+    ), "the blocking-review mode flag must be passed to the policy script"
+    assert 'RECEIPT_ARGS+=(--review-footprint-exempt)' in text
     for flag in (
         '--review-title "${PR_TITLE:-}"',
         '--review-labels "${LABELS:-}"',
