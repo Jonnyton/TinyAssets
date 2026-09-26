@@ -111,16 +111,40 @@ def _pre_split_word_counts() -> Counter:
     return counts
 
 
+def _source_docstring(name: str = "write_graph") -> str:
+    """The RAW docstring from the shipped source, before any MCP layer sees it.
+
+    The relocation this module guards is a SOURCE edit, so prove it against source.
+    Reading the advertised description instead made this test a claim about FastMCP:
+    on 3.4.x it extracts the `Args:` block into the parameter schema, consuming the
+    `Args:` header and turning each parameter name into a schema KEY, so a word check
+    over the advertised text reported 17 "lost" words in CI that the split had not
+    touched. What FastMCP chooses to relocate is its business; what this change
+    relocated is the question.
+    """
+    import ast
+
+    source = pathlib.Path(engine.__file__).read_text(encoding="utf-8")
+    node = next(
+        item for item in ast.walk(ast.parse(source))
+        if isinstance(item, ast.FunctionDef) and item.name == name
+    )
+    return ast.get_docstring(node, clean=False) or ""
+
+
 def test_the_split_lost_no_guidance():
     """The whole safety claim in one assertion: relocation, not deletion.
 
-    Every word the description carried before the split still occurs at least as
-    often across the resident description plus every chapter. Relocation between
-    them is allowed — that is the point — and so is added text; losing any of it is
-    not.
+    Every word the docstring carried before the split still occurs at least as often
+    across the docstring that remains plus every chapter. Relocation between them is
+    allowed — that is the point — and so is added text; losing any of it is not.
     """
     before = _pre_split_word_counts()
-    after = Counter(engine.served_tool_guidance("write_graph").split())
+    after = Counter(
+        (_source_docstring() + "".join(
+            engine.SERVED_TOOL_CHAPTERS["write_graph"][name] for name in CHAPTER_ORDER
+        )).split()
+    )
     missing = {
         word: (count, after[word])
         for word, count in before.items()
@@ -130,14 +154,14 @@ def test_the_split_lost_no_guidance():
     assert sum(before.values()) == 4968  # provenance, stated in the fixture header
 
 
-def test_nothing_is_lost_under_either_fastmcp_docstring_placement(monkeypatch):
-    """The same guarantee on both hosts, not just the one I develop on.
+def test_the_reader_finds_guidance_under_either_fastmcp_placement(monkeypatch):
+    """`served_tool_guidance` reads the schema too, not only the description.
 
     FastMCP 3.2.0 (local) leaves a docstring's `Args:` block in `description`;
-    3.4.x extracts it into the parameter schema. The first version of these tests
-    read only `description` and went RED in Linux CI while passing on Windows —
-    577 lines instead of 622, exactly the `Args:` block. So simulate the OTHER
-    placement and assert the guarantee survives it.
+    3.4.x extracts it into the parameter schema. A reader that looks at one field
+    answers "is the agent told this?" differently per host — which is how two of
+    these tests went RED in Linux CI while passing on Windows. So simulate the
+    OTHER placement and assert the parameter documentation is still reached.
     """
     real = _description("write_graph")
     if "Args:" not in real:  # pragma: no cover - already the extracting version
@@ -157,10 +181,18 @@ def test_nothing_is_lost_under_either_fastmcp_docstring_placement(monkeypatch):
 
     monkeypatch.setattr(engine.mcp, "list_tools", _list_tools)
     assert "Args:" not in _description("write_graph")  # the simulated placement
-    before = _pre_split_word_counts()
-    after = Counter(engine.served_tool_guidance("write_graph").split())
-    missing = [word for word, count in before.items() if after[word] < count]
-    assert not missing, f"lost under the extracting placement: {sorted(missing)[:20]}"
+    reachable = engine.served_tool_guidance("write_graph")
+    # The whole Args block is now only in the schema, and the reader still has it.
+    assert "Args:" in reachable
+    for parameter in ("payload_json", "expected_revision", "idempotency_key"):
+        assert parameter in reachable
+    # And the chapters are still appended under the other placement.
+    for name in CHAPTER_ORDER:
+        probe = max(
+            (line.strip() for line in engine.SERVED_TOOL_CHAPTERS["write_graph"][name]
+             .splitlines()), key=len,
+        )
+        assert probe in reachable
 
 
 def test_the_chapters_are_still_where_the_index_says_they_were():
