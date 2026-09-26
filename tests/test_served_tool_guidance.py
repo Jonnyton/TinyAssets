@@ -19,21 +19,33 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import pathlib
+import types
+from collections import Counter
 
 import pytest
 
 from tinyassets import engine_mcp_server as engine
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
-#: The digest of `write_graph`'s guidance BEFORE the 2026-09-26 split, over the
-#: normalised form (each line stripped, trailing blanks dropped) because leading
-#: indentation is presentation and the relocation legitimately changes it — the
-#: chapters keep their original indent while the shorter description now dedents.
-#: Taken from `git show <pre-split>:tinyassets/engine_mcp_server.py`.
-GUIDANCE_BEFORE_SPLIT_SHA256 = (
-    "d3ce3eba699692c263ab1d7731d90ba5d2a5a4850b9e1c66ac645cace5ca3fa9"
+#: Every word `write_graph`'s guidance carried BEFORE the 2026-09-26 split, with
+#: its count, generated from the commit before the split. Committed rather than
+#: recomputed so the proof needs no git history at test time.
+#:
+#: A WORD MULTISET, not a line digest, because the invariant is "no guidance was
+#: lost" and that has to survive legitimate relocation and rewording: the split
+#: adds a resident chapter index, and the PR #4000 review asked for the base64
+#: rule to move BACK to the resident description. A line-sequence digest fails on
+#: any such move and would have to be re-pinned each time, which is how a
+#: preservation check quietly stops preserving anything. Deletion still fails.
+PRE_SPLIT_WORDS = (
+    pathlib.Path(__file__).parent
+    / "fixtures"
+    / "write_graph_guidance_pre_split_words.txt"
 )
-GUIDANCE_BEFORE_SPLIT_LINES = 622
+PRE_SPLIT_WORDS_SHA256 = (
+    "37c5977f309b0395fc784d1ca0b5df348951598a9de120db2d5cdf988c5689a8"
+)
 
 #: How to put the chapters back where they were: the resident index sits exactly
 #: where they used to start, and the tail resumes at this line. This pair IS the
@@ -47,6 +59,22 @@ CHAPTER_ORDER = ("connections", "code_nodes", "workspaces")
 
 def _normalized(text: str) -> str:
     return "\n".join(line.strip() for line in text.splitlines()).rstrip("\n")
+
+
+def _parameter_descriptions(handle: str) -> list[str]:
+    """Every parameter description in the advertised schema, possibly empty."""
+    async def _read() -> list[str]:
+        for tool in await engine.mcp.list_tools():
+            if tool.name == handle:
+                schema = tool.parameters if isinstance(tool.parameters, dict) else {}
+                return [
+                    str(spec["description"])
+                    for spec in (schema.get("properties") or {}).values()
+                    if isinstance(spec, dict) and spec.get("description")
+                ]
+        raise AssertionError(f"no served handle named {handle!r}")
+
+    return asyncio.run(_read())
 
 
 def _description(handle: str) -> str:
@@ -64,17 +92,97 @@ def _description(handle: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_putting_the_chapters_back_reproduces_the_original_guidance():
-    """The whole safety claim in one assertion: relocation, not deletion."""
+def _pre_split_word_counts() -> Counter:
+    raw = PRE_SPLIT_WORDS.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    assert digest == PRE_SPLIT_WORDS_SHA256, (
+        "the pre-split word fixture changed; it is the baseline this change is "
+        "measured against, so regenerating it needs saying in the PR"
+    )
+    counts: Counter = Counter()
+    for line in raw.decode("utf-8").splitlines():
+        # A word from `.split()` can never contain a tab, so a line WITHOUT one is
+        # the comment header. A `#` marker would have eaten the guidance's own
+        # `#`-prefixed words — six of them, found the first time this ran.
+        if "\t" not in line:
+            continue
+        count, _, word = line.partition("\t")
+        counts[word] = int(count)
+    return counts
+
+
+def test_the_split_lost_no_guidance():
+    """The whole safety claim in one assertion: relocation, not deletion.
+
+    Every word the description carried before the split still occurs at least as
+    often across the resident description plus every chapter. Relocation between
+    them is allowed — that is the point — and so is added text; losing any of it is
+    not.
+    """
+    before = _pre_split_word_counts()
+    after = Counter(engine.served_tool_guidance("write_graph").split())
+    missing = {
+        word: (count, after[word])
+        for word, count in before.items()
+        if after[word] < count
+    }
+    assert not missing, f"guidance words lost in relocation: {sorted(missing)[:20]}"
+    assert sum(before.values()) == 4968  # provenance, stated in the fixture header
+
+
+def test_nothing_is_lost_under_either_fastmcp_docstring_placement(monkeypatch):
+    """The same guarantee on both hosts, not just the one I develop on.
+
+    FastMCP 3.2.0 (local) leaves a docstring's `Args:` block in `description`;
+    3.4.x extracts it into the parameter schema. The first version of these tests
+    read only `description` and went RED in Linux CI while passing on Windows —
+    577 lines instead of 622, exactly the `Args:` block. So simulate the OTHER
+    placement and assert the guarantee survives it.
+    """
+    real = _description("write_graph")
+    if "Args:" not in real:  # pragma: no cover - already the extracting version
+        pytest.skip("this FastMCP already extracts Args into the schema")
+    head, _, args_block = real.partition("Args:")
+    extracted = types.SimpleNamespace(
+        name="write_graph",
+        description=head,
+        parameters={"properties": {"payload_json": {"description": "Args:" + args_block}}},
+    )
+    others = [
+        tool for tool in asyncio.run(engine.mcp.list_tools()) if tool.name != "write_graph"
+    ]
+
+    async def _list_tools():
+        return [extracted, *others]
+
+    monkeypatch.setattr(engine.mcp, "list_tools", _list_tools)
+    assert "Args:" not in _description("write_graph")  # the simulated placement
+    before = _pre_split_word_counts()
+    after = Counter(engine.served_tool_guidance("write_graph").split())
+    missing = [word for word, count in before.items() if after[word] < count]
+    assert not missing, f"lost under the extracting placement: {sorted(missing)[:20]}"
+
+
+def test_the_chapters_are_still_where_the_index_says_they_were():
+    """Relocation is allowed, arbitrary reshuffling is not: order still holds.
+
+    Structural, with no line count: how much of the docstring lands in the
+    description versus the parameter schema depends on the FastMCP version
+    (3.2.0 keeps `Args:` in the description, 3.4.x extracts it), so a line total
+    asserts a different thing on each host — which is how this first went red in
+    CI while passing locally.
+    """
     description = _description("write_graph")
     at = description.index(INDEX_ANCHOR)
     head, rest = description[:at], description[at:]
     tail = TAIL_ANCHOR + rest.split(TAIL_ANCHOR, 1)[1]
     chapters = engine.SERVED_TOOL_CHAPTERS["write_graph"]
     recomposed = head + "".join(chapters[name] for name in CHAPTER_ORDER) + tail
-    normalized = _normalized(recomposed)
-    assert len(normalized.splitlines()) == GUIDANCE_BEFORE_SPLIT_LINES
-    assert hashlib.sha256(normalized.encode()).hexdigest() == GUIDANCE_BEFORE_SPLIT_SHA256
+    # The reconstruction reads in the original order: the operation catalogue
+    # before the chapters, the delete/parity tail after them.
+    assert recomposed.index('operation="create"') < recomposed.index("CODE NODES")
+    assert recomposed.index("CODE NODES") < recomposed.index(TAIL_ANCHOR)
+    assert recomposed.index("CODE NODES") < recomposed.index("WORKSPACES.")
 
 
 def test_served_tool_guidance_answers_for_every_served_handle():
@@ -131,8 +239,22 @@ def test_guidance_that_prevents_a_wrong_first_call_stays_resident():
     # The operation catalogue and the no-effect guarantee.
     assert 'operation="create"' in description
     assert "fires NO effect" in description or "NO effect" in description
-    # Parameter documentation.
-    assert "Args:" in description
+    # Parameter documentation. Where it LIVES is FastMCP-version dependent (3.2.0
+    # leaves `Args:` in the description, 3.4.x extracts it into the schema), so
+    # assert it reaches the agent rather than which field carries it.
+    reachable = engine.served_tool_guidance("write_graph")
+    assert "Args:" in reachable or _parameter_descriptions("write_graph")
+    for parameter in ("payload_json", "expected_revision"):
+        assert parameter in reachable
+    # PR #4000 review: skipping this produces a WRONG effectful call -- a
+    # corrupted file written to somebody's repository -- not an absent one, so it
+    # came back out of the `connections` chapter.
+    assert "NEVER generate base64" in description
+    assert "NEVER re-type a file" in description
+    assert "422 not valid Base64" in description
+    # And it is not ALSO in the chapter: one definition, not two that can diverge.
+    chapters = engine.SERVED_TOOL_CHAPTERS["write_graph"]
+    assert "NEVER generate base64" not in chapters["connections"]
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +277,36 @@ def test_a_chapter_comes_back_verbatim_and_untruncated():
         assert payload["handle"] == "write_graph"
         assert payload["chapter"] == name
         assert payload["text"] == engine.SERVED_TOOL_CHAPTERS["write_graph"][name]
+
+
+def test_the_bound_read_handle_actually_serves_the_handbook(monkeypatch):
+    """END TO END through the real `read_graph`, not the helper behind it.
+
+    PR #4000 review, mutation finding: disabling the `if normalized == "handbook"`
+    branch left the whole suite green (210 passed), because every handbook test
+    called `_handbook_read` directly. The agent would have been told to fetch
+    chapters it could not reach. This test drives the handle the agent drives.
+    """
+    monkeypatch.setattr(engine, "_binding_error", lambda: None)
+    monkeypatch.setattr(engine, "_GRAPH_ID", "u-handbook", raising=False)
+
+    index = json.loads(engine.read_graph(target="handbook"))
+    assert sorted(index["handbook"]["write_graph"]) == sorted(CHAPTER_ORDER)
+
+    for name in CHAPTER_ORDER:
+        chapter = json.loads(
+            engine.read_graph(target="handbook", query=f"write_graph.{name}")
+        )
+        assert chapter["text"] == engine.SERVED_TOOL_CHAPTERS["write_graph"][name]
+
+    refused = json.loads(engine.read_graph(target="handbook", query="write_graph.nope"))
+    assert "no chapter 'nope'" in refused["error"]
+
+
+def test_the_handbook_route_still_refuses_an_unbound_caller(monkeypatch):
+    """`_binding_error()` runs BEFORE the handbook branch; keep it that way."""
+    monkeypatch.setattr(engine, "_binding_error", lambda: json.dumps({"error": "unbound"}))
+    assert json.loads(engine.read_graph(target="handbook"))["error"] == "unbound"
 
 
 def test_an_unknown_name_is_refused_and_names_what_is_available():

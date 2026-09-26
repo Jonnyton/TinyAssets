@@ -80,19 +80,48 @@ PLATFORM_OWN = {
 }
 
 #: Module constants that ARE documentation, exempt on the same grounds as a
-#: docstring. Listed by name so the exemption stays visible, and deliberately not
-#: a pattern: only guidance text a served handle serves to its own agent.
+#: docstring -- keyed BY FILE, because a name is not a credential.
 #:
 #: 2026-09-26: `write_graph`'s long-form chapters moved out of its docstring into
 #: these constants so they stop riding on every model round-trip of every served
 #: turn (`openspec/changes/engine-tool-manual-on-demand/`). The text did not
 #: change -- only where it lives -- so counting it now would make the rule
 #: unmeetable for exactly the reason the docstring exemption exists.
-DOCUMENTATION_CONSTANTS = {
+#:
+#: Scoped three ways after a blocking review of PR #4000, which planted
+#: ``tinyassets/zz_probe_effector.py`` assigning one of these names to
+#: ``https://api.github.com/repos`` inside a function and calling ``urlopen`` on
+#: it -- and the gate reported clean. A copy-pasted name must never switch the
+#: rule off. The exemption therefore holds ONLY in the owning file, ONLY for a
+#: module-level assignment, and ONLY when that name is assigned exactly once in
+#: that module. Everything else -- the same name in a function, in a class, in
+#: another file, or assigned twice -- counts.
+#:
+#: The survey walks ``tinyassets/`` only, so the packaging mirror is not surveyed
+#: today; it is listed anyway so widening the survey cannot silently start
+#: counting the mirrored copy.
+_MIRROR = (
+    "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
+    "tinyassets/engine_mcp_server.py"
+)
+_ENGINE_CHAPTERS = frozenset({
     "_WRITE_GRAPH_CONNECTIONS_CHAPTER",
     "_WRITE_GRAPH_CODE_NODES_CHAPTER",
     "_WRITE_GRAPH_WORKSPACES_CHAPTER",
+})
+DOCUMENTATION_CONSTANTS: dict[str, frozenset[str]] = {
+    "tinyassets/engine_mcp_server.py": _ENGINE_CHAPTERS,
+    _MIRROR: _ENGINE_CHAPTERS,
 }
+
+
+def documentation_constants_for(path: pathlib.Path) -> frozenset[str]:
+    """Names exempt IN THIS FILE, empty for every other file."""
+    try:
+        rel = path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return frozenset()
+    return DOCUMENTATION_CONSTANTS.get(rel, frozenset())
 
 
 def runtime_strings(path: pathlib.Path):
@@ -115,14 +144,26 @@ def runtime_strings(path: pathlib.Path):
             doc = ast.get_docstring(node, clean=False)
             if doc is not None:
                 docstrings.add(doc)
-    for node in ast.walk(tree):
-        # A relocated docstring: `NAME = """..."""` at module level, named in
-        # DOCUMENTATION_CONSTANTS. Only that exact value is exempted.
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+    # A relocated docstring: `NAME = """..."""` at MODULE level, in the file that
+    # owns the name, assigned exactly once there. Scoped this narrowly because a
+    # name is not a credential -- see DOCUMENTATION_CONSTANTS. `tree.body` (not
+    # `ast.walk`) is what makes "module level" true rather than intended.
+    exempt_names = documentation_constants_for(path)
+    if exempt_names:
+        module_assigned: Counter = Counter()
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        module_assigned[target.id] += 1
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
             target = node.targets[0]
             if (
                 isinstance(target, ast.Name)
-                and target.id in DOCUMENTATION_CONSTANTS
+                and target.id in exempt_names
+                and module_assigned[target.id] == 1
                 and isinstance(node.value, ast.Constant)
                 and isinstance(node.value.value, str)
             ):

@@ -1255,10 +1255,9 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
                      "path": "<a path from the connection's allow-list>",
                      "body": { ... }}}      # JSON body to send
 
-    **Writing a file through an API that takes base64 (a contents API):
-    NEVER generate base64 and NEVER re-type a file - both corrupt it (live
-    2026-08-29: `422 not valid Base64`, then a file with 87 lines collapsed,
-    then a "repair" with 36 typos).** Put text in a transform and reference the
+    Writing a file through an API that takes base64 (a contents API) -- the rule
+    itself is resident in my description, and here is how. Put text in a transform
+    and reference the
     fetched bytes; the effector does the encoding and the byte-moving. Build TWO
     nodes in ONE branch, each with ``effects: ["authenticated_external_call"]``:
     ``fetch`` emits a GET packet for the file; ``write`` (listed after it)
@@ -1505,25 +1504,39 @@ def served_tool_guidance(handle: str) -> str:
     """Everything a served turn can READ about ``handle``, resident or fetched.
 
     The single place that answers "is the agent told this?", because after the
-    2026-09-26 relocation the answer is no longer "is it in ``__doc__``". Returns
-    the advertised description with every chapter appended in the order the
-    resident index names them. A handle with no chapters returns its description,
-    so every served handle is a valid argument.
+    2026-09-26 relocation the answer is no longer "is it in ``__doc__``".
 
-    Raises for an unknown handle: a silent "" here would let a test assert that
-    guidance is reachable when it is asking about a name that does not exist.
+    Three sources, because the agent receives all three: the advertised
+    description, every PARAMETER description in the schema, and every handbook
+    chapter in the order the resident index names them. The parameter
+    descriptions matter for a reason found in CI rather than guessed: which of
+    description-vs-schema holds a docstring's ``Args:`` block depends on the
+    FastMCP version (3.2.0 leaves it in the description; 3.4.x extracts it into
+    the parameters), so a check that reads only one of them asserts a different
+    thing on each host. The agent is told the same either way.
+
+    A handle with no chapters returns its own text, so every served handle is a
+    valid argument. Raises for an unknown handle: a silent "" would let a test
+    assert guidance is reachable while asking about a name that does not exist.
     """
     import asyncio
 
     chapters = SERVED_TOOL_CHAPTERS.get(handle, {})
 
-    async def _description() -> str:
+    async def _advertised() -> str:
         for tool in await mcp.list_tools():
-            if tool.name == handle:
-                return tool.description or ""
+            if tool.name != handle:
+                continue
+            parts = [tool.description or ""]
+            schema = tool.parameters if isinstance(tool.parameters, dict) else {}
+            for spec in (schema.get("properties") or {}).values():
+                described = isinstance(spec, dict) and spec.get("description")
+                if described:
+                    parts.append(str(spec["description"]))
+            return "\n".join(parts)
         raise KeyError(f"no served handle named {handle!r}")
 
-    return asyncio.run(_description()) + "".join(chapters.values())
+    return asyncio.run(_advertised()) + "".join(chapters.values())
 
 
 def _handbook_read(query: str) -> str:
@@ -2048,6 +2061,14 @@ def write_graph(
       goals, invoking branches and universe loops to delete or re-point first).
       Everything else of yours deletes and is gone from
       ``read_graph target="branches"``.
+
+    **Writing a file through an API that takes base64 (a contents API):
+    NEVER generate base64 and NEVER re-type a file - both corrupt it (live
+    2026-08-29: `422 not valid Base64`, then a file with 87 lines collapsed,
+    then a "repair" with 36 typos).** This one stays here rather than in the
+    handbook: skipping it produces a WRONG effectful call -- a corrupted file
+    written to somebody's repository -- not an absent one. The `connections`
+    chapter has the two-node shape that does it correctly.
 
     THE HANDBOOK. My long-form guidance for this handle is not repeated in
     every round of every turn -- it is three chapters I read when I need one,
