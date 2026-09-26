@@ -18,6 +18,7 @@ Change: `openspec/changes/deferred-learning-never-blocks-the-reply/`.
 from __future__ import annotations
 
 import json
+import pathlib
 import time
 from types import SimpleNamespace
 
@@ -290,7 +291,12 @@ def test_the_cursor_starts_owing_nothing_and_advances_only_on_settle(turn):
     assert latest > 0
     # Owed: turns exist past the cursor.
     assert latest > conversation_store.learned_cursor(universe_dir, SESSION)
-    assert conversation_store.settle_learned_cursor(universe_dir, SESSION) == latest
+    # `from_turn` states where the caller believes the cursor stands. It is a
+    # REQUIRED keyword with no default: an omitted one used to skip the
+    # contiguity check, which is the unsafe reading of an absent argument.
+    assert conversation_store.settle_learned_cursor(
+        universe_dir, SESSION, from_turn=0,
+    ) == latest
     assert conversation_store.learned_cursor(universe_dir, SESSION) == latest
 
 
@@ -299,10 +305,10 @@ def test_settling_is_monotonic_and_idempotent(turn):
     conversation_store.record_exchange(universe_dir, SESSION, "one", "ok")
     conversation_store.record_exchange(universe_dir, SESSION, "two", "ok")
     latest = conversation_store.latest_turn_no(universe_dir, SESSION)
-    conversation_store.settle_learned_cursor(universe_dir, SESSION)
+    conversation_store.settle_learned_cursor(universe_dir, SESSION, from_turn=0)
     # A second settle for an EARLIER span cannot un-settle the later one.
     assert conversation_store.settle_learned_cursor(
-        universe_dir, SESSION, through_turn=1,
+        universe_dir, SESSION, through_turn=1, from_turn=latest,
     ) == latest
     assert conversation_store.learned_cursor(universe_dir, SESSION) == latest
 
@@ -362,10 +368,70 @@ def test_an_unreadable_cursor_costs_an_extraction_not_a_lesson(turn, monkeypatch
 
         return sqlite3.OperationalError("synthetic store failure")
 
+    # An EXISTING store, so the read actually reaches sqlite. With no db file the
+    # answer is a knowable 0 ("no turns"), which is the distinction under test.
+    conversation_store.record_exchange(universe_dir, SESSION, "a turn", "reply")
     monkeypatch.setattr(conversation_store, "_connect", explode)
     assert conversation_store.learned_cursor(universe_dir, SESSION) == 0
-    assert conversation_store.latest_turn_no(universe_dir, SESSION) == 0
-    assert conversation_store.settle_learned_cursor(universe_dir, SESSION) == 0
+    # UNKNOWN, not zero. "0" is the answer for a conversation with no turns, and a
+    # reader that cannot answer must not give the same answer as one that can.
+    assert conversation_store.latest_turn_no(universe_dir, SESSION) is None
+    assert conversation_store.settle_learned_cursor(
+        universe_dir, SESSION, from_turn=0,
+    ) == 0
+
+
+def test_a_missing_store_is_a_knowable_zero_not_an_unknown(turn):
+    """The other side of the same line: absent is not unreadable."""
+    import tempfile
+
+    empty = pathlib.Path(tempfile.mkdtemp())
+    assert conversation_store.latest_turn_no(empty, SESSION) == 0
+    assert conversation_store.latest_turn_no(empty, "") is None  # no session to ask about
+
+
+def test_an_unknown_span_refuses_the_settle_and_claims_nothing():
+    """The repro from docs/concerns/2026-09-26-learned-cursor-prerequisites…
+
+    `latest_turn_no` used to fail SOFT to 0, and the handle passed that as
+    `from_turn`. 0 is indistinguishable from "this is the first turn", so the
+    contiguity guard compared 0 against a cursor legitimately at 0, agreed with
+    itself, and the settle claimed every unsettled turn in the history. Now the read
+    answers None and None REFUSES.
+    """
+    import tempfile
+
+    universe_dir = pathlib.Path(tempfile.mkdtemp())
+    conversation_store.record_exchange(universe_dir, SESSION, "owed turn", "reply")
+    conversation_store.record_exchange(universe_dir, SESSION, "second turn", "reply")
+    assert conversation_store.learned_cursor(universe_dir, SESSION) == 0
+    owed = conversation_store.latest_turn_no(universe_dir, SESSION)
+    assert owed == 4
+
+    # The exact shape of the old bug: an unreadable moment reported as "turn zero".
+    assert conversation_store.settle_learned_cursor(
+        universe_dir, SESSION, from_turn=None,
+    ) == 0
+    assert conversation_store.learned_cursor(universe_dir, SESSION) == 0, (
+        "an unknown span claimed the history"
+    )
+    # And a caller that genuinely knows it is seeding still may.
+    assert conversation_store.start_learned_cursor(universe_dir, SESSION) == owed
+
+
+def test_an_unknown_latest_turn_refuses_rather_than_settling_nothing(monkeypatch):
+    """The other half of the same read: through_turn cannot be guessed either."""
+    import tempfile
+
+    universe_dir = pathlib.Path(tempfile.mkdtemp())
+    conversation_store.record_exchange(universe_dir, SESSION, "a turn", "reply")
+    assert conversation_store.settle_learned_cursor(
+        universe_dir, SESSION, from_turn=0,
+    ) == 2
+    monkeypatch.setattr(conversation_store, "latest_turn_no", lambda *a, **k: None)
+    assert conversation_store.settle_learned_cursor(
+        universe_dir, SESSION, from_turn=2,
+    ) == 2, "an unknown target moved the cursor"
 
 
 # ---------------------------------------------------------------------------
