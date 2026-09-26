@@ -173,22 +173,35 @@ class AgentTurnCoordinator:
         source kind, model id, first-verified time -- and no user or universe id;
         see ``tinyassets/storage/learned_models.py`` for why each is safe to share.
 
-        The id recorded is the one the source SAYS answered where it says so,
-        falling back to the configured id: a source that renames a model in its
-        reply is telling us the real id, and that is the one another user needs.
-        """
-        from tinyassets.storage.learned_models import record_verified_model
+        The id recorded is the one THIS UNIVERSE ASKED FOR and that then succeeded
+        -- its own ``model_selection.model_id`` -- and never a string the source
+        chose.
 
-        model_id = (getattr(response, "reported_model", "") or "").strip() \
-            or (getattr(response, "model", "") or "").strip()
+        The first version preferred ``response.reported_model``, and Codex refuted
+        it on #4028: that field is source-controlled, so a source could publish
+        anything to every other user of its kind (it reproduced
+        ``owner-alice@example.com-private-9``), and ``codex_provider`` deliberately
+        reports the literal ``provider-default`` when it cannot resolve a model,
+        which would then have been published as a verified model id. What this
+        universe REQUESTED is the only id worth sharing: it is a name its owner
+        already held, it is exactly what another owner would need to grant, and a
+        source cannot inject it.
+
+        An empty requested id is the provider default -- a position, not a model --
+        so there is nothing to teach anyone and it is skipped.
+        """
+        from tinyassets.storage.learned_models import (
+            LEARNED_SOURCE_KIND,
+            record_verified_model,
+        )
+
+        selection = getattr(self.context, "model_selection", None)
+        model_id = (getattr(selection, "model_id", "") or "").strip()
         if not model_id:
             return
         record_verified_model(
             self.context.universe_dir.parent,
-            # A native agent runs a subscription CLI; the same value
-            # ``_native_models`` keys its ConnectionModels with, so the read and
-            # the write agree on what "kind" means without a second definition.
-            source_kind="subscription",
+            source_kind=LEARNED_SOURCE_KIND,
             model_id=model_id,
         )
 

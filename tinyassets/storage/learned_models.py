@@ -19,6 +19,7 @@ Serving still requires the reading universe's own accepted model access.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,10 +39,22 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS learned_models (
   first_verified_at TEXT NOT NULL,
   PRIMARY KEY(source_kind, model_id))"""
 
+#: The source KIND a native (subscription CLI) connection reports, and the
+#: availability basis a contributed row carries. ONE definition each, read by both
+#: the writer (the coordinator) and the reader (the model plan), so the two cannot
+#: disagree about what a "kind" is or about which rows are learned rather than
+#: granted.
+LEARNED_SOURCE_KIND = "subscription"
+LEARNED_MODEL_BASIS = "platform_verified_elsewhere"
+
 #: Every column there will ever be. A test asserts the shipped table matches, so
 #: adding a fourth column has to be a deliberate act that updates this tuple and
 #: argues with the cross-user floor.
 COLUMNS = ("source_kind", "model_id", "first_verified_at")
+
+#: How long a write may wait for the shared database. Short by design -- see
+#: ``_connect``. A read waits the same: nobody's model list is worth a stall.
+_BUSY_WAIT_MS = 250
 
 #: What must never appear in this table, by name. A counter of verifications is on
 #: the list because "3 universes verified this" is a population fact about users
@@ -59,11 +72,24 @@ class LearnedModel:
     first_verified_at: str
 
 
+#: What an IDENTIFIER may contain. Deliberately a strict allowlist, not
+#: "printable": Codex published ``owner-alice@example.com-private-9`` through the
+#: old printable-only rule (#4028). Every value in this table is read by every
+#: other user of that source kind, so a value that could carry a sentence, an
+#: address or a path is not an identifier and does not belong here. No ``@``, no
+#: whitespace, no unicode -- the shapes real model ids use and nothing else.
+#: First and last character alphanumeric, so a malformed id with a dangling
+#: separator (``some-``) cannot become a class name either.
+_IDENTIFIER = re.compile(
+    r"\A[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,126}[A-Za-z0-9])?\Z", re.ASCII)
+
+
 def _clean(value: object, field: str) -> str:
-    if type(value) is not str or not value.strip() or len(value) > 200:
+    """Validate an identifier. A shared store cannot accept free text."""
+    if type(value) is not str:
         raise ValueError(f"invalid learned model {field}")
     text = value.strip()
-    if not text.isprintable():
+    if not _IDENTIFIER.match(text):
         raise ValueError(f"invalid learned model {field}")
     return text
 
@@ -80,15 +106,21 @@ class LearnedModelCatalog:
             return None
         if create:
             path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+            conn = sqlite3.connect(path, timeout=_BUSY_WAIT_MS / 1000,
+                                   isolation_level=None)
         else:
             # Non-creating: an observational read must not bring a database into
             # being. `mode=rw` opens an existing file and refuses to create one,
             # which also closes the gap after the exists() check above.
             conn = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True,
-                                   timeout=30.0, isolation_level=None)
+                                   timeout=_BUSY_WAIT_MS / 1000, isolation_level=None)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 30000")
+        # A SHORT wait, on purpose. Codex measured the old 30s timeout blocking a
+        # reply-path write for 318 ms behind a 300 ms competing writer and stalling
+        # an asyncio heartbeat (#4028). Learning is optional and repeatable: the
+        # next successful turn on the same id records it. Waiting on a busy shared
+        # database to do it is never worth a user's latency.
+        conn.execute(f"PRAGMA busy_timeout = {_BUSY_WAIT_MS}")
         return conn
 
     def record(self, *, source_kind: str, model_id: str, now: datetime | None = None) -> bool:

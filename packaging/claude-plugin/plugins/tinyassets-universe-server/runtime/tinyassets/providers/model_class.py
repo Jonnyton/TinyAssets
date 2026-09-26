@@ -43,9 +43,17 @@ def _version_parts(token: str) -> tuple[int, ...]:
 def model_class_and_version(model_id: str) -> tuple[str, tuple[int, ...]]:
     """Return ``(class, version)`` for one model id.
 
-    ``class`` is the id with its version tokens removed, joined by ``-``.
-    ``version`` is the version tokens in the order they appeared, flattened, so
-    ``4-6`` and ``4.6`` describe the same version and compare equal.
+    ``class`` is the id with its version tokens REMOVED IN PLACE -- every remaining
+    separator is exactly the one the id used. ``version`` is the version tokens in
+    the order they appeared, flattened, so ``4-6`` and ``4.6`` describe the same
+    version and compare equal.
+
+    Removing in place rather than re-joining the surviving tokens matters twice.
+    ``some_model`` and ``some-model`` stay two classes, where normalising both to
+    ``some-model`` collapsed them and made ``newest_per_class`` discard one (Codex
+    on #4028). And a mixed-separator id like ``vendor/thing-2.5-turbo`` keeps its
+    own shape (``vendor/thing-turbo``) instead of being rewritten with whichever
+    separator happened to come first.
 
     A blank or non-string id is refused rather than bucketed: an unnamed model is
     a caller bug, and silently giving it a class would let it win a "newest"
@@ -53,23 +61,30 @@ def model_class_and_version(model_id: str) -> tuple[str, tuple[int, ...]]:
     """
     if type(model_id) is not str or not model_id.strip():
         raise ValueError("model id must be a non-empty string")
-    tokens = [token for token in _SPLIT.split(model_id.strip()) if token]
-    if not tokens:
-        # Separators only. It cannot be tokenised, so it is its own class -- the
-        # rule for anything unparseable, applied rather than excepted.
-        return model_id.strip(), ()
-    class_tokens: list[str] = []
+    text = model_id.strip()
+    # Keep the separators: `parts` alternates token, separator, token, ...
+    parts = _SPLIT.split(text)
+    separators = _SPLIT.findall(text)
     version: list[int] = []
-    for token in tokens:
-        if _VERSION_TOKEN.match(token):
+    kept: list[str] = []
+    kept_separators: list[str] = []
+    for index, token in enumerate(parts):
+        if token and _VERSION_TOKEN.match(token):
             version.extend(_version_parts(token))
-        else:
-            class_tokens.append(token)
-    # Every token was a version (an id that is only numbers). It has no class of
-    # its own to share, so it is its own class and keeps its version.
-    if not class_tokens:
-        return model_id.strip(), tuple(version)
-    return "-".join(class_tokens), tuple(version)
+            continue
+        if kept:
+            # The separator that preceded this surviving token, which is the one
+            # immediately before it in the original string.
+            kept_separators.append(separators[index - 1] if index else "")
+        kept.append(token)
+    # Nothing but versions and separators: no class of its own to share, so it is
+    # its own class -- the rule for anything unparseable, applied not excepted.
+    if not any(kept):
+        return text, tuple(version)
+    klass = kept[0]
+    for separator, token in zip(kept_separators, kept[1:], strict=True):
+        klass += separator + token
+    return klass, tuple(version)
 
 
 def newer(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
@@ -87,20 +102,30 @@ def newest_per_class(rows):
     """Reduce rows to the newest model of each class.
 
     ``rows`` is any iterable of objects with ``model_id`` and ``first_verified_at``.
-    A tie on version is broken by the EARLIER first-verified time: the id that has
-    been known to work longest wins, rather than whichever row was read first.
+    The winner of a class is decided by: higher version, then the EARLIER
+    first-verified time (the id known to work longest), then the lower model id.
+
+    That last tiebreak is not cosmetic. Equal version AND equal timestamp used to
+    fall back to input order, so the same catalog could answer differently
+    depending on how rows were read (Codex on #4028). Arbitrary but STABLE beats
+    arbitrary.
 
     An id that cannot be given a class is returned as its own class, so it is
     never dropped for being unusual.
     """
-    best: dict[str, tuple[tuple[int, ...], str, object]] = {}
+    best: dict[str, tuple[tuple[int, ...], str, str, object]] = {}
     for row in rows:
         try:
             klass, version = model_class_and_version(row.model_id)
         except ValueError:
             continue  # a row with no usable id is not a model anyone can select
-        seen = best.get(klass)
         stamp = str(getattr(row, "first_verified_at", "") or "")
-        if seen is None or newer(version, seen[0]) or (version == seen[0] and stamp < seen[1]):
-            best[klass] = (version, stamp, row)
-    return [entry[2] for entry in best.values()]
+        # Higher version wins, so the version is compared as-is; among equals the
+        # smaller (stamp, id) wins, so it is negated by comparing the incumbent.
+        candidate = (version, stamp, str(row.model_id), row)
+        seen = best.get(klass)
+        if (seen is None
+                or candidate[0] > seen[0]
+                or (candidate[0] == seen[0] and candidate[1:3] < seen[1:3])):
+            best[klass] = candidate
+    return [best[klass][3] for klass in sorted(best)]

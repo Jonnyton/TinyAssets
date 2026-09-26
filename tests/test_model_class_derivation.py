@@ -42,11 +42,16 @@ from tinyassets.providers.model_class import (
         # No version token at all: its own class, empty version.
         ("some-model", "some-model", ()),
         ("mistral", "mistral", ()),
-        # Underscores and slashes are separators too.
-        ("vendor/model-3-1", "vendor-model", (3, 1)),
-        ("vendor_model_3_1", "vendor-model", (3, 1)),
-        # Mixed separators in one id.
-        ("vendor/thing-2.5-turbo", "vendor-thing-turbo", (2, 5)),
+        # Underscores and slashes are separators too, and the class KEEPS the
+        # separator the id used: `some_model` and `some-model` are two ids, so they
+        # must stay two classes (Codex on #4028 -- normalising them collapsed the
+        # classes and discarded one).
+        ("vendor/model-3-1", "vendor/model", (3, 1)),
+        ("vendor_model_3_1", "vendor_model", (3, 1)),
+        ("some_model", "some_model", ()),
+        # Mixed separators in one id keep their own shape rather than being
+        # rewritten with whichever separator came first.
+        ("vendor/thing-2.5-turbo", "vendor/thing-turbo", (2, 5)),
         # A leading version token still leaves the rest as class.
         ("4-mini", "mini", (4,)),
         # Only numbers: its own class, so it cannot win another class's newest.
@@ -133,6 +138,22 @@ def test_a_tie_goes_to_the_id_known_to_work_longest():
 def test_an_unversioned_id_is_never_dropped_for_being_unusual():
     rows = [Row("some-model"), Row("mistral"), Row("claude-opus-4-7")]
     assert _ids(newest_per_class(rows)) == ["claude-opus-4-7", "mistral", "some-model"]
+
+
+def test_two_ids_differing_only_by_separator_are_two_classes():
+    """Codex on #4028: they collapsed, and newest_per_class discarded one."""
+    rows = [Row("some-model"), Row("some_model")]
+    assert _ids(newest_per_class(rows)) == ["some-model", "some_model"], (
+        "an id this module cannot version is its own class, and these are two ids")
+
+
+def test_an_equal_version_and_timestamp_tie_is_stable_not_input_ordered():
+    """Same catalog, different read order, same answer."""
+    same = "2026-02-01T00:00:00Z"
+    a, b = Row("gpt-5-6", same), Row("gpt-5.6", same)
+    assert _ids(newest_per_class([a, b])) == _ids(newest_per_class([b, a]))
+    # ...and it is the lower id, chosen by a rule rather than by arrival.
+    assert _ids(newest_per_class([a, b])) == ["gpt-5-6"]
 
 
 def test_a_row_with_no_usable_id_is_skipped_not_fatal():

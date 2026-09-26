@@ -4,6 +4,8 @@ Discovery happens outside assignment admission and database transactions. The
 result is advisory: every actual launch still validates its exact member anew.
 """
 
+import logging
+import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -38,8 +40,14 @@ from tinyassets.providers.model_policy import (
 from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
 from tinyassets.providers.wire_dialects import same_dialect
 from tinyassets.storage.current_home import check_current_home
+from tinyassets.storage.learned_models import (
+    LEARNED_MODEL_BASIS,
+    LEARNED_SOURCE_KIND,
+)
 from tinyassets.storage.model_preferences import ModelPreferenceStore
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+_LOG = logging.getLogger("universe_server.served_model_plan")
 
 
 def _assert_plan_snapshot(snapshot):
@@ -190,7 +198,7 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
     # existing access machinery marks them outside the accepted scope, so they
     # surface as "needs access" and become selectable when the owner grants it.
     # A catalog row is evidence, never permission.
-    models.extend(_catalog_candidates(base, "subscription", already=models))
+    models.extend(_catalog_candidates(base, LEARNED_SOURCE_KIND, already=models))
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
     if provider is None or not provider.is_available():
@@ -215,12 +223,19 @@ def _catalog_candidates(base, source_kind, *, already):
     have = {model.model_id for model in already}
     try:
         rows = LearnedModelCatalog(base).newest_for_source_kind(source_kind)
-    except Exception:  # noqa: BLE001 - a missing catalog is simply nothing learned yet
+    except (OSError, sqlite3.DatabaseError, ValueError) as exc:
+        # NARROW on purpose. A bare ``except Exception`` here disguised corruption
+        # and programming errors as "nothing learned yet" (Codex on #4028), which
+        # is the silent-fallback shape Hard Rule 8 forbids. These three are the
+        # honest "the catalog is not readable right now" cases -- a missing or
+        # locked file, a damaged database, a malformed row -- and even they are
+        # logged rather than swallowed. Anything else is a bug and must surface.
+        _LOG.warning("learned model catalog unreadable: %s", type(exc).__name__)
         return ()
     return tuple(
         Model(row.model_id, True, frozenset({"text"}),
               pricing=Pricing("fresh", unmetered=True),
-              availability_basis="platform_verified_elsewhere")
+              availability_basis=LEARNED_MODEL_BASIS)
         for row in rows if row.model_id and row.model_id not in have
     )
 
@@ -376,8 +391,33 @@ def prepare_owned_model_plan(
                         # own default. Preserve that lane and expose the gap.
                         rejected.append(Ineligible(ModelRef(provider, ""),
                                                    "native_catalogue_unavailable", scope="source"))
-                catalog = filtered = _native_models(
+                catalog = _native_models(
                     base, universe, owner, member, native_snapshot=native_snapshot,
+                )
+                # A LEARNED id is a candidate to GRANT, never an admitted one.
+                # `catalog` is what a client may SEE; `filtered` is what may be
+                # selected and executed, and the two are deliberately different
+                # here -- the same split the HTTP branch below already makes.
+                #
+                # Codex on #4028 found these identical: one object went to both, so
+                # a learned id arrived with in_candidate_catalog=true, the dropdown
+                # offered it, selection succeeded and only EXECUTION refused it.
+                # Selectable choices that fail are worse than absent ones.
+                contributed = tuple(
+                    model for model in catalog.models
+                    if model.availability_basis == LEARNED_MODEL_BASIS
+                )
+                filtered = replace(catalog, models=tuple(
+                    model for model in catalog.models
+                    if model.availability_basis != LEARNED_MODEL_BASIS
+                ))
+                # Said, not merely withheld: the reason is what puts it under the
+                # dropdown's "Needs access" group with the one-tap grant, so the
+                # owner can turn a learned id into a real choice.
+                rejected.extend(
+                    Ineligible(ModelRef(provider, model.model_id),
+                               "model_access_optin_required")
+                    for model in contributed
                 )
                 if native_snapshot is not None:
                     snapshots.append(native_snapshot)

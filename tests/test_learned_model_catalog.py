@@ -297,3 +297,74 @@ def test_the_table_is_classified_for_both_user_deletion_paths(tmp_path):
     with sqlite3.connect(db_path(tmp_path)) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(learned_models)")}
     assert not columns & {"owner_user_id", "universe_id", "actor_id", "principal_id"}
+
+
+# ---------------------------------------------------------------------------
+# What a SOURCE may publish to everyone else. All four are Codex findings on the
+# first version of this change (#4028), each reproduced before being fixed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "owner-alice@example.com-private-9",   # Codex published exactly this
+        "alice@example.com",
+        "model with a sentence in it",
+        "../../etc/passwd",
+        "id\twith\ttabs",
+        "trailing-",
+        "-leading",
+        "café-model-1",                   # non-ASCII is not an identifier here
+        "x" * 200,                             # over the identifier bound
+    ],
+)
+def test_a_value_that_is_not_an_identifier_never_reaches_a_shared_store(catalog, hostile):
+    """Three safe COLUMNS do not make arbitrary VALUES safe.
+
+    The first version validated "printable, <=200 chars", so a source-controlled
+    string could carry an address or a sentence to every other user of its kind.
+    """
+    with pytest.raises(ValueError):
+        catalog.record(source_kind="subscription", model_id=hostile, now=_at(0))
+    assert catalog.for_source_kind("subscription") == []
+
+
+@pytest.mark.parametrize(
+    "real", ["claude-fable-5-1", "gpt-5.6-sol", "vendor/model-3-1", "a", "o4-mini"]
+)
+def test_the_identifier_rule_still_accepts_the_shapes_real_ids_use(catalog, real):
+    """A rule strict enough to be useless would pass the test above for free."""
+    assert catalog.record(source_kind="subscription", model_id=real, now=_at(0)) is True
+
+
+def test_the_write_does_not_wait_on_a_busy_shared_database(tmp_path):
+    """Learning is optional and repeatable; a user's reply must not wait for it.
+
+    Codex measured the old 30s busy timeout blocking a reply-path write for 318 ms
+    behind a competing writer and stalling an asyncio heartbeat. The bound is now
+    short by design, so a contended write gives up and the next successful turn on
+    the same id records it instead.
+    """
+    from tinyassets.storage.learned_models import _BUSY_WAIT_MS
+
+    assert _BUSY_WAIT_MS <= 500, (
+        "a shared-store write on the reply path must not wait long enough to be felt")
+    # Hold the database's write lock, then time a record() through the public
+    # best-effort path: it must return promptly rather than waiting out a long
+    # timeout, and it must not raise.
+    import time
+
+    blocker = sqlite3.connect(db_path(tmp_path), isolation_level=None)
+    blocker.execute("CREATE TABLE IF NOT EXISTS holder (x TEXT)")
+    blocker.execute("BEGIN EXCLUSIVE")
+    try:
+        started = time.monotonic()
+        recorded = record_verified_model(
+            tmp_path, source_kind="subscription", model_id="vendor-line-4-7")
+        elapsed = time.monotonic() - started
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+    assert recorded is False, "a contended write reports that it did not land"
+    assert elapsed < 3.0, f"the write waited {elapsed:.1f}s on a busy database"
