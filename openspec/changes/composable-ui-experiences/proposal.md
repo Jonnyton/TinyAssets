@@ -18,8 +18,13 @@ must be editable, including instance selection and phone notification routing.
 - Bound the first implementation proof to one experience remixed between a
   desktop view and a phone view, with voice and notification handoff scenarios.
 
-This is a proposal for review, not an implemented UI builder. The public format
-and private binding contract need shape review before implementation.
+**Implementation status (2026-09-26).** The shape review settled the renderer
+isolation contract, so the first slice is now built rather than proposed:
+executable `tinyassets.app-ui.v1` bundles, an isolated sandboxed renderer with a
+closed message bridge acting as the viewing user, an on-the-fly switcher, and
+sharing through the existing publish/remix path. See design.md, "Implementation
+slice: executable UI bundles". Device negotiation, notification routing and voice
+handoff remain proposed only.
 
 ## Capabilities
 

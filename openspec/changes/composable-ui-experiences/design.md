@@ -154,3 +154,107 @@ Before implementation, settle:
    availability; no claim that phone push exists until proved.
 5. Cross-family shape review, with AGREE / DISAGREE_EVIDENCE /
    DISAGREE_CONCERN findings and code citations where applicable.
+
+---
+
+## Implementation slice: executable UI bundles (2026-09-26)
+
+The proposal above describes the whole contract. This section settles item 1 of
+"Before implementation" — **the governed renderer isolation contract** — and
+scopes the first slice that actually ships. Everything the proposal defers
+(device negotiation, notification routing, voice handoff) stays deferred.
+
+### What already exists, and what it cannot do
+
+`tinyassets/onboarding/app_layout.js` reads one `tinyassets.app-layout.v1`
+component and *moves the app's own nodes*. It deliberately carries no HTML, CSS,
+script or URL, because nothing in the app can safely execute imported code.
+`openspec/specs/governed-agent-consumers/spec.md` states that limitation as a
+requirement: the first adapter "SHALL NOT claim arbitrary executable UI".
+
+That is the gap. A user who wants an office-building simulation cannot express it
+by reordering four surfaces. The missing primitive is not another fixed surface —
+it is a place to put arbitrary code plus a boundary strong enough to run it.
+
+### The boundary, not a sanitizer
+
+A shared UI is hostile input. Sanitizing markup or script is a losing game and is
+explicitly **not** attempted. The bundle runs as arbitrary code inside a boundary
+that holds regardless of what the code does:
+
+1. **Opaque origin, enforced by response header.** `/mcp/app/ui-frame` serves a
+   fixed bootstrap document under
+   `Content-Security-Policy: sandbox allow-scripts`. The CSP `sandbox` directive
+   applies to the document however it was loaded, so even a direct top-level
+   navigation to that URL gets an opaque origin. `allow-same-origin` is never
+   granted, so the document cannot reach `sessionStorage` (where `ta_access_token`
+   lives, `app.html:710`), `localStorage`, cookies, or the parent DOM.
+2. **No network of its own.** The same header sets `connect-src 'none'`,
+   `default-src 'none'`, `form-action 'none'` and `img-src data:`. A bundle cannot
+   fetch, cannot post a form, and cannot exfiltrate through an image URL. Every
+   capability it has arrives through the bridge and nothing else.
+3. **No nesting out.** `frame-src` falls back to `default-src 'none'`, so the
+   bundle cannot embed a frame to shop for a weaker context, and
+   `frame-ancestors 'self'` keeps the bootstrap from being framed off-origin.
+4. **The bundle is never in the app's document.** The parent posts bundle source
+   into the frame; it is never assigned to any node the app owns. The app's CSP
+   gains exactly one term, `frame-src 'self'`, and keeps its nonce-only
+   `script-src` — so even a bug that inserted bundle script into `app.html` would
+   still not execute it.
+
+Both sandboxes apply: the `<iframe sandbox="allow-scripts">` attribute and the
+response-header CSP. Either alone is sufficient; the pair means a mistake in one
+is not a breach.
+
+### The bridge is the whole capability surface
+
+`app_ui.js` owns the parent half. A message is considered only when
+`event.source === frame.contentWindow`; the action is looked up in a frozen map
+and an unlisted action is refused by name, never guessed. Each handler builds its
+own `MCP.callTool` arguments — a bundle cannot supply `graph_id`, because the
+handler pins it to the **viewing** user's current home, captured at enable time
+and re-checked against `fetchMe()`. Cross-user reach is therefore not refused by
+a check that could be bypassed; it is unrepresentable.
+
+Replies are assembled field by field from picked values. No server payload is
+spread into a reply, so a field added upstream later cannot ride out to a bundle.
+
+MVP allowlist: `whoami` (universe id and display name only), `list_agents`,
+`send_message`, `read_conversation`. `send_message` addresses a named agent in the
+viewer's own universe, which is what makes "click a room, talk to that agent"
+work. One `send_message` in flight at a time.
+
+### Where a bundle lives
+
+Two stores already have bounds, ownership, privacy, revision guards and a
+publish/remix path; a third file store would be new storage shape needing its own
+migration, so it is not introduced here.
+
+- **Private, unpublished:** the existing non-serving `app_experience`
+  `AgentBinding` configuration (`ui_library`, `ui_selection`), written through
+  `write_graph target:agent_binding` — which the universe's own agent can call.
+  Private by default: publishing is a separate, explicit act.
+- **Shared:** a `tinyassets.app-ui.v1` component inside a public agent
+  definition, via the `publish`/`remix` path `app_layout.js` already uses. A
+  remix copies the component into the remixer's *own* binding, where it runs
+  against the remixer's bridge. The author's universe is never addressed.
+
+`ui_library` is a **list**, not an object: `_check_binding_content_fields`
+rejects reserved key names like `messages`, and a list has no user-chosen keys to
+collide. Bundle bytes are bounded so a full library cannot exceed
+`MAX_AGENT_JSON_BYTES` (`tinyassets/custom_agents.py:26`); a test ties the JS
+constants to that Python constant rather than restating it.
+
+### One system, not two
+
+The switcher is the existing "App design" surface, and the UI selection lives in
+the same binding configuration as `turn_consumer`, read and written through
+`AppLayout`'s existing read-back-and-CAS helpers. The layout editor keeps
+working; a user with no bundle sees exactly what they see today.
+
+### Deferred, and named so it is not mistaken for shipped
+
+Device capability negotiation, notification routing, voice handoff, multi-file
+bundles with binary assets, and a real per-universe file store. A rendered
+real-browser proof through `ui-test` is required before this is called
+user-ready; test-harness evidence is not that proof.

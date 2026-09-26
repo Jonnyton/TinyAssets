@@ -79,3 +79,93 @@ a broken experience and restore a compatible prior revision.
 - **THEN** only fixture behavior runs
 - **AND** after explicit activation the user can disable or roll back the view
 - **AND** rollback does not claim to undo completed external effects
+
+### Requirement: An executable UI bundle runs only in an isolated, credential-free context
+
+A universe SHALL be able to hold a user-authored executable UI bundle
+(`tinyassets.app-ui.v1`: name, markup, style, script) that its own agent writes
+through ordinary graph writes, with no platform code change per UI. The app SHALL
+render such a bundle only inside a document served by a dedicated route whose
+response carries a `Content-Security-Policy` granting `sandbox allow-scripts`
+without `allow-same-origin`, and denying its own network (`connect-src 'none'`,
+`default-src 'none'`, `form-action 'none'`, non-remote `img-src`). Bundle source
+SHALL NOT be assigned into any node of the app's own document, and the app's own
+`script-src` SHALL remain nonce-only. The bundle SHALL be treated as hostile
+input; the platform SHALL NOT claim to sanitize its markup or script.
+
+#### Scenario: Bundle cannot reach the app's credentials or DOM
+- **WHEN** a bundle is rendered
+- **THEN** its document has an opaque origin and no `allow-same-origin` grant
+- **AND** it cannot read the app's session storage, cookies, or parent DOM
+- **AND** the app's page policy permits frames only from its own origin while its
+  script policy stays nonce-only
+
+#### Scenario: Bundle has no network path of its own
+- **WHEN** the isolated document's policy is inspected
+- **THEN** it forbids outbound connections, form submission, remote images, and
+  nested frames
+- **AND** every capability the bundle has is reached through the message bridge
+
+#### Scenario: Direct navigation to the frame route is still sandboxed
+- **WHEN** the frame route is fetched as a top-level document rather than framed
+- **THEN** the sandbox and its opaque origin still apply from the response header
+- **AND** no user bundle content is present in that response
+
+#### Scenario: A malformed bundle is refused with a reason
+- **WHEN** a bundle carries an unexpected field, a wrong kind or version, a
+  non-string body, or exceeds its byte bounds
+- **THEN** it is reported unsupported with the reason and is not rendered
+- **AND** the default chat experience stays in use
+
+### Requirement: The bundle bridge is a closed allowlist acting as the viewing user
+
+The bridge SHALL accept a message only from the rendering frame, SHALL resolve the
+action against a fixed allowlist, and SHALL refuse an unlisted action by name
+without guessing. Every handler SHALL pin its universe target to the viewing
+user's own current home rather than accepting one from the bundle, SHALL carry no
+credential, token, or raw provider material in any reply, and SHALL build replies
+from explicitly picked fields rather than forwarding server payloads. A bundle
+SHALL be able to address a named agent in the viewing user's universe.
+
+#### Scenario: Unlisted action is refused
+- **WHEN** a bundle requests an action outside the allowlist
+- **THEN** the bridge returns a refusal naming the action
+- **AND** no tool call is made
+
+#### Scenario: Cross-user reach is unrepresentable
+- **WHEN** a bundle supplies another universe's identifier in its request
+- **THEN** the supplied value is ignored and the call targets the viewer's home
+- **AND** a stale or changed home ends the bridge rather than serving the old target
+
+#### Scenario: Replies carry no credentials
+- **WHEN** an allowlisted handler returns
+- **THEN** its reply contains only the fields the bridge picked
+- **AND** no access token, refresh handle, or credential-shaped value is included
+
+#### Scenario: Message reaches a named agent in the viewer's universe
+- **WHEN** a bundle sends a message naming an agent
+- **THEN** the message is relayed within the viewer's own universe
+- **AND** the author's universe is not addressed
+
+### Requirement: Switching is on the fly, remembered, and does not fork the layout system
+
+The app SHALL offer an explicit choice between the default chat experience and any
+installed bundle, SHALL apply it without reload, and SHALL persist it in the same
+private `app_experience` binding configuration that holds the existing layout and
+turn-consumer selection, under the same read-back and revision-guarded write
+discipline. A universe with no bundle SHALL behave exactly as before.
+
+#### Scenario: Choice survives a new sign-in
+- **WHEN** a user selects an installed bundle and later signs in again
+- **THEN** that bundle is applied from the persisted selection
+- **AND** returning to default chat is available at all times
+
+#### Scenario: Concurrent selection write is refused, not overwritten
+- **WHEN** the binding revision observed before the write is stale
+- **THEN** the write is refused as a conflict and the current selection is reloaded
+- **AND** nothing is retried automatically
+
+#### Scenario: A remixed bundle acts as the remixer
+- **WHEN** a second account remixes a published bundle and runs it
+- **THEN** its bridge resolves to the remixer's own universe and identity
+- **AND** the original author's universe, conversation, and agents are unreachable

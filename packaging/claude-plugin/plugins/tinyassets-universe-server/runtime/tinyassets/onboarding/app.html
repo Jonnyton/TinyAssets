@@ -210,6 +210,13 @@
     .layout-dialog input:not([type=checkbox]),.layout-dialog textarea{width:100%;box-sizing:border-box;margin:.35rem 0}
     .layout-dialog li{margin:.35rem 0}.layout-actions{display:flex;flex-wrap:wrap;gap:.5rem}
     #layout-mode{font-size:.8rem} .chat-actions{flex-wrap:wrap}
+    /* A custom UI replaces the chat body rather than sitting beside it, and the
+       frame itself carries no border: whatever is inside is somebody's own
+       design, so the app does not frame it with its own chrome. */
+    #ui-frame-host{flex:1;display:flex;min-height:0}
+    .ui-frame{flex:1;width:100%;border:0;min-height:20rem;background:var(--bg)}
+    .ui-custom-active>.chat-body{display:none!important}
+    #ui-mode{font-size:.8rem}
   </style>
 </head>
 <body>
@@ -242,6 +249,8 @@
         </div>
         <nav class="chat-actions">
           <span id="layout-mode" hidden></span>
+          <span id="ui-mode" hidden></span>
+          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch UI</button>
           <button id="btn-layouts" class="btn btn--link" hidden>App design</button>
           <button id="btn-layout-restore" class="btn btn--link" hidden>Restore default</button>
           <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
@@ -392,8 +401,26 @@
            aria-label="Conversation status"></div>
       <div id="voice-status-line" class="status-line status-line--voice" role="status"
            aria-live="polite" aria-label="Voice status" hidden></div>
+      <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
+           sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
+           bundle markup, style or script is ever assigned into this document. -->
+      <div id="ui-frame-host" hidden></div>
     </section>
 
+    <dialog id="ui-dialog" class="layout-dialog" aria-labelledby="ui-title">
+      <h2 id="ui-title">Your UI</h2>
+      <p>Switch between the default chat and any UI installed in this universe.
+      A custom UI runs isolated: it cannot read your sign-in, your other tabs, or
+      anything outside this universe, and it reaches your universe only through
+      the actions you see here — greeting you, listing your agents, sending a
+      message, and reading this conversation.</p>
+      <p id="ui-status" role="status" aria-live="polite"></p>
+      <ul id="ui-list"></ul>
+      <div class="layout-actions">
+        <button id="btn-ui-refresh" class="btn" type="button">Refresh</button>
+        <button id="btn-ui-close" class="btn" type="button">Close</button>
+      </div>
+    </dialog>
     <dialog id="layout-dialog" class="layout-dialog" aria-labelledby="layout-title">
       <h2 id="layout-title">Your app design</h2>
       <p>Arrange existing controls. Your conversations, model access and private settings stay yours.</p>
@@ -3771,6 +3798,11 @@
     engineConnected = connected ? true : HostedModelConnect.setup==="unavailable" ? null : false;
     if(typeof AppLayout!=="undefined"){
       if(connected) AppLayout.enable(me.universe_id,me.principal_id); else AppLayout.reset();
+      // The custom-UI switcher follows the SAME identity+home gate as the
+      // layout editor: a bundle only ever runs for a verified signed-in home.
+      if(typeof AppUI!=="undefined"){
+        if(connected) AppUI.enable(me.universe_id,me.principal_id); else AppUI.reset();
+      }
     }
     // Powered or not, this is the universe's own chat. The owner and home were
     // taken above, from the same verified `me`.
@@ -3972,6 +4004,7 @@
     if(Uploads) Uploads.abort();
     clearAccountScopedState();
     if(typeof AppLayout!=="undefined") AppLayout.reset();
+    if(typeof AppUI!=="undefined") AppUI.reset();
     HostedModelConnect.reset();
     modelChoiceForNextTurn=null;
     ModelPicker.reset();
@@ -6368,10 +6401,13 @@
 
   __TA_APP_LAYOUT__
 
+  __TA_APP_UI__
+
   async function boot(){
     const modelCallback=HostedModelConnect.takeCallback();
     wire();
     if(typeof AppLayout!=="undefined") AppLayout.init();
+    if(typeof AppUI!=="undefined") AppUI.init();
     HostedModelConnect.wire();
     wireNativeReturn();
     // A vendor sign-in card once kept a verifier here; nothing reads it now.
