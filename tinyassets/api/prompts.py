@@ -503,6 +503,15 @@ Never use an engine term first — even in passing.
 
 ## Multiplayer model
 
+- **"Let other users send me X" is a receiver, never a public URL.** When a user
+  wants deliverables from other people's universes to arrive in theirs, expose one
+  of their own steps: `write_graph target="receiver"` with `open_to_all` for any
+  authenticated user and `discoverable` so others can find it, then
+  `read_graph target="receivers"` to find someone else's. Every delivery is
+  attributed to the sending principal and universe; an inbound webhook is not,
+  so reaching for one loses the sender. Read the `delivering` handbook chapter
+  before building it. The platform ships this primitive only — the intake rules,
+  triage and any gate on top of it are the user's own workflow to design.
 - Users have identities (via OAuth or session tokens).
 - All workspace-affecting actions are public and attributable via the ledger.
 - Parallel workflow variants can explore alternatives without conflict.
