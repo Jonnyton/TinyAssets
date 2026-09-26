@@ -834,6 +834,19 @@ HIDDEN_RECEIPT_BODIES = {
         f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
         "```\n"
     ),
+    # The receipt sits AFTER a SHORTER fence marker, which per CommonMark does
+    # not close the longer one. Put it before, as the row above does, and the
+    # receipt is hidden whatever the length rule says — so that row cannot
+    # detect a broken length comparison and this one can.
+    "shorter marker does not close a longer fence": (
+        "````\n"
+        "an example\n"
+        "```\n"
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+        "````\n"
+    ),
 }
 
 
@@ -894,6 +907,11 @@ def test_a_pr_may_document_the_receipt_format_and_still_be_stamped(tmp_path: Pat
         ("```html\n<details><summary>x</summary>\n```\n\n", "a literal details tag in a fence"),
         ("> the reviewer said it looks fine\n\n", "a blockquote CLOSED by a blank line"),
         ("text with an <!-- inline --> comment\n\n", "a same-line comment"),
+        # MULTI-LINE, so comment state is actually entered and must be LEFT.
+        # A same-line comment is stripped by the regex and never enters the
+        # state machine, so it could not detect a missing exit.
+        ("<!--\na reviewer note\n-->\n\n", "a multi-line CLOSED html comment"),
+        ("<!--\nnote one\n-->\ntext\n<!--\nnote two\n-->\n\n", "two of them"),
     ],
 )
 def test_hidden_content_before_a_real_receipt_does_not_hide_the_receipt(
