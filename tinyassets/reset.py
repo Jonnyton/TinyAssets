@@ -62,14 +62,28 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
+# The four reserved operational names this DESTRUCTIVE reader has always
+# skipped. It is deliberately NOT the ownership predicate the readers use
+# (`daemon_server.owned_universe_ids`, 2026-09-02): a cut needs a positive
+# reason to believe a directory WAS a universe, and "nobody owns it" is not one
+# -- the migration backup `docs/host-actions.md` says not to delete owns
+# nothing. Routing reset through ownership would have silently changed what a
+# host-invoked reset removes on a read-only change. Narrowing what this deletes
+# is the prune lane's job, with a dry-run inventory first.
+_RESERVED_OPERATIONAL_DIRS = frozenset({"lance", "output", "runs", "wiki"})
+
+
 def universe_dirs(base: Path) -> list[Path]:
     """Universe directories under ``base`` (excludes reserved operational dirs
     like wiki/output/runs/lance and any dotfile)."""
-    from tinyassets.api.universe import _is_listable_universe_dir
-
     if not base.is_dir():
         return []
-    return sorted(p for p in base.iterdir() if _is_listable_universe_dir(p))
+    return sorted(
+        p for p in base.iterdir()
+        if p.is_dir()
+        and not p.name.startswith(".")
+        and p.name not in _RESERVED_OPERATIONAL_DIRS
+    )
 
 
 def reset(data_dir: Path, *, confirm: bool) -> dict[str, object]:

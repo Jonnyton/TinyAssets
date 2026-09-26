@@ -773,6 +773,15 @@ def set_universe_display_name(
 
 
 def sync_universes_from_filesystem(base_path: str | Path) -> None:
+    """Index every directory under the data root by path.
+
+    Deliberately NOT filtered by ownership. This table is a path INDEX, not the
+    definition of a universe: a self-hoster restoring a universe directory from
+    a backup needs it indexed before anything can grant on it. What makes a
+    directory a universe is an owner, and that is enforced where it is READ --
+    :func:`owned_universe_ids` and every reader routed through it (founder,
+    2026-09-02). Indexing an unowned directory shows it to nobody.
+    """
     initialize_author_server(base_path)
     root = Path(base_path)
     if not root.exists():
@@ -4975,6 +4984,67 @@ def list_universe_acl(
         }
         for r in rows
     ]
+
+
+def owned_universe_ids(base_path: str | Path) -> set[str]:
+    """Every universe id somebody owns: an ACL grant, or a founder's home.
+
+    THE DEFINITION of a universe (founder, 2026-09-02: "a universe should only
+    exist if it belongs to a user"). It used to be "a directory under the data
+    root that is not one of four hardcoded names", so the platform's own
+    backups, a past prune's archive, ``scratch`` and ``cloud-automation-inputs``
+    were all universes -- enumerated, declared ``public`` by the boot backfill,
+    and readable by id -- and every new operational directory silently became
+    one. The denylist could not be completed: ``lancedb`` (not the listed
+    ``lance``), daemon memory, retained inputs, the workspace pool and stored
+    offers were already missing from it.
+
+    A home binding counts alongside an ACL row because first contact binds the
+    home BEFORE any grant is written; a universe with a live founder must never
+    depend on which of the two landed first.
+
+    Ownership here is "somebody has a row", not "somebody is admin" -- a
+    universe shared write-only is still somebody's. Callers needing a specific
+    permission ask :func:`universe_access_permission`.
+    """
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        owned = {
+            str(row["universe_id"])
+            for row in conn.execute("SELECT DISTINCT universe_id FROM universe_acl")
+            if str(row["universe_id"] or "").strip()
+        }
+        owned |= {
+            str(row["universe_id"])
+            for row in conn.execute("SELECT DISTINCT universe_id FROM founder_home")
+            if str(row["universe_id"] or "").strip()
+        }
+    return owned
+
+
+def owned_universe_id(base_path: str | Path, name: str) -> str:
+    """The owned universe id ``name`` refers to, or ``""`` when nobody owns it.
+
+    ONE definition, case-folded. A directory restored from a backup as
+    ``U-Mine`` is the ACL's ``u-mine`` on a case-insensitive filesystem, and two
+    readers comparing it differently is how a directory ended up protected from
+    a cut and invisible in every list at the same time.
+
+    A dotted name is never a universe, whatever the ACL says: ``.deleting/`` is
+    account deletion's staging directory, and a row naming it must not make it
+    readable.
+    """
+    candidate = (name or "").strip()
+    if not candidate or candidate.startswith("."):
+        return ""
+    owned = owned_universe_ids(base_path)
+    if candidate in owned:
+        return candidate
+    folded = candidate.casefold()
+    for owned_id in sorted(owned):
+        if owned_id.casefold() == folded:
+            return owned_id
+    return ""
 
 
 def universe_is_private(base_path: str | Path, *, universe_id: str) -> bool:

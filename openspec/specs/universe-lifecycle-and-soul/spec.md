@@ -6,6 +6,58 @@
 
 How a universe is created, identified, seeded with an OKF soul bundle, taught via governed `soul.edit` writes, and ended via the confirm-gated clean-slate reset.
 ## Requirements
+### Requirement: A universe exists because an ownership row names it
+
+A universe SHALL be a directory under the data root that an ownership row names:
+a `universe_acl` grant of any permission, or a `founder_home` binding. A home
+binding SHALL count alongside an ACL grant, because first contact binds the home
+before any grant is written. Ownership resolution SHALL case-fold both the
+directory name and the row's id, so a directory restored under a different case
+is still the universe its row names; where a caller's pointer matches a directory
+exactly, that directory's own spelling SHALL be the answer. A name beginning with
+`.` SHALL never resolve as a universe whatever a row says.
+
+Every reader of "which universes exist" SHALL apply this predicate: enumeration,
+the direct-id readers (`inspect`, `switch_universe`) including the `available`
+list they publish on a miss, the visibility backfill and readiness enumeration,
+the branch-dependents scan, and the default/home resolvers. A configuration
+pointer — the host-global `.active_universe` marker or
+`UNIVERSE_SERVER_DEFAULT_UNIVERSE` — SHALL NOT by itself make a directory a
+universe; an unowned configured default SHALL answer only when no universe is
+owned at all (a fresh install naming what it is about to create). The `available`
+list SHALL additionally apply the `discover_existence` visibility gate.
+
+When the ownership store cannot be read, a direct-id reader SHALL refuse with a
+store-unavailable error rather than "not found", and an enumeration SHALL return
+nothing. The filesystem path index (`sync_universes_from_filesystem`) SHALL
+remain unfiltered, because a restored directory must be indexed before anything
+can grant on it; indexed SHALL NOT imply owned. An unowned directory SHALL become
+invisible and unreadable, and SHALL NOT be deleted by any reader.
+
+#### Scenario: an unowned directory is invisible and unreadable
+- **WHEN** a directory under the data root has no `universe_acl` grant and no `founder_home` binding
+- **THEN** enumeration omits it, reading it by id answers "not found", selecting it answers "not found", the visibility backfill declares no level for it, and the directory and its contents remain on disk
+
+#### Scenario: an operational store is not a universe without any denylist
+- **WHEN** the data root holds operational directories such as `lancedb`, `daemon_wikis`, `cloud-automation-inputs`, `scratch`, or a past prune's archive
+- **THEN** none of them is enumerated or readable by id, with no list of reserved names consulted
+
+#### Scenario: a not-found answer publishes only owned, discoverable universes
+- **WHEN** a caller asks for an id that does not exist
+- **THEN** the `available` list contains only directories somebody owns whose declared level permits `discover_existence` for that caller
+
+#### Scenario: a pointer is not a grant
+- **WHEN** `.active_universe` or `UNIVERSE_SERVER_DEFAULT_UNIVERSE` names an unowned directory while at least one universe is owned
+- **THEN** the default resolver returns an owned universe instead
+
+#### Scenario: an unreadable ownership store says so
+- **WHEN** the ownership lookup raises while reading a universe by id
+- **THEN** the refusal names the store as unavailable rather than reporting the universe as not found
+
+#### Scenario: an owned id with no directory is not readable
+- **WHEN** an ownership row names an id whose directory is absent
+- **THEN** it is neither enumerated nor readable by id
+
 ### Requirement: Universe identity is an opaque, time-sortable serial
 
 A universe SHALL be identified by an opaque serial of the form `u-` followed by a

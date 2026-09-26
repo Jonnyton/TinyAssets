@@ -385,23 +385,34 @@ def backfill_universe_visibility(
 
 
 def _discover_universe_ids() -> list[str]:
-    """Best-effort enumeration of on-disk universe ids for backfill."""
+    """Best-effort enumeration of on-disk universe ids for backfill.
+
+    Owned only. This is the step that TURNED a stray directory into a public
+    universe: :func:`backfill_universe_visibility` declares a level for every id
+    returned here, so an archive the four-name denylist allowed got the
+    ``public`` row that made it both listable and readable by id. It also gates
+    readiness, so an unowned directory used to hold the startup gate.
+    """
     base = _base_path()
     if not base.is_dir():
         return []
     try:
         from tinyassets.api.universe import _is_listable_universe_dir
+        from tinyassets.daemon_server import owned_universe_ids
+
+        owned = owned_universe_ids(base)
     except Exception:
-        _is_listable_universe_dir = None  # type: ignore[assignment]
-    ids: list[str] = []
-    for child in sorted(base.iterdir()):
-        if _is_listable_universe_dir is not None:
-            if not _is_listable_universe_dir(child):
-                continue
-        elif not child.is_dir() or child.name.startswith("."):
-            continue
-        ids.append(child.name)
-    return ids
+        # Fail CLOSED: an unreadable ownership store means nothing is known to
+        # be owned, so nothing is declared or gated on. The previous fallback
+        # (predicate unavailable -> accept every non-dotted directory) would
+        # re-open the leak exactly when the authority could not be consulted.
+        logger.exception("ownership lookup failed while discovering universe ids")
+        return []
+    return [
+        child.name
+        for child in sorted(base.iterdir())
+        if _is_listable_universe_dir(child, owned)
+    ]
 
 
 def is_declared(universe_id: str) -> bool:

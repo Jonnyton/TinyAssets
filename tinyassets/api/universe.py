@@ -1733,20 +1733,41 @@ def _epoch2_operational_snapshot(udir: Path) -> dict[str, Any]:
     return _epoch2_operational_read(udir).summary
 
 
-_TOP_LEVEL_OPERATIONAL_DATA_DIRS = frozenset({
-    "lance",
-    "output",
-    "runs",
-    "wiki",
-})
+def _is_listable_universe_dir(path: Path, owned: set[str]) -> bool:
+    """A universe is a directory somebody OWNS (founder, 2026-09-02).
 
+    This used to be a four-name denylist (``lance``/``output``/``runs``/``wiki``)
+    standing in for a definition, so the platform's own backups and every past
+    prune's archive were universes, and each new operational directory needed
+    another name in the frozenset -- ``lancedb``, daemon memory, retained inputs,
+    the workspace pool and stored offers were already missing from it. Ownership
+    is the definition; operational directories need no list because they were
+    never universes.
 
-def _is_listable_universe_dir(path: Path) -> bool:
+    ``owned`` comes from ``daemon_server.owned_universe_ids``. Passing it in
+    rather than reading it here keeps one ownership query per enumeration
+    instead of one per directory.
+    """
     return (
         path.is_dir()
         and not path.name.startswith(".")
-        and path.name not in _TOP_LEVEL_OPERATIONAL_DATA_DIRS
+        and _name_is_owned(path.name, owned)
     )
+
+
+def _name_is_owned(name: str, owned: set[str]) -> bool:
+    """Whether an ownership row names ``name``, comparing case-folded BOTH ways.
+
+    Folding only the directory name would match a lowercase ACL id against a
+    restored ``U-Mine/`` and miss the mirror case -- a ``u-mine/`` directory
+    whose row was written as ``U-Mine``. The owned set is per-host small (one
+    entry per universe), so the symmetric scan costs nothing and removes the
+    asymmetry rather than documenting it.
+    """
+    if name in owned:
+        return True
+    folded = name.casefold()
+    return any(folded == owned_id.casefold() for owned_id in owned)
 
 
 def _action_list_universes(**_kwargs: Any) -> str:
@@ -1768,11 +1789,22 @@ def _action_list_universes(**_kwargs: Any) -> str:
         })
 
     from tinyassets.api import visibility
+    from tinyassets.daemon_server import owned_universe_ids
+
+    try:
+        owned = owned_universe_ids(base)
+    except Exception as exc:  # noqa: BLE001 - fail closed, and say why
+        logger.exception("ownership lookup failed while listing universes")
+        return json.dumps({
+            "universes": [],
+            "count": 0,
+            "note": f"Ownership store unavailable: {exc}",
+        })
 
     universes = []
     hidden_by_visibility = 0
     for child in sorted(all_entries):
-        if not _is_listable_universe_dir(child):
+        if not _is_listable_universe_dir(child, owned):
             continue
         # Existence is a privileged, separately-granted capability: a universe
         # whose declared level withholds discovery (e.g. `unlisted`) is not
@@ -1814,17 +1846,81 @@ def _action_list_universes(**_kwargs: Any) -> str:
     return json.dumps(result)
 
 
+class _OwnershipUnavailable(RuntimeError):
+    """The ownership store could not be read. NOT the same as unowned."""
+
+
+def _owned_universe_id(uid: str) -> str:
+    """The owned id ``uid`` names, or ``""`` when nobody owns it.
+
+    Raises :class:`_OwnershipUnavailable` when the store cannot be read.
+    Returning ``""`` there would refuse the request as "Universe not found",
+    which tells the caller an existing universe does not exist -- a lie, from a
+    transient SQLite lock. Fail closed AND loudly: the request is still refused,
+    but for the reason that is true.
+    """
+    from tinyassets.daemon_server import owned_universe_id
+
+    base = _base_path()
+    if not base.is_dir():
+        # No data root is not a broken store: there is nothing here, so nobody
+        # owns anything. Raising here would turn every read on a fresh install
+        # into "Ownership store unavailable".
+        return ""
+    try:
+        return owned_universe_id(base, uid)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ownership lookup failed for %s", uid)
+        raise _OwnershipUnavailable(str(exc)) from exc
+
+
+def _available_universe_ids() -> list[str]:
+    """What to offer when an id is not found: the universes SOMEBODY OWNS.
+
+    This used to list every directory under the data root, so a "not found"
+    answer published the whole graveyard -- the archives, the migration backup
+    and the operational stores -- to any caller who guessed a wrong id.
+    """
+    from tinyassets.daemon_server import owned_universe_ids
+
+    base = _base_path()
+    if not base.is_dir():
+        return []
+    try:
+        owned = owned_universe_ids(base)
+    except Exception:  # noqa: BLE001 - fail closed
+        logger.exception("ownership lookup failed while listing available ids")
+        return []
+    from tinyassets.api import visibility
+
+    return sorted(
+        d.name for d in base.iterdir()
+        if _is_listable_universe_dir(d, owned)
+        # Existence is separately granted. Without this, asking for an id that
+        # does not exist answers with every owned universe, private and unlisted
+        # ones included -- the enumeration gate the listing applies, skipped by
+        # taking the error path.
+        and visibility.visibility_permits(d.name, "discover_existence")
+    )
+
+
 def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
-    if not udir.is_dir():
+    # A DIRECTORY IS NOT A UNIVERSE. Filtering the enumeration was half the fix:
+    # reading one BY ID still answered with a full universe payload for
+    # `cloud-automation-inputs` and for the migration backup, reproduced against
+    # production on 2026-09-02. The graveyard was still browsable, which is what
+    # the founder reported.
+    try:
+        owner_id = _owned_universe_id(uid)
+    except _OwnershipUnavailable as exc:
+        return json.dumps({"error": f"Ownership store unavailable: {exc}"})
+    if not udir.is_dir() or not owner_id:
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "available": _available_universe_ids(),
         })
 
     # Metadata gate: inspect returns describe-surface metadata (premise, daemon
@@ -5484,13 +5580,16 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
 
     uid = universe_id
     udir = _universe_dir(uid)
-    if not udir.is_dir():
+    # The same question the listing and `inspect` ask: selecting a directory
+    # nobody owns is selecting something that is not a universe.
+    try:
+        owner_id = _owned_universe_id(uid)
+    except _OwnershipUnavailable as exc:
+        return json.dumps({"error": f"Ownership store unavailable: {exc}"})
+    if not udir.is_dir() or not owner_id:
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "available": _available_universe_ids(),
         })
 
     # Explicit universe selection is not global (universe-creation spec:
