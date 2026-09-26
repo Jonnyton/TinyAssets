@@ -167,7 +167,9 @@ def _served_action_types() -> set[str]:
     """Every ``{"type": "..."}`` action the served write_graph docstring teaches."""
     import tinyassets.engine_mcp_server as engine
 
-    doc = engine.write_graph.__doc__ or ""
+    # REACHABLE, not resident (2026-09-26): the ask actions live in the
+    # `connections` handbook chapter the resident index names.
+    doc = engine.served_tool_guidance("write_graph")
     return set(re.findall(r'"action":\s*{\s*"type":\s*"([a-z_]+)"', doc))
 
 
@@ -207,7 +209,10 @@ def test_the_served_docs_teach_the_removal_as_an_ask_not_an_operation():
     that works, said in the words the agent will copy."""
     import tinyassets.engine_mcp_server as engine
 
-    doc = engine.write_graph.__doc__ or ""
+    # REACHABLE, not resident (2026-09-26): the copyable shape is in the
+    # `connections` chapter. What must never come back is the DEAD shape, and
+    # that assertion is stronger over the whole reachable text, not weaker.
+    doc = engine.served_tool_guidance("write_graph")
     assert '"type": "remove_http"' in doc, "the copyable shape is missing"
     assert "the operation is ``remove_http``" not in doc, "the dead shape is back"
 
@@ -250,7 +255,10 @@ def test_every_connection_verb_the_served_docs_name_is_reachable_from_there():
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
-    doc = (engine.write_graph.__doc__ or "") + "\n" + _CONTROL_STATION_PROMPT
+    # REACHABLE, not resident (2026-09-26): the connection verbs live in the
+    # `connections` chapter, so the two instruction surfaces are compared over
+    # everything the agent can read, not only what rides on every round.
+    doc = engine.served_tool_guidance("write_graph") + "\n" + _CONTROL_STATION_PROMPT
     verbs = sorted(set(re.findall(
         r"\b([a-z][a-z0-9]*_(?:http|compute))\b", doc)))
     assert verbs, "neither instruction surface names a connection verb at all"
