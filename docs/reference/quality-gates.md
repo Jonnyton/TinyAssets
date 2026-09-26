@@ -122,15 +122,18 @@ carries an exact-head receipt, whenever the PR
 * carries the `infra-change` label, **or**
 * declares `Tier 2` in its title.
 
-Satisfying it takes **two steps, both required**. First the reviewer POSTS the
-verdict as a comment on the PR, carrying these two lines as plain visible text:
+Satisfying it takes **two steps, both required, and each receipt goes at the TOP
+of its text** — only blank lines may precede it.
+
+First the reviewer POSTS the verdict as a comment on the PR. These are its first
+two non-blank lines, with the reasoning below them:
 
 ```
 Drain-Review-Verdict: APPROVE
 Drain-Review-Head: <the PR's current 40-hex head>
 ```
 
-Then the PR BODY cites that comment:
+Then the PR BODY cites that comment. These are its first three non-blank lines:
 
 ```
 Drain-Review-Verdict: APPROVE
@@ -151,12 +154,13 @@ Mechanics worth knowing before you plan work:
   the reviewer's BLOCK comment, and a citation of a pre-push approval all fail.
   A `docs/…md` artifact still satisfies the older drain-branch receipt but not
   this one.
-- **An approval nobody can read is not published.** Lines inside a fenced code
-  block, an HTML comment, or a `<details>` block do not count, in either place —
-  and an unclosed one hides everything after it, exactly as GitHub renders it.
-  The same rule is why a PR that DOCUMENTS this format in a fenced example can
-  still be stamped: its example is ignored, so it does not collide with the real
-  receipt.
+- **Only the top is read.** Nothing above a receipt can hide it, because nothing
+  can precede the first line of a document; and nothing below it can void it. A
+  receipt in a fenced block, an HTML comment, a `<details>`, a blockquote or a
+  list is simply not at the top and does not count. If an honest receipt is being
+  refused, move it up. This replaced a markdown scanner that three cross-family
+  review rounds broke in both directions — hidden approvals it accepted, honest
+  ones it refused after a heading or a code example.
 - **Stamping the body re-runs the check** (`edited` is a trigger), so a verdict
   unblocks a PR with no push. **Any push voids the receipt** — the head must
   match exactly, so batch your fixes and re-stamp once.

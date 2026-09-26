@@ -52,11 +52,13 @@ def _run_gate(
 
 
 def _valid_body(*, head: str = HEAD) -> str:
+    # The receipt OPENS the body: a receipt is only read at the top, so that
+    # nothing can be open in front of it and hide it.
     return (
-        "## Review\n\n"
         "Drain-Review-Verdict: APPROVE\n"
         f"Drain-Review-Head: {head}\n"
         "Drain-Review-Artifact: docs/audits/drain-review.md\n"
+        "\n## Review\n"
     )
 
 
@@ -305,10 +307,19 @@ def test_drain_branch_denies_missing_or_stale_receipt(tmp_path: Path) -> None:
 def test_drain_branch_denies_duplicate_or_malformed_receipt(
     tmp_path: Path,
 ) -> None:
+    # A duplicated line INSIDE the receipt block displaces the artifact line,
+    # so the top three lines are not a receipt. (A duplicate further down the
+    # body is simply never read — see
+    # `test_a_contradiction_below_the_receipt_is_not_read`.)
     duplicate = _run_gate(
         tmp_path,
         branch="drain/run/target-001",
-        body=_valid_body() + f"Drain-Review-Head: {HEAD}\n",
+        body=(
+            "Drain-Review-Verdict: APPROVE\n"
+            f"Drain-Review-Head: {HEAD}\n"
+            f"Drain-Review-Head: {HEAD}\n"
+            "Drain-Review-Artifact: docs/audits/drain-review.md\n"
+        ),
     )
     malformed = _run_gate(
         tmp_path,
@@ -319,19 +330,20 @@ def test_drain_branch_denies_duplicate_or_malformed_receipt(
             "Drain-Review-Artifact: local/private.txt\n"
         ),
     )
-    valid_plus_malformed = _run_gate(
+    # A malformed receipt ON TOP is not rescued by a valid one below it.
+    malformed_plus_valid = _run_gate(
         tmp_path,
         branch="drain/run/target-001",
         body=(
-            _valid_body()
-            + "Drain-Review-Verdict: DENY\n"
-            + "Drain-Review-Head: malformed\n"
+            "Drain-Review-Verdict: DENY\n"
+            + "Drain-Review-Head: malformed\n\n"
+            + _valid_body()
         ),
     )
 
     assert duplicate.returncode == 2
     assert malformed.returncode == 2
-    assert valid_plus_malformed.returncode == 2
+    assert malformed_plus_valid.returncode == 2
 
 
 def test_auto_enroll_reconciles_drain_review_on_head_and_body_changes() -> None:
@@ -377,22 +389,26 @@ TRUSTED_COMMENTS = ((ARTIFACT_URL, "OWNER"),)
 
 
 def _attestation(head: str = HEAD, verdict: str = "APPROVE") -> str:
-    """What the reviewer POSTS as a comment: the verdict, bound to the head."""
+    """What the reviewer POSTS as a comment: the verdict, bound to the head.
+
+    The receipt OPENS the comment. Nothing may precede it — that is the rule
+    that replaced the markdown scanner.
+    """
     return (
-        f"## Tier 2 review: {verdict}\n\n"
-        "I read the diff and ran the tests.\n\n"
         f"Drain-Review-Verdict: {verdict}\n"
         f"Drain-Review-Head: {head}\n"
+        f"\n## Tier 2 review: {verdict}\n\n"
+        "I read the diff and ran the tests.\n"
     )
 
 
 def _receipt_body(*, head: str = HEAD, url: str = ARTIFACT_URL, verdict: str = "APPROVE") -> str:
     """What the stamper puts in the PR BODY: the same claim, plus the citation."""
     return (
-        "## Review\n\n"
         f"Drain-Review-Verdict: {verdict}\n"
         f"Drain-Review-Head: {head}\n"
         f"Drain-Review-Artifact: {url}\n"
+        "\n## Review\n\nStamped after the Tier 2 pass.\n"
     )
 
 
@@ -574,8 +590,9 @@ def test_valid_receipt_unblocks_a_tier2_pr(tmp_path: Path) -> None:
         (_receipt_body(head=HEAD.upper()), "the head must be lower-case hex"),
         ("", "no receipt at all"),
         (
-            _receipt_body() + f"Drain-Review-Verdict: BLOCK\nDrain-Review-Head: {HEAD}\n",
-            "an APPROVE cannot be stacked next to a BLOCK",
+            f"Drain-Review-Verdict: BLOCK\nDrain-Review-Head: {HEAD}\n"
+            f"Drain-Review-Artifact: {ARTIFACT_URL}\n\n" + _receipt_body(),
+            "a visible BLOCK on top cannot be overridden by an APPROVE below it",
         ),
     ],
 )
@@ -851,12 +868,18 @@ HIDDEN_RECEIPT_BODIES = {
 
 
 @pytest.mark.parametrize("why", sorted(HIDDEN_RECEIPT_BODIES))
-def test_an_approval_a_reader_cannot_see_is_not_a_receipt(tmp_path: Path, why: str) -> None:
-    """Cross-family review 2026-09-26, finding 4.
+def test_a_receipt_below_the_top_of_the_body_is_not_read(tmp_path: Path, why: str) -> None:
+    """Every hiding place three review rounds found, refused by ONE rule.
 
-    `splitlines()` alone saw an approval inside an HTML comment, which GitHub
-    renders as nothing, under a visible `VERDICT: BLOCK. Do not merge.` It saw
-    fenced and `<details>` examples the same way.
+    Each body below puts an approval somewhere a reader does not plainly see it:
+    an HTML comment (which GitHub renders as nothing) under a visible
+    `VERDICT: BLOCK. Do not merge.`; a fenced "what NOT to do" example; a
+    `<details>` toggle; a nested `<details>` that closed the outer one; a lazily
+    continued blockquote; a list-nested quote. The markdown scanner that chased
+    them individually lost a defect to each of three rounds. A receipt is now
+    read ONLY at the top of the text, where nothing can be open in front of it,
+    so every one of these fails for the same reason: the first non-blank line is
+    not the verdict.
     """
     completed = _run_blocking(
         tmp_path, title="deploy: a thing (Tier 2)", body=HIDDEN_RECEIPT_BODIES[why]
@@ -866,24 +889,80 @@ def test_an_approval_a_reader_cannot_see_is_not_a_receipt(tmp_path: Path, why: s
     assert completed.stdout.strip() == "deny"
 
 
-def test_a_pr_may_document_the_receipt_format_and_still_be_stamped(tmp_path: Path) -> None:
-    """The same rule, from the other side — and this PR needed it.
-
-    A PR whose body EXPLAINS the receipt format carries a fenced example. If the
-    example counted, the real receipt beside it would be a second verdict line
-    and the exact-one comparison would refuse the honest stamp. Ignoring hidden
-    lines is what keeps a self-documenting PR stampable.
-    """
-    body = (
-        "This gate needs three lines in the body:\n\n"
-        "```\n"
-        "Drain-Review-Verdict: APPROVE\n"
-        "Drain-Review-Head: <the PR's current 40-hex head>\n"
-        "Drain-Review-Artifact: <comment URL>\n"
-        "```\n\n" + _receipt_body()
+@pytest.mark.parametrize("why", sorted(HIDDEN_RECEIPT_BODIES))
+def test_the_same_hiding_place_in_the_cited_comment_is_refused(tmp_path: Path, why: str) -> None:
+    # The comment side of the same rule, so the attestation cannot be hidden
+    # either. The body carries an honest receipt; only the comment is suspect.
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body(),
+        comments=((ARTIFACT_URL, "OWNER", HIDDEN_RECEIPT_BODIES[why]),),
     )
 
-    completed = _run_blocking(tmp_path, title="gate: a thing (Tier 2)", body=body)
+    assert completed.returncode == 2, why
+    assert completed.stdout.strip() == "deny"
+
+
+TRAILING_CONTENT = {
+    "a fenced example of this very format": (
+        "\n```\nDrain-Review-Verdict: APPROVE\n"
+        "Drain-Review-Head: <the PR's current head>\n"
+        "Drain-Review-Artifact: <comment URL>\n```\n"
+    ),
+    "an unclosed fence": "\n```\nnever closed\n",
+    "an unclosed html comment": "\n<!--\nnever closed\n",
+    "a nested details block": "\n<details><summary>a</summary>\n<details>b</details>\n</details>\n",
+    "a lazily continued blockquote": "\n> quoted\nlazy continuation\n",
+    "a list-nested quote": "\n- > quoted inside a list\n  still quoted\n",
+    "a heading right after a quote": "\n> prior reviewer\n## Final review\n",
+    "a fence marker inside an html block": "\n<details>\n```\n</details>\n",
+    "a markdown table": "\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+    "an indented code block": "\n    Drain-Review-Verdict: BLOCK\n",
+    "CRLF throughout": "\r\n## notes\r\n\r\nall fine\r\n",
+}
+
+
+@pytest.mark.parametrize("why", sorted(TRAILING_CONTENT))
+def test_anything_may_follow_the_receipt(tmp_path: Path, why: str) -> None:
+    """The anti-wall half, and the payoff for dropping the markdown scanner.
+
+    Over-blocking is a wall, and the scanner produced three of them: an honest
+    receipt was refused after a heading, after a fence marker inside an HTML
+    block, and after a literal `<!--` in a code example. Because only the top of
+    the text is read now, NOTHING that follows the receipt can void it — every
+    construct that used to matter is listed here, including the three that broke
+    it, plus a `<details>` a reviewer would fold evidence into and a fenced copy
+    of this very format.
+    """
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body() + TRAILING_CONTENT[why],
+        comments=((ARTIFACT_URL, "OWNER", _attestation() + TRAILING_CONTENT[why]),),
+    )
+
+    assert completed.returncode == 0, why
+    assert completed.stdout.strip() == "allow"
+
+
+def test_a_contradiction_below_the_receipt_is_not_read(tmp_path: Path) -> None:
+    """A deliberate semantic change from the whole-text scan, stated openly.
+
+    Only the top of the text is authoritative, so a `BLOCK` line further down no
+    longer refuses. That is not a weakening: the direction that matters — a
+    visible refusal at the top, with an approval hidden below — still denies, and
+    is pinned in `test_mutating_the_verdict_or_head_fails_closed` and in every
+    `HIDDEN_RECEIPT_BODIES` row. What is lost is refusing a text a reader would
+    read as an approval, because the approval is the first thing in it.
+    """
+    trailing_block = f"\nDrain-Review-Verdict: BLOCK\nDrain-Review-Head: {HEAD}\n"
+    completed = _run_blocking(
+        tmp_path,
+        title="deploy: a thing (Tier 2)",
+        body=_receipt_body() + trailing_block,
+        comments=((ARTIFACT_URL, "OWNER", _attestation() + trailing_block),),
+    )
 
     assert completed.returncode == 0
     assert completed.stdout.strip() == "allow"
@@ -892,39 +971,13 @@ def test_a_pr_may_document_the_receipt_format_and_still_be_stamped(tmp_path: Pat
 @pytest.mark.parametrize(
     "prefix,why",
     [
-        ("<!-- reviewer notes: nothing to see -->\n\n", "a CLOSED html comment"),
-        (
-            "<details><summary>test output</summary>\n\n115 passed\n\n</details>\n\n",
-            "a CLOSED details block, which is how evidence is usually folded",
-        ),
-        ("```\nsome unrelated code\n```\n\n", "a CLOSED fence"),
-        ("~~~\nsome unrelated code\n~~~\n\n", "a CLOSED tilde fence"),
-        # Round 2 finding: HTML truncation ran BEFORE fence recognition, so a
-        # literal `<!--` inside a code example discarded the honest receipt
-        # below it. Over-blocking is a wall, so this direction is blocking too.
-        ("```html\n<!-- a comment, as an example -->\n```\n\n", "a literal comment in a fence"),
-        ("```\n<!-- unterminated, inside a fence\n```\n\n", "an unterminated one in a fence"),
-        ("```html\n<details><summary>x</summary>\n```\n\n", "a literal details tag in a fence"),
-        ("> the reviewer said it looks fine\n\n", "a blockquote CLOSED by a blank line"),
-        ("text with an <!-- inline --> comment\n\n", "a same-line comment"),
-        # MULTI-LINE, so comment state is actually entered and must be LEFT.
-        # A same-line comment is stripped by the regex and never enters the
-        # state machine, so it could not detect a missing exit.
-        ("<!--\na reviewer note\n-->\n\n", "a multi-line CLOSED html comment"),
-        ("<!--\nnote one\n-->\ntext\n<!--\nnote two\n-->\n\n", "two of them"),
+        ("\n\n", "leading blank lines are skipped"),
+        ("\r\n\r\n", "leading CRLF blank lines"),
+        ("   \n", "a whitespace-only first line"),
     ],
 )
-def test_hidden_content_before_a_real_receipt_does_not_hide_the_receipt(
-    tmp_path: Path, prefix: str, why: str
-) -> None:
-    """The benign direction, and the reason the strippers are not just truncation.
-
-    Truncating at the first `<!--` or `<details` would ALSO delete an honest
-    receipt that happens to follow a closed one. Two mutations survived until
-    this test existed: deleting `_HTML_COMMENT_RE.sub` and deleting
-    `_DETAILS_RE.sub` both stayed green, because the unclosed-opener truncation
-    caught the abuse case on its own while over-blocking this one.
-    """
+def test_only_blank_lines_may_precede_the_receipt(tmp_path: Path, prefix: str, why: str) -> None:
+    # Blank lines cannot hide anything, and an editor or a paste often adds one.
     completed = _run_blocking(
         tmp_path, title="deploy: a thing (Tier 2)", body=prefix + _receipt_body()
     )
@@ -933,24 +986,19 @@ def test_hidden_content_before_a_real_receipt_does_not_hide_the_receipt(
     assert completed.stdout.strip() == "allow"
 
 
-def test_a_closed_html_comment_in_the_attestation_comment_is_tolerated(tmp_path: Path) -> None:
-    # Same rule on the comment side: a reviewer folding their evidence into a
-    # details block must not lose their own verdict.
-    completed = _run_blocking(
-        tmp_path,
-        title="deploy: a thing (Tier 2)",
-        body=_receipt_body(),
-        comments=(
-            (
-                ARTIFACT_URL,
-                "OWNER",
-                "<details><summary>harness</summary>\n\nran it\n\n</details>\n\n"
-                + _attestation(),
-            ),
-        ),
-    )
+@pytest.mark.parametrize(
+    "line,why",
+    [
+        ("Drain-Review-Verdict: APPROVE   ", "trailing spaces are tolerated"),
+        ("Drain-Review-Verdict: APPROVE\t", "a trailing tab"),
+    ],
+)
+def test_trailing_whitespace_does_not_void_a_receipt(tmp_path: Path, line: str, why: str) -> None:
+    # Trailing whitespace hides nothing, so refusing it would only be a trap.
+    body = f"{line}\nDrain-Review-Head: {HEAD}\nDrain-Review-Artifact: {ARTIFACT_URL}\n"
+    completed = _run_blocking(tmp_path, title="deploy: a thing (Tier 2)", body=body)
 
-    assert completed.returncode == 0
+    assert completed.returncode == 0, why
     assert completed.stdout.strip() == "allow"
 
 
@@ -989,8 +1037,8 @@ def test_a_closed_html_comment_in_the_attestation_comment_is_tolerated(tmp_path:
             "reviewer's approval",
         ),
         (
-            _attestation() + f"Drain-Review-Verdict: BLOCK\nDrain-Review-Head: {HEAD}\n",
-            "an APPROVE stacked with a BLOCK in the same comment",
+            _attestation(verdict="BLOCK") + "\n" + _attestation(),
+            "a comment opening with BLOCK is a refusal, whatever follows it",
         ),
         ("", "an empty comment body"),
     ],

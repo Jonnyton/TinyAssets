@@ -100,15 +100,24 @@ auto-merge. For classes 4 and 5 the receipt's artifact must additionally name a
 comment that **exists on that PR**, whose `author_association` is `OWNER`,
 `MEMBER` or `COLLABORATOR`, and **which itself attests `APPROVE` at the current
 head** — all read from the API, so trust comes from GitHub and not from anything
-the PR says. Neither attestation counts if it sits inside a fenced block, an HTML
-comment or a `<details>` block: an approval a reader cannot see is not published.
+the PR says. Both came out of the cross-family review of the change that added
+them: checking only that the cited comment EXISTED let a receipt cite an `OWNER`
+comment reading `VERDICT: BLOCK` for that exact head. Requiring the comment to
+name the current head is also what closes a re-cited pre-push approval, with no
+clock involved.
 
-Both of those came out of the cross-family review of the change that added them.
-Checking only that the cited comment EXISTED let a receipt cite an `OWNER`
-comment reading `VERDICT: BLOCK` for that exact head, and parsing the PR body
-line-by-line let an approval hide in an HTML comment under a visible
-"VERDICT: BLOCK. Do not merge." Requiring the comment to name the current head
-is also what closes a re-cited pre-push approval, with no clock involved.
+**Each receipt is read only at the TOP of its text**, with nothing but blank lines
+allowed in front of it. That is the entire anti-hiding rule, and it replaced a
+markdown scanner. Three review rounds broke that scanner in BOTH directions —
+approvals hidden in an HTML comment, a fence, a nested `<details>`, a lazily
+continued blockquote, a list-nested quote; and honest receipts wrongly refused
+after a heading, after a fence marker inside an HTML block, after a literal
+`<!--` in a code example. Each fix produced the next round's findings, which is
+the loop `AGENTS.md` names, and its answer is that recurring findings in one area
+mean the shape is wrong. Nothing can precede a document's first line, so a
+position with nothing in front of it needs no renderer. The trade: only the top is
+authoritative, so a contradicting line further down is not read — the direction
+that matters, a visible refusal on top with an approval hidden below, still fails.
 
 Two content proofs stand down classes 2-4, and only when they cover the PR's
 whole release-critical/authority footprint: a deletion-only quarantine-ledger

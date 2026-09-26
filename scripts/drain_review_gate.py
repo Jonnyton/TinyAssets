@@ -79,40 +79,71 @@ def review_allows_merge(
     if not _SHA_RE.fullmatch(head):
         return False
 
-    lines = visible_receipt_lines(body)
-    artifacts = [line for line in lines if line.startswith("Drain-Review-Artifact:")]
-    if not (
-        _attests_approval(lines, head)
-        and len(artifacts) == 1
-        and _ARTIFACT_RE.fullmatch(artifacts[0]) is not None
-    ):
+    lines = leading_lines(body, 3)
+    if not (_attests_approval(lines, head) and len(lines) == 3):
+        return False
+    artifact = lines[2]
+    if _ARTIFACT_RE.fullmatch(artifact) is None:
         return False
     if artifact_must_be_comment_on is None:
         return True
     repo, pr = artifact_must_be_comment_on
     return artifact_names_trusted_comment(
-        artifacts[0], repo=repo, pr=pr, trusted_comment_urls=trusted_comment_urls
+        artifact, repo=repo, pr=pr, trusted_comment_urls=trusted_comment_urls
     )
+
+
+def leading_lines(text: str, count: int) -> list[str]:
+    """The first `count` non-blank lines, trailing whitespace removed.
+
+    **A receipt is only read at the TOP of the text**, and that is the whole
+    anti-hiding rule. Nothing can precede the first line of a document, so no
+    construct can be open when it is read: an HTML comment, a fence, a
+    `<details>`, a blockquote or a list all have to START somewhere, and if one
+    does, the first non-blank line is its opener and not the verdict.
+
+    This replaced a markdown scanner, and the reason is worth keeping. Three
+    cross-family review rounds each found defects in that scanner, in BOTH
+    directions -- approvals hidden in a nested `<details>`, in an HTML comment, in
+    a lazily-continued blockquote, in a list-nested quote; and honest receipts
+    wrongly refused after a heading, after a fence marker inside an HTML block,
+    after a literal `<!--` in a code example. Each fix created the next round's
+    findings, which `AGENTS.md` names as a loop rather than progress, and says to
+    answer with a redesign: recurring findings in one area mean the shape is
+    wrong. Modelling GitHub's renderer was the wrong shape. A position that
+    cannot have anything in front of it needs no renderer.
+
+    Trailing whitespace is stripped because an editor adding a space must not
+    void a receipt, and trailing whitespace can hide nothing. Leading blank
+    lines are skipped for the same reason.
+    """
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line:
+            continue
+        lines.append(line)
+        if len(lines) == count:
+            break
+    return lines
 
 
 def _attests_approval(lines: list[str], head: str) -> bool:
-    """Exactly one APPROVE verdict and exactly one head line naming `head`.
+    """Do these leading lines OPEN with an approval of `head`?
 
     ONE definition of what an approval looks like, used for the PR body and for
-    the cited comment alike. Exact single-element list comparison, so a second
-    verdict line, a `BLOCK` beside an `APPROVE`, or a head line for any other
-    commit all refuse.
+    the cited comment alike. Exact string equality on the first two non-blank
+    lines, in order, so `BLOCK`, a lower-case verdict, trailing prose, or a head
+    line for any other commit all refuse.
     """
-    verdicts = [line for line in lines if line.startswith("Drain-Review-Verdict:")]
-    reviewed_heads = [line for line in lines if line.startswith("Drain-Review-Head:")]
-    return (
-        verdicts == ["Drain-Review-Verdict: APPROVE"]
-        and reviewed_heads == [f"Drain-Review-Head: {head}"]
-    )
+    return lines[:2] == [
+        "Drain-Review-Verdict: APPROVE",
+        f"Drain-Review-Head: {head}",
+    ]
 
 
 def comment_attests_approval(comment_body: str, head: str) -> bool:
-    """Does this comment PUBLISH an approval of `head`, visibly?
+    """Does this comment OPEN by publishing an approval of `head`?
 
     Comment identity was not enough. Cross-family review 2026-09-26, finding 6:
     the gate accepted any trusted-author comment as the artifact, so a body
@@ -122,120 +153,7 @@ def comment_attests_approval(comment_body: str, head: str) -> bool:
     gap too (finding 7), because the comment must name the CURRENT head, which
     needs no clock.
     """
-    return _attests_approval(visible_receipt_lines(comment_body), head)
-
-
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->")
-_FENCE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})")
-_QUOTE_RE = re.compile(r"^ {0,3}>")
-_DETAILS_OPEN_RE = re.compile(r"<details\b", re.IGNORECASE)
-_DETAILS_CLOSE_RE = re.compile(r"</details\b", re.IGNORECASE)
-
-
-def visible_receipt_lines(text: str) -> list[str]:
-    """Lines a human reading the rendered markdown actually sees as prose.
-
-    A receipt is an attestation, so it has to be legible to whoever reads the
-    PR. Cross-family review 2026-09-26, finding 4: `splitlines()` alone saw an
-    approval that GitHub renders as nothing at all --
-
-        VERDICT: BLOCK. Do not merge.
-        <!--
-        Drain-Review-Verdict: APPROVE
-        Drain-Review-Head: <the exact head>
-        -->
-
-    and it equally saw the approval in a fenced "here is what NOT to do"
-    example. Both directions matter: the same rule is why a PR that DOCUMENTS
-    the receipt format in a fenced block can still be stamped, instead of its
-    own example colliding with the real receipt.
-
-    ONE ordered pass, because a regex per construct got the PRECEDENCE wrong.
-    Round two of the same review broke the first attempt three ways: a nested
-    `<details>` closed the outer one, because the substitution was not recursive;
-    a lazy blockquote continuation (an unprefixed line under a `>` line, which
-    CommonMark renders inside the quote) read as prose; and -- the one that
-    matters most, because over-blocking is a wall -- a literal `<!--` inside a
-    closed fence truncated the body and discarded the honest receipt below it.
-
-    So the order is the renderer's order:
-
-    1. **A fence is literal.** Nothing inside one is markup, so an `<!--`,
-       `<details>` or `>` in a code example changes no state.
-    2. **An unterminated HTML comment** spans lines, and the remainder after
-       `-->` keeps being scanned.
-    3. **`<details>` by DEPTH**, so an inner pair cannot close the outer
-       element. Collapsed is not visible: an approval behind a toggle is not
-       published.
-    4. **Blockquote, with lazy continuation** -- once quoted, everything up to
-       the next blank line is quoted, which is exactly how a "someone proposed
-       this, I disagree" quote renders.
-
-    An UNCLOSED fence, comment or `<details>` swallows the rest of the body, as
-    GitHub does. Indented and `>`-prefixed lines need nothing extra: the caller's
-    `startswith` already refuses them.
-
-    Not a markdown implementation, and not trying to be: these are the four
-    constructs that HIDE text. The threat model is the #3989 accident, stated in
-    the workflow's honesty note, not an adversary with commit rights.
-    """
-    lines: list[str] = []
-    fence: str | None = None
-    in_comment = False
-    details_depth = 0
-    in_quote = False
-
-    for raw in text.splitlines():
-        if fence is not None:
-            match = _FENCE_RE.match(raw)
-            if (
-                match is not None
-                and match.group("fence")[0] == fence[0]
-                and len(match.group("fence")) >= len(fence)
-                and not raw.strip().strip(fence[0])
-            ):
-                fence = None
-            continue
-
-        line = raw
-        if in_comment:
-            closed_at = line.find("-->")
-            if closed_at == -1:
-                continue
-            line = line[closed_at + 3 :]
-            in_comment = False
-
-        # Before any HTML handling: an opener here makes the rest literal.
-        match = _FENCE_RE.match(line)
-        if match is not None:
-            fence = match.group("fence")
-            continue
-
-        line = _HTML_COMMENT_RE.sub("", line)
-        opened_at = line.find("<!--")
-        if opened_at != -1:
-            in_comment = True
-            line = line[:opened_at]
-
-        opens = len(_DETAILS_OPEN_RE.findall(line))
-        closes = len(_DETAILS_CLOSE_RE.findall(line))
-        # A line carrying a tag is markup, not an attestation, so it is hidden
-        # either way; depth decides every line between them.
-        hidden = details_depth > 0 or opens > 0 or closes > 0
-        details_depth = max(0, details_depth + opens - closes)
-        if hidden:
-            continue
-
-        if in_quote:
-            if line.strip():
-                continue
-            in_quote = False
-        if _QUOTE_RE.match(line):
-            in_quote = True
-            continue
-
-        lines.append(line)
-    return lines
+    return _attests_approval(leading_lines(comment_body, 2), head)
 
 
 def artifact_names_trusted_comment(

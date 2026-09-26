@@ -392,17 +392,20 @@ jobs:
               echo ""
               sed 's/^/> /' "$RUNNER_TEMP/receipt-why.txt"
               echo ""
-              echo "**Two steps, both required.**"
+              echo "**Two steps, both required. Each receipt goes at the TOP.**"
               echo ""
-              echo "1. The reviewer POSTS the verdict as a comment on this PR,"
-              echo "   containing these two lines as plain visible text:"
+              echo "1. The reviewer POSTS the verdict as a comment on this PR."
+              echo "   These must be its FIRST two non-blank lines:"
               echo ""
               echo '   ```'
               echo "   Drain-Review-Verdict: APPROVE"
               echo "   Drain-Review-Head: ${HEAD_OID}"
               echo '   ```'
               echo ""
-              echo "2. The PR BODY then cites that comment:"
+              echo "   Reasoning and evidence go BELOW them."
+              echo ""
+              echo "2. The PR BODY then cites that comment. These must be its"
+              echo "   FIRST three non-blank lines:"
               echo ""
               echo '   ```'
               echo "   Drain-Review-Verdict: APPROVE"
@@ -412,11 +415,15 @@ jobs:
               echo ""
               echo "The artifact must link a comment, review or review comment on"
               echo "THIS PR whose author is a repository owner, member or"
-              echo "collaborator AND which carries the APPROVE lines above. Only"
-              echo "\`APPROVE\` counts — a BLOCK verdict can never satisfy this,"
-              echo "in the body or in the comment. Lines inside a fenced block,"
-              echo "an HTML comment or a \`<details>\` block do not count: an"
-              echo "approval nobody can read is not published."
+              echo "collaborator AND which OPENS with the APPROVE lines above."
+              echo "Only \`APPROVE\` counts — a BLOCK verdict can never satisfy"
+              echo "this, in the body or in the comment."
+              echo ""
+              echo "**Only the top is read**, so nothing below either receipt can"
+              echo "void it and nothing above it can hide it. A receipt in a"
+              echo "fenced block, an HTML comment, a \`<details>\` or a quote is"
+              echo "simply not at the top. If yours is being refused, MOVE IT UP:"
+              echo "only blank lines may precede it."
               echo "Re-stamp after every push: the head SHA must match exactly,"
               echo "in BOTH places."
               # Both complaints at once. The receipt is checked before the label
@@ -539,13 +546,21 @@ jobs:
 # The first version of this gate checked only that the cited comment EXISTED and
 # came from a trusted author. Cross-family review 2026-09-26 got a receipt past
 # it by citing an OWNER comment whose text was `VERDICT: BLOCK` for that exact
-# head, and separately by hiding the body receipt inside an HTML comment under a
-# visible "VERDICT: BLOCK. Do not merge." Both are closed: the cited comment
-# must itself attest APPROVE at the current head, and neither attestation counts
-# when it sits in a fence, an HTML comment or a <details> block.
-#
-# Requiring the comment to name the current head is also what closes the stale
-# approval, and it needs no clock. Binding the comment's `created_at` against the
-# head commit's date was considered and rejected — commit dates come from the
+# head. Closed: the cited comment must itself attest APPROVE at the current head.
+# Requiring the CURRENT head is also what closes a re-cited pre-push approval,
+# and it needs no clock. Binding the comment's `created_at` against the head
+# commit's date was considered and rejected — commit dates come from the
 # committer's clock, and a client clock running ahead would make the gate
 # unsatisfiable until real time caught up.
+#
+# Each receipt is read ONLY at the TOP of its text, and that is the whole
+# anti-hiding rule. Three review rounds attacked a markdown scanner that tried to
+# work out what GitHub renders, and each round found defects in BOTH directions:
+# approvals hidden in an HTML comment, a fence, a nested <details>, a lazily
+# continued blockquote, a list-nested quote; and honest receipts wrongly refused
+# after a heading, after a fence marker inside an HTML block, after a literal
+# <!-- in a code example. Every fix created the next round's findings, which
+# AGENTS.md calls a loop, and answers with: recurring findings in one area mean
+# the shape is wrong, so redesign. Nothing can precede the first line of a
+# document, so a position with nothing in front of it needs no renderer. The
+# scanner is gone.
