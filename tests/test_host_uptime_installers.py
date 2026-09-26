@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -2355,15 +2356,34 @@ def test_a_container_reporting_a_future_start_time_gets_no_grace(tmp_path):
     assert "restart tinyassets-daemon.service" in systemctl_lines
 
 
-# Three distinct failure modes, not three spellings of one. Verified against
-# `set -euo pipefail` before writing the test:
-#   "abc"  -> arithmetic treats it as a variable NAME; `set -u` makes it an
-#             unbound variable and the script EXITS 1. A recovery tool that
-#             refuses to run is the one outcome worse than a wrong threshold.
-#   "1+"   -> arithmetic syntax error; `(( ))` returns non-zero, so inside an
-#             `if` it silently evaluates FALSE -- no heartbeat is ever stale.
-#   "-3"   -> parses fine and is accepted, so EVERY heartbeat is stale.
-_BAD_THRESHOLDS = ("abc", "1+", "-3", "  ")
+# Distinct failure modes, not spellings of one. Each verified against
+# `set -euo pipefail` before being added here:
+#   "abc"   -> arithmetic treats it as a variable NAME; `set -u` makes it an
+#              unbound variable and the script EXITS 1. A recovery tool that
+#              refuses to run is the one outcome worse than a wrong threshold.
+#   "1+"    -> arithmetic syntax error; `(( ))` returns non-zero, so inside an
+#              `if` it silently evaluates FALSE -- no heartbeat is ever stale.
+#   "-3"    -> parses fine and is accepted, so EVERY heartbeat is stale.
+#   "08"    -> a leading zero means OCTAL and 8 is not an octal digit: "value
+#   "0900"     too great for base". As the max age that reads FALSE, so a hung
+#              container logs "healthy" and is never restarted; as the margin it
+#              aborts. All digits, and still either silence or death.
+#   "010"   -> valid octal, so silently EIGHT rather than ten. The insidious one:
+#              no error at all, just the wrong window forever.
+#   20 digits -> overflows signed 64-bit and WRAPS; 99999999999999999999 came out
+#              as 7766279631452241979.
+# The last four are why the pattern is the decimal SHAPE and not `^[0-9]+$`
+# (#3995 round 1).
+_BAD_THRESHOLDS = (
+    "abc",
+    "1+",
+    "-3",
+    "  ",
+    "08",
+    "0900",
+    "010",
+    "99999999999999999999",
+)
 
 
 @pytest.mark.skipif(not _BASH, reason="bash is unavailable")
@@ -2378,10 +2398,11 @@ _BAD_THRESHOLDS = ("abc", "1+", "-3", "  ")
 def test_a_bad_threshold_falls_back_instead_of_silencing_recovery(tmp_path, var, bad):
     """An operator typo in a host env file must not disarm the watchdog.
 
-    Both thresholds feed `(( ... ))`, where a bad value does one of three
-    unrelated wrong things (see above) -- and one of them kills the script
-    outright. Whatever the operator wrote, the run has to reach a decision, so a
-    non-integer is replaced by its default and said out loud.
+    Both thresholds feed `(( ... ))`, where a bad value does one of several
+    unrelated wrong things (see above) -- some kill the script outright, some
+    silence recovery without a word, and being all-digits is no defence. Whatever
+    the operator wrote, the run has to reach a decision, so anything that is not
+    a plain decimal integer is replaced by its default and said out loud.
     """
     result, systemctl_lines, _docker, _relay, _compose = _run_watchdog(
         tmp_path, "stale-heartbeat", extra_env={var: bad}
@@ -2393,6 +2414,60 @@ def test_a_bad_threshold_falls_back_instead_of_silencing_recovery(tmp_path, var,
     # two hours stale under either threshold's default.
     assert "restarting daemon container: heartbeat stale" in result.stdout
     assert "restart tinyassets-daemon.service" in systemctl_lines
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+def test_the_threshold_pattern_takes_every_plain_decimal_and_nothing_else():
+    """The boundary, which the behavioural tests above cannot reach.
+
+    Tightening `^[0-9]+$` to a decimal shape creates the opposite risk: a pattern
+    too strict would discard an operator's legitimate value and silently pin the
+    default. The behavioural tests only ever exercise one good value, so the
+    accepted set is pinned here -- read out of the script and evaluated by bash,
+    so narrowing that line turns this red.
+    """
+    source = WATCHDOG.read_text(encoding="utf-8")
+    match = re.search(r'\[\[ "\$\{value\}" =~ (\S+) \]\]', source)
+    assert match, "the threshold validator moved or changed shape; update this test"
+    pattern = match.group(1)
+
+    accept = ["0", "1", "9", "30", "60", "120", "900", "86400", "999999999"]
+    reject = [
+        "",
+        " ",
+        "abc",
+        "1+",
+        "-3",
+        "+3",
+        "08",
+        "0900",
+        "010",
+        "00",
+        "1.5",
+        "1e3",
+        "0x10",
+        "1000000000",  # ten digits: past the cap, so past overflow risk
+        "99999999999999999999",
+        "12 ",
+        " 12",
+    ]
+
+    def matches(value: str) -> bool:
+        # Environment, not argv: Git Bash strips braces out of arguments, which
+        # would turn `{0,8}` into a literal and make every answer here wrong.
+        result = subprocess.run(
+            [_BASH, "-c", '[[ "$TA_VALUE" =~ $TA_PATTERN ]]'],
+            env={**os.environ, "TA_PATTERN": pattern, "TA_VALUE": value},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode in (0, 1), f"{result.stdout}\n{result.stderr}"
+        return result.returncode == 0
+
+    assert [value for value in accept if not matches(value)] == []
+    assert [value for value in reject if matches(value)] == []
 
 
 @pytest.mark.skipif(not _BASH, reason="bash is unavailable")

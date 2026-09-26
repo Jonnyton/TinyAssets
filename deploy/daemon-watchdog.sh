@@ -23,18 +23,34 @@ log() {
 }
 
 seconds_or_default() {
-    # Replace a non-integer threshold with its default instead of dying on it.
+    # Replace a threshold bash would misread with its default instead of dying
+    # on it, or worse, quietly obeying it.
     #
-    # These two feed `(( ... ))`, and under `set -e` a value bash cannot parse
-    # arithmetically -- "1+", "5 " -- aborts the script. Aborting is the one
-    # outcome a recovery tool must never have: a typo in a host env file would
-    # silence auto-recovery entirely, and the operator would see a unit that
-    # exits non-zero rather than a daemon that never gets restarted. A bad
-    # threshold is an operator mistake; refusing to run is an outage.
+    # These two feed `(( ... ))`, where a value that is merely "all digits" is
+    # not safe. Measured on this host, four distinct wrong outcomes:
+    #
+    #   "1+", "5 "  arithmetic syntax error. `(( ))` returns non-zero, so inside
+    #               an `if` it reads FALSE -- nothing is ever stale. In a sum it
+    #               leaves the target unset and `set -u` ABORTS the script.
+    #   "08"        a leading zero makes it OCTAL, and 8 is not an octal digit:
+    #               "value too great for base". As the max age that reads FALSE,
+    #               so a hung container logs "healthy" and is never restarted.
+    #               As the margin it aborts. Either way recovery is gone.
+    #   "010"       valid octal, so it is silently EIGHT, not ten.
+    #   20 digits   overflows a signed 64-bit integer and WRAPS; 99999999999999999999
+    #               came out as 7766279631452241979.
+    #
+    # So the pattern is the decimal shape, not "digits": no leading zero (except
+    # a bare 0) and at most nine of them, which caps the window near 31 years and
+    # cannot overflow. Aborting is the one outcome a recovery tool must never
+    # have -- an operator typo would silence auto-recovery entirely, and they
+    # would see a unit exiting non-zero rather than a daemon never restarted. A
+    # bad threshold is an operator mistake; refusing to run is an outage.
+    #
     # Names the ENV var in the message, not the internal one: the operator set
     # TINYASSETS_*, and that is what they have to go and fix.
     local name="$1" default="$2" env_name="$3" value="${!1}"
-    [[ "${value}" =~ ^[0-9]+$ ]] && return 0
+    [[ "${value}" =~ ^(0|[1-9][0-9]{0,8})$ ]] && return 0
     log "ignoring ${env_name}='${value}': not a non-negative integer; using ${default}"
     printf -v "${name}" '%s' "${default}"
 }
