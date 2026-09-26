@@ -210,40 +210,56 @@ Restart or eviction MAY lose advisory health; it SHALL NOT change authority.
 - **THEN** the picker displays a non-blocking reconnect warning
 - **AND** it does not disable manual selection, claim successful sign-in or expose raw provider errors
 
-### Requirement: A zero-cost source's unproven capacity refusal is narrowed to the model that failed
+### Requirement: An unproven capacity refusal is narrowed to the model that failed, for every account
 
 A source contract reports a capacity refusal's scope as `model`, `account` or
 `unknown`, and that reported scope SHALL remain the evidence unchanged. When the
 scope is `unknown` and the failure class is a transient window
-(`provider_rate_limited`, `provider_overloaded`) and the plan's effective cost
-ceilings for that source are all confirmed zero, a served agent turn SHALL narrow
+(`provider_rate_limited`, `provider_overloaded`), a served agent turn SHALL narrow
 the resulting exhaustion to the MODEL that failed rather than the whole account,
-and the router SHALL NOT apply a source-wide cooldown to that attempt. Being
-wrong about an unproven scope costs a refused request on a source that cannot
-spend, and being conservative leaves a freshly connected free universe with no
-second candidate for its first message.
+and the router SHALL NOT apply a source-wide cooldown to that attempt.
+
+This decision SHALL read only what the SOURCE reported. It SHALL NOT read the
+owner's accepted cost ceilings, their plan or any other account attribute: the
+same refusal means the same thing for every account (founder, 2026-09-25). A
+prior version required all-confirmed-zero ceilings, which made a paid source's
+identical refusal a cooled dead end while its free neighbour continued to a
+sibling.
+
+Spend stays bounded by the mechanisms that bound every attempt, not by this
+policy: the owner's accepted ceilings constrain EVERY request body, so a narrowed
+replacement costs what the first attempt was already authorized to cost, and a
+retry policy SHALL NOT raise a ceiling, admit a model or widen a grant.
 
 The narrowing SHALL be bounded at three per turn, SHALL take its replacement from
 the SAME advisory order under the SAME ceilings, and SHALL refuse a replacement on
 any other connection — a narrowed exhaustion is a guess about one source's window,
 never evidence that a different connection sharing its scope is healthy. Exhausted
-credit (`provider_credit_exhausted`), an `account` scope the source actually
-reported, and any source whose ceilings are not all confirmed zero SHALL keep the
-conservative account exclusion and its cooldown. The diagnostics of every attempt
-the turn replaced SHALL be carried onto the failure that finally escapes.
+credit (`provider_credit_exhausted`) and an `account` scope the source actually
+reported SHALL keep the conservative account exclusion and its cooldown, for every
+account alike — both are the source's own report, one about money and one about
+breadth. A round whose executor is a native subscription SHALL NOT narrow at all:
+its account IS the source, which is a fact about the source rather than about the
+owner's plan. The diagnostics of every attempt the turn replaced SHALL be carried
+onto the failure that finally escapes.
 
 #### Scenario: A free universe's first message meets a busy model
 - **WHEN** a served turn's selected free model is refused with an unknown-scope rate limit and nothing ran
 - **THEN** the turn tries the next eligible model of the SAME grant at the SAME zero ceilings and answers
 - **AND** no source-wide cooldown is applied that would have skipped that sibling
 
-#### Scenario: A source that can spend keeps the conservative reading
+#### Scenario: A source that can spend gets the same reading
 - **WHEN** the same unknown-scope refusal arrives for a source with a nonzero accepted ceiling
-- **THEN** the whole account is excluded, the source is cooled, and no sibling is tried
+- **THEN** the turn narrows and the source is not cooled, exactly as for a zero-ceiling source
+- **AND** the replacement attempt is priced by that source's own accepted ceilings
 
 #### Scenario: Exhausted credit is never narrowed
 - **WHEN** a source reports exhausted credit
 - **THEN** the account exclusion and cooldown stand regardless of the accepted ceilings
+
+#### Scenario: A native subscription executor is never narrowed
+- **WHEN** an unknown-scope transient refusal arrives on a native subscription round
+- **THEN** the account exclusion stands, because that account is the source itself
 
 #### Scenario: A narrowed guess cannot cross into another connection
 - **WHEN** the only remaining candidate after a narrowed exhaustion belongs to a different connection
@@ -261,8 +277,8 @@ source's own `Retry-After` when it supplied one. A refusal whose stated window
 is longer than a whole turn may live SHALL keep its cooldown immediately, since
 waiting is then the answer and no sibling attempt can outlast it.
 
-#### Scenario: A daily free cap is paid for once, not every turn
-- **WHEN** a zero-cost source refuses every eligible model with an unknown-scope rate limit
+#### Scenario: A daily cap is paid for once, not every turn
+- **WHEN** a source refuses every eligible model with an unknown-scope rate limit
 - **THEN** the first turn spends its bounded budget discovering that and the source is cooled
 - **AND** the next turn is answered off that cooldown with its attempt skipped, rather than sending the same requests again
 
@@ -273,6 +289,13 @@ waiting is then the answer and no sibling attempt can outlast it.
 #### Scenario: A stated window longer than the turn is waited out
 - **WHEN** a refusal names a retry-after longer than the turn's absolute cap
 - **THEN** the source is cooled for that window and no sibling attempt is made
+- **AND** this is decided at both call sites of the rule — the router's per-attempt
+  handler and the coordinator's after-the-fact cooling — not only inside the predicate
+
+#### Scenario: A source cannot retire itself with a Retry-After
+- **WHEN** a refusal names a window longer than a bounded ceiling (one day)
+- **THEN** the applied cooldown is clamped to that ceiling, so no response header can
+  make an owner's own source unusable indefinitely
 
 ### Requirement: Connection-scoped model choices
 The app SHALL expose model choices from the universe owner's authorized connections with freshness and capability information, without a compiled model-release list.

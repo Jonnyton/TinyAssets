@@ -521,7 +521,13 @@ class ProviderRouter:
         if type(provider) is not str or not provider:
             raise ValueError("cooling a source requires its provider name")
         seconds = _retry_after_cooldown_s(retry_after_s)
-        self._quota.cooldown(provider, seconds)
+        # Through the one guarded door (``_cool``), so the secondary-call rule
+        # cannot be bypassed by a future caller of this seam. ``None`` for the
+        # config is the honest value: this is an AFTER-THE-FACT cooling by the
+        # turn coordinator, which only ever follows a founder-facing turn, so it
+        # is never secondary -- and saying so beats leaving a second unguarded
+        # write of the shared map.
+        self._cool(None, provider, seconds)
         return seconds
 
     def selected_agent_execution_kind(self, selection) -> str:

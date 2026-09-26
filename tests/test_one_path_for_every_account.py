@@ -324,3 +324,141 @@ def test_the_coordinators_own_window_rule_is_live(retry_after, budget, narrows):
     exhaustion, narrowed = turn._narrowed(boundary)
     assert narrowed is narrows
     assert exhaustion.scope == ("model" if narrows else "account")
+
+
+# --------------------------------------------------------------------------
+# #3988's secondary-call rule is also one path for every account: it reads only
+# whether the founder asked for the call, never what they pay or what kind of
+# source answers.
+# --------------------------------------------------------------------------
+
+
+_SOURCE_KINDS = [
+    "api_key_http:provdef_ed0169c8",   # an owner's HTTP key, free or paid
+    "codex",                           # a subscription CLI executor
+    "claude-code",                     # the other subscription CLI executor
+    "ollama-local",                    # a local executor
+]
+
+_PRICES = [
+    None,                                                       # no selection
+    (),                                                         # no proven ceilings
+    (("input_million_tokens_usd", 0), ("request_usd", 0)),      # free-only
+    (("input_million_tokens_usd", 3000), ("request_usd", 50)),  # PAID
+]
+
+
+@pytest.mark.parametrize("provider", _SOURCE_KINDS)
+@pytest.mark.parametrize("caps", _PRICES, ids=["no-selection", "unproven", "free", "paid"])
+@pytest.mark.parametrize("secondary", [True, False])
+def test_the_cooldown_rule_reads_only_whether_the_call_was_secondary(
+    provider, caps, secondary,
+):
+    """Same `secondary_call` value, same decision -- every source, every price.
+
+    `_cool` is handed a provider NAME and a number, never an access method or a
+    ceiling. This drives the real method over every source kind and price shape
+    the platform has, so a "just for paid sources" branch cannot be added quietly.
+    """
+    from dataclasses import replace
+
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.model_selection import SelectedModel
+    from tinyassets.providers.quota import QuotaTracker
+    from tinyassets.providers.router import ProviderRouter
+
+    selected = None if caps is None else SelectedModel(
+        "owner", "a-model", "openai_chat", caps, "digest", 1,
+    )
+    router = ProviderRouter({}, quota=QuotaTracker())
+    config = replace(ModelConfig(selected_model=selected), secondary_call=secondary)
+
+    assert router._cool(config, provider, 120) is (not secondary)
+    assert (router._quota.cooldown_remaining(provider) > 0) is (not secondary)
+    assert router._quota.available(provider) is secondary
+
+
+def test_every_router_cooldown_write_goes_through_the_guard():
+    """A second write point reintroduces the lockout for whoever uses it.
+
+    `cool_source` (#3986) writes the same shared map from the turn coordinator. A
+    secondary call cannot reach the coordinator today, but the invariant is "one
+    guarded door", not "one door nobody happens to open".
+    """
+    from tinyassets.providers import router as router_module
+
+    source = inspect.getsource(router_module.ProviderRouter)
+    writes = source.count("self._quota.cooldown(")
+    assert writes == 1, (
+        f"{writes} places write the shared cooldown map; route them all through "
+        "ProviderRouter._cool so the secondary-call rule cannot be bypassed"
+    )
+
+
+def test_cooling_a_source_after_the_fact_is_still_recorded():
+    """The guard for the above: routing through `_cool` must not silence it."""
+    from tinyassets.providers.quota import QuotaTracker
+    from tinyassets.providers.router import ProviderRouter
+
+    router = ProviderRouter({}, quota=QuotaTracker())
+    assert router.cool_source("codex", retry_after_s=45) == 46
+    assert router._quota.cooldown_remaining("codex") > 0
+
+
+# --------------------------------------------------------------------------
+# A convenience field may not cost the owner their whole failure record.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [0, -5, "41", 41.5, True, 10**9, None, [], {}])
+def test_an_invalid_wait_drops_only_itself(bad):
+    """Every other optional field already degrades; this one discarded the row.
+
+    A record with a bad `retry_after_s` returned None from `normalize_turn_failure`
+    AND from `read_turn_failure`, so one out-of-range number lost the owner the
+    stage, class, effects and ref that were all perfectly readable.
+    """
+    import json
+
+    from tinyassets.conversation_failure import normalize_turn_failure, read_turn_failure
+
+    row = {
+        "version": 1, "kind": "turn_failed", "code": "quota_or_cooldown",
+        "stage": "before_send", "effects": "none", "ref": "abc123",
+        "retry_after_s": bad,
+    }
+    kept = normalize_turn_failure(row)
+    assert kept is not None, "one bad number discarded the whole record"
+    assert "retry_after_s" not in kept
+    assert kept["code"] == "quota_or_cooldown" and kept["ref"] == "abc123"
+    assert kept["stage"] == "before_send" and kept["effects"] == "none"
+
+    stored = read_turn_failure("platform", json.dumps(row))
+    assert stored is not None and stored.retry_after_s is None
+    assert stored.code == "quota_or_cooldown" and stored.ref == "abc123"
+
+
+def test_a_valid_wait_is_still_kept_and_rendered():
+    """The guard: degrading must not become dropping."""
+    from tinyassets.conversation_failure import failure_notice, normalize_turn_failure
+
+    row = {
+        "version": 1, "kind": "turn_failed", "code": "quota_or_cooldown",
+        "stage": "before_send", "effects": "none", "retry_after_s": 41,
+    }
+    assert normalize_turn_failure(row)["retry_after_s"] == 41
+    assert "41 second" in failure_notice(row)
+
+
+def test_a_field_outside_the_closed_set_still_rejects_the_record():
+    """Degrading a KNOWN optional field is not the same as accepting junk."""
+    from tinyassets.conversation_failure import normalize_turn_failure
+
+    assert normalize_turn_failure({
+        "version": 1, "kind": "turn_failed", "code": "quota_or_cooldown",
+        "something_invented": 1,
+    }) is None
+    # And a REQUIRED field is still fatal.
+    assert normalize_turn_failure({
+        "version": 1, "kind": "turn_failed", "code": "not_a_real_code",
+    }) is None

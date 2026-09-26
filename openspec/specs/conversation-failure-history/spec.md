@@ -64,6 +64,11 @@ stays readable.
 - **WHEN** the class is a sign-in problem, a setup gap or a platform fault
 - **THEN** no wait is recorded or rendered, so the owner is not sent away to wait out something waiting cannot fix
 
+#### Scenario: a malformed wait costs only itself
+- **WHEN** a stored record carries a `retry_after_s` outside its bounded set
+- **THEN** that field alone is dropped and the record still reads, so the owner keeps the class, stage, effects and ref that were valid
+- **AND** an unrecognized key or an invalid REQUIRED field still rejects the record, because degrading a known optional field is not the same as accepting junk
+
 #### Scenario: Exception contains a secret-like sentinel
 - **WHEN** a failing provider includes private payload text in its exception or attempts
 - **THEN** that text does not enter durable failure metadata or the platform notice
