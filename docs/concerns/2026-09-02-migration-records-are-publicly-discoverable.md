@@ -48,35 +48,18 @@ site now carries a note saying the list is raw rather than curated
 (`WebSite/site-react/app/commons/page.tsx`); that is a caption on the problem,
 not a resolution.
 
-## Mostly answered by the ownership predicate (2026-09-26)
+## Suggested fix (needs the founder, touches live data)
 
-A universe now exists because an ownership row names it, not because a folder is
-on disk (`openspec/specs/universe-lifecycle-and-soul/spec.md`, "A universe exists
-because an ownership row names it"). All seven rows above are directories
-maintenance created; none is named by a `universe_acl` grant or a `founder_home`
-binding. So they stop being enumerated AND stop being readable by id — including
-through `read_page` and explicit-id `get_status`, which previously reached them
-because they asked only about visibility and the old boot backfill had already
-written `visibility_level=public`.
+1. Decide the default: maintenance-created holding records should be created
+   `private`, not `public`. Find where the migration and removal buckets are
+   created and set visibility explicitly.
+2. Flip the seven existing non-universe records to private. Per
+   `verify-the-binding-in-the-destructive-step`, run the ownership query
+   inside the same command that writes, and do not delete anything: these are
+   backups of a migration.
+3. Consider whether `visibility` should even default to `public` for a
+   universe nobody published. The public read contract already refuses
+   anything that is not explicitly `public`/`metadata_only`, so the default is
+   the only thing making these visible.
 
-That is a better answer than steps 1 and 2 below were: **it writes nothing to any
-live universe record.** Nothing is deleted either — the migration backups stay on
-disk exactly as `docs/host-actions.md` requires, they are simply not universes.
-
-### What is left
-
-1. **Confirm no real universe goes dark, before the deploy.** Ownership is
-   matched exactly, so a universe with no row — a pre-migration one, or one
-   restored under a different case — would also become invisible. `paper-notes`
-   in the table above is the candidate to check.
-   `python scripts/universe_ownership_inventory.py` is read-only, lists every
-   directory with its owners, and exits 1 naming any directory that carries a
-   universe signal and has no ownership row. Exit 0 is the go-ahead; a named
-   directory needs its missing row written first.
-2. **Still a founder call: should `visibility` default to `public` at all for a
-   universe nobody published?** The public read contract already refuses
-   anything not explicitly `public`/`metadata_only`, so the default is the only
-   thing that ever made these visible. Independent of the above, and the reason
-   this file is not deleted yet.
-
-Delete this file when (1) is confirmed on the live root and (2) is decided.
+Delete this file when the public list is universes people chose to publish.
