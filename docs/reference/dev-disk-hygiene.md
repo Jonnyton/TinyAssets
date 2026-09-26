@@ -33,10 +33,16 @@ times out injects nothing.
 
 | Class | Removed only when | Never |
 |---|---|---|
-| `basetemp` | directly under the OS temp root, name matches an agent-convention prefix, **and** the contents have pytest's numbered-dir shape, untouched for `--min-age-hours` (6) | anything whose shape it does not recognise; anything containing a reparse point |
-| `worktree` | a worktree of **this** repo per `git worktree list --porcelain`, clean of tracked *and* ignored content, idle for `--worktree-idle-hours` (24), and content-merged into `origin/main` (or PR closed with every commit on a remote) | the primary checkout, `main`/`master`/`production`, a detached HEAD, another project's repo |
-| `docker` | `docker builder prune` with a keep budget, only when the engine answers | volumes, images, containers, `system prune`, `-a` |
-| `scratch` | a name on a closed allowlist in the repo root, `git check-ignore` confirms it is ignored, older than `--min-age-days` (7) | `output/`, `universes/`, `logs/`, `data-room/`, `.secrets/`, `.codex-worktrees/`, or anything tracked |
+| `basetemp` | directly under the OS temp root, name matches an agent-convention prefix, **and every child** is a pytest artifact (a `<slug><N>` numbered dir, `.lock`, `garbage-*`, a `*-current` link), untouched for `--min-age-hours` (6) | anything with one unrecognised child; anything containing a reparse point |
+| `worktree` | a worktree of **this** repo per `git worktree list --porcelain`, clean of tracked *and* ignored content, idle for `--worktree-idle-hours` (24) by **recursive** newest mtime, and content-merged into `origin/main` (or PR closed with every commit on a remote) | the primary checkout, `main`/`master`/`production`, a detached HEAD, another project's repo |
+| `docker` | `docker builder prune` with a keep budget whose flag was probed from `--help`, only when the engine answers | volumes, images, containers, `system prune`, `-a` |
+| `scratch` | a name on a closed allowlist in the repo root, `git check-ignore` confirms it is ignored, older than `--min-age-days` (7) | `output/`, `universes/`, `logs/`, `data-room/`, `.secrets/`, `.codex-worktrees/`, `.tmp/`, `.review/`, or anything tracked |
+
+A branch ref is deleted only on the `merged_and_clean` path, with `git branch -d`.
+A PR-closed lane loses its worktree and **keeps its branch ref** as the recovery
+path: `git log --not --remotes` and `git branch -d` both read *local* tracking
+refs, so neither can tell a live remote branch from a tracking ref that was pruned
+after the PR closed. A ref costs ~41 bytes; the worktree is the disk win.
 
 **Every unknown is a KEEP.** An undecidable git query, an unrecognised directory
 shape, a tree over the entry budget, and a tree containing a symlink or junction
@@ -52,14 +58,50 @@ the log before the next pass.
 cruft came to hold 4,711 lines of unique research on 2026-08-26 (Hard Rule 13).
 So a worktree is also scanned with `--ignored=matching`, and any ignored path
 outside a short disposable allowlist (`.venv/`, `__pycache__/`, caches,
-`_PURPOSE.md`, `.agents/supervisor/` session telemetry) keeps the worktree and
-names the path in the escalation. `.claude/agent-memory/`, `output/`,
+root-only `_PURPOSE.md`, `.agents/supervisor/` session telemetry) keeps the
+worktree and names the path in the escalation. `.claude/agent-memory/`, `output/`,
 `universes/`, `.env`, and `.secrets/` are all unique work by this rule.
 
-On the first real inventory this held back 71 of 328 worktrees, and the shape
-gate on `basetemp` held back whole stale repo checkouts (`ta-base-tree`,
-`ta-baseline-*`) kept deliberately as audit oracles — a prefix match alone would
-have destroyed them.
+On the real inventory this held back 75 of 328 worktrees, and the shape gate on
+`basetemp` held back whole stale repo checkouts (`ta-base-tree`, `ta-baseline-*`)
+kept deliberately as audit oracles — a prefix match alone would have destroyed
+them.
+
+Three properties of that allowlist are load-bearing, each one a defect cross-family
+review found before this shipped:
+
+* **Matching is by path component**, never substring or bare prefix. A rule of
+  `startswith` accepted `_PURPOSE.md-git-credentials.txt`, and a nested
+  `docs/_PURPOSE.md` was accepted as disposable although `wt.py` only ever
+  archives the root copy.
+* **An extension is not a provenance.** `*.db` was on the allowlist because this
+  repo ignores it for the SQLite mirror of its YAML catalog. The same pattern
+  covers a user's own database — on the real box it would have removed a 103 MB
+  worktree holding `test.db`.
+* **A collapsed directory entry is not a content check.** `--ignored=matching`
+  reports a wholly-ignored directory as one line, so accepting `.agents/supervisor/`
+  says nothing about what is in it. Its contents are verified against the
+  filenames its producers actually emit (`events.jsonl`, `seen.json`,
+  `keep-working-*.json`); anything else keeps the worktree.
+
+### Idleness is a recursive mtime, and nothing else
+
+The first version answered "is a session still using this lane?" with a cheap scan
+of the worktree's direct children plus its gitdir's `index`/`HEAD`. That
+measurement is **invalidated by its own caller**: the collector runs `git status`
+first, which rewrites `gitdir/index`. Measured on 2026-09-26 — 72.0h before the
+status call, 0.0h after. It has been deleted rather than kept as a second opinion;
+the recursive newest mtime from the size walk is the whole answer, it was already
+being computed, and `git status` does not touch the worktree tree (a linked
+worktree holds only a `.git` *file*).
+
+### Everything is re-verified at the removal boundary
+
+Inventory and removal are minutes apart on a full pass, and `git worktree remove`
+re-checks tracked cleanliness but not ignored content. So a worktree's dirty and
+ignored scans both run again immediately before removal, and a `_PURPOSE.md`
+archive that fails **aborts** the removal rather than logging and continuing —
+that archive is the only thing preserving an unpublished lane draft.
 
 ## Running it by hand
 
@@ -82,8 +124,8 @@ Two founder-facing classes it will not resolve on its own:
 
 * **ACL-locked temp dirs.** A sandbox agent that pointed `--basetemp`/`TMPDIR` at
   a path under a restricted token leaves a directory the interactive user cannot
-  read, list, or delete (68 of them on 2026-09-26, plus three inside the repo:
-  `.codex-test-tmp/`, `.pytest-tmp/`, `.tmp/`). Reported as
+  read, list, or delete (68 of them on 2026-09-26, plus two inside the repo:
+  `.codex-test-tmp/`, `.pytest-tmp/`). Reported as
   `acl_locked_needs_elevation`; cleared with an **elevated**
   `powershell -ExecutionPolicy Bypass -File scripts/clear_sandbox_temp_dirs.ps1 -Apply`.
   Prevention is in `tests/conftest.py`, which refuses a temp root inside the repo.
@@ -109,3 +151,29 @@ protects is "no work exists only here", and `is_merged_into` already proves the
 branch's cumulative diff is on the base, so for a merged branch those commits are
 duplicates of landed content. The check therefore gates the *not-merged* path,
 where an unreachable commit is real unique work and the worktree is kept.
+
+Known limit, accepted: `is_merged_into`'s squash path ends in `git cherry`, which
+compares patch IDs, and patch IDs normalize whitespace. A branch differing from
+the base by whitespace alone therefore reads as merged. The bounded consequence is
+that such a lane's *working files* are removed while its branch ref survives —
+`git branch -d` refuses a branch git does not consider merged, and the tool
+reports "branch kept as the recovery ref". `is_merged_into` is the repo's shared
+squash-merge oracle (`scripts/wt.py` and `scripts/worktree_status.py` both use
+it); a second definition here would be worse than the limit.
+
+### Windows notes
+
+* `entry.is_dir(follow_symlinks=False)` returns **True** for a junction, so a
+  naive walk crosses into the target. Reparse points are detected via
+  `st_file_attributes` and the tree is refused. This is a *measurement* fix: both
+  of `tree_stats`'s returns are load-bearing (size ranks the escalation, newest
+  mtime is the idleness gate). `shutil.rmtree` does **not** delete through a
+  nested junction — `shutil._rmtree_islink` tests `IO_REPARSE_TAG_MOUNT_POINT`
+  (Python 3.14) and a probe on 2026-09-26 confirmed the target survived.
+* Git writes loose objects read-only, so `shutil.rmtree` raises WinError 5 on any
+  basetemp holding a checkout — which is most of them. The remover does one chmod
+  sweep and retries; a failure after that reports **partial** removal, because
+  `rmtree` deletes as it walks and "kept" would imply the path is intact.
+* Status parsing uses `--porcelain -z`. The newline form quotes and escapes a path
+  with spaces or non-ASCII bytes, and stripping the quotes leaves the escapes
+  undecoded.

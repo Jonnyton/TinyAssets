@@ -105,26 +105,47 @@ DISPOSABLE_IGNORED = (
     "dist/",
     "build/",
     ".egg-info/",
-    "_PURPOSE.md",
-    "junit.xml",
     # Per-session hook telemetry for loop detection: events.jsonl plus one
     # keep-working-<session-uuid>.json per session. Regenerated on demand, scoped
     # to a session that has ended, and never a work product — verified by reading
     # a lane's copy on 2026-09-26. Without this, nearly every Codex lane is held
     # back by machine state it wrote about itself.
     ".agents/supervisor/",
-    ".DS_Store",
-    "Thumbs.db",
 )
-_DISPOSABLE_IGNORED_GLOBS = ("*.pyc", "*.pyo", "*.egg-info/", "*.db", "*.db-wal", "*.db-shm")
+# Ignored FILES with no unique content. Matched against the whole relative path
+# for a root-anchored name and against the final component otherwise — never as a
+# substring or a bare prefix. `_PURPOSE.md` is root-only because `wt.py`'s archive
+# only preserves the root copy, so a nested one would be accepted as disposable
+# and then never archived (Codex round 1, P0).
+DISPOSABLE_IGNORED_FILES_ROOT = ("_PURPOSE.md", "junit.xml")
+DISPOSABLE_IGNORED_BASENAMES = (".DS_Store", "Thumbs.db")
+# Compiled artifacts only. `*.db`/`*.db-wal`/`*.db-shm` were here and are NOT:
+# this repo ignores `*.db` for the SQLite mirror of the YAML catalog, but the same
+# pattern covers a user's own local database, and Codex round 1 reproduced a
+# `research.db` being accepted as disposable. An extension is not a provenance.
+DISPOSABLE_IGNORED_GLOBS = ("*.pyc", "*.pyo")
+
+# `git status --ignored=matching` collapses a wholly-ignored directory into ONE
+# entry, so accepting the entry says nothing about what is inside it (Codex round
+# 1, answer 4). Tool-owned caches above need no content check — nothing but the
+# tool writes them. `.agents/supervisor/` is repo state, so its contents are
+# verified against the filenames its producers actually emit
+# (`scripts/supervisor.py`, `.claude/hooks/keep_working_while_waiting.py`): one
+# `events.jsonl`, one `seen.json`, and `keep-working-<session-uuid>.json`.
+# Anything else in there keeps the worktree.
+DISPOSABLE_DIR_CONTENT_RULES: dict[str, tuple[str, ...]] = {
+    ".agents/supervisor": ("events.jsonl", "seen.json", "keep-working-*.json"),
+}
 
 # This repo's own scratch directory names. A closed list on purpose: `.codex-worktrees/`
 # holds sandbox-owned INDEPENDENT repos and `output/`, `universes/`, `logs/`,
 # `data-room/`, `.secrets/` hold real local state, so none of them appear here.
+# `.tmp` and `.review` were here and are NOT: a generic name plus ignore status
+# plus age proves nothing about provenance, and Codex round 1 reproduced a
+# ten-day-old `.tmp/research.md` being removed. Every name left is one only a
+# test run or an agent tool creates.
 SCRATCH_NAMES = (
     "codex-tmp",
-    ".review",
-    ".tmp",
     ".pytest-tmp",
     ".codex-test-tmp",
     ".workflow-test-data",
@@ -259,7 +280,18 @@ def tree_stats(root: Path, budget: int = MAX_TREE_ENTRIES) -> tuple[int, float]:
 
     Raises ``Undecidable`` when the tree exceeds ``budget`` entries, cannot be
     read, or contains a reparse point — an unmeasurable tree is kept rather than
-    guessed at, and a tree with a door out of it is never handed to a remover.
+    guessed at.
+
+    The reparse case is a *measurement* correctness fix, not a deletion-escape
+    fix. ``entry.is_dir(follow_symlinks=False)`` returns True for a Windows
+    junction, so the walk used to cross into the target and report its bytes as
+    reclaimable here; both returns are load-bearing (size drives the escalation
+    ranking, newest mtime is the worktree idleness gate). ``shutil.rmtree`` was
+    checked separately on 2026-09-26 and does **not** delete through a nested
+    junction — ``shutil._rmtree_islink`` tests ``IO_REPARSE_TAG_MOUNT_POINT``
+    (Python 3.14, ``shutil.py:660``), and a probe confirmed the target's contents
+    survived removal of the parent. Refusing the tree outright is still the right
+    answer: a tree we cannot size honestly is a tree we do not understand.
     """
     total = 0
     newest = 0.0
@@ -290,10 +322,18 @@ def tree_stats(root: Path, budget: int = MAX_TREE_ENTRIES) -> tuple[int, float]:
                             stack.append(Path(entry.path))
                             newest = max(newest, info.st_mtime)
                             continue
-                    except OSError:
-                        # A vanished or locked entry: keep measuring, but the
-                        # newest-mtime floor below still protects a live tree.
-                        continue
+                    except FileNotFoundError:
+                        continue  # raced with a delete; it contributes nothing
+                    except PermissionError as exc:
+                        # Same class as a denied root, so it gets the same answer and
+                        # the same elevated-fix pointer.
+                        raise AclLocked(f"access denied on {entry.path}: {exc}") from exc
+                    except OSError as exc:
+                        # Anything else is an answer we do not have. The recursive
+                        # newest mtime is the worktree idleness gate, so skipping
+                        # an unreadable entry would silently under-report activity
+                        # (Codex round 1, P2).
+                        raise Undecidable(f"cannot stat {entry.path}: {exc}") from exc
                     total += info.st_size
                     newest = max(newest, info.st_mtime)
         except PermissionError as exc:
@@ -346,29 +386,46 @@ def classify_temp_dir(path: Path) -> str:
     links, or an empty directory (``pytest --basetemp=X`` wipes and recreates X
     at session start, so an empty X holds zero bytes of anything).
 
+    **Every** child must be one of those shapes. Accepting on the first match was
+    enough for Codex round 1 to get ``ta-research/`` removed by adding a
+    ``chapter1/`` next to a unique ``manuscript.md``: one plausible-looking child
+    vouched for its siblings. A single unrecognised sibling now keeps the
+    directory, and ``pytest-of-*`` is checked the same way rather than trusted on
+    its name.
+
     ``acl_locked`` is its own answer, not a shrug: a sandbox agent that pointed
     ``--basetemp`` at the temp root under a restricted token leaves a directory
     the interactive user cannot read, list, or delete. Those need an elevated
     ``scripts/clear_sandbox_temp_dirs.ps1 -Apply``, so they belong in the
     escalation list rather than lumped in with shapes we simply do not know.
     """
-    if path.name.startswith("pytest-of-"):
-        return "pytest"
     try:
         with os.scandir(path) as entries:
-            empty = True
             for entry in entries:
-                empty = False
-                name = entry.name
-                if name == ".lock" or name.startswith("garbage-"):
-                    return "pytest"
-                if entry.is_dir(follow_symlinks=False) and _NUMBERED_DIR.match(name):
-                    return "pytest"
-            return "pytest" if empty else "unrecognized"
+                if not _is_pytest_artifact(entry):
+                    return "unrecognized"
+            return "pytest"  # every child vouched for, or the directory is empty
     except PermissionError:
         return "acl_locked"
     except OSError:
         return "unrecognized"
+
+
+def _is_pytest_artifact(entry: os.DirEntry) -> bool:
+    """Whether one entry inside a temp root is something pytest itself created."""
+    name = entry.name
+    if name in {".lock", "pytest-current"} or name.startswith("garbage-"):
+        return True
+    try:
+        is_dir = entry.is_dir(follow_symlinks=False)
+    except OSError:
+        return False
+    if is_dir:
+        # tmp_path dirs ("test_foo0"), pytest-of-<user>'s "pytest-<N>" roots, and
+        # the per-session numbered dirs underneath them all end in a digit.
+        return bool(_NUMBERED_DIR.match(name))
+    # pytest leaves "<name>-current" links beside its numbered dirs.
+    return name.endswith("-current")
 
 
 def collect_basetemps(temp_root: Path, *, min_age_hours: float, now: float) -> list[Item]:
@@ -496,74 +553,120 @@ def parse_worktrees(porcelain: str) -> list[Worktree]:
 
 
 def is_disposable_ignored(rel: str) -> bool:
-    """True when an ignored path inside a worktree carries no unique work."""
+    """True when an ignored path inside a worktree carries no unique work.
+
+    Matching is by **path component**, never by substring or bare prefix. The
+    first version used ``norm.startswith(known)`` plus a ``"/" + known in
+    "/" + norm`` substring test, and Codex round 1 reproduced three unique paths
+    passing it: ``research.db`` (an extension is not a provenance),
+    ``docs/_PURPOSE.md`` (accepted as disposable but only the root copy is ever
+    archived), and ``_PURPOSE.md-git-credentials.txt`` (a prefix is not a
+    filename). A component test refuses all three.
+    """
     # Only a leading "./" is stripped. `str.lstrip("./")` would eat the leading
-    # dot of every dotted path, turning ".ruff_cache/" into "ruff_cache/" and
-    # silently failing to match anything on the allowlist.
+    # dot of every dotted path, turning ".ruff_cache/" into "ruff_cache/".
     norm = rel.replace("\\", "/")
     if norm.startswith("./"):
         norm = norm[2:]
+    trimmed = norm.rstrip("/")
+    if not trimmed:
+        return False
+    parts = trimmed.split("/")
+
+    # A directory entry matches when it IS a component of the path, so
+    # ".venv/", "a/.venv/" and "a/.venv/lib/x.py" all match while
+    # ".venv-backup/" does not.
     for known in DISPOSABLE_IGNORED:
-        if norm == known.rstrip("/") or norm == known or norm.startswith(known):
+        segments = [s for s in known.strip("/").split("/") if s]
+        if not segments:
+            continue
+        window = len(segments)
+        if any(parts[i : i + window] == segments for i in range(len(parts) - window + 1)):
             return True
-        if f"/{known}" in f"/{norm}":
-            return True
-    tail = norm.rsplit("/", 1)[-1]
-    return any(
-        fnmatch.fnmatch(norm, g) or fnmatch.fnmatch(tail, g) for g in _DISPOSABLE_IGNORED_GLOBS
-    )
+
+    if trimmed in DISPOSABLE_IGNORED_FILES_ROOT:  # root-anchored, exact
+        return True
+    if parts[-1] in DISPOSABLE_IGNORED_BASENAMES:  # exact final component
+        return True
+    return any(fnmatch.fnmatch(parts[-1], g) for g in DISPOSABLE_IGNORED_GLOBS)
+
+
+def _status_entries(worktree: Path, *extra: str) -> list[tuple[str, str]]:
+    """Parse ``git status --porcelain -z`` into ``(xy, path)`` pairs.
+
+    NUL-delimited because git escapes and quotes a path with spaces or non-ASCII
+    bytes in the newline form, and stripping the quotes leaves the escapes
+    undecoded (Codex round 1, P2). Rename entries carry two NUL-separated paths;
+    the origin path is returned as its own entry so neither half is lost.
+    """
+    raw = git_ok(["status", "--porcelain", "-z", "--untracked-files=all", *extra], worktree)
+    fields = [f for f in raw.split("\0") if f]
+    entries: list[tuple[str, str]] = []
+    index = 0
+    while index < len(fields):
+        field = fields[index]
+        index += 1
+        if len(field) < 4 or field[2] != " ":
+            continue  # not a status record; never silently treated as clean
+        xy, path = field[:2], field[3:]
+        entries.append((xy, path))
+        if "R" in xy or "C" in xy:  # rename/copy: the next field is the origin
+            if index < len(fields):
+                entries.append((xy, fields[index]))
+                index += 1
+    return entries
+
+
+def unexpected_dir_contents(worktree: Path, rel: str) -> list[str]:
+    """Files under a content-ruled disposable directory that the rule does not allow.
+
+    Raises ``Undecidable`` when the directory cannot be listed: an unreadable
+    directory is not an empty one.
+    """
+    key = rel.replace("\\", "/").strip("/")
+    allowed = DISPOSABLE_DIR_CONTENT_RULES.get(key)
+    if allowed is None:
+        return []
+    root = worktree / key
+    unexpected: list[str] = []
+    try:
+        for parent, _dirs, files in os.walk(root, onerror=_raise_walk_error):
+            for name in files:
+                if not any(fnmatch.fnmatch(name, pattern) for pattern in allowed):
+                    unexpected.append(
+                        str(Path(parent, name).relative_to(worktree)).replace("\\", "/")
+                    )
+    except OSError as exc:
+        raise Undecidable(f"cannot list {root}: {exc}") from exc
+    return unexpected
+
+
+def _raise_walk_error(exc: OSError) -> None:
+    raise exc
 
 
 def unique_ignored_paths(worktree: Path) -> list[str]:
     """Ignored paths that are NOT provably disposable. Raises Undecidable on error."""
-    out = git_ok(["status", "--porcelain", "--ignored=matching", "--untracked-files=all"], worktree)
     found: list[str] = []
-    for line in out.splitlines():
-        if not line.startswith("!! "):
+    for xy, path in _status_entries(worktree, "--ignored=matching"):
+        if xy != "!!":
             continue
-        rel = line[3:].strip().strip('"')
-        if not is_disposable_ignored(rel):
-            found.append(rel)
+        if not is_disposable_ignored(path):
+            found.append(path)
+            continue
+        found.extend(unexpected_dir_contents(worktree, path))
     return found
 
 
 def dirty_paths(worktree: Path) -> list[str]:
     """Tracked modifications and non-ignored untracked paths. Raises Undecidable."""
-    out = git_ok(["status", "--porcelain", "--untracked-files=all"], worktree)
-    return [ln for ln in out.splitlines() if ln.strip()]
+    return [f"{xy} {path}" for xy, path in _status_entries(worktree) if xy != "!!"]
 
 
 def unpushed_commits(worktree: Path, head: str) -> list[str]:
     """Commits reachable from HEAD but from no remote-tracking ref."""
     out = git_ok(["log", "--format=%h %s", head, "--not", "--remotes"], worktree)
     return [ln for ln in out.splitlines() if ln.strip()]
-
-
-def worktree_idle_hours(worktree: Path, gitdir: Path | None, now: float) -> float:
-    """Cheap in-use signal: newest mtime across direct children plus the index.
-
-    Not a recursive scan — a lane in active use is almost always *dirty*, which
-    is a stronger gate; this catches the clean-but-open case (a session whose cwd
-    is here, a checkout created minutes ago) without walking 5,500 files.
-    """
-    newest = 0.0
-    try:
-        newest = worktree.stat().st_mtime
-        with os.scandir(worktree) as entries:
-            for entry in entries:
-                try:
-                    newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
-                except OSError:
-                    continue
-    except OSError:
-        return 0.0  # unreadable => treat as fresh => KEEP
-    if gitdir is not None:
-        for name in ("index", "HEAD"):
-            try:
-                newest = max(newest, (gitdir / name).stat().st_mtime)
-            except OSError:
-                continue
-    return max(0.0, (now - newest) / 3600.0)
 
 
 def pr_is_closed(branch: str, cwd: Path) -> bool | None:
@@ -673,14 +776,16 @@ def _judge_worktree(
     if ignored:
         return keep("ignored_content_exists_nowhere_else", f"{label}: {', '.join(ignored[:3])}")
 
-    idle = worktree_idle_hours(path, _worktree_gitdir(path), now)
-    if idle < idle_hours:
-        return keep("recently_active", f"{label}: touched {idle:.1f}h ago")
-
+    # The recursive newest mtime from the size walk IS the idleness answer, and it
+    # was being computed and thrown away (Codex round 1, P1): a direct-children
+    # scan misses a live lane writing at depth, e.g. into .agents/supervisor/.
     try:
-        size, _ = tree_stats(path)
+        size, newest = tree_stats(path)
     except Undecidable as exc:
         return keep_for("worktree", path, exc)
+    idle = max(0.0, (now - newest) / 3600.0)
+    if idle < idle_hours:
+        return keep("recently_active", f"{label}: touched {idle:.1f}h ago", size)
 
     merged = is_merged_into(lambda a: run(list(a), cwd=path), wt.head, base_ref)
     try:
@@ -720,15 +825,6 @@ def _judge_worktree(
     return keep("unmerged_pr_open", f"{label}: PR still open", size)
 
 
-def _worktree_gitdir(worktree: Path) -> Path | None:
-    proc = run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-dir"], cwd=worktree, timeout=15
-    )
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return None
-    return Path(proc.stdout.strip())
-
-
 # --------------------------------------------------------------------------- #
 # (c) Docker build cache
 # --------------------------------------------------------------------------- #
@@ -755,6 +851,19 @@ def collect_docker_cache(*, keep_gb: float, docker: str = "docker") -> list[Item
         return [Item("docker", "build-cache", 0, "KEEP", "docker_engine_not_running")]
 
     helped = run([docker, "builder", "prune", "--help"], timeout=20)
+    if helped.returncode != 0:
+        # Recognisable help text in a FAILED invocation is not a probe result
+        # (Codex round 1, P2): the returncode is the answer, not the stdout.
+        return [
+            Item(
+                "docker",
+                "build-cache",
+                0,
+                "KEEP",
+                "prune_flag_unknown",
+                f"docker builder prune --help rc={helped.returncode}",
+            )
+        ]
     try:
         flag = docker_keep_flag(helped.stdout or "")
     except Undecidable as exc:
@@ -873,10 +982,13 @@ def remove_path(path: Path) -> tuple[bool, str]:
     before 3.12, so neither is used: a read-only-attribute failure gets one
     explicit chmod sweep and a single retry instead.
 
-    Refuses a reparse point outright. ``shutil.rmtree`` recurses through a Windows
-    junction, so deleting one would delete the contents of whatever it points at.
-    Candidates reach here only after ``tree_stats`` vouched for the tree; this is
-    the second lock on the same door.
+    Refuses a reparse point outright. Not because ``shutil.rmtree`` would delete
+    through one — it would not; ``shutil._rmtree_islink`` recognises
+    ``IO_REPARSE_TAG_MOUNT_POINT`` and a 2026-09-26 probe confirmed a junction's
+    target survives removal of its parent — but because a path whose identity is a
+    link to somewhere else is not a path this tool has reasoned about. Candidates
+    reach here only after ``tree_stats`` vouched for the tree; this repeats the
+    check at the boundary where the tree could have changed since.
     """
     try:
         if is_reparse_point(os.stat(path, follow_symlinks=False)):
@@ -902,7 +1014,10 @@ def remove_path(path: Path) -> tuple[bool, str]:
                     continue
         shutil.rmtree(path) if path.is_dir() else path.unlink()
     except OSError as exc:
-        return False, f"{type(exc).__name__}: {exc}"
+        # rmtree deletes as it walks, so a failure here means the tree is PARTLY
+        # gone. Saying so is the honest report (Codex round 1, P2); a bare "kept"
+        # would imply the path is intact.
+        return False, f"PARTIALLY REMOVED then failed — {type(exc).__name__}: {exc}"
     return True, "removed after chmod retry"
 
 
@@ -913,29 +1028,66 @@ def remove_worktree(repo: Path, item: Item) -> tuple[bool, str]:
     cleanliness and lock checks stay in the path as a second net behind this
     script's verdict. The purpose archive reuses ``wt.py`` so an unpublished lane
     draft survives in ``.git/tinyassets-worktrees.log``.
+
+    **A failed archive aborts the removal** when a ``_PURPOSE.md`` exists. The
+    first version printed the error and carried on, which defeated the only
+    preservation mechanism that file has (Codex round 1, P0) — a disk-full or
+    permission error during the archive would have quietly destroyed the draft.
     """
     path = Path(item.path)
     branch = item.branch
     if not branch:
         return False, "no branch recorded on the candidate; refusing to remove"
+
+    # Re-verify at the boundary. Inventory and removal are minutes apart on a full
+    # pass, and `git worktree remove` re-checks tracked cleanliness but not ignored
+    # content, so a unique ignored file written in between would be destroyed on a
+    # verdict that predates it (Codex round 1, answer 6).
+    try:
+        if dirty_paths(path):
+            return False, "changed since inventory: the worktree is now dirty"
+        stale = unique_ignored_paths(path)
+    except Undecidable as exc:
+        return False, f"could not re-verify before removal: {exc}"
+    if stale:
+        return (
+            False,
+            f"changed since inventory: ignored content now present ({', '.join(stale[:3])})",
+        )
+
     try:
         import wt  # noqa: PLC0415  (sibling script; only needed on the apply path)
 
         wt._archive_purpose(repo, path, branch, f"dev_hygiene: {item.reason}")
-    except Exception as exc:  # noqa: BLE001 — archiving must never block the pass
-        print(f"  note: could not archive _PURPOSE.md for {path.name}: {exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 — any failure here must fail closed
+        if (path / "_PURPOSE.md").exists():
+            return False, f"refusing to remove: could not archive _PURPOSE.md ({exc})"
+        print(
+            f"  note: purpose archive skipped for {path.name} (none present): {exc}",
+            file=sys.stderr,
+        )
 
     proc = run(["git", "worktree", "remove", str(path)], cwd=repo, timeout=120)
     if proc.returncode != 0:
         return False, f"git worktree remove refused: {proc.stderr.strip()[:300]}"
-    # -d for the merged case (git re-checks); -D only for a PR-closed branch we
-    # already proved is reachable from a remote, so the local ref is recoverable.
-    flag = "-d" if item.reason == "merged_and_clean" else "-D"
-    delete = run(["git", "branch", flag, branch], cwd=repo, timeout=60)
+    # The disk win is the worktree; a branch ref is ~41 bytes. So the ref is only
+    # deleted for `merged_and_clean`, where the content is provably on the base
+    # everything integrates into, and always with `-d` so git's own check is the
+    # last word.
+    #
+    # The PR-closed path keeps its ref deliberately. `-D` would have forced it away
+    # on the strength of `git log --not --remotes`, which reads LOCAL tracking refs
+    # — and `-d` is no better here, since it also accepts "merged into its
+    # upstream" from the same local ref. A tracking ref pruned after the PR closed
+    # leaves nothing behind (Codex round 1, answer 7), so the ref stays and is the
+    # recovery path.
+    if item.reason != "merged_and_clean":
+        return True, "worktree removed; branch ref kept as the recovery path"
+    delete = run(["git", "branch", "-d", branch], cwd=repo, timeout=60)
     detail = (
         "branch deleted"
         if delete.returncode == 0
-        else f"branch kept ({delete.stderr.strip()[:120]})"
+        else f"branch kept as the recovery ref ({delete.stderr.strip()[:120]})"
     )
     return True, detail
 

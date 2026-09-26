@@ -193,6 +193,44 @@ def test_unrecognized_shape_is_kept_even_with_a_matching_prefix(tmp_path: Path) 
     assert oracle.exists()
 
 
+def test_one_numbered_child_does_not_vouch_for_its_siblings(tmp_path: Path) -> None:
+    """Codex round 1, P0: `ta-research/chapter1/` beside a unique `manuscript.md`.
+
+    `chapter1` matches pytest's `<slug><N>` scheme, and accepting on the first
+    match let one plausible child authorize deleting the manuscript next to it.
+    Every child must now be a pytest artifact.
+    """
+    root = tmp_path / "t"
+    root.mkdir()
+    work = root / "ta-research"
+    (work / "chapter1").mkdir(parents=True)
+    (work / "manuscript.md").write_text("the only copy\n", encoding="utf-8")
+    age(work, 500)
+    item = by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), work)
+    assert item.verdict == "KEEP"
+    assert item.reason == "unrecognized_shape"
+    assert (work / "manuscript.md").exists()
+
+
+def test_pytest_of_root_is_checked_by_shape_not_by_name(tmp_path: Path) -> None:
+    """`pytest-of-<user>` used to bypass content classification on its name alone."""
+    root = tmp_path / "t"
+    root.mkdir()
+    impostor = root / "pytest-of-someone"
+    impostor.mkdir()
+    (impostor / "notes.md").write_text("not pytest's\n", encoding="utf-8")
+    age(impostor, 500)
+    assert by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), impostor).verdict == "KEEP"
+
+    genuine = root / "pytest-of-runner"
+    (genuine / "pytest-3").mkdir(parents=True)
+    (genuine / "pytest-current").mkdir()
+    age(genuine, 500)
+    assert (
+        by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), genuine).verdict == "REMOVE"
+    )
+
+
 def test_unknown_name_is_not_even_a_candidate(tmp_path: Path) -> None:
     """Anything outside the prefix allowlist is invisible to the tool."""
     root = tmp_path / "t"
@@ -252,6 +290,98 @@ def test_basetemp_containing_cwd_is_kept(tmp_path: Path, monkeypatch: pytest.Mon
     assert (item.verdict, item.reason) == ("KEEP", "contains_cwd")
 
 
+def test_tree_stats_refuses_an_entry_it_cannot_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single unreadable entry makes the whole tree undecidable.
+
+    Skipping it was the original behaviour, and it is unsafe now that the recursive
+    newest mtime IS the worktree idleness gate (Codex round 1, P2): the one entry a
+    live session is holding open is exactly the one likeliest to deny a stat, so
+    skipping it would under-report activity. A vanished entry (FileNotFoundError)
+    still just contributes nothing — that is a race, not an unknown.
+    """
+    base = tmp_path / "t"
+    base.mkdir()
+    (base / "real.txt").write_bytes(b"x" * 8)
+    real_scandir = os.scandir
+
+    class _DenyEntry:
+        name = "denied.bin"
+
+        def __init__(self, parent: Path) -> None:
+            self.path = str(parent / self.name)
+
+        def is_dir(self, follow_symlinks: bool = True) -> bool:
+            return False
+
+        def stat(self, follow_symlinks: bool = True):
+            raise PermissionError(13, "Access is denied")
+
+    class _Scandir:
+        def __init__(self, path) -> None:
+            self.path = path
+
+        def __enter__(self):
+            if Path(self.path) == base:
+                return iter([_DenyEntry(base)])
+            return real_scandir(self.path).__enter__()
+
+        def __exit__(self, *_exc) -> None:
+            return None
+
+    monkeypatch.setattr(dh.os, "scandir", _Scandir)
+    with pytest.raises(dh.AclLocked):
+        dh.tree_stats(base)
+
+
+def test_tree_stats_separates_a_vanished_entry_from_an_unreadable_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A race contributes nothing; any other stat error is an unknown.
+
+    Both branches are exercised because a ``PermissionError`` now has its own
+    clause ahead of the generic one, so a test that only raises ``PermissionError``
+    leaves the generic ``OSError`` path uncovered.
+    """
+    base = tmp_path / "t"
+    base.mkdir()
+    real_scandir = os.scandir
+
+    def with_entry(error: Exception):
+        class _Entry:
+            name = "entry.bin"
+            path = str(base / "entry.bin")
+
+            def is_dir(self, follow_symlinks: bool = True) -> bool:
+                return False
+
+            def stat(self, follow_symlinks: bool = True):
+                raise error
+
+        class _Scandir:
+            def __init__(self, path) -> None:
+                self.path = path
+
+            def __enter__(self):
+                if Path(self.path) == base:
+                    return iter([_Entry()])
+                return real_scandir(self.path).__enter__()
+
+            def __exit__(self, *_exc) -> None:
+                return None
+
+        return _Scandir
+
+    monkeypatch.setattr(dh.os, "scandir", with_entry(FileNotFoundError(2, "No such file")))
+    assert dh.tree_stats(base)[0] == 0, "a vanished entry must not refuse the tree"
+
+    monkeypatch.setattr(dh.os, "scandir", with_entry(OSError(22, "Invalid argument")))
+    with pytest.raises(dh.Undecidable) as caught:
+        dh.tree_stats(base)
+    assert not isinstance(caught.value, dh.AclLocked), "only access-denied is the ACL class"
+
+
 def test_tree_stats_refuses_an_oversized_tree(tmp_path: Path) -> None:
     """Fail closed: a tree too big to inventory is kept, not guessed at."""
     root = tmp_path / "big"
@@ -267,9 +397,17 @@ def test_tree_stats_does_not_follow_a_link_out_of_the_tree(tmp_path: Path, kind:
     """Sizing must stay inside the tree it was asked about.
 
     Both link kinds are exercised because on Windows a symlink needs privilege
-    this host does not grant while a **junction** needs none — and ``os.walk``
-    happily descends into a junction. A symlink-only test passes by skipping here
-    and proves nothing about the mechanism that actually exists on this box.
+    this host does not grant while a **junction** needs none — and
+    ``entry.is_dir(follow_symlinks=False)`` returns True for a junction, so the
+    walk crossed into the target and reported its bytes as reclaimable. A
+    symlink-only test passes by skipping on Windows and proves nothing about the
+    mechanism that actually exists there.
+
+    The assertion is the *invariant* (the walk does not count what is outside, and
+    the outside content survives), not one platform's mechanism: on POSIX
+    ``follow_symlinks=False`` already answers it and no reparse attribute exists,
+    so there is nothing to refuse. Asserting the Windows refusal unconditionally
+    is what made this red on Linux CI.
     """
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -291,13 +429,19 @@ def test_tree_stats_does_not_follow_a_link_out_of_the_tree(tmp_path: Path, kind:
         )
         if made.returncode != 0 or not link.exists():
             pytest.skip(f"mklink /J unavailable: {made.stderr.strip()}")
-    with pytest.raises(dh.Undecidable, match="reparse point"):
-        dh.tree_stats(inside)
-    # Second lock: shutil.rmtree recurses through a junction, so the remover must
-    # refuse the link itself rather than delete the target's contents.
-    ok, detail = dh.remove_path(link)
-    assert not ok and "reparse point" in detail
+    reparse = dh.is_reparse_point(os.stat(link, follow_symlinks=False))
+    if reparse:
+        with pytest.raises(dh.Undecidable, match="reparse point"):
+            dh.tree_stats(inside)
+        ok, detail = dh.remove_path(link)
+        assert not ok and "reparse point" in detail
+    else:
+        size, _newest = dh.tree_stats(inside)
+        assert size == 10, f"the walk counted bytes behind the {kind}"
+        ok, _detail = dh.remove_path(link)
+        assert ok, "removing the link itself must succeed where it is not a reparse point"
     assert (outside / "huge.bin").exists(), f"deleting a {kind} reached through it"
+    assert outside.is_dir()
 
 
 # --------------------------------------------------------------------------- #
@@ -386,6 +530,48 @@ def test_disposable_ignored_content_does_not_block_removal(repo: Path) -> None:
     assert item.verdict == "REMOVE", f"blocked by {item.reason}: {item.detail}"
 
 
+def test_supervisor_dir_with_an_unexpected_file_keeps_the_worktree(repo: Path) -> None:
+    """`--ignored=matching` collapses an ignored directory into one entry.
+
+    Accepting `.agents/supervisor/` therefore says nothing about its contents
+    (Codex round 1, answer 4), so the contents are checked against the filenames
+    its producers actually emit. Anything else in there is unexamined work.
+    """
+    lane = add_lane(repo, "landed", merged=True)
+    (repo / ".gitignore").write_text(
+        "output/\n.ruff_cache/\n_PURPOSE.md\n.agents/supervisor/\n", encoding="utf-8"
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "ignore supervisor")
+    git(repo, "push", "-q", "origin", "main")
+    git(lane, "merge", "-q", "--ff-only", "origin/main")
+    supervisor = lane / ".agents" / "supervisor"
+    supervisor.mkdir(parents=True)
+    (supervisor / "events.jsonl").write_text("{}\n", encoding="utf-8")
+    (supervisor / "keep-working-abc123.json").write_text("{}", encoding="utf-8")
+    assert git(lane, "status", "--porcelain").strip() == "", "setup: must read clean"
+    assert dh.unique_ignored_paths(lane) == [], "known telemetry must not block removal"
+
+    (supervisor / "handoff-notes.md").write_text("the only copy\n", encoding="utf-8")
+    blocking = dh.unique_ignored_paths(lane)
+    assert blocking == [".agents/supervisor/handoff-notes.md"], blocking
+
+
+def test_unexpected_dir_contents_refuses_a_directory_it_cannot_list(repo: Path) -> None:
+    """A directory it cannot walk is not an empty one — missing or denied, KEEP."""
+    with pytest.raises(dh.Undecidable):
+        dh.unexpected_dir_contents(repo, ".agents/supervisor")
+
+
+def test_status_parsing_survives_a_path_with_spaces(repo: Path) -> None:
+    """Git quotes and escapes such paths in the newline form; `-z` does not."""
+    awkward = repo / "a file with spaces.txt"
+    awkward.write_text("x\n", encoding="utf-8")
+    entries = dh.dirty_paths(repo)
+    assert any("a file with spaces.txt" in e for e in entries), entries
+    assert not any('"' in e for e in entries), f"quoting leaked into the parse: {entries}"
+
+
 def test_primary_checkout_is_never_removed(repo: Path) -> None:
     add_lane(repo, "landed", merged=True)
     item = by_path(worktree_items(repo), repo)
@@ -398,6 +584,48 @@ def test_recently_active_worktree_is_kept(repo: Path) -> None:
     lane = add_lane(repo, "landed", merged=True)
     item = by_path(worktree_items(repo, now=time.time(), idle_hours=24.0), lane)
     assert item.verdict == "KEEP"
+    assert item.reason == "recently_active"
+
+
+def test_a_write_deep_in_the_tree_counts_as_activity(repo: Path) -> None:
+    """Codex round 1, P1: the idle check scanned only direct children.
+
+    A live lane writing at depth — telemetry under `.agents/supervisor/`, a cache
+    write — does not refresh a direct child's mtime, so a clean merged lane a
+    session still held could read as idle for a day. The recursive newest mtime was
+    already being computed by the size walk and thrown away.
+
+    The direct-children-plus-gitdir helper that used to answer this is now gone
+    rather than kept as a second opinion: the collector's own `git status` rewrites
+    `gitdir/index`, so that helper reported 0.0h for every worktree it was asked
+    about — measured 72.0h before the status call and 0.0h after. A measurement its
+    own caller invalidates is worse than no measurement.
+
+    The deep write goes into an **ignored and disposable** directory on purpose. A
+    plain untracked file would also make the worktree dirty, and the test would
+    then pass on the dirty gate no matter what the idle gate did.
+    """
+    lane = add_lane(repo, "landed", merged=True)
+    stale = time.time() - 72 * HOUR
+    deep = lane / ".ruff_cache" / "a" / "b"
+    deep.mkdir(parents=True)
+    (deep / "cache.json").write_text("{}", encoding="utf-8")
+    age(lane, 72, now=time.time())
+    assert dh.dirty_paths(lane) == [], "setup: the write must not make the lane dirty"
+    assert dh.unique_ignored_paths(lane) == [], "setup: the write must be disposable-ignored"
+    baseline = by_path(worktree_items(repo, now=time.time(), idle_hours=24.0), lane)
+    assert baseline.verdict == "REMOVE", (
+        f"setup: a wholly backdated lane must be removable, got {baseline.reason}"
+    )
+
+    # Now make ONLY the deepest entry fresh. The lane root and every direct child
+    # stay backdated, so nothing but a recursive walk can notice the write.
+    os.utime(deep / "cache.json", None)
+    for child in lane.iterdir():
+        os.utime(child, (stale, stale))
+    os.utime(lane, (stale, stale))
+    item = by_path(worktree_items(repo, now=time.time(), idle_hours=24.0), lane)
+    assert item.verdict == "KEEP", f"a deep write did not register as activity ({item.reason})"
     assert item.reason == "recently_active"
 
 
@@ -465,18 +693,105 @@ def test_apply_removes_a_merged_worktree_and_leaves_the_kept_one(repo: Path) -> 
     assert "landed" not in git(repo, "branch", "--list", "landed")
 
 
+def test_archive_failure_aborts_the_removal(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Codex round 1, P0: the archive is the only thing preserving `_PURPOSE.md`.
+
+    Printing the error and carrying on meant a disk-full or permission failure
+    during the archive silently destroyed the draft.
+    """
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "_PURPOSE.md").write_text("Purpose: never published anywhere\n", encoding="utf-8")
+    import wt  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        wt, "_archive_purpose", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "REMOVE", f"setup: expected a removable lane, got {item.reason}"
+    ok, detail = dh.remove_worktree(repo, item)
+    assert not ok
+    assert "could not archive _PURPOSE.md" in detail
+    assert (lane / "_PURPOSE.md").exists(), "the unpublished draft was destroyed"
+
+
+def test_ignored_content_written_after_inventory_aborts_the_removal(repo: Path) -> None:
+    """Inventory and removal are minutes apart on a full pass (Codex round 1, answer 6)."""
+    lane = add_lane(repo, "landed", merged=True)
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "REMOVE", item.reason
+    (lane / "output").mkdir()
+    (lane / "output" / "late.md").write_text("written after the verdict\n", encoding="utf-8")
+    ok, detail = dh.remove_worktree(repo, item)
+    assert not ok
+    assert "changed since inventory" in detail
+    assert (lane / "output" / "late.md").exists()
+
+
+def test_pr_closed_lane_keeps_its_branch_ref(repo: Path) -> None:
+    """The ref is the recovery path, and it costs ~41 bytes.
+
+    `-D` would have forced it away on the strength of `git log --not --remotes`,
+    which reads LOCAL tracking refs; `-d` is no better, since it also accepts
+    "merged into its upstream" from that same local ref. A tracking ref pruned
+    after the PR closed leaves nothing behind (Codex round 1, answer 7), so this
+    path removes the worktree only.
+    """
+    lane = add_lane(repo, "abandoned", merged=False)
+    item = by_path(worktree_items(repo, pr_state_fn=lambda _b, _c: True), lane)
+    assert item.verdict == "REMOVE" and item.reason == "pr_closed_branch_fully_pushed"
+    ok, detail = dh.remove_worktree(repo, item)
+    assert ok, detail
+    assert not lane.exists(), "the worktree is the disk win"
+    assert "abandoned" in git(repo, "branch", "--list", "abandoned"), (
+        "the unmerged branch ref must survive as the recovery path"
+    )
+
+
+def test_merged_lane_does_delete_its_branch(repo: Path) -> None:
+    """Keeping every ref forever is clutter; the merged case is provably on the base."""
+    lane = add_lane(repo, "landed", merged=True)
+    item = by_path(worktree_items(repo), lane)
+    ok, detail = dh.remove_worktree(repo, item)
+    assert ok, detail
+    assert not lane.exists()
+    assert git(repo, "branch", "--list", "landed").strip() == ""
+
+
+def test_is_disposable_ignored_matches_by_path_component() -> None:
+    """The three paths Codex round 1 reproduced passing the old substring rule.
+
+    `research.db` — an extension is not a provenance; this repo ignores `*.db` for
+    the SQLite mirror of its YAML catalog, and the same pattern covers a user's own
+    database. `docs/_PURPOSE.md` — accepted as disposable, but `wt.py` only ever
+    archives the ROOT copy, so a nested one would be destroyed unpreserved.
+    `_PURPOSE.md-git-credentials.txt` — a prefix is not a filename, and this one is
+    ignored by `*git-credentials*`.
+    """
+    for unique in ("research.db", "docs/_PURPOSE.md", "_PURPOSE.md-git-credentials.txt"):
+        assert not dh.is_disposable_ignored(unique), unique
+
+
 def test_is_disposable_ignored_classification() -> None:
     for disposable in (
         ".venv/",
         "__pycache__/",
         ".claude/hooks/__pycache__/",
+        "__pycache__/x.pyc",
         "_PURPOSE.md",
         "x/y.pyc",
         ".agents/supervisor/",
+        ".agents/supervisor/events.jsonl",
         ".ruff_cache/",
+        "Thumbs.db",
+        "a/b/.DS_Store",
     ):
         assert dh.is_disposable_ignored(disposable), disposable
     for unique in (
+        ".venv-backup/",
+        "my.venv/notes.md",
+        "supervisor/plan.md",
+        "junit.xml.bak",
+        "docs/junit.xml",
         "output/",
         "universes/",
         "data-room/cap-table.xlsx",
@@ -535,6 +850,26 @@ def test_docker_prune_refuses_without_a_probed_flag() -> None:
     ok, detail = dh.prune_docker(item, keep_gb=8.0)
     assert not ok
     assert "keep-budget flag" in detail
+
+
+def test_docker_help_failure_is_not_a_probe_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recognisable help text in a FAILED invocation is not an answer.
+
+    The returncode is the answer (Codex round 1, P2): a nonzero `--help` whose
+    stderr happens to mention `--reserved-space` must not authorize a prune.
+    """
+
+    def fake(args, **_kwargs):
+        if "version" in args:
+            return subprocess.CompletedProcess(args, 0, "27.0.0", "")
+        if "--help" in args:
+            return subprocess.CompletedProcess(args, 125, "--reserved-space bytes", "boom")
+        raise AssertionError(f"docker should not have been called further: {args}")
+
+    monkeypatch.setattr(dh, "run", fake)
+    (item,) = dh.collect_docker_cache(keep_gb=8.0)
+    assert (item.verdict, item.reason) == ("KEEP", "prune_flag_unknown")
+    assert "rc=125" in item.detail
 
 
 def test_docker_keep_flag_is_probed_not_guessed() -> None:
@@ -605,6 +940,29 @@ def test_recent_scratch_is_kept(repo: Path) -> None:
     (scratch / "live.txt").write_text("x", encoding="utf-8")
     item = by_path(dh.collect_repo_scratch(repo, min_age_days=7, now=time.time()), scratch)
     assert (item.verdict, item.reason) == ("KEEP", "recent")
+
+
+def test_generic_scratch_names_are_not_candidates(repo: Path) -> None:
+    """Codex round 1, P0: a ten-day-old `.tmp/research.md` was removed.
+
+    A generic name plus ignore status plus age proves nothing about provenance, so
+    `.tmp` and `.review` came off the allowlist. Only names a test run or an agent
+    tool creates are left.
+    """
+    for name in (".tmp", ".review"):
+        target = repo / name
+        target.mkdir()
+        (target / "research.md").write_text("the only copy\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".tmp/\n.review/\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "ignore generic scratch")
+    age(repo / ".tmp", 24 * 30, now=time.time())
+    age(repo / ".review", 24 * 30, now=time.time())
+    seen = {
+        Path(i.path).name for i in dh.collect_repo_scratch(repo, min_age_days=7, now=time.time())
+    }
+    assert seen.isdisjoint({".tmp", ".review"}), seen
+    assert (repo / ".tmp" / "research.md").exists()
 
 
 def test_protected_repo_dirs_are_not_candidates(repo: Path) -> None:
@@ -820,18 +1178,23 @@ def test_summary_file_carries_the_escalation_for_the_hook(
 def test_acl_locked_measurement_is_its_own_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Access-denied is a known class with an elevated fix, not a generic shrug."""
+    """Access-denied is a known class with an elevated fix, not a generic shrug.
+
+    The seam is ``tree_stats``, not ``os.stat``: patching ``os.stat`` globally also
+    breaks ``Path.is_dir()``, so the candidate was skipped before classification
+    and the report came back empty on Linux CI while passing on Windows.
+    """
     root = tmp_path / "t"
     root.mkdir()
     target = make_basetemp(root, "ta-pt-locked", hours=500)
-    real_stat = os.stat
+    real_tree_stats = dh.tree_stats
 
     def deny(path, *a, **kw):
         if Path(path) == target:
-            raise PermissionError(13, "Access is denied")
-        return real_stat(path, *a, **kw)
+            raise dh.AclLocked(f"access denied on {path}")
+        return real_tree_stats(path, *a, **kw)
 
-    monkeypatch.setattr(dh.os, "stat", deny)
+    monkeypatch.setattr(dh, "tree_stats", deny)
     item = by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), target)
     assert item.reason == "acl_locked_needs_elevation"
     assert "clear_sandbox_temp_dirs.ps1 -Apply" in item.detail
