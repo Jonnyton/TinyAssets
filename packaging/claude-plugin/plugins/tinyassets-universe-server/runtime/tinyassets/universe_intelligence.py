@@ -253,17 +253,31 @@ def _engine_mcp_enabled() -> bool:
 _SERVED_ABSOLUTE_CAP_S = 3600.0
 
 
-def _served_knob(ctx, name: str, default):
+def _served_knob(config, name: str, default):
     """A positive per-universe override for a watchdog knob, else ``default``.
 
     Nonsense (a string, zero, negative) falls back to the default rather than
     disabling a bound - the same hardening the profile resolver applies.
     """
     try:
-        value = float(getattr(ctx.config, name, None) or 0)
+        value = float(getattr(config, name, None) or 0)
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
+
+
+def served_absolute_cap_s(config) -> float:
+    """How long a GRANTED founder turn may legitimately run in this universe.
+
+    One definition, because a surface that reports activity has to agree with the
+    coordinator about how long a turn may take. Codex on #4020: a bound derived
+    from the library's 600s default called a healthy founder turn dead after ten
+    and a half minutes, which hid the indicator for exactly the long turns it was
+    added for. The granted turn's cap is 3600s (founder rule 2026-08-29, "a
+    granted turn runs until it is finished") with a positive per-universe
+    override, and this returns that same number.
+    """
+    return _served_knob(config, "absolute_cap_s", _SERVED_ABSOLUTE_CAP_S)
 
 
 def _sandboxed_config(
@@ -315,10 +329,10 @@ def _sandboxed_config(
     # default: the extractor runs BEFORE the reply is returned, so a generous
     # cap there could withhold an already-generated reply (Codex round 2, P1).
     absolute_cap_s = (
-        _served_knob(ctx, "absolute_cap_s", _SERVED_ABSOLUTE_CAP_S)
+        served_absolute_cap_s(ctx.config)
         if granted else None
     )
-    idle_timeout_s = _served_knob(ctx, "idle_timeout_s", None)
+    idle_timeout_s = _served_knob(ctx.config, "idle_timeout_s", None)
     engine_mcp = bool(
         granted and founder_principal and universe_id and _engine_mcp_enabled()
     )
