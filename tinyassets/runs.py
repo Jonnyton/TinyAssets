@@ -7307,11 +7307,45 @@ _CREDENTIAL_DEAD_RE = re.compile(
     rf"(?<![a-z]){_CREDENTIAL_DEAD}(?![a-z]){_CREDENTIAL_GAP}(?<![a-z]){_CREDENTIAL_NOUN}(?![a-z])"
     rf"|(?<![a-z]){_CREDENTIAL_NOUN}(?![a-z]){_CREDENTIAL_GAP}(?<![a-z]){_CREDENTIAL_DEAD}(?![a-z])"
 )
-#: One row's body preview is capped at 160 (the persisted error row) or 200 (the
-#: raised message) characters, plus its ` [kind]` tail. Bounding the 403 body
-#: test to this window keeps a word in a LATER row of a five-row summary from
-#: deciding an earlier row's class.
+#: The COPULAR form, which a one-word gap cannot reach and a wider gap must not
+#: be used for. Verbatim from a real 403 body (AWS, "Unknown/Missing Access Key
+#: or Session Token"): *"The security token included in the request is
+#: invalid."* -- five words between `token` and `invalid`, which the compact rule
+#: deliberately will not span (Codex refute-review, P1 #3).
+#:
+#: The extra reach is safe here in a way it is not for the compact rule, because
+#: a copula binds its predicate to its SUBJECT: `<credential noun> ... is
+#: invalid` says the credential is invalid, where `invalid <2 words> token` may
+#: be saying something else is invalid. Bounded by characters and stopped at a
+#: sentence break so it cannot cross clauses.
+_CREDENTIAL_DEAD_COPULA_RE = re.compile(
+    rf"(?<![a-z]){_CREDENTIAL_NOUN}(?![a-z])[^.;!?]{{0,48}}?"
+    r"(?:is|was|are|were|has been|have been)[ _\-]+"
+    r"(?:(?:no longer|not)[ _\-]+valid|invalid|expired|revoked|rejected"
+    r"|unauthori[sz]ed)(?![a-z])"
+)
+#: A hard cap on one row's body: the persisted error row previews 160 characters
+#: and the raised message 200, each plus a ` [kind]` tail.
 _CREDENTIAL_BODY_WINDOW = 220
+
+
+def _credential_body(lower: str, match: re.Match) -> str:
+    """The body of the delivered row ``match`` names, and no other row's.
+
+    A summary carries up to five rows joined by ``"; "``, and a body preview can
+    itself contain a semicolon -- so the row boundary is taken as the start of the
+    NEXT delivered-status phrase (or the end of the string), then capped. Codex
+    refute-review, P1 #2: a fixed 220-character window let a short-bodied 403
+    borrow ``invalid_token`` out of a following 404 and classify as a dead key.
+
+    A body long enough to be cut by the producer's own 160/200-character preview
+    can still lose its marker past that cut. That is a MISS, which leaves the row
+    in its existing class -- the safe direction, and not fixable from the string.
+    """
+    rest = lower[match.end():]
+    following = _DELIVERED_STATUS_RE.search(rest)
+    end = following.start() if following else len(rest)
+    return rest[:min(end, _CREDENTIAL_BODY_WINDOW)]
 
 
 def _credential_rejected(lower: str) -> bool:
@@ -7330,8 +7364,8 @@ def _credential_rejected(lower: str) -> bool:
         if status == "401":
             return True
         if status == "403":
-            window = lower[match.end():match.end() + _CREDENTIAL_BODY_WINDOW]
-            if _CREDENTIAL_DEAD_RE.search(window):
+            body = _credential_body(lower, match)
+            if _CREDENTIAL_DEAD_RE.search(body) or _CREDENTIAL_DEAD_COPULA_RE.search(body):
                 return True
     return False
 

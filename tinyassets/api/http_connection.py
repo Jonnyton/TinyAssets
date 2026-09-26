@@ -983,6 +983,19 @@ def _rotation_target(
         # Mirrors extend_http and remove_http: an admin may act on the universe,
         # but not on another principal's deposited credential.
         return dict(_NOT_FOUND)
+    if (
+        resource.connection_type != "http"
+        or resource.connection_class != "http"
+        or resource.provider != "http"
+        or resource.credential_ref != f"vault://http/{destination}"
+    ):
+        # The rotation writes ONE vault slot: `(http, destination)`. A row that
+        # does not read that slot would be reported as rotated while the key it
+        # actually presents was untouched -- a success that changed nothing,
+        # which is the worst outcome available here (hard rule 8). The deposit
+        # door already compares every one of these as an immutable field; not
+        # comparing them here would be the inconsistency, not the check.
+        return dict(_NOT_FOUND)
     # The connection id is DERIVED from (universe, destination), so another
     # universe naming this destination already addresses its own row. The grant
     # is compared anyway: a derivation is not a check, and a connection with no
@@ -1007,6 +1020,35 @@ def _rotation_git_scopes(resource: Any) -> list[str]:
         return []
 
 
+def _unpasteable_scheme(scheme: str) -> dict[str, Any] | None:
+    """The refusal for an auth scheme no pasted value may replace, or None.
+
+    Fail closed on the SET the deposit door accepts rather than on a list of
+    known exceptions: a scheme the engine learns to sign later is not rotatable
+    by paste until someone decides it is. Two land here today, and they fail for
+    different reasons worth saying out loud --
+
+    * ``oauth2``: its stored value is a token bundle naming the URL every refresh
+      token is sent to, so only the owner's own sign-in may write it;
+    * ``none``: there is no credential in the request at all, so a pasted value
+      would be stored, never sent, and reported as a repair. Codex refute-review,
+      P2 #5 -- ``connect_http`` cannot create one, a lower-level path can, and a
+      false repair receipt is worse than a refusal (hard rule 8).
+    """
+    if scheme in _DEPOSITABLE_AUTH_SCHEMES:
+        return None
+    return {
+        "error": "rotation_not_supported",
+        "detail": (
+            "this connection is completed by signing in, so its authorization "
+            "cannot be replaced by pasting one; sign in again"
+            if scheme == _SIGN_IN_AUTH_SCHEME else
+            f"a {scheme!r} connection has no pasted key to replace"
+        ),
+        "auth_scheme": scheme,
+    }
+
+
 def preview_rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """What a rotation would act on, read for an ask that has not been raised yet.
 
@@ -1017,6 +1059,7 @@ def preview_rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[s
     for a multi-value one. Reads only; writes nothing.
     """
     from tinyassets.api import permissions
+    from tinyassets.credential_vault import http_deposit_refusal
     from tinyassets.daemon_server import list_universe_acl
 
     if not permissions.is_authenticated_request():
@@ -1048,11 +1091,34 @@ def preview_rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[s
     if isinstance(found, dict):
         return found
     resource, _grant, connection_id, grant_id, ledger = found
+    # EVERY refusal the write makes for reasons the owner cannot type their way
+    # out of, applied here too. The rule this module already follows is that the
+    # owner never sees a tab that cannot be honoured; a preview that admitted one
+    # would be the same defect as no preview at all (Codex refute-review, P2
+    # #4/#5).
+    scheme = str(resource.auth_scheme or "").strip().lower()
+    refusal = _unpasteable_scheme(scheme)
+    if refusal:
+        return refusal
+    legacy = http_deposit_refusal(
+        _universe_dir(uid), destination=destination, owner_user_id=actor,
+    )
+    if legacy:
+        return {
+            "error": "credential_ownership_transfer_unsupported",
+            "detail": (
+                "this destination's credential is owned by another principal"
+                if legacy == "foreign_owner" else
+                "this destination's stored credential has no recorded depositor, "
+                "so it cannot be proved to be yours to replace; removing and "
+                "depositing it again is the way back"
+            ),
+        }
     return {
         "destination": destination,
         "connection_id": connection_id,
         "grant_id": grant_id,
-        "auth_scheme": str(resource.auth_scheme or "").strip().lower(),
+        "auth_scheme": scheme,
         "incarnation": ledger.incarnation(connection_id) or "",
         "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
         "git_scopes": _rotation_git_scopes(resource),
@@ -1079,27 +1145,34 @@ def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     deletion, dismissed three such cards, and the connection stayed dead for ten
     days.
 
-    This is the one-step replace. It performs EXACTLY ONE mutation: the vault
-    upsert for ``(http, destination)``. It never touches the ledger -- no
-    ``create_connection``, no ``grant_connection``, no ``set_access_mode``, no
-    endpoint extension -- so the connection id, grant, endpoints, scopes, access
-    mode, git host, effector consents and workspace consents survive by the
-    ABSENCE of a code path rather than by care. The next outbound call presents
-    the new secret with no invalidation, because the broker child resolves the
-    vault per request.
+    This is the one-step replace. It makes EXACTLY ONE state change: the vault
+    upsert for ``(http, destination)``. No ``create_connection``, no
+    ``grant_connection``, no ``set_access_mode``, no endpoint extension -- so the
+    connection id, grant, endpoints, scopes, access mode, git host, effector
+    consents and workspace consents survive by the ABSENCE of a code path rather
+    than by care. The next outbound call presents the new secret with no
+    invalidation, because the broker child resolves the vault per request.
+
+    Two narrower statements than "it never touches the ledger", because that one
+    is not quite true and a claim a reviewer can falsify is worse than a smaller
+    one (Codex refute-review, P2 #8): constructing ``ConnectionLedger`` runs the
+    schema migration and backfills an empty incarnation, as it does for every
+    reader; and the vault upsert READS the existing record in order to merge it,
+    though this handler never looks at the old secret itself.
 
     Every refusal happens before that write, so a refused rotation leaves the old
     secret exactly as it was. The auth scheme is the STORED one: a rotation
     carries none, because a caller who could name it could turn a multi-value
-    connection into a bearer one wearing the same name. ``oauth2`` cannot be
-    rotated by paste at all -- its secret is a bundle naming where refresh tokens
-    are sent, so only the owner's own sign-in may write it.
-
-    The old secret is never read: there is no reason to, and a value never read
-    cannot reach a log or an exception.
+    connection into a bearer one wearing the same name -- and a scheme outside the
+    deposit door's own set cannot be replaced by pasting at all
+    (``_unpasteable_scheme``).
     """
     from tinyassets.api import permissions
-    from tinyassets.credential_vault import http_credential_record, write_credential_vault
+    from tinyassets.credential_vault import (
+        http_credential_record,
+        http_deposit_refusal,
+        write_credential_vault,
+    )
     from tinyassets.daemon_server import list_universe_acl
 
     if not permissions.is_authenticated_request():
@@ -1146,14 +1219,25 @@ def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     resource, _grant, connection_id, grant_id, ledger = found
 
     scheme = str(resource.auth_scheme or "").strip().lower()
-    if scheme == _SIGN_IN_AUTH_SCHEME:
+    refusal = _unpasteable_scheme(scheme)
+    if refusal:
+        return refusal
+    legacy = http_deposit_refusal(
+        _universe_dir(uid), destination=destination, owner_user_id=actor,
+    )
+    if legacy:
+        # The write would refuse this on its own; refusing HERE means the
+        # preview refuses it too, so the owner is never shown a card that
+        # cannot be honoured (Codex refute-review, P2 #4).
         return {
-            "error": "rotation_not_supported",
+            "error": "credential_ownership_transfer_unsupported",
             "detail": (
-                "this connection is completed by signing in, so its "
-                "authorization cannot be replaced by pasting one; sign in again"
+                "this destination's credential is owned by another principal"
+                if legacy == "foreign_owner" else
+                "this destination's stored credential has no recorded depositor, "
+                "so it cannot be proved to be yours to replace; removing and "
+                "depositing it again is the way back"
             ),
-            "auth_scheme": scheme,
         }
     shape_error = _secret_shape_error(scheme, secret)
     if shape_error:

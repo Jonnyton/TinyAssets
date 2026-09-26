@@ -30,6 +30,7 @@ from tests.test_pending_requests import (  # noqa: F401 - fixtures and harness
     _ask,
     _login,
     _make_universe,
+    _rail,
     _reset_auth,
 )
 
@@ -159,20 +160,63 @@ def test_a_refusal_before_the_wire_is_not_a_rejected_credential():
 
 
 def test_one_rows_body_cannot_decide_another_rows_class():
-    """A summary carries up to five rows. The 403 body test is bounded to the
-    row whose status it is reading, so a dead-key phrase far down the line
-    cannot promote an unrelated 403."""
+    """A summary carries up to five rows. The 403 body test is bounded to the row
+    whose status it is reading — at the start of the NEXT delivered status, not at
+    a character count.
+
+    Codex refute-review, P1 #2: with a fixed 220-character window, a 403 with a
+    SHORT body borrowed `invalid_token` out of the following 404 and classified as
+    a dead key. The first version of this test padded the 403's body to 150
+    characters and so never met it; the row below is Codex's counterexample
+    unpadded.
+    """
     from tinyassets.runs import _classify_external_write, _external_write_error_summary
 
-    summary = _external_write_error_summary([
-        {"node_id": "a", "sink": "authenticated_external_call",
-         "error": "far side answered HTTP 403: " + "x" * 150 + " padding",
-         "error_kind": "far_side_error"},
-        {"node_id": "b", "sink": "authenticated_external_call",
-         "error": 'far side answered HTTP 404: {"message":"invalid_token"}',
-         "error_kind": "far_side_error"},
-    ]).lower()
-    assert _classify_external_write(summary) == "external_write_failed"
+    def _summary_of(*rows: tuple[str, int, str]) -> str:
+        return _external_write_error_summary([
+            {"node_id": node, "sink": "authenticated_external_call",
+             "error": f"far side answered HTTP {status}: {body}",
+             "error_kind": "far_side_error"}
+            for node, status, body in rows
+        ]).lower()
+
+    # Short 403 body, dead-key marker in the NEXT row: not a rejected credential.
+    assert _classify_external_write(
+        _summary_of(("a", 403, "Forbidden"), ("b", 404, "invalid_token"))
+    ) == "external_write_failed"
+    # Same shape, the 403 carrying the marker ITSELF: still caught, so the bound
+    # narrows the window rather than disabling the rule.
+    assert _classify_external_write(
+        _summary_of(("a", 403, "invalid_token"), ("b", 404, "Not Found"))
+    ) == "credential_rejected"
+
+
+def test_a_credential_declared_dead_in_a_sentence_is_caught():
+    """The copular form, which a one-word gap cannot reach and a wider gap must
+    not be used for (Codex refute-review, P1 #3).
+
+    The first string is verbatim from a real 403 body — five words between
+    `token` and `invalid`. A copula binds its predicate to its SUBJECT, which is
+    why the extra reach is safe here and would not be for `invalid <n> token`;
+    the decoys below are the cases that proves.
+    """
+    assert _classify(403, "The security token included in the request is invalid.") == (
+        "credential_rejected"
+    )
+    assert _classify(403, '{"message":"Your credentials have expired"}') == (
+        "credential_rejected"
+    )
+    assert _classify(403, '{"message":"The API key you supplied has been revoked"}') == (
+        "credential_rejected"
+    )
+    # The subject is not a credential, so the sentence is not about one.
+    assert _classify(403, '{"message":"The repository is invalid"}') == (
+        "external_write_failed"
+    )
+    # No copula at all, and five words of distance: still not promoted.
+    assert _classify(403, '{"message":"Invalid target selected for this token"}') == (
+        "external_write_failed"
+    )
 
 
 def test_the_action_names_the_card_and_forbids_the_retry():
@@ -658,6 +702,193 @@ def test_another_universe_cannot_replace_this_universes_key(base):
     assert _stored_secret(base, "u-1") == SECRET
 
 
+def test_a_grant_bound_to_another_universe_is_refused(base):
+    """The grant's `universe_id` is compared, and this is the test that says so.
+
+    Codex refute-review, P2 #6: `test_another_universe_cannot_replace_this_
+    universes_key` exercises only the id DERIVATION — delete the
+    `grant.universe_id != uid` check and it still passes. This one moves the
+    grant, so the derivation resolves the connection and only the explicit
+    comparison can refuse it.
+    """
+    from tinyassets.api.http_connection import _ids, rotate_http
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    _make_universe(base, "u-1", admin="alice")
+    _make_universe(base, "u-2", admin="alice")
+    _login("alice")
+    _deposit("u-1")
+    _conn_id, grant_id = _ids(universe_id="u-1", destination="acme")
+    ledger = ConnectionLedger(base / "outbound.db",
+                              verify_authenticated_principal=lambda: "alice")
+    with ledger._connect() as connection:
+        connection.execute(
+            "UPDATE outbound_connection_grants SET universe_id = 'u-2' "
+            "WHERE grant_id = ?", (grant_id,))
+    assert ledger.get_grant(grant_id).universe_id == "u-2", "the fixture did not move it"
+
+    refused = rotate_http(universe_id="u-1", payload=json.dumps({
+        "destination": "acme", "secret": REPLACEMENT}))
+    assert refused == {"error": "not_found", "resource": "connection"}, refused
+    assert _stored_secret(base, "u-1") == SECRET
+
+
+def _ledger_connection(base, *, uid, destination, actor="alice", **over):
+    """A connection row built straight through the ledger, to reach shapes
+    `connect_http` cannot create but a lower-level path can."""
+    from tinyassets.api.http_connection import _ids
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    conn_id, grant_id = _ids(universe_id=uid, destination=destination)
+    ledger = ConnectionLedger(base / "outbound.db",
+                              verify_authenticated_principal=lambda: actor)
+    fields = {
+        "connection_id": conn_id,
+        "owner_user_id": actor,
+        "connection_class": "http",
+        "connection_type": "http",
+        "auth_scheme": "bearer",
+        "scopes": ("POST",),
+        "provider": "http",
+        "destination": destination,
+        "credential_ref": f"vault://http/{destination}",
+        "allowed_endpoints": [{"host": "api.acme.test",
+                               "path_template": "/v1/things",
+                               "methods": ["POST"]}],
+        **over,
+    }
+    ledger.create_connection(**fields)
+    ledger.grant_connection(grant_id=grant_id, connection_id=conn_id,
+                            owner_user_id=actor, universe_id=uid)
+    return conn_id, grant_id
+
+
+def test_a_connection_that_does_not_read_this_vault_slot_is_refused(base):
+    """A rotation writes ONE slot: `(http, <destination>)`. A connection whose
+    `credential_ref` names a different key would be reported as rotated while the
+    secret it actually presents was untouched — a success that changed nothing,
+    which is the worst outcome available here.
+
+    `connect_http` compares `credential_ref` as an immutable field; not comparing
+    it here would have been the inconsistency. Found by re-reading my own gate
+    against the deposit's before sending the review out.
+    """
+    from tinyassets.api.http_connection import rotate_http
+    from tinyassets.credential_vault import write_credential_vault
+
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    write_credential_vault(
+        udir, [{"credential_type": "http", "service": "elsewhere",
+                "destination": "elsewhere", "token": SECRET}],
+        owner_user_id="alice", universe_id="u-1")
+    _ledger_connection(base, uid="u-1", destination="acme",
+                       credential_ref="vault://http/elsewhere")
+
+    refused = rotate_http(universe_id="u-1", payload=json.dumps({
+        "destination": "acme", "secret": REPLACEMENT}))
+    assert refused == {"error": "not_found", "resource": "connection"}, refused
+    assert _stored_secret(base, "u-1", destination="elsewhere") == SECRET
+
+
+def test_a_scheme_with_no_pasted_key_is_refused_in_both_places(base):
+    """Fail closed on the SET the deposit door accepts, not on a list of known
+    exceptions (Codex refute-review, P2 #5).
+
+    `none` sends no credential at all, so storing a pasted value would report a
+    repair that cannot have repaired anything. `connect_http` cannot create such a
+    connection; a lower-level path can, and hard rule 8 says the answer is a
+    refusal, not a receipt.
+    """
+    from tinyassets.api.http_connection import rotate_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _ledger_connection(base, uid="u-1", destination="acme", auth_scheme="none")
+
+    direct = rotate_http(universe_id="u-1", payload=json.dumps({
+        "destination": "acme", "secret": REPLACEMENT}))
+    assert direct["error"] == "rotation_not_supported", direct
+    assert "no pasted key" in direct["detail"]
+
+    railed = _ask("u-1", kind="API", title="rotate", fields=[
+        {"name": "token", "type": "secret", "label": "API token"}],
+        action={"type": "rotate_http", "destination": "acme"})
+    assert railed["error"] == "ask_cannot_be_granted", railed
+    assert "no pasted key" in railed["detail"]
+
+
+def test_a_record_with_no_recorded_depositor_is_refused_before_the_card(base):
+    """The vault refuses to overwrite an http slot it cannot prove is yours. That
+    refusal used to arrive AFTER the owner had pasted, because the preview did not
+    check it (Codex refute-review, P2 #4) — and this module's own rule is that the
+    owner never sees a tab that cannot be honoured."""
+    from tinyassets.api.http_connection import rotate_http
+    from tinyassets.credential_vault import load_credential_vault, write_credential_vault
+
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    # A legacy deposit: an http record with no ownership row at all.
+    write_credential_vault(udir, [{"credential_type": "http", "service": "acme",
+                                   "destination": "acme", "token": SECRET}])
+    _ledger_connection(base, uid="u-1", destination="acme")
+
+    railed = _ask("u-1", kind="API", title="rotate", fields=[
+        {"name": "token", "type": "secret", "label": "API token"}],
+        action={"type": "rotate_http", "destination": "acme"})
+    # Under its OWN name, not flattened into `ask_cannot_be_granted`: there is no
+    # ask to fix here. The note is what says no tab is pending.
+    assert railed["error"] == "credential_ownership_transfer_unsupported", railed
+    assert "no recorded depositor" in railed["detail"], railed
+    assert "no tab was raised" in railed["note"], railed
+    assert _rail("u-1")["count"] == 0, "a tab was raised anyway"
+
+    direct = rotate_http(universe_id="u-1", payload=json.dumps({
+        "destination": "acme", "secret": REPLACEMENT}))
+    assert direct["error"] == "credential_ownership_transfer_unsupported", direct
+    [record] = [r for r in load_credential_vault(udir)
+                if r.get("credential_type") == "http"]
+    assert record["token"] == SECRET
+
+
+def test_a_rotation_that_cannot_close_its_card_says_so(base):
+    """The key IS replaced and the card did NOT close.
+
+    Codex refute-review, P1 #1: reporting "answered" here leaves a pending card
+    the owner believes is done — and because a rotation does not move the
+    incarnation, answering it again later would overwrite a NEWER key with this
+    older value. So the answer reports what actually happened.
+    """
+    from tinyassets.api import pending_requests as rail
+    from tinyassets.storage import pending_requests as store
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _deposit("u-1")
+
+    ask = _ask("u-1", kind="API", title="rotate", fields=[
+        {"name": "token", "type": "secret", "label": "API token"}],
+        action={"type": "rotate_http", "destination": "acme"})
+    assert ask.get("request_id"), ask
+    # The storage fault `resolve_request` swallows, at the one moment it matters.
+    rail_resolve = store.resolve_request
+    try:
+        store.resolve_request = lambda *a, **k: False
+        out = _answer("u-1", request_id=ask["request_id"],
+                      values={"token": REPLACEMENT})
+    finally:
+        store.resolve_request = rail_resolve
+
+    assert out["error"] == "request_resolution_unconfirmed", out
+    assert out["request_pending"] is True
+    assert out["destination"] == "acme"
+    assert REPLACEMENT not in json.dumps(out)
+    # The key really did land, which is why this is recoverable rather than an
+    # error to undo: answering again with the same value settles it.
+    assert _stored_secret(base, "u-1") == REPLACEMENT
+    assert rail.answer_request  # the module under test, not a stale import
+
+
 def test_a_connection_with_no_live_grant_is_not_rotatable(base):
     """The grant is what binds a connection to a universe, and it is compared
     even though the connection id is derived from (universe, destination): a
@@ -708,10 +939,9 @@ def test_a_card_raised_for_one_deposit_cannot_rotate_a_different_one(base):
 # --------------------------------------------------------------------------- #
 # The secret itself
 # --------------------------------------------------------------------------- #
-def test_the_new_key_is_in_no_result_no_log_and_no_exception(base, caplog):
-    """Every channel a secret has ever leaked through here at once: the returned
-    envelopes, the request row the rail stores, the log, and an exception raised
-    on the failing path."""
+def test_the_new_key_is_in_no_result_and_no_log(base, caplog):
+    """Every channel at once on the SUCCESS path: the returned envelopes, the
+    request row the rail stores, and the log."""
     from tinyassets.api.http_connection import rotate_http
     from tinyassets.api.pending_requests import list_requests
 
@@ -720,10 +950,13 @@ def test_the_new_key_is_in_no_result_no_log_and_no_exception(base, caplog):
     _deposit("u-1")
 
     caplog.set_level(logging.DEBUG)
+    logging.getLogger("tinyassets.api.http_connection").debug("capture-sentinel")
+
     ask, answered = _rotate_through_the_rail("u-1")
     rail = list_requests(universe_id="u-1")
     direct = rotate_http(universe_id="u-1", payload=json.dumps({
         "destination": "acme", "secret": REPLACEMENT}))
+    assert direct.get("status") == "rotated", direct
 
     for name, envelope in (("ask", ask), ("answer", answered),
                            ("rail", rail), ("direct", direct)):
@@ -731,16 +964,60 @@ def test_the_new_key_is_in_no_result_no_log_and_no_exception(base, caplog):
         # And the reference that resolves to it never rides along either.
         assert "vault://" not in json.dumps(envelope, default=str), name
 
+    messages = [record.getMessage() for record in caplog.records]
+    # The sentinel proves this capture is LIVE. Without it, "no record contains
+    # the secret" is also what an empty capture says (Codex refute-review, P2 #6).
+    assert any("capture-sentinel" in message for message in messages)
     for record in caplog.records:
         assert REPLACEMENT not in record.getMessage(), record.name
         assert REPLACEMENT not in str(record.args or ""), record.name
 
-    # The failing path: a malformed value for the stored scheme, and a storage
-    # fault, must both refuse without the value in the message.
-    bad = rotate_http(universe_id="u-1", payload=json.dumps({
-        "destination": "acme", "secret": " "}))
-    assert bad["error"] == "connection_setup_invalid", bad
-    assert REPLACEMENT not in json.dumps(bad)
+
+def test_a_storage_fault_carrying_the_key_leaks_it_nowhere(base, caplog):
+    """The exception path, with a fault whose own message holds the secret.
+
+    The earlier version of this only submitted whitespace and then checked that a
+    DIFFERENT value was absent, which proves nothing about exception secrecy
+    (Codex refute-review, P2 #6). A vault fault really can carry the value it was
+    handed — that is the whole of memory `exceptions-carry-more-than-their-
+    message` — so the fault is injected carrying it, and the refusal, the log and
+    the traceback text are all checked afterwards.
+    """
+    from tinyassets import credential_vault
+    from tinyassets.api.http_connection import rotate_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _deposit("u-1")
+
+    caplog.set_level(logging.DEBUG)
+    logging.getLogger("tinyassets.api.http_connection").debug("capture-sentinel")
+    real = credential_vault.write_credential_vault
+    try:
+        def _explode(*_a, **_k):
+            raise RuntimeError(f"disk error while storing {REPLACEMENT}")
+
+        credential_vault.write_credential_vault = _explode
+        out = rotate_http(universe_id="u-1", payload=json.dumps({
+            "destination": "acme", "secret": REPLACEMENT}))
+    finally:
+        credential_vault.write_credential_vault = real
+
+    assert out == {"error": "deposit_failed", "resource": "connection"}, out
+    assert REPLACEMENT not in json.dumps(out)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("capture-sentinel" in message for message in messages)
+    for record in caplog.records:
+        assert REPLACEMENT not in record.getMessage(), record.name
+        assert REPLACEMENT not in str(record.args or ""), record.name
+        # `exc_info` renders the chained exception's own text, which is where the
+        # value was planted.
+        if record.exc_info:
+            import traceback
+            rendered = "".join(traceback.format_exception(*record.exc_info))
+            assert REPLACEMENT not in rendered, record.name
+    # The old key is untouched, because the refusal is the whole outcome.
+    assert _stored_secret(base, "u-1") == SECRET
 
 
 def test_a_malformed_replacement_is_refused_before_the_old_one_is_touched(base):

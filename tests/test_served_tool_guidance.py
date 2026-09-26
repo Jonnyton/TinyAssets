@@ -56,36 +56,35 @@ TAIL_ANCHOR = "A branch is a stored graph SHAPE"
 #: Chapter order as the resident index names them.
 CHAPTER_ORDER = ("connections", "code_nodes", "workspaces")
 
-#: Guidance a LATER change deliberately DELETED, word by word, with the reason.
+#: The passage a LATER change deliberately DELETED, verbatim.
 #:
 #: The ratchet below is "relocation, not deletion", and it is right to fail on a
 #: deletion. So a deletion that is the POINT of a change is recorded here rather
 #: than by re-pinning the baseline fixture — re-pinning is how a preservation
 #: check quietly stops preserving anything, and it would also throw away the
-#: split's provenance. Every word still has to be accounted for, and an
-#: exemption that stops being needed is itself a failure (see the second half of
-#: `test_the_split_lost_no_guidance`), so this cannot rot into a blanket.
+#: split's provenance.
 #:
-#: 2026-09-26, `openspec/changes/rotate-a-rejected-credential/`: these eleven
-#: words are the sentence "**If you are ROTATING a key rather than retiring it,
-#: carry both into the new ``connect_http`` ask.**". It told the agent to repair
-#: a credential the far side had rejected by REMOVING it and depositing it again
-#: — the path the founder read as deletion and dismissed three times, leaving a
-#: connection dead for ten days. `rotate_http` replaces it in one card, so the
-#: sentence had to go rather than sit beside its replacement contradicting it.
-DELIBERATELY_REMOVED: dict[str, int] = {
-    "**If": 1,
-    "ROTATING": 1,
-    "``connect_http``": 1,
-    "are": 1,
-    "ask.**": 1,
-    "both": 1,
-    "carry": 1,
-    "into": 1,
-    "new": 1,
-    "retiring": 1,
-    "you": 1,
-}
+#: Written as the PASSAGE rather than a hand-typed word list, because a word list
+#: excuses a global deficit in those words wherever it happens (Codex
+#: refute-review, P2 #9): every allowance below is derived from this string, and
+#: `test_the_split_lost_no_guidance` additionally asserts the passage itself is
+#: gone and its distinctive word with it. Unrelated additions and deletions
+#: cannot balance out into a pass, because the anchor is the text.
+#:
+#: 2026-09-26, `openspec/changes/rotate-a-rejected-credential/`: it told the
+#: agent to repair a credential the far side had rejected by REMOVING it and
+#: depositing it again — the path the founder read as deletion and dismissed
+#: three times, leaving a connection dead for ten days. `rotate_http` replaces it
+#: in one card, so this had to go rather than sit beside its replacement
+#: contradicting it.
+REMOVED_PASSAGE = (
+    "**If you are ROTATING a key rather than retiring it, carry both into the "
+    "new ``connect_http`` ask.**"
+)
+#: A word that occurs ONLY in that passage, so its absence is a cheap, direct
+#: check that the passage went rather than merely being rephrased.
+REMOVED_PASSAGE_MARKER = "ROTATING"
+DELIBERATELY_REMOVED: Counter = Counter(REMOVED_PASSAGE.split())
 
 
 def _normalized(text: str) -> str:
@@ -170,32 +169,29 @@ def test_the_split_lost_no_guidance():
     across the docstring that remains plus every chapter. Relocation between them is
     allowed — that is the point — and so is added text; losing any of it is not.
 
-    The one exception is a later change that MEANT to remove a sentence, and it is
-    named word by word in `DELIBERATELY_REMOVED` with its reason. The second half
-    of this test then requires every such exemption to still be load-bearing, so
-    the list cannot outlive the edit it records and start covering a real loss.
+    The one exception is a later change that MEANT to delete a passage. Its
+    allowance is DERIVED from `REMOVED_PASSAGE` — so no deficit larger than that
+    passage can hide behind it — and this test then anchors the exemption to the
+    text: the passage is gone, and so is the word that occurred only in it. A word
+    list alone would excuse a global deficit in those words wherever it happened.
     """
     before = _pre_split_word_counts()
-    after = Counter(
-        (_source_docstring() + "".join(
-            engine.SERVED_TOOL_CHAPTERS["write_graph"][name] for name in CHAPTER_ORDER
-        )).split()
+    text = _source_docstring() + "".join(
+        engine.SERVED_TOOL_CHAPTERS["write_graph"][name] for name in CHAPTER_ORDER
     )
-    missing = {
+    after = Counter(text.split())
+    unexplained = {
         word: (count, after[word])
         for word, count in before.items()
-        if after[word] + DELIBERATELY_REMOVED.get(word, 0) < count
+        if after[word] + DELIBERATELY_REMOVED[word] < count
     }
-    assert not missing, f"guidance words lost in relocation: {sorted(missing)[:20]}"
-    stale = {
-        word: count
-        for word, count in DELIBERATELY_REMOVED.items()
-        if after[word] >= before[word]
-    }
-    assert not stale, (
-        "these words came back, so their exemption now hides any future loss of "
-        f"them; delete the entries: {sorted(stale)}"
+    assert not unexplained, (
+        f"guidance words lost in relocation: {sorted(unexplained)[:20]}"
     )
+    # The exemption is anchored to the TEXT, not to its words: it only covers a
+    # passage that is actually gone.
+    assert REMOVED_PASSAGE not in text
+    assert REMOVED_PASSAGE_MARKER not in text
     assert sum(before.values()) == 4968  # provenance, stated in the fixture header
 
 

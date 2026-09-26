@@ -1137,11 +1137,12 @@ def _rotate_ask_verdict(universe_id: str, action: dict[str, Any]) -> dict[str, A
     ``_extend_ask_verdict``: there is no key to replace, or its scheme cannot be
     replaced by pasting. The agent can fix both; the owner cannot.
     """
-    from tinyassets.api.http_connection import (
-        _SIGN_IN_AUTH_SCHEME,
-        preview_rotate_http,
-    )
+    from tinyassets.api.http_connection import preview_rotate_http
 
+    unraisable = (
+        "Answering this ask would fail with exactly this reason, so no tab was "
+        "raised. Fix the ask, or drop it."
+    )
     preview = preview_rotate_http(universe_id=universe_id, payload={
         "destination": action.get("destination"),
     })
@@ -1152,29 +1153,26 @@ def _rotate_ask_verdict(universe_id: str, action: dict[str, Any]) -> dict[str, A
                 f'no key is deposited as "{action.get("destination")}" to '
                 "replace; raise a connect_http ask to deposit one instead"
             ),
-            "note": (
-                "Answering this ask would fail with exactly this reason, so no "
-                "tab was raised. Fix the ask, or drop it."
-            ),
+            "note": unraisable,
         }
-    if preview.get("error"):
-        return preview
-    scheme = str(preview.get("auth_scheme") or "").strip().lower()
-    if scheme == _SIGN_IN_AUTH_SCHEME:
+    if preview.get("error") == "rotation_not_supported":
+        # The preview applies every refusal the write makes, so this covers a
+        # sign-in connection (renew it by signing in again) and a scheme with no
+        # pasted key at all. Reported as ask_cannot_be_granted with the write's
+        # own reason: the agent can act on it, the owner could not.
         return {
             "error": "ask_cannot_be_granted",
-            "detail": (
-                "this connection was completed by signing in, so there is no key "
-                "to paste; raise the connect ask again and its Sign in button "
-                "renews the authorization"
-            ),
-            "note": (
-                "Answering this ask would fail with exactly this reason, so no "
-                "tab was raised."
-            ),
+            "detail": str(preview.get("detail") or preview["error"]),
+            "note": unraisable,
         }
+    if preview.get("error"):
+        # Passed through under its OWN name rather than flattened into
+        # `ask_cannot_be_granted`: a legacy record with no recorded depositor is
+        # not an ask the agent can fix, and calling it one would send it round the
+        # same loop. The note is added so it still knows no tab is pending.
+        return {**preview, "note": unraisable}
     return {
-        "auth_scheme": scheme,
+        "auth_scheme": str(preview.get("auth_scheme") or "").strip().lower(),
         # WHICH deposit this card replaces. The connection id and the credential
         # reference are both derived from (universe, destination), so neither
         # changes when a key is removed and a different one put in its place --
@@ -2178,9 +2176,27 @@ def _rotate_answer(
         # Leave it PENDING: the key did not land, and closing the tab here would
         # lose the ask with the connection still dead.
         return {**rotated, "request_pending": True}
-    resolve_request(udir, request_id, status="answered", answer=answer,
-                    feedback=feedback, dont_ask_again=dont_ask_again,
-                    decision="allowed")
+    if not resolve_request(udir, request_id, status="answered", answer=answer,
+                           feedback=feedback, dont_ask_again=dont_ask_again,
+                           decision="allowed"):
+        # The key IS replaced and the card did NOT close (`resolve_request`
+        # catches a storage fault and returns False). Reporting "answered" here
+        # would leave a pending card the owner believes is done, answerable again
+        # later — and because a rotation does not move the incarnation, a replay
+        # would overwrite a LATER replacement with this older value. So say what
+        # actually happened. Re-answering with the same value is idempotent, which
+        # is why this is recoverable rather than an error to undo (Codex
+        # refute-review, P1 #1; same shape as the model-access branch).
+        return {
+            "error": "request_resolution_unconfirmed",
+            "request_pending": True,
+            "destination": action["destination"],
+            "detail": (
+                "the key was replaced, but this request could not be closed. "
+                "Answer it again with the same key to settle it; nothing is "
+                "replaced twice."
+            ),
+        }
     return {
         "status": "answered",
         "request_id": request_id,
