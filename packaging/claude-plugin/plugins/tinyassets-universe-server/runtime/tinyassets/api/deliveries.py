@@ -15,7 +15,9 @@ WRITE_ACTIONS = frozenset({
     "create_receiver", "update_receiver", "revoke_receiver", "connect_output",
     "disconnect_output", "deliver_output",
 })
-READ_ACTIONS = frozenset({"inspect_receiver", "list_output_links", "get_delivery"})
+READ_ACTIONS = frozenset({
+    "inspect_receiver", "discover_receivers", "list_output_links", "get_delivery",
+})
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,41 @@ def _reject_undeclared_references(values, file_fields):
     )
 
 
+def _sender_attribution(snapshot_json, link, values):
+    """Fill the reserved attribution fields the RECEIVER's own snapshot declares.
+
+    Source is the stored link row -- ``owner_id`` is the sending principal and
+    ``universe_id`` the universe the send is made from -- never the request
+    payload, so a sender cannot name itself. Only declared fields are filled:
+    ``tinyassets/runs.py`` feeds a run row's stored inputs back into
+    ``_invoke_prepared_branch`` on the waiting-run resume path, so an undeclared
+    key here would reach a graph whose state schema has no channel for it.
+
+    A receiver that declares neither field is unchanged. Attribution is still
+    unconditional where it is authoritative: ``graph_deliveries`` records the
+    sender on every acceptance, and the receiver's side of the receipt shows it.
+
+    ``snapshot_json`` is passed rather than read off a receiver row because WHICH
+    snapshot governs differs by path: a first acceptance uses the receiver's
+    current pinned snapshot, and a replay must use the ADMITTED one. Both are
+    reproducible from stored state, which is what keeps a retry byte-identical --
+    these values land in ``inputs_json`` and therefore in the replay digest.
+    """
+    branch = BranchDefinition.from_dict(json.loads(snapshot_json))
+    declared = {
+        field["name"]
+        for field in branch.state_schema
+        if isinstance(field, dict) and isinstance(field.get("name"), str)
+    }
+    attribution = dict(zip(
+        receiver_links.SENDER_ATTRIBUTION_FIELDS, (link["owner_id"], link["universe_id"]),
+    ))
+    return {
+        **values,
+        **{name: value for name, value in attribution.items() if name in declared},
+    }
+
+
 def _structured_inputs(receiver, link, outputs, *, allow_files=False):
     if not isinstance(outputs, dict):
         raise ValueError("outputs must be an object")
@@ -189,6 +226,9 @@ def _structured_inputs(receiver, link, outputs, *, allow_files=False):
             raise ValueError("receiver input type mismatch")
     if file_fields:
         _declared_file_limits(branch, values, file_fields)
+    # Before preflight, so a receiver may declare an attribution field REQUIRED and
+    # have it satisfied by the platform rather than refused as a missing input.
+    values = _sender_attribution(receiver["snapshot_json"], link, values)
     runs.preflight_required_inputs(branch, values)
     return values
 
@@ -260,8 +300,14 @@ def _transfer_files(base, *, principal, universe_id, link_id, occurrence_id, out
         if prior is not None:
             # Mirrors the authoritative replay branch structure so a changed replay
             # is refused before any reservation, allocation or byte is moved.
-            mapped = {target: outputs[field] for field, target in mapping.items()
-                      if field in outputs}
+            # Attribution is reproduced from the ADMITTED snapshot for the same
+            # reason it is below: it is part of what was stored, so omitting it here
+            # would make every retry to an attributed receiver read as changed.
+            mapped = _sender_attribution(
+                prior["snapshot_json"], link,
+                {target: outputs[field] for field, target in mapping.items()
+                 if field in outputs},
+            )
             if mapped != json.loads(prior["inputs_json"]):
                 raise deliveries.OccurrenceConflict()
             return _accepted_transfer(conn, prior["delivery_id"])
@@ -307,6 +353,33 @@ def _transfer_files(base, *, principal, universe_id, link_id, occurrence_id, out
          "source_reference": record["reference"]}
         for record, copy in zip(records, copies)
     ]}
+
+
+def _enforce_sender_rate_limit(conn, receiver, *, sender_id):
+    """Bound how much traffic ONE sender can push through ONE receiver.
+
+    Runs on first acceptance only, inside the acceptance transaction, and BEFORE
+    ``engine_admissions.admit_detail`` -- a refused sender must not spend the
+    receiving owner's run admission budget, which is the abuse channel an open
+    receiver creates. A retry of an already-accepted occurrence never reaches here,
+    so replay neither consumes budget nor is refused.
+
+    Usage, not structure: it limits deliveries per sender per window, never how many
+    receivers, nodes, links or contract fields an owner may have. One code path for
+    every account -- an enumerated sender gets the same rule as a stranger.
+    """
+    limit = receiver["sender_rate_limit"]
+    accepted = deliveries.sender_window_count(
+        conn, receiver_id=receiver["receiver_id"], sender_id=sender_id,
+        window_seconds=deliveries.SENDER_RATE_WINDOW_SECONDS,
+    )
+    if accepted >= limit:
+        raise ValueError(
+            "receiver_sender_rate_limit_exceeded: this receiver accepts "
+            f"{limit} deliveries per sender per "
+            f"{int(deliveries.SENDER_RATE_WINDOW_SECONDS)}s and you have sent "
+            f"{accepted}; its owner sets the limit"
+        )
 
 
 def _revalidate_source_bindings(conn, source, transfer):
@@ -374,8 +447,15 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
             # Replay uses the admitted contract/snapshot, not a later revision.
             receiver["snapshot_json"] = prior["snapshot_json"]
             original = json.loads(prior["inputs_json"])
-            mapped = {target: outputs[source] for source, target
-                      in json.loads(link["mapping_json"]).items() if source in outputs}
+            # Attribution was stored with the original acceptance and is therefore
+            # inside the replay digest. Reproducing it from the SAME link row and the
+            # SAME admitted snapshot is what keeps a retry byte-identical; computing
+            # the mapping alone made every retry to an attributed receiver conflict.
+            mapped = _sender_attribution(
+                prior["snapshot_json"], link,
+                {target: outputs[source] for source, target
+                 in json.loads(link["mapping_json"]).items() if source in outputs},
+            )
             if mapped != original:
                 raise deliveries.OccurrenceConflict()
         values = (_structured_inputs(receiver, link, outputs, allow_files=source is not None)
@@ -386,6 +466,7 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
             raise ValueError("delivery_source_cancelled")
         ticket = None
         if prior is None:
+            _enforce_sender_rate_limit(conn, receiver, sender_id=principal)
             admission = engine_admissions.admit_detail(
                 receiver["universe_id"], write_max=engine_admissions.RUN_WRITE_LIMIT,
                 total_max=engine_admissions.RUN_TOTAL_LIMIT,
@@ -441,6 +522,8 @@ def action(action_name, kwargs):
             result = functions[action_name](universe_id=uid, **payload)
         elif action_name == "inspect_receiver":
             result = management.inspect_receiver(**payload)
+        elif action_name == "discover_receivers":
+            result = management.discover_receivers(universe_id=uid, **payload)
         else:
             principal = management._principal(write=False)
             base = management._base()

@@ -53,8 +53,12 @@ PRE_SPLIT_WORDS_SHA256 = (
 INDEX_ANCHOR = "THE HANDBOOK."
 TAIL_ANCHOR = "A branch is a stored graph SHAPE"
 
-#: Chapter order as the resident index names them.
-CHAPTER_ORDER = ("connections", "code_nodes", "workspaces")
+#: Chapter order as the resident index names them. `delivering` was added
+#: 2026-09-26 with open receivers: an agent asked to let other users send its
+#: universe something reached for a public webhook because no chapter named the
+#: cross-user delivery primitive. Appended last, so the reconstruction order the
+#: tests below assert is unchanged.
+CHAPTER_ORDER = ("connections", "code_nodes", "workspaces", "delivering")
 
 
 def _normalized(text: str) -> str:

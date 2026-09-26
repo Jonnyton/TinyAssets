@@ -113,6 +113,9 @@ def save_receiver(
     description="",
     receiver_id=None,
     expected_generation=None,
+    open_to_all=False,
+    discoverable=False,
+    sender_rate_limit=store.DEFAULT_SENDER_RATE_LIMIT,
 ):
     principal = _principal(write=True)
     base = _base()
@@ -123,6 +126,16 @@ def save_receiver(
         or len(set(input_keys)) != len(input_keys)
     ):
         raise ValueError("receiver input_keys must be an explicit list of unique names")
+    # The platform fills these from trusted link authority at acceptance. Keeping
+    # them OUT of the advertised contract is what makes them unforgeable: a sender's
+    # mapping is validated against the contract, so a name that cannot be advertised
+    # cannot be mapped onto. Refuse loudly rather than dropping the key.
+    reserved = sorted(set(input_keys) & set(store.SENDER_ATTRIBUTION_FIELDS))
+    if reserved:
+        raise ValueError(
+            "these receiver inputs are filled by the platform with the sender's "
+            "identity and cannot be advertised: " + ", ".join(reserved)
+        )
     projection = project_receiver_entry(branch, node_id, contract_input_keys=input_keys)
     fields = {item["name"]: item for item in branch.state_schema}
     defaults = _state_schema_defaults(branch.state_schema)
@@ -148,6 +161,9 @@ def save_receiver(
         description=description,
         receiver_id=receiver_id,
         expected_generation=expected_generation,
+        open_to_all=open_to_all,
+        discoverable=discoverable,
+        sender_rate_limit=sender_rate_limit,
     )
 
 
@@ -161,6 +177,21 @@ def inspect_receiver(*, receiver_id, owner_universe_id=None):
         receiver_id=receiver_id,
         principal_id=principal,
         owner_universe_id=owner_universe_id,
+    )
+
+
+def discover_receivers(*, universe_id, query="", limit=25):
+    """List receivers other owners opened to discovery, for an authenticated user.
+
+    Admin on the CALLER's own universe, like every other delivery read here: this
+    is an act by an identified universe owner, not an anonymous directory lookup.
+    Read-only, so it takes no owner-write fence.
+    """
+    principal = _principal(write=False)
+    base = _base()
+    _require_admin(base, universe_id, principal)
+    return store.discover_receivers(
+        base, principal_id=principal, query=query, limit=limit
     )
 
 
