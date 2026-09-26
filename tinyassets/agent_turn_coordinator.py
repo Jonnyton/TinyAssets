@@ -189,6 +189,11 @@ class AgentTurnCoordinator:
 
         An empty requested id is the provider default -- a position, not a model --
         so there is nothing to teach anyone and it is skipped.
+
+        Recording is not publishing. The id becomes visible to other users only
+        once ``PROMOTION_OWNERS`` distinct owners have made it work (founder,
+        2026-09-26), which is what keeps a private account-bearing selector on its
+        own owner's list forever.
         """
         from tinyassets.storage.learned_models import (
             LEARNED_SOURCE_KIND,
@@ -199,10 +204,15 @@ class AgentTurnCoordinator:
         model_id = (getattr(selection, "model_id", "") or "").strip()
         if not model_id:
             return
+        # The OWNER, not the universe: the founder's threshold counts distinct
+        # owners, so one person's two universes must not promote an id between
+        # them. `self.owner` is the capability principal this turn ran under, which
+        # is the same identity the journal scopes its rows by.
         record_verified_model(
             self.context.universe_dir.parent,
             source_kind=LEARNED_SOURCE_KIND,
             model_id=model_id,
+            owner_user_id=self.owner,
         )
 
     def effects_evidence(self):

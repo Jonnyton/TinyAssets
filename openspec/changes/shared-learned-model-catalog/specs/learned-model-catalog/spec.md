@@ -8,11 +8,40 @@ with no release and no per-provider code.
 
 ## Requirements
 
-### Requirement: The catalog carries no user data
-The catalog SHALL store exactly three fields per row: source kind, model id, and
-the time the id was first verified platform-wide. It SHALL NOT store a user id, a
-universe id, a connection id, a prompt, a reply, a credential, or any count of how
-many users verified an id. A repeat verification of a known id SHALL be a no-op.
+### Requirement: An id becomes public only at the distinct-owner threshold
+Verified model ids SHALL be recorded per OWNER in a private table, and published to
+a shared table only once at least two DISTINCT OWNERS have verified the same id for
+the same source kind. Two universes of the SAME owner SHALL count as one owner. A
+model id verified by only one owner SHALL remain on that owner's own list and SHALL
+NOT be visible to any other user. The promotion count SHALL NOT be returned to any
+caller, and no API SHALL return another owner's evidence.
+
+This threshold, not a rule about the characters in an id, is what keeps a private
+selector private: an identifier embedding one account, tenant or personal
+deployment cannot be reached by a second owner, so it can never cross it.
+
+#### Scenario: An account-bearing selector
+- **WHEN** one owner repeatedly verifies a selector that embeds their own account id
+- **THEN** it is never published and no other user can see it
+- **AND** it remains available on that owner's own list
+
+#### Scenario: Two owners verify the same id
+- **WHEN** a second, different owner verifies an id already recorded by another
+- **THEN** it is published for every universe with that source kind
+- **AND** the published first-verified time is the earliest across those owners
+
+#### Scenario: One owner, several universes
+- **WHEN** the same owner verifies an id from more than one of their universes
+- **THEN** it is still one owner and the id is not published
+
+### Requirement: The shared catalog carries no user data
+The shared table SHALL store exactly three fields per row: source kind, model id, and
+the time the id was first verified. It SHALL NOT store a user id, a universe id, a
+connection id, a prompt, a reply, a credential, or any count of how many users
+verified an id. A repeat publication of a known id SHALL be a no-op. The private
+evidence table SHALL be classified as its owner's data in both the scoped-reset and
+account-deletion sweeps; a published id SHALL survive its contributors' deletion,
+because the published row is a fact about the id.
 
 #### Scenario: A row is recorded
 - **WHEN** a model id is verified through a source and recorded
@@ -23,9 +52,10 @@ many users verified an id. A repeat verification of a known id SHALL be a no-op.
 - **WHEN** an id already in the catalog is verified again
 - **THEN** the existing row is unchanged and nothing accumulates
 
-### Requirement: Only verified success enters the catalog
+### Requirement: Only a universe's own verified request enters the catalog
 A model id SHALL enter the catalog only from a call that succeeded through the
-source. A refusal, a capacity hold, an unconfirmed transport outcome, and an
+source, and SHALL be the id the universe ITSELF REQUESTED -- never a value the
+source reported, which it controls. A refusal, a capacity hold, an unconfirmed transport outcome, and an
 owner-declared id SHALL record nothing. Failing to record SHALL NOT fail the call
 that succeeded.
 

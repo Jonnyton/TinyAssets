@@ -64,3 +64,34 @@ Evidence: the round-2 verdict summary is a comment on PR #4028; the two findings
 still open carry their own evidence inline in `docs/concerns/`. Review transcripts
 are not kept in the repo (founder process cut, 2026-09-26).
 Latency and client-visible read degradation are recorded as nonblocking concerns.
+
+## Round 3 shape change — the founder's threshold (2026-09-26)
+
+The round-2 P1 was resolved by the FOUNDER choosing a threshold instead of a rule
+about strings: an owner-typed id is public once at least two DISTINCT OWNERS have
+made it work. A private selector is unique to its owner by construction, so it can
+never cross it, and nothing has to classify a string or name a vendor.
+
+- [x] Two tables: `learned_model_evidence` (PRIVATE, owner-keyed, counts distinct
+      owners) and `learned_models` (SHARED, still exactly three columns and no user
+      data). The promotion count stays in the private table and is returned to
+      nobody.
+- [x] `PROMOTION_OWNERS = 2`, named with the founder's rationale. Evidence and
+      promotion happen in one transaction; the published first-verified time is the
+      EARLIEST across contributing owners, so it stays a property of the id.
+- [x] The same owner's several universes count as ONE owner — the store is not even
+      told which universe.
+- [x] Charset relaxed to basic identifier sanity (printable ASCII, no whitespace,
+      bounded). `sonnet[1m]` and `opus[1m]` are usable again; the threshold carries
+      the privacy boundary.
+- [x] The private table classified as its owner's data in BOTH sweeps
+      (`preserve_or_block` in scoped_reset, picked up by account deletion via its
+      `owner_user_id` column). A published id survives its contributors' deletion.
+- [x] Tests: the ARN never leaves one owner however often it is used; two distinct
+      owners publish `claude-fable-5-1` and a third owner sees it under "needs
+      access" with the grant path; one owner's two universes do not promote;
+      the count is returned to nobody.
+- [x] `docs/concerns/2026-09-26-learned-catalog-private-selectors.md` DELETED — the
+      threshold resolves it. The contention concern stays open.
+- [ ] Round 3 Codex verdict on this shape, then rebase onto bounded-results'
+      dispatch ceiling, sync the spec delta and archive.

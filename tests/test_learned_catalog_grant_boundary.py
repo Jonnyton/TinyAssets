@@ -58,8 +58,17 @@ def _row(document, model_id):
 
 
 def _learn(configured, model_id=LEARNED_ID):
-    LearnedModelCatalog(configured.rig.base).record(
-        source_kind="subscription", model_id=model_id)
+    """Publish an id the way the founder's threshold requires: two DISTINCT owners.
+
+    A single owner's id is evidence, not publication, so a one-owner call here would
+    make every assertion below vacuous.
+    """
+    catalog = LearnedModelCatalog(configured.rig.base)
+    catalog.record(source_kind="subscription", model_id=model_id,
+                   owner_user_id="some-other-owner")
+    published = catalog.record(source_kind="subscription", model_id=model_id,
+                               owner_user_id="a-third-owner")
+    assert published, "the fixture must actually publish, or the test proves nothing"
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
@@ -143,9 +152,10 @@ class _Coordinator:
 
     _learn_verified_model = _real._learn_verified_model
 
-    def __init__(self, base, requested):
+    def __init__(self, base, requested, owner="owner-alice"):
         from types import SimpleNamespace
 
+        self.owner = owner
         self.context = SimpleNamespace(
             universe_dir=base / "u-models",
             model_selection=SimpleNamespace(model_id=requested),
@@ -153,8 +163,14 @@ class _Coordinator:
 
 
 def _learned(base):
+    """What is PUBLISHED, i.e. visible to other users."""
     return [row.model_id for row in
             LearnedModelCatalog(base).for_source_kind("subscription")]
+
+
+def _own_evidence(base, owner):
+    return [row.model_id for row in
+            LearnedModelCatalog(base).evidence_ids("subscription", owner)]
 
 
 def test_only_the_id_this_universe_REQUESTED_is_published(tmp_path):
@@ -171,9 +187,16 @@ def test_only_the_id_this_universe_REQUESTED_is_published(tmp_path):
         model="provider-default",
     )
     _Coordinator(tmp_path, "vendor-line-4-7")._learn_verified_model(response)
-    assert _learned(tmp_path) == ["vendor-line-4-7"], (
-        "the published id must be the one this universe asked for, so a source "
-        "cannot inject a string into every other user's model list")
+    # One owner, so nothing is published yet -- but the id RECORDED as this owner's
+    # evidence must be the requested one, never either source-controlled string.
+    assert _own_evidence(tmp_path, "owner-alice") == ["vendor-line-4-7"], (
+        "the recorded id must be the one this universe asked for, so a source "
+        "cannot inject a string into the promotion path at all")
+    assert _learned(tmp_path) == [], "one owner is evidence, not publication"
+    # A second, different owner requesting the same id publishes it -- and it is
+    # still the requested id, not the reported one.
+    _Coordinator(tmp_path, "vendor-line-4-7", owner="owner-bob")._learn_verified_model(response)
+    assert _learned(tmp_path) == ["vendor-line-4-7"]
 
 
 def test_a_provider_default_position_teaches_nobody_anything(tmp_path):
@@ -199,6 +222,7 @@ def test_a_requested_id_that_is_not_an_identifier_is_refused_not_raised(tmp_path
     _Coordinator(tmp_path, "not an identifier")._learn_verified_model(
         SimpleNamespace(reported_model="", model=""))
     assert _learned(tmp_path) == []
+    assert _own_evidence(tmp_path, "owner-alice") == []
 
 
 def test_the_legacy_plan_also_refuses_to_admit_a_learned_id(configured_legacy_probe=None):
