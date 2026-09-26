@@ -31,14 +31,16 @@ _SLICE_START = "  // ---- Pending-request rail ---"
 #: `forgetFinishedSetup` -- is inside the slice.
 _SLICE_END = "  // A declared model list needs a context size"
 
-#: A DOM that records exactly what the renderer set, and nothing else. `open` is a
-#: plain property here, as it is on a real <details>, so a test can prove the
-#: renderer ASSIGNS it rather than relying on the markup default.
+#: A DOM that records exactly what the renderer set, and nothing else — plus the one
+#: browser behaviour this code depends on: `open` is an ACCESSOR that fires a QUEUED
+#: `toggle` on every change, programmatic assignment included. A plain property here
+#: made the suite blind to the renderer's own toggles, which is how the review of
+#: PR #4002 found the renderer recording its own open as the user's intent.
 HARNESS = r"""
 const elements=new Map();
 function node(tag){
   const n={tag,children:[],attrs:{},textContent:'',id:'',className:'',type:'',
-    hidden:false,open:false,disabled:false,dataset:{},listeners:{},
+    hidden:false,disabled:false,dataset:{},listeners:{},
     replaceChildren(){this.children=[];},
     append(...k){this.children.push(...k);},
     appendChild(c){this.children.push(c);return c;},
@@ -48,8 +50,22 @@ function node(tag){
     closest(){return null;},
     classList:{toggle(){},add(){},remove(){}},
   };
+  let open=false;
+  Object.defineProperty(n,'open',{
+    get(){return open;},
+    set(value){
+      const next=!!value;
+      if(next===open) return;          // no change, no event, as in a browser
+      open=next;
+      queueMicrotask(()=>{ if(n.listeners.toggle) n.listeners.toggle(); });
+    },
+    enumerable:true,
+  });
   return n;
 }
+//: Let every queued toggle run, the way the browser's task queue would between
+//: renders. Every assertion is made after this.
+const settle=()=>new Promise(r=>setTimeout(r,0));
 const $=id=>{if(!elements.has(id)){const e=node(id);e.id=id;elements.set(id,e);}
   return elements.get(id);};
 const document={createElement:node,addEventListener(){}};
@@ -61,12 +77,12 @@ function foldedModelAccess(){return null;}
 function railBody(){return node('body');}
 function autoGrow(){}
 __SOURCE__
-// Tap the disclosure the way a user does: the browser flips `open`, then fires
-// `toggle`. Anything that only flips the property is not a tap.
-function tapOther(){
+// Tap the disclosure the way a user does: the browser flips `open` and the queued
+// `toggle` follows on its own. Awaited, so the listener has actually run.
+async function tapOther(){
   const d=$('connect-other');
   d.open=!d.open;
-  if(d.listeners.toggle) d.listeners.toggle();
+  await settle();
 }
 function ask(over){
   return Object.assign({
@@ -79,9 +95,12 @@ function ask(over){
       setup:{primary:{provider:'a-source',label:'Continue'},shapes:['api_key','local']}},
   }, over||{});
 }
+(async()=>{
 __STEPS__
+await settle();
 console.log(JSON.stringify({open:$('connect-other').open,
   hidden:$('connect-other').hidden, remembered:connectOtherOpen}));
+})().catch(e=>{console.error(e);process.exitCode=1;});
 """
 
 
@@ -114,20 +133,66 @@ def test_the_primary_path_stands_alone_on_a_first_render():
 
 
 def test_it_opens_on_the_users_tap():
-    state = run(STICKY + " tapOther();")
+    state = run(STICKY + " await tapOther();")
     assert state["open"] is True
     assert state["remembered"] is True
 
 
 def test_a_rail_refresh_does_not_fold_the_users_tap_back_shut():
     """The failure mode of a naive fix: closing it on every poll."""
-    state = run(STICKY + " tapOther(); renderRail([ask()]); renderRail([ask()]);")
+    state = run(STICKY + " await tapOther(); renderRail([ask()]); renderRail([ask()]);")
     assert state["open"] is True
 
 
 def test_a_stale_open_on_the_parked_node_is_not_inherited():
     """The actual cause. The node survives refreshes; its state must not."""
     state = run("$('connect-other').open=true; renderRail([ask()]);")
+    assert state["open"] is False
+    assert state["remembered"] is False
+
+
+def test_the_renderers_own_open_is_not_recorded_as_the_users_intent():
+    """The reviewer's probe, PR #4002 round 1 (DISAGREE_CONCERN).
+
+    A real <details> fires `toggle` for a PROGRAMMATIC assignment too, and fires it
+    queued. So the listener was recording the renderer's legitimate open — the
+    no-primary case — as the user's intent, and every later sticky-with-primary card
+    came up unfolded. That is the founder's exact first-time path.
+    """
+    no_primary = "renderRail([ask({action:{type:'connect',setup:{shapes:['api_key']}}})]); "
+    opened = run(no_primary)
+    assert opened["open"] is True, "the no-primary card must show the fields"
+    assert opened["remembered"] is False, "the renderer's own open was taken as a tap"
+    # Now the same conversation gets a card that HAS a primary path.
+    state = run(no_primary + "await settle(); " + STICKY)
+    assert state["open"] is False
+    assert state["remembered"] is False
+
+
+#: The user on an OPTIONAL row, which the renderer opens for them: they fold it, then
+#: unfold it again. The second tap is a genuine user open, so intent is remembered.
+OPTIONAL_THEN_REOPENED = (
+    "railOpen=CONNECT_REQUEST_ID; renderRail([ask({sticky:false})]); "
+    "await tapOther(); await tapOther(); "
+)
+
+
+def test_a_reopen_after_a_close_is_still_the_users_intent():
+    """Re-baselining matters: without it the second tap looked like our own echo."""
+    state = run(OPTIONAL_THEN_REOPENED)
+    assert state["open"] is True
+    assert state["remembered"] is True
+
+
+def test_losing_your_model_again_folds_the_card_back():
+    """The live path in the same finding: optional -> sticky must also reset.
+
+    The user opened "Other ways to connect" on the optional "Connect another LLM"
+    row; later they disconnect and the card becomes a first-time precondition again.
+    With only the blocking -> optional reset, their hours-old tap served the unfolded
+    manual form to the naive-user path.
+    """
+    state = run(OPTIONAL_THEN_REOPENED + "renderRail([ask()]);")
     assert state["open"] is False
     assert state["remembered"] is False
 
@@ -147,7 +212,7 @@ def test_an_optional_row_the_user_opened_shows_the_fields():
 def test_finishing_setup_forgets_the_tap():
     """Same transition the connected-optional collapse uses: blocking -> optional."""
     state = run(
-        "renderRail([ask()]); tapOther();"
+        "renderRail([ask()]); await tapOther();"
         " renderRail([ask({sticky:false})]);"
     )
     assert state["open"] is False

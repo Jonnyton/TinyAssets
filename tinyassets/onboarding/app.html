@@ -5437,6 +5437,10 @@
   // `connectWasBlocking` + `railOpen`: remember the intent, reset it on the
   // transition, never infer it from the DOM.
   let connectOtherOpen = false;
+  //: The last value the RENDERER wrote to that <details>. The toggle event is
+  //: queued and fires for a programmatic assignment as well as a tap, so this is
+  //: how the listener tells its own echo from a human.
+  let connectOtherWritten = false;
 
   function railFieldControl(field, reqId){
     const id = "f_" + reqId + "_" + field.name;
@@ -5486,14 +5490,21 @@
   // its Model URL / API key / Model id fields and its Connect button still on
   // screen, over a universe that was already connected. The TRANSITION is what
   // resets it, not the tap — tapping an optional row must still open it.
+  // EITHER transition forgets it. Finishing setup (blocking -> optional) is the
+  // 2026-09-25 case above. The reverse, optional -> blocking, is the founder losing
+  // their model again: the card becomes a first-time precondition, and it must come
+  // up folded even though they opened "Other ways to connect" hours earlier on the
+  // optional row (review of PR #4002 — with only the first direction reset, a
+  // disconnect served the unfolded manual form to the exact naive-user path).
   function forgetFinishedSetup(rows){
     const setup = rows.find(isSetupRequest);
     if(!setup) return;
     const blocking = !!setup.sticky;
-    if(connectWasBlocking === true && !blocking){
+    if(connectWasBlocking !== null && connectWasBlocking !== blocking){
       if(railOpen === setup.request_id) railOpen = null;
       const other = $("connect-other");
       if(other) other.open = false;
+      connectOtherWritten = false;
       connectOtherOpen = false;
     }
     connectWasBlocking = blocking;
@@ -5597,15 +5608,33 @@
       // thing that may record the intent. Wired HERE, next to the state it feeds
       // and idempotently, rather than in page init: a listener wired somewhere the
       // renderer's own tests cannot reach is a listener nothing proves runs.
+      //
+      // A real <details> fires `toggle` on ANY change to `open`, including the
+      // assignment two lines below, and fires it QUEUED rather than inline. A
+      // listener that trusted the event therefore recorded the RENDERER's open as
+      // the user's intent (review of PR #4002): render a no-primary ask, which the
+      // renderer legitimately opens, and every later sticky-with-primary card came
+      // up unfolded -- the founder's exact first-time path. So compare against what
+      // the renderer last wrote: equal means it was our own assignment echoing
+      // back, different means a human moved it.
       if(!other.dataset.taWired){
         other.dataset.taWired="1";
-        other.addEventListener("toggle",()=>{ connectOtherOpen=!!other.open; });
+        other.addEventListener("toggle",()=>{
+          if(!!other.open === connectOtherWritten) return;
+          // A human moved it. Record the intent AND re-baseline, or the NEXT user
+          // move back to the renderer's last value would look like our own echo --
+          // close it then re-open it on an optional row and the re-open was ignored.
+          connectOtherOpen=!!other.open;
+          connectOtherWritten=connectOtherOpen;
+        });
       }
       // CLOSED unless the user opened it, or there is no primary path at all (in
       // which case these fields ARE the path and hiding them hides the only way
       // through). Assigned both ways on purpose: the parked node would otherwise
-      // carry a stale `open` into every later render.
-      other.open=!!open || connectOtherOpen;
+      // carry a stale `open` into every later render. `connectOtherWritten` is what
+      // the listener above compares the queued toggle against.
+      connectOtherWritten = !!open || connectOtherOpen;
+      other.open=connectOtherWritten;
       this.select(known.includes(this.shape)?this.shape:(known[0]||""));
     },
     select(shape){
