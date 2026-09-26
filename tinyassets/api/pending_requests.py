@@ -104,6 +104,14 @@ _MULTI_VALUE_AUTH_SCHEMES = frozenset(_MULTI_VALUE_FIELD_NAMES)
 #: ``connect_http`` with the connection's uses declared on it.
 _DEPOSIT_TYPES = frozenset({"connect_http", "connect"})
 
+#: Every ask whose answer is a secret, which is a WIDER set than the asks that
+#: create a connection: ``rotate_http`` replaces the secret of one that already
+#: exists. The boundary a ``secret`` field is allowed on is this set, and the
+#: reason it exists is unchanged -- the value goes to the vault through a typed
+#: handler and is never recorded as an answer. Keeping ``_DEPOSIT_TYPES`` to mean
+#: "creates a connection" leaves everything that branches on it unchanged.
+_SECRET_FIELD_TYPES = _DEPOSIT_TYPES | {"rotate_http"}
+
 #: A plain https link, no userinfo (`https://user:pw@host`), bounded.
 _MAX_URL_CHARS = 300
 _SAFE_URL_RE = re.compile(r"^https://[^\s/@]+(?:/[^\s]*)?$")
@@ -248,12 +256,35 @@ def _validated_action(raw: Any) -> dict[str, Any]:
                 "alphanumeric"
             )
         return {"type": "remove_http", "destination": destination}
+    if kind == "rotate_http":
+        # REPLACING the secret of a key the owner already deposited, because the
+        # far side stopped accepting it. The destination names which one; nothing
+        # else is on the ask, and that is the point. No endpoints (they are not
+        # changing), no scopes (same), and NO auth_scheme: a caller who could name
+        # one could turn a multi-value connection into a single-token one wearing
+        # the same name. The stored scheme is read when this ask is raised and
+        # recorded then, so what the owner is shown is what the write reads.
+        destination = str(action.get("destination") or "").strip().lower()
+        if not _DESTINATION_RE.match(destination):
+            raise ValueError(
+                "destination must be 2-127 chars of [a-z0-9._:-] starting "
+                "alphanumeric"
+            )
+        for unwanted in ("endpoints", "scopes", "access", "auth_scheme", "hosts"):
+            if action.get(unwanted):
+                raise ValueError(
+                    "a rotate_http ask replaces only the key: it carries a "
+                    f"destination and nothing else (got {unwanted!r}). To change "
+                    "what the key may reach, that is extend_http"
+                )
+        return {"type": "rotate_http", "destination": destination}
     if kind == "connect":
         return _validated_connect(action)
     if kind != "connect_http":
         raise ValueError(
             "action type must be answer, connect, connect_http, extend_http, "
-            "remove_http, grant_workspace_consent or bind_model_access"
+            "rotate_http, remove_http, grant_workspace_consent or "
+            "bind_model_access"
         )
 
     destination = str(action.get("destination") or "").strip().lower()
@@ -651,7 +682,7 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
         #
         # The agent knows what the service needs; if it does not, that is the
         # thing to fix, not paper over with a box the owner has to interpret.
-        if action["type"] in _DEPOSIT_TYPES:
+        if action["type"] in _SECRET_FIELD_TYPES:
             raise ValueError(
                 "a credential request needs one field per value the service "
                 "asks for, each with the label THAT SERVICE uses (and ideally "
@@ -683,13 +714,13 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
         ftype = str(field.get("type") or "text").strip().lower()
         if ftype not in FIELD_TYPES:
             raise ValueError("field type must be one of " + ", ".join(sorted(FIELD_TYPES)))
-        if ftype == "secret" and action["type"] not in _DEPOSIT_TYPES:
+        if ftype == "secret" and action["type"] not in _SECRET_FIELD_TYPES:
             # THE boundary. Without it, "compose requests however you like"
             # becomes a way to ask for a password and store it in the clear.
             raise ValueError(
                 "a secret field is only allowed on a connect_http request (or "
-                "connect), so the value goes to the vault instead of being "
-                "recorded as an answer"
+                "connect, or rotate_http), so the value goes to the vault "
+                "instead of being recorded as an answer"
             )
         entry = {
             "name": name,
@@ -734,9 +765,11 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                 raise ValueError("a choice field needs options")
             entry["options"] = options[:8]
         out.append(entry)
-    if action["type"] in _DEPOSIT_TYPES:
+    if action["type"] in _SECRET_FIELD_TYPES:
         if not any(f["type"] == "secret" for f in out):
-            raise ValueError("a connect_http request needs a secret field for the key")
+            raise ValueError(
+                f"a {action['type']} request needs a secret field for the key"
+            )
         # EVERY field on a credential ask is a secret. A non-secret field's
         # answer is recorded in `answer_json` and relayed back into chat, so an
         # ask that labelled one value `text` -- "API token", typed as text --
@@ -778,6 +811,16 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                     + " -- got " + ", ".join(got)
                     + " (label them the service's way, name them these)"
                 )
+        if expected and action["type"] == "rotate_http" and len(secrets) != len(expected):
+            # For a ROTATION the scheme is not the agent's claim -- it was read
+            # off the connection when the ask was raised. So the box count is
+            # knowable here, and a one-box card for a four-value scheme must not
+            # reach the owner: the write would refuse the assembled value only
+            # after they had pasted it.
+            raise ValueError(
+                f"this connection stores a {scheme!r} credential, so the card "
+                "needs one secret field per value, named " + ", ".join(expected)
+            )
     return out
 
 
@@ -807,16 +850,31 @@ def request_from_user(
     if not title:
         return _bad("title is required; the user is being asked for something")
     sign_in: dict[str, Any] = {}
+
+    def _refused(exc: Exception) -> dict[str, Any]:
+        reason = sign_in.get("oauth_unavailable")
+        return _bad(str(exc) + (f" (no sign-in is offered: {reason})" if reason else ""))
+
     try:
         action = _validated_action(document.get("action"))
         if action.get("type") == "connect":
             action, sign_in = _with_sign_in_offer(action)
-        fields = _validated_fields(document.get("fields"), action)
     except ValueError as exc:
-        reason = sign_in.get("oauth_unavailable")
-        return _bad(str(exc) + (f" (no sign-in is offered: {reason})" if reason else ""))
+        return _refused(exc)
     except Exception as exc:  # noqa: BLE001 - endpoint validator
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
+    if action.get("type") == "rotate_http":
+        # BEFORE the fields are validated, because the connection's stored auth
+        # scheme is what decides how many boxes the card has and what they are
+        # named -- and the fields check reads it off the action.
+        verdict = _rotate_ask_verdict(_uid, action)
+        if verdict.get("error"):
+            return verdict
+        action = {**action, **verdict}
+    try:
+        fields = _validated_fields(document.get("fields"), action)
+    except ValueError as exc:
+        return _refused(exc)
 
     if action.get("type") == "bind_model_access":
         from tinyassets.api.model_access_requests import capture_action
@@ -1066,6 +1124,65 @@ def _extend_ask_verdict(
     return None
 
 
+def _rotate_ask_verdict(universe_id: str, action: dict[str, Any]) -> dict[str, Any]:
+    """What to record on a ``rotate_http`` ask, or the refusal to raise it.
+
+    A rotation names a destination and nothing else, so everything the card needs
+    comes from the connection the owner already has: the auth scheme (which
+    decides the card's boxes) and the incarnation (which deposit this card is
+    for). Read ONCE, here, when the ask is raised, so the tab the owner reads and
+    the write that follows cannot disagree.
+
+    Two things never reach the owner as a tab, on the same grounds as
+    ``_extend_ask_verdict``: there is no key to replace, or its scheme cannot be
+    replaced by pasting. The agent can fix both; the owner cannot.
+    """
+    from tinyassets.api.http_connection import (
+        _SIGN_IN_AUTH_SCHEME,
+        preview_rotate_http,
+    )
+
+    preview = preview_rotate_http(universe_id=universe_id, payload={
+        "destination": action.get("destination"),
+    })
+    if preview.get("error") == "not_found":
+        return {
+            "error": "ask_cannot_be_granted",
+            "detail": (
+                f'no key is deposited as "{action.get("destination")}" to '
+                "replace; raise a connect_http ask to deposit one instead"
+            ),
+            "note": (
+                "Answering this ask would fail with exactly this reason, so no "
+                "tab was raised. Fix the ask, or drop it."
+            ),
+        }
+    if preview.get("error"):
+        return preview
+    scheme = str(preview.get("auth_scheme") or "").strip().lower()
+    if scheme == _SIGN_IN_AUTH_SCHEME:
+        return {
+            "error": "ask_cannot_be_granted",
+            "detail": (
+                "this connection was completed by signing in, so there is no key "
+                "to paste; raise the connect ask again and its Sign in button "
+                "renews the authorization"
+            ),
+            "note": (
+                "Answering this ask would fail with exactly this reason, so no "
+                "tab was raised."
+            ),
+        }
+    return {
+        "auth_scheme": scheme,
+        # WHICH deposit this card replaces. The connection id and the credential
+        # reference are both derived from (universe, destination), so neither
+        # changes when a key is removed and a different one put in its place --
+        # this is the only value that does, and the answer re-checks it.
+        "incarnation": str(preview.get("incarnation") or ""),
+    }
+
+
 def _granted_lines(action: dict[str, Any]) -> list[str]:
     """Everything an ask grants, one phrase each, endpoints AND git scopes.
 
@@ -1238,6 +1355,17 @@ def _grant_sentence(row: dict[str, Any]) -> str:
             f'Delete the key you gave as "{action.get("destination")}", and '
             "everything it was allowed to reach. Nothing to paste; this is the "
             "yes. You can deposit that name again whenever you like."
+        )
+    if action.get("type") == "rotate_http":
+        # PLAIN, because the owner is being told something broke and what to do
+        # about it, and because the failure this replaces was a removal card they
+        # read as deletion. Nothing is being granted that was not granted before,
+        # so this sentence promises the opposite of a grant sentence: nothing
+        # changes except the key.
+        return (
+            f'{action.get("destination")} stopped accepting its key. Paste a new '
+            "one. Nothing else changes: the same connection, the same access you "
+            "already approved, and nothing new to allow."
         )
     if action.get("type") != "connect_http":
         return ""
@@ -1910,45 +2038,19 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "this connection is completed by signing in: use the request's "
             "Sign in button, which returns here connected"
         )
+    if action.get("type") == "rotate_http":
+        return _rotate_answer(
+            universe_id=universe_id, udir=udir, row=row,
+            secret_names=secret_names, values=values, answer=answer,
+            feedback=feedback, dont_ask_again=dont_ask_again,
+        )
     if action.get("type") in _DEPOSIT_TYPES:
-        # ONE secret field -> its value. SEVERAL -> a JSON object keyed by field
-        # name, which is the encoding a multi-value scheme's vault string uses.
-        #
-        # This used to be `next(...)`: the FIRST secret field's value, with every
-        # other one silently discarded. Harmless while a credential ask was one
-        # unlabelled box, and broken the moment asks became one field per value
-        # -- an OAuth 1.0a owner would fill four boxes, three would vanish, and
-        # the deposit would refuse a malformed bundle with nothing to explain it.
-        # Found on 2026-08-31 by checking this seam rather than assuming it.
-        scheme = str(action.get("auth_scheme") or "bearer").strip().lower()
-        supplied = {
-            name: str(values.get(name) or "")
-            for name in sorted(secret_names)
-            if str(values.get(name) or "").strip()
-        }
-        if not supplied:
-            return _bad("the key is required")
-        # Completeness is judged against what the ask DECLARED, never against
-        # what came back. Keying off the supplied count meant filling one box of
-        # four took the single-value branch and deposited that one value as the
-        # whole credential, skipping this check entirely (Codex, Q4).
-        missing = sorted(secret_names - set(supplied))
-        if missing:
-            # Partial is worse than refused: a bundle short one value deposits a
-            # credential that cannot sign, and the owner is told later, by a
-            # failing call, with no idea which box was empty.
-            return _bad(
-                "this needs every value: still missing "
-                + ", ".join(repr(name) for name in missing)
-            )
-        if len(secret_names) == 1:
-            secret = next(iter(supplied.values()))
-        elif scheme == "basic":
-            # The vault string for basic has always been `username:password`;
-            # JSON here would hand the service `Basic base64({...})`.
-            secret = f"{supplied['username']}:{supplied['password']}"
-        else:
-            secret = json.dumps(supplied)
+        secret, refusal = _assembled_secret(
+            scheme=str(action.get("auth_scheme") or "bearer").strip().lower(),
+            secret_names=secret_names, values=values,
+        )
+        if refusal is not None:
+            return refusal
         return _deposit_answer(
             universe_id=universe_id, uid=_uid, udir=udir, row=row, secret=secret,
             auth_scheme=action["auth_scheme"], answer=answer, feedback=feedback,
@@ -1990,6 +2092,110 @@ def displayed_row_matches(row: dict[str, Any]) -> bool:
         sort_keys=True, separators=(",", ":"),
     )
     return not row.get("dedupe_key") or row["dedupe_key"] == expected
+
+
+def _assembled_secret(
+    *, scheme: str, secret_names: set[str], values: dict[str, Any],
+) -> tuple[str, dict[str, Any] | None]:
+    """The vault string a card's secret boxes make, or ``("", refusal)``.
+
+    ONE secret field -> its value. SEVERAL -> a JSON object keyed by field name,
+    which is the encoding a multi-value scheme's vault string uses.
+
+    This used to be `next(...)`: the FIRST secret field's value, with every other
+    one silently discarded. Harmless while a credential ask was one unlabelled
+    box, and broken the moment asks became one field per value -- an OAuth 1.0a
+    owner would fill four boxes, three would vanish, and the deposit would refuse
+    a malformed bundle with nothing to explain it. Found on 2026-08-31 by checking
+    this seam rather than assuming it.
+
+    One function, because a deposit and a rotation are the same assembly: two
+    copies would drift, and the copy that drifted would be the one that stores a
+    credential that cannot sign.
+    """
+    supplied = {
+        name: str(values.get(name) or "")
+        for name in sorted(secret_names)
+        if str(values.get(name) or "").strip()
+    }
+    if not supplied:
+        return "", _bad("the key is required")
+    # Completeness is judged against what the ask DECLARED, never against what
+    # came back. Keying off the supplied count meant filling one box of four took
+    # the single-value branch and deposited that one value as the whole
+    # credential, skipping this check entirely (Codex, Q4).
+    missing = sorted(secret_names - set(supplied))
+    if missing:
+        # Partial is worse than refused: a bundle short one value deposits a
+        # credential that cannot sign, and the owner is told later, by a failing
+        # call, with no idea which box was empty.
+        return "", _bad(
+            "this needs every value: still missing "
+            + ", ".join(repr(name) for name in missing)
+        )
+    if len(secret_names) == 1:
+        return next(iter(supplied.values())), None
+    if scheme == "basic":
+        # The vault string for basic has always been `username:password`; JSON
+        # here would hand the service `Basic base64({...})`.
+        return f"{supplied['username']}:{supplied['password']}", None
+    return json.dumps(supplied), None
+
+
+def _rotate_answer(
+    *, universe_id: str, udir: Any, row: dict[str, Any], secret_names: set[str],
+    values: dict[str, Any], answer: dict[str, Any], feedback: str,
+    dont_ask_again: bool,
+) -> dict[str, Any]:
+    """The owner pasted a replacement key. Swap it and leave everything else.
+
+    The scheme is the one READ OFF THE CONNECTION when this ask was raised, so
+    the boxes the owner filled and the string the vault receives agree. The
+    incarnation captured then rides along: if the key was removed and a different
+    one deposited while this tab sat open, the write refuses rather than replacing
+    a key the owner never saw this card for.
+    """
+    from tinyassets.api.http_connection import rotate_http
+    from tinyassets.storage.pending_requests import resolve_request
+
+    action = row["action"]
+    request_id = row["request_id"]
+    secret, refusal = _assembled_secret(
+        scheme=str(action.get("auth_scheme") or "bearer").strip().lower(),
+        secret_names=secret_names, values=values,
+    )
+    if refusal is not None:
+        return refusal
+    rotated = rotate_http(
+        universe_id=universe_id,
+        payload=json.dumps({
+            "destination": action["destination"],
+            "secret": secret,
+            "incarnation": action.get("incarnation", ""),
+        }),
+    )
+    if rotated.get("error"):
+        # Leave it PENDING: the key did not land, and closing the tab here would
+        # lose the ask with the connection still dead.
+        return {**rotated, "request_pending": True}
+    resolve_request(udir, request_id, status="answered", answer=answer,
+                    feedback=feedback, dont_ask_again=dont_ask_again,
+                    decision="allowed")
+    return {
+        "status": "answered",
+        "request_id": request_id,
+        "suppressed": dont_ask_again,
+        "destination": action["destination"],
+        "connection_id": rotated.get("connection_id"),
+        "allowed_endpoints": rotated.get("allowed_endpoints") or [],
+        "git_scopes": rotated.get("git_scopes") or [],
+        "receipt": (
+            f'The key for "{action["destination"]}" is replaced. Same connection, '
+            "same access you already approved; nothing new was allowed and "
+            "nothing needs re-approving."
+        ),
+        "in_flight": rotated.get("in_flight", ""),
+    }
 
 
 def _deposit_answer(

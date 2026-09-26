@@ -408,7 +408,7 @@ def _connect_http(
     conflicting re-provision (the conflict-check below refuses first).
     """
     from tinyassets.api import permissions
-    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.credential_vault import http_credential_record, write_credential_vault
     from tinyassets.daemon_server import list_universe_acl
 
     # 1. Server-derived authenticated principal (no env fallback).
@@ -678,14 +678,7 @@ def _connect_http(
     try:
         write_credential_vault(
             udir,
-            [
-                {
-                    "credential_type": "http",
-                    "service": destination,
-                    "destination": destination,
-                    "token": secret,
-                }
-            ],
+            [http_credential_record(destination=destination, token=secret)],
             owner_user_id=actor,
             universe_id=uid,
         )
@@ -960,6 +953,257 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
             "'removed_endpoints' and 'removed_scopes' in the new ask: the "
             "scopes went with the grant, and a deposit without them looks "
             "healthy but cannot check anything out"
+        ),
+    }
+
+
+def _rotation_target(
+    *, uid: str, actor: str, destination: str,
+) -> tuple[Any, Any, str, str, Any] | dict[str, Any]:
+    """The connection a rotation would act on, or the refusal, with NO write.
+
+    One reader for the write and for the raise-time preview, so a card the rail
+    admits is a card the write will honour. Every refusal is the uniform absent
+    envelope: this is reachable by any admin of the universe, and a distinct
+    "wrong owner" answer would say which destinations exist and who deposited
+    them.
+    """
+    base = _base_path()
+    connection_id, grant_id = _ids(universe_id=uid, destination=destination)
+    ledger = ConnectionLedger(
+        Path(base) / "outbound.db",
+        verify_authenticated_principal=lambda: actor,
+    )
+    resource = ledger._get_connection_resource(connection_id)
+    if resource is None or resource.revoked_at is not None:
+        # Nothing to rotate. A revoked row is not rotatable either: the deposit
+        # door refuses to re-provision one, so a key put into it would be inert.
+        return dict(_NOT_FOUND)
+    if resource.owner_user_id != actor:
+        # Mirrors extend_http and remove_http: an admin may act on the universe,
+        # but not on another principal's deposited credential.
+        return dict(_NOT_FOUND)
+    # The connection id is DERIVED from (universe, destination), so another
+    # universe naming this destination already addresses its own row. The grant
+    # is compared anyway: a derivation is not a check, and a connection with no
+    # live grant for this universe is not this universe's to rotate.
+    grant = ledger.get_grant(grant_id)
+    if (
+        grant is None
+        or grant.connection_id != connection_id
+        or grant.owner_user_id != actor
+        or grant.universe_id != uid
+        or grant.revoked_at is not None
+    ):
+        return dict(_NOT_FOUND)
+    return resource, grant, connection_id, grant_id, ledger
+
+
+def _rotation_git_scopes(resource: Any) -> list[str]:
+    try:
+        return sorted(format_git_scope(kind, repo)
+                      for kind, repo in connection_git_scopes(resource))
+    except Exception:  # noqa: BLE001 - never fail a rotation over a readback
+        return []
+
+
+def preview_rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """What a rotation would act on, read for an ask that has not been raised yet.
+
+    The rail calls this when the agent raises the card, for two reasons. The owner
+    must never see a tab that cannot be honoured (the rule ``extend_http`` already
+    follows), and the card's boxes have to be named after the auth scheme the
+    connection actually STORES -- one for a single-token scheme, the fixed names
+    for a multi-value one. Reads only; writes nothing.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.daemon_server import list_universe_acl
+
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
+        return {"error": "authentication_required", "resource": "connection"}
+    uid = _request_universe(universe_id)
+    admin = [
+        row
+        for row in list_universe_acl(_base_path(), universe_id=uid)
+        if row.get("actor_id") == actor and row.get("permission") == "admin"
+    ]
+    if not admin:
+        return dict(_NOT_FOUND)
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    destination = str(document.get("destination") or "").strip().lower()
+    if not _DESTINATION_RE.match(destination):
+        return {
+            "error": "connection_setup_invalid",
+            "detail": "destination must name the connection whose key is being replaced",
+        }
+    found = _rotation_target(uid=uid, actor=actor, destination=destination)
+    if isinstance(found, dict):
+        return found
+    resource, _grant, connection_id, grant_id, ledger = found
+    return {
+        "destination": destination,
+        "connection_id": connection_id,
+        "grant_id": grant_id,
+        "auth_scheme": str(resource.auth_scheme or "").strip().lower(),
+        "incarnation": ledger.incarnation(connection_id) or "",
+        "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+        "git_scopes": _rotation_git_scopes(resource),
+        "access": getattr(resource, "access_mode", ACCESS_EXACT) or ACCESS_EXACT,
+        "git_host": getattr(resource, "git_host", "") or "",
+    }
+
+
+def rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    from tinyassets.onboarding.serving import _gesture_lock
+
+    with _gesture_lock(_request_universe(universe_id)):
+        return _rotate_http(universe_id=universe_id, payload=payload)
+
+
+def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """Replace the SECRET of an existing connection, and nothing else.
+
+    Founder-visible failure, 2026-09-16: a connection's key died on the provider
+    side (one expired, one was revoked by its user) and the owner had no way to
+    put a new one in. The repair paths were ``remove_http`` + ``connect_http``
+    re-carrying every endpoint and scope, or a ``connect_http`` whose whole
+    allow-list matched the stored one exactly -- and the owner read "remove" as
+    deletion, dismissed three such cards, and the connection stayed dead for ten
+    days.
+
+    This is the one-step replace. It performs EXACTLY ONE mutation: the vault
+    upsert for ``(http, destination)``. It never touches the ledger -- no
+    ``create_connection``, no ``grant_connection``, no ``set_access_mode``, no
+    endpoint extension -- so the connection id, grant, endpoints, scopes, access
+    mode, git host, effector consents and workspace consents survive by the
+    ABSENCE of a code path rather than by care. The next outbound call presents
+    the new secret with no invalidation, because the broker child resolves the
+    vault per request.
+
+    Every refusal happens before that write, so a refused rotation leaves the old
+    secret exactly as it was. The auth scheme is the STORED one: a rotation
+    carries none, because a caller who could name it could turn a multi-value
+    connection into a bearer one wearing the same name. ``oauth2`` cannot be
+    rotated by paste at all -- its secret is a bundle naming where refresh tokens
+    are sent, so only the owner's own sign-in may write it.
+
+    The old secret is never read: there is no reason to, and a value never read
+    cannot reach a log or an exception.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.credential_vault import http_credential_record, write_credential_vault
+    from tinyassets.daemon_server import list_universe_acl
+
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
+        return {"error": "authentication_required", "resource": "connection"}
+
+    # Same gate as the deposit and the removal: an explicit admin ACL row for
+    # THIS actor on THIS universe, and the uniform absent envelope, so this
+    # surface cannot be used to probe which destinations exist.
+    uid = _request_universe(universe_id)
+    admin = [
+        row
+        for row in list_universe_acl(_base_path(), universe_id=uid)
+        if row.get("actor_id") == actor and row.get("permission") == "admin"
+    ]
+    if not admin:
+        return dict(_NOT_FOUND)
+
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+
+    destination = str(document.get("destination") or "").strip().lower()
+    if not _DESTINATION_RE.match(destination):
+        return {
+            "error": "connection_setup_invalid",
+            "detail": "destination must name the connection whose key is being replaced",
+        }
+
+    secret = document.get("secret")
+    if not isinstance(secret, str) or not secret.strip():
+        return {"error": "connection_setup_invalid", "detail": "secret is required"}
+    if len(secret) > _MAX_SECRET_CHARS:
+        return {"error": "connection_setup_invalid", "detail": "secret is too large"}
+
+    found = _rotation_target(uid=uid, actor=actor, destination=destination)
+    if isinstance(found, dict):
+        return found
+    resource, _grant, connection_id, grant_id, ledger = found
+
+    scheme = str(resource.auth_scheme or "").strip().lower()
+    if scheme == _SIGN_IN_AUTH_SCHEME:
+        return {
+            "error": "rotation_not_supported",
+            "detail": (
+                "this connection is completed by signing in, so its "
+                "authorization cannot be replaced by pasting one; sign in again"
+            ),
+            "auth_scheme": scheme,
+        }
+    shape_error = _secret_shape_error(scheme, secret)
+    if shape_error:
+        return {"error": "connection_setup_invalid", "detail": shape_error}
+
+    # Which DEPOSIT this card was raised against. The id and credential_ref are
+    # both derived from (universe, destination), so neither changes when a key is
+    # removed and a different one put in its place -- the incarnation is the only
+    # thing that does.
+    observed = document.get("incarnation")
+    incarnation = ledger.incarnation(connection_id)
+    if observed is not None and observed != incarnation:
+        return {"error": "connection_changed", "resource": "connection"}
+
+    try:
+        write_credential_vault(
+            _universe_dir(uid),
+            [http_credential_record(destination=destination, token=secret)],
+            owner_user_id=actor,
+            universe_id=uid,
+        )
+    except PermissionError:
+        return {
+            "error": "credential_ownership_transfer_unsupported",
+            "detail": "this destination's credential is owned by another principal",
+        }
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    except Exception:  # noqa: BLE001 - fail closed, never leak the secret
+        return {"error": "deposit_failed", "resource": "connection"}
+
+    return {
+        "status": "rotated",
+        "destination": destination,
+        "connection_id": connection_id,
+        "grant_id": grant_id,
+        "auth_scheme": scheme,
+        # Read from the row this call did NOT write, so the receipt is evidence
+        # that the policy survived rather than a restatement of the request.
+        "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+        "git_scopes": _rotation_git_scopes(resource),
+        "access": getattr(resource, "access_mode", ACCESS_EXACT) or ACCESS_EXACT,
+        "git_host": getattr(resource, "git_host", "") or "",
+        "unchanged": (
+            "Only the key changed. The connection, its endpoints, its scopes and "
+            "its consents are the same ones; nothing needs re-approving."
+        ),
+        "in_flight": (
+            "A request already dispatched with the old key may still finish; "
+            "every later call uses the new one."
         ),
     }
 

@@ -32,6 +32,35 @@ VALID_CREDENTIAL_TYPES = frozenset(
     {"social", "llm_subscription", "llm_api_key", "vcs", "http"}
 )
 
+#: When the secret NOW STORED in an http record was stored. There is no expiry
+#: warning yet -- a key that died on the provider side was first noticed by a
+#: failed run -- and this is the field one needs.
+HTTP_DEPOSITED_AT = "deposited_at"
+
+
+def http_credential_record(*, destination: str, token: str) -> dict[str, Any]:
+    """The ONE shape of an http credential record, stamped with its write time.
+
+    Three paths put a secret in an http slot: the owner's deposit
+    (``api.http_connection.connect_http``), a rotation (``rotate_http``), and an
+    oauth2 refresh (``connection_oauth.tokens``). ``_merge_single_record``
+    REPLACES the whole slot for every non-subscription type, so a field only one
+    of them wrote would silently disappear on the next write by another. One
+    builder, so ``deposited_at`` means the same thing whichever path stored the
+    secret that is there now.
+
+    The token is passed straight through and never inspected, logged or returned.
+    """
+    from datetime import datetime, timezone
+
+    return {
+        "credential_type": "http",
+        "service": destination,
+        "destination": destination,
+        "token": token,
+        HTTP_DEPOSITED_AT: datetime.now(timezone.utc).isoformat(),
+    }
+
 # Map a deposited llm_api_key record's ``service`` to the provider-subprocess
 # env var that CLI providers read. Only CLI-subprocess providers are reachable
 # via the vault env overlay (claude-code / codex); the in-process HTTP free-tier
