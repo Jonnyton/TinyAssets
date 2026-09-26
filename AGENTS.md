@@ -1,8 +1,7 @@
 # TinyAssets
 
 Principles and architecture: `PLAN.md` (§ *Operating Principles*). Here: the loop,
-and facts a model would get wrong. Every other rule lives at its point of use — a
-guard, an error message, a docstring, a skill, a spec.
+and facts a model would get wrong. Every other rule lives at its point of use.
 
 ## Live state
 
@@ -25,7 +24,7 @@ Orient: `python scripts/docview.py headings PLAN.md`, one section, then
    the rest. Mutation tables only for data-loss or cross-user guards.
 4. Review only floor-class changes and gate files: one cross-family round
    (`peer-agents`), floor and correctness findings only, `AGREE`/`DISAGREE_EVIDENCE`.
-5. Four lanes at most; merges serialized.
+5. No lane cap: fold colliding lanes into one; serialize merges.
 6. Done = sha asserted deployed, one real-user app pass, spec synced.
 7. Same error three times, or the same finding twice: hand off, do not patch.
 8. A new rule deletes an old one; a rule a script can enforce gets no line.
