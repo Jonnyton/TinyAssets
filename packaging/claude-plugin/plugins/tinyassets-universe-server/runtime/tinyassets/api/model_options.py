@@ -61,6 +61,23 @@ def _scope(conn, base, owner, uid):
         raise PermissionError("model catalogue scope unavailable")
 
 
+def _granted_only(connection):
+    """The connection with LEARNED candidates removed.
+
+    `_native_models` returns everything a client may SEE, which now includes ids
+    the platform verified on another universe of the same source kind. Those are
+    offers to grant; an admitted plan must contain only what this owner granted.
+    """
+    from dataclasses import replace as _replace
+
+    from tinyassets.storage.learned_models import LEARNED_MODEL_BASIS
+
+    return _replace(connection, models=tuple(
+        model for model in connection.models
+        if model.availability_basis != LEARNED_MODEL_BASIS
+    ))
+
+
 def _native_inventory(conn, universe, owner):
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master "
@@ -195,7 +212,12 @@ def _collect(base, owner, uid):
             if legacy is not None and legacy[0].provider == provider and (
                 preferences.policy is None or preferences.policy.mode == "automatic"
             ):
-                plan = replace(plan, catalog=Catalog(owner, uid, (model,)))
+                # The LEGACY plan gets only what the owner actually granted. A
+                # learned id is a candidate to grant, never an admitted one, and
+                # Codex found this second caller still admitting them after the
+                # served_model_plan branch was fixed (#4028 round 2) -- one reader
+                # of _native_models was corrected and this one was not.
+                plan = replace(plan, catalog=Catalog(owner, uid, (_granted_only(model),)))
             else:
                 rejected.append(Ineligible(ModelRef(provider, ""),
                                           "source_not_accepted" if provider not in accepted

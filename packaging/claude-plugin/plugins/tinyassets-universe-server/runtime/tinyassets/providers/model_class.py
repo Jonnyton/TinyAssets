@@ -68,15 +68,25 @@ def model_class_and_version(model_id: str) -> tuple[str, tuple[int, ...]]:
     version: list[int] = []
     kept: list[str] = []
     kept_separators: list[str] = []
+    pending_separator = ""
     for index, token in enumerate(parts):
         if token and _VERSION_TOKEN.match(token):
             version.extend(_version_parts(token))
+            # Remember the separator that led INTO this version so the next
+            # surviving token inherits it instead of the one that followed.
+            if not pending_separator and index:
+                pending_separator = separators[index - 1]
             continue
         if kept:
-            # The separator that preceded this surviving token, which is the one
-            # immediately before it in the original string.
-            kept_separators.append(separators[index - 1] if index else "")
+            # The separator BEFORE the run of version tokens just dropped, not the
+            # one after it. Codex round 2 on #4028: taking the following separator
+            # made `vendor/2-model` and `vendor-2-model` both collapse to
+            # `vendor-model`, so one of two distinct ids could disappear. Keeping
+            # the leading separator preserves `vendor/model` and `vendor-model`.
+            kept_separators.append(pending_separator if pending_separator else (
+                separators[index - 1] if index else ""))
         kept.append(token)
+        pending_separator = ""
     # Nothing but versions and separators: no class of its own to share, so it is
     # its own class -- the rule for anything unparseable, applied not excepted.
     if not any(kept):

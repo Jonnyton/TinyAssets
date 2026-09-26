@@ -147,6 +147,26 @@ def test_two_ids_differing_only_by_separator_are_two_classes():
         "an id this module cannot version is its own class, and these are two ids")
 
 
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        # Codex round 2 on #4028: taking the separator AFTER a dropped version
+        # collapsed these into one class, so one of two distinct ids could vanish.
+        ("vendor/2-model", "vendor-2-model"),
+        ("vendor_1_model", "vendor-1-model"),
+        ("a/b-2", "a-b-2"),
+    ],
+)
+def test_a_separator_beside_a_dropped_version_is_not_lost(left, right):
+    left_class, left_version = model_class_and_version(left)
+    right_class, right_version = model_class_and_version(right)
+    assert left_version == right_version, "the version is genuinely the same"
+    assert left_class != right_class, (
+        f"{left!r} and {right!r} are different ids and must not share a class")
+    # ...and neither is discarded when both are offered.
+    assert len(newest_per_class([Row(left), Row(right)])) == 2
+
+
 def test_an_equal_version_and_timestamp_tie_is_stable_not_input_ordered():
     """Same catalog, different read order, same answer."""
     same = "2026-02-01T00:00:00Z"

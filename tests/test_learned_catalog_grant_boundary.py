@@ -199,3 +199,42 @@ def test_a_requested_id_that_is_not_an_identifier_is_refused_not_raised(tmp_path
     _Coordinator(tmp_path, "not an identifier")._learn_verified_model(
         SimpleNamespace(reported_model="", model=""))
     assert _learned(tmp_path) == []
+
+
+def test_the_legacy_plan_also_refuses_to_admit_a_learned_id(configured_legacy_probe=None):
+    """Codex round 2: one reader of _native_models was fixed and the other was not.
+
+    `api/model_options.py` builds a LEGACY plan for a single-provider universe and
+    put the whole native catalog into it, so a learned-only id came back with
+    `in_candidate_catalog=true` and no reason there even after the
+    `served_model_plan` branch was corrected. The lesson is the one in
+    `a-delete-starts-with-every-reader`: find EVERY reader, not the one you were
+    looking at.
+    """
+    from dataclasses import replace
+
+    from tinyassets.api.model_options import _granted_only
+    from tinyassets.providers.model_policy import ConnectionModels, Model, Pricing
+    from tinyassets.storage.learned_models import LEARNED_MODEL_BASIS
+
+    granted = Model("owner-typed-4-6", True, frozenset({"text"}),
+                    pricing=Pricing("fresh", unmetered=True),
+                    availability_basis="owner_declared")
+    default = Model("", True, frozenset({"text"}),
+                    pricing=Pricing("fresh", unmetered=True),
+                    availability_basis="executor_default")
+    learned = Model("vendor-newline-9-1", True, frozenset({"text"}),
+                   pricing=Pricing("fresh", unmetered=True),
+                   availability_basis=LEARNED_MODEL_BASIS)
+    connection = ConnectionModels(
+        "a-cli", "native-subscription:a-cli", "subscription", "fresh", True, True,
+        (default, granted, learned), default_model_id="",
+    )
+    admitted = _granted_only(connection)
+    ids = [model.model_id for model in admitted.models]
+    assert "vendor-newline-9-1" not in ids, (
+        "the legacy plan must not admit a learned id either")
+    # ...and it removes ONLY that: a filter that emptied the plan would also pass
+    # the assertion above.
+    assert ids == ["", "owner-typed-4-6"]
+    assert replace(connection, models=admitted.models) == admitted

@@ -30,7 +30,7 @@
 
 ## Round 2 (Codex `gpt-6-astra` on `03a6828c`: "block this branch")
 
-- [x] P0 — contributed ids were ADMITTED, not display-only. `catalog = filtered =
+- [ ] P0 — contributed ids were ADMITTED, not display-only. `catalog = filtered =
       _native_models(...)` handed one object to both, so a learned id arrived with
       `in_candidate_catalog=true` and only execution refused it. Split, as the HTTP
       branch already did, with `model_access_optin_required` so the dropdown files
@@ -40,7 +40,7 @@
       the id this universe REQUESTED and that succeeded, so a source cannot inject
       a string into every other user's list, and `provider-default` can no longer
       be published as a verified model.
-- [x] P1 — validation was "printable, <=200 chars", which accepted
+- [ ] P1 — validation was "printable, <=200 chars", which accepted
       `owner-alice@example.com-private-9`. Now a strict ASCII identifier charset,
       alphanumeric at both ends.
 - [x] P1 — the write sat on the reply path with a 30s busy timeout (measured 318 ms
@@ -48,8 +48,17 @@
 - [x] P1 — `served_model_plan`'s bare `except Exception` disguised corruption as
       "nothing learned yet". Narrowed to OSError / DatabaseError / ValueError, and
       logged.
-- [x] P2 — `some_model` and `some-model` collapsed into one class and one was
+- [ ] P2 — `some_model` and `some-model` collapsed into one class and one was
       discarded. Version tokens are now removed IN PLACE, so every separator
       survives; an equal version-and-timestamp tie falls back to the model id
       rather than to input order.
-- [ ] Round 3 if needed, then sync the spec delta and archive.
+- [ ] Resolve the remaining floor through the primitive rule, then sync the spec
+      delta and archive. No round 3 under the two-round review policy.
+
+Round-2 verification at `b655942b`: **blocked**. The native manifest path is fixed,
+but the legacy picker still admits learned-only rows; the validator still permits
+private account-bearing selectors to be published. Exact unversioned separator
+and tie examples are fixed, but version removal can still erase a namespace.
+The reopened checkboxes reflect those residuals, not a claim the fixes did nothing.
+Evidence: [Codex round-2 review](../../../docs/reviews/2026-09-26-learned-catalog-round-2.md).
+Latency and client-visible read degradation are recorded as nonblocking concerns.
