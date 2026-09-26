@@ -380,7 +380,7 @@ class ProviderResponse:
     ``provider`` is the routing identity (``api_key_http:provdef_ed0169c8...``),
     which the founder saw on the "Answered by" line. This carries the label read
     from their connection instead -- the installed acquisition preset's
-    ``display_name`` ("OpenRouter") when the connection was deposited by the
+    ``display_name`` when the connection was deposited by the
     guided sign-in, else the destination they named it. Empty when nothing
     resolves; a renderer then falls back to ``provider`` rather than invent one.
     Never routing authority, never a model id, never substituted for either."""
