@@ -31,6 +31,10 @@ founder neither reviews nor stamps; do not record it as though they did.
 Owing a cross-family pass after the 2026-09-27 17:15 reset:
 
 - **PR #3981** (`tinyassets/providers/router.py`) -- free-model sibling retry.
+- **PR #4009** (`.github/workflows/pr-scope-guard.yml`,
+  `scripts/drain_review_gate.py`) -- makes a blocking review verdict a required
+  check. A gate file, and the gate now judging every other Tier 2 PR, so the
+  owed pass matters more here than most.
 
 Background: `pr-scope-guard` requires an exact-head review receipt for any
 behavioural change to an authority path (`AUTHORITY_RE` in
