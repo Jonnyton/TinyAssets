@@ -46,8 +46,11 @@ from tinyassets.effectors.workspace import (
 def _served_doc() -> str:
     import tinyassets.engine_mcp_server as server
 
-    doc = server.write_graph.__doc__
-    assert doc, "write_graph lost its docstring; the served surface is the docs"
+    # REACHABLE, not resident (2026-09-26): the workspace packet examples live in
+    # the `workspaces` handbook chapter, which the resident index names. A wrong
+    # packet is refused by the gate, so absence costs a fetch, not a bad effect.
+    doc = server.served_tool_guidance("write_graph")
+    assert doc, "write_graph lost its guidance; the served surface is the docs"
     return doc
 
 
