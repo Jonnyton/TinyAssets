@@ -823,7 +823,6 @@ class _ForegroundRunProviderSession:
         from tinyassets.exceptions import ProviderAuthorityHeldError
         from tinyassets.provider_assignment import provider_assignment_admission
         from tinyassets.provider_serving_binding import (
-            _PROVIDER_SERVICE,
             _current_selected_member_authority,
             _current_serving_authority,
             _is_open_provider,
@@ -833,7 +832,6 @@ class _ForegroundRunProviderSession:
         from tinyassets.storage.provider_work_authority import (
             SQLiteProviderWorkAuthorityStore,
         )
-        from tinyassets.subscription_refresh import refresh_deposited_subscriptions
 
         # Agent tool rounds can enter directly, without going through _call.
         # A retained receipt is not process admission. This check is cached-only.
@@ -854,20 +852,20 @@ class _ForegroundRunProviderSession:
             ):
                 raise PermissionError("foreground immutable Branch subject changed")
             self._validate_run(allowed_statuses={"running"})
-            # BEFORE custody is resolved below, and outside the transaction: a
-            # refresh writes the vault, which moves the record digest custody
-            # pins, so refreshing after resolution would make the snapshot
-            # refuse with "credential changed before launch snapshot".
-            refresh_deposited_subscriptions(
-                base_path=self._base_path,
-                universe_dir=self._universe_dir,
-                owner_user_id=self._principal_id,
-                universe_id=self._universe_id,
-                # Only THIS launch's source may fail this launch. `_provider` is
-                # set on the resolved assignment; empty before one exists, which
-                # the seam reads as "nothing may raise".
-                launching=_PROVIDER_SERVICE.get(self._provider, ""),
-            )
+            # NO pre-launch credential refresh here, deliberately. This lane's
+            # receipt is already minted by the time `_authorize_attempt` runs, and
+            # it PINS `assignment_generation` + `credential_reference_digest`
+            # (:683 and :689 below). A refresh renews the accepted source, which
+            # advances the assignment generation -- so refreshing here failed the
+            # receipt check it was meant to help, and the resulting PermissionError
+            # was swallowed into ProviderAuthorityHeldError at :985, which cannot
+            # fall back either. Codex refute-review P1 #3 reproduced both halves.
+            #
+            # The refresh belongs where nothing is pinned yet, which is the served
+            # entry (`provider_assignment.authorize_served_provider_call_async`).
+            # Covering this lane means moving the seam ahead of the receipt mint,
+            # and that is its own change: docs/concerns/
+            # 2026-09-26-pr4032-refresh-launch-integration.md.
             with self._lock:
                 self._call_index += 1
                 invocation_index = self._call_index

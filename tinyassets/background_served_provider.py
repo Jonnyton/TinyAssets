@@ -1087,7 +1087,6 @@ class _BackgroundAssignedProviderSession:
         )
         from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
         from tinyassets.storage.request_admissions import RequestAdmissionStore
-        from tinyassets.subscription_refresh import refresh_deposited_subscriptions
 
         held = "Assigned background provider authority is unavailable; retry after repair."
         # `_authorize_launch` is the single mint path for this lane: `_call`
@@ -1110,22 +1109,22 @@ class _BackgroundAssignedProviderSession:
                 )
             )
         universe_dir = self._base_path / self._task.universe_id
-        # Still outside the transaction, and BEFORE custody is resolved below: a
-        # refresh writes the vault, which moves `_subscription_record_digest`,
-        # which is what custody pins. Refreshing after resolution would make the
-        # snapshot refuse with "credential changed before launch snapshot".
-        refresh_deposited_subscriptions(
-            base_path=self._base_path,
-            universe_dir=universe_dir,
-            owner_user_id=self._task.actor_id,
-            universe_id=self._task.universe_id,
-            # No `launching` here: which provider this attempt uses is resolved
-            # inside the transaction below, so nothing is known yet to fail the
-            # launch FOR. Every document is still brought up to date; a finished
-            # sign-in surfaces from the launch itself, which now types it as a
-            # sign-in failure rather than an outage
-            # (providers/codex_provider._terminal_auth_failure).
-        )
+        # NO pre-launch credential refresh here, deliberately. This attempt's
+        # authority is already minted and PINS the assignment generation, and a
+        # refresh renews the accepted source, which advances it -- so refreshing
+        # here fails the very check it was meant to help, and the PermissionError
+        # is swallowed into ProviderAuthorityHeldError below, which cannot fall
+        # back either. Codex refute-review P1 #3 reproduced both halves on the
+        # foreground twin of this lane.
+        #
+        # The refresh belongs where nothing is pinned yet, which is the served
+        # entry (`provider_assignment.authorize_served_provider_call_async`).
+        # Covering this lane means moving the seam ahead of the authority mint, and
+        # that is its own change:
+        # docs/concerns/2026-09-26-pr4032-refresh-launch-integration.md. A finished
+        # sign-in still surfaces from the launch itself, now typed as a sign-in
+        # failure rather than an outage
+        # (providers/codex_provider._terminal_auth_failure).
         snapshot = None
         carrier = None
         try:

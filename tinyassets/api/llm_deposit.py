@@ -121,11 +121,16 @@ def _build_record(service: str, material: str) -> dict[str, Any]:
         }
     # codex: the base64 string is the at-rest field; strip transport whitespace.
     normalized = material.translate(str.maketrans("", "", " \t\r\n"))
-    return {
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "auth_json_b64": normalized,
-    }
+    # Through the shared builder, so the deposit is STAMPED. Both newest-wins
+    # comparators fall back to the record's stamp when the stored document carries
+    # none, and an unstamped deposit gave them nothing to read -- so a
+    # yesterday-stamped document already on disk could be restored over a
+    # credential deposited moments ago (Codex refute-review, P1 #4).
+    from tinyassets.credential_vault import llm_subscription_credential_record
+
+    return llm_subscription_credential_record(
+        service="codex", auth_json_b64=normalized,
+    )
 
 
 def connect_llm(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:

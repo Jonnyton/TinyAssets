@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import threading
 import time
@@ -21,6 +22,7 @@ import pytest
 
 from tests.test_provider_served_router import _RecordingProvider, _served_context
 from tinyassets.exceptions import ProviderAuthenticationError
+from tinyassets.providers.model_policy import ModelRef
 
 OWNER = "owner-1"
 UID = "u-owner"
@@ -339,11 +341,14 @@ def _deposit_with_home(universe_dir, encoded: str):
 
     home = universe_dir / "sign-in-home"
     home.mkdir(exist_ok=True)
+    from tinyassets.credential_vault import llm_subscription_credential_record
+
     write_credential_vault(
         universe_dir,
         [{
-            "credential_type": "llm_subscription", "service": "codex",
-            "codex_home": str(home), "auth_json_b64": encoded,
+            **llm_subscription_credential_record(
+                service="codex", auth_json_b64=encoded),
+            "codex_home": str(home),
         }],
         owner_user_id=OWNER, universe_id=UID,
     )
@@ -515,6 +520,101 @@ def test_a_finished_signin_is_told_apart_from_an_outage(excerpt, terminal):
     from tinyassets.providers.codex_provider import _terminal_auth_failure
 
     assert _terminal_auth_failure(excerpt) is terminal
+
+
+def test_the_interactive_served_launch_refreshes_before_it_pins_anything(tmp_path, monkeypatch):
+    """Codex refute-review, P1 #7: this is THE path the outage is on.
+
+    Wiring only the workflow lanes left the founder's own served turn never
+    calling the refresh at all, so the P0 was untouched. Asserted by driving the
+    real `authorize_served_provider_call_async` and recording the ORDER: the
+    refresh must land before custody is resolved and before the credential is
+    snapshotted, because both pin the record digest a refresh moves.
+    """
+    import asyncio
+
+    from tinyassets import provider_assignment
+    from tinyassets.auth.middleware import revoke_provider_request
+
+    _, _, capability, context = _served_context(tmp_path)
+    order: list[str] = []
+
+    def refreshed(**kwargs):
+        order.append(f"refresh:{kwargs.get('launching')}")
+
+    def snapshotted(**_kwargs):
+        order.append("snapshot")
+        raise PermissionError("stop here; the ordering is what is under test")
+
+    # Patched at their DEFINING modules: both are function-local imports in
+    # `provider_assignment`, so the name is bound from the source at call time and
+    # patching the caller's namespace would silently do nothing.
+    from tinyassets import credential_vault, subscription_refresh
+
+    monkeypatch.setattr(
+        subscription_refresh, "refresh_deposited_subscriptions", refreshed, raising=True,
+    )
+    monkeypatch.setattr(
+        credential_vault, "snapshot_llm_subscription_credential", snapshotted, raising=True,
+    )
+
+    async def drive():
+        manager = provider_assignment.authorize_served_provider_call_async(
+            tmp_path, universe_dir=context.universe_dir,
+            request_carrier=context.provider_request, role="writer",
+            operation="converse", model_selection=ModelRef("codex", ""),
+        )
+        with contextlib.suppress(Exception):
+            async with manager:
+                pass
+
+    try:
+        asyncio.run(drive())
+    finally:
+        revoke_provider_request(capability)
+
+    assert order, "the served launch path never called the refresh"
+    assert order[0] == "refresh:codex", (
+        "the refresh must run FIRST and name the source this call selected; got "
+        f"{order}"
+    )
+
+
+def test_an_unrecognized_selection_refreshes_nothing(tmp_path, monkeypatch):
+    """An existing test caught this: the selection must not steer a refresh.
+
+    `test_async_unaccepted_selection_refused_before_discovery` passes a bare
+    object to pin that an unaccepted selection is refused before discovery. Reading
+    a field off it turned that refusal into an AttributeError -- and the deeper
+    point is that the selection decides WHICH source is refreshed and which one may
+    fail the launch, so an unvalidated one must steer neither.
+    """
+    import asyncio
+
+    from tinyassets import provider_assignment, subscription_refresh
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+    _, _, capability, context = _served_context(tmp_path)
+    monkeypatch.setattr(
+        subscription_refresh, "refresh_deposited_subscriptions",
+        lambda **_k: pytest.fail("nothing may be refreshed for an unrecognized selection"),
+    )
+
+    async def drive():
+        manager = provider_assignment.authorize_served_provider_call_async(
+            tmp_path, universe_dir=context.universe_dir,
+            request_carrier=context.provider_request, role="writer",
+            operation="converse", model_selection=object(),
+        )
+        async with manager:
+            pass
+
+    try:
+        with pytest.raises(ProviderAuthorityHeldError):
+            asyncio.run(drive())
+    finally:
+        revoke_provider_request(capability)
 
 
 def test_a_finished_signin_is_not_a_provider_outage(tmp_path):
@@ -784,11 +884,155 @@ def test_a_non_https_endpoint_is_refused_before_anything_is_spent(monkeypatch):
 
 
 def test_an_unreadable_stored_document_is_never_echoed(tmp_path):
+    """Codex refute-review, P1 #6: `from None` clears __cause__, NOT __context__.
+
+    A `JSONDecodeError`'s `doc` attribute is the WHOLE credential document, so a
+    raise inside the handler hands every token in it to anything that walks the
+    context chain. My previous version of this test read only the context's
+    `repr`, which omits `.doc` -- so it passed while the leak was real. It now
+    walks the whole chain and reads every attribute of every link.
+    """
     from tinyassets.credential_refresh import RefreshError
     from tinyassets.subscription_refresh import _parse
 
     blob = base64.b64encode(b'{"tokens": {"access_token": "s3cr3t-in-broken-json"').decode()
     with pytest.raises(RefreshError) as caught:
         _parse(blob)
-    chain = f"{caught.value} {caught.value.__cause__!r} {caught.value.__context__!r}"
-    assert "s3cr3t" not in chain
+
+    def links(exc):
+        seen = []
+        while exc is not None and exc not in seen:
+            seen.append(exc)
+            exc = exc.__cause__ or exc.__context__
+        return seen
+
+    chain = links(caught.value)
+    assert len(chain) == 1, "no exception carrying the document may remain in the chain"
+    rendered = " ".join(
+        f"{link!r} {link} " + " ".join(
+            str(getattr(link, name, "")) for name in ("doc", "object", "args", "detail")
+        )
+        for link in chain
+    )
+    assert "s3cr3t" not in rendered
+
+
+def test_the_endpoint_comes_from_the_document_read_under_the_locks(tmp_path, monkeypatch):
+    """Codex refute-review, P1 #2: credential and endpoint must share one read.
+
+    Resolving the endpoint BEFORE the locks and capturing it let this through:
+    read credential A, the owner deposits credential B from a different issuer,
+    the locks are taken and B is re-read -- and B's refresh token went to A's
+    endpoint.
+    """
+    from tinyassets import subscription_refresh
+
+    universe_dir = tmp_path / UID
+    universe_dir.mkdir()
+    first = _jwt({"iss": "https://issuer-a.example.net", "client_id": "client-a"})
+    second = _jwt({"iss": "https://issuer-b.example.net", "client_id": "client-b"})
+    _deposit(universe_dir, _document(
+        refresh="r-a", id_token=first, last_refresh="2020-01-01T00:00:00Z"))
+    _endpoint_from_the_credential(monkeypatch)
+    sent: list[tuple[str, str, str]] = []
+
+    def fake_spend(document, *, token_url, client_id):
+        sent.append((document.refresh_token, token_url, client_id))
+        return subscription_refresh._rebuild(
+            document, access_token="a-2", refresh_token="r-2", id_token="")
+
+    monkeypatch.setattr(subscription_refresh, "_spend", fake_spend)
+
+    # The record is replaced by a DIFFERENT issuer's credential after the first
+    # read, which is the read the endpoint used to be resolved from.
+    original_read = subscription_refresh._stored
+    swapped = {"done": False}
+
+    def swapping_read(universe, key):
+        result = original_read(universe, key)
+        if not swapped["done"]:
+            swapped["done"] = True
+            _deposit(universe_dir, _document(
+                refresh="r-b", id_token=second, last_refresh="2020-01-01T00:00:00Z"))
+        return result
+
+    monkeypatch.setattr(subscription_refresh, "_stored", swapping_read)
+    subscription_refresh.refresh_before_launch(
+        universe_dir=universe_dir, service="codex", owner_user_id=OWNER, universe_id=UID,
+    )
+    assert sent, "nothing was spent at all"
+    token, url, client = sent[-1]
+    assert (token, url, client) == (
+        "r-b", "https://issuer-b.example.net/token", "client-b",
+    ), "a credential was spent at another issuer's endpoint"
+
+
+def test_an_unsaveable_rotation_is_terminal_not_transient(tmp_path, monkeypatch):
+    """Codex refute-review, P1 #2: the token HAS been spent by then.
+
+    Reported as transient this read as "try later" about a credential that is
+    already gone -- the source rotated it and the replacement was not stored, so
+    what is in the vault is dead and only signing in again fixes it.
+    """
+    from tinyassets import credential_refresh
+    from tinyassets.credential_refresh import RefreshRejected, refresh_credential
+
+    universe_dir = tmp_path / UID
+    universe_dir.mkdir()
+    _deposit(universe_dir, _document())
+    spent: list[str] = []
+
+    real_hold = credential_refresh._hold_vault
+
+    def failing_hold(universe, deadline, subject):
+        stack, _ = real_hold(universe, deadline, subject)
+
+        def refuse(*_a, **_k):
+            raise OSError("storage is gone")
+
+        return stack, refuse
+
+    monkeypatch.setattr(credential_refresh, "_hold_vault", failing_hold)
+    with pytest.raises(RefreshRejected) as caught:
+        refresh_credential(
+            universe_dir=universe_dir, lock_id="llm_subscription::codex",
+            owner_user_id=OWNER, universe_id=UID,
+            read=lambda: "stored", stale=lambda _current: True,
+            spend=lambda _current: spent.append("once") or "rotated",
+            records=lambda _fresh: [{
+                "credential_type": "llm_subscription", "service": "codex",
+                "auth_json_b64": _document(),
+            }],
+            wait_seconds=0.2,
+        )
+    assert spent == ["once"]
+    assert "sign in again" in str(caught.value)
+
+
+def test_the_two_newest_wins_comparators_agree_on_a_fresh_deposit(tmp_path):
+    """Codex refute-review, P1 #4: adoption must not undo a re-deposit.
+
+    A newly deposited document with no internal stamp, whose RECORD is stamped
+    today, against a yesterday-stamped document on disk. The materializer prefers
+    the deposit via the record fallback; adoption must reach the same answer, or
+    it restores yesterday's credential over today's.
+    """
+    from tinyassets.credential_vault import ensure_codex_home_from_vault
+    from tinyassets.subscription_refresh import adopt_newer_on_disk_document
+
+    universe_dir = tmp_path / UID
+    universe_dir.mkdir()
+    home = _deposit_with_home(universe_dir, _document(refresh="r-old", last_refresh=""))
+    (home / "auth.json").write_text(json.dumps({
+        "tokens": {"access_token": "a-y", "refresh_token": "r-yesterday"},
+        "last_refresh": "2020-01-01T00:00:00Z",
+    }), encoding="utf-8")
+    # The record's own deposited_at is now, so the deposit is the newer of the two.
+    _deposit_with_home(universe_dir, _document(refresh="r-new", last_refresh=""))
+
+    assert adopt_newer_on_disk_document(
+        universe_dir=universe_dir, service="codex", owner_user_id=None, universe_id=UID,
+    ) is False, "adoption restored an older document over a fresh deposit"
+    assert _stored_tokens(universe_dir)["tokens"]["refresh_token"] == "r-new"
+    ensure_codex_home_from_vault(universe_dir)
+    assert json.loads((home / "auth.json").read_text())["tokens"]["refresh_token"] == "r-new"

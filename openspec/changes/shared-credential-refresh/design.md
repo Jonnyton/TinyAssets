@@ -169,3 +169,52 @@ have committed a side effect is not replayable anywhere.
 ## Open Questions
 
 None blocking. The re-authentication card is tracked as its own change.
+
+## What round 2 of the cross-family review changed (REJECT, 7 P1s)
+
+Four of them were placement and authority, not defects in the mechanism, and they
+moved the design:
+
+**The seam belongs where nothing is pinned yet, and that is exactly ONE place.**
+The first version wired the two workflow lanes and missed the founder's own
+interactive turn -- the surface the outage is on -- so the P0 was untouched. Worse,
+both lanes it did wire have their authority ALREADY minted by then: the receipt
+pins `assignment_generation` and `credential_reference_digest`, and a refresh
+renews the accepted source, which advances the generation. Refreshing there failed
+the very check it was meant to help, and the resulting `PermissionError` was
+swallowed into `ProviderAuthorityHeldError`, which cannot fall back either. Both
+lanes are now explicitly NOT wired, with the reason in the code, and the refresh
+runs at the top of `authorize_served_provider_call_async` -- before the shared
+admission, before custody resolution, before the snapshot.
+
+**An unvalidated selection must steer nothing.** `model_selection` decides which
+source is refreshed and which one may fail the launch. A landed test passes a bare
+object to pin that an unaccepted selection is refused before discovery, and reading
+a field off it turned that refusal into an `AttributeError`. A non-`ModelRef`
+selection now refreshes nothing and reaches its existing refusal untouched.
+
+**The credential and the endpoint must come from ONE read.** Resolving the endpoint
+before the locks and capturing it allowed: read credential A, the owner deposits
+credential B from a different issuer, the locks are taken and B is re-read -- and
+B's refresh token went to A's endpoint. The endpoint is now resolved inside
+`spend`, from the re-read document.
+
+**`from None` does not clear `__context__`.** A `JSONDecodeError`'s `doc` attribute
+is the entire credential document, so a raise inside the handler handed every token
+in it to anything walking the context chain. `_parse` now raises outside its
+handler, like `credential_vault.load_credential_vault` already did. The previous
+test read only the context's `repr`, which omits `.doc` -- so it passed while the
+leak was real.
+
+Three smaller ones followed from the same round: an unsaveable rotation is
+TERMINAL rather than transient (the token has already been spent, so the stored one
+is dead and only signing in again fixes it); the two newest-wins comparators now
+share the record-stamp fallback, which stops adoption restoring yesterday's
+credential over a fresh deposit; and the deposit path goes through the shared
+builder, so a deposit is stamped at all -- without which that fallback had nothing
+to read.
+
+Still open, carried in `docs/concerns/2026-09-26-pr4032-refresh-launch-integration.md`:
+the workflow lanes, which need the seam moved ahead of the receipt mint, and the
+native-agent turn state (`held_native_unknown`), which `_next_after_signin`
+deliberately refuses to advance past because it is not evidence of no side effect.

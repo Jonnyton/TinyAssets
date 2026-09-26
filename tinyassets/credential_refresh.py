@@ -250,7 +250,15 @@ def _refresh_locked(
                 return fresh
             except Exception:  # noqa: BLE001 - an unsaved rotation loses the credential
                 if time.monotonic() >= deadline:
-                    raise RefreshUnavailable(
-                        "the refreshed authorization could not be saved; reconnect"
+                    # TERMINAL, not transient. The refresh token HAS been spent:
+                    # the source rotated it and the replacement could not be
+                    # stored, so what is in the vault is now dead and no retry of
+                    # it can work -- only the owner signing in again. Reported as
+                    # `RefreshUnavailable` this read as "try later", which is a
+                    # lie about a credential that is already gone (Codex
+                    # refute-review, P1 #2, second half).
+                    raise RefreshRejected(
+                        "the refreshed authorization could not be saved, so the "
+                        "stored one is no longer usable; sign in again"
                     ) from None
                 time.sleep(0.05)

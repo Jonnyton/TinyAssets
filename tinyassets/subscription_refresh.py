@@ -114,32 +114,42 @@ def _claim_expiry(token: str) -> float | None:
         return None
 
 
+_UNREADABLE = "the stored authorization is unreadable; reconnect"
+
+
 def _parse(encoded: str) -> _Document:
     """Parse the stored base64 document. Raises :class:`RefreshError` on any
-    shape this module will not spend a refresh token against."""
+    shape this module will not spend a refresh token against.
+
+    Every raise happens OUTSIDE the handler that decided it. ``from None`` clears
+    ``__cause__`` but LEAVES ``__context__``, and a ``JSONDecodeError``'s ``doc``
+    attribute is the entire credential document -- so a raise inside the handler
+    hands every token in it to any traceback, log or error collector that walks
+    the context chain (Codex refute-review, P1 #6; the same reason
+    ``credential_vault.load_credential_vault`` raises after its handler exits).
+    """
+    document: dict[str, Any] | None = None
+    text = ""
     try:
         raw = base64.b64decode(encoded.strip(), validate=True)
-    except (binascii.Error, ValueError):
-        raise RefreshError("the stored authorization is unreadable; reconnect") from None
-    if len(raw) > _MAX_DOCUMENT_BYTES:
-        raise RefreshError("the stored authorization is unreadable; reconnect")
-    try:
-        doc = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        # `ValueError.doc` on a JSONDecodeError is the WHOLE document, i.e. every
-        # token in it. Nothing from the exception is chained or interpolated.
-        raise RefreshError("the stored authorization is unreadable; reconnect") from None
-    if not isinstance(doc, dict) or not isinstance(doc.get("tokens"), dict):
-        raise RefreshError("the stored authorization is unreadable; reconnect")
-    tokens = doc["tokens"]
+        if len(raw) <= _MAX_DOCUMENT_BYTES:
+            text = raw.decode("utf-8")
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                document = parsed
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        document = None
+    if document is None or not isinstance(document.get("tokens"), dict):
+        raise RefreshError(_UNREADABLE)
+    tokens = document["tokens"]
     access = tokens.get("access_token")
     refresh = tokens.get("refresh_token")
     if not isinstance(access, str) or not isinstance(refresh, str):
-        raise RefreshError("the stored authorization is unreadable; reconnect")
+        raise RefreshError(_UNREADABLE)
     identity = tokens.get("id_token")
-    stamp = doc.get("last_refresh")
+    stamp = document.get("last_refresh")
     return _Document(
-        text=raw.decode("utf-8"),
+        text=text,
         access_token=access,
         refresh_token=refresh,
         id_token=identity if isinstance(identity, str) else "",
@@ -339,21 +349,14 @@ def refresh_before_launch(
     if stored is None:
         return False
     moment = time.time() if now is None else now
-    document = _parse(stored[1])
-    if not document_is_stale(document, moment):
-        return False
-    endpoint, identifier = _source_endpoint(document, token_url, client_id)
-    if not endpoint or not identifier:
-        # The credential does not say where it came from, or that issuer publishes
-        # no usable metadata: launch with what is stored, exactly as before. Not a
-        # failure, and not a place to guess a URL.
+    if not document_is_stale(_parse(stored[1]), moment):
         return False
     rotated = False
 
     def read() -> _Document:
         current = _stored(universe, key)
         if current is None:
-            raise RefreshError("the stored authorization is unreadable; reconnect")
+            raise RefreshError(_UNREADABLE)
         return _parse(current[1])
 
     def stale(current: _Document) -> bool:
@@ -363,30 +366,50 @@ def refresh_before_launch(
 
     def spend(current: _Document) -> _Document:
         nonlocal rotated
+        # The endpoint is resolved from the document that was RE-READ under the
+        # locks, never from the one seen before them. Resolving it early and
+        # capturing the pair let this interleaving through: read credential A,
+        # the owner deposits credential B from a different issuer, the locks are
+        # taken and B is re-read -- and B's refresh token went to A's endpoint
+        # (Codex refute-review, P1 #2). The credential and the endpoint it is
+        # spent at must come from the same read.
+        endpoint, identifier = _source_endpoint(current, token_url, client_id)
+        if not endpoint or not identifier:
+            # The credential does not say where it came from, or that issuer
+            # publishes no usable metadata. Nothing is spent; the launch proceeds
+            # with what is stored, exactly as before.
+            raise _NoEndpoint()
         fresh = _spend(current, token_url=endpoint, client_id=identifier)
         rotated = True
         return fresh
 
     from tinyassets.credential_vault import llm_subscription_credential_record
 
-    refresh_credential(
-        universe_dir=universe,
-        lock_id=f"llm_subscription::{key}",
-        owner_user_id=owner_user_id,
-        universe_id=universe_id,
-        read=read,
-        stale=stale,
-        spend=spend,
-        records=lambda fresh: [
-            llm_subscription_credential_record(
-                service=key,
-                auth_json_b64=fresh.encoded(),
-                last_refresh=fresh.last_refresh,
-            )
-        ],
-        subject="sign-in",
-    )
+    try:
+        refresh_credential(
+            universe_dir=universe,
+            lock_id=f"llm_subscription::{key}",
+            owner_user_id=owner_user_id,
+            universe_id=universe_id,
+            read=read,
+            stale=stale,
+            spend=spend,
+            records=lambda fresh: [
+                llm_subscription_credential_record(
+                    service=key,
+                    auth_json_b64=fresh.encoded(),
+                    last_refresh=fresh.last_refresh,
+                )
+            ],
+            subject="sign-in",
+        )
+    except _NoEndpoint:
+        return False
     return rotated
+
+
+class _NoEndpoint(Exception):
+    """The locked credential does not name a resolvable issuer. Nothing spent."""
 
 
 def _claims(token: str) -> dict[str, Any]:
@@ -494,7 +517,7 @@ def adopt_newer_on_disk_document(
     except (OSError, RefreshError):
         return False
     moment = time.time() if now is None else now
-    if not _strictly_newer(candidate, current, moment):
+    if not _strictly_newer(candidate, current, moment, stored[0]):
         return False
 
     def read() -> _Document:
@@ -512,7 +535,11 @@ def adopt_newer_on_disk_document(
             read=read,
             # Re-decided inside the locks against whatever is stored NOW: a holder
             # before us may already have written something newer still.
-            stale=lambda latest: _strictly_newer(candidate, latest, moment),
+            # Re-decided inside the locks against whatever is stored NOW, with
+            # that read's OWN record, so the fallback stamp belongs to the
+            # document it is compared against.
+            stale=lambda latest: _strictly_newer(
+                candidate, latest, moment, (_stored(universe, key) or (None,))[0]),
             # No network: the source already issued this document.
             spend=lambda latest: candidate,
             records=lambda fresh: [
@@ -575,14 +602,32 @@ def _materialized_document(universe: Path, record: dict[str, Any]) -> Path | Non
     return None
 
 
-def _strictly_newer(candidate: _Document, current: _Document, now: float) -> bool:
-    """Whether ``candidate`` is a different document with a strictly newer stamp."""
+def _strictly_newer(
+    candidate: _Document, current: _Document, now: float, record: dict[str, Any] | None = None,
+) -> bool:
+    """Whether ``candidate`` is a different document with a strictly newer stamp.
+
+    ``record`` is the vault record holding ``current``, and it is not optional in
+    spirit: the materializer's comparator falls back to the RECORD's stamp when the
+    stored document carries none, and without the same fallback here the two
+    disagreed. Concretely (Codex refute-review, P1 #4): a freshly deposited
+    document with no internal stamp, whose record is stamped today, lost to a
+    yesterday-stamped document on disk -- so adoption restored yesterday's
+    credential over the deposit the materializer had just correctly preferred.
+    """
     if candidate.refresh_token == current.refresh_token:
         return False
     theirs = _stamp_age(candidate.last_refresh, now)
-    ours = _stamp_age(current.last_refresh, now)
     if theirs is None:
         return False  # unstamped: never preferred, however different it looks
+    ours = _stamp_age(current.last_refresh, now)
+    if ours is None and record is not None:
+        from tinyassets.credential_vault import HTTP_DEPOSITED_AT, SUBSCRIPTION_LAST_REFRESH
+
+        for field in (SUBSCRIPTION_LAST_REFRESH, HTTP_DEPOSITED_AT):
+            ours = _stamp_age(str(record.get(field) or ""), now)
+            if ours is not None:
+                break
     return ours is None or theirs < ours
 
 
