@@ -1,5 +1,13 @@
-## ADDED Requirements
+# served-agent-tool-guidance Specification
 
+## Purpose
+What the served engine surface keeps RESIDENT in the tool block re-sent on
+every model round-trip of a served founder turn, versus what it keeps
+REACHABLE on demand through the handbook. Measured 2026-09-25: the block was
+63,383 B and one handle's manual was 38,513 chars of it, on every round of
+every turn. Created by archiving change engine-tool-manual-on-demand.
+
+## Requirements
 ### Requirement: Long-form served-agent guidance is reachable, not resident
 
 A served founder turn is an agentic loop, so the engine tool-definition block is
@@ -23,9 +31,10 @@ discover from what it is already holding.
 - **THEN** a relocated chapter's text is absent from the advertised description
 - **AND** the description still names that chapter and when to fetch it
 
-#### Scenario: relocation preserves every byte
-- **WHEN** a handle's chapters are concatenated back in their documented order onto its resident description
-- **THEN** the result equals the guidance that handle carried before relocation, byte for byte
+#### Scenario: relocation preserves every line of guidance
+- **WHEN** a handle's chapters are put back at the position its resident index now occupies
+- **THEN** the result equals the guidance that handle carried before relocation, line for line, modulo leading indentation and trailing blank lines — pinned against a digest recorded before the split
+- **AND** `served_tool_guidance(handle)` returns the description plus every chapter, so one call answers "is the agent told this?"
 
 #### Scenario: guidance that prevents a wrong first call stays resident
 - **WHEN** the resident description is assembled

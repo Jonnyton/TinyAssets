@@ -79,12 +79,29 @@ PLATFORM_OWN = {
     "tinyassets/auto_ship.py",                   # ships its own releases
 }
 
+#: Module constants that ARE documentation, exempt on the same grounds as a
+#: docstring. Listed by name so the exemption stays visible, and deliberately not
+#: a pattern: only guidance text a served handle serves to its own agent.
+#:
+#: 2026-09-26: `write_graph`'s long-form chapters moved out of its docstring into
+#: these constants so they stop riding on every model round-trip of every served
+#: turn (`openspec/changes/engine-tool-manual-on-demand/`). The text did not
+#: change -- only where it lives -- so counting it now would make the rule
+#: unmeetable for exactly the reason the docstring exemption exists.
+DOCUMENTATION_CONSTANTS = {
+    "_WRITE_GRAPH_CONNECTIONS_CHAPTER",
+    "_WRITE_GRAPH_CODE_NODES_CHAPTER",
+    "_WRITE_GRAPH_WORKSPACES_CHAPTER",
+}
+
 
 def runtime_strings(path: pathlib.Path):
     """String literals and identifiers that reach the runtime.
 
     Docstrings are excluded: in this tree they mostly explain why something is
-    agnostic, and counting them would make the rule unmeetable.
+    agnostic, and counting them would make the rule unmeetable. A constant named
+    in ``DOCUMENTATION_CONSTANTS`` is a relocated docstring and excluded the same
+    way -- its value only, never the rest of the file.
     """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
@@ -98,6 +115,18 @@ def runtime_strings(path: pathlib.Path):
             doc = ast.get_docstring(node, clean=False)
             if doc is not None:
                 docstrings.add(doc)
+    for node in ast.walk(tree):
+        # A relocated docstring: `NAME = """..."""` at module level, named in
+        # DOCUMENTATION_CONSTANTS. Only that exact value is exempted.
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if (
+                isinstance(target, ast.Name)
+                and target.id in DOCUMENTATION_CONSTANTS
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                docstrings.add(node.value.value)
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if node.value not in docstrings:

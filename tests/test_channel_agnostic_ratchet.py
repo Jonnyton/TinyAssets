@@ -73,6 +73,40 @@ def test_a_runtime_literal_does_count(tmp_path):
     assert hits == ["https://api.github.com"]
 
 
+def test_a_relocated_docstring_is_exempt_but_only_its_own_value(tmp_path):
+    """2026-09-26: `write_graph`'s chapters left its docstring for a module
+    constant so they stop riding on every model round-trip of every served turn.
+    The text did not change, so counting it now would make the rule unmeetable for
+    exactly the reason docstrings are exempt -- but the exemption must be the
+    NAMED constant's value only, never a licence for the rest of the file."""
+    module = _module()
+    name = sorted(module.DOCUMENTATION_CONSTANTS)[0]
+    source = tmp_path / "relocated.py"
+    source.write_text(
+        '"""Agnostic, allegedly."""\n'
+        "\n"
+        f'{name} = """Ask for a GitHub key the way the site names it."""\n'
+        '_OTHER_CONSTANT = """A GitHub mention in an unlisted constant."""\n'
+        "\n"
+        "def f():\n"
+        '    return "https://api.github.com"\n',
+        encoding="utf-8",
+    )
+    hits = [t for t in module.runtime_strings(source) if "github" in t.lower()]
+    assert "Ask for a GitHub key the way the site names it." not in hits
+    assert "A GitHub mention in an unlisted constant." in hits
+    assert "https://api.github.com" in hits
+
+
+def test_every_exempt_documentation_constant_still_exists():
+    """A stale name in the exemption list is an exemption nobody can audit."""
+    module = _module()
+    from tinyassets import engine_mcp_server
+
+    for name in module.DOCUMENTATION_CONSTANTS:
+        assert isinstance(getattr(engine_mcp_server, name), str)
+
+
 def test_the_platform_acting_as_itself_is_listed_not_hidden():
     """Billing its own customers and shipping its own releases are not user
     capabilities. They are exempt BY NAME so the exemption can be argued with,
