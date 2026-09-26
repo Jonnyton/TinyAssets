@@ -258,11 +258,6 @@ Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/e
   locks you out entirely -- you cannot delete, list, or even read it, and a
   reboot does not help. Cleanup needs an elevated
   `scripts/clear_sandbox_temp_dirs.ps1 -Apply`.
-- **Disk hygiene is automatic, not a question** (founder, 2026-09-26, after C:
-  hit 0 bytes free). `scripts/dev_hygiene.py` runs from a SessionStart hook and
-  an hourly task; it removes only the provably disposable and fails closed on
-  every unknown. Dry-run by default. Reference:
-  [`docs/reference/dev-disk-hygiene.md`](docs/reference/dev-disk-hygiene.md).
 - After canonical `tinyassets/*` edits affecting the plugin runtime:
   `python packaging/claude-plugin/build_plugin.py` (`mirror-parity` gates it).
 - `actionlint` on workflow edits; CI is authoritative.

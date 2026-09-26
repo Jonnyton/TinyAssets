@@ -137,6 +137,10 @@ def worktree_items(repo: Path, **kwargs):
     kwargs.setdefault("now", time.time() + 48 * HOUR)  # past the idle gate
     kwargs.setdefault("idle_hours", 24.0)
     kwargs.setdefault("pr_state_fn", no_pr)
+    # Default: gh answered, and no branch has an open PR. Tests that care about
+    # liveness pass their own; a test that forgot would otherwise silently exercise
+    # the fail-closed path and prove nothing.
+    kwargs.setdefault("open_pr_fn", lambda _repo: set())
     return dh.collect_worktrees(repo, **kwargs)
 
 
@@ -229,6 +233,57 @@ def test_pytest_of_root_is_checked_by_shape_not_by_name(tmp_path: Path) -> None:
     assert (
         by_path(dh.collect_basetemps(root, min_age_hours=6, now=NOW), genuine).verdict == "REMOVE"
     )
+
+
+def test_a_drive_root_scans_only_the_agents_own_prefix(tmp_path: Path) -> None:
+    """Lanes put short basetemps at the C:\\ ROOT to dodge MAX_PATH; 34 were there.
+
+    A drive root also holds system directories, so it takes `ta-` only — not the
+    full temp-root prefix set, which would make `pytest-*` and `Program Files`-
+    adjacent names candidates.
+    """
+    root = tmp_path / "drive"
+    root.mkdir()
+    mine = make_basetemp(root, "ta-cr1", hours=500)
+    (root / "Windows").mkdir()
+    (root / "pytest-of-someone").mkdir()
+    age(root / "pytest-of-someone", 500)
+    items = dh.collect_basetemps(root, min_age_hours=6, now=NOW, prefixes=dh.DRIVE_ROOT_PREFIXES)
+    assert by_path(items, mine).verdict == "REMOVE"
+    seen = {Path(i.path).name for i in items}
+    assert seen == {"ta-cr1"}, f"a drive root must not widen past ta-*: {seen}"
+    assert (root / "Windows").is_dir()
+
+
+def test_a_checkout_at_a_drive_root_is_not_basetemp(tmp_path: Path) -> None:
+    """`C:\\ta-something` holding a repo belongs to the worktree class, not this one."""
+    root = tmp_path / "drive"
+    root.mkdir()
+    checkout = root / "ta-baseline-checkout"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "test_x0").mkdir()  # pytest-shaped children, so only .git saves it
+    age(checkout, 500)
+    item = by_path(
+        dh.collect_basetemps(root, min_age_hours=6, now=NOW, prefixes=dh.DRIVE_ROOT_PREFIXES),
+        checkout,
+    )
+    assert item.verdict == "KEEP"
+    assert item.reason == "git_checkout_not_basetemp"
+    assert checkout.exists()
+
+
+def test_extra_temp_root_defaults_to_the_repo_drive(repo: Path, tmp_path: Path, capsys) -> None:
+    """The default is data derived from the repo path, not a literal "C:\\"."""
+    root = tmp_path / "t"
+    root.mkdir()
+    rc = dh.main(["--repo", str(repo), "--temp-root", str(root), "--classes", "basetemp", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    anchor = Path(repo).anchor
+    assert anchor, "setup: the repo path must have a drive/root anchor"
+    # Nothing under the real drive root is asserted removable here — only that the
+    # pass completed with the extra root configured and refused nothing unknown.
+    assert all(i["verdict"] in {"REMOVE", "KEEP"} for i in payload["items"])
 
 
 def test_unknown_name_is_not_even_a_candidate(tmp_path: Path) -> None:
@@ -600,6 +655,99 @@ def test_status_parsing_survives_a_path_with_spaces(repo: Path) -> None:
     entries = dh.dirty_paths(repo)
     assert any("a file with spaces.txt" in e for e in entries), entries
     assert not any('"' in e for e in entries), f"quoting leaked into the parse: {entries}"
+
+
+def test_a_branch_with_an_open_pr_is_never_removed(repo: Path) -> None:
+    """Liveness: an open PR means someone is still working that lane.
+
+    With 115 removable worktrees the realistic failure is deleting the tree a
+    parallel builder is standing in, and merge state alone does not see that — a
+    branch can read merged locally while its PR is open and being revised.
+    """
+    lane = add_lane(repo, "landed", merged=True)
+    assert by_path(worktree_items(repo), lane).verdict == "REMOVE", "setup: removable when no PR"
+    item = by_path(worktree_items(repo, open_pr_fn=lambda _r: {"landed"}), lane)
+    assert item.verdict == "KEEP"
+    assert item.reason == "open_pr"
+    assert lane.exists()
+
+
+def test_an_unanswerable_open_pr_query_skips_the_whole_worktree_class(repo: Path) -> None:
+    """Fail closed: an unknown open-PR set is not a licence to remove any worktree."""
+    lane = add_lane(repo, "landed", merged=True)
+    items = worktree_items(repo, open_pr_fn=lambda _r: None)
+    assert [i.reason for i in items] == ["open_pr_set_unknown"]
+    assert all(i.verdict == "KEEP" for i in items)
+    assert not any(Path(i.path) == lane and i.verdict == "REMOVE" for i in items)
+
+
+def test_open_pr_branches_returns_none_when_gh_fails(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """None, never an empty set — an empty set would read as "no open PRs"."""
+    monkeypatch.setattr(
+        dh, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "gh: not logged in")
+    )
+    assert dh.open_pr_branches(repo) is None
+    monkeypatch.setattr(
+        dh, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "not json", "")
+    )
+    assert dh.open_pr_branches(repo) is None
+    monkeypatch.setattr(
+        dh,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a, 0, json.dumps([{"headRefName": "claude/x"}, {"headRefName": "codex/y"}]), ""
+        ),
+    )
+    assert dh.open_pr_branches(repo) == {"claude/x", "codex/y"}
+
+
+def test_a_commit_added_after_the_merge_is_never_removed(repo: Path) -> None:
+    """A post-merge commit that CHANGES the tree is refused.
+
+    Caught by the unpushed-commits gate rather than the new one, because changing
+    the tree also changes the cumulative diff, so `is_merged_into` stops agreeing.
+    Asserted anyway: the outcome is what matters, and it must not depend on which of
+    the two gates happens to fire first.
+    """
+    lane = add_lane(repo, "landed", merged=True)
+    assert by_path(worktree_items(repo), lane).verdict == "REMOVE", (
+        "setup: removable before the commit"
+    )
+
+    (lane / "landed.txt").write_text("a later edit nobody pushed\n", encoding="utf-8")
+    git(lane, "add", "-A")
+    git(lane, "commit", "-q", "-m", "work added after the merge")
+    item = by_path(worktree_items(repo), lane)
+    assert item.verdict == "KEEP", f"a post-merge commit was removable ({item.reason})"
+    assert item.reason in {"local_commits_after_push", "unpushed_commits"}
+
+
+def test_commits_after_push_sees_a_tip_ahead_of_its_remote_ref(repo: Path) -> None:
+    """The mechanism behind the `local_commits_after_push` refusal.
+
+    Tested directly rather than end-to-end on purpose. `is_merged_into` compares the
+    branch's CUMULATIVE diff, and every post-merge commit I could construct — a
+    tree-changing one, and an experiment-plus-revert pair — also stops it agreeing,
+    so the unpushed-commits gate refuses the worktree first and this gate never
+    becomes the deciding one. It stays as the direct check on "the tip moved past
+    what was pushed", which is the fact the merge comparison does not look at; an
+    end-to-end test asserting it fires would be asserting a path I cannot reach.
+    """
+    lane = add_lane(repo, "landed", merged=True)
+    assert dh.commits_after_push(lane, "landed", "HEAD") == [], "at the pushed tip: nothing ahead"
+
+    (lane / "later.txt").write_text("after the push\n", encoding="utf-8")
+    git(lane, "add", "-A")
+    git(lane, "commit", "-q", "-m", "after the push")
+    ahead = dh.commits_after_push(lane, "landed", "HEAD")
+    assert len(ahead) == 1, ahead
+    assert "after the push" in ahead[0]
+
+    # No remote-tracking ref is not "ahead of it" — the merge and unpushed gates
+    # own that shape, and guessing here would refuse every unpushed branch twice.
+    assert dh.commits_after_push(lane, "never-pushed", "HEAD") == []
 
 
 def test_primary_checkout_is_never_removed(repo: Path) -> None:

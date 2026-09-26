@@ -82,6 +82,13 @@ CLASSES = ("basetemp", "worktree", "docker", "scratch")
 # looks_like_pytest_tree.
 BASETEMP_PREFIXES = ("ta-", "pytest-of-", "pytest-", "tinyassets-review-", "tinyassets-test-")
 
+# A DRIVE root (C:\) is also a basetemp root here: lanes put short basetemps at
+# C:\ta-<lane>N to stay under MAX_PATH, and nothing swept them — 34 were sitting
+# there on 2026-09-26, some from July. Deliberately narrower than the temp-root set:
+# a drive root holds system directories, so only the agents' own `ta-` convention
+# is even a candidate, top level only.
+DRIVE_ROOT_PREFIXES = ("ta-",)
+
 # pytest's numbered-dir scheme: "<slug><N>" for tmp_path dirs, "pytest-<N>" under
 # pytest-of-<user>, and "garbage-<uuid>" for its own deferred cleanup.
 _NUMBERED_DIR = re.compile(r".*\d+\Z")
@@ -441,7 +448,20 @@ def _is_pytest_artifact(entry: os.DirEntry) -> bool:
     return name.endswith("-current")
 
 
-def collect_basetemps(temp_root: Path, *, min_age_hours: float, now: float) -> list[Item]:
+def collect_basetemps(
+    temp_root: Path,
+    *,
+    min_age_hours: float,
+    now: float,
+    prefixes: tuple[str, ...] = BASETEMP_PREFIXES,
+) -> list[Item]:
+    """Inventory one temp root. ``prefixes`` is narrower for a drive root.
+
+    Called once per configured root. The OS temp root takes the full agent-prefix
+    set; a **drive root** like ``C:\\`` takes ``ta-`` only, because lanes put short
+    basetemps there to dodge MAX_PATH and a drive root also holds system
+    directories that must never be candidates.
+    """
     items: list[Item] = []
     here = Path.cwd().resolve()
     try:
@@ -451,7 +471,23 @@ def collect_basetemps(temp_root: Path, *, min_age_hours: float, now: float) -> l
 
     for child in children:
         name = child.name
-        if not any(name.startswith(p) for p in BASETEMP_PREFIXES):
+        if not any(name.startswith(p) for p in prefixes):
+            continue
+        # A checkout is never basetemp, whatever it is called. The shape gate below
+        # would refuse it anyway, but saying so by name keeps a repo at a drive root
+        # out of this class entirely — it belongs to the worktree class, which
+        # applies the unique-work checks.
+        if (child / ".git").exists():
+            items.append(
+                Item(
+                    "basetemp",
+                    str(child),
+                    0,
+                    "KEEP",
+                    "git_checkout_not_basetemp",
+                    "has a .git entry; the worktree class owns this path",
+                )
+            )
             continue
         try:
             if not child.is_dir() or child.is_symlink():
@@ -710,6 +746,7 @@ def collect_worktrees(
     deadline: float | None = None,
     base_ref: str = "refs/remotes/origin/main",
     pr_state_fn=None,
+    open_pr_fn=None,
 ) -> list[Item]:
     """Inventory this repo's worktrees. Never looks outside ``git worktree list``."""
     pr_state = pr_state_fn if pr_state_fn is not None else pr_is_closed
@@ -720,6 +757,25 @@ def collect_worktrees(
         ).parent
     except Undecidable as exc:
         return [Item("worktree", str(repo), 0, "KEEP", "worktree_list_undecidable", str(exc))]
+
+    # One liveness query for the whole pass. A branch with an OPEN PR is a lane
+    # someone is still working, whatever its merge state looks like locally — and
+    # with 115 removable worktrees the realistic failure is deleting the tree a
+    # parallel builder is standing in. If gh cannot answer, the ENTIRE worktree
+    # class is skipped: an unknown open-PR set is not a licence to remove any of
+    # them (lead directive 2026-09-26).
+    open_branches = (open_pr_fn if open_pr_fn is not None else open_pr_branches)(repo)
+    if open_branches is None:
+        return [
+            Item(
+                "worktree",
+                str(repo),
+                0,
+                "KEEP",
+                "open_pr_set_unknown",
+                "gh could not list open PRs; the whole worktree class is skipped",
+            )
+        ]
 
     here = Path.cwd().resolve()
     items: list[Item] = []
@@ -738,9 +794,56 @@ def collect_worktrees(
             idle_hours=idle_hours,
             base_ref=base_ref,
             pr_state=pr_state,
+            open_branches=open_branches,
         )
         items.append(item)
     return items
+
+
+def commits_after_push(worktree: Path, branch: str, head: str) -> list[str]:
+    """Commits on ``head`` that its own remote-tracking ref does not have.
+
+    The case this exists for: a branch squash-merges, then someone adds a commit
+    locally. ``is_merged_into`` compares the branch's *cumulative* diff against the
+    base, so a later commit touching only files the merge already changed can leave
+    that comparison still true — and the commit would be destroyed with the
+    worktree. Comparing the tip against ``refs/remotes/origin/<branch>`` answers it
+    directly.
+
+    Empty when there is no remote-tracking ref (nothing to compare against, and the
+    unpushed-commits and merge gates already cover that shape) or when git cannot
+    answer — the callers that matter have already established the branch is merged,
+    and this is an extra refusal, not the only one.
+    """
+    remote_ref = f"refs/remotes/origin/{branch}"
+    if run(["git", "rev-parse", "--verify", "--quiet", remote_ref], cwd=worktree).returncode != 0:
+        return []
+    proc = run(["git", "log", "--format=%h %s", head, f"^{remote_ref}"], cwd=worktree, timeout=60)
+    if proc.returncode != 0:
+        return []
+    return [line for line in (proc.stdout or "").splitlines() if line.strip()]
+
+
+def open_pr_branches(repo: Path) -> set[str] | None:
+    """Head branch names with an OPEN PR, or ``None`` when gh cannot say.
+
+    ``None`` is not "no open PRs" — callers must treat it as undecidable and skip
+    the whole class. One call per pass, not per worktree.
+    """
+    proc = run(
+        ["gh", "pr", "list", "--state", "open", "--limit", "500", "--json", "headRefName"],
+        cwd=repo,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        rows = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(rows, list):
+        return None
+    return {str(row.get("headRefName", "")) for row in rows if row.get("headRefName")}
 
 
 def _judge_worktree(
@@ -753,6 +856,7 @@ def _judge_worktree(
     idle_hours: float,
     base_ref: str,
     pr_state,
+    open_branches: set[str],
 ) -> Item:
     path = wt.path
     label = wt.branch or f"(detached {wt.head[:8]})"
@@ -774,24 +878,14 @@ def _judge_worktree(
         return keep("protected_branch")
     if wt.detached or not wt.branch:
         return keep("detached_head", "no branch to prove merged; resolve by hand")
+    if wt.branch in open_branches:
+        return keep("open_pr", f"{label}: a PR is open on this branch")
 
-    try:
-        dirty = dirty_paths(path)
-    except Undecidable as exc:
-        return keep("status_undecidable", str(exc))
-    if dirty:
-        return keep("dirty", f"{label}: {len(dirty)} changed/untracked path(s)")
-
-    try:
-        ignored = unique_ignored_paths(path)
-    except Undecidable as exc:
-        return keep("ignored_scan_undecidable", str(exc))
-    if ignored:
-        return keep("ignored_content_exists_nowhere_else", f"{label}: {', '.join(ignored[:3])}")
-
-    # The recursive newest mtime from the size walk IS the idleness answer, and it
-    # was being computed and thrown away (Codex round 1, P1): a direct-children
-    # scan misses a live lane writing at depth, e.g. into .agents/supervisor/.
+    # LIVENESS FIRST. The size walk's recursive newest mtime is the idleness
+    # answer, and it is taken BEFORE any git call: `git status` and `git log`
+    # touch files under the gitdir, and the earlier direct-children-plus-index
+    # check was invalidated by exactly that (measured 72.0h before the status
+    # call, 0.0h after). Snapshot first, judge after.
     try:
         size, newest = tree_stats(path)
     except Undecidable as exc:
@@ -799,6 +893,22 @@ def _judge_worktree(
     idle = max(0.0, (now - newest) / 3600.0)
     if idle < idle_hours:
         return keep("recently_active", f"{label}: touched {idle:.1f}h ago", size)
+
+    try:
+        dirty = dirty_paths(path)
+    except Undecidable as exc:
+        return keep("status_undecidable", str(exc), size)
+    if dirty:
+        return keep("dirty", f"{label}: {len(dirty)} changed/untracked path(s)", size)
+
+    try:
+        ignored = unique_ignored_paths(path)
+    except Undecidable as exc:
+        return keep("ignored_scan_undecidable", str(exc), size)
+    if ignored:
+        return keep(
+            "ignored_content_exists_nowhere_else", f"{label}: {', '.join(ignored[:3])}", size
+        )
 
     merged = is_merged_into(lambda a: run(list(a), cwd=path), wt.head, base_ref)
     try:
@@ -812,6 +922,19 @@ def _judge_worktree(
         # "no work exists only here", and is_merged_into already proved this
         # branch's cumulative diff is on the base, so those commits are
         # duplicates of landed content, not unique work.
+        #
+        # EXCEPT when the tip moved after the push. `is_merged_into` compares the
+        # CUMULATIVE diff, so a commit added after the merge can leave that diff
+        # still matching the base — and it would then be destroyed. Comparing the
+        # tip against its own remote-tracking ref catches that directly.
+        ahead = commits_after_push(path, wt.branch, wt.head)
+        if ahead:
+            return keep(
+                "local_commits_after_push",
+                f"{label}: {len(ahead)} commit(s) on top of origin/{wt.branch}, "
+                "made after it merged",
+                size,
+            )
         detail = f"{label}: merged into {base_ref}"
         if unpushed:
             detail += f"; {len(unpushed)} pre-squash commit(s) superseded"
@@ -1274,10 +1397,15 @@ def inventory(
     docker_keep_gb: float,
     now: float,
     deadline: float | None,
+    extra_temp_roots: tuple[Path, ...] = (),
 ) -> list[Item]:
     items: list[Item] = []
     if "basetemp" in classes:
         items += collect_basetemps(temp_root, min_age_hours=min_age_hours, now=now)
+        for root in extra_temp_roots:
+            items += collect_basetemps(
+                root, min_age_hours=min_age_hours, now=now, prefixes=DRIVE_ROOT_PREFIXES
+            )
     if "scratch" in classes:
         items += collect_repo_scratch(repo, min_age_days=min_age_days, now=now)
     if "worktree" in classes:
@@ -1341,6 +1469,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", default="", help="repository root (default: this script's repo)")
     parser.add_argument("--temp-root", default="", help="OS temp root (default: %%TEMP%%)")
     parser.add_argument(
+        "--extra-temp-root",
+        action="append",
+        default=None,
+        metavar="DIR",
+        help=(
+            "additional basetemp root, scanned for top-level `ta-*` only "
+            "(default: the repo's drive root; pass --extra-temp-root '' for none)"
+        ),
+    )
+    parser.add_argument(
         "--log", default="", help=f"append removals here (default: <repo>/{DEFAULT_LOG})"
     )
     parser.add_argument("--no-log", action="store_true", help="do not write the removal log")
@@ -1362,6 +1500,13 @@ def main(argv: list[str] | None = None) -> int:
     temp_root = (
         Path(args.temp_root).resolve() if args.temp_root else Path(os.environ.get("TEMP") or "/tmp")
     )
+    if args.extra_temp_root is None:
+        # Default: the drive the repo lives on, which is where the short
+        # MAX_PATH-dodging basetemps land. Data, not a hard-coded "C:\".
+        extra_roots: tuple[Path, ...] = (Path(repo.anchor),) if repo.anchor else ()
+    else:
+        extra_roots = tuple(Path(r).resolve() for r in args.extra_temp_root if r.strip())
+    extra_roots = tuple(r for r in extra_roots if r != temp_root)
 
     classes = tuple(c.strip() for c in args.classes.split(",") if c.strip())
     unknown = [c for c in classes if c not in CLASSES]
@@ -1384,6 +1529,7 @@ def main(argv: list[str] | None = None) -> int:
     report.items = inventory(
         repo=repo,
         temp_root=temp_root,
+        extra_temp_roots=extra_roots,
         classes=classes,
         min_age_hours=args.min_age_hours,
         min_age_days=args.min_age_days,

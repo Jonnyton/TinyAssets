@@ -84,17 +84,6 @@ review found before this shipped:
   filenames its producers actually emit (`events.jsonl`, `seen.json`,
   `keep-working-*.json`); anything else keeps the worktree.
 
-### Idleness is a recursive mtime, and nothing else
-
-The first version answered "is a session still using this lane?" with a cheap scan
-of the worktree's direct children plus its gitdir's `index`/`HEAD`. That
-measurement is **invalidated by its own caller**: the collector runs `git status`
-first, which rewrites `gitdir/index`. Measured on 2026-09-26 — 72.0h before the
-status call, 0.0h after. It has been deleted rather than kept as a second opinion;
-the recursive newest mtime from the size walk is the whole answer, it was already
-being computed, and `git status` does not touch the worktree tree (a linked
-worktree holds only a `.git` *file*).
-
 ### Everything is re-verified at the removal boundary
 
 Inventory and removal are minutes apart on a full pass, and `git worktree remove`
@@ -143,51 +132,39 @@ lane's unpublished `_PURPOSE.md` still lands in
 three gates `wt.py` does not have: ignored-content, idleness, and
 commits-on-no-remote.
 
-### On the unpushed-commits check
+### Links and platform notes
 
-`git log <head> --not --remotes` is non-empty for **every** squash-merged branch —
-its pre-squash history is reachable from no remote. The invariant that check
-protects is "no work exists only here", and `is_merged_into` already proves the
-branch's cumulative diff is on the base, so for a merged branch those commits are
-duplicates of landed content. The check therefore gates the *not-merged* path,
-where an unreachable commit is real unique work and the worktree is kept.
+**One rule for every link, on every platform: it contributes nothing to a size
+and is never descended into.** `entry.is_dir(follow_symlinks=False)` is True for a
+Windows junction, and a POSIX symlink's own `lstat` size is its target-path length
+— neither is content in this tree. Both of `tree_stats`' returns are load-bearing
+(size ranks the escalation, newest mtime is the idleness gate). `remove_path`
+refuses a link handed to it directly. Git writes loose objects read-only, so the
+remover does one chmod sweep and retries; a later failure reports **partial**
+removal, because `rmtree` deletes as it walks. Status parsing uses `--porcelain -z`.
 
-Known limit, accepted: `is_merged_into`'s squash path ends in `git cherry`, which
-compares patch IDs, and patch IDs normalize whitespace. A branch differing from
-the base by whitespace alone therefore reads as merged. The bounded consequence is
-that such a lane's *working files* are removed while its branch ref survives —
-`git branch -d` refuses a branch git does not consider merged, and the tool
-reports "branch kept as the recovery ref". `is_merged_into` is the repo's shared
-squash-merge oracle (`scripts/wt.py` and `scripts/worktree_status.py` both use
-it); a second definition here would be worse than the limit.
+## Scaling later (not built)
 
-### Links, and platform notes
+Founder addendum 2026-09-26: *"also scaled with users as needed, but that's
+mostly later."* The build is scoped to the dev box. The policy is deliberately
+the part that generalizes, so the same four rules — disposable-only,
+inventory-first, logged, runs on a schedule and on low disk, escalates only with
+a concrete list — apply unchanged to the production host and to per-universe
+scratch. Everything machine-specific is data, not code: prefixes, class names,
+age floors, the keep budget, the per-pass cap and the roots are all module
+constants or CLI flags, and the extra temp root defaults to the repo's own drive
+rather than a literal `C:\`.
 
-**One rule for every link, on every platform: it contributes nothing to a size and
-is never descended into.** Two different mechanisms, one fact:
+What would have to be added when user count makes it necessary, and is NOT here:
 
-* `entry.is_dir(follow_symlinks=False)` returns **True** for a Windows junction, so
-  a naive walk crosses into the target and counts its bytes (measured: 4,106 where
-  10 were inside).
-* A POSIX symlink is not descended into, but its **own** `lstat` size is the length
-  of its target path — 38 bytes in a WSL probe — which is not content in this tree
-  either. Counting it is what made the assertion `size == 10` red on Linux CI at
-  48.
+- **Per-universe quotas.** A reclaim decision per universe needs a tier quota to
+  measure against; today the tool has one global free-space floor.
+- **Reclaiming scratch leases.** Per-job scratch is leased, so the disposability
+  proof becomes "the lease expired", not "the mtime is old" — a different
+  question, and the one the production side should ask.
+- **Host disk expansion.** On the droplet, escalation should be able to end in
+  "grow the volume" rather than "delete more"; the dev box has no such lever.
 
-Both returns of `tree_stats` are load-bearing (size ranks the escalation, newest
-mtime is the idleness gate), so counting either would be a lie about a different
-directory. An earlier version raised `Undecidable` on any reparse point; that was
-unnecessary once nothing is counted or followed, and it cost real coverage — 2
-worktrees and 7 temp dirs permanently un-inventoriable, and it would have refused
-every POSIX tree holding a `.venv/bin` symlink. The remaining guard is at the
-deletion boundary: `remove_path` refuses a link handed to it directly. `shutil.rmtree`
-does **not** delete through a nested junction either — `shutil._rmtree_islink` tests
-`IO_REPARSE_TAG_MOUNT_POINT` (Python 3.14) and a 2026-09-26 probe confirmed the
-target survived removal of the parent.
-* Git writes loose objects read-only, so `shutil.rmtree` raises WinError 5 on any
-  basetemp holding a checkout — which is most of them. The remover does one chmod
-  sweep and retries; a failure after that reports **partial** removal, because
-  `rmtree` deletes as it walks and "kept" would imply the path is intact.
-* Status parsing uses `--porcelain -z`. The newline form quotes and escapes a path
-  with spaces or non-ASCII bytes, and stripping the quotes leaves the escapes
-  undecoded.
+None of those change the rules above; they add classes with their own proof of
+disposability. Production disk pressure today is `DISK_AUTOPRUNE_PCT` and
+`scripts/daemon_image_retention.py`, which this tool deliberately does not touch.
