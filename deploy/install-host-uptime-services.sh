@@ -313,14 +313,37 @@ exact_file() { # exact_file <path> <expected-mode>
 #     starting the unit and is what actually makes a retired timer still fire;
 #   * systemd's own view: a unit can remain loaded and even active after its file
 #     is gone, and only a daemon-reload plus a stop clears that.
+# Enablement links only: a *.wants/ or *.requires/ entry naming the unit. Scoped to
+# those directories on purpose -- searching for the basename anywhere under the
+# systemd tree also matches a saved copy someone parked in a subdirectory, and
+# deleting that is not this script's business (round 2 follow-up).
+retired_unit_links() {  # retired_unit_links <unit>
+    find "${SYSTEMD_DIR}" \
+        -path "*.wants/$1" -o -path "*.requires/$1" \
+        2>/dev/null
+}
+
+# A unit masked to /dev/null is TERMINAL for retirement: systemd refuses to start
+# it, and the link is the only thing left. This is how a unit provided from
+# somewhere we do not own (/run/systemd/system, /usr/lib/systemd/system) reaches a
+# converged state -- see the transaction below.
+retired_unit_is_masked() {  # retired_unit_is_masked <unit>
+    local target
+    [[ -L "${SYSTEMD_DIR}/$1" ]] || return 1
+    target="$(readlink -- "${SYSTEMD_DIR}/$1")" || return 1
+    [[ "${target}" == "/dev/null" ]]
+}
+
 retired_unit_is_gone() {  # retired_unit_is_gone <unit>
     local unit="$1" load_state
+    # Masked counts as gone, and must be checked FIRST: the mask link would
+    # otherwise fail the "no file of ours" test below and the installer would
+    # loop trying to re-retire a unit it had already neutralised.
+    retired_unit_is_masked "${unit}" && return 0
     [[ ! -e "${SYSTEMD_DIR}/${unit}" && ! -L "${SYSTEMD_DIR}/${unit}" ]] || return 1
-    # Any *.wants/ or *.requires/ link naming this unit, anywhere under the
-    # systemd tree. -L catches the dangling ones a plain -e would miss.
-    if find "${SYSTEMD_DIR}" -name "${unit}" ! -path "${SYSTEMD_DIR}/${unit}" ! -type d \
-        -print -quit 2>/dev/null | grep -q .
-    then
+    # -L as well as -e: a DANGLING link is invisible to -e, and a dangling
+    # enablement link still keeps systemd starting the unit.
+    if [[ -n "$(retired_unit_links "${unit}")" ]]; then
         return 1
     fi
     load_state="$("${SYSTEMCTL_BIN}" show --property=LoadState --value "${unit}" 2>/dev/null)" \
@@ -564,16 +587,33 @@ for unit in "${RETIRED_UNITS[@]}"; do
         [[ -n "${link}" ]] || continue
         rm -f -- "${link}" || fail "cannot remove retired enablement link: ${link}"
         log "retired enablement link removed: ${link}"
-    done < <(
-        find "${SYSTEMD_DIR}" -name "${unit}" ! -path "${SYSTEMD_DIR}/${unit}" \
-            ! -type d -print 2>/dev/null
-    )
+    done < <(retired_unit_links "${unit}")
     UNITS_MUTATED=1
     log "retired unit removed: ${unit}"
 done
 # One reload after the removals, so systemd forgets the units rather than keeping
 # them loaded with no file behind them.
 "${SYSTEMCTL_BIN}" daemon-reload
+
+# Anything STILL loadable is provided from a tree this script does not own --
+# /run/systemd/system from a generator, or /usr/lib/systemd/system from a package.
+# Deleting another owner's file is not ours to do, and leaving it means the unit
+# keeps firing AND the gate above never converges, so the installer would repeat
+# this transaction on every deploy (round 2 3). Masking is the supported
+# neutralisation: it links the name to /dev/null under SYSTEMD_DIR, which IS ours,
+# so the unit cannot start and `retired_unit_is_masked` gives the gate a terminal
+# state to recognise.
+for unit in "${RETIRED_UNITS[@]}"; do
+    retired_unit_is_gone "${unit}" && continue
+    load_state="$("${SYSTEMCTL_BIN}" show --property=LoadState --value "${unit}")" \
+        || fail "cannot inspect retired unit load state: ${unit}"
+    [[ "${load_state}" == "not-found" ]] && continue
+    log "retired unit ${unit} is still provided elsewhere (${load_state}); masking it"
+    "${SYSTEMCTL_BIN}" mask "${unit}" || fail "cannot mask retired unit: ${unit}"
+    UNITS_MUTATED=1
+    retired_unit_is_masked "${unit}" \
+        || fail "mask did not take effect for retired unit: ${unit}"
+done
 
 # journald retention. Installed atomically like the units; journald is only
 # restarted when the bytes actually changed, for the same reason the idempotence

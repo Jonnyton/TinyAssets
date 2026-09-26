@@ -589,8 +589,8 @@ def test_retirement_checks_state_not_just_the_unit_file():
     # A dangling symlink: -e follows the link and is false for a broken one, so -L
     # has to be asked separately or the link is invisible.
     assert "! -L " in predicate
-    # Enablement links anywhere under the systemd tree, not just the unit path.
-    assert "find" in predicate and "! -path" in predicate
+    # Enablement links, via the scoped finder.
+    assert "retired_unit_links" in predicate
     # systemd's own view, because a unit outlives its file.
     assert "LoadState" in predicate and "not-found" in predicate
 
@@ -604,4 +604,40 @@ def test_retirement_checks_state_not_just_the_unit_file():
     assert "retired enablement link removed" in transaction
     assert transaction.index("retired unit removed") < transaction.index(
         '"${SYSTEMCTL_BIN}" daemon-reload'
+    )
+
+
+def test_a_unit_we_cannot_delete_still_converges_by_masking():
+    """Retirement has to terminate even for a unit whose file is not ours.
+
+    A unit provided from /run/systemd/system (a generator) or
+    /usr/lib/systemd/system (a package) cannot be deleted by this installer.
+    Leaving it meant the unit kept firing AND the gate never passed, so the
+    transaction repeated on every deploy — it never converged (cross-family review
+    round 2, output/codex-log-durability-review-round2.md §3). Masking links the
+    name to /dev/null under SYSTEMD_DIR, which IS ours: the unit cannot start, and
+    the gate has a terminal state to recognise.
+    """
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert "retired_unit_is_masked()" in text
+    assert '"${SYSTEMCTL_BIN}" mask "${unit}"' in text
+    # Masked must be checked FIRST in the predicate, or the mask link itself fails
+    # the "no file of ours" test and the installer loops re-retiring it.
+    predicate = text.split("retired_unit_is_gone() {", 1)[1].split("\n}", 1)[0]
+    masked_at = predicate.index("retired_unit_is_masked")
+    file_test_at = predicate.index('! -e "${SYSTEMD_DIR}/${unit}"')
+    assert masked_at < file_test_at, "the mask check must short-circuit the file test"
+    # Masking is verified rather than assumed to have worked.
+    assert "mask did not take effect" in text
+
+
+def test_enablement_link_search_is_scoped_to_wants_and_requires():
+    """Searching the systemd tree for the basename also matches a copy someone
+    parked in a subdirectory, and deleting that is not this script's business."""
+    text = INSTALLER.read_text(encoding="utf-8")
+    finder = text.split("retired_unit_links() {", 1)[1].split("\n}", 1)[0]
+    assert '-path "*.wants/$1"' in finder
+    assert '-path "*.requires/$1"' in finder
+    assert "-name" not in finder, (
+        "a bare -name match is how a saved copy in a subdirectory became deletable"
     )

@@ -43,6 +43,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+from collections import deque
+from collections.abc import Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -115,6 +118,58 @@ _NO_ENTRIES = re.compile(r"^--\s*no entries\s*--$", re.IGNORECASE)
 _JOURNAL_MARKER = re.compile(r"^--\s.*\s--$")
 
 
+class JournalRead:
+    """A lazily-consumed journalctl run.
+
+    Exists so the caller can bound its own memory: `lines()` is a generator over
+    the child's stdout, so nothing holds the whole query. `--lines` caps RECORDS
+    and 50k fat records is most of a gigabyte, which is why capturing first and
+    trimming afterwards was not a bound at all (cross-family review round 2,
+    output/codex-log-durability-review-round2.md §5).
+
+    The child is killed if it outlives ``timeout``, so a hung journal cannot spend
+    the backup unit's own 30-minute budget.
+    """
+
+    def __init__(self, argv: list[str], *, timeout: int) -> None:
+        self._argv = argv
+        self._timeout = timeout
+        self._deadline = time.monotonic() + timeout
+        self._proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            bufsize=1,
+        )
+
+    def lines(self) -> Iterator[str]:
+        assert self._proc.stdout is not None
+        for line in self._proc.stdout:
+            if time.monotonic() > self._deadline:
+                self._proc.kill()
+                raise subprocess.TimeoutExpired(self._argv, self._timeout)
+            yield line
+
+    def finish(self) -> tuple[int, str]:
+        """Return ``(returncode, last_stderr_line)`` once stdout is exhausted."""
+        if self._proc.stdout is not None:
+            self._proc.stdout.close()
+        stderr = ""
+        if self._proc.stderr is not None:
+            stderr = self._proc.stderr.read() or ""
+            self._proc.stderr.close()
+        remaining = max(1, int(self._deadline - time.monotonic()))
+        try:
+            rc = self._proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            raise
+        detail = stderr.strip().splitlines()
+        return rc, (detail[-1] if detail else "")
+
+
 def collect_source(
     source: str,
     destination: Path,
@@ -124,7 +179,7 @@ def collect_source(
     max_bytes: int,
     max_lines: int = DEFAULT_MAX_LINES,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
-    runner=subprocess.run,
+    reader=JournalRead,
 ) -> tuple[int, str]:
     """Write one redacted journal query to ``destination``.
 
@@ -134,45 +189,60 @@ def collect_source(
 
     Bounded three ways, because this is the least valuable thing in a unit with a
     30-minute timeout: ``max_lines`` caps what journalctl emits, ``timeout`` caps
-    how long it may take, and ``max_bytes`` caps what is written.
+    how long it may take, and ``max_bytes`` caps both what is WRITTEN and what is
+    held in memory, because the read is streamed into a sliding tail.
     """
     argv = _journalctl_argv(source, since=since, binary=binary, max_lines=max_lines)
     try:
-        completed = runner(
-            argv, capture_output=True, text=True, errors="replace", timeout=timeout
-        )
-    except subprocess.TimeoutExpired:
-        return 0, f"error:timeout after {timeout}s"
+        read = reader(argv, timeout=timeout)
     except (OSError, ValueError) as exc:
         return 0, f"error:{type(exc).__name__}"
-    if completed.returncode != 0:
-        detail = (completed.stderr or "").strip().splitlines()
-        # The stderr of a failed journalctl can name a unit or a match value;
-        # redact it like any other line rather than trusting it.
-        reason = redact_line(detail[-1])[:160] if detail else "rc%d" % completed.returncode
-        return 0, f"error:{reason}"
 
-    # Redact first, then select which lines fit. Keeping the NEWEST is the whole
-    # point: journalctl emits oldest-first, so the original head-first budget
-    # discarded the most recent evidence -- exactly the lines an incident needs
-    # (cross-family review, output/codex-log-durability-review.md, closing note).
-    kept: list[str] = []
-    budget = max_bytes
+    # A bounded TAIL, built while reading. journalctl emits oldest-first and the
+    # newest lines are what an incident needs, so the window slides: append, then
+    # drop from the front until the budget fits. Nothing ever holds the whole
+    # query.
+    kept: deque[str] = deque()
+    kept_bytes = 0
     truncated = False
     data_lines = 0
-    for raw in reversed((completed.stdout or "").splitlines()):
-        stripped = raw.strip()
-        if _NO_ENTRIES.match(stripped):
-            continue
-        line = redact_line(raw) + "\n"
-        budget -= len(line.encode("utf-8", errors="replace"))
-        if budget < 0:
-            truncated = True
-            break
-        kept.append(line)
-        if not _JOURNAL_MARKER.match(stripped):
-            data_lines += 1
-    kept.reverse()
+
+    def _size(text: str) -> int:
+        return len(text.encode("utf-8", errors="replace"))
+
+    try:
+        for raw in read.lines():
+            raw = raw.rstrip("\n").rstrip("\r")
+            stripped = raw.strip()
+            if _NO_ENTRIES.match(stripped):
+                continue
+            line = redact_line(raw) + "\n"
+            if _size(line) > max_bytes:
+                # One record bigger than the entire budget: keep a bounded head
+                # rather than dropping it without trace.
+                line = line[: max(1, max_bytes // 2)].rstrip("\n")
+                line += " ...[line truncated]\n"
+            kept.append(line)
+            kept_bytes += _size(line)
+            if not _JOURNAL_MARKER.match(stripped):
+                data_lines += 1
+            while kept_bytes > max_bytes and len(kept) > 1:
+                dropped = kept.popleft()
+                kept_bytes -= _size(dropped)
+                truncated = True
+                if not _JOURNAL_MARKER.match(dropped.strip()):
+                    data_lines -= 1
+        rc, stderr_tail = read.finish()
+    except subprocess.TimeoutExpired:
+        return 0, f"error:timeout after {timeout}s"
+    except OSError as exc:
+        return 0, f"error:{type(exc).__name__}"
+
+    if rc != 0:
+        # A failed journalctl's stderr can name a unit or a match value; redact it
+        # like any other line rather than trusting it.
+        reason = redact_line(stderr_tail)[:160] if stderr_tail else f"rc{rc}"
+        return 0, f"error:{reason}"
 
     with destination.open("w", encoding="utf-8", errors="replace", newline="\n") as handle:
         if truncated:
@@ -196,7 +266,7 @@ def build_bundle(
     max_bytes: int = DEFAULT_MAX_BYTES,
     max_lines: int = DEFAULT_MAX_LINES,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
-    runner=subprocess.run,
+    reader=JournalRead,
 ) -> tuple[int, list[str]]:
     """Write the bundle. Returns ``(exit_code, report_lines)``."""
     report: list[str] = []
@@ -218,7 +288,7 @@ def build_bundle(
                     max_bytes=max_bytes,
                     max_lines=max_lines,
                     timeout=timeout,
-                    runner=runner,
+                    reader=reader,
                 )
             except ValueError as exc:
                 return 1, [str(exc)]

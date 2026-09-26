@@ -37,9 +37,16 @@ cross-family review reproduced these; they are accepted, not overlooked:
   ``codex_provider._SECRET_SHAPES`` and removed for exactly this reason.
 - **A secret split across two journal records.** This is a line filter by
   construction, and the journal's unit of storage is the record.
-- **A value long enough to cross ``MAX_LINE_CHARS``.** Redaction runs BEFORE
-  truncation, so the visible part is redacted; but a single line carrying a
-  secret past the bound is truncated rather than inspected further.
+- **An UNQUOTED value containing a structural delimiter.** ``password=a]b}c``
+  redacts ``a`` and leaves ``]b}c``, because an unquoted field ends at a
+  delimiter and ``}``/``]`` overwhelmingly close a structure rather than belong to
+  a value. Consuming through them is the opposite failure: it eats the sibling
+  fields on every ordinary ``k=v,k=v`` line. Quote the value and it is redacted
+  whole; a credential logged bare enough to hit this needs the upstream fix.
+
+``MAX_LINE_CHARS`` is NOT in this list: redaction runs over the whole line before
+truncation, so a 10,000-character labelled value is redacted and then the
+remainder is cut. An earlier version of this docstring claimed otherwise.
 
 The mitigation for all three is upstream: the daemon should not log credential
 material, and ``providers/diagnostics.py`` / ``workspace_git.scrub_text`` are
@@ -67,43 +74,9 @@ PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)(authorization\s*:\s*)([^\r\n]+)"), r"\1" + REDACTED),
     # `Bearer <token>` outside a header (codex_provider _SECRET_SHAPES)
     (re.compile(r"(?i)bearer\s+\S+"), REDACTED),
-    # A labelled value: `key=v`, `key: v`, `"key": "v"`, `\"key\": \"v\"`,
-    # `--key v`. Everything after the label up to a STRUCTURAL delimiter goes.
-    #
-    # Rewritten 2026-09-26 after a cross-family review reproduced four leaks in
-    # the first version (Codex, output/codex-log-durability-review.md §4). The
-    # important one was on the real collection path: Vector's console sink is
-    # `codec: json` (deploy/vector.yaml), so a daemon line reaches the journal as
-    # an ESCAPED JSON string -- `{"log": "{\"api_key\": \"secret\"}"}` -- and a
-    # pattern expecting a bare `"` never fires. Hence `(?:\\?["'])?` on both
-    # sides: it matches a plain quote, a backslash-escaped quote, or neither.
-    #
-    # The value terminator is the other half. The first version stopped at
-    # `,;&"'`, which turned `password=alpha,beta;gamma` into
-    # `password=[redacted],beta;gamma` -- a PARTIAL disclosure that still looked
-    # redacted. The set below stops only at whitespace, a closing brace/bracket,
-    # or an escaped quote, so a comma-bearing value is consumed whole. Structural
-    # JSON separators (`,` followed by a quoted key) still end it because the
-    # escaped-quote alternative matches first.
-    (
-        re.compile(
-            r"""(?ix)
-            ( (?:--)?                              # optional argv flag prefix
-              (?:\\?["'])?                         # opening quote, escaped or not
-              [A-Za-z0-9_.-]*
-              (?: token|secret|api[_-]?key|password|passwd
-                | credential|private[_-]?key|auth|bearer )
-              [A-Za-z0-9_.-]*
-              (?:\\?["'])?                         # closing quote of the KEY
-              \s* [:=]? \s*                        # separator, or just space (argv)
-              (?:\\?["'])?                         # opening quote of the VALUE
-            )
-            (?! \s )                               # a label with no value is not a leak
-            (?: \\. | [^\s"'\\},\]] | ,(?!\s*\\?["']) )+
-            """
-        ),
-        r"\1" + REDACTED,
-    ),
+    # NOTE: labelled values (`api_key=…`, `"password": "…"`) are NOT handled here.
+    # A single pattern cannot get them right, which two review rounds demonstrated
+    # in both directions -- see `_redact_labelled_values` below, which runs first.
     # OpenAI/Anthropic/OpenRouter-style keys: sk-, sk-ant-, sk-or-v1-.
     # No leading `\b`: the canonical `_SECRET_SHAPES` has none, and `prefix_sk-…`
     # kept the whole key alive because `_` is a word character so `\b` never
@@ -124,9 +97,111 @@ PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"), REDACTED),
 )
 
+# ---------------------------------------------------------------------------
+# Labelled values, scanned rather than pattern-matched
+# ---------------------------------------------------------------------------
+#
+# `api_key=…`, `"password": "…"`, `\"token\": \"…\"`, `--password …`. Two review
+# rounds showed a single regex cannot do this, failing in BOTH directions:
+#
+#   round 1: stopping the value at `,;&` left `password=[redacted],beta` --
+#            redacted-looking, still disclosing.
+#   round 2: widening the terminator to whitespace then left
+#            `"password": "[redacted] beta gamma"` for a quoted passphrase
+#            containing spaces, and -- worse -- adding `auth` to the key list with
+#            an optional separator destroyed ordinary evidence:
+#            `authentication succeeded` became `authentication [redacted]`.
+#
+# The reason is that where a value ENDS depends on how it STARTED, which is state
+# a flat pattern does not carry. So: find the label, look at the first character
+# of the value, and end where that opening implies.
+#
+#   * opened with a quote (`"`, `'`, or an escaped `\"`)  -> ends at the matching
+#     closing quote. Spaces, commas and brackets inside are part of the value.
+#   * opened bare -> ends at whitespace or a structural delimiter. An unquoted
+#     value CANNOT contain those, so stopping there is not partial disclosure --
+#     `password=alpha,elapsed=17` really is the field `alpha` followed by another
+#     field, and eating `elapsed=17` would destroy a diagnostic.
+#
+# The key must be followed by a real separator (`:` or `=`), except for the argv
+# form, which requires an explicit `--flag`. That is what keeps
+# `authentication succeeded` intact: no separator, no `--`, no match.
+# The bounded prefix and the lookbehind are a PERFORMANCE requirement, not style.
+# With an unbounded leading `[A-Za-z0-9_.-]*` and no anchor, `finditer` attempts a
+# match at every offset of a long identifier-ish run, each attempt consuming to the
+# end and backtracking in search of `token`/`password`/... That is quadratic: a
+# 1 KiB line -- entirely ordinary once Vector wraps daemon output in JSON -- took
+# 27.85 ms, against 0.028 ms for a short one. At 50,000 records that is ~23 minutes
+# for ONE source, which would blow the per-source timeout every night.
+#
+# The lookbehind means a match can only START where a key could actually start, so
+# a 1 KiB run of key characters offers one candidate rather than a thousand; the
+# {0,40} bound caps the work at each candidate. Measured after: 0.10 ms on the same
+# 1 KiB line, ~280x faster.
+_SECRET_KEY = (
+    r"[A-Za-z0-9_.-]{0,40}?"
+    r"(?:token|secret|api[_-]?key|password|passwd|credential|private[_-]?key)"
+    r"[A-Za-z0-9_.-]{0,40}"
+)
+# The anchor goes on the FIELD form only. Putting it inside _SECRET_KEY broke the
+# argv form, because `--password` presents `-` to the lookbehind and `-` is a key
+# character; `--` is its own anchor and needs no help.
+_KEY_START = r"(?<![A-Za-z0-9_.-])"
+# Group 1 is everything up to and including the value's opening quote, if any;
+# group 2 is that quote (empty when the value is bare).
+_LABELLED = re.compile(
+    r"(?i)("
+    # argv form: a whitespace separator is only allowed after an explicit --flag.
+    r"--" + _SECRET_KEY + r"\s+"
+    r"|"
+    # field form: the key, optionally quoted, then a real `:` or `=`.
+    + _KEY_START + r"(?:\\?[\"'])?" + _SECRET_KEY + r"(?:\\?[\"'])?\s*[:=]\s*"
+    r")(\\?[\"']|)"                 # the value's opening quote, or empty
+)
+# Bare values end here. `)` included because a value in a parenthesised aside is
+# bounded by it; `\` excluded so an escaped quote ends the span rather than being
+# consumed as content.
+_BARE_VALUE_END = re.compile(r"[\s,;&}\])\"'\\]")
+
+
+def _redact_labelled_values(line: str) -> str:
+    """Replace the value of every credential-named field, whole."""
+    out: list[str] = []
+    pos = 0
+    for match in _LABELLED.finditer(line):
+        if match.start() < pos:  # already inside a replaced span
+            continue
+        label, quote = match.group(1), match.group(2)
+        value_start = match.end()
+        if value_start >= len(line):
+            continue
+        if quote:
+            # Ends at the same quote form it opened with. `\"` closes `\"`.
+            closer = line.find(quote, value_start)
+            if closer == -1:
+                # Unterminated: treat the rest of the line as the value rather
+                # than leaving it exposed. Truncated JSON is the likely cause.
+                value_end = len(line)
+            else:
+                value_end = closer
+        else:
+            terminator = _BARE_VALUE_END.search(line, value_start)
+            value_end = terminator.start() if terminator else len(line)
+        if value_end <= value_start:
+            continue  # a label with an empty value is not a leak
+        out.append(line[pos : match.start()])
+        out.append(label)
+        out.append(quote)
+        out.append(REDACTED)
+        pos = value_end
+    out.append(line[pos:])
+    return "".join(out)
+
+
 # Docker's journald driver adds no size guard, and a single line can be a whole
 # serialized payload. Truncating past this bound keeps one pathological line
-# from dominating a bundle whose point is breadth of history.
+# from dominating a bundle whose point is breadth of history. Redaction runs
+# BEFORE truncation, so a long value is redacted rather than merely cut off.
 MAX_LINE_CHARS = 8192
 _TRUNCATION_MARKER = " ...[truncated]"
 
@@ -137,6 +212,7 @@ def redact_line(line: str) -> str:
     Idempotent: the replacement marker matches none of the patterns, so
     re-running this over its own output changes nothing.
     """
+    line = _redact_labelled_values(line)
     for pattern, replacement in PATTERNS:
         line = pattern.sub(replacement, line)
     if len(line) > MAX_LINE_CHARS:

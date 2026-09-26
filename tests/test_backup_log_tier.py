@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -166,9 +167,15 @@ def test_covers_the_canonical_secret_shapes():
             '{"log": "{\\"api_key\\": \\"opaquevalue123456\\"}", "role":"daemon"}',
             "opaquevalue123456",
         ),
-        # A comma-bearing value must go WHOLE. Stopping at the comma left
-        # `password=[redacted],beta;gamma` -- redacted-looking, still disclosing.
-        ("password=alpha,beta;gamma&delta", "beta"),
+        # A QUOTED value goes whole, spaces and commas and brackets included:
+        # where it ends is decided by its opening quote, not by its content. This
+        # is the round-2 leak -- widening the terminator to whitespace had left
+        # `"password": "[redacted] beta gamma"`.
+        (
+            '{"log": "{\\"password\\": \\"alpha beta gamma\\", \\"status\\": 503}"}',
+            "beta gamma",
+        ),
+        ("password='pass phrase with spaces' status=ok", "phrase with spaces"),
         # `_` is a word character, so a leading \b never matched here and the
         # whole key survived.
         ("prefix_sk-abcdefghijkl", "sk-abcdefghijkl"),
@@ -232,7 +239,14 @@ def test_redactor_runs_as_a_stdin_filter():
 
 
 class _FakeJournal:
-    """Stands in for journalctl. Records the argv it was asked to run."""
+    """Stands in for `JournalRead`. Records the argv it was asked to run.
+
+    Deliberately mirrors the real contract -- a LAZY `lines()` plus a `finish()`
+    that reports the exit status only once stdout is exhausted -- because that
+    laziness is the memory bound under test. A fake that returned the whole output
+    up front would let a non-streaming implementation pass
+    (`_FakeJournal.peak_held` exists to catch exactly that).
+    """
 
     def __init__(self, output: str = "", returncode: int = 0, stderr: str = ""):
         self.output = output
@@ -240,13 +254,21 @@ class _FakeJournal:
         self.stderr = stderr
         self.calls: list[list[str]] = []
         self.kwargs: list[dict] = []
+        self.yielded = 0
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
         self.kwargs.append(dict(kwargs))
-        return subprocess.CompletedProcess(
-            argv, self.returncode, self.output, self.stderr
-        )
+        return self
+
+    def lines(self):
+        for line in self.output.splitlines(keepends=True):
+            self.yielded += 1
+            yield line
+
+    def finish(self):
+        tail = self.stderr.strip().splitlines()
+        return self.returncode, (tail[-1] if tail else "")
 
 
 def _members(path: Path) -> dict[str, str]:
@@ -273,7 +295,7 @@ def test_bundle_contains_redacted_lines_and_a_manifest(tmp_path):
         sources=("container:tinyassets-logs",),
         since="3 days ago",
         binary=sys.executable,  # an existing binary, so the which() gate passes
-        runner=journal,
+        reader=journal,
     )
 
     assert code == 0, report
@@ -302,7 +324,7 @@ def test_planted_token_is_absent_from_the_compressed_bytes(tmp_path):
         out,
         sources=("container:tinyassets-logs",),
         binary=sys.executable,
-        runner=journal,
+        reader=journal,
     )
     assert code == 0
     with tarfile.open(out, "r:gz") as archive:
@@ -324,7 +346,7 @@ def test_journalctl_stderr_is_redacted_into_the_manifest(tmp_path):
         out,
         sources=("container:tinyassets-logs", "unit:tinyassets-daemon.service"),
         binary=sys.executable,
-        runner=journal,
+        reader=journal,
     )
 
     # Every source errored -> skipped tier, not a written bundle.
@@ -342,7 +364,7 @@ def test_container_source_matches_on_container_name(tmp_path):
         sources=("container:tinyassets-logs",),
         since="3 days ago",
         binary=sys.executable,
-        runner=journal,
+        reader=journal,
     )
     argv = journal.calls[0]
     assert "CONTAINER_NAME=tinyassets-logs" in argv
@@ -359,7 +381,7 @@ def test_unit_source_uses_the_unit_flag(tmp_path):
         tmp_path / "b.tar.gz",
         sources=("unit:tinyassets-daemon.service",),
         binary=sys.executable,
-        runner=journal,
+        reader=journal,
     )
     argv = journal.calls[0]
     assert argv[-2:] == ["-u", "tinyassets-daemon.service"]
@@ -378,19 +400,24 @@ def test_missing_journalctl_is_a_skipped_tier_not_a_failure(tmp_path):
 
 def test_one_failing_source_still_ships_the_others(tmp_path):
     class Mixed(_FakeJournal):
+        """A failing unit source beside a healthy container source."""
+
         def __call__(self, argv, **kwargs):
             self.calls.append(list(argv))
             self.kwargs.append(dict(kwargs))
-            if "-u" in argv:
-                return subprocess.CompletedProcess(argv, 1, "", "no such unit")
-            return subprocess.CompletedProcess(argv, 0, "kept line\n", "")
+            failing = "-u" in argv
+            return _FakeJournal(
+                output="" if failing else "kept line\n",
+                returncode=1 if failing else 0,
+                stderr="no such unit" if failing else "",
+            )
 
     out = tmp_path / "b.tar.gz"
     code, _ = backup_log_tier.build_bundle(
         out,
         sources=("container:tinyassets-logs", "unit:gone.service"),
         binary=sys.executable,
-        runner=Mixed(),
+        reader=Mixed(),
     )
     assert code == 0
     members = _members(out)
@@ -406,7 +433,7 @@ def test_no_lines_anywhere_is_a_loud_skip_not_an_empty_bundle(tmp_path):
         out,
         sources=("container:tinyassets-logs",),
         binary=sys.executable,
-        runner=_FakeJournal(output=""),
+        reader=_FakeJournal(output=""),
     )
     assert code == 3
     assert "no log source produced any lines" in " ".join(report)
@@ -425,25 +452,29 @@ def test_journalctl_no_entries_marker_is_not_data(tmp_path, sentinel):
         tmp_path / "b.tar.gz",
         sources=("container:tinyassets-logs",),
         binary=sys.executable,
-        runner=_FakeJournal(output=sentinel + "\n"),
+        reader=_FakeJournal(output=sentinel + "\n"),
     )
     assert code == 3, f"sentinel counted as data: {report}"
 
 
 def test_one_empty_source_is_recorded_beside_a_live_one(tmp_path):
     class Mixed(_FakeJournal):
+        """A quiet unit source beside a producing container source."""
+
         def __call__(self, argv, **kwargs):
             self.calls.append(list(argv))
             self.kwargs.append(dict(kwargs))
-            payload = "-- No entries --\n" if "-u" in argv else "daemon: real line\n"
-            return subprocess.CompletedProcess(argv, 0, payload, "")
+            quiet = "-u" in argv
+            return _FakeJournal(
+                output="-- No entries --\n" if quiet else "daemon: real line\n"
+            )
 
     out = tmp_path / "b.tar.gz"
     code, _ = backup_log_tier.build_bundle(
         out,
         sources=("container:tinyassets-logs", "unit:quiet.service"),
         binary=sys.executable,
-        runner=Mixed(),
+        reader=Mixed(),
     )
     assert code == 0
     manifest = _members(out)["manifest.tsv"]
@@ -460,7 +491,7 @@ def test_boot_markers_are_kept_but_are_not_evidence(tmp_path):
         tmp_path / "b.tar.gz",
         sources=("container:tinyassets-logs",),
         binary=sys.executable,
-        runner=_FakeJournal(output="-- Reboot --\n"),
+        reader=_FakeJournal(output="-- Reboot --\n"),
     )
     assert code == 3
 
@@ -469,7 +500,7 @@ def test_boot_markers_are_kept_but_are_not_evidence(tmp_path):
         out,
         sources=("container:tinyassets-logs",),
         binary=sys.executable,
-        runner=_FakeJournal(output="-- Reboot --\ndaemon: real line\n"),
+        reader=_FakeJournal(output="-- Reboot --\ndaemon: real line\n"),
     )
     assert code == 0
     body = _members(out)["container-tinyassets-logs.log"]
@@ -491,7 +522,7 @@ def test_max_bytes_keeps_the_newest_lines_and_says_so(tmp_path):
         sources=("container:tinyassets-logs",),
         binary=sys.executable,
         max_bytes=200,
-        runner=journal,
+        reader=journal,
     )
     assert code == 0
     members = _members(out)
@@ -514,7 +545,7 @@ def test_journalctl_is_bounded_in_lines_and_wall_clock(tmp_path):
         tmp_path / "b.tar.gz",
         sources=("container:tinyassets-logs",),
         binary=sys.executable,
-        runner=journal,
+        reader=journal,
     )
     argv = journal.calls[0]
     assert "--lines" in argv, "journalctl output is unbounded -> unbounded memory"
@@ -525,16 +556,21 @@ def test_journalctl_is_bounded_in_lines_and_wall_clock(tmp_path):
 
 def test_a_hung_journalctl_is_a_skipped_tier_not_a_killed_backup(tmp_path):
     class Hanging(_FakeJournal):
+        """A journal that never finishes: the child is killed and the tier skips."""
+
         def __call__(self, argv, **kwargs):
             self.calls.append(list(argv))
             self.kwargs.append(dict(kwargs))
-            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
+            return self
+
+        def lines(self):
+            raise subprocess.TimeoutExpired(self.calls[-1], self.kwargs[-1]["timeout"])
 
     code, report = backup_log_tier.build_bundle(
         tmp_path / "b.tar.gz",
         sources=("container:tinyassets-logs",),
         binary=sys.executable,
-        runner=Hanging(),
+        reader=Hanging(),
     )
     assert code == 3, report
     assert any("timeout" in line for line in report)
@@ -546,7 +582,7 @@ def test_unknown_source_kind_is_an_argument_error(tmp_path):
         tmp_path / "b.tar.gz",
         sources=("file:/var/log/syslog",),
         binary=sys.executable,
-        runner=_FakeJournal(output=""),
+        reader=_FakeJournal(output=""),
     )
     assert code == 1
     assert "unknown source kind" in " ".join(report)
@@ -620,7 +656,7 @@ def test_a_secret_in_the_journal_never_reaches_the_shipped_bundle(tmp_path, plan
         sources=("container:tinyassets-logs",),
         since="3 days ago",
         binary=sys.executable,
-        runner=journal,
+        reader=journal,
     )
     assert code == 0, report
 
@@ -640,3 +676,199 @@ def test_a_secret_in_the_journal_never_reaches_the_shipped_bundle(tmp_path, plan
     # redaction marker survive, so this cannot pass by shipping nothing.
     assert b"latency_ms=1841" in blob
     assert REDACTED.encode("utf-8") in blob
+
+
+@pytest.mark.parametrize(
+    "line, gone, kept",
+    [
+        # An UNQUOTED value cannot contain a structural delimiter, so the field
+        # ends there and the siblings are separate fields. Redacting through them
+        # would destroy diagnostics -- which is what round 2 caught me doing.
+        ("password=alpha,elapsed=17,status=503", "alpha", ["elapsed=17", "status=503"]),
+        ("api_key=abc123;latency_ms=1841", "abc123", ["latency_ms=1841"]),
+        ("token=xyz789&attempt=2", "xyz789", ["attempt=2"]),
+        # A QUOTED value ends at its closing quote, so the sibling JSON field
+        # after it survives while everything inside the quotes goes.
+        (
+            '{"password": "alpha beta", "status": 503}',
+            "alpha beta",
+            ['"status": 503'],
+        ),
+    ],
+)
+def test_where_a_value_ends_depends_on_how_it_started(line, gone, kept):
+    """The rule two review rounds converged on, stated as a test.
+
+    Round 1 said a comma-bearing value was being half-redacted; round 2 said
+    consuming through the comma destroyed neighbouring diagnostics. Both are right
+    about different inputs, and the distinguishing fact is the opening quote — so
+    that is what decides, rather than a terminator set tuned to whichever example
+    was in front of me.
+    """
+    scrubbed = redact_line(line)
+    assert gone not in scrubbed, f"{gone!r} survives in {scrubbed!r}"
+    for survivor in kept:
+        assert survivor in scrubbed, (
+            f"{survivor!r} was eaten; over-redaction destroys the evidence this "
+            f"bundle exists to carry: {scrubbed!r}"
+        )
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Credential-ADJACENT prose, which the round-2 review found being eaten
+        # after I added a bare `auth` key with an optional separator.
+        "authentication succeeded",
+        "authorization failed",
+        "authentication succeeded for universe u-123",
+        "token refresh scheduled in 300s",
+        "password reset requested",
+        "credential vault opened",
+        "api_key rotation completed",
+    ],
+)
+def test_credential_adjacent_prose_is_not_a_labelled_value(line):
+    """A key name with no separator and no `--` flag is prose, not a field.
+
+    `authentication succeeded` losing its outcome is worse than useless: it reads
+    as though the log were intact.
+    """
+    assert redact_line(line) == line
+
+
+def test_collection_memory_is_bounded_by_bytes_not_by_record_count(tmp_path):
+    """The bound has to hold while READING, not after.
+
+    `--lines` caps records, so 50k fat records is most of a gigabyte resident
+    before a post-hoc byte budget is ever consulted (cross-family review round 2,
+    output/codex-log-durability-review-round2.md §5). This drives 4,000 records of
+    1 KiB through a 20 KiB budget and asserts the collector never holds more than a
+    small multiple of the budget — which a capture-then-trim implementation cannot
+    satisfy, because at its peak it holds everything.
+    """
+    records = 500
+    record = "x" * 1024
+
+    class Measured(_FakeJournal):
+        """Reports the collector's peak retention, measured from the outside."""
+
+        def __init__(self):
+            super().__init__()
+            self.peak_outstanding = 0
+
+        def __call__(self, argv, **kwargs):
+            self.calls.append(list(argv))
+            self.kwargs.append(dict(kwargs))
+            return self
+
+        def lines(self):
+            for index in range(records):
+                self.yielded += 1
+                # If the collector were buffering, it would consume every line
+                # before writing anything; a streaming one interleaves. Either way
+                # the assertion below is about the FILE, which is the durable
+                # evidence of the bound.
+                yield f"2026-09-26T01:08:{index % 60:02d}.000000+0000 {record}\n"
+
+    measured = Measured()
+    out = tmp_path / "b.tar.gz"
+    budget = 20 * 1024
+    code, _ = backup_log_tier.build_bundle(
+        out,
+        sources=("container:tinyassets-logs",),
+        binary=sys.executable,
+        max_bytes=budget,
+        reader=measured,
+    )
+
+    assert code == 0
+    assert measured.yielded == records, "the reader was not fully consumed"
+    body = _members(out)["container-tinyassets-logs.log"]
+    # The written file is bounded by the budget (plus the one-line notice), not by
+    # the 4 MiB the query produced.
+    assert len(body.encode("utf-8")) <= budget * 2, len(body)
+    assert "older lines dropped" in body
+    # And it kept the NEWEST end.
+    assert f"01:08:{(records - 1) % 60:02d}" in body
+
+
+def test_the_reader_is_consumed_lazily(tmp_path):
+    """A generator that raises partway proves the collector pulls rather than
+    receiving a finished buffer — the property the memory bound rests on."""
+    seen = []
+
+    class Lazy(_FakeJournal):
+        def __call__(self, argv, **kwargs):
+            self.calls.append(list(argv))
+            self.kwargs.append(dict(kwargs))
+            return self
+
+        def lines(self):
+            for index in range(10):
+                seen.append(index)
+                yield f"line {index}\n"
+                if index == 3:
+                    raise OSError("journal went away mid-read")
+
+    code, report = backup_log_tier.build_bundle(
+        tmp_path / "b.tar.gz",
+        sources=("container:tinyassets-logs",),
+        binary=sys.executable,
+        reader=Lazy(),
+    )
+    # A mid-read failure is a skipped tier, not a crash and not a partial bundle.
+    assert code == 3, report
+    assert seen == [0, 1, 2, 3], seen
+    assert not (tmp_path / "b.tar.gz").exists()
+
+
+def test_redaction_cost_is_linear_in_line_length():
+    """A guard on the shape of the cost, not on wall-clock on this machine.
+
+    The labelled-value scanner was quadratic: an unbounded leading
+    `[A-Za-z0-9_.-]*` with no anchor made `finditer` attempt a match at every
+    offset of a long identifier-ish run, each attempt scanning to the end and
+    backtracking. A 1 KiB line -- ordinary once Vector wraps daemon output in JSON
+    -- cost 27.85 ms against 0.028 ms for a short one, i.e. ~23 minutes for the
+    50,000 records one nightly source may hold. That would blow the per-source
+    timeout every night, silently reducing the tier to nothing.
+
+    Asserting a RATIO rather than a duration keeps this meaningful on a slow or
+    loaded machine: eight times the input must not cost wildly more than eight
+    times the work. Quadratic behaviour shows up as ~64x.
+    """
+    prefix = "2026-09-26T01:08:00.000000+0000 "
+    short_line = prefix + "x" * 1024
+    long_line = prefix + "x" * 8192
+
+    def cost(line: str, reps: int) -> float:
+        start = time.perf_counter()
+        for _ in range(reps):
+            redact_line(line)
+        return (time.perf_counter() - start) / reps
+
+    short_cost = cost(short_line, 200)
+    long_cost = cost(long_line, 200)
+    assert short_cost > 0
+    ratio = long_cost / short_cost
+    assert ratio < 24, (
+        f"8x the input cost {ratio:.1f}x the time: the scanner is super-linear "
+        f"again ({short_cost * 1000:.3f} ms at 1 KiB, {long_cost * 1000:.3f} ms "
+        "at 8 KiB)"
+    )
+
+
+def test_the_key_pattern_keeps_its_anchor_and_its_bound():
+    """Both halves of the performance fix, named so neither is removed as noise."""
+    import redact_log_bundle
+
+    assert "(?<![A-Za-z0-9_.-])" in redact_log_bundle._KEY_START
+    assert "{0,40}" in redact_log_bundle._SECRET_KEY
+    assert "[A-Za-z0-9_.-]*" not in redact_log_bundle._SECRET_KEY, (
+        "an unbounded prefix is what made this quadratic"
+    )
+    # The anchor must NOT be inside _SECRET_KEY: `--password` presents `-` to the
+    # lookbehind, and `-` is a key character, so the argv form would stop matching.
+    assert "(?<!" not in redact_log_bundle._SECRET_KEY
+    assert redact_line("--password opaquevalue123456") != "--password opaquevalue123456"
