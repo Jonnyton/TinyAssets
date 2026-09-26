@@ -41,6 +41,61 @@ from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
 
 _STATUS_SCHEMA_VERSION = 2
+# Async overhead plus the in-band reap, on top of the turn's own cap: the same
+# margin the router already allows a sync wrapper over the streaming cap
+# (``providers.router._sync_call_timeout_s``).
+_WORKING_TURN_REAP_MARGIN_S = 30.0
+
+
+def _working_turn_max_age_s(udir: Path) -> float:
+    """How old a still-progressing turn row may be and still mean "working now".
+
+    Resolved from the cap the COORDINATOR will actually enforce for this
+    universe, not from the library default. The first version of this used
+    ``DEFAULT_ABSOLUTE_CAP_S`` (600s) and Codex refuted it on #4020: the granted
+    founder turn -- the only kind the app produces -- gets 3600s with a
+    per-universe override (``universe_intelligence.served_absolute_cap_s``), so a
+    630s bound called a healthy turn dead after ten and a half minutes and hid
+    the indicator for exactly the long turns it was added for.
+
+    Erring generous is the right direction here. A NON-granted turn keeps the
+    library default, so its wedged row stays reported as activity for longer than
+    strictly necessary; the cost of that is a stale indicator on a dead row,
+    against the cost of hiding live work, which is the bug being fixed.
+    """
+    from tinyassets.config import load_universe_config
+    from tinyassets.universe_intelligence import served_absolute_cap_s
+
+    return served_absolute_cap_s(load_universe_config(udir)) + _WORKING_TURN_REAP_MARGIN_S
+
+
+def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
+    """Server-side "is this universe working" for one universe.
+
+    The web app used to decide its own working indicator from whether THIS page
+    had sent a message, so a turn started by answering a request, by a queued
+    line, by another tab or device, or one still running across a reload showed
+    nothing at all (founder, 2026-09-26: a turn ran for four minutes with no
+    indicator, so it read as if nothing happened).
+
+    An unreadable journal is reported as ``state: "unreadable"``, never as idle:
+    a surface that paints "nothing is happening" off a failed read is the silent
+    fallback this project refuses. Callers treat only the progressing states as
+    activity, so an unreadable or stale row shows no indicator either way.
+    """
+    from datetime import datetime, timezone
+
+    from tinyassets.storage.agent_turn_journal import AgentTurnJournal
+
+    try:
+        return AgentTurnJournal(udir.parent).universe_working_turn(
+            udir.name,
+            now=datetime.now(timezone.utc),
+            max_age_s=_working_turn_max_age_s(udir),
+        )
+    except Exception as exc:  # noqa: BLE001 - an unreadable journal is reported, not guessed
+        _LOGGER.warning("agent turn activity unreadable: %s", type(exc).__name__)
+        return {"state": "unreadable", "reason": type(exc).__name__}
 
 
 def _policy_hash(payload: dict[str, Any]) -> str:
@@ -1673,6 +1728,16 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         resource_usage = for_authorized_status(_base_path(), uid)
         if resource_usage is not None:
             response["resource_usage"] = resource_usage
+
+    # Whether this universe is working RIGHT NOW, whatever started the turn — a
+    # typed message, an answered request, a queued line, another tab, another
+    # device, the connector. Gated the same way the conversation peek is (write
+    # access to this universe), and it carries no prompt, model or owner: only
+    # that a turn is progressing, since when, and its journal state. The key is
+    # PRESENT and null when the universe is idle, so a client can tell "idle"
+    # from "this build does not report it".
+    if universe_exists and permissions.universe_access_allows(uid, write=True):
+        response["active_turn"] = _universe_active_turn(udir)
 
     # persona — the universe brain speaking as itself. Its self-understanding
     # comes from its learned self-model (an OKF bundle the brain authors about

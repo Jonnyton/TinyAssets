@@ -18,9 +18,13 @@
     TAG:"tinyassets-app-layout-v1",LIST_LIMIT:100,
     SURFACES:["conversation","requests","models","status"],
     DENSITIES:["comfortable","compact"],
-    NODES:{conversation:["thread","attachments","composer"],requests:["request-rail"],
+    // The working indicator belongs to the CONVERSATION surface, not the status
+    // one: a user who arranges the status line away must still be told their
+    // universe is thinking, and a node left out of every surface is hidden
+    // outright by `.layout-active>.chat-body`.
+    NODES:{conversation:["thread","attachments","working-banner","composer"],requests:["request-rail"],
            models:["model-bar"],status:["status-line"]},
-    LABELS:{conversation:"Conversation (thread, attachments, composer)",requests:"Requests rail",
+    LABELS:{conversation:"Conversation (thread, attachments, activity, composer)",requests:"Requests rail",
             models:"Model bar",status:"Conversation status"},
     epoch:0,home:"",principal:"",loaded:false,enabled:false,busy:false,uncertain:false,
     mode:"default",source:null,arrangement:null,
