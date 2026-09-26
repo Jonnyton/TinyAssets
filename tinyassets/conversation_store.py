@@ -910,10 +910,18 @@ def learned_cursor(universe_dir: "str | Path", session_id: str) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def latest_turn_no(universe_dir: "str | Path", session_id: str) -> int:
-    """The highest recorded turn number for this session, or 0."""
+def latest_turn_no(universe_dir: "str | Path", session_id: str) -> int | None:
+    """The highest recorded turn number for this session, 0 for none, None if unknown.
+
+    ``None`` is NOT 0. It used to be: every failure path returned 0, which is the same
+    answer as "this conversation has no turns yet" -- so an unreadable store looked
+    like a brand-new conversation, the contiguity guard in
+    :func:`settle_learned_cursor` compared 0 against a cursor legitimately at 0, agreed
+    with itself, and the settle claimed every unsettled turn in the history. Reproduced
+    on 2026-09-26 (PR #4001 review follow-up); a reader that cannot answer must say so.
+    """
     if not session_id:
-        return 0
+        return None
     db_path = _db_path(universe_dir)
     if not db_path.exists():
         return 0
@@ -926,8 +934,11 @@ def latest_turn_no(universe_dir: "str | Path", session_id: str) -> int:
             ).fetchone()
         finally:
             conn.close()
-    except Exception:  # noqa: BLE001
-        return 0
+    except Exception:  # noqa: BLE001 - unknown, which is not the same as none
+        logger.warning(
+            "conversation memory: latest turn unreadable for %s", session_id, exc_info=True,
+        )
+        return None
     return int(row[0]) if row and row[0] is not None else 0
 
 
@@ -935,8 +946,8 @@ def settle_learned_cursor(
     universe_dir: "str | Path",
     session_id: str,
     *,
+    from_turn: "int | None",
     through_turn: int | None = None,
-    from_turn: int | None = None,
 ) -> int:
     """Advance the cursor to ``through_turn`` (default: the latest turn). Returns it.
 
@@ -954,16 +965,28 @@ def settle_learned_cursor(
     latest turn BEFORE the exchange it is settling; the advance is refused when the
     cursor is behind that. Refusing costs a redundant extraction later; claiming
     would cost the lesson.
+
+    ``from_turn`` is a REQUIRED keyword with no default, and ``None`` means "I could
+    not read it" and REFUSES. It was optional, and an omitted value skipped the
+    contiguity check entirely -- the unsafe reading of an absent argument. Every
+    caller now states its belief, and a caller that has none says ``None`` and is
+    turned down: the one thing this must never do is claim a lesson nobody learned.
     """
     if not session_id:
         return 0
+    if from_turn is None:
+        logger.info(
+            "conversation memory: lesson for %s not claimed -- the turn this settles "
+            "could not be identified, so an earlier turn may still be owed", session_id,
+        )
+        return learned_cursor(universe_dir, session_id)
     target = latest_turn_no(universe_dir, session_id) if through_turn is None else int(
         through_turn
     )
-    if target <= 0:
-        return 0
+    if target is None or target <= 0:
+        return learned_cursor(universe_dir, session_id)
     settled = learned_cursor(universe_dir, session_id)
-    if from_turn is not None and settled != int(from_turn):
+    if settled != int(from_turn):
         logger.info(
             "conversation memory: lesson for %s not claimed -- cursor at %d, this "
             "turn began at %d, so an earlier turn is still owed",
@@ -1002,10 +1025,14 @@ def start_learned_cursor(universe_dir: "str | Path", session_id: str) -> int:
     re-extracted the first time this runs -- that would be a spend surprise on the
     founder's own credential. Only ever called for a session that has history and
     no cursor yet; a session with a cursor is untouched.
+
+    This is the ONE caller entitled to claim a whole history, and it says so
+    explicitly with ``from_turn=0`` after checking the cursor is 0 -- seeding, not a
+    settle that skipped the contiguity check.
     """
     if not session_id or learned_cursor(universe_dir, session_id):
         return 0
-    return settle_learned_cursor(universe_dir, session_id)
+    return settle_learned_cursor(universe_dir, session_id, from_turn=0)
 
 
 __all__ = [

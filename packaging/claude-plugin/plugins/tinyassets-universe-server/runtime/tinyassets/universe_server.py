@@ -2807,6 +2807,8 @@ def converse(
     # Where the cursor should already stand. A turn whose learning FAILED left it
     # behind, and a watermark cannot say "N settled, N-1 not" -- so this turn's
     # settle is refused rather than jumping past the owed one (PR #4001 review).
+    # None means "could not read it", which refuses the settle rather than guessing:
+    # a redundant extraction next turn is the cheap failure, a claimed lesson is not.
     try:
         from tinyassets.conversation_store import latest_turn_no
 
@@ -2870,8 +2872,7 @@ def converse(
             from tinyassets.conversation_store import settle_learned_cursor
 
             settle_learned_cursor(
-                memory_universe_dir, memory_session,
-                **({} if turn_began_at is None else {"from_turn": turn_began_at}),
+                memory_universe_dir, memory_session, from_turn=turn_began_at,
             )
     except Exception:  # noqa: BLE001 - the reply is already earned; memory is best-effort
         logger.warning("converse: conversation memory could not record the turn", exc_info=True)
