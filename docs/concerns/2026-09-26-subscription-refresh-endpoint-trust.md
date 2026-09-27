@@ -27,3 +27,26 @@ Bind issuer/client/endpoint to accepted connection provenance, resolve against t
 fix (not `776abaaf`, which this finding was pinned to). Two of the three legs are closed. The refresh POST goes through the SSRF-hardened broker transport with every carried value declared as a secret (`test_the_refresh_token_is_sent_through_the_hardened_transport`, `test_a_non_https_endpoint_is_refused_before_anything_is_spent`), and the endpoint is now resolved from the document RE-READ under the locks, so a credential can no longer be spent at another issuer's endpoint (`test_the_endpoint_comes_from_the_document_read_under_the_locks`).
 
 STILL OPEN by design, and worth a decision rather than a fix: the issuer still comes from an UNVERIFIED `id_token`. The alternative -- compiling each source's endpoint into the platform -- is what the channel-agnostic ratchet refuses. A signature check against the issuer's published keys would close it without naming any source.
+
+## Scoping the signature check (read-only, 2026-09-26)
+
+Smaller than it looks, and one trap that would make it self-defeating:
+
+- `pyjwt[crypto]` is already a dependency (`pyproject.toml`), and `PyJWKClient` +
+  `jwt.decode` are already used for exactly this shape in
+  `tinyassets/auth/host_binding.py`. Nothing new to add, nothing vendor-specific.
+- The JWKS URI belongs to the issuer's own metadata, so it comes from the same
+  RFC 8414 / OpenID document the token endpoint does. `connection_oauth.discovery.
+  ServerMetadata` does not currently carry `jwks_uri`, so that field has to be
+  added there -- a small, vendor-neutral addition, and the right place for it.
+
+**The trap: do NOT verify `exp`.** A stale credential's identity token is very
+likely expired, and expiry is precisely the condition under which the refresh is
+wanted. Verifying `exp` would make signature checking fail exactly when the
+refresh is needed, converting a working credential into a dead one. The check that
+is wanted is signature + `iss` only (`options={"verify_exp": False,
+"verify_aud": False}`): the question being asked is "did this issuer really mint
+this token", not "is this token still valid". The access token's own expiry is
+already read separately, as a freshness hint.
+
+Verify each cited symbol before acting -- this note is a snapshot.
