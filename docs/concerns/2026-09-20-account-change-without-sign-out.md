@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Account change that skips sign-out keeps the previous thread
+filed: '2026-09-20'
+summary: the app's account boundary is fenced at `enterSignedOut` and around the history/send awaits; a verified account or home change reaching `enterSignedIn` without a sign-out would still keep the old thread and `historyLoaded`. No live path found
+---
+
 # P2 - an account change that skips `enterSignedOut` keeps the previous thread
 
 **Filed:** 2026-09-20 | **Verified:** 2026-09-20 against `8ca62e49` | **Severity:** P2

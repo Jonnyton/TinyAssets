@@ -1,3 +1,10 @@
+---
+severity: P1
+title: A materialized home at the default path is never adopted
+filed: '2026-09-26'
+summary: '`_materialized_document` scans the record''s own values, so a home materialized where no record field names it is invisible; closing it needs a home resolver that does not make the caller name the source'
+---
+
 # Materialized rotations can remain outside the vault
 
 **Filed:** 2026-09-26

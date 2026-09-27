@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Pending-request mute bypass
+filed: '2026-08-27'
+summary: 'different asks collide, and the asking agent can unmute itself Also: `dont_ask_again` and `unmute_request` are both reachable by the served agent, which authenticates as the user''s own principal; lifts are recorded and surfaced, not prevented'
+---
+
 # The agent can lift a mute the user set, because they share one principal
 
 **Filed:** 2026-08-27 (Codex cross-family review, verdict ADAPT)

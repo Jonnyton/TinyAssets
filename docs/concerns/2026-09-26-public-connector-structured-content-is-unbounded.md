@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The public connector's `structuredContent` is unbounded
+filed: '2026-09-26'
+summary: the engine surface now caps a single tool result, but `_structured_return` still hands the full payload to `structured_content`, so a chatbot client parsing the structured half still receives the 1.27 MB catalogue that killed a live turn. Capping it contradicts the as-built "complete choices, not a first-page sample" requirement, so it needs an OpenSpec change that splits the picker's reader from the model's
+---
+
 # The public connector's `structuredContent` carries the whole payload
 
 **Filed:** 2026-09-26

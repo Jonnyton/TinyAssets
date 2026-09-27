@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Grant granularity is per-file, not per-job
+filed: '2026-08-28'
+summary: a job the founder already approved end-to-end stops for a fresh approval on each additional file, which is the friction they have ruled against twice
+---
+
 # A grant is approved per file, so a job already approved keeps stopping for permission
 
 **Filed:** 2026-08-28

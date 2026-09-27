@@ -1,3 +1,10 @@
+---
+severity: P2
+title: '`_current_actor` env fallback'
+filed: '2026-06-30'
+summary: bypasses `permissions.py`
+---
+
 # P2 - `_current_actor` env fallback bypasses `permissions.py`
 
 **Filed:** 2026-06-30 | **Verified:** 2026-07-22 | **Re-verified:** 2026-08-25 | **Severity:** P2

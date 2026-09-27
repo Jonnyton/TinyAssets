@@ -1,3 +1,10 @@
+---
+severity: P2
+title: P0 disk-full repair uses broad prune
+filed: '2026-09-24'
+summary: '`p0-outage-triage.yml` still runs `docker system prune -af`, which deletes the rollback images that bounded retention keeps; its comment misdescribes the prune timer'
+---
+
 # P0 disk-full repair still runs a broad `docker system prune -af`
 
 **Filed:** 2026-09-24 (while building count-based daemon image retention, PR #3960)

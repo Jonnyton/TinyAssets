@@ -1,3 +1,10 @@
+---
+severity: P1
+title: '`reset(confirm=True)` deletes the operational stores and the migration backup'
+filed: '2026-09-26'
+summary: '`reset.universe_dirs` returns every non-dotted dir outside `{lance,output,runs,wiki}` and rmtree''s them, which on the live root is `lancedb`, `daemon_wikis`, `cloud-automation-inputs`, the workspace pool, the migration backup `host-actions.md` says not to delete, and every `_removed_universes_*` archive; a destructive reader needs a POSITIVE universe signal, not the absence of an owner'
+---
+
 # `reset(confirm=True)` deletes the operational stores and the migration backup
 
 **Found** 2026-09-26, routing every reader through the universe-ownership

@@ -1,3 +1,10 @@
+---
+severity: P2
+title: A rate-limited sender can still cause one file copy per in-flight request
+filed: '2026-09-26'
+summary: the per-sender check now runs in the copy's pre-flight transaction, so the sequential loop is blocked, but the byte copy happens after that transaction commits, so N concurrent senders can produce N copies where 1 was allowed and the refused ones are not cleaned up. Costs the receiving owner storage, never authority; closing it needs a capacity reservation spanning the copy
+---
+
 # A rate-limited sender can still cause one file copy per in-flight request
 
 **Filed:** 2026-09-26
