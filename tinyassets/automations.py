@@ -348,6 +348,31 @@ def hold_process_liveness(base_path: str | Path, holder: str) -> Any:
     return acquire_singleton_lock(path)
 
 
+def _probe_holder(base_path: str | Path, holder: str) -> str:
+    """``"dead"``, ``"alive"`` or ``"unknown"`` -- read-only, never deletes.
+
+    The file is the proof, and a holder can hold leases in several universes,
+    so a probe that deleted it after reclaiming ONE lease left every other
+    lease of that dead holder unprovable (Codex round 2, 2026-09-27).
+    """
+    from tinyassets.singleton_lock import _lock_fd, _unlock_fd
+
+    path = holder_liveness_path(base_path, holder)
+    if path is None or not path.is_file():
+        return "unknown"
+    try:
+        fd = os.open(str(path), os.O_RDWR)
+    except OSError:
+        return "unknown"
+    try:
+        if not _lock_fd(fd):
+            return "alive"
+        _unlock_fd(fd)
+        return "dead"
+    finally:
+        os.close(fd)
+
+
 def holder_is_provably_dead(base_path: str | Path, holder: str) -> bool:
     """True only when ``holder``'s process is gone. Never a guess.
 
@@ -356,28 +381,12 @@ def holder_is_provably_dead(base_path: str | Path, holder: str) -> bool:
     before this, or one that never started a consumer) is NOT evidence of
     death: its lease stands until it expires. So does any probe error.
     """
-    from tinyassets.singleton_lock import _lock_fd, _pid_path, _unlock_fd
+    return _probe_holder(base_path, holder) == "dead"
 
-    path = holder_liveness_path(base_path, holder)
-    if path is None or not path.is_file():
-        return False
-    try:
-        fd = os.open(str(path), os.O_RDWR)
-    except OSError:
-        return False
-    try:
-        if not _lock_fd(fd):
-            return False
-        _unlock_fd(fd)
-    finally:
-        os.close(fd)
-    # Its boot id is unique, so no live process will ever take this file again.
-    for stale in (path, _pid_path(path)):
-        try:
-            stale.unlink()
-        except OSError:
-            pass
-    return True
+
+def holder_is_provably_alive(base_path: str | Path, holder: str) -> bool:
+    """True when ``holder``'s process still holds its liveness lock."""
+    return _probe_holder(base_path, holder) == "alive"
 
 
 # -- Store --------------------------------------------------------------------
@@ -686,13 +695,19 @@ class AutomationStore:
                     (universe_id,),
                 ).fetchone()
                 if row is not None and str(row["holder"]) != holder:
+                    current = str(row["holder"])
                     expires = _parse(str(row["expires_at"]))
+                    unexpired = expires is not None and expires > moment
+                    # Unexpired: yield unless the holder is proven dead.
+                    # Expired: take it unless the holder is proven ALIVE -- a
+                    # live holder that missed its refreshes may still be
+                    # calling a provider (Codex round 2, sequence 1 after TTL).
                     if (
-                        expires is not None
-                        and expires > moment
-                        and not holder_is_provably_dead(
-                            self.base_path, str(row["holder"])
-                        )
+                        unexpired
+                        and not holder_is_provably_dead(self.base_path, current)
+                    ) or (
+                        not unexpired
+                        and holder_is_provably_alive(self.base_path, current)
                     ):
                         conn.execute("ROLLBACK")
                         return False
@@ -743,6 +758,19 @@ class AutomationStore:
                 "DELETE FROM universe_leases WHERE universe_id = ? AND holder = ?",
                 (universe_id, holder),
             )
+        finally:
+            conn.close()
+
+    def lease_holders(self) -> set[str]:
+        """Every holder named by any lease row, expired or not."""
+        conn = self._connect(create=False)
+        if conn is None:
+            return set()
+        try:
+            return {
+                str(row[0])
+                for row in conn.execute("SELECT DISTINCT holder FROM universe_leases")
+            }
         finally:
             conn.close()
 
@@ -1675,6 +1703,7 @@ __all__ = [
     "cron_min_gap_seconds",
     "due_automations",
     "hold_process_liveness",
+    "holder_is_provably_alive",
     "holder_is_provably_dead",
     "holder_liveness_path",
     "register_automation",

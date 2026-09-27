@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -263,22 +264,46 @@ class AssignedQueueConsumer:
     def _hold_liveness(self) -> None:
         from tinyassets.automations import (
             LIVENESS_DIR,
+            AutomationStore,
             hold_process_liveness,
             holder_is_provably_dead,
+            holder_liveness_path,
         )
+        from tinyassets.singleton_lock import _pid_path
 
         try:
-            self._liveness = hold_process_liveness(self.base_path, self.consumer_id)
+            held = hold_process_liveness(self.base_path, self.consumer_id)
         except Exception:  # noqa: BLE001 - without it, leases fall back to TTL
             logger.exception("consumer liveness lock unavailable")
-        # Every boot adds a file and a kill leaves it behind. The probe removes
-        # a dead holder's file, so sweeping once per boot keeps the count at
-        # the number of live consumers.
+            held = None
+        if held is not None and held.acquired:
+            self._liveness = held
+        elif held is not None:
+            # An UNLOCKED file under our own id would read as proof that this
+            # live process is dead. Remove it; our leases then wait out a TTL.
+            logger.error("consumer liveness lock not acquired; removing its file")
+            for path in (held.path, _pid_path(held.path)):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        # Every boot adds a file and a kill leaves it behind. A dead holder's
+        # file is removed only once NO lease names it: until then it is the
+        # proof another universe needs to reclaim that holder's lease.
         try:
+            named = AutomationStore(self.base_path).lease_holders()
             for stale in (self.base_path / LIVENESS_DIR).glob("*.lock"):
-                if stale.stem != self.consumer_id:
-                    holder_is_provably_dead(self.base_path, stale.stem)
-        except OSError:
+                holder = stale.stem
+                if holder == self.consumer_id or holder in named:
+                    continue
+                if holder_is_provably_dead(self.base_path, holder):
+                    path = holder_liveness_path(self.base_path, holder)
+                    for leftover in (path, _pid_path(path)):
+                        try:
+                            leftover.unlink()
+                        except OSError:
+                            pass
+        except (OSError, sqlite3.Error):
             logger.exception("consumer liveness sweep failed")
 
     def _release_liveness(self) -> None:
@@ -614,7 +639,6 @@ class AssignedQueueConsumer:
         A universe with an unstopped automation run is busy until that run is
         terminal, then its lease -- held long on purpose -- is released.
         """
-        still_running = self._reap_unstopped()
         with self._lock:
             finished = [uid for uid, future in self._active.items() if future.done()]
             for uid in finished:
@@ -623,31 +647,53 @@ class AssignedQueueConsumer:
                     future.result()
                 except Exception:  # noqa: BLE001 - already contained, retain diagnostics
                     logger.exception("assigned queue task future failed")
-            return (
-                self.max_concurrency - len(self._active),
-                set(self._active) | still_running,
-            )
+            free = self.max_concurrency - len(self._active)
+            active = set(self._active)
+        # AFTER reaping, not before: a batch records its unstopped run before its
+        # future completes, so a future seen done here has already published it.
+        # Reading `_unstopped` first raced a batch finishing in between, which
+        # returned its universe as free (Codex round 2, 2026-09-27).
+        return free, active | self._reap_unstopped()
 
     def _reap_unstopped(self) -> set[str]:
-        """Universes whose timed-out run is still going; release the rest."""
-        from tinyassets.runs import get_run
+        """Universes whose timed-out run is still going; release the rest.
 
-        terminal = {"completed", "failed", "cancelled", "interrupted"}
+        "Still going" is the worker's own future, not the run row: a status
+        can be orphan-marked while the worker runs on, and a run id with no row
+        would otherwise hold its universe forever. A running universe's lease
+        is re-stamped here, since its batch's refresher has already stopped.
+        """
+        from datetime import datetime as _dt
+
+        from tinyassets.automations import (
+            AutomationStore,
+            cancel_grace_seconds,
+            run_timeout_seconds,
+        )
+        from tinyassets.runs import get_future
+
         with self._lock:
             pending = {uid: set(runs) for uid, runs in self._unstopped.items()}
         running: set[str] = set()
         for universe_id, run_ids in pending.items():
-            try:
-                live = any(
-                    str((get_run(self.base_path, run_id) or {}).get("status") or "")
-                    not in terminal
-                    for run_id in run_ids
-                )
-            except Exception:  # noqa: BLE001 - unknown is still running
-                logger.exception("unstopped run check failed universe=%s", universe_id)
-                live = True
+            live = False
+            for run_id in run_ids:
+                future = get_future(run_id)
+                if future is not None and not future.done():
+                    live = True
             if live:
                 running.add(universe_id)
+                try:
+                    AutomationStore(self.base_path).refresh_universe_lease(
+                        universe_id,
+                        holder=self.consumer_id,
+                        now=_dt.now(timezone.utc),
+                        ttl_seconds=run_timeout_seconds() + cancel_grace_seconds(),
+                    )
+                except Exception:  # noqa: BLE001 - the held lease still stands
+                    logger.exception(
+                        "unstopped lease refresh failed universe=%s", universe_id
+                    )
                 continue
             with self._lock:
                 self._unstopped.pop(universe_id, None)
