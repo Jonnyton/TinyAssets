@@ -23,7 +23,7 @@ from tinyassets.providers.agent_capacity_boundary import capacity_boundary
 from tinyassets.providers.agent_inference import AgentInferenceRequest
 from tinyassets.providers.agent_model_plan import AgentModelPlan
 from tinyassets.providers.native_agent_input import render_native_input
-from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+from tinyassets.served_tools import granted_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
@@ -262,7 +262,7 @@ class AgentTurnCoordinator:
                             )
                             engine = await stack.enter_async_context(open_engine_tools(
                                 actor_id=actor_id, graph_id=graph_id,
-                                enabled_tools=SERVED_ENGINE_MCP_TOOLS, timeout=timeout,
+                                enabled_tools=granted_tools(self.config), timeout=timeout,
                             ))
                         config = replace(self.config, agent_request=AgentInferenceRequest(
                             tools=codec.tool_definitions(engine.tools), history=self._history(),

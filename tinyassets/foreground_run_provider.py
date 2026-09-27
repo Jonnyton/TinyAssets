@@ -1065,11 +1065,14 @@ class _ForegroundRunProviderSession:
                 return response, "mock"
 
         self._ensure_admitted()
-        from tinyassets.shared_self import prepare_shared_self_turn, shared_self_requested
+        from tinyassets.shared_self import agent_node, prepare_shared_self_turn
 
-        if shared_self_requested(self._branch_snapshot):
+        node = agent_node(
+            self._branch_snapshot, getattr(config, "agent_node_id", ""), self._principal_id,
+        )
+        if node is not None:
             prompt, system, config = prepare_shared_self_turn(
-                self._base_path, self._universe_id, self._principal_id, prompt, config,
+                self._base_path, self._universe_id, self._principal_id, prompt, config, node,
             )
             if config.engine_mcp_enabled:
                 from tinyassets.workflow_agent import call_foreground_work_agent

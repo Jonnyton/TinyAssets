@@ -825,11 +825,12 @@ class _BackgroundAssignedProviderSession:
             )
         with self._lock:
             from tinyassets.exceptions import ProviderAuthorityHeldError
-            from tinyassets.shared_self import prepare_shared_self_turn, shared_self_requested
+            from tinyassets.shared_self import agent_node, prepare_shared_self_turn
 
             try:
-                agent_requested = shared_self_requested(
+                node = agent_node(
                     _branch_snapshot(self._base_path, self._task),
+                    getattr(config, "agent_node_id", ""), self._task.actor_id,
                 )
             except Exception as exc:
                 # Preserve the existing typed hold when the earlier opt-in read
@@ -841,12 +842,13 @@ class _BackgroundAssignedProviderSession:
                 raise ProviderAuthorityHeldError(
                     "Assigned background provider authority is unavailable; retry after repair.",
                 ) from exc
-            if agent_requested:
+            if node is not None:
                 if role != "writer" or kwargs:
                     raise PermissionError("workflow agent cannot substitute execution context")
                 load_background_executor_identity(self._base_path, self._task, self._consumer_lease)
                 prompt, system, config = prepare_shared_self_turn(
                     self._base_path, self._task.universe_id, self._task.actor_id, prompt, config,
+                    node,
                 )
                 from tinyassets.workflow_agent import call_background_work_agent
 

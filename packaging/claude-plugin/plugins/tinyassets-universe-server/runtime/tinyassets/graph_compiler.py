@@ -1266,6 +1266,23 @@ def _build_prompt_template_node(
     role = (node.model_hint or "writer").strip().lower() or "writer"
     template = node.prompt_template or ""
     timeout_s = float(node.timeout_seconds or 300.0)
+    from tinyassets.served_tools import AGENT_NODE_MARKERS
+
+    agent_node_id = (
+        node.node_id if AGENT_NODE_MARKERS.intersection(node.tools_allowed or []) else ""
+    )
+    if agent_node_id:
+        from tinyassets.served_tools import node_tool_grant
+
+        try:
+            node_tool_grant(node.tools_allowed)
+        except ValueError as exc:
+            raise CompilerError(f"Node '{node.node_id}': {exc}") from exc
+        # An agent node is the converse turn, which runs until it finishes: its
+        # slot is that turn's own runaway backstop, not a node timeout.
+        from tinyassets.universe_intelligence import served_absolute_cap_s
+
+        timeout_s = served_absolute_cap_s(getattr(universe_context, "config", None))
     strict_isolation = bool(getattr(node, "strict_input_isolation", True))
     declared_inputs = list(node.input_keys)
     # BUG-085 (Codex checker finding 1): state_schema fields carrying a
@@ -1295,6 +1312,7 @@ def _build_prompt_template_node(
             # Streaming providers use this cap, not the legacy timeout scalar.
             absolute_cap_s=timeout_s,
             reasoning_effort=_node_reasoning_effort,
+            agent_node_id=agent_node_id,
         )
     except Exception:  # pragma: no cover - defensive; provider import is optional
         _node_cfg = None
