@@ -57,6 +57,12 @@ an authority change plus a recovery-shape change, not a UI change:
   `content_hash` for source authorization; a per-turn path must authorize the
   source of the *requested* binding, and the owner-remix gate
   (`consumer_remix_required`) has to hold per binding.
+- **Reservation is not the only gate.** There is a second selection check at
+  execution time (`tinyassets/consumer_runtime.py`, in the dispatch path around
+  line 328). Changing reservation alone would admit the turn and then reject it
+  when execution starts — a worse failure than today's refusal, because the user
+  would already believe the message was sent. Both checks move together or
+  neither does. (Codex, reviewing PR #4038, 2026-09-26.)
 
 Belongs in its own OpenSpec change — it is public surface and authority. Until
 then, `openspec/changes/composable-ui-experiences` carries it as remaining work.

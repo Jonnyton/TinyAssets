@@ -436,8 +436,11 @@
       <p>Switch between the default chat and any UI installed in this universe.
       A custom UI runs isolated: it cannot read your sign-in, your other tabs, or
       anything outside this universe, and it reaches your universe only through
-      the actions you see here — greeting you, listing your agents, sending a
-      message, and reading this conversation.</p>
+      four actions — your universe's name, your list of agents, sending a message,
+      and reading this conversation.</p>
+      <p class="muted">Those four are what it can use, so they are also what it
+      could keep. Someone else's UI is someone else's code: running it shows it
+      this conversation. Switch back to default chat to stop that.</p>
       <p id="ui-status" role="status" aria-live="polite"></p>
       <ul id="ui-list"></ul>
       <div class="layout-actions">
@@ -3233,6 +3236,11 @@
     // moving to another home has a different row to be offered, so the
     // "already restored" mark is account-scoped AND home-scoped.
     if(queueScope && value && value!==queueScope) uploadsRestored=false;
+    // A custom UI's bridge was granted access to ONE home. The same account
+    // moving to another home must end that grant here, because `converse` and
+    // `get_status` resolve the caller's CURRENT home: a bundle left mounted would
+    // be served the new home's conversation (Codex, 2026-09-26).
+    if(queueScope && value && value!==queueScope && typeof AppUI!=="undefined") AppUI.homeChanged(value);
     queueScope=value;
   }
   // The ACCOUNT half of "may this page read what this browser saved". A home id
@@ -4141,6 +4149,10 @@
   }
   function clearAccountScopedState(){
     queueScope=""; queueOwner="";
+    // The other writer of the home. A custom UI's bridge is account- AND
+    // home-scoped, so an account-scoped clear must end it here too; leaving it to
+    // the sign-out path only would miss every other caller of this.
+    if(typeof AppUI!=="undefined") AppUI.reset();
     historyLoaded=false; queueRestored=false; inflightRestored=false;
     uploadsRestored=false;
     sendQueue.length=0; sendQueueHeld=false; retainedItems=[];

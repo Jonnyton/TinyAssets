@@ -258,3 +258,56 @@ Device capability negotiation, notification routing, voice handoff, multi-file
 bundles with binary assets, and a real per-universe file store. A rendered
 real-browser proof through `ui-test` is required before this is called
 user-ready; test-harness evidence is not that proof.
+
+### Cross-family review round (Codex gpt-6-astra, 2026-09-26, head `6b85ee1e`)
+
+Verdict ADAPT: three P1 and two P2, all real, all fixed. Recorded because four of
+the five are things the *shape* got wrong, not typos.
+
+1. **CSP does not cover every egress path.** `connect-src 'none'` stops fetch,
+   beacon and WebSocket, but **not WebRTC**: ICE gathering resolves
+   attacker-controlled STUN hostnames, so a bundle could encode what the bridge
+   showed it into DNS lookups with no permission prompt and nothing for the policy
+   to see. DNS prefetch is the same class. There is no CSP directive for either,
+   so a directive would have been a comfort, not a control. The frame's bootstrap
+   now **removes the capability from the realm** (`RTCPeerConnection` and friends,
+   non-configurable and non-writable) and the response carries
+   `X-DNS-Prefetch-Control: off`. Removal holds only because there is no route
+   back to a pristine realm — nested frame, worker and popup are each refused by
+   this document's own policy, which is why those three absences are now asserted
+   next to the removal rather than separately.
+2. **A home change did not revoke a mounted bundle.** The same account can move
+   home mid-session; `converse` and `get_status` resolve the *caller's current*
+   home, so a bundle granted access to one home would have been served the next
+   one's conversation. Sign-out tore the bridge down; this path did not. Now:
+   `AppUI.homeChanged` on the single transition funnel (`setQueueScope`),
+   `AppUI.reset` on the account-scoped clear, a `verify()` against `fetchMe`
+   before every action, and the conversation read pinned to `this.home` with the
+   **answer's** universe checked. Four layers because each covers a different
+   window, and a test proves each one fires on its own.
+3. **Installing could erase what it could not read.** `adopt` emptied its cache
+   when any stored bundle was unsupported, and `install` rebuilt `ui_library` from
+   that cache — so installing next to a future-version bundle deleted it, and CAS
+   could not object because the revision was current. An unreadable library is now
+   remembered *as unreadable*, install refuses on it, and the guarded mutation
+   rebuilds from the configuration the write actually observed.
+4. **Replies were fenced to the account, not the asking frame.** Switching bundles
+   did not advance any generation, and both bootstraps number requests from `r1`,
+   so bundle A's answer could settle bundle B's identically-named promise. A frame
+   generation is now captured per request.
+5. **Sizes were counted in UTF-16 units against a byte cap.** Three separately
+   accepted CJK bundles could bust `MAX_AGENT_JSON_BYTES` at write time, surfacing
+   as an unexplained "uncertain" editor. Sizes are UTF-8 bytes now, the
+   whole-configuration size is checked before the write *and* inside it, and a
+   test ties `MAX_CONFIG_BYTES` to the Python constant.
+
+One guard was **deleted** rather than kept: a generation check in `post` that no
+mutation could make fire, because `serve` already fenced every async reply. A
+guard no test can turn red is decoration, and decoration next to real locks is
+worse than nothing — it invites trusting the wrong line.
+
+**Residual, accepted, and not claimed as closed.** A bundle can navigate *itself*
+away; the parent's `frame-src 'self'` bounds where to, so it cannot carry data to
+a third party, but it can put it in this origin's own access log. And a bundle
+keeps whatever the bridge already showed it — which is why the switcher dialog now
+says so in plain words rather than only listing the four actions.

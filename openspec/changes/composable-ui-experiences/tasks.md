@@ -7,7 +7,8 @@
 
 - [x] Settle the renderer isolation contract, the bundle store and its byte bounds
       against the existing handlers (design.md, "Implementation slice").
-- [ ] Record cross-family shape review and resolve its findings.
+- [x] Record cross-family shape review and resolve its findings (Codex
+      gpt-6-astra, 2026-09-26, ADAPT: 3xP1 + 2xP2, all fixed; design.md).
 
 ## Implementation slice: executable UI bundles
 

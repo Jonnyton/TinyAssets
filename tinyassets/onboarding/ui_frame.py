@@ -53,6 +53,26 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
   // Nothing to host and no parent to serve: refuse rather than run loose.
   if (!parentWindow || parentWindow === window) { return; }
 
+  // WebRTC is a real egress channel that CSP does not cover: ICE gathering
+  // resolves attacker-controlled STUN hostnames, so a bundle could encode the
+  // conversation it was shown into DNS lookups without any permission and
+  // without touching `connect-src` (Codex, 2026-09-26). A CSP directive for it
+  // does not exist, so the capability is REMOVED from the realm instead -- which
+  // is enforced by JS semantics rather than by policy support.
+  //
+  // There is no route back to a pristine realm: this document's own CSP leaves
+  // `frame-src` and `worker-src` falling back to `default-src 'none'`, and no
+  // `allow-popups` means `window.open` is blocked, so a nested frame, a worker
+  // and a popup are all unavailable as sources of a fresh constructor.
+  try {
+    for (var i = 0, gone = ["RTCPeerConnection", "webkitRTCPeerConnection",
+                            "mozRTCPeerConnection", "RTCDataChannel",
+                            "RTCIceTransport", "webkitRTCIceTransport"];
+         i < gone.length; i++) {
+      Object.defineProperty(window, gone[i], {value: undefined, configurable: false, writable: false});
+    }
+  } catch (_err) { /* already absent on this engine */ }
+
   var pending = Object.create(null);
   var nextId = 1;
   var started = false;
@@ -160,6 +180,10 @@ FRAME_HEADERS = {
     "Content-Security-Policy": FRAME_CSP,
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
+    # DNS prefetch is the other egress channel CSP does not cover: a hostname in
+    # a link or a `<link rel=dns-prefetch>` is resolved without any request the
+    # policy sees. The WebRTC half of that pair is closed in the bootstrap.
+    "X-DNS-Prefetch-Control": "off",
     # The document is fixed, but it is also the security boundary; a stale copy
     # after a policy fix is exactly the cache we do not want.
     "Cache-Control": "no-store",

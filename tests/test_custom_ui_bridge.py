@@ -51,6 +51,8 @@ const emit=event=>{for(const fn of [...listeners])fn(event);};
 const HOME='u-alice',PRINCIPAL='alice';
 let me={principal_id:PRINCIPAL,universe_id:HOME,setup:'connected'};
 let binding=null, definitions={}, calls=[], sends=[], conversation=[];
+let otherConversation=[{speaker:'universe',text:'BOBS PRIVATE TURN',ts:1,truncated:false}];
+let statusUniverseOverride='';
 const fetchMe=async()=>me;
 const sessionExpired=()=>{throw Error('expired');};
 const sendTurn=async(message,display,opts)=>{sends.push({message,display,opts});};
@@ -60,7 +62,11 @@ const MCP={
   if(tool==='read_graph'&&args.target==='agent_bindings')return {bindings:binding?[binding]:[]};
   if(tool==='read_graph'&&args.target==='agent_binding')return {binding};
   if(tool==='read_graph'&&args.target==='agent')return {agent:definitions[args.agent_definition_id]||{agent_definition_id:args.agent_definition_id,components:{}}};
-  if(tool==='get_status')return {recent_conversation:{turns:conversation}};
+  if(tool==='get_status'){
+   const scope=statusUniverseOverride||args.universe_id||me.universe_id;
+   return {universe_id:scope,
+     recent_conversation:{turns:scope===HOME?conversation:otherConversation}};
+  }
   if(tool==='write_graph'&&args.target==='agent_binding'){
    const config=JSON.parse(args.payload_json);
    if(args.operation==='update'){
@@ -290,6 +296,183 @@ assert(!u.publishPayload({...bobs,extra:1},'').ok);
 assert(!u.readDefinition({components:{a:bobs,b:bundleOf()}}).ok);
 assert(!u.readDefinition({components:{}}).ok);
 assert.equal(u.readDefinition({components:{only:bobs}}).bundle.ui_id,'bob-tower');
+
+// ---- the read is pinned, and its answer is checked (Codex P1) ---------
+// `verify()` sees nothing wrong here: `fetchMe` still reports this home. Only
+// the status answer disagrees, which is the window between the two.
+const pinnedFrame=u.frame.contentWindow;
+calls=[];
+const pinnedRead=await (async()=>{const before=pinnedFrame.posts.length;
+ emit({source:pinnedFrame,data:{ta_ui:1,type:'call',id:'pin',action:'read_conversation',params:{}}});
+ for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
+ return pinnedFrame.posts[pinnedFrame.posts.length-1];})();
+const statusCalls=calls.filter(c=>c.tool==='get_status');
+assert.equal(statusCalls.length,1);
+assert.equal(statusCalls[0].args.universe_id,HOME,'the read names the granted home');
+assert.equal(pinnedRead.ok,true);
+
+// Now the server answers about a DIFFERENT universe while fetchMe still says
+// this one. The reply must be refused, not rendered.
+statusUniverseOverride='u-bob';
+const mismatched=await (async()=>{const before=pinnedFrame.posts.length;
+ emit({source:pinnedFrame,data:{ta_ui:1,type:'call',id:'mis',action:'read_conversation',params:{}}});
+ for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
+ return pinnedFrame.posts[pinnedFrame.posts.length-1];})();
+assert.equal(mismatched.ok,false,'an answer about another universe is refused');
+assert(/another universe/.test(mismatched.error),mismatched.error);
+assert.equal(JSON.stringify(mismatched).includes('BOBS PRIVATE TURN'),false);
+statusUniverseOverride='';
+
+// ---- a home change under the same login ends the grant (Codex P1) ------
+// The account moves home while a bundle is mounted. `get_status` with no
+// universe would hand it the NEW home's conversation.
+conversation=[{speaker:'founder',text:'ALICE PRIVATE TURN',ts:2,truncated:false}];
+const mountedFrame=u.frame.contentWindow;
+me={principal_id:PRINCIPAL,universe_id:'u-bob',setup:'connected'};
+const leak=await (async()=>{const before=mountedFrame.posts.length;
+ emit({source:mountedFrame,data:{ta_ui:1,type:'call',id:'leak',action:'read_conversation',params:{}}});
+ for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
+ return mountedFrame.posts[mountedFrame.posts.length-1];})();
+assert.equal(leak.ok,false,'a moved home must not be served to the old bundle');
+assert(/identity or home changed/.test(leak.error),leak.error);
+assert.equal(JSON.stringify(leak).includes('BOBS PRIVATE TURN'),false);
+assert.equal(u.frame,null,'the bridge is revoked, not merely refused once');
+assert.equal(u.enabled,false);
+
+// The funnel the app actually calls must revoke too, not just the handler.
+me={principal_id:PRINCIPAL,universe_id:HOME,setup:'connected'};
+binding=installed([bundleOf()],{version:1,state:'active',ui_id:'office'});
+AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
+ configuration:JSON.parse(JSON.stringify(binding.configuration))};
+AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
+AppLayout.uncertain=false;AppLayout.enabled=true;AppLayout.home=HOME;AppLayout.principal=PRINCIPAL;
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.adopt(AppLayout.installation);
+assert(u.active,'the saved UI is mounted again');
+u.homeChanged('u-carol');
+assert.equal(u.frame,null,'homeChanged tears the frame down');
+assert.equal(u.enabled,false);
+u.homeChanged('u-carol');   // idempotent on an already-reset controller
+
+// ---- a reply is owed to the frame that asked (Codex P2) ----------------
+me={principal_id:PRINCIPAL,universe_id:HOME,setup:'connected'};
+binding=installed([bundleOf(),bundleOf({ui_id:'second',name:'Second'})],null);
+AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
+ configuration:JSON.parse(JSON.stringify(binding.configuration))};
+AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
+AppLayout.uncertain=false;AppLayout.enabled=true;AppLayout.home=HOME;AppLayout.principal=PRINCIPAL;
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.adopt(AppLayout.installation);
+u.mount(u.library[0]);
+const frameA=u.frame.contentWindow;
+emit({source:frameA,data:{ta_ui:1,type:'ready'}});
+const postsA=frameA.posts.length;
+// Ask, then swap the bundle before the answer lands. Both bootstraps number
+// their requests from r1, so a misrouted reply would settle B's own promise.
+emit({source:frameA,data:{ta_ui:1,type:'call',id:'r1',action:'read_conversation',params:{}}});
+u.mount(u.library[1]);
+const frameB=u.frame.contentWindow;
+for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));
+assert.equal(frameB.posts.filter(m=>m.type==='result'&&m.id==='r1').length,0,
+ "bundle A's answer must not reach bundle B");
+assert.equal(frameA.posts.length,postsA,'and it is not delivered to a torn-down frame either');
+assert.equal(u.pending,0,"a stale completion must not decrement the new frame's counter");
+
+// ---- installing next to an unreadable library refuses (Codex P1) -------
+// One stored bundle is a future version this app cannot parse. Installing must
+// not rebuild the library from a cache that dropped it.
+const future={...bundleOf({ui_id:'from-tomorrow'}),version:2};
+binding=installed([bundleOf(),future],null);
+AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
+ configuration:JSON.parse(JSON.stringify(binding.configuration))};
+AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
+AppLayout.uncertain=false;
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.adopt(AppLayout.installation);
+assert(u.unreadable,'an unreadable library is remembered as unreadable, not as empty');
+assert.deepEqual(u.library,[]);
+const storedBefore=JSON.stringify(binding.configuration.ui_library);
+calls=[];
+const refused=await u.install(bundleOf({ui_id:'newcomer'}));
+assert(!refused.ok,'install must refuse rather than overwrite');
+assert.equal(calls.filter(c=>c.tool==='write_graph').length,0,'and write nothing');
+assert.equal(AppLayout.uncertain,false,
+ 'refusing up front must not leave the shared editor uncertain; only the write backstop does that');
+assert.equal(JSON.stringify(binding.configuration.ui_library),storedBefore,
+ 'the bundle it could not parse is still stored');
+
+// The guarded mutation is the backstop: even with a clean cache, a library that
+// became unreadable since the read is refused inside the write window.
+u.unreadable='';u.library=[bundleOf()];
+AppLayout.uncertain=false;
+const sneaky=await u.install(bundleOf({ui_id:'newcomer'}));
+assert(!sneaky.ok,'the mutation re-checks what the write actually observed');
+assert.equal(JSON.stringify(binding.configuration.ui_library),storedBefore);
+
+// ---- size is measured in UTF-8 bytes, not UTF-16 units (Codex P2) ------
+// Characters that cost three bytes each. A character-counting limit accepts
+// this; the server, which caps bytes, would not.
+const cjk=bundleOf({ui_id:'cjk',markup:'漢'.repeat(20000)});
+assert.equal(cjk.markup.length,20000);
+assert(u.bytes(cjk.markup)>3*19000,'the fixture really is multi-byte');
+const cjkRead=u.parseBundle(cjk);
+assert(!cjkRead.ok,'a bundle over the BYTE limit is refused');
+assert(/bytes/.test(cjkRead.reason),cjkRead.reason);
+// And the whole configuration is checked before a write, not just one bundle.
+binding=installed([],null);
+AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
+ configuration:JSON.parse(JSON.stringify(binding.configuration))};
+AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.uncertain=false;
+u.adopt(AppLayout.installation);
+const near=u.MAX_MARKUP-1024;   // inside the field bound AND the bundle budget
+for(let i=0;i<u.LIBRARY_LIMIT-1;i++){
+ AppLayout.uncertain=false;
+ const r=await u.install(bundleOf({ui_id:'big-'+i,markup:'x'.repeat(near)}));
+ assert(r.ok,'a bundle inside its own budget installs: '+JSON.stringify(r));
+}
+assert(u.bytes(JSON.stringify(binding.configuration))<u.MAX_CONFIG_BYTES);
+
+// With bulk already in the configuration, one more bundle crosses the cap. The
+// refusal must come from this app, before a write, naming the size.
+binding=installed([],null);
+binding.configuration.private={bulk:'p'.repeat(u.MAX_CONFIG_BYTES-30000)};
+AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
+ configuration:JSON.parse(JSON.stringify(binding.configuration))};
+AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
+AppLayout.uncertain=false;
+u.adopt(AppLayout.installation);
+const storedBulk=JSON.stringify(binding.configuration);
+calls=[];
+const tooBig=await u.install(bundleOf({ui_id:'straw',markup:'y'.repeat(u.MAX_MARKUP)}));
+assert(!tooBig.ok,'a bundle that would bust the binding cap is refused');
+assert.equal(calls.filter(c=>c.tool==='write_graph').length,0,'and nothing is written');
+assert.equal(JSON.stringify(binding.configuration),storedBulk);
+assert(/over the /.test($('ui-status').textContent),$('ui-status').textContent);
+// This size was visible BEFORE the write, so the refusal must not leave the
+// shared editor uncertain -- that state is for outcomes nobody can be sure of.
+assert.equal(AppLayout.uncertain,false,
+ 'a size this app could see coming is refused without an uncertain write');
+
+// ---- the in-write cap is the backstop for a RACE (Codex P2) -----------
+// The pre-write check reads the configuration last OBSERVED; the stored one can
+// have grown since. Make them disagree: observed small, stored already near the
+// cap, same revision so CAS is satisfied. The pre-write check passes and the
+// guarded mutation must refuse -- and THAT refusal legitimately marks the shared
+// editor uncertain, which the pre-write one must not.
+binding=installed([],null);
+binding.configuration.private={bulk:'q'.repeat(u.MAX_CONFIG_BYTES-30000)};
+AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
+ configuration:{schema_version:1,name:'App experience',role:'app_experience'}};  // the small view
+AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
+AppLayout.uncertain=false;
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.library=[];u.unreadable='';
+const storedRace=JSON.stringify(binding.configuration);
+calls=[];
+const raced=await u.install(bundleOf({ui_id:'raced',markup:'z'.repeat(u.MAX_MARKUP)}));
+assert(!raced.ok,'the guarded mutation refuses what the stale view allowed');
+assert.equal(JSON.stringify(binding.configuration),storedRace,'and nothing was written');
+assert(AppLayout.uncertain,'a refusal inside the write window IS uncertain');
+// The reason must survive out to the user, not be flattened to "failed".
+assert(/over the /.test($('ui-status').textContent),$('ui-status').textContent);
+assert(/bytes/.test($('ui-status').textContent),$('ui-status').textContent);
+AppLayout.uncertain=false;
 
 // ---- sign-out tears the bridge down ----------------------------------
 u.reset();

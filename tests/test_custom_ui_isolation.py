@@ -83,6 +83,37 @@ def test_frame_response_carries_the_policy_and_no_user_content(
     assert served.body.decode("utf-8") == BOOTSTRAP_HTML
 
 
+def test_frame_closes_the_egress_channels_csp_does_not_cover() -> None:
+    """WebRTC and DNS prefetch are not `connect-src` traffic.
+
+    ICE gathering resolves attacker-controlled STUN hostnames, so a bundle could
+    encode what the bridge showed it into DNS lookups with no permission prompt
+    and nothing for the policy to block (Codex, 2026-09-26). There is no CSP
+    directive for it, so the capability is removed from the realm instead.
+    """
+    assert FRAME_HEADERS["X-DNS-Prefetch-Control"] == "off"
+
+    # Removed with a non-configurable, non-writable definition, so the bundle
+    # cannot simply assign them back.
+    assert "RTCPeerConnection" in BOOTSTRAP_HTML
+    assert "webkitRTCPeerConnection" in BOOTSTRAP_HTML
+    assert "configurable: false" in BOOTSTRAP_HTML
+    assert "writable: false" in BOOTSTRAP_HTML
+
+    # The removal only holds because there is no route to a pristine realm. Each
+    # of these would hand one back, and each is refused by this document's policy
+    # rather than by the bootstrap.
+    frame = _directives(FRAME_CSP)
+    assert "frame-src" not in frame          # falls back to default-src 'none'
+    assert "child-src" not in frame
+    assert "worker-src" not in frame
+    assert frame["default-src"] == ["'none'"]
+    assert "allow-popups" not in frame["sandbox"]
+
+    # And the removal happens before any bundle code can run.
+    assert BOOTSTRAP_HTML.index("RTCPeerConnection") < BOOTSTRAP_HTML.index("function start(")
+
+
 def test_frame_route_is_registered_for_reads_only() -> None:
     frame_routes = [r for r in onboarding_routes() if getattr(r, "path", "") == "/mcp/app/ui-frame"]
     assert len(frame_routes) == 1
@@ -141,6 +172,39 @@ def test_frame_handler_honours_the_dark_flag(monkeypatch: pytest.MonkeyPatch) ->
     assert on.headers["Content-Security-Policy"] == FRAME_CSP
 
 
+def test_the_home_transition_funnel_revokes_the_bridge() -> None:
+    """`AppUI.homeChanged` is only a guard if the app actually calls it.
+
+    A behavioural test can drive `homeChanged` directly and pass while nothing in
+    the app ever reaches it. The same account CAN move home mid-session -- the
+    status poll observes it -- so the one funnel every transition goes through has
+    to be the caller.
+    """
+    html = Path("tinyassets/onboarding/app.html").read_text(encoding="utf-8")
+
+    body = re.search(r"function setQueueScope\(next\)\{(.*?)\n  \}", html, re.S)
+    assert body, "setQueueScope must still be the single home-transition funnel"
+    assert "AppUI.homeChanged(value)" in body.group(1), body.group(1)
+
+    # And it must fire on a CHANGE, not on every call -- re-reporting the same
+    # home would tear down a working bundle on every status poll.
+    assert "value!==queueScope" in body.group(1)
+
+    # There are exactly two writers of the app's home, and BOTH revoke. A third
+    # one appearing without a revoke is the bug this pins: it would move the home
+    # under a mounted bundle and leave its bridge live.
+    assignments = [
+        line for line in html.splitlines()
+        if re.search(r"^\s*queueScope\s*=", line)
+    ]
+    assert len(assignments) == 2, assignments
+
+    clear = re.search(r"function clearAccountScopedState\(\)\{(.*?)\n  \}", html, re.S)
+    assert clear, "the account-scoped clear must still be a function"
+    assert 'queueScope=""' in clear.group(1)
+    assert "AppUI.reset()" in clear.group(1), clear.group(1)
+
+
 def test_bundle_bounds_fit_the_real_binding_cap() -> None:
     """The JS bounds are derived from the Python cap, not a coincidence.
 
@@ -157,6 +221,15 @@ def test_bundle_bounds_fit_the_real_binding_cap() -> None:
 
     per_bundle = constant("MAX_BUNDLE_BYTES")
     library = constant("LIBRARY_LIMIT")
+
+    # The configuration-wide check the install path enforces must BE the server's
+    # cap, not a number that resembles it.
+    assert constant("MAX_CONFIG_BYTES") == MAX_AGENT_JSON_BYTES
+
+    # And the sizes must be measured the way the server measures them. Counting
+    # UTF-16 units accepted three CJK bundles that together bust the byte cap.
+    assert "new TextEncoder().encode(String(value)).length" in APP_UI
+    assert "JSON.stringify(component).length" not in APP_UI
 
     # Every field bound must be reachable inside one bundle's own budget, or the
     # field bound is decoration.

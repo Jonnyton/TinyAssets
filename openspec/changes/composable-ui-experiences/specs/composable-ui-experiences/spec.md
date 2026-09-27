@@ -169,3 +169,69 @@ discipline. A universe with no bundle SHALL behave exactly as before.
 - **WHEN** a second account remixes a published bundle and runs it
 - **THEN** its bridge resolves to the remixer's own universe and identity
 - **AND** the original author's universe, conversation, and agents are unreachable
+
+### Requirement: Egress paths outside CSP's reach are removed, not merely policed
+
+A bundle SHALL have no path to move data out of the app other than its bridge.
+Where an egress channel exists that content-security policy cannot express —
+WebRTC ICE hostname resolution and DNS prefetch — the platform SHALL remove the
+capability from the bundle's realm and SHALL NOT rely on an unenforced directive.
+The removal SHALL hold, meaning the bundle's document SHALL have no route to a
+fresh realm: nested frames, workers and popups SHALL all be refused by its policy.
+
+#### Scenario: WebRTC is unavailable to a bundle
+- **WHEN** a bundle attempts to construct a peer connection
+- **THEN** the constructor is absent and cannot be reassigned
+- **AND** the removal happened before any bundle code ran
+
+#### Scenario: No fresh realm is reachable
+- **WHEN** a bundle tries to obtain an unmodified global object
+- **THEN** a nested frame, a worker and a popup are each refused by its own policy
+- **AND** DNS prefetch is disabled by the response
+
+### Requirement: A bundle's grant ends when the identity or home it was granted for changes
+
+A bundle's bridge SHALL be scoped to one signed-in identity and one home universe.
+Every transition of the app's home SHALL revoke a mounted bundle, and an
+account-scoped clear SHALL do the same. Each bridge action SHALL re-verify the
+signed-in identity and home before acting, and any read that resolves a universe
+server-side SHALL name the granted universe and SHALL verify the universe the
+answer describes.
+
+#### Scenario: The account moves home while a bundle is mounted
+- **WHEN** the app observes a different home for the same signed-in account
+- **THEN** the mounted bundle is closed and its bridge stops answering
+- **AND** no data from the new home reaches it
+
+#### Scenario: A read answers about another universe
+- **WHEN** a pinned read returns a universe other than the granted one
+- **THEN** the result is refused rather than returned
+- **AND** the refusal names that the access ended
+
+#### Scenario: A reply is owed to the frame that asked
+- **WHEN** the displayed bundle is replaced while a request is outstanding
+- **THEN** the earlier bundle's result is not delivered to the replacement
+- **AND** it does not disturb the replacement's own request accounting
+
+### Requirement: Installing never destroys stored UIs it could not read
+
+An install SHALL refuse when the stored library cannot be understood, SHALL build
+its update from the configuration the guarded write observed rather than a cached
+view, and SHALL bound the resulting configuration by the same byte limit the
+server enforces, measured the same way. A limit visible before the write SHALL be
+reported without marking the shared installation uncertain; a limit reached inside
+the write window MAY.
+
+#### Scenario: A stored bundle of an unsupported version is preserved
+- **WHEN** the library holds a bundle this app cannot parse and another is installed
+- **THEN** the install is refused and nothing is written
+- **AND** the unparsable bundle is still stored
+
+#### Scenario: The stored configuration grew since it was read
+- **WHEN** the observed configuration allowed the install but the stored one does not
+- **THEN** the guarded write refuses and reports the size
+- **AND** nothing is written
+
+#### Scenario: Size is measured as the server measures it
+- **WHEN** a bundle's content is multi-byte
+- **THEN** its size is counted in encoded bytes against the server's cap
