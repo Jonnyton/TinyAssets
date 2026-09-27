@@ -86,6 +86,10 @@ Options, ranked, with what each costs:
    is personal-account owned. Adopting it means transferring the repo, changing
    protection, and adapting all three required checks for `merge_group` —
    `policy` and `Diff scope declared` currently read PR-specific payloads.
+   *Adopted 2026-09-27:* the repo moves to the `TinyAssets` org and the
+   required checks gain `merge_group` triggers. Enrollment still has to run on
+   the PAT, and the PAT has to be re-minted for the org as its resource owner.
+   See `docs/ops/org-transfer-runbook.md`.
 4. **Drop `strict`** — removes the re-sync race with a one-line protection
    change, but lets checks pass against a stale base so incompatible PR
    combinations can merge. On an automated high-frequency merge path that

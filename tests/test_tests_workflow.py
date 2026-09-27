@@ -53,12 +53,12 @@ assert _spec and _spec.loader
 _ci = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_ci)
 
-# The one expression `heavy-tests` may use. Admits schedule, push and
-# workflow_dispatch; excludes pull_request. Pinned exactly rather than by
-# substring: `github.event_name != 'pull_request' && github.event_name ==
-# 'push'` also contains "pull_request" and "!=" while excluding schedules
-# entirely, which is the bug this file guards against.
-_FULL_TESTS_IF = "github.event_name != 'pull_request'"
+# The one expression `heavy-tests` may use: the hourly schedule and manual
+# dispatch, nothing else. Pinned exactly rather than by substring, because a
+# condition that drops `schedule` removes the only automatic coverage of the
+# heavy files, and one that admits `push` (or a future `merge_group`) runs a
+# ~41 min red-at-baseline job on every merge (2026-09-27 lean pipeline).
+_FULL_TESTS_IF = "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
 
 _CONCURRENCY_GROUP = (
     "tests-${{ github.event.pull_request.number || github.run_id }}"
@@ -223,14 +223,14 @@ def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
     )
 
 
-def test_heavy_tests_runs_on_every_non_pr_event() -> None:
-    """Pinned exactly — a narrower condition would re-strand the tripwire."""
+def test_heavy_tests_runs_on_schedule_and_dispatch_only() -> None:
+    """Pinned exactly: dropping `schedule` strands the tripwire; adding `push`
+    puts a ~41 min job back on every merge."""
     condition = _expr(_load()["jobs"]["heavy-tests"].get("if", ""))
     assert condition == _FULL_TESTS_IF, (
-        f"heavy-tests `if:` must be exactly {_FULL_TESTS_IF!r} so that schedule, "
-        f"push and workflow_dispatch all run it; got {condition!r}. Narrowing "
-        f"it (e.g. adding `&& github.event_name == 'push'`) silently removes "
-        f"the only automatic coverage of .github/heavy-test-files.txt."
+        f"heavy-tests `if:` must be exactly {_FULL_TESTS_IF!r}; got "
+        f"{condition!r}. Without `schedule` nothing automatic covers "
+        f".github/heavy-test-files.txt; with `push` it runs on every merge."
     )
 
 
