@@ -1,29 +1,17 @@
 # GitHub-Aligned Worktree Discipline (full procedure)
 
-> **Partly historical (2026-08-26).** `STATUS.md` and `scripts/claim_check.py`
-> were retired in the harness reset. Sections below that require a STATUS row or
-> a claim_check run describe machinery that no longer exists. What still holds:
-> one work item = one branch = one worktree = one PR; `_PURPOSE.md` at each lane
-> root as a **local draft** whose published form is the PR body; never switch a
-> dirty worktree to `main`; ownership is a branch or an open PR, not a table.
->
-> **2026-08-29:** `_PURPOSE.md` is git-ignored and untracked (a tracked copy
-> made every concurrent PR `DIRTY` the moment another landed — five times in
-> one afternoon), and the hand-edited `.agents/worktrees.md` inventory is
-> retired: `python scripts/wt.py list` derives it from git, and "who is
-> working on what" is branches and open PRs (AGENTS.md).
+> **`STATUS.md`, `scripts/claim_check.py` and the hand-edited
+> `.agents/worktrees.md` were retired in the 2026-08-26 harness reset**, and the
+> procedure that required them has been deleted from this file rather than left
+> as history. Ownership is a branch or an open PR, not a table; `python
+> scripts/wt.py list` derives the inventory from git. `_PURPOSE.md` is
+> git-ignored and untracked — a tracked copy made every concurrent PR `DIRTY`
+> the moment another landed, five times in one afternoon.
 
-
-> **Canonical full procedure.** Moved out of `AGENTS.md` on 2026-06-25 under
-> [ADR-002](../decisions/ADR-002-static-vs-dynamic-context-budget.md): the
-> detailed step-by-step procedure is pointer-loaded *reference*, not every-turn
-> static context. `AGENTS.md` §"GitHub-Aligned Worktree Discipline" keeps the
-> load-bearing invariants inline + a pointer here. The `git-workflow-and-versioning`
-> skill summarizes this for on-demand git work and points here as canonical.
+> Canonical procedure, pointer-loaded reference ([ADR-002](../decisions/ADR-002-static-vs-dynamic-context-budget.md)).
 
 GitHub is the integration model. A TinyAssets worktree is the local checkout
-for one Git branch; the branch folds back through a PR; `STATUS.md` is the
-claim surface, not a replacement for GitHub history. A branch by itself is
+for one Git branch; the branch folds back through a PR. A branch by itself is
 not durable memory. It remembers commits, not why the branch exists, whether
 it is live-safe, what blocks it, what ideas are parked in it, who owns it, or
 whether it should merge, split, be abandoned, or become a PR. Uncommitted
@@ -34,8 +22,7 @@ idea files. `_PURPOSE.md` itself is the local draft of that record.
 
 Every branch/worktree must be in exactly one lane state:
 
-- **Active lane**: actionable now. Has a `STATUS.md` row with exact Files /
-  Depends / Status ownership, a local worktree path, a branch, and
+- **Active lane**: actionable now. Has a branch, a local worktree path, and
   `_PURPOSE.md`.
 - **Parked draft lane**: not necessarily actionable now. Has a pushed branch
   and draft PR. The PR body or `_PURPOSE.md` records ship condition, abandon
@@ -43,8 +30,7 @@ Every branch/worktree must be in exactly one lane state:
   pickup hints.
 - **Idea/reference only**: no build authority. Captured in `ideas/INBOX.md`,
   `ideas/PIPELINE.md`, or the bottom "Idea feed refs" section of
-  `_PURPOSE.md`. It must be promoted into `STATUS.md` and checked against
-  `PLAN.md` before implementation.
+  `_PURPOSE.md`. It must be checked against `PLAN.md` before implementation.
 - **Abandoned/swept**: worktree removed (`python scripts/wt.py done`, or
   `sweep`) with the reason on the closed PR — or, for a lane that never
   reached `wt.py pr`, the `--reason` given to `done --force`, recorded with
@@ -97,61 +83,6 @@ Before coding, the pickup provider reads those memories plus the source
 artifact and records any new memory refs it creates. If no memory path is
 listed, search `.claude/agent-memory/`, `.agents/activity.log`, recent audit
 artifacts, and branch/PR notes by task slug before assuming context is absent.
-
-Related implications stay live across the whole GitHub/worktree lifecycle.
-At planning, build, review, and fold-back, re-check the relevant `PLAN.md`
-modules as the project/module understanding. Also re-check linked `STATUS.md`
-lanes, `ideas/PIPELINE.md` rows, research artifacts, design notes, and memory
-refs that touch the same files, primitives, user surfaces, or review gates.
-`ideas/INBOX.md` captures are not design truth or build authority; copy them
-into the bottom "Idea feed refs" area of the worktree/PR when they are useful
-reminders. If a related implication changes the approach, update the STATUS
-row and PR body before continuing; if it does not apply, record that in the PR
-or handoff.
-
-Review-blocked work still gets a lane. If a finding needs opposite-provider
-review, create the review row as claimable and create/reserve the
-implementation row as `pending` with `Depends` naming the review artifact and
-required verdict. The worktree/branch may exist before review, but runtime
-implementation, push, live rollout, and acceptance-test advancement stay
-blocked until the review returns `approve` or `adapt`. If a branch has enough
-metadata to push, use a draft PR or clearly blocked PR body rather than an
-untracked private branch.
-
-Legacy coordination docs (`ideas/PIPELINE.md`, `ideas/INBOX.md`,
-`docs/vetted-specs.md`, `docs/exec-plans/active/*`, old audit docs, and
-agent memories) are context, not build queues. Before building from any of
-them, promote/refactor the work into current project state:
-
-- re-check relevant `PLAN.md` modules as design truth, plus `STATUS.md`,
-  `ideas/PIPELINE.md`, recent commits, and active research gates;
-- create or update a `STATUS.md` Work row with exact Files, Depends, Status,
-  proposed branch, proposed worktree path, PR/fold-back expectation, and
-  PLAN module refs, prior-provider memory refs, and related implication refs;
-- carry `ideas/INBOX.md` captures only as bottom-of-lane "Idea feed refs" so
-  promising ideas are not forgotten, never as permission to build;
-- run `claim_check.py --check-files` before broadening Files;
-- only then claim and build in the worktree.
-
-Existing worktrees are retrofit-on-next-touch: add `_PURPOSE.md` when you next
-work there. A lane opened before 2026-08-29 still tracks its own copy of the
-file (29 branch tips did on that day; three had uncommitted edits). **Before**
-its next `main` merge, untrack the copy without touching the disk:
-`git rm --cached _PURPOSE.md && git commit -m "worktree: purpose is a local
-draft"` — the file stays where it is and is ignored from then on. Merging
-first instead produces a conflict: once the deletion is on `main`, Git
-reports modify/delete and keeps the branch's own copy on disk (resolve with
-`git rm --cached`); while `main` still *tracked* the file, its copy won and
-overwrote the draft on disk (it happened to the lane that built this). If
-your text is gone, recover it from `git show HEAD:_PURPOSE.md` on the branch
-before resolving. A checkout with **uncommitted edits to
-`.agents/worktrees.md`** must preserve them before the deletion lands, under
-the owner's own hand — `git diff -- .agents/worktrees.md >>
-.git/tinyassets-worktrees.log` (the primary checkout's 54 unsaved lines were
-copied there on 2026-08-29 before this landed) — and then resolve the
-modify/delete conflict with `git rm .agents/worktrees.md`. Never `git
-checkout --` a file you have not first preserved (Hard Rule 13). Do not bulk
-rewrite another provider's active worktree metadata unless the owner asks.
 
 ## Branch & worktree lifecycle automation
 
