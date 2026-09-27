@@ -54,12 +54,41 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
+          # Full history of commits and trees, no file contents: enough for the
+          # merge base and `git diff --raw` that the PR's diff key reads, while
+          # still never checking out or executing PR code.
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Compute the PR's diff key
+        id: diffkey
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          BASE_OID: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          # Lets a `Drain-Review-Diff:` receipt (drain_review_gate.diff_key)
+          # survive merge-main and rebase. On ANY failure the key is empty, and
+          # an empty key only means head receipts are the sole way to match:
+          # it can never allow what a head receipt would not.
+          set -uo pipefail
+          KEY=""
+          if git fetch --no-tags --filter=blob:none origin \
+                "+refs/pull/${PR}/head:refs/remotes/pr/head" \
+              && git cat-file -e "${HEAD_OID}^{commit}"; then
+            KEY="$(python scripts/drain_review_gate.py --print-diff-key \
+              "${BASE_OID}" "${HEAD_OID}")" || KEY=""
+          fi
+          echo "diff key: ${KEY:-<none>}"
+          echo "key=${KEY}" >> "$GITHUB_OUTPUT"
 
       - name: Require exact-head review for drain PRs
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_OID: ${{ github.event.pull_request.head.sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          DIFF_KEY: ${{ steps.diffkey.outputs.key }}
         shell: bash
         run: |
           set -euo pipefail
@@ -67,6 +96,7 @@ jobs:
           python scripts/drain_review_gate.py \
             --branch "${HEAD_REF}" \
             --head "${HEAD_OID}" \
+            --diff-key "${DIFF_KEY}" \
             --body-file "$RUNNER_TEMP/pr-body.md"
 
       # Under pull_request_target, only the trusted base SHA above is checked out.
@@ -81,6 +111,7 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_OID: ${{ github.event.pull_request.head.sha }}
           BASE_OID: ${{ github.event.pull_request.base.sha }}
+          DIFF_KEY: ${{ steps.diffkey.outputs.key }}
           # The body is author-controlled text. It is read through the
           # environment and never interpolated into this script, so a body
           # containing shell metacharacters is data, not code.
@@ -380,6 +411,7 @@ jobs:
               "${RECEIPT_ARGS[@]}" \
               --branch "${HEAD_REF}" \
               --head "${HEAD_OID}" \
+              --diff-key "${DIFF_KEY}" \
               --body-file "$RUNNER_TEMP/pr-body-gate.md" \
               --review-hits-file "$RUNNER_TEMP/receipt-hits.txt" \
               --review-repo "${REPO}" \
