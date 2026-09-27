@@ -170,9 +170,19 @@ LOGS_CONTAINER=tinyassets-logs
 # the key absent the bound is docker's 10 seconds, which is what killed the
 # founder's turns. A bundle that loses the key must FAIL validation rather than
 # silently return to 10 (compose flags are inert in exactly this quiet way).
+#
+# 180, not the 300 first proposed: this run may drain TWICE (the forward converge
+# and, if the new image is unacceptable, the rollback converge), each followed by
+# a HEALTH_TIMEOUT wait, and `deploy-prod.yml` gives the whole job 900s. At 300
+# the worst case is 2*300 + 2*180 = 960 > 900, so a slow deploy would be
+# CANCELLED part-way rather than rolled back -- worse than the bug being fixed
+# (Codex on #4039, P1). 180 gives 720 with 180s left for pull, validation,
+# snapshot and canary, and stays under tinyassets-daemon.service's 200s
+# TimeoutStartSec so a recreate driven through the unit cannot outlive it.
+#
 # Kept in step with `deploy/compose.yml` and with
 # `universe_server.GRACEFUL_SHUTDOWN_S` by tests/test_deploy_drains_in_flight_turns.py.
-MIN_DAEMON_STOP_GRACE_S=300
+MIN_DAEMON_STOP_GRACE_S=180
 # Shared host-mutation lock (same path the watchdog uses); serializes all
 # image mutators so deploy/watchdog/autoheal cannot race.
 LOCK_FILE="${LOCK_FILE:-/var/lock/tinyassets-host-mutation.lock}"
@@ -673,6 +683,25 @@ image_lines = (
     None if daemon_block is None
     else [line for line in daemon_block if re.match(r"^\s*image:\s*\S", line)]
 )
+
+
+def daemon_direct_children(pattern):
+    """Lines matching `pattern` at the daemon mapping's OWN key indent.
+
+    `daemon_block_lines` returns every descendant, so a key nested under
+    `environment:` or `healthcheck:` would satisfy a check that only matched the
+    text. Codex reproduced exactly that against the first version of the
+    stop_grace_period check: moving it under `environment:` passed validation
+    while docker had no service stop grace at all. A service property must be a
+    DIRECT child to mean anything.
+    """
+    if not daemon_block:
+        return []
+    key_indent = indent_of(daemon_block[0])
+    return [
+        line for line in daemon_block
+        if indent_of(line) == key_indent and re.match(pattern, line.strip())
+    ]
 if image_lines is None:
     problems.append(
         "no top-level `services:` mapping with a `daemon:` child in the source file"
@@ -685,26 +714,36 @@ if image_lines is None:
 # version emits. Absent means docker's 10-second default, which is what cut the
 # founder's turns off mid-flight -- a bundle that drops the key is refused.
 min_grace = int(os.environ["MIN_DAEMON_STOP_GRACE_S"])
-grace_lines = [
-    line for line in daemon_block if re.match(r"^\s*stop_grace_period:\s*\S", line)
-]
+grace_lines = daemon_direct_children(r"^stop_grace_period:\s*\S")
 if len(grace_lines) != 1:
     problems.append(
-        "daemon must declare exactly one `stop_grace_period:` (found %d); without it a "
-        "recreate SIGKILLs in-flight turns after docker's 10s default" % (len(grace_lines),)
+        "daemon must declare exactly one direct `stop_grace_period:` (found %d); without it "
+        "a recreate SIGKILLs in-flight turns after docker's 10s default" % (len(grace_lines),)
     )
 else:
     grace_text = grace_lines[0].split(":", 1)[1].strip().strip("'\"")
-    match = re.fullmatch(r"(\d+)(s|m)?", grace_text)
-    if match is None:
+    # Compose accepts Go duration syntax, so `5m0s`, `300.0s` and `300000ms` are
+    # all the same bound the shipped `180s` expresses. The first version took
+    # `(\d+)(s|m)?` and refused every one of them, which is a foot-gun in a gate
+    # that blocks deploys INCLUDING a rollback: the next person to write the
+    # equivalent value gets a refused bundle (Codex on #4039). Parse the real
+    # grammar instead of narrowing what the file may say.
+    units = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001, "us": 1e-6, "ns": 1e-9}
+    parts = re.findall(r"(\d+(?:\.\d+)?)(h|ms|us|ns|m|s)", grace_text)
+    rebuilt = "".join(number + unit for number, unit in parts)
+    if not parts or rebuilt != grace_text:
+        # Refuse rather than guess. A bare `300` reaches here, and compose itself
+        # rejects it, so the `config` run above has already failed -- this arm is
+        # the belt, not the braces.
         problems.append(
-            "daemon.stop_grace_period %r is not a plain seconds/minutes duration" % (grace_text,)
+            "daemon.stop_grace_period %r is not a duration this check can read; use a "
+            "form like 180s or 3m" % (grace_text,)
         )
     else:
-        seconds = int(match.group(1)) * (60 if match.group(2) == "m" else 1)
+        seconds = sum(float(number) * units[unit] for number, unit in parts)
         if seconds < min_grace:
             problems.append(
-                "daemon.stop_grace_period is %ds; it must be at least %ds so an in-flight "
+                "daemon.stop_grace_period is %gs; it must be at least %ds so an in-flight "
                 "turn is not SIGKILLed mid-drain" % (seconds, min_grace)
             )
 if not image_lines:

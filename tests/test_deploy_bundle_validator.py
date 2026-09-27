@@ -492,9 +492,9 @@ def test_losing_the_stop_grace_period_is_refused(tmp_path: Path):
         "the refusal must say what absence MEANS, not just that a key is missing")
 
 
-@pytest.mark.parametrize("value", ["10s", "299s", "4m"])
+@pytest.mark.parametrize("value", ["10s", "179s", "2m", "179000ms", "2m59s"])
 def test_a_grace_below_the_floor_is_refused(tmp_path: Path, value: str):
-    """4m is 240s -- a minutes form still has to clear the floor."""
+    """Every form has to clear the floor, not just the one the file happens to use."""
     source = re.sub(
         r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
         _source(), count=1, flags=re.M,
@@ -504,9 +504,17 @@ def test_a_grace_below_the_floor_is_refused(tmp_path: Path, value: str):
     assert "must be at least" in result.stderr
 
 
-@pytest.mark.parametrize("value", ["300s", "300", "5m", "600s", "10m"])
-def test_a_grace_at_or_above_the_floor_is_accepted(tmp_path: Path, value: str):
-    """Every duration form compose accepts that clears the floor."""
+@pytest.mark.parametrize(
+    "value", ["180s", "3m", "3m0s", "180.0s", "180000ms", "1h30m", "600s", "10m"],
+)
+def test_every_equivalent_duration_compose_accepts_is_accepted(tmp_path: Path, value: str):
+    """Go duration syntax, because that is what compose documents.
+
+    The first version took `(\\d+)(s|m)?` and refused `3m0s`, `180.0s` and
+    `180000ms` -- all the same bound as the shipped `180s`, all valid compose
+    (Codex on #4039, P2). A gate that blocks deploys, INCLUDING a rollback, must
+    not refuse the next maintainer for writing an equivalent value.
+    """
     source = re.sub(
         r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
         _source(), count=1, flags=re.M,
@@ -515,14 +523,12 @@ def test_a_grace_at_or_above_the_floor_is_accepted(tmp_path: Path, value: str):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("value", ["1h30m", "later", "300ms", "-300s"])
+@pytest.mark.parametrize("value", ["later", "-180s", "180 s", "3minutes"])
 def test_a_duration_this_check_cannot_read_is_refused_not_assumed(
     tmp_path: Path, value: str,
 ):
-    """Refuse rather than guess. `1h30m` clears the floor in reality, and is
-    still refused: a bound this check cannot READ is one it cannot enforce, and
-    silently accepting it is how the key came to mean 10 seconds in the first
-    place. Widen the parser deliberately if a compound form is ever wanted.
+    """Refuse rather than guess: a bound this check cannot READ is one it cannot
+    enforce, and silently accepting it is how the key came to mean 10 seconds.
     """
     source = re.sub(
         r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
@@ -530,7 +536,45 @@ def test_a_duration_this_check_cannot_read_is_refused_not_assumed(
     )
     result = _validate(tmp_path, _render(), source)
     assert result.returncode == 1
-    assert "not a plain seconds/minutes duration" in result.stderr
+    assert "not a duration this check can read" in result.stderr
+
+
+def test_a_bare_integer_is_refused_here_and_by_compose_itself(tmp_path: Path):
+    """`stop_grace_period: 180` is NOT valid compose -- it wants a duration.
+
+    The first version of this suite listed a bare integer as an accepted form,
+    which was simply wrong about compose (Codex checked v5.1.4). The real deploy
+    never reaches this arm: `docker compose config` fails first and
+    `validate_bundle` returns before the python runs. Asserted anyway, because a
+    check that would have ACCEPTED an invalid file is a check that is not reading
+    what it thinks it is.
+    """
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", r"\g<1>stop_grace_period: 180",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "not a duration this check can read" in result.stderr
+
+
+def test_a_grace_buried_under_another_mapping_does_not_count(tmp_path: Path):
+    """Codex reproduced exit 0 for this, which is the whole finding.
+
+    `daemon_block_lines` returns every DESCENDANT of the daemon service, so a
+    text-only match was satisfied by a key nested under `environment:` while
+    docker had no service stop grace at all. A service property has to be a
+    direct child to mean anything.
+    """
+    source = _without_grace(_source()).replace(
+        "    environment:",
+        "    environment:\n      stop_grace_period: 180s",
+        1,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1, (
+        "a stop_grace_period under `environment:` is an env var, not a stop grace")
+    assert "direct `stop_grace_period:`" in result.stderr
 
 
 def test_a_second_grace_declaration_is_refused(tmp_path: Path):
