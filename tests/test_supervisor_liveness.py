@@ -779,6 +779,9 @@ def test_get_status_response_includes_supervisor_liveness(tmp_path, monkeypatch)
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-universe")
     universe = tmp_path / "test-universe"
     universe.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, "test-universe")
 
     response = json.loads(get_status("test-universe"))
     assert "supervisor_liveness" in response
@@ -796,6 +799,9 @@ def test_get_status_supervisor_liveness_reflects_stuck_pending(tmp_path, monkeyp
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-universe")
     universe = tmp_path / "test-universe"
     universe.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, "test-universe")
 
     old = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
     append_task(universe, BranchTask(

@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Scoped reset cannot erase delivery custody
+filed: '2026-09-23'
+summary: operator scoped reset fail-closes on any root that ever opened the delivery surface; allowlisting the tables would report success while retaining custody
+---
+
 # Operator scoped reset refuses on any root that has ever accepted a delivery
 
 **Filed:** 2026-09-23

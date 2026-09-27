@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Workspace admission is narrower than the claims made for it
+filed: '2026-08-31'
+summary: 'four findings from a Codex REJECT on #2742, all pre-existing in the workspace primitive but falsifying the claims that justified the widening'
+---
+
 # The workspace admission model is narrower than the claims made for it
 
 **Filed** 2026-08-31 from a Codex refute review of PR #2742, which returned

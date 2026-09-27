@@ -70,6 +70,10 @@ from tinyassets.auth.wiki_canary import (
     set_wiki_canary_authority,
     wiki_canary_token_matches,
 )
+from tinyassets.engine_read_views import (
+    CONNECTOR_MORE_TARGET,
+    compact_model_options,
+)
 from tinyassets.mcp_schema_utils import describe_signature
 
 logger = logging.getLogger("universe_server")
@@ -167,7 +171,99 @@ def _faithful_text_content(value: object) -> str:
     return pretty[:keep] + marker
 
 
-def _structured_return(raw):
+#: The ONE tool whose replies the single-result ceiling governs on this surface.
+#:
+#: An ALLOWLIST, not a denylist, and deliberately narrow — because every other
+#: handle registered here carries something a ceiling would not bound but destroy:
+#:
+#: * ``converse`` carries the universe's own reply to its founder. That reply IS
+#:   the product; clipping it is data loss the user reads, not a bound.
+#: * ``read_page`` / ``write_page`` carry content the user authored. Hard Rule 9:
+#:   user uploads are authoritative, preserved verbatim.
+#: * ``get_status`` is read by the app itself — `active_host` and
+#:   `supervisor_liveness` at ``tinyassets/onboarding/app.html:3800``, ``:3864``,
+#:   ``:3867`` drive the status dot — so bounding it breaks the app exactly the way
+#:   bounding ``model_options`` would break the model picker. It needs its own
+#:   split into a complete client read and a bounded model-facing one, which is a
+#:   different capability and a different change.
+#:
+#: Widening this set means proving, per handle, that a partial reply is still a
+#: true one. For the four above it is not.
+_CEILING_TOOLS = frozenset({"read_graph"})
+
+
+def _connector_ceiling_exempt():
+    """The ``(tool, target)`` reads this surface must never bound.
+
+    Four entries. Each names its reason, and not one of them is "it is big" —
+    being big is what the ceiling is FOR:
+
+    * ``run_file`` — its contract is exact bytes (``EXACT_BYTE_READS``). Capping it
+      destroys the base64 AND the ``next_offset`` cursor, so the caller cannot even
+      page to recover.
+    * ``model_options`` — the owner's own model picker reads it
+      (``tinyassets/onboarding/app.html:1423``) and
+      ``openspec/specs/live-mcp-connector-surface/spec.md`` requires its complete
+      document ("Complete choices, not a first-page sample"). A model wanting a
+      bounded view reads ``target=model_options_summary``; that is the split.
+    * ``conversation`` — a retained message chunk, already bounded by the caller's
+      own ``output_max_chars``, with a lossless chunk contract the app depends on.
+      Replacing it drops ``chunk``/``next_offset``/``available`` and the app shows
+      "Couldn't load the rest of this message" (``app.html:3776``). A default 8,192
+      character chunk of CJK text exceeds the ceiling on its own, so this is the
+      ordinary path for a non-English conversation, not an edge case.
+    * ``conversation_turn`` — the committed terminal reply of a custom
+      conversation (``consumer_runtime.read_turn``). It is the SAME universe reply
+      ``converse`` returns, by a different route; the app polls it
+      (``app.html:3159``) and exits its loop when ``consumer_turn`` disappears.
+      Exempting ``converse`` alone left the product truncatable here.
+    """
+    from tinyassets.engine_result_bounds import EXACT_BYTE_READS
+
+    return EXACT_BYTE_READS | {
+        ("read_graph", "model_options"),
+        # Message text the user or their universe authored, with a chunk contract
+        # the client parses. Same class as read_page: Hard Rule 9 content, bounded
+        # already by the parameter the caller passed.
+        ("read_graph", "conversation"),
+        ("read_graph", "conversation_turn"),
+    }
+
+
+def _bounded_structured(structured: dict, *, tool: str) -> dict | None:
+    """The truncation marker for an oversized structured reply, else ``None``.
+
+    The connector already bounds its TEXT block at ``_MCP_TEXT_CONTENT_MAX_CHARS``
+    while handing ``structured_content`` the whole payload — and
+    ``structuredContent`` is the half the Apps SDK path exists to serve and the
+    half a chatbot client parses. So the text cap protected text-only clients and
+    nobody else: the 1,274,067-byte catalogue that ended a free model's turn on
+    2026-09-26 reached a browser chatbot by exactly this route.
+
+    Same marker and same ceiling as the engine surface, from the same module, so
+    there is one definition of "too big" rather than two that drift.
+
+    ``ensure_ascii=False`` matters and is not cosmetic. ``json.dumps`` defaults to
+    escaping every non-ASCII character as ``\\uXXXX``, six bytes for one, so
+    measuring that way charges a CJK, Cyrillic or Arabic payload roughly six times
+    its real size: an 8,192-character Japanese message measured 49,201 bytes
+    against a 24,576 ceiling, where the same message in English measured 8,257. A
+    ceiling that truncates a Japanese user's read at a sixth of an English user's
+    content is not one code path for every account. It also matches what
+    ``bound_tool_text`` renders, so the measurement and the marker agree.
+    """
+    import json as _json
+
+    from tinyassets.engine_result_bounds import bound_tool_text, resolve_ceiling
+
+    rendered = _json.dumps(
+        structured, separators=(",", ":"), default=str, ensure_ascii=False,
+    )
+    marker = bound_tool_text(rendered, tool=tool, limit=resolve_ceiling())
+    return None if marker is None else _json.loads(marker)
+
+
+def _structured_return(raw, *, tool: str = "", arguments: object = None):
     """Wrap an MCP tool result so FastMCP populates ``structured_content``.
 
     ChatGPT (OpenAI Apps SDK) wedges on substrate-changing tool calls when
@@ -178,11 +274,18 @@ def _structured_return(raw):
     Wrapping their output in a dict (parsing JSON when possible, else
     embedding the raw text) lets FastMCP's response builder populate
     ``structured_content`` automatically — Apps SDK then renders cleanly.
+
+    ``tool``/``arguments`` name the dispatched call so the single-result ceiling
+    can be applied, and so the two reads that must not be bounded can be
+    recognised (``_connector_ceiling_exempt``). Both default to empty, which bounds
+    the reply: an unidentified call is never exempt.
     """
     import json as _json
 
     from fastmcp.tools.base import ToolResult
     from mcp.types import TextContent
+
+    from tinyassets.engine_result_bounds import ceiling_exempt
 
     if isinstance(raw, dict):
         structured = raw
@@ -200,11 +303,39 @@ def _structured_return(raw):
     else:
         structured = {"result": raw}
 
+    if tool in _CEILING_TOOLS and not ceiling_exempt(
+        tool, arguments, _connector_ceiling_exempt(),
+    ):
+        marker = _bounded_structured(structured, tool=tool)
+        if marker is not None:
+            # The text block is derived from the SAME marker, so the two halves
+            # of one reply never tell different stories about what was returned.
+            structured = marker
+
     text = _faithful_text_content(structured)
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured,
     )
+
+
+def _bound_arguments(fn, args, kwargs) -> dict:
+    """The call's arguments by NAME, however the caller passed them.
+
+    FastMCP dispatches by keyword, but reading `kwargs` alone would make a
+    positional `read_graph("run_file")` look like a call with no target — and an
+    unidentified call is not exempt from the ceiling, so that misread would
+    truncate exact bytes. Binding by signature closes it. A signature that will
+    not bind is not a reason to fail a working read: degrade to `kwargs`, which
+    errs toward bounding.
+    """
+    import inspect
+
+    try:
+        bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+        return dict(bound.arguments)
+    except TypeError:
+        return dict(kwargs)
 
 
 def _register_structured_tool(fn, *, title, tags, annotations, name=None):
@@ -233,7 +364,16 @@ def _register_structured_tool(fn, *, title, tags, annotations, name=None):
                 tool_name=name or fn.__name__,
             )
         try:
-            return _structured_return(fn(*args, **kwargs))
+            # The dispatched call names itself, so the single-result ceiling can
+            # tell `read_graph target=run_file` (exact bytes) and
+            # `target=model_options` (the picker's complete document) from every
+            # other read. Positional args are bound by name first: a caller that
+            # passed `target` positionally must not read as an unidentified call.
+            return _structured_return(
+                fn(*args, **kwargs),
+                tool=name or fn.__name__,
+                arguments=_bound_arguments(fn, args, kwargs),
+            )
         finally:
             if capability is not None:
                 revoke_provider_request(capability)
@@ -558,7 +698,14 @@ def read_graph(
         target: What to read: status, graphs, graph, branches (your own workflows
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings, or
-            agent_binding, model_options (all owned model choices, including unavailable ones),
+            agent_binding, model_options (all owned model choices, including
+            unavailable ones — the COMPLETE catalogue, which a large source makes
+            very large; if you are reading this into a model's context use
+            model_options_summary instead), model_options_summary (the same
+            catalogue bounded: per source its model count, how many are
+            selectable, and the top few of the existing order, plus the current
+            choice and the totals; query=<text> filters by model id or provider,
+            and output_offset=<the next_offset a page returned> walks the rest),
             conversation_turn (your keyed custom conversation's current run/projection),
             or conversation (page your OWN retained conversation: omit field_name
             for a bounded catalogue of turn ids, or pass field_name=<turn id> --
@@ -796,11 +943,32 @@ def read_graph(
         from tinyassets.api.compute_connection import read_compute_providers
 
         return json.dumps(read_compute_providers(universe_id=graph_id))
-    if normalized == "model_options":
+    if normalized in {"model_options", "model_options_summary"}:
         from tinyassets.api.model_options import read_model_options
 
         # Complete protocol-bounded catalogue: limit=30 must not hide new models.
-        return json.dumps(read_model_options(universe_id=graph_id))
+        # The owner's model picker reads this and needs every choice they own
+        # (openspec/specs/live-mcp-connector-surface, "Complete choices, not a
+        # first-page sample"), so it stays complete and stays exempt from the
+        # single-result ceiling.
+        document = read_model_options(universe_id=graph_id)
+        if normalized == "model_options":
+            return json.dumps(document)
+        # ... and the same catalogue bounded, for a caller reading it into a
+        # model's context. One collector, one document, two projections: the
+        # caller picks, because the server guessing which kind of caller this is
+        # would be wrong exactly when a model drives the founder's own session.
+        return json.dumps(
+            compact_model_options(
+                document, query=query, offset=output_offset,
+                # This surface's continuation is the summary itself: its
+                # `model_options` is the complete document and ignores these
+                # selectors, so the engine's default hint would send a caller
+                # straight back to the megabyte.
+                more_target=CONNECTOR_MORE_TARGET,
+            ),
+            default=str,
+        )
     return _unknown_target(
         "read_graph",
         target,
@@ -821,6 +989,7 @@ def read_graph(
             "conversation",
             "compute",
             "model_options",
+            "model_options_summary",
             "run_file",
             "run_file_limits",
             "agents",
@@ -920,7 +1089,7 @@ def write_graph(
     name: str = "",
     description: str = "",
     tags: str = "",
-    visibility: str = "public",
+    visibility: str = "",
     text: str = "",
     graph_id: str = "",
     request_type: str = "general",
@@ -992,7 +1161,15 @@ def write_graph(
             The founder's home universe is auto-created on first contact; use
             target=universe to create an additional universe (or the home when
             a create-scoped sign-in declined auto-birth).
-        operation: With target=goal, set_canonical. With target=agent,
+        operation: With target=universe, set_visibility changes who else may see
+            that universe, taking `visibility` as `private` or `public` and
+            `graph_id` for the universe. Everything in a universe is private until
+            its owner uses this: no other user can discover, inspect or read it,
+            while the owner and anyone they granted access keep full access either
+            way. Owner-only — a collaborator holding write on the universe is
+            refused, because editing it is not authority to decide who else sees
+            it.
+            With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update/bind_serving_provider/set_serving.
             With target=automation, create/list/get/pause/resume/delete — one
@@ -1032,7 +1209,10 @@ def write_graph(
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
-        visibility: Shared-goal visibility, usually public.
+        visibility: Shared-goal visibility, usually public. With
+            target=universe operation=set_visibility, the universe level to
+            declare instead — `private` or `public`. Empty means nobody stated
+            one, which is never read as a request to publish.
         text: Request text to queue (or optional purpose with target=universe).
         graph_id: Optional target graph/universe identifier.
         goal_id: With target=goal operation=set_canonical, the Goal identifier.
@@ -1214,6 +1394,17 @@ def write_graph(
                 universe_id=graph_id,
                 branch_def_id=branch_id,
             )
+        # EXPOSURE, the other half of private-by-default (founder 2026-09-26).
+        # A universe is born `private`, and this is the owner's only way to change
+        # that. Before it existed, `set_universe_visibility` had no production
+        # caller outside the creation path and the boot backfill, so an owner
+        # could not publish their own universe at all.
+        if (operation or "").strip() == "set_visibility":
+            return _universe_impl(
+                action="set_visibility",
+                universe_id=graph_id,
+                visibility=visibility,
+            )
         # Opt-in birth on the canonical surface (2026-07-02): the founder's
         # explicit ask creates their universe. Routes through the ledgered
         # create (scope-gated costly; binds founder_home; seeds OKF bundle).
@@ -1292,7 +1483,12 @@ def write_graph(
             name
             or description
             or tags
-            or visibility != "public"
+            # `visibility` used to default to "public" on this signature, so the
+            # stray-parameter check had to spell that value out. It now defaults
+            # to empty precisely so `operation=set_visibility` can tell "the
+            # owner asked for public" from "nobody said" — an ambient "public"
+            # default on an exposure verb would publish a universe by accident.
+            or visibility not in ("", "public")
             or changes_json
         ):
             return json.dumps({"error": "request_validation_error"})
@@ -2209,6 +2405,19 @@ _PLATFORM_FAULT_TELLS = (
     "already consumed",
 )
 
+#: OUR OWN refusal when the request does not fit the selected model's published
+#: context window (``providers/router``). It raises a bare ``PermissionError``
+#: with no attempts behind it, so every taxonomy below reads "unknown" and the
+#: owner is told "we could not identify why" about the one failure whose cause we
+#: measured ourselves -- live 2026-09-26, turn 8dc8ada56b8e4d1cbfd2e4f37a111e7d,
+#: killed by a 1,274,067-byte tool result. These are the router's exact words;
+#: matching the sentence, not a keyword, keeps an unrelated provider message that
+#: happens to say "context" out of this class.
+_CONTEXT_OVERFLOW_TELLS = (
+    "selected model cannot fit this inference context",
+    "selected model cannot fit this workflow context",
+)
+
 
 #: Classes whose remedy is time. Only these carry a measured wait into the
 #: notice; for anything else a number would send the owner away to wait out a
@@ -2513,6 +2722,19 @@ def _has_native_auth_clue(exc: BaseException) -> bool:
     return False
 
 
+def _context_overflow(exc: BaseException) -> bool:
+    """True when this turn, or anything it wraps, is our own context refusal."""
+    seen: set[int] = set()
+    node: BaseException | None = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        text = str(node).lower()
+        if any(tell in text for tell in _CONTEXT_OVERFLOW_TELLS):
+            return True
+        node = node.__cause__ or node.__context__
+    return False
+
+
 def _served_failure_code(exc: BaseException) -> str:
     """Reduce observed diagnostics to a closed code before any durable write."""
     from tinyassets.conversation_failure import FAILURE_CODES
@@ -2520,6 +2742,12 @@ def _served_failure_code(exc: BaseException) -> str:
     try:
         if any(tell in str(exc).lower() for tell in _PLATFORM_FAULT_TELLS):
             return "platform_fault"
+        # Before the taxonomies: this refusal is ours and carries no attempt for
+        # them to read, so consulting them first is how a measured cause became
+        # "unknown". Read the whole chain -- a wrapper that says "exhausted"
+        # must not bury the measurement underneath it.
+        if _context_overflow(exc):
+            return "context_window_exceeded"
         for code in (getattr(exc, "failure_class", None), _attempt_class(exc)):
             if isinstance(code, str) and code in FAILURE_CODES:
                 return code
@@ -3019,6 +3247,7 @@ def universe(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
+    visibility: str = "",
 ) -> str:
     """Inspect and steer a workflow's universe.
 
@@ -3034,7 +3263,7 @@ def universe(
         action: One of — reads: list, inspect, read_output, query_world,
             get_activity, get_recent_events, get_ledger, read_premise,
             list_canon, read_canon, list_sources, read_source; writes: submit_request,
-            give_direction, set_premise, add_canon, add_canon_from_path,
+            give_direction, set_premise, set_visibility, add_canon, add_canon_from_path,
             create_universe, switch_universe; learning: soul.edit (teach the
             universe — inputs_json {changes: {governed file: new body},
             source, context, name?}; persists per its soul.edit.md policy);
@@ -3128,6 +3357,7 @@ def universe(
         enabled=enabled,
         tag=tag,
         anchor_json=anchor_json,
+        visibility=visibility,
     )
 
 

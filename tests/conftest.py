@@ -34,8 +34,8 @@ def pytest_configure(config: pytest.Config) -> None:
     and could not be removed from an ordinary shell.
 
     Failing here costs one clear error; the alternative costs an elevated
-    cleanup and a directory nobody can delete. See ``AGENTS.md`` § *Testing*
-    and ``scripts/clear_sandbox_temp_dirs.ps1``.
+    cleanup and a directory nobody can delete. Recovery:
+    ``scripts/clear_sandbox_temp_dirs.ps1 -Apply`` from an elevated shell.
 
     On Windows, ALSO pass a SHORT ``--basetemp`` (e.g.
     ``C:/Users/<you>/AppData/Local/Temp/ta-pt``): pytest's default root plus a
@@ -171,28 +171,47 @@ def authenticate_request() -> Callable[[str | None], None]:
     set_provider(DevAuthProvider())
 
 
+#: Modules that must see the REAL strict visibility resolver, not the
+#: public-for-legacy-modules stand-in below. A test whose subject IS the
+#: visibility boundary has to opt out, or it asserts the double's behaviour
+#: instead of the code's.
+_STRICT_VISIBILITY_MODULES = frozenset({
+    "test_universe_visibility",
+    "test_private_by_default",
+})
+
+
 @pytest.fixture(autouse=True)
 def _emulate_deployed_visibility_backfill(request, monkeypatch):
-    """Emulate the deployed ``backfill_universe_visibility`` for legacy modules.
+    """A legacy module's bare universe stands for one whose owner chose public.
 
     The universe-visibility contract fails closed on an *undeclared* universe
-    (openspec/changes/universe-visibility). In production the one-time
-    ``backfill_universe_visibility`` migration declares every pre-existing
-    universe from its ``public_read`` bit, after which undeclared only ever means
-    forged/corrupt. The hundreds of pre-visibility tests create bare universes
-    and were written against that post-backfill world (undeclared == public).
+    (openspec/changes/universe-visibility). Hundreds of pre-visibility tests
+    create bare universe directories and assert public-reader behaviour — status
+    shape, word count, telemetry, ledger — none of which is about visibility.
+    This fixture resolves an undeclared universe to ``PUBLIC`` for those modules
+    so each one does not have to re-declare, while an explicit (or forged)
+    declaration, a corrupt store, and a blank id all defer to the real strict
+    resolver.
 
-    This fixture reproduces the deployed backfill state in the harness so those
-    tests keep asserting their own concern (status shape, word count, telemetry)
-    without each re-declaring visibility: for an *undeclared* universe it derives
-    the level from ``public_read`` exactly as the backfill does, while an explicit
-    (or forged) declaration, a corrupt store, and a blank id all defer to the real
-    strict resolver. Production code ships fully strict; the true pre-backfill
-    fail-closed behavior is exercised un-emulated by ``test_universe_visibility``.
+    Until 2026-09-26 this was literally "emulate the deployed backfill": the
+    production backfill derived ``public`` from the ``public_read`` bit, so the
+    harness matched it. It no longer does — per the founder, the backfill now
+    declares ``private`` and the platform never declares an open level on an
+    owner's behalf (openspec/changes/private-by-default-universes). The fixture
+    keeps its behaviour and changes its MEANING: these modules' bare directories
+    now stand in for a universe whose owner chose public, which is what each of
+    those tests is actually about. Flipping the fixture to ``private`` instead
+    would silently rewrite what several hundred unrelated tests assert.
+
+    Modules in ``_STRICT_VISIBILITY_MODULES`` opt out and exercise the real,
+    un-emulated resolver. Everything created through the real
+    ``_action_create_universe`` is unaffected either way, because creation writes
+    an *explicit* declaration and this fixture defers on those.
     """
     module_name = getattr(request.node.module, "__name__", "")
-    if module_name.endswith("test_universe_visibility"):
-        return  # this module tests the real, un-backfilled strict resolver.
+    if module_name.rpartition(".")[2] in _STRICT_VISIBILITY_MODULES:
+        return  # these modules test the real, un-emulated strict resolver.
 
     from tinyassets.api import visibility as _vis
 
@@ -205,8 +224,7 @@ def _emulate_deployed_visibility_backfill(request, monkeypatch):
         if rules is _vis._CORRUPT:
             return _vis.CLOSED
         if rules is _vis._MISSING:
-            # A bare universe: backfill would create a rules row (public_read
-            # defaults True) and declare it public.
+            # A bare universe with no rules row: read as "the owner chose public".
             return _vis.PUBLIC
         if not isinstance(rules, dict):
             return _vis.CLOSED
@@ -216,6 +234,32 @@ def _emulate_deployed_visibility_backfill(request, monkeypatch):
         return _vis.PUBLIC if bool(rules.get("public_read", True)) else _vis.PRIVATE
 
     monkeypatch.setattr(_vis, "universe_visibility", _post_backfill)
+
+
+def own_universe(base_path, *universe_ids: str) -> None:
+    """Give each universe an OWNER, which is what makes it a universe.
+
+    Since 2026-09-02 a universe exists because an ownership row names it, and a
+    universe nobody owns grants no capability -- so a fixture that makes a
+    directory and then reads it back is describing a state production cannot be
+    in: `_action_create_universe` claims the owner before the directory exists.
+
+    A `founder_home` binding rather than a `universe_acl` grant, deliberately:
+    `daemon_server.universe_is_private` is literally "has any ACL rows", so
+    granting would flip every fixture from public to private and change what the
+    surrounding assertions mean. One synthetic founder per universe, because the
+    table is keyed by founder.
+
+    Call it beside the mkdir. There is no autouse version on purpose -- most
+    fixtures make a bare directory with no function call to hook, and a helper
+    that guessed would be a permissive double rather than a truth-maker.
+    """
+    from tinyassets.daemon_server import set_founder_home
+
+    for uid in universe_ids:
+        set_founder_home(
+            base_path, founder_sub=f"test-owner::{uid}", universe_id=uid,
+        )
 
 
 @pytest.fixture(autouse=True)

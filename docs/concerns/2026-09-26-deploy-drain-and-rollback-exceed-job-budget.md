@@ -1,3 +1,10 @@
+---
+severity: P2
+title: A cancelled deploy has never been observed recovering
+filed: '2026-09-26'
+summary: 'the 960s-over-900s arithmetic is FIXED (#4039 took the drain to 180s and the test now models both converges); what remains is that SSH cancellation mid-run is untested, the EXIT trap cleans scratch files rather than recovering a part-way bundle install, and the canary rollback shares the same job budget'
+---
+
 # Drain and rollback allowances exceed the deployment job budget
 
 **Filed:** 2026-09-26

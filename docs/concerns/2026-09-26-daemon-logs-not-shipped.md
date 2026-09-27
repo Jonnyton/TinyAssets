@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Daemon logs are not shipped off-box
+filed: '2026-09-26'
+summary: '`LOG_DEST` unset, so ship-logs errors every run; each deploy recreates the container and erases `docker logs` evidence'
+---
+
 # Daemon logs are not shipped off-box, so every deploy erases the evidence
 
 **Filed:** 2026-09-26 · **Verified:** 2026-09-26 on production · **Severity:** P2

@@ -1,3 +1,10 @@
+---
+severity: note
+title: The node import allowlist is theatre — delete it, don't fix it
+filed: '2026-08-31'
+summary: 'filed as P1, INVERTED the same day: the measurement holds, but under the isolation floor (cross-user only) it is not a vulnerability'
+---
+
 # The node import allowlist is theatre — delete it, don't fix it
 
 **Superseded 2026-08-31, same day it was filed.** This started as a P1

@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Host recovery paths do not share the deploy's mutation lock
+filed: '2026-09-26'
+summary: 'the deploy takes `/var/lock/tinyassets-host-mutation.lock`, the watchdog takes a different lock and autoheal takes none, so a recreate can race a recovery restart; pre-existing, and a longer drain widens the window'
+---
+
 # Checked-in host recovery paths do not share the deploy mutation lock
 
 **Filed:** 2026-09-26

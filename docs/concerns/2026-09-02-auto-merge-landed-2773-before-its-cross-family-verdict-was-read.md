@@ -1,3 +1,10 @@
+---
+severity: P2
+title: 'Auto-merge landed #2773 six minutes after its Codex verdict said REJECT'
+filed: '2026-09-02'
+summary: 'auto-enroll binds merge to CI, not to the cross-family verdict; measured: enrolled 05:59Z, REJECT written 06:03Z, merged 06:09Z. Drafts are skipped by auto-enroll, so this lane opens review-pending PRs as drafts'
+---
+
 # Auto-merge landed #2773 six minutes after its Codex verdict said REJECT
 
 **Filed:** 2026-09-02, from the Google Play launch lane (PR #2773, branch

@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Provider compatibility is not open
+filed: '2026-09-04'
+summary: compiled CLI-name restrictions and ignored connection-local model choices prevent provider portability; provider default, user-saved defaults, and all available model choices are required
+---
+
 # Provider compatibility still depends on a compiled vendor set
 
 Founder directive, 2026-09-04 PDT (recorded 2026-09-05 UTC): users must be able

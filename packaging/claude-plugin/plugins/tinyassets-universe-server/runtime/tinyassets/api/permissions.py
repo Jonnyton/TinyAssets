@@ -308,6 +308,26 @@ def universe_public_read_allowed(universe_id: str) -> bool:
     return bool(rules.get("public_read", True))
 
 
+def _universe_is_owned(base: Any, universe_id: str) -> bool:
+    """Whether an ownership row names this universe. Fails CLOSED.
+
+    An unreadable ownership store means nothing is known to be owned, and the
+    question this answers is "may the caller reach it" -- so the safe answer is
+    no. The by-id readers in `tinyassets.api.universe` raise instead, so they can
+    tell a caller the store is down rather than that their universe does not
+    exist; a boolean gate has no room for that distinction and must deny.
+    """
+    from tinyassets.daemon_server import owned_universe_id
+
+    try:
+        return bool(owned_universe_id(base, universe_id))
+    except Exception:  # noqa: BLE001 - fail closed
+        logger.warning(
+            "universe ownership lookup failed closed for %r", universe_id, exc_info=True,
+        )
+        return False
+
+
 def universe_access_allows(universe_id: str, *, write: bool = False) -> bool:
     """Return whether the current actor may read/write a universe.
 
@@ -322,6 +342,24 @@ def universe_access_allows(universe_id: str, *, write: bool = False) -> bool:
     from tinyassets.daemon_server import universe_access_permission
 
     base = _base_path()
+
+    # A UNIVERSE NOBODY OWNS GRANTS NOTHING (2026-09-02; enforced here after the
+    # Codex review of 2026-09-26). This is THE shared gate -- `visibility_permits`
+    # composes it as its ceiling, and the wiki, runs, automations, status and
+    # auto-ship readers call it directly -- so the ownership requirement belongs
+    # here rather than at sixteen call sites.
+    #
+    # Reads were the hole. A write already needed a write/admin grant on the exact
+    # id, which an unowned directory can never have. But a READ short-circuits on
+    # `universe_public_read_allowed`, and that is True both for a `public` row and
+    # for NO row at all ("missing means public by design") -- so an archive the old
+    # boot backfill declared public, and a bare directory with no row whatsoever,
+    # were both readable by explicit id. Filtering discovery did not retract
+    # either, which is how `read_page` and explicit-id `get_status` kept answering
+    # for the graveyard after it stopped being listed.
+    if not _universe_is_owned(base, uid):
+        return False
+
     if not write and universe_public_read_allowed(uid):
         return True
 

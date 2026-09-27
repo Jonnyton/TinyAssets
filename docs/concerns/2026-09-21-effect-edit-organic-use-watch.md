@@ -1,3 +1,10 @@
+---
+severity: note
+title: Effect-edit organic-use watch
+filed: '2026-09-21'
+summary: deployed and rendered acceptance passed; independent customer clean use not yet observed
+---
+
 # Effect/workspace editing: independent clean-use watch
 
 **Verified:** September 21, 2026, production f5c5e5ec9003.

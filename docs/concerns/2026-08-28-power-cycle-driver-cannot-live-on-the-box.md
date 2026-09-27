@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Power-cycle driver cannot live on the box
+filed: '2026-08-28'
+summary: 'a shutdown-and-resize script run ON the droplet would have left it off with nothing alive to restart it; cancelled ~40s in, no impact. Also: I declared a credential absent after checking two of four places'
+---
+
 # A near-miss: I ran a shutdown-and-resize driver on the machine it was shutting down
 
 **Severity:** P1 (no impact — caught before the box went down) · **Filed:** 2026-08-28

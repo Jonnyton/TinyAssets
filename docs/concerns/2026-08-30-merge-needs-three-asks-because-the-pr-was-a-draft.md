@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Merging took three rail asks because the PR opened as a draft
+filed: '2026-08-30'
+summary: 'live naive-user test on #2691: merge `405 still a draft`, the `ready_for_review` REST endpoint does not exist (`404`), only GraphQL works'
+---
+
 # Merging a PR the universe opened took three rail asks, because it opened it as a draft
 
 **Filed:** 2026-08-30, from the live naive-user merge test (production,

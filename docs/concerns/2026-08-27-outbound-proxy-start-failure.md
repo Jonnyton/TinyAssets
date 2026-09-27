@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The outbound broker child failed to start, cause never found
+filed: '2026-08-27'
+summary: 'was P0; egress verified working 2026-08-31 (the universe opened #2691 through it). The intermittent was never diagnosed. (The `source_code`-nodes-unrunnable claim here was INVERTED 2026-09-01: they run; only the receipt says otherwise)'
+---
+
 # The outbound broker child fails to start, and nothing can say why
 
 **Filed:** 2026-08-27

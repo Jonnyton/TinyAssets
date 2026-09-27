@@ -1364,8 +1364,42 @@ async def authorize_served_provider_call_async(
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers.model_selection import prepare_selected_model_async
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+    from tinyassets.subscription_refresh import refresh_deposited_subscriptions
 
     universe = Path(universe_dir)
+    # THE interactive launch path. Wiring only the workflow lanes left the
+    # founder's own served turn -- the surface the outage is on -- never calling
+    # the refresh at all (Codex refute-review, P1 #7).
+    #
+    # Here, at the very top: before the shared admission is taken (the refresh
+    # needs the EXCLUSIVE one, which cannot nest inside it), before `_selected_chain`
+    # resolves custody, and before the snapshot below pins the credential. A refresh
+    # after any of those would make the launch refuse with "credential changed
+    # before launch snapshot".
+    #
+    # `launching` is the source this call actually selected, so another deposited
+    # source's dead credential cannot fail this one. No owner is asserted: the
+    # authenticated principal is only resolved inside the admission below, and a
+    # refresh replaces bytes for a credential the owner already deposited -- it must
+    # not touch, claim or transfer its ownership row.
+    #
+    # A selection that is not a `ModelRef` is refused below, by the checks that
+    # already exist for it, and NOTHING is refreshed for it. Reading a field off an
+    # unvalidated caller-supplied object turned that refusal into an AttributeError
+    # (`test_async_unaccepted_selection_refused_before_discovery`, which passes a
+    # bare object precisely to pin the ordering) -- and more importantly, the
+    # selection decides WHICH source is refreshed and which one may fail the
+    # launch, so an unrecognized one must steer neither.
+    from tinyassets.providers.model_policy import ModelRef
+
+    if isinstance(model_selection, ModelRef):
+        refresh_deposited_subscriptions(
+            base_path=base_path,
+            universe_dir=universe,
+            owner_user_id=None,
+            universe_id=universe.name,
+            launching=_SERVED_PROVIDER_SERVICE.get(model_selection.connection_id, ""),
+        )
     try:
         with provider_assignment_admission().shared(universe):
             capability, agent = _served_request_agent(
@@ -1397,6 +1431,11 @@ async def authorize_served_provider_call_async(
     ) as authority:
         yield authority
 
+
+#: Which subscription record a served provider launches from. Hoisted out of the
+#: snapshot branch below so the pre-launch refresh names the same source the
+#: launch will, rather than repeating the mapping.
+_SERVED_PROVIDER_SERVICE = {"codex": "codex", "claude-code": "claude"}
 
 _SERVED_AUTHORITY_HELD = (
     "Connect your provider before running this universe. TinyAssets will not "
@@ -1577,9 +1616,7 @@ def _authorize_served_provider_call(
                         ),
                     )
                 else:
-                    service = {"codex": "codex", "claude-code": "claude"}.get(
-                        provider
-                    )
+                    service = _SERVED_PROVIDER_SERVICE.get(provider)
                     if service is None:
                         raise PermissionError("provider is not supported for serving")
                     credential_snapshot = snapshot_llm_subscription_credential(

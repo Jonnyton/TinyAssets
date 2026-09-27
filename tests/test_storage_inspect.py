@@ -109,6 +109,9 @@ class TestMissingPathsReturnZero:
         (isolated_data_dir / ".runs.db").write_bytes(b"y" * 500)
         uni = isolated_data_dir / "concordance"
         uni.mkdir()
+        from tests.conftest import own_universe
+        # A universe needs an OWNER to be readable at all (2026-09-02).
+        own_universe(isolated_data_dir, "concordance")
         (uni / ".langgraph_runs.db").write_bytes(b"z" * 300)
         (uni / ".runs.db").write_bytes(b"w" * 200)
         (uni / ".runs.db-wal").write_bytes(b"v" * 40)
@@ -216,6 +219,9 @@ class TestGetStatusIntegration:
 
         # Create the default universe so get_status has a real target.
         (isolated_data_dir / "default-universe").mkdir()
+        from tests.conftest import own_universe
+        # A universe needs an OWNER to be readable at all (2026-09-02).
+        own_universe(isolated_data_dir, "default-universe")
 
         from tinyassets.universe_server import get_status
         raw = get_status("default-universe")
@@ -242,6 +248,9 @@ class TestGetStatusIntegration:
         # Create a universe with a populated activity.log and output dir.
         udir = isolated_data_dir / "default-universe"
         udir.mkdir()
+        from tests.conftest import own_universe
+        # A universe needs an OWNER to be readable at all (2026-09-02).
+        own_universe(isolated_data_dir, "default-universe")
         activity_log = udir / "activity.log"
         activity_log.write_bytes(b"log entry\n" * 100)  # 1000 bytes
         out_dir = udir / "output"

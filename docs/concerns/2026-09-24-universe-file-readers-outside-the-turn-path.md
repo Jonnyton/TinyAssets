@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Universe-file readers outside the turn path
+filed: '2026-09-24'
+summary: harness S1 routes every turn-path read through `universe_files` and keeps the agent's write set small; ~20 other modules still read universe files raw, safe only while those paths stay agent read-only
+---
+
 # Universe-file readers outside the served turn path (harness S1)
 
 **Found:** 2026-09-24, harness S1 review round 2 (PR #3972). **Severity:** P2

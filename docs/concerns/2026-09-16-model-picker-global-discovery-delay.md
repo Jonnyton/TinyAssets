@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Model picker global discovery delay
+filed: '2026-09-16'
+summary: first-open selection and execution still wait on unrelated source discovery
+---
+
 # Model switching waits on unrelated source discovery
 
 Filed 2026-09-16. Original-owner live app picker disables choice while
