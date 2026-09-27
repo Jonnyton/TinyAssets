@@ -34,8 +34,8 @@ def pytest_configure(config: pytest.Config) -> None:
     and could not be removed from an ordinary shell.
 
     Failing here costs one clear error; the alternative costs an elevated
-    cleanup and a directory nobody can delete. See ``AGENTS.md`` § *Testing*
-    and ``scripts/clear_sandbox_temp_dirs.ps1``.
+    cleanup and a directory nobody can delete. Recovery:
+    ``scripts/clear_sandbox_temp_dirs.ps1 -Apply`` from an elevated shell.
 
     On Windows, ALSO pass a SHORT ``--basetemp`` (e.g.
     ``C:/Users/<you>/AppData/Local/Temp/ta-pt``): pytest's default root plus a
@@ -216,6 +216,32 @@ def _emulate_deployed_visibility_backfill(request, monkeypatch):
         return _vis.PUBLIC if bool(rules.get("public_read", True)) else _vis.PRIVATE
 
     monkeypatch.setattr(_vis, "universe_visibility", _post_backfill)
+
+
+def own_universe(base_path, *universe_ids: str) -> None:
+    """Give each universe an OWNER, which is what makes it a universe.
+
+    Since 2026-09-02 a universe exists because an ownership row names it, and a
+    universe nobody owns grants no capability -- so a fixture that makes a
+    directory and then reads it back is describing a state production cannot be
+    in: `_action_create_universe` claims the owner before the directory exists.
+
+    A `founder_home` binding rather than a `universe_acl` grant, deliberately:
+    `daemon_server.universe_is_private` is literally "has any ACL rows", so
+    granting would flip every fixture from public to private and change what the
+    surrounding assertions mean. One synthetic founder per universe, because the
+    table is keyed by founder.
+
+    Call it beside the mkdir. There is no autouse version on purpose -- most
+    fixtures make a bare directory with no function call to hook, and a helper
+    that guessed would be a permissive double rather than a truth-maker.
+    """
+    from tinyassets.daemon_server import set_founder_home
+
+    for uid in universe_ids:
+        set_founder_home(
+            base_path, founder_sub=f"test-owner::{uid}", universe_id=uid,
+        )
 
 
 @pytest.fixture(autouse=True)

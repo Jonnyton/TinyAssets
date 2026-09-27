@@ -70,7 +70,7 @@ class Budget:
 # PLAN.md is design truth, not a rule file, and is not budgeted. STATUS.md was
 # retired 2026-08-25 and left the set entirely.
 #
-# Pins are EXACT post-cut sizes (2026-09-26), not round numbers: a ceiling set at
+# Pins are EXACT post-recut sizes (2026-09-26), not round numbers: a ceiling set at
 # the achieved value is a ratchet, one set at a comfortable round number is a
 # wish. This set grew from ~17.6 KB (2026-04-28) to 62,082 B under SOFT budgets
 # that only warned, with the invariant registered and VIOLATED the whole time.
@@ -79,24 +79,27 @@ class Budget:
 # one fact means a reflow that removes words can still fail — a second authority
 # for the same thing, which is what the 2026-09-26 cut was removing.
 CONFIG: tuple[Budget, ...] = (
-    Budget("AGENTS.md", "hard", 13614, 0,
-           "Cross-provider canonical. Move procedure to docs/reference/, not into here."),
-    Budget("CLAUDE.md", "hard", 692, 0,
-           "Claude Code router; harness quirks only, a thin layer over AGENTS.md."),
-    Budget("docs/reference/quality-gates.md", "hard", 3852, 0,
-           "Review/merge/completion procedure. A new gate displaces an old one.",
-           always_loaded=False),
-    Budget("docs/reference/executable-gates.md", "hard", 5530, 0,
-           "Enforced vs judgement. Add a row only by deleting one.",
-           always_loaded=False),
-    Budget("docs/reference/delivery-flow.md", "hard", 1574, 0,
-           "OpenSpec WIP discipline.",
+    Budget("AGENTS.md", "hard", 2829, 0,
+           "The loop and the un-inferable facts. Principles live in PLAN.md."),
+    Budget("CLAUDE.md", "hard", 420, 0,
+           "Two harness quirks. Nothing else belongs here."),
+    Budget("docs/reference/executable-gates.md", "hard", 1154, 0,
+           "Index of gates -> scripts. Add a row only by deleting one.",
            always_loaded=False),
 )
 
+# Deleted 2026-09-26 because a procedure doc is where a rule goes to hide: both
+# restated what the loop in AGENTS.md says, and quality-gates.md additionally
+# contradicted `pr-scope-guard.yml`. Recreating either is how the rulebook grows
+# back, so their absence is pinned like a size.
+FORBIDDEN: tuple[str, ...] = (
+    "docs/reference/quality-gates.md",
+    "docs/reference/delivery-flow.md",
+)
+
 # HARD ceiling for the combined always-loaded payload (AGENTS.md + CLAUDE.md +
-# anything they @import), pinned at the achieved post-cut total.
-COMBINED_HARD_BYTES = 14306
+# anything they @import), pinned at the achieved post-recut total.
+COMBINED_HARD_BYTES = 3249
 
 
 @dataclass
@@ -120,10 +123,11 @@ class Aggregate:
 # endpoints and claims) and grow when the product does, which is not rulebook
 # growth. Every other docs/reference file is procedure, and procedure is capped.
 AGGREGATES: tuple[Aggregate, ...] = (
-    Aggregate("docs/reference/*.md", "docs/reference/*.md", 26587,
-              exclude=("environment-variables.md", "workos-authkit-integration.md"),
+    Aggregate("docs/reference/*.md", "docs/reference/*.md", 6741,
+              exclude=("environment-variables.md", "workos-authkit-integration.md",
+                       "dev-disk-hygiene.md"),  # temporary: folded into dev_hygiene.py next PR
               note="Procedure docs. A new gate here displaces an old one."),
-    Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 83644,
+    Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 52094,
               note="Skills are rulebook too -- a rule moved into a skill is still a rule."),
 )
 
@@ -293,6 +297,11 @@ def run(root: Path) -> tuple[list[Result], int, bool]:
     # quiet pass. Deleting AGENTS.md must never be the cheapest way to satisfy
     # its own budget.
     missing = [r.path for r in results if not r.exists]
+
+    # ...and the mirror case: a file deleted ON PURPOSE must not come back, or the
+    # cut is undone one well-meaning recreation at a time.
+    returned = [rel for rel in FORBIDDEN if (root / rel).is_file()]
+    missing.extend(f"{rel} (deleted on purpose; do not recreate)" for rel in returned)
 
     hard_busted = (
         any(r.kind == "hard" and r.over for r in results)

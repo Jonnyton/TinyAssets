@@ -70,6 +70,9 @@ def status_env(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "test-user")
     universe = tmp_path / "test-universe"
     universe.mkdir()
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, universe.name)
     # Minimal dispatcher config so load_dispatcher_config doesn't error.
     (universe / "dispatcher.json").write_text("{}")
     return universe
@@ -210,6 +213,8 @@ def test_get_status_explicit_universe_id_overrides_default(status_env, tmp_path)
     """Passing universe_id="other" should resolve to that universe id."""
     other = tmp_path / "other-universe"
     other.mkdir()
+    from tests.conftest import own_universe
+    own_universe(tmp_path, other.name)
     (other / "dispatcher.json").write_text("{}")
     parsed = json.loads(get_status(universe_id="other-universe"))
     assert parsed["universe_id"] == "other-universe"

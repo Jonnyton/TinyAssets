@@ -18,6 +18,23 @@ from tinyassets.api.helpers import (
     _wiki_root,
 )
 
+
+def _own(base: Path, *names: str) -> None:
+    """Give each directory an OWNER, which is what makes it a universe.
+
+    Since 2026-09-02 a universe exists because an ownership row names it, not
+    because a folder is on disk, so a test whose subject is resolution ORDER has
+    to hand ``_default_universe`` real universes to order. A ``founder_home``
+    binding (one synthetic founder each) is used rather than an ACL grant
+    because a universe with zero ACL rows is PUBLIC, and these tests are not
+    about privacy.
+    """
+    from tinyassets.daemon_server import set_founder_home
+
+    for name in names:
+        set_founder_home(base, founder_sub=f"test-owner::{name}", universe_id=name)
+
+
 # ---------------------------------------------------------------------------
 # _base_path
 # ---------------------------------------------------------------------------
@@ -85,6 +102,7 @@ class TestDefaultUniverse:
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
         (tmp_path / "my-default").mkdir()
         (tmp_path / "active-now").mkdir()
+        _own(tmp_path, "my-default", "active-now")
         (tmp_path / ".active_universe").write_text("active-now", encoding="utf-8")
         assert _default_universe() == "active-now"
 
@@ -92,6 +110,7 @@ class TestDefaultUniverse:
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
         (tmp_path / "my-default").mkdir()
+        _own(tmp_path, "my-default")
         (tmp_path / ".active_universe").write_text("../outside", encoding="utf-8")
         assert _default_universe() == "my-default"
 
@@ -100,6 +119,7 @@ class TestDefaultUniverse:
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / "alpha").mkdir()
         (tmp_path / "beta").mkdir()
+        _own(tmp_path, "alpha", "beta")
         assert _default_universe() == "alpha"
 
     def test_skips_dotdirs(self, tmp_path, monkeypatch):
@@ -107,6 +127,7 @@ class TestDefaultUniverse:
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / ".hidden").mkdir()
         (tmp_path / "visible").mkdir()
+        _own(tmp_path, ".hidden", "visible")
         assert _default_universe() == "visible"
 
     def test_fallback_when_empty(self, tmp_path, monkeypatch):
@@ -125,6 +146,7 @@ class TestDefaultUniverse:
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / "afile.txt").write_text("x")
         (tmp_path / "zdir").mkdir()
+        _own(tmp_path, "afile.txt", "zdir")
         # File is sorted before zdir alphabetically but must be skipped
         assert _default_universe() == "zdir"
 
