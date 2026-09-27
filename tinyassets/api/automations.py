@@ -198,6 +198,8 @@ def _projection(
             "kind": automation.trigger_kind,
             "interval_seconds": automation.interval_seconds,
             "cron_expr": automation.cron_expr,
+            # A one-shot wake's instant (kind "once"); '' for a cadence.
+            "not_before": automation.not_before,
         },
         "inputs": dict(automation.inputs),
         "desired_state": automation.desired_state,

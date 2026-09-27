@@ -16,9 +16,7 @@ is the §14 regression proof for its shared admission boundaries.
 from __future__ import annotations
 
 import multiprocessing
-import threading
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from queue import Empty
 
@@ -221,42 +219,6 @@ def _run_spawn_cohort(
         result_queue.join_thread()
 
 
-def test_concurrent_enqueue_bounded_and_lock_safe(tmp_path, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN", str(_BUDGET))
-    uni = tmp_path / "uni"
-    uni.mkdir()
-    monkeypatch.setattr(helpers, "_universe_dir", lambda uid: uni)
-    # Stub the target-branch existence/visibility check as a public branch so
-    # the real append path (file lock + caps) is what's under test here.
-    monkeypatch.setattr(
-        ds, "get_branch_definition",
-        lambda base_path, *, branch_def_id: {"visibility": "public", "author": "anyone"},
-    )
-
-    with ThreadPoolExecutor(max_workers=_RUNS) as ex:
-        results = list(ex.map(_one_run, range(_RUNS)))
-
-    # 1. Per-run budget held under concurrency — each run landed exactly budget.
-    assert results == [str(_BUDGET)] * _RUNS
-
-    # 2. No lost updates / no corruption — the file lock serialized every append.
-    q = read_queue(uni)
-    assert len(q) == _RUNS * _BUDGET
-
-    # 3. Well-formed at depth 1 (parent 0 + 1), correct target + tier.
-    assert all(t.depth == 1 for t in q)
-    assert all(t.branch_def_id == "leaf" for t in q)
-    assert all(t.trigger_source == "owner_queued" for t in q)
-
-    # Every run represented exactly budget times; no cross-run loss.
-    per_run = Counter(t.inputs["run"] for t in q)
-    assert per_run == {r: _BUDGET for r in range(_RUNS)}
-
-    # Unique task ids — no collision across concurrent appends.
-    assert len({t.branch_task_id for t in q}) == _RUNS * _BUDGET
-
-
 def _configure_real_enqueue_storage(monkeypatch, universe_path: Path) -> None:
     monkeypatch.setattr(helpers, "_universe_dir", lambda uid: universe_path)
     monkeypatch.setattr(
@@ -267,70 +229,6 @@ def _configure_real_enqueue_storage(monkeypatch, universe_path: Path) -> None:
             "author": "anyone",
         },
     )
-
-
-def test_compiled_concurrent_distinct_origins_stop_at_global_cap(
-    tmp_path, monkeypatch,
-):
-    cap = 5
-    contenders = 12
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN", "1")
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_QUEUE", str(cap))
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_LINEAGE", "100")
-    universe_path = tmp_path / "uni"
-    universe_path.mkdir()
-    _configure_real_enqueue_storage(monkeypatch, universe_path)
-    start_barrier = threading.Barrier(contenders)
-
-    def _synchronized_run(index: int, origin: str) -> str:
-        start_barrier.wait(timeout=20)
-        return _one_capped_run(index, origin)
-
-    with ThreadPoolExecutor(max_workers=contenders) as executor:
-        futures = [
-            executor.submit(_synchronized_run, index, f"origin-{index}")
-            for index in range(contenders)
-        ]
-        results = [future.result() for future in futures]
-
-    assert Counter(results) == {"enqueued": cap, "refused": contenders - cap}
-    queue = read_queue(universe_path)
-    assert len(queue) == cap
-    assert len({task.branch_task_id for task in queue}) == cap
-    assert len({task.origin_branch_task_id for task in queue}) == cap
-
-
-def test_compiled_concurrent_shared_origin_stops_at_lineage_cap(
-    tmp_path, monkeypatch,
-):
-    cap = 4
-    contenders = 11
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN", "1")
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_QUEUE", "100")
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_LINEAGE", str(cap))
-    universe_path = tmp_path / "uni"
-    universe_path.mkdir()
-    _configure_real_enqueue_storage(monkeypatch, universe_path)
-    start_barrier = threading.Barrier(contenders)
-
-    def _synchronized_run(index: int) -> str:
-        start_barrier.wait(timeout=20)
-        return _one_capped_run(index, "shared-origin")
-
-    with ThreadPoolExecutor(max_workers=contenders) as executor:
-        futures = [
-            executor.submit(_synchronized_run, index)
-            for index in range(contenders)
-        ]
-        results = [future.result() for future in futures]
-
-    assert Counter(results) == {"enqueued": cap, "refused": contenders - cap}
-    queue = read_queue(universe_path)
-    assert len(queue) == cap
-    assert {task.origin_branch_task_id for task in queue} == {"shared-origin"}
-    assert len({task.branch_task_id for task in queue}) == cap
 
 
 def test_spawn_processes_stop_exactly_at_global_cap(tmp_path):
