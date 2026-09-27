@@ -396,3 +396,66 @@ def test_a_code_node_never_reaches_served_tools_outside_its_owners_own_run(
         _invoker([], **context)("write_brain", identity=MARK)
     assert code_node_engine == []
     assert MARK not in (tmp_path / "u-a" / "identity.md").read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# What an agent node persists stays bound to its universe (#4060 review)
+# --------------------------------------------------------------------------- #
+def _reads_as(authenticate_request, who, run_id):
+    from tinyassets.api import runs as api_runs
+
+    authenticate_request(who)
+    return "\n".join([
+        api_runs._action_get_run({"run_id": run_id}),
+        api_runs._action_get_run_output({"run_id": run_id}),
+        api_runs._action_list_runs({}),
+        api_runs._action_query_runs({"branch_def_id": "branch_repo_spec_loop",
+                                     "select": ["ledger"]}),
+    ])
+
+
+def _second_user_is_refused(tmp_path, monkeypatch, authenticate_request, run_id, secret):
+    from tinyassets.api import runs as api_runs
+    from tinyassets.daemon_server import set_founder_home
+
+    monkeypatch.setattr(api_runs, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(api_runs, "_ensure_runs_recovery", lambda: None)
+    (tmp_path / "universe_bob").mkdir(exist_ok=True)
+    set_founder_home(tmp_path, founder_sub="acct_bob", universe_id="universe_bob",
+                     platform_generated=True)
+    seen = _reads_as(authenticate_request, "acct_bob", run_id)
+    assert secret not in seen
+    assert run_id not in seen
+    # The owner still reads it, so the refusal is about who asks, not a broken read.
+    assert secret in _reads_as(authenticate_request, "acct_alice", run_id)
+
+
+def test_a_background_agent_nodes_saved_output_is_refused_to_another_user(
+    tmp_path, monkeypatch, authenticate_request, engine,
+):
+    engine.script = [[_call("read_brain")]]
+    task, result = _run(tmp_path, monkeypatch, ["agent"])
+    assert task.status == "succeeded", (result, engine.errors)
+    _second_user_is_refused(tmp_path, monkeypatch, authenticate_request,
+                            result["run_id"], "steward done")
+
+
+def test_a_foreground_agent_nodes_saved_output_is_refused_to_another_user(
+    tmp_path, monkeypatch, authenticate_request, engine,
+):
+    from tests.test_run_provider_session import _branch, _run_branch
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    branch = _branch(node_count=1)
+    branch.branch_def_id = "branch_repo_spec_loop"
+    branch.node_defs[0].llm_policy = {"preferred": {"model": "synthetic-model"},
+                                      "fallback_chain": []}
+    branch.node_defs[0].tools_allowed = ["agent"]
+    branch.node_defs[0].output_keys = ["ledger"]
+    branch.state_schema = [{"name": "ledger", "type": "str", "default": ""}]
+    engine.script = [[_call("read_brain")]]
+    result = _run_branch(tmp_path, monkeypatch, authenticate_request, branch,
+                         open_provider=True, model_access=ModelAccess("discovered"))[0]
+    assert result["terminal_status"] == "completed", (result, engine.errors)
+    _second_user_is_refused(tmp_path, monkeypatch, authenticate_request,
+                            result["run_id"], "steward done")

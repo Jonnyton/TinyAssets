@@ -26,6 +26,15 @@ arguments.
 - **WHEN** a provider call names an `agent_node_id` that is not an agent node in the admitted snapshot
 - **THEN** the call is refused
 
+### Requirement: An agent node's saved output is bound to its universe
+Every run that executes an agent node SHALL be bound to the run's universe, so
+another user's `get_run`, `get_run_output`, `list_runs` and `query_runs` are
+refused on it, in foreground and background runs alike.
+
+#### Scenario: a second user reads an agent-node run
+- **WHEN** another signed-in user asks for an agent-node run on the owner's private universe
+- **THEN** none of the four reads returns the run or its output, and the owner still reads it
+
 ### Requirement: Node tool grants
 The other entries of an agent node's `tools_allowed` SHALL be a grant over the served
 engine tools. A marker with no other entry SHALL mean every served tool, and a non-empty grant SHALL expose

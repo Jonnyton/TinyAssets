@@ -77,6 +77,20 @@ exactly the served names in the node's `tools_allowed`. If it names none, the
 node gets the whole served set, which is what the owner's chat has. The alias
 table is unchanged for its existing names.
 
+## D5. What an agent node saves stays bound to its universe
+
+Widening what a run may read also widens what its saved output contains. The run
+read gate only protects rows bound to a universe, either by a `universe:<id>`
+actor or by `queue_universe_id`. Every agent turn is structurally bound:
+- the foreground session rechecks, before each round, that its run's actor is
+  `universe:<session universe>`;
+- a background task records its universe in `queue_universe_id`.
+
+The agent node writes no conversation transcript. Its turn journal is keyed by
+(owner, universe) and is not served. Tests read an agent-node run as a second
+user through `get_run`, `get_run_output`, `list_runs` and `query_runs`, and
+expect a refusal on both paths.
+
 ## Custom agents become configurations
 
 A custom agent is an agent node's stored configuration: instructions
