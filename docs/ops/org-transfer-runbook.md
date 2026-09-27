@@ -36,26 +36,29 @@ Checked 2026-09-26 against GitHub docs and the live repo (`gh api`):
 
 ## Does a merge-queue merge trigger `push` workflows?
 
-The deploy chain is `push: main` → `build-image` → `deploy-prod` (`workflow_run`).
-GitHub's rule (*Events that trigger workflows*, and *GITHUB_TOKEN*): "With the
-exception of `workflow_dispatch` and `repository_dispatch`, other
-`GITHUB_TOKEN`-triggered events do not create workflow runs at all." The
-merge-queue docs don't say who the queue's push to `main` is attributed to, so
-don't assume it either way. Enqueue with a real identity, and verify on the
-first queue merge (step 11):
+**Yes. Measured 2026-09-27 on the first queue merge (step 11).** The deploy
+chain is `push: main` → `build-image` → `deploy-prod` (`workflow_run`).
 
-- `auto-enroll-merge.yml` enqueues with `MERGE_ATTRIBUTION_TOKEN || github.token`.
-  With the PAT re-minted for the org (step 0.4), the queue entry, its
-  `merge_group` runs and the final push all carry a user identity. That is the
-  path ADR-004 measured working for plain auto-merge (#2275: two push runs 3 s
-  after merge).
-- If the PAT is missing, enrollment falls back to `GITHUB_TOKEN`. That risks
-  no `merge_group` runs (so the queue times out) and no push runs (so nothing
-  deploys). Treat an empty secret as a cutover failure.
-- If step 11 still shows no `event=push` run, `release-reconcile.yml` redeploys
-  undeployed `main` on its 15-minute schedule. The immediate fix is
+- The queue's push to `main` is attributed to `github-merge-queue[bot]`, and it
+  starts push workflows. That is unlike `GITHUB_TOKEN`, whose events "do not
+  create workflow runs at all" (*Events that trigger workflows*).
+- #4062, #4059 and #4067 merged as one batch. The queue fast-forwarded `main`
+  to the merge-group commit (#4062's merge sha, `86dd375b`, was its group
+  commit) and raised two push events. On `5364c2f8`:
+  - Build and publish image (run 36302492671, `event=push`) decided `build`.
+    Its served..head range covered the whole batch.
+  - `deploy-prod` (run 36302831420, triggered by `github-merge-queue[bot]`)
+    shipped. The receipt check printed "production reports 5364c2f8a901,
+    which contains 5364c2f8a901d57757f2561ec2244430a8a9df58".
+- **A user identity is needed only to ENTER the queue.** An auto-merge armed
+  by `GITHUB_TOKEN` never enqueues. On 2026-09-27, #4059 and #4062 sat CLEAN,
+  with every check green, and the queue stayed empty until a user enqueued
+  them. `auto-enroll-merge.yml` therefore enrolls with `MERGE_ATTRIBUTION_TOKEN`
+  only. It fails loudly if that is empty or if the enroller isn't a `User`
+  (#4069).
+- If a queue merge ever shows no `event=push` run, `release-reconcile.yml`
+  redeploys undeployed `main` on its 15-minute schedule. The immediate fix is
   `gh workflow run build-image.yml --repo TinyAssets/TinyAssets --ref main`.
-  Then add `merge_group` handling to `build-image.yml` in a follow-up PR.
 
 ## Why `Diff scope declared` passes through in the queue
 

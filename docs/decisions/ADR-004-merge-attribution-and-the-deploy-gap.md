@@ -86,10 +86,14 @@ Options, ranked, with what each costs:
    is personal-account owned. Adopting it means transferring the repo, changing
    protection, and adapting all three required checks for `merge_group` —
    `policy` and `Diff scope declared` currently read PR-specific payloads.
-   *Adopted 2026-09-27:* the repo moves to the `TinyAssets` org and the
-   required checks gain `merge_group` triggers. Enrollment still has to run on
-   the PAT, and the PAT has to be re-minted for the org as its resource owner.
-   See `docs/ops/org-transfer-runbook.md`.
+   *Adopted 2026-09-27:* the repo moved to the `TinyAssets` org and the
+   required checks gained `merge_group` triggers. Measured on the first queue
+   merge: the queue's push to `main` is attributed to
+   `github-merge-queue[bot]` and DOES trigger `build-image` → `deploy-prod`.
+   So with the queue on, the deploy gap this ADR describes is closed by the
+   queue itself. A user identity (the PAT) is needed only to *enter* the queue,
+   because an auto-merge armed by `GITHUB_TOKEN` never enqueues. Evidence is in
+   `docs/ops/org-transfer-runbook.md`.
 4. **Drop `strict`** — removes the re-sync race with a one-line protection
    change, but lets checks pass against a stale base so incompatible PR
    combinations can merge. On an automated high-frequency merge path that
