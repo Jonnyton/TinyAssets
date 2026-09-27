@@ -149,13 +149,6 @@ INDIRECTLY_SCOPED_TABLES = frozenset({
 #: Not personal data: published commons, provenance, and money already settled.
 #: These keep their rows even when they carry a principal column.
 PRESERVED_TABLES = frozenset({
-    # Platform-wide evidence that a model id works on a KIND of source. It carries
-    # no user, universe or connection column at all -- see
-    # `tinyassets/storage/learned_models.py` -- so there is nothing of this
-    # person in it, and removing a row would take a working model away from every
-    # other user of that kind of source. Preserved, and listed here so a future
-    # column cannot silently make it deletable.
-    "learned_models",
     "author_definitions",
     "branch_definitions",
     "goals",

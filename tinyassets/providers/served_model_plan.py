@@ -41,7 +41,6 @@ from tinyassets.providers.model_preferences import ModelPreferences, capture_pre
 from tinyassets.providers.wire_dialects import same_dialect
 from tinyassets.storage.current_home import check_current_home
 from tinyassets.storage.learned_models import (
-    LEARNED_MODEL_BASIS,
     LEARNED_SOURCE_KIND,
     OWN_VERIFIED_BASIS,
 )
@@ -50,10 +49,14 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 
 _LOG = logging.getLogger("universe_server.served_model_plan")
 
+#: An id from the reviewed public list for this source kind. A public claim that the
+#: id EXISTS, never permission to use it.
+PUBLIC_LISTED_BASIS = "publicly_listed"
+
 #: Bases that are OFFERS to grant, never admitted candidates. One set, read by the
-#: split below and by api/model_options' legacy plan, so a third basis cannot be
-#: added in one place and admitted in the other.
-_CANDIDATE_ONLY_BASES = frozenset({LEARNED_MODEL_BASIS, OWN_VERIFIED_BASIS})
+#: split below and by api/model_options' legacy plan, so a third basis cannot be added
+#: in one place and admitted in the other.
+_CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
 
 
 def _assert_plan_snapshot(snapshot):
@@ -212,8 +215,10 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
     # keeping it.
     models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, owner,
                                           already=models))
-    # ...then what the PLATFORM published, which needed two distinct owners.
-    models.extend(_catalog_candidates(base, LEARNED_SOURCE_KIND, already=models))
+    # ...then the reviewed public list for this kind of source, which is how a newly
+    # released model reaches everyone without a patch: a PR adds the id, review is the
+    # moderation, and every universe on that source kind sees it next read.
+    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, already=models))
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
     if provider is None or not provider.is_available():
@@ -237,11 +242,11 @@ def _own_verified_candidates(base, source_kind, owner, *, already):
     published rows, these are candidates and NOT admitted: the owner may have
     narrowed their model access since, and re-granting is the existing one-tap path.
     """
-    from tinyassets.storage.learned_models import LearnedModelCatalog
+    from tinyassets.storage.learned_models import OwnModelHistory
 
     have = {model.model_id for model in already}
     try:
-        rows = LearnedModelCatalog(base).evidence_ids(source_kind, owner)
+        rows = OwnModelHistory(base).ids_for(source_kind, owner)
     except (OSError, sqlite3.DatabaseError, ValueError) as exc:
         _LOG.warning("own verified model evidence unreadable: %s", type(exc).__name__)
         return ()
@@ -253,33 +258,26 @@ def _own_verified_candidates(base, source_kind, owner, *, already):
     )
 
 
-def _catalog_candidates(base, source_kind, *, already):
-    """Newest-per-class learned ids for one source KIND, minus what is already listed.
+def _listed_candidates(source_kind, *, already):
+    """Newest-per-class ids from the reviewed public list for one source kind.
 
-    A UNION, never a filter: an id this universe already has is left exactly as it
-    was, whatever the catalog knows about newer siblings. A user happily using an
-    older model does not lose it because someone else verified a newer one
-    (founder: "if someone wants to use opus 4.6 that would only be on their list").
+    A UNION, never a filter: an id this universe already has keeps its own row and its
+    own basis, whatever the list says. A user happily running an older model does not
+    lose it because a newer one was listed.
+
+    A malformed list file RAISES rather than reading as empty -- a corrupted list must
+    not silently shrink every user's picker with no signal -- and the caller's own
+    except clause turns that into a source-level reason the repair screen can show.
     """
-    from tinyassets.storage.learned_models import LearnedModelCatalog
+    from tinyassets.providers.public_model_lists import newest_listed_cached
 
     have = {model.model_id for model in already}
-    try:
-        rows = LearnedModelCatalog(base).newest_for_source_kind(source_kind)
-    except (OSError, sqlite3.DatabaseError, ValueError) as exc:
-        # NARROW on purpose. A bare ``except Exception`` here disguised corruption
-        # and programming errors as "nothing learned yet" (Codex on #4028), which
-        # is the silent-fallback shape Hard Rule 8 forbids. These three are the
-        # honest "the catalog is not readable right now" cases -- a missing or
-        # locked file, a damaged database, a malformed row -- and even they are
-        # logged rather than swallowed. Anything else is a bug and must surface.
-        _LOG.warning("learned model catalog unreadable: %s", type(exc).__name__)
-        return ()
     return tuple(
-        Model(row.model_id, True, frozenset({"text"}),
+        Model(model_id, True, frozenset({"text"}),
               pricing=Pricing("fresh", unmetered=True),
-              availability_basis=LEARNED_MODEL_BASIS)
-        for row in rows if row.model_id and row.model_id not in have
+              availability_basis=PUBLIC_LISTED_BASIS)
+        for model_id in newest_listed_cached(source_kind)
+        if model_id and model_id not in have
     )
 
 

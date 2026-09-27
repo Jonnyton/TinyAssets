@@ -1,72 +1,67 @@
 ## Why
 
-A user cannot select a model the platform has never heard of, and today the
-platform only hears about a model in two ways: the source enumerates its own
-catalogue, or the owner declared the id by hand. A source that cannot enumerate —
-a subscription CLI is the common case — therefore shows a stale hand-declared
-set, labelled "owner-selected; availability not verified". Founder, 2026-09-26:
-*"i cant seem to select fable as a user for the llm"*, against a `claude-code`
-source listing only a provider default plus two older ids.
-
-Shipping a patch whenever a vendor releases a model is the wrong fix and the
-founder said so: *"we also should not have to put out new patches for providers
-so make sure it is made provider agnostic always updates for users once one user
-adds the newly available model"*.
-
-So the platform learns. When a model id **succeeds in a real call** through a
-source, that fact is worth keeping, and it is worth keeping for everyone with
-that kind of source — one user's successful call is evidence the id exists and
-works, and that evidence carries nothing private.
+A source that cannot call its provider's own list-models endpoint offered only the ids
+its owner had typed by hand, so a newly released model was invisible until someone
+shipped a patch. Founder, 2026-09-26: *"i cant seem to select fable as a user for the
+llm"*, against a subscription CLI source listing a provider default and two older ids.
 
 ## What Changes
 
-- A platform-wide **learned model catalog**: exactly three fields per row —
-  source kind, model id, first-verified time. No user id, no universe id, no
-  prompt, no reply, no credential. A failed or merely-declared id never enters.
-- Recording happens only where a call has already **succeeded** through the
-  source, so the catalog is a record of verified facts, not of attempts.
-- A universe whose source kind appears in the catalog sees, from the catalog,
-  **only the newest model of each class** for that source kind. A user's own
-  previously verified ids stay on their own list and are **unioned on top, never
-  removed** — a model someone is happily using does not disappear because a newer
-  one was verified elsewhere.
-- **Class and newest are derived, with no vendor or model names in platform
-  code.** Class is the model id with version tokens removed (numeric runs and
-  date stamps); a named suffix such as `-sol` is part of the class, not the
-  version, so it reads as a distinct line rather than a newer version of another.
-  Newest is the highest version tuple, tie-broken by first-verified time. One
-  function, table-driven tests. An id whose shape cannot be parsed is its own
-  class — never a guess.
-- New model availability reaches every user with no release: the first verified
-  call publishes the id for that source kind.
+Two mechanisms, split by what is actually public.
+
+**A typed model id is PERSONAL, forever.** An id an owner typed and successfully used
+stays on that owner's own list and is never shared with anyone. That is what keeps an
+account-bearing selector -- a Bedrock ARN with an account number in it, a personal
+deployment name -- private: there is no mechanism that could move it.
+
+**A PROVIDER-LISTED id is shared.** Where a connected source can call its provider's
+own list endpoint, its ids already arrive through discovery as `executor_enumerated`
+and are public by construction; nothing new is needed. Where a source has NO list
+endpoint, a reviewed file in the repo carries the load: `models/<source-kind>.json`,
+which users' agents propose additions to by ordinary PR. A CI check refuses a malformed
+file; review and merge are the moderation. Only the newest of each class is offered,
+derived from the id's own shape.
+
+A listed id is a claim that the id EXISTS, never permission to use it: it appears under
+the picker's "needs access" group until the owner grants access, with the existing
+one-tap grant.
+
+## What this REPLACES
+
+Three earlier designs in this change directory, each built and then refuted:
+
+* a charset deciding whether an id was safe to share -- it admitted account-bearing
+  ARNs and rejected documented selectors like `sonnet[1m]`, and no character rule can
+  separate the two without the per-vendor knowledge this capability forbids;
+* a distinct-owner threshold -- "used by two owners" does not imply "public", because
+  two colleagues share one organisation's private deployment id;
+* attestation plus peer confirmation -- it worked, and was over-built for the problem
+  (founder: *"that might be over design for the model sharing"*).
+
+The shared database table, the pending state, the confirmations and the promotion
+threshold are all deleted. What survives is the owner's own list, the union into the
+picker, and the newest-per-class derivation.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `learned-model-catalog`: platform-wide verified model facts, contributed by
-  successful calls and surfaced newest-per-class per source kind.
+None. Sharing is a reviewed file plus the existing PR flow.
 
 ### Modified Capabilities
 
-- `provider-capability-negotiation`: a source that cannot enumerate its catalogue
-  gains catalog-contributed candidates instead of only owner-declared ids.
+- `provider-capability-negotiation`: a source with no list endpoint gains candidates
+  from a reviewed public list instead of only owner-declared ids.
 
 ## Impact
 
-Storage: one new platform-scoped table. Surface: additional rows in the existing
-advisory model options document — no new MCP handle, no change to what the
-selection API accepts. Authority: unchanged; a catalog row is evidence that an id
-exists, never permission to use it, and serving still requires accepted model
-access for that universe.
+Storage: one per-owner table, classified as its owner's data in both deletion sweeps.
+Surface: additional rows in the existing advisory model options document -- no new MCP
+handle, and no change to what the selection API accepts. Authority: unchanged; an
+agent-opened PR to a list file lands through ordinary review with no automatic merge
+path and no new permission.
 
-**The cross-user floor.** This is the first store that is deliberately shared
-across users, so the invariant is explicit and tested: the catalog carries no
-user data of any kind. Reading it tells you which model ids work for a kind of
-source; it cannot tell you who used one, when they used it, from which universe,
-or what they asked. The only time recorded is when the id was FIRST verified
-platform-wide, which is a property of the id, not of a person.
+The cross-user floor is met by construction rather than by a check: nothing a user
+types is ever shared, and what IS shared is a file a human merged.
 
-Owner: Claude Code; branch `claude/model-catalog`. Split from the model-dropdown
-UI change (#4027) on the lead's instruction: that one is UI-only, this one is
-storage shape plus a cross-user surface and carries its own Codex round.
+Owner: Claude Code; branch `claude/model-catalog`.

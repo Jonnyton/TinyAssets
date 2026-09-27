@@ -191,10 +191,10 @@ class AgentTurnCoordinator:
         An empty requested id is the provider default -- a position, not a model --
         so there is nothing to teach anyone and it is skipped.
 
-        Recording is not publishing. The id becomes visible to other users only
-        once ``PROMOTION_OWNERS`` distinct owners have made it work (founder,
-        2026-09-26), which is what keeps a private account-bearing selector on its
-        own owner's list forever.
+        Recording is not publishing, and here there is no publishing at all: a typed
+        id is PERSONAL forever (founder, 2026-09-26). That is what keeps a private
+        account-bearing selector on its own owner's list and nowhere else. Ids reach
+        everyone by a different route entirely -- a reviewed file in the repo.
         """
         from tinyassets.storage.learned_models import (
             LEARNED_SOURCE_KIND,

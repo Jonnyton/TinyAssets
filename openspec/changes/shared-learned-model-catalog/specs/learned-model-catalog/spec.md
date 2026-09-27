@@ -1,113 +1,66 @@
-# Learned Model Catalog
+# Public Model Lists
 
 ## Purpose
 
-Platform-wide verified model facts, contributed by successful calls and surfaced
-newest-per-class per source kind, so new model availability reaches every user
-with no release and no per-provider code.
+Let a newly released model reach every user of a source kind with no release and no
+per-provider code, while a model id a user typed themselves never leaves them.
 
 ## Requirements
 
-### Requirement: An id becomes public only at the distinct-owner threshold
-Verified model ids SHALL be recorded per OWNER in a private table, and published to
-a shared table only once at least two DISTINCT OWNERS have verified the same id for
-the same source kind. Two universes of the SAME owner SHALL count as one owner. A
-model id verified by only one owner SHALL remain on that owner's own list and SHALL
-NOT be visible to any other user. The promotion count SHALL NOT be returned to any
-caller, and no API SHALL return another owner's evidence.
-
-This threshold, not a rule about the characters in an id, is what keeps a private
-selector private: an identifier embedding one account, tenant or personal
-deployment cannot be reached by a second owner, so it can never cross it.
+### Requirement: A typed model id is personal forever
+A model id an owner supplied and successfully used SHALL be recorded for that owner and
+SHALL remain available on that owner's own candidate list. It SHALL NOT be shared with
+any other user, published, aggregated, or counted across owners by any mechanism. Two
+universes of the same owner SHALL be one owner. The record SHALL be classified as that
+owner's data and removed with their account.
 
 #### Scenario: An account-bearing selector
-- **WHEN** one owner repeatedly verifies a selector that embeds their own account id
-- **THEN** it is never published and no other user can see it
-- **AND** it remains available on that owner's own list
+- **WHEN** an owner uses a model selector that embeds their own account or deployment
+- **THEN** it stays on their own list however often it is used
+- **AND** no other user can see it, because no mechanism exists to share it
 
-#### Scenario: Two owners verify the same id
-- **WHEN** a second, different owner verifies an id already recorded by another
-- **THEN** it is published for every universe with that source kind
-- **AND** the published first-verified time is the earliest across those owners
+#### Scenario: The id stops being declared
+- **WHEN** an owner's accepted model access no longer names an id that previously worked
+- **THEN** it is still offered on their own list, marked as their own history
 
-#### Scenario: One owner, several universes
-- **WHEN** the same owner verifies an id from more than one of their universes
-- **THEN** it is still one owner and the id is not published
+### Requirement: Sharing is a reviewed list, per source kind
+For a source kind whose sources cannot enumerate their own models, the platform SHALL
+read candidate ids from a tracked file per source kind. The file SHALL hold only the
+source kind and a sorted, duplicate-free list of well-formed model identifiers, and no
+user, universe, credential, URL or price. A malformed file SHALL be refused rather than
+read as empty. Additions SHALL arrive by ordinary pull request with no automatic merge
+path and no additional authority; a check SHALL refuse a malformed file in CI.
 
-### Requirement: The shared catalog carries no user data
-The shared table SHALL store exactly three fields per row: source kind, model id, and
-the time the id was first verified. It SHALL NOT store a user id, a universe id, a
-connection id, a prompt, a reply, a credential, or any count of how many users
-verified an id. A repeat publication of a known id SHALL be a no-op. The private
-evidence table SHALL be classified as its owner's data in both the scoped-reset and
-account-deletion sweeps; a published id SHALL survive its contributors' deletion,
-because the published row is a fact about the id.
+#### Scenario: A newly released model
+- **WHEN** a pull request adding its id to the source kind's list is merged
+- **THEN** every universe on that source kind offers it on the next read, with no release
 
-#### Scenario: A row is recorded
-- **WHEN** a model id is verified through a source and recorded
-- **THEN** the stored row names only the source kind, the model id and the first-verified time
-- **AND** no user id, universe id, prompt or credential appears anywhere in the store
+#### Scenario: A malformed list
+- **WHEN** a list file is invalid JSON, unsorted, duplicated, or holds a bad identifier
+- **THEN** the read raises rather than silently offering fewer models
+- **AND** the CI check names the file and the reason
 
-#### Scenario: The same id is verified again by another user
-- **WHEN** an id already in the catalog is verified again
-- **THEN** the existing row is unchanged and nothing accumulates
+#### Scenario: A source that lists its own models
+- **WHEN** a source can call its provider's list endpoint
+- **THEN** its ids arrive through discovery and need no entry in any file
 
-### Requirement: Only a universe's own verified request enters the catalog
-A model id SHALL enter the catalog only from a call that succeeded through the
-source, and SHALL be the id the universe ITSELF REQUESTED -- never a value the
-source reported, which it controls. A refusal, a capacity hold, an unconfirmed transport outcome, and an
-owner-declared id SHALL record nothing. Failing to record SHALL NOT fail the call
-that succeeded.
+### Requirement: A listed id is evidence, never permission
+A candidate contributed by a public list or by an owner's own history SHALL NOT be an
+admitted candidate and SHALL NOT enter the routing order until that universe's accepted
+model access includes it. Each SHALL carry an availability basis distinguishing it from
+the source's own verified models, and a reason stating that access is required. Only the
+newest model of each class SHALL be offered from a list, derived from the identifier's
+own shape with no vendor or model names in platform code.
 
-#### Scenario: A turn succeeds
-- **WHEN** a call completes through a source with a known model id
-- **THEN** that id is recorded for the source's kind
+#### Scenario: Before the grant
+- **WHEN** a listed id is not in the universe's accepted model access
+- **THEN** it is visible, not admitted, carries a needs-access reason, and is absent
+  from the routing order
 
-#### Scenario: A turn is refused, held, or unconfirmed
-- **WHEN** the call did not succeed
-- **THEN** the catalog is unchanged
+#### Scenario: After the grant
+- **WHEN** the owner grants access to that id
+- **THEN** it becomes an admitted candidate and a turn can run on it
 
-#### Scenario: The catalog cannot be written
-- **WHEN** recording fails
-- **THEN** the call that succeeded still returns its result
-
-### Requirement: Class and newest are derived with no vendor knowledge
-Model class SHALL be derived by removing version tokens from the model id, where a
-version token is a run of digits, a dotted run of digits, or a date stamp. Every
-other token, including a named suffix, SHALL be part of the class. Newest SHALL be
-the highest version tuple, tie-broken by the earlier first-verified time. An id
-whose shape cannot be parsed SHALL be its own class. Platform code SHALL contain no
-vendor or model names.
-
-#### Scenario: Two versions of one line
-- **WHEN** two ids differ only in their numeric version tokens
-- **THEN** they share a class and only the higher version is contributed
-
-#### Scenario: A named suffix
-- **WHEN** two ids share a stem but differ by a named suffix
-- **THEN** they are different classes and both are contributed
-
-#### Scenario: An unparseable id
-- **WHEN** an id carries no recognisable version token
-- **THEN** it is its own class and is always contributed
-
-### Requirement: The catalog adds candidates and never removes a user's own
-For each source kind on a universe's connections, the newest model of each class
-SHALL be contributed to that universe's model options, unioned with the ids the
-universe already had. A contributed row SHALL carry an availability basis
-distinguishing it from this connection's own verified models, and SHALL grant no
-access: serving still requires that universe's accepted model access. The
-currently-saved model SHALL remain marked as current even when the union does not
-contain it and even when it is not usable.
-
-#### Scenario: A newer sibling is verified elsewhere
-- **WHEN** the catalog learns a newer model in the same class as one a user already has
-- **THEN** the user's own id remains on their list and the newer one is added
-
-#### Scenario: A source that cannot enumerate
-- **WHEN** a source cannot enumerate its own catalogue
-- **THEN** its options include the catalog's newest-per-class for that source kind
-
-#### Scenario: The saved model is unusable
-- **WHEN** the saved default is absent from the union or is not usable
-- **THEN** it is still shown as the current choice and is not offered as a fresh pick
+#### Scenario: Two versions of one line are listed
+- **WHEN** a list holds both an older and a newer id of the same class
+- **THEN** only the newer is offered, and the older remains in the file

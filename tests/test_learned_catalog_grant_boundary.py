@@ -27,7 +27,7 @@ from tests import test_served_model_preferences as integration
 from tinyassets.api.custom_agents import custom_agents
 from tinyassets.providers import served_model_plan
 from tinyassets.providers.model_options import model_options_document
-from tinyassets.storage.learned_models import LearnedModelCatalog
+from tinyassets.storage.learned_models import OwnModelHistory
 
 rig = integration.rig
 reader = integration.reader
@@ -61,32 +61,43 @@ def _row(document, model_id):
     return None
 
 
-def _learn(configured, model_id=LEARNED_ID):
-    """PUBLISH an id through the real path, so the assertions below are not vacuous.
+def _listed(tmp_path, *model_ids):
+    """Write a reviewed public list, the way a merged PR would.
 
-    Publication is now the owner's attestation plus two OTHER owners' confirmations
-    (founder, 2026-09-26). Recording alone publishes nothing, so a one-call fixture
-    here would leave the shared table empty and every assertion trivially true.
+    This is the whole sharing mechanism now: a tracked file per source kind. No
+    database, no attestation, no confirmers -- see models/README.md.
     """
-    catalog = LearnedModelCatalog(configured.rig.base)
-    catalog.record(source_kind="subscription", model_id=model_id,
-                   owner_user_id="some-other-owner")
-    catalog.attest(source_kind="subscription", model_id=model_id,
-                   evidence_url="https://docs.example.com/releases",
-                   snippet=f"Announcing {model_id}.", owner_user_id="some-other-owner")
-    state = None
-    for confirmer in ("a-third-owner", "a-fourth-owner"):
-        state = catalog.confirm(source_kind="subscription", model_id=model_id,
-                                snippet=f"{model_id} is available",
-                                owner_user_id=confirmer,
-                                confirming_model_id="bootstrap-model-1")
-    assert state == "published", "the fixture must actually publish, or this proves nothing"
+    import json
+
+    directory = tmp_path / "models"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "subscription.json").write_text(
+        json.dumps({"source_kind": "subscription", "models": sorted(model_ids)}),
+        encoding="utf-8")
+    return directory
+
+
+def _learn(monkeypatch, configured, model_id=LEARNED_ID):
+    """Put an id on the shared list for this source kind.
+
+    Redirects the loader's directory through monkeypatch so it is UNDONE after the
+    test. Rebinding the module attribute directly leaked the fixture's directory into
+    every later module in the same process and broke tests that read the shipped list.
+    """
+    import tinyassets.providers.public_model_lists as lists
+
+    directory = _listed(configured.rig.base, model_id)
+    monkeypatch.setattr(lists, "lists_directory", lambda: directory)
+    # Cleared on the way in so this test sees its own file. No teardown needed: the
+    # cache key is (source kind, mtime), and monkeypatch restores the directory, so a
+    # later read resolves the real path and misses on a different mtime.
+    lists._cached.cache_clear()
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_a_learned_id_is_visible_but_not_admitted_until_access_is_granted(configured):
+def test_a_learned_id_is_visible_but_not_admitted_until_access_is_granted(configured, monkeypatch):
     """THE artefact. The owner granted only the provider default."""
-    _learn(configured)
+    _learn(monkeypatch, configured)
     document = _document(configured)
 
     row = _row(document, LEARNED_ID)
@@ -104,17 +115,18 @@ def test_a_learned_id_is_visible_but_not_admitted_until_access_is_granted(config
     # chain is a turn that fails later for no reason the user can see.
     assert all(item["model_id"] != LEARNED_ID for item in document["order"])
     # And it says honestly where its evidence came from.
-    assert row["availability_basis"] == "platform_verified_elsewhere"
+    assert row["availability_basis"] == "publicly_listed"
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_the_owner_granting_access_makes_a_learned_id_selectable_and_runnable(configured):
+def test_granting_access_makes_a_listed_id_selectable_and_runnable(
+        configured, monkeypatch):
     """The other half: after the grant it is a real choice, and a turn runs on it.
 
     This is the founder's actual ask -- "i cant seem to select fable" -- so the
     test has to end with a turn that ran, not with a flag.
     """
-    _learn(configured)
+    _learn(monkeypatch, configured)
     from tinyassets.provider_assignment_manifest import ModelAccess
 
     # The one-tap grant the access sheet offers, as its payload: add the learned id
@@ -138,12 +150,12 @@ def test_the_owner_granting_access_makes_a_learned_id_selectable_and_runnable(co
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_an_owner_declared_id_keeps_its_own_admission(configured):
+def test_an_owner_declared_id_keeps_its_own_admission(configured, monkeypatch):
     """The fix must not demote what the owner already granted.
 
     Without this, "exclude contributed ids" could pass by excluding everything.
     """
-    _learn(configured)
+    _learn(monkeypatch, configured)
     document = _document(configured)
     default = _row(document, "")
     assert default is not None and default["in_candidate_catalog"] is True, (
@@ -174,15 +186,10 @@ class _Coordinator:
         )
 
 
-def _learned(base):
-    """What is PUBLISHED, i.e. visible to other users."""
-    return [row.model_id for row in
-            LearnedModelCatalog(base).for_source_kind("subscription")]
-
-
 def _own_evidence(base, owner):
+    """One owner's own ids. There is no "published" counterpart any more."""
     return [row.model_id for row in
-            LearnedModelCatalog(base).evidence_ids("subscription", owner)]
+            OwnModelHistory(base).ids_for("subscription", owner)]
 
 
 def test_only_the_id_this_universe_REQUESTED_is_recorded(tmp_path):
@@ -202,9 +209,7 @@ def test_only_the_id_this_universe_REQUESTED_is_recorded(tmp_path):
     _Coordinator(tmp_path, "vendor-line-4-7")._learn_verified_model(response)
     assert _own_evidence(tmp_path, "owner-alice") == ["vendor-line-4-7"], (
         "the recorded id must be the one this universe asked for, so a source cannot "
-        "inject a string into the publication path at all")
-    # And recording still publishes nothing on its own.
-    assert _learned(tmp_path) == []
+        "put a string of its choosing on the owner's list")
 
 
 
@@ -219,7 +224,7 @@ def test_a_provider_default_position_teaches_nobody_anything(tmp_path):
     (tmp_path / "u-models").mkdir(parents=True, exist_ok=True)
     _Coordinator(tmp_path, "")._learn_verified_model(
         SimpleNamespace(reported_model="provider-default", model="provider-default"))
-    assert _learned(tmp_path) == []
+    assert _own_evidence(tmp_path, "owner-alice") == []
 
 
 def test_a_requested_id_that_is_not_an_identifier_is_refused_not_raised(tmp_path):
@@ -230,7 +235,6 @@ def test_a_requested_id_that_is_not_an_identifier_is_refused_not_raised(tmp_path
     # No exception: the hook is on the reply path of a turn that already succeeded.
     _Coordinator(tmp_path, "not an identifier")._learn_verified_model(
         SimpleNamespace(reported_model="", model=""))
-    assert _learned(tmp_path) == []
     assert _own_evidence(tmp_path, "owner-alice") == []
 
 
@@ -248,7 +252,7 @@ def test_the_legacy_plan_also_refuses_to_admit_a_learned_id(configured_legacy_pr
 
     from tinyassets.api.model_options import _granted_only
     from tinyassets.providers.model_policy import ConnectionModels, Model, Pricing
-    from tinyassets.storage.learned_models import LEARNED_MODEL_BASIS
+    from tinyassets.providers.served_model_plan import PUBLIC_LISTED_BASIS
 
     granted = Model("owner-typed-4-6", True, frozenset({"text"}),
                     pricing=Pricing("fresh", unmetered=True),
@@ -258,7 +262,7 @@ def test_the_legacy_plan_also_refuses_to_admit_a_learned_id(configured_legacy_pr
                     availability_basis="executor_default")
     learned = Model("vendor-newline-9-1", True, frozenset({"text"}),
                    pricing=Pricing("fresh", unmetered=True),
-                   availability_basis=LEARNED_MODEL_BASIS)
+                   availability_basis=PUBLIC_LISTED_BASIS)
     connection = ConnectionModels(
         "a-cli", "native-subscription:a-cli", "subscription", "fresh", True, True,
         (default, granted, learned), default_model_id="",
@@ -322,7 +326,7 @@ def test_a_solo_owners_own_verified_id_stays_on_their_own_list(configured):
     """
     # One owner only: nothing here is published, so this cannot pass via the
     # shared table.
-    LearnedModelCatalog(configured.rig.base).record(
+    OwnModelHistory(configured.rig.base).record(
         source_kind="subscription", model_id=SOLO_ID, owner_user_id="owner")
     document = _document(configured)
 
@@ -334,16 +338,9 @@ def test_a_solo_owners_own_verified_id_stays_on_their_own_list(configured):
     # Still a candidate, not an admitted one: their access may have narrowed since.
     assert row["in_candidate_catalog"] is False
     assert {reason["reason"] for reason in row["reasons"]} == {"model_access_optin_required"}
-    # It reached them WITHOUT being published, which is the whole point.
-    assert LearnedModelCatalog(configured.rig.base).for_source_kind("subscription") == []
+    # It is on no shared list: a typed id is personal forever.
+    from tinyassets.providers.public_model_lists import read_list
+
+    assert SOLO_ID not in read_list("subscription")
 
 
-@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_another_owners_evidence_never_reaches_this_list(configured):
-    """The other half: their own history only, not anyone else's."""
-    LearnedModelCatalog(configured.rig.base).record(
-        source_kind="subscription", model_id="someone-elses-private-7",
-        owner_user_id="a-different-owner")
-    document = _document(configured)
-    assert _row(document, "someone-elses-private-7") is None, (
-        "one owner's unpublished evidence must never appear in another's list")
