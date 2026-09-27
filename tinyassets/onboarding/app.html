@@ -369,6 +369,16 @@
             <details id="connect-other" class="connect-other">
               <summary>Other ways to connect</summary>
               <div id="connect-shapes" class="connect-shapes" role="group" aria-label="How to connect"></div>
+              <div id="connect-signin" hidden>
+                <span id="signin-help" class="rtab-help"></span>
+                <button id="btn-signin-start" class="btn btn--primary" type="button">Sign in</button>
+                <div id="signin-code" class="rtab-note" hidden>
+                  <span id="signin-code-value"></span>
+                  <a id="signin-code-link" class="rtab-link" data-external target="_blank"
+                    rel="noreferrer noopener">Open the sign-in page</a>
+                </div>
+                <div id="signin-result" class="rtab-note" role="status" aria-live="polite"></div>
+              </div>
               <div id="connect-endpoint" hidden>
                 <span id="endpoint-help" class="rtab-help"></span>
                 <label class="rtab-label">Model URL
@@ -5151,9 +5161,15 @@
     $("btn-rail-add").addEventListener("click",toggleAddKey);
     $("connect-shapes").addEventListener("click",e=>{
       const b=e.target&&e.target.closest?e.target.closest("button[data-shape]"):null;
-      if(b) ConnectShapes.select(b.dataset.shape);
+      if(b){
+        // Leaving the sign-in shape stops its poll. A timer left running against a
+        // flow the owner walked away from would keep polling the source forever.
+        if(b.dataset.shape!=="sign_in") SignInConnect.reset();
+        ConnectShapes.select(b.dataset.shape);
+      }
     });
     $("btn-endpoint-connect").addEventListener("click",connectEndpoint);
+    $("btn-signin-start").addEventListener("click",()=>SignInConnect.start());
     $("btn-signout").addEventListener("click",async()=>{ MCP.endLogin(); sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
     // Legal links open OUTSIDE the app. In the Capacitor shell a plain <a> would
     // navigate the WebView itself to tinyassets.io and strand the user with no
@@ -5805,9 +5821,17 @@
   // The platform's own model-setup entry: the one `connect` action with the
   // shapes the rail completes itself. An older page's "connect_llm" is the same
   // entry without them.
+  // Any card the connect PANEL answers, not just the one setup card. A reconnect
+  // card carries the same `connect` action with its own request id, and matching on
+  // the id alone sent it to the generic Accept/Deny controls instead -- so the card
+  // rendered and its sign-in control never did (Codex refute-review, P1 #5).
+  const RECONNECT_REQUEST_PREFIX="reconnect-source:";
   function isSetupRequest(req){
     const a=req&&req.action;
-    return !!a&&req.request_id===CONNECT_REQUEST_ID&&(a.type==="connect_llm"||(a.type==="connect"&&!!a.setup));
+    if(!a) return false;
+    const own=req.request_id===CONNECT_REQUEST_ID
+      ||(typeof req.request_id==="string"&&req.request_id.startsWith(RECONNECT_REQUEST_PREFIX));
+    return own&&(a.type==="connect_llm"||(a.type==="connect"&&!!a.setup));
   }
   // While unpowered, exactly one pending free-model confirmation is the second
   // half of the setup in progress, so it is finished inside the setup request.
@@ -5912,6 +5936,9 @@
       why.className = "rtab-why"; why.textContent = req.body; box.appendChild(why);
     }
     const setup = (req.action && req.action.setup) || {};
+    // Which source this card is FOR. A reconnect card names it; the setup card does
+    // not, because it is connecting something new.
+    SignInConnect.configure(setup.service || "", setup.universe_id || "");
     HostedModelConnect.configure(req.sticky ? (setup.primary || null) : null);
     ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
     const panel = $("connect-panel");
@@ -5925,8 +5952,9 @@
   // unpowered universe has no model to infer with - and no provider is named.
   const ConnectShapes={
     shape:"",
-    labels:{api_key:"API key", local:"Your own server"},
+    labels:{api_key:"API key", local:"Your own server", sign_in:"Sign in again"},
     help:{
+      sign_in:"Your saved sign-in for this source is no longer accepted. Signing in again replaces it — there is nothing to copy or paste.",
       api_key:"From your provider's API page: the chat URL, a key, and the model id.",
       local:"A model server you run must be reachable over HTTPS, for example through a tunnel. TinyAssets can't reach localhost.",
     },
@@ -5983,9 +6011,127 @@
       this.shape=shape;
       Array.from($("connect-shapes").children||[]).forEach(b=>
         b.setAttribute("aria-pressed",String(b.dataset.shape===shape)));
-      $("connect-endpoint").hidden=!shape;
-      $("endpoint-help").textContent=this.help[shape]||"";
+      // `sign_in` has NO fields: the owner types nothing, which is the whole point
+      // of it. So the field box stays hidden for it and its own box appears instead.
+      const signin = shape==="sign_in";
+      $("connect-endpoint").hidden=!shape||signin;
+      $("connect-signin").hidden=!signin;
+      $("signin-help").textContent=signin?(this.help[shape]||""):"";
+      $("endpoint-help").textContent=signin?"":(this.help[shape]||"");
       $("endpoint-url").placeholder=this.placeholders[shape]||"";
+    },
+  };
+
+  // The sign-in shape's client. The daemon already had both routes and NO client
+  // called them, so a source whose saved sign-in died had no way back through the
+  // app -- the founder hit exactly that. Start, show the code, poll, and let the
+  // daemon deposit; the credential never touches this page.
+  const SignInConnect={
+    flow:"", timer:0, busy:false, blips:0, epoch:0, service:"", universe:"",
+    // Which source the visible card is for. Set from the card, so a reconnect for one
+    // source can never start a flow for another: switching cards resets whatever was
+    // in flight before the new service is adopted.
+    configure(service,universe){
+      const next=String(service||""), where=String(universe||"");
+      if(next!==this.service||where!==this.universe){
+        this.reset(); this.service=next; this.universe=where;
+      }
+    },
+    // A dropped poll is retried, but not forever. Without a cap an offline client
+    // kept a timer alive against a flow that had already expired, polling for as
+    // long as the page stayed open -- found by the test for this, not in review.
+    MAX_BLIPS:5,
+    status(text){ $("signin-result").textContent=text; },
+    stop(){ if(this.timer){ clearTimeout(this.timer); this.timer=0; } },
+    reset(){
+      // The epoch is what cancels work already in flight. Clearing the timer is not
+      // enough: a `start` whose response had not arrived yet came back AFTER the
+      // reset, restored the abandoned flow and scheduled polling against it, with
+      // `busy` false so a second start could run alongside (Codex refute-review,
+      // P1 #6). Same generation pattern the model dialog above already uses.
+      this.epoch++;
+      this.stop(); this.flow=""; this.busy=false; this.blips=0;
+      $("signin-code").hidden=true; $("signin-code-value").textContent="";
+      this.status("");
+    },
+    async start(){
+      if(this.busy||this.flow) return;
+      if(!this.service){
+        // No card named a source, so there is nothing to sign back in to. The route
+        // would pick the user's home universe and deposit for its own service, which
+        // is not necessarily what the owner is looking at.
+        this.status("Open this from the connection that needs signing in again.");
+        return;
+      }
+      this.busy=true; this.status("Starting sign-in…");
+      const epoch=this.epoch;
+      try{
+        const h=authHeaders(); h["Content-Type"]="application/json";
+        const r=await fetch("/mcp/app/openai/device/start",{method:"POST",headers:h,
+          credentials:"same-origin",
+          // The source the card names, and the home the rail is showing. The route
+          // validates both rather than choosing for us; before this it always picked
+          // the user's home and deposited for its own service, so it could not repair
+          // another universe's connection (Codex refute-review, P1 #5).
+          // The source AND the universe the card names. The route resolves the
+          // universe against this caller's admin ACL and refuses one they do not
+          // administer, so naming it here asks rather than asserts.
+          body:JSON.stringify({service:this.service,universe_id:this.universe})});
+        const doc=await r.json().catch(()=>({}));
+        if(epoch!==this.epoch) return;   // reset while this was in flight: drop it
+        if(!r.ok||!doc.flow){
+          // The route's own code, never a guessed cause.
+          this.busy=false;
+          this.status("Sign-in could not be started ("+(doc.error||r.status)+"). Try again.");
+          return;
+        }
+        this.flow=doc.flow; this.blips=0;
+        $("signin-code-value").textContent="Your code: "+(doc.user_code||"");
+        if(doc.verification_url) $("signin-code-link").href=doc.verification_url;
+        $("signin-code").hidden=false;
+        this.status("Enter the code on the sign-in page, then come back here.");
+        // The interval the SOURCE asked for, floored so a bad value cannot spin.
+        const wait=Math.max(2,Math.min(Number(doc.interval)||5,30))*1000;
+        this.timer=setTimeout(()=>this.poll(wait,epoch),wait);
+      }catch(_e){
+        if(epoch!==this.epoch) return;
+        this.busy=false; this.status("Sign-in could not be started. Check your connection.");
+      }
+    },
+    async poll(wait,epoch){
+      if(!this.flow||epoch!==this.epoch) return;
+      try{
+        const h=authHeaders(); h["Content-Type"]="application/json";
+        const r=await fetch("/mcp/app/openai/device/poll",{method:"POST",headers:h,
+          credentials:"same-origin",body:JSON.stringify({flow:this.flow})});
+        const doc=await r.json().catch(()=>({}));
+        if(epoch!==this.epoch) return;
+        if(doc.status==="pending"){
+          this.blips=0;   // the route answered, so whatever came before is over
+          this.timer=setTimeout(()=>this.poll(wait,epoch),wait);
+          return;
+        }
+        this.reset();
+        if(doc.status==="connected"){
+          this.status("Signed in. Your universe can use this connection again.");
+          // The card is derived from the stored rejection, which the deposit just
+          // cleared, so refreshing the rail is what makes it disappear.
+          if(typeof refreshRail==="function") refreshRail();
+          return;
+        }
+        this.status("Sign-in did not complete ("+(doc.error||r.status)+"). Try again.");
+      }catch(_e){
+        if(epoch!==this.epoch) return;
+        // A single failed poll is not a failed sign-in; keep waiting -- up to the
+        // cap, after which the owner is told rather than left watching a spinner.
+        this.blips+=1;
+        if(this.blips>this.MAX_BLIPS){
+          this.reset();
+          this.status("Sign-in could not be checked. Check your connection and try again.");
+          return;
+        }
+        this.timer=setTimeout(()=>this.poll(wait,epoch),wait);
+      }
     },
   };
 
