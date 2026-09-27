@@ -256,8 +256,16 @@ def test_real_pytest_shards_cover_every_test_exactly_once(tmp_path):
     (proj / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     (proj / "tests" / "conftest.py").write_text("", encoding="utf-8")
     expected = set()
-    for i in range(12):
-        rel = f"tests/{'sub/' if i % 3 == 0 else ''}test_m{i}.py"
+    # Directories named like modules: pytest asks the hook about a directory
+    # before descending, so hashing one would split it from its own files.
+    # Several are needed so at least one directory and its file hash apart.
+    rels = [f"tests/{'sub/' if i % 3 == 0 else ''}test_m{i}.py" for i in range(12)]
+    rels += [f"tests/gen{i}.py/test_inner{i}.py" for i in range(6)]
+    assert any(
+        gate.shard_of(r.rsplit("/", 1)[0], 3) != gate.shard_of(r, 3) for r in rels[12:]
+    ), "no directory/file pair hashes apart; the regression case is not exercised"
+    for rel in rels:
+        (proj / rel).parent.mkdir(parents=True, exist_ok=True)
         (proj / rel).write_text(
             "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n", encoding="utf-8"
         )
@@ -313,8 +321,10 @@ def shards(tmp_path):
     return d
 
 
-def _aggregate(shards: Path, expected: int = 3, min_ran: int = 1) -> int:
-    return gate.aggregate(shards, expected, shards.parent / "junit.xml", min_ran)
+def _aggregate(
+    shards: Path, expected: int = 3, min_ran: int = 1, result: str = "success"
+) -> int:
+    return gate.aggregate(shards, expected, shards.parent / "junit.xml", min_ran, result)
 
 
 def test_aggregate_passes_when_every_shard_is_present_and_clean(shards):
@@ -324,6 +334,14 @@ def test_aggregate_passes_when_every_shard_is_present_and_clean(shards):
     # The union is written back as ONE junit, the shape --emit-quarantine reads.
     _, ran = gate.collect_outcomes(shards.parent / "junit.xml")
     assert len(ran) == 12
+
+
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", ""])
+def test_aggregate_fails_when_the_shard_jobs_did_not_succeed(shards, result):
+    """Complete, clean files do not outvote a failed shard job."""
+    for i in (1, 2, 3):
+        _shard(shards, i, 3, _cases(f"test_s{i}", 4))
+    assert _aggregate(shards, result=result) == 1
 
 
 def test_aggregate_fails_on_a_missing_shard(shards, capsys):

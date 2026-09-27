@@ -475,10 +475,20 @@ def test_aggregate_waits_for_every_shard_and_reads_their_results() -> None:
     assert "ci_required_tests.py --aggregate" in run
     # The job result is checked as well as the files: a shard that failed
     # AFTER writing a clean-looking junit must still fail the gate.
+    # The failure itself is unit-tested in test_ci_required_tests; here, pin
+    # that the real job result reaches it and that the step's exit code is the
+    # script's (a single command, nothing after it that could exit 0).
     assert decide["env"]["SHARD_RESULT"] == "${{ needs.required-tests-shard.result }}"
-    assert '[ "$SHARD_RESULT" != "success" ]' in run
-    code = "\n".join(line for line in run.splitlines() if not line.lstrip().startswith("#"))
-    assert "continue-on-error" not in decide and "|| true" not in code
+    assert '--shard-job-result "$SHARD_RESULT"' in run
+    code = [
+        line.strip()
+        for line in run.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert code[0].startswith("python scripts/ci_required_tests.py --aggregate"), code
+    assert all(line.startswith("--") for line in code[1:]), code
+    assert all(line.endswith("\\") for line in code[:-1]), code
+    assert "continue-on-error" not in decide
 
 
 def test_shards_run_the_reviewed_runner_with_the_shard_floor() -> None:

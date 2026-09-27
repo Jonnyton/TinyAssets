@@ -244,18 +244,13 @@ jobs:
         env:
           SHARD_RESULT: ${{ needs.required-tests-shard.result }}
         run: |
-          # A shard job that did not succeed fails the gate even if its files
-          # somehow look complete. The script separately fails on a MISSING,
-          # duplicated or truncated shard, so neither check alone decides.
+          # The script fails on a shard job result other than success (even if
+          # its files look complete) and on a MISSING, duplicated, truncated or
+          # differently-split shard, before the quarantine comparison.
           # No `|| true`, no `continue-on-error` — the exit code IS the gate.
-          status=0
           python scripts/ci_required_tests.py --aggregate shards/ \
-            --expect-shards 6 --junit junit.xml --min-ran 10700 || status=$?
-          if [ "$SHARD_RESULT" != "success" ]; then
-            echo "::error::shard jobs concluded '$SHARD_RESULT', not 'success'"
-            exit 1
-          fi
-          exit "$status"
+            --expect-shards 6 --shard-job-result "$SHARD_RESULT" \
+            --junit junit.xml --min-ran 10700
 
       - name: Upload junit
         if: always()

@@ -106,7 +106,10 @@ def pytest_addoption(parser) -> None:  # pragma: no cover - exercised via pytest
 def pytest_ignore_collect(collection_path, config):
     """Skip test files owned by another shard. Directories and conftests pass."""
     raw = config.getoption("--ci-shard", default=None)
-    if not raw or collection_path.suffix != ".py":
+    # is_file() FIRST: a directory can be named `x.py`, and pytest asks about
+    # directories before descending. Hashing one would hand the directory to
+    # one shard and its files to others, and no shard would run them.
+    if not raw or not collection_path.is_file() or collection_path.suffix != ".py":
         return None
     if collection_path.name in ("conftest.py", "__init__.py"):
         return None
@@ -339,7 +342,9 @@ def evaluate(
     return 0
 
 
-def aggregate(directory: Path, expected: int, junit_out: Path, min_ran: int) -> int:
+def aggregate(
+    directory: Path, expected: int, junit_out: Path, min_ran: int, shard_job_result: str
+) -> int:
     """Merge shard results and decide the gate. Every shard must be accounted for.
 
     A lost shard must never read as green: a shard whose job died before
@@ -349,6 +354,10 @@ def aggregate(directory: Path, expected: int, junit_out: Path, min_ran: int) -> 
     comparison, and each shard's truncation signals fail the whole gate.
     """
     problems: list[str] = []
+    if shard_job_result != "success":
+        # Checked here, not in shell, so it is unit-tested: a shard that failed
+        # AFTER writing clean-looking results must still fail the gate.
+        problems.append(f"shard jobs concluded {shard_job_result!r}, not 'success'")
     manifests: dict[int, dict] = {}
     for path in sorted(directory.rglob("*.json")):
         try:
@@ -509,14 +518,29 @@ def main() -> int:
         metavar="N",
         help="With --aggregate: the shard count the workflow matrix runs.",
     )
+    ap.add_argument(
+        "--shard-job-result",
+        metavar="RESULT",
+        help=(
+            "With --aggregate: `needs.<shard job>.result`. Anything but "
+            "`success` fails the gate, whatever the shard files say."
+        ),
+    )
     args = ap.parse_args()
 
     if args.shard and args.profile != "shard":
         raise SystemExit("--shard requires --profile shard (the per-shard floor).")
     if args.profile == "shard" and not args.shard:
         raise SystemExit("--profile shard is only meaningful with --shard I/N.")
-    if args.aggregate and (args.shard or not args.expect_shards or args.expect_shards < 1):
-        raise SystemExit("--aggregate needs --expect-shards N >= 1 and no --shard.")
+    if args.aggregate and (
+        args.shard
+        or not args.expect_shards
+        or args.expect_shards < 1
+        or args.shard_job_result is None
+    ):
+        raise SystemExit(
+            "--aggregate needs --expect-shards N >= 1, --shard-job-result, and no --shard."
+        )
 
     # BEFORE running anything. argparse can only check the LOWEST profile floor
     # (the profile is not known while parsing), so `--profile full --min-ran
@@ -545,7 +569,13 @@ def main() -> int:
         return 0
 
     if args.aggregate:
-        return aggregate(Path(args.aggregate), args.expect_shards, Path(args.junit), args.min_ran)
+        return aggregate(
+            Path(args.aggregate),
+            args.expect_shards,
+            Path(args.junit),
+            args.min_ran,
+            args.shard_job_result,
+        )
 
     junit = Path(args.junit)
     manifest = junit.with_suffix(".json")
