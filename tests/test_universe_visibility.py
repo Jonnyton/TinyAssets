@@ -114,10 +114,27 @@ def _authenticate(user_id: str) -> None:
     auth_middleware("ok")
 
 
+def _own(base: Path, *names: str) -> None:
+    """Give each directory an OWNER, which is what makes it a universe.
+
+    Since 2026-09-02 a universe exists because an ownership row names it, not
+    because a folder is on disk (``tests/test_a_universe_needs_an_owner.py``), so
+    a directory this module means as a real universe has to have one. A
+    ``founder_home`` binding is used rather than an ACL grant because a universe
+    with zero ACL rows is PUBLIC, and flipping these fixtures to private would
+    change what every gate below is asserting.
+    """
+    from tinyassets.daemon_server import set_founder_home
+
+    for name in names:
+        set_founder_home(base, founder_sub=f"test-owner::{name}", universe_id=name)
+
+
 def _make_universe(base: Path, uid: str, *, level: str | None = None) -> Path:
     udir = base / uid
     udir.mkdir(parents=True, exist_ok=True)
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    _own(base, uid)
     if level is not None:
         vis.set_universe_visibility(uid, level)
     return udir
@@ -180,6 +197,7 @@ class TestResolutionFailClosed:
 
     def test_no_rules_row_is_undeclared_and_closed(self, base):
         (base / "u").mkdir()  # dir exists, no rules row at all
+        _own(base, "u")
         assert vis.universe_visibility("u") is vis.CLOSED
 
     def test_rules_row_without_explicit_level_is_closed(self, base):
@@ -530,13 +548,21 @@ class TestSiblingReadLeaks:
 class TestForgeProbes:
     def test_forge_unlisted_excluded_from_enumeration(self, base):
         _make_universe(base, "forged")
+        # An OWNED universe, so the only thing that can withhold it here is the
+        # visibility gate. Since 2026-09-02 a directory is a universe because an
+        # ownership row names it, so an ungranted directory would be withheld by
+        # the ownership predicate and this probe would prove nothing.
+        grant_universe_access(
+            base, universe_id="forged", actor_id="workos|forge-owner",
+            permission="admin", granted_by="tests",
+        )
         _forge_metadata_raw(base, "forged", json.dumps({"visibility_level": "unlisted"}))
         _anonymous()
         out = json.loads(us._action_list_universes())
         assert "forged" not in {u["id"] for u in out["universes"]}
         # RED without the gate: the on-disk dir IS a listable universe; only the
         # visibility gate withholds it.
-        assert us._is_listable_universe_dir(base / "forged") is True
+        assert us._is_listable_universe_dir(base / "forged", {"forged"}) is True
         assert vis.universe_visibility("forged") is vis.UNLISTED
 
     def test_forge_metadata_only_withholds_content(self, base):
@@ -598,6 +624,7 @@ class TestStartupGate:
     def test_gate_declares_undeclared_universes(self, base):
         _make_universe(base, "reg")   # registered rules row, no explicit level
         (base / "bare").mkdir()       # bare dir, no rules row at all
+        _own(base, "bare")            # ...but an owner, or it is not a universe
         assert not vis.is_declared("reg") and not vis.is_declared("bare")
 
         summary = vis.run_visibility_startup_gate()

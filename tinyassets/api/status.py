@@ -1114,13 +1114,25 @@ def _platform_has_work() -> bool:
     recent activity is not. Reading it per-universe was possible only for a
     caller who could inspect a universe, which the canary principal cannot.
     """
-    from tinyassets.api.universe import _read_json
+    from tinyassets.api.universe import _is_listable_universe_dir, _read_json
 
     base = _base_path()
     if not base.is_dir():
         return False
+    # Owned only. A boolean leaks no ids, which is why this was initially judged
+    # out of scope -- wrongly: an unowned archive's stale `work_targets.json`
+    # made the platform report work, and `scripts/last_activity_canary.py` then
+    # skips its healthy-idleness handling and raises a stale-activity alarm for a
+    # platform that is simply quiet (Codex review 2026-09-26, P2).
+    from tinyassets.daemon_server import owned_universe_ids
+
+    try:
+        owned = owned_universe_ids(base)
+    except Exception:  # noqa: BLE001 - observability never breaks a read
+        _LOGGER.exception("ownership lookup failed while checking platform work")
+        return False
     for child in sorted(base.iterdir()):
-        if not child.is_dir() or child.name.startswith("."):
+        if not _is_listable_universe_dir(child, owned):
             continue
         try:
             targets = _read_json(child / "work_targets.json")
