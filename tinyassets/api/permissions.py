@@ -285,12 +285,17 @@ def owner_run_identity(base: Any, universe_id: str, principal_id: str) -> Iterat
     actor. While universes defaulted public that was invisible; private-by-default
     (2026-09-26) turned it into a refusal of the owner's own content.
 
-    Binds ``principal_id`` read-only only when it is a named principal holding
-    the ``admin`` grant on ``universe_id`` -- the same ownership signal the
+    Binds ``principal_id`` only when it is a named principal holding the
+    ``admin`` grant on ``universe_id`` -- the same ownership signal the
     interlocutor tier uses. Anyone else leaves the context exactly as it was, so
     this can never widen what another user or a visitor reads. When the owner is
     ALREADY the bound actor (their live request), that identity is kept rather
-    than narrowed to read-only. Yields whether the owner is the actor inside.
+    than narrowed. Yields whether the owner is the actor inside.
+
+    This is the owner, not a read-only view of them: ACL gates check the stored
+    grant, not ``capabilities``, so the run may write its own universe too. That
+    is intended (founder 2026-09-27, "same as itself"); the capabilities bound
+    only scoped dispatch (``require_action_scope``) to read/list.
     """
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity

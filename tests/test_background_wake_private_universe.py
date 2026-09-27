@@ -272,3 +272,57 @@ def test_an_owner_already_bound_is_not_narrowed(base, signed_in):
     with owner_run_identity(base, UID, OWNER) as bound:
         assert bound is True
         assert mw.current_identity_or_none() is live
+
+
+# --- what the owner's run PERSISTS stays the owner's -------------------------
+#
+# Codex round 2 on #4060, P1: a queue task records the OWNER as its actor and
+# the universe only in `queue_universe_id`. The run read gate derived the
+# universe from the actor alone, so it classed these runs as "not universe
+# data" and let any signed-in user list them and read their output -- which,
+# now that the owner's run reads its private universe, is private content.
+
+
+def _persisted_owner_run(base: Path) -> str:
+    from tinyassets.runs import create_run, update_run_status
+
+    run_id = create_run(
+        base, branch_def_id="branch-a", thread_id="t-a", inputs={},
+        actor=OWNER, queue_universe_id=UID,
+    )
+    update_run_status(base, run_id, status="completed", output={"brief": SECRET})
+    return run_id
+
+
+def _reads_as(signed_in, who: str, run_id: str) -> str:
+    from tinyassets.api import runs as api_runs
+
+    signed_in(who)
+    return "\n".join([
+        api_runs._action_get_run({"run_id": run_id}),
+        api_runs._action_get_run_output({"run_id": run_id}),
+        api_runs._action_list_runs({}),
+        api_runs._action_query_runs({"branch_def_id": "branch-a", "select": ["brief"]}),
+    ])
+
+
+def test_another_user_cannot_read_what_the_owners_background_run_persisted(
+    base, signed_in,
+):
+    _home(base, UID, OWNER)
+    _home(base, "u-other-home", OTHER)
+    run_id = _persisted_owner_run(base)
+
+    seen = _reads_as(signed_in, OTHER, run_id)
+
+    assert SECRET not in seen
+    from tinyassets.api import runs as api_runs
+
+    assert run_id not in api_runs._action_list_runs({})
+
+
+def test_the_owner_still_reads_what_their_background_run_persisted(base, signed_in):
+    _home(base, UID, OWNER)
+    run_id = _persisted_owner_run(base)
+
+    assert SECRET in _reads_as(signed_in, OWNER, run_id)

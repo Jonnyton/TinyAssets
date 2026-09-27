@@ -6782,7 +6782,7 @@ def query_runs(
 
     with _connect(base_path) as conn:
         rows = conn.execute(
-            f"SELECT run_id, branch_def_id, status, actor, "
+            f"SELECT run_id, branch_def_id, status, actor, queue_universe_id, "
             f"started_at, finished_at, output_json "
             f"FROM runs {where} "
             f"ORDER BY started_at DESC LIMIT ?",
