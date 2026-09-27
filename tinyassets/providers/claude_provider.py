@@ -459,6 +459,14 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     }
     root = data_dir()
     server_env["TINYASSETS_DATA_DIR"] = str(root)
+    # The ceiling on a single tool result scales with the window the result has
+    # to fit in (``engine_result_bounds``). Passed only when this turn's model is
+    # known; the persistent HTTP transport below outlives any one turn's choice,
+    # so it runs on the safe default instead of a stale number.
+    selected = getattr(config, "selected_model", None)
+    context_tokens = getattr(selected, "context_tokens", None)
+    if type(context_tokens) is int and context_tokens > 0:
+        server_env["TINYASSETS_ENGINE_MODEL_CONTEXT_TOKENS"] = str(context_tokens)
     # Transport selection. The claude CLI's STDIO MCP spawn is flaky in the
     # headless served subprocess (verified live 2026-08-19: the server process
     # never launched, CLI reported "still connecting"); HTTP MCP connects

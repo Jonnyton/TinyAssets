@@ -48,7 +48,7 @@ def _seed(tmp_path: Path) -> Path:
 
     # A universe needs an OWNER to be readable at all (2026-09-02).
     own_universe(tmp_path, UID)
-    vis.set_universe_visibility(UID, "public")
+    vis.set_universe_visibility(UID, "public", source="owner")
     return udir
 
 
