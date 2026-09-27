@@ -28,5 +28,10 @@ shape is the shape.
       options document for the grant boundary, 44 for the id-shape derivation. Four
       existing modules had assertions over the FULL offered list made basis-specific or
       admitted-specific, which is more precise than they were.
-- [ ] 10. One Codex round (cross-user surface), rebase after #4037, then sync the spec
-      delta and archive.
+- [x] 10. One Codex round: no cross-user disclosure and no grant bypass; one P1 (the
+      lists never reached production -- Dockerfile, plugin staging and the build
+      path-filter all omitted `models/`, so the feature would have shipped silently
+      dead) and four P2s, all fixed. Merged #4037 and pinned the seam between the listed
+      rows and its compact projection.
+- [x] 11. Spec synced into `openspec/specs/provider-capability-negotiation/spec.md`
+      (three requirements) and this change archived.
