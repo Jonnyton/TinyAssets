@@ -81,6 +81,24 @@ logger = logging.getLogger("universe_server")
 _MCP_TEXT_CONTENT_MAX_CHARS = 6000
 _OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
 
+#: Seconds the server keeps serving in-flight requests after SIGTERM, before it
+#: closes them and exits. A served ``converse`` IS an in-flight HTTP request, so
+#: this is what decides whether a deploy lets the founder's turn finish.
+#:
+#: Chosen, not defaulted. Uvicorn's default is to wait indefinitely, which reads
+#: generous and is worthless here: docker recreates the container with the
+#: service's ``stop_grace_period``, and with that key absent the effective bound
+#: was docker's 10-second default -- so a turn was SIGKILLed 10s into a drain
+#: nobody had chosen (founder, 2026-09-26: a deploy killed an in-flight turn, and
+#: the same shape twice on 2026-08-29).
+#:
+#: Must stay BELOW ``deploy/compose.yml``'s ``daemon.stop_grace_period`` so the
+#: server closes its own connections and exits cleanly rather than being
+#: SIGKILLed mid-write. ``tests/test_deploy_drains_in_flight_turns.py`` pins that
+#: ordering, because the two numbers live in different files and nothing else
+#: relates them.
+GRACEFUL_SHUTDOWN_S = 290.0
+
 
 def _oauth_security_schemes() -> list[dict[str, object]]:
     """A fresh OAuth-only tool policy for OpenAI and standard MCP clients."""
@@ -4566,7 +4584,10 @@ def main(
             assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
             assigned_consumer.start()
         try:
-            uvicorn.run(app, host=host, port=port)
+            uvicorn.run(
+                app, host=host, port=port,
+                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+            )
         finally:
             if assigned_consumer is not None:
                 assigned_consumer.stop()

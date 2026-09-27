@@ -56,6 +56,16 @@ ENV_FILE = "/etc/tinyassets/env"
 IMAGE = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "b" * 64
 
 
+def _script_int(name: str) -> int:
+    """One `NAME=<int>` assignment read out of the deploy script."""
+    match = re.search(rf"^{name}=(\d+)$", SCRIPT.read_text(encoding="utf-8"), re.M)
+    assert match, f"{name} is no longer a plain integer assignment in {SCRIPT.name}"
+    return int(match.group(1))
+
+
+MIN_STOP_GRACE_S = _script_int("MIN_DAEMON_STOP_GRACE_S")
+
+
 def _validator_source() -> str:
     """The validator as it ships, lifted out of the shell heredoc."""
     text = SCRIPT.read_text(encoding="utf-8")
@@ -211,6 +221,11 @@ def _validate(
             "RUNTIME_DIR": RUNTIME,
             "EXPECT_IMAGE": IMAGE,
             "ENV_FILE": ENV_FILE,
+            # Read from the script, never a literal here: the validator reads it
+            # with `os.environ[...]` on purpose, so a shell that forgets to export
+            # it fails loudly, and a test that hard-coded the number would keep
+            # passing after the deploy script changed it.
+            "MIN_DAEMON_STOP_GRACE_S": str(MIN_STOP_GRACE_S),
             "SYSTEMROOT": "C:/Windows",  # cpython needs this on Windows
             "PATH": "",
         },
@@ -449,3 +464,95 @@ def test_the_logs_sidecar_may_not_forward_to_its_own_listener(tmp_path: Path):
     result = _validate(tmp_path, config, _source())
     assert result.returncode == 1
     assert "expected 'journald'" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# the drain bound (2026-09-26)
+#
+# `stop_grace_period` decides whether a deploy lets the founder's turn finish.
+# With the key ABSENT the bound is docker's 10-second default, which is what cut
+# two live turns off mid-flight -- so losing it must refuse the bundle rather
+# than quietly returning to 10 seconds. Read from the SOURCE, not either render:
+# compose normalizes durations and this check must not depend on which form this
+# version emits.
+# ---------------------------------------------------------------------------
+
+
+def _without_grace(source: str) -> str:
+    stripped = re.sub(r"^\s*stop_grace_period:.*\n", "", source, count=1, flags=re.M)
+    assert stripped != source, "the shipped compose.yml no longer declares it here"
+    return stripped
+
+
+def test_losing_the_stop_grace_period_is_refused(tmp_path: Path):
+    result = _validate(tmp_path, _render(), _without_grace(_source()))
+    assert result.returncode == 1
+    assert "stop_grace_period" in result.stderr
+    assert "10s default" in result.stderr, (
+        "the refusal must say what absence MEANS, not just that a key is missing")
+
+
+@pytest.mark.parametrize("value", ["10s", "299s", "4m"])
+def test_a_grace_below_the_floor_is_refused(tmp_path: Path, value: str):
+    """4m is 240s -- a minutes form still has to clear the floor."""
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "must be at least" in result.stderr
+
+
+@pytest.mark.parametrize("value", ["300s", "300", "5m", "600s", "10m"])
+def test_a_grace_at_or_above_the_floor_is_accepted(tmp_path: Path, value: str):
+    """Every duration form compose accepts that clears the floor."""
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("value", ["1h30m", "later", "300ms", "-300s"])
+def test_a_duration_this_check_cannot_read_is_refused_not_assumed(
+    tmp_path: Path, value: str,
+):
+    """Refuse rather than guess. `1h30m` clears the floor in reality, and is
+    still refused: a bound this check cannot READ is one it cannot enforce, and
+    silently accepting it is how the key came to mean 10 seconds in the first
+    place. Widen the parser deliberately if a compound form is ever wanted.
+    """
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "not a plain seconds/minutes duration" in result.stderr
+
+
+def test_a_second_grace_declaration_is_refused(tmp_path: Path):
+    """Two keys in one mapping: YAML keeps the last, so a check reading the first
+    would enforce a bound the daemon does not have."""
+    source = re.sub(
+        r"^(\s*)(stop_grace_period:.*)$", r"\g<1>\g<2>\n\g<1>stop_grace_period: 10s",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "exactly one" in result.stderr
+
+
+def test_another_services_grace_does_not_satisfy_the_daemons(tmp_path: Path):
+    """The block walker is anchored on services.daemon; a sidecar's key must not
+    stand in for it."""
+    source = _without_grace(_source()).replace(
+        "    container_name: tinyassets-tunnel",
+        "    container_name: tinyassets-tunnel\n    stop_grace_period: 300s",
+        1,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "stop_grace_period" in result.stderr

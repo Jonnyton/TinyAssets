@@ -70,6 +70,30 @@ services:
     container_name: tinyassets-daemon
     restart: unless-stopped
     logging: *tinyassets_log_forwarding
+    # How long a recreate lets in-flight turns finish before SIGKILL.
+    #
+    # `up -d` recreates this container on every deploy, and with this key ABSENT
+    # the bound was docker's 10-second default -- so a deploy killed whatever
+    # turn was running 10 seconds into a drain nobody had chosen. Live twice:
+    # 2026-08-29 (a five-step GitHub job at 07:26:04Z) and 2026-09-26 (the row
+    # left behind read "thinking" for 35 minutes).
+    #
+    # The server already cooperates: uvicorn's graceful shutdown stops accepting
+    # connections and waits for in-flight requests, and a served `converse` IS an
+    # in-flight request. So this key is the whole fix; no drain endpoint is needed.
+    #
+    # 300s, not the 3600s a granted turn may run: `deploy-prod.yml` gives the
+    # whole job 15 minutes including build, validation, snapshot and health
+    # checks, so a grace long enough for the longest turns cannot fit and would
+    # make every merge wait on one user. This saves conversational and most
+    # tool-using turns; anything longer is still killed, and the startup
+    # reconciliation (tinyassets/agent_turn_reconcile.py) is what makes THAT
+    # truthful instead of silent. Partial by design, and honest about it.
+    #
+    # `deploy_fail_safe.sh` asserts this key is present and at least this large,
+    # so a staged bundle that loses it FAILS rather than silently returning to
+    # 10 seconds. Keep it above universe_server.GRACEFUL_SHUTDOWN_S.
+    stop_grace_period: 300s
     # Bound the daemon so a memory runaway kills the CONTAINER, not the host.
     #
     # `docker inspect` reported mem_limit=0 (2026-08-28): the daemon could consume the
