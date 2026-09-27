@@ -103,6 +103,9 @@ def test_get_status_exposes_fingerprint_not_authenticated_subject(
     base = tmp_path / "output"
     universe = base / "status-uni"
     universe.mkdir(parents=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(universe.parent, universe.name)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "status-uni")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "env-actor")

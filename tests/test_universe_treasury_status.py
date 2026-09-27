@@ -28,6 +28,20 @@ def test_universe_treasury_status_is_read_only(monkeypatch, tmp_path: Path) -> N
         )
         conn.commit()
 
+    # A universe with an OWNER, created BEFORE the mtime snapshot: a universe
+    # nobody owns is not readable at all (2026-09-02), and writing the ownership
+    # row is itself a database write, so it must precede the baseline this test
+    # compares against.
+    from tests.conftest import own_universe
+
+    # The env var as well as the patched `universe_api._base_path`: the default
+    # resolver lives in `api.helpers` and reads the env, so patching one module's
+    # `_base_path` leaves the ownership lookup pointed at the host's real root.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    (tmp_path / "u-treasury").mkdir()
+    own_universe(tmp_path, "u-treasury")
+    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "u-treasury")
+
     before = (tmp_path / DB_FILENAME).stat().st_mtime_ns
     result = json.loads(universe_api._universe_impl(
         action="treasury_status",

@@ -73,6 +73,9 @@ class TestGetStatusMissingDataFiles:
         """get_status includes missing_data_files key."""
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         (tmp_path / "default-universe").mkdir()
+        from tests.conftest import own_universe
+        # A universe needs an OWNER to be readable at all (2026-09-02).
+        own_universe(tmp_path, "default-universe")
 
         from tinyassets.universe_server import get_status
         raw = get_status("default-universe")
@@ -85,6 +88,9 @@ class TestGetStatusMissingDataFiles:
         """In a normal checkout, no data files are missing."""
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         (tmp_path / "default-universe").mkdir()
+        from tests.conftest import own_universe
+        # A universe needs an OWNER to be readable at all (2026-09-02).
+        own_universe(tmp_path, "default-universe")
 
         from tinyassets.universe_server import get_status
         raw = get_status("default-universe")
