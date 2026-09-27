@@ -137,6 +137,9 @@ def test_get_status_response_includes_auto_ship_health(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-universe")
     universe = tmp_path / "test-universe"
     universe.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(universe.parent, universe.name)
     record_attempt(universe, _attempt(1, ship_status="opened"))
 
     response = json.loads(get_status("test-universe"))

@@ -205,6 +205,9 @@ def test_get_status_surfaces_self_model_not_fed_purpose(
     uid = "persona_universe"
     udir = tmp_path / uid
     udir.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, uid)
     # an authored soul exists, but its purpose is operational, NOT the identity.
     write_universe_soul(
         udir,
@@ -249,6 +252,9 @@ def test_get_status_persona_block_present_when_no_soul(
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     uid = "soulless_universe"
     (tmp_path / uid).mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, uid)
 
     from tinyassets.api.status import get_status
 

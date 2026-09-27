@@ -909,8 +909,19 @@ def _branch_dependents(
     from tinyassets.universe_soul import read_universe_soul
 
     loops: list[str] = []
+    # Owned only. This names universe ids back to the caller, and an archived
+    # or restored directory still carries the `soul.md` it was archived with --
+    # so an unowned directory used to be reported as a live dependent, which is
+    # both a wrong refusal and an id it should never have seen (2026-09-02: a
+    # universe exists because an ownership row says so).
+    from tinyassets.api.universe import _is_listable_universe_dir
+    from tinyassets.daemon_server import owned_universe_ids
+
     try:
-        universe_dirs = [d for d in Path(base).iterdir() if d.is_dir()]
+        owned = owned_universe_ids(base)
+        universe_dirs = [
+            d for d in Path(base).iterdir() if _is_listable_universe_dir(d, owned)
+        ]
     except OSError:
         universe_dirs = []
     for udir in sorted(universe_dirs):
@@ -3974,16 +3985,28 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
 
 
 def _resolve_udir() -> Path:
-    """Return the active universe directory (best-effort; never raises)."""
+    """Return the active universe directory (best-effort; never raises).
+
+    Currently has no callers. Routed through ownership anyway: an unrouted
+    default resolver sitting in the tree is a trap for whoever wires it up next,
+    and "a directory that sorts first" is exactly the resolution that handed out
+    operational stores as universes (2026-09-02).
+    """
     try:
         uid = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
         if not uid:
+            from tinyassets.api.helpers import _owned_universe_dir_name
+
             base = _base_path()
             if base.is_dir():
-                # Skip dot-dirs: the data root also holds operational state such as
-                # account deletion's transient `.deleting/` staging dir.
+                # Dot-dirs and unowned directories are both skipped: the data
+                # root also holds operational state such as account deletion's
+                # transient `.deleting/` staging dir.
                 subdirs = sorted(
-                    d for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")
+                    d for d in base.iterdir()
+                    if d.is_dir()
+                    and not d.name.startswith(".")
+                    and _owned_universe_dir_name(base, d.name)
                 )
                 if subdirs:
                     uid = subdirs[0].name
