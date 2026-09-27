@@ -327,29 +327,147 @@ def test_the_real_execute_binds_the_owner_for_the_runs_nodes(
 # -- Deploys, retries and usage ----------------------------------------------------
 
 
-def test_a_wake_killed_mid_run_is_retried_under_a_new_key(
+def _register_cadence(base: Path, created: datetime) -> Automation:
+    """A 10-minute cadence on the private branch, registered as its owner."""
+    with identity_context(Identity(user_id=OWNER, username=OWNER)):
+        return register_automation(
+            base, universe_id=UNIVERSE, owner_principal_id=OWNER, name="c",
+            branch_def_id=PRIVATE, interval_seconds=600, now=created,
+        )
+
+
+def _claim_and_die(base: Path, now: datetime) -> tuple[Automation, str]:
+    """What a process killed before its run started leaves: a claim, nothing else."""
+    [(wake, key)] = due_automations(base, universe_id=UNIVERSE, now=now)
+    assert AutomationStore(base).claim_attempt(wake.automation_id, key, now=now)
+    return wake, key
+
+
+def _retry_at(base: Path, automation_id: str) -> datetime:
+    row = AutomationStore(base).get(automation_id)
+    return datetime.fromisoformat(row.last_claimed_at) + timedelta(
+        seconds=ONCE_RETRY_SECONDS
+    )
+
+
+def test_a_wake_killed_before_its_run_is_retried_under_a_new_key(
     home: Path, monkeypatch
 ) -> None:
     graph = _Graph()
     monkeypatch.setattr(automations_module, "_execute", graph)
     _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
-    [(wake, first_key)] = due_automations(
-        home, universe_id=UNIVERSE, now=datetime.now(timezone.utc)
-    )
-    # What a killed process leaves: a claim and nothing else.
-    assert AutomationStore(home).claim_attempt(
-        wake.automation_id, first_key, now=datetime.now(timezone.utc)
-    )
+    wake, first_key = _claim_and_die(home, datetime.now(timezone.utc))
     _poll(home)
-    assert graph.calls == []  # the retry key is ONCE_RETRY_SECONDS later
-    # Time passes rather than the row moving: the retry key is derived from the
-    # stored not_before plus a step per attempt, never the claimed key again.
-    retry_at = datetime.fromisoformat(first_key) + timedelta(seconds=ONCE_RETRY_SECONDS)
+    assert graph.calls == []  # the retry key is ONCE_RETRY_SECONDS after the claim
+    retry_at = _retry_at(home, wake.automation_id)
     [(again, retry_key)] = due_automations(home, universe_id=UNIVERSE, now=retry_at)
-    assert retry_key != first_key
+    assert retry_key > first_key
     assert run_due_automation(home, again, retry_key, now=retry_at).startswith("ok:ran:")
     assert graph.calls == [PRIVATE]
     assert AutomationStore(home).get(wake.automation_id).retired_at
+
+
+def test_a_wake_is_spent_the_moment_its_run_exists(home: Path, monkeypatch) -> None:
+    """Refute P1 #8: a process killed MID-run must not repeat the work later."""
+    seen: list[str] = []
+
+    def running(base_path, automation, provider_call, branch, inputs,
+                on_run_started=None):
+        on_run_started("run_live")
+        seen.append(AutomationStore(base_path).get(automation.automation_id).retired_at)
+        return _FakeOutcome(run_id="run_live")
+
+    monkeypatch.setattr(automations_module, "_execute", running)
+    _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
+    _poll(home)
+    assert len(seen) == 1 and seen[0]  # retired while the run was still going
+
+
+def test_a_stale_snapshot_of_a_spent_or_paused_row_does_not_run(
+    home: Path, monkeypatch
+) -> None:
+    """Refute P1 #9: a due scan's row can be retired or paused before its run."""
+    graph = _Graph()
+    monkeypatch.setattr(automations_module, "_execute", graph)
+    store = AutomationStore(home)
+    now = datetime.now(timezone.utc)
+
+    _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
+    [(wake, key)] = due_automations(home, universe_id=UNIVERSE, now=now)
+    store.retire_for_reason(wake.automation_id, reason="ran", now=now)
+    assert run_due_automation(home, wake, key, now=now) == "not_active"
+
+    cadence = _register_cadence(home, now - timedelta(hours=1))
+    [(snapshot, cadence_key)] = [
+        pair for pair in due_automations(home, universe_id=UNIVERSE, now=now)
+        if pair[0].automation_id == cadence.automation_id
+    ]
+    store.set_desired_state(
+        cadence.automation_id, "paused", expected_revision=1, now=now
+    )
+    assert run_due_automation(home, snapshot, cadence_key, now=now) == "not_active"
+    assert graph.calls == []
+
+
+def test_a_wake_admits_fail_closed_and_a_cadence_does_not(
+    home: Path, monkeypatch
+) -> None:
+    """Refute P1 #7: a self-replenishing wake must not run on an unread budget."""
+    import tinyassets.engine_mcp_server as engine
+
+    asked: list[bool] = []
+
+    def admit(**kwargs):
+        asked.append(kwargs.get("fail_closed", False))
+        return False
+
+    monkeypatch.setattr(engine, "_engine_run_admit", admit)
+    monkeypatch.setattr(automations_module, "_execute", _Graph())
+    now = datetime.now(timezone.utc)
+    _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
+    _register_cadence(home, now - timedelta(hours=1))
+    for automation, key in due_automations(home, universe_id=UNIVERSE, now=now):
+        run_due_automation(home, automation, key, now=now)
+    assert sorted(asked) == [False, True]
+
+
+def test_five_killed_claims_retire_the_wake(home: Path) -> None:
+    """Refute P2 #11: attempts that never reach `_retire_once` still end it."""
+    _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
+    now = datetime.now(timezone.utc)
+    wake, _key = _claim_and_die(home, now)
+    for _attempt in range(MAX_ONCE_ATTEMPTS - 1):
+        _claim_and_die(home, _retry_at(home, wake.automation_id))
+    at = _retry_at(home, wake.automation_id)
+    [(spent, key)] = due_automations(home, universe_id=UNIVERSE, now=at)
+    assert run_due_automation(home, spent, key, now=at) == "gave_up"
+    row = AutomationStore(home).get(wake.automation_id)
+    assert row.retired_at and row.pause_reason == "gave_up"
+
+
+def test_a_late_resumed_wake_does_not_find_every_retry_already_due(
+    home: Path,
+) -> None:
+    """Refute P2 #10: retries step from the latest claim, not from not_before."""
+    _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
+    [wake] = _wakes(home)
+    _age(home, wake.automation_id, 3600)  # an hour overdue
+    now = datetime.now(timezone.utc)
+    _claim_and_die(home, now)
+    assert due_automations(home, universe_id=UNIVERSE, now=now) == []
+
+
+def test_a_cadence_does_not_count_its_attempt_history(home: Path) -> None:
+    """Refute P2 #13: only wakes pay for the attempt subqueries."""
+    now = datetime.now(timezone.utc)
+    cadence = _register_cadence(home, now)
+    store = AutomationStore(home)
+    for minute in range(5):
+        store.claim_attempt(
+            cadence.automation_id, f"2026-01-01T00:0{minute}:00+00:00", now=now
+        )
+    row = store.get(cadence.automation_id)
+    assert (row.attempt_count, row.last_claimed_at) == (0, "")
 
 
 def test_retries_that_never_reach_a_run_are_bounded(home: Path, monkeypatch) -> None:
@@ -359,13 +477,18 @@ def test_retries_that_never_reach_a_run_are_bounded(home: Path, monkeypatch) -> 
     monkeypatch.setattr(automations_module, "_execute", _Graph())
     _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
     [wake] = _wakes(home)
-    far = datetime.now(timezone.utc) + timedelta(days=1)
+    at = datetime.now(timezone.utc)
     reasons = []
-    for _attempt in range(MAX_ONCE_ATTEMPTS + 2):
-        due = due_automations(home, universe_id=UNIVERSE, now=far)
+    for _attempt in range(MAX_ONCE_ATTEMPTS + 3):
+        due = due_automations(home, universe_id=UNIVERSE, now=at)
         if not due:
             break
-        reasons.append(run_due_automation(home, due[0][0], due[0][1], now=far))
+        reasons.append(run_due_automation(home, due[0][0], due[0][1], now=at))
+        if AutomationStore(home).get(wake.automation_id).retired_at:
+            break
+        at = _retry_at(home, wake.automation_id)
+    # Each refused attempt is retried one step after its claim, and the last
+    # one allowed retires the wake rather than leaving it pending.
     assert reasons == ["run_rate_limited"] * MAX_ONCE_ATTEMPTS
     spent = AutomationStore(home).get(wake.automation_id)
     assert spent.retired_at and spent.pause_reason == "gave_up"

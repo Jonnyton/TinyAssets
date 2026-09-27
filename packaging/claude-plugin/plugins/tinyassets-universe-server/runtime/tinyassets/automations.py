@@ -177,9 +177,16 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
 )
 
 #: A row read with how many attempts it has had -- the ``once`` due key.
+#: Only for ``once`` rows: a recurring automation's attempt history grows
+#: forever, and counting it on every poll made the scan cost grow with it
+#: (Codex refute 2026-09-27, P2).
 _SELECT_ROWS = (
-    "SELECT automations.*, (SELECT COUNT(*) FROM automation_attempts a "
-    "WHERE a.automation_id = automations.automation_id) AS attempt_count "
+    "SELECT automations.*, "
+    "CASE WHEN trigger_kind = 'once' THEN (SELECT COUNT(*) FROM automation_attempts a "
+    "WHERE a.automation_id = automations.automation_id) ELSE 0 END AS attempt_count, "
+    "CASE WHEN trigger_kind = 'once' THEN (SELECT MAX(claimed_at) FROM "
+    "automation_attempts a WHERE a.automation_id = automations.automation_id) "
+    "ELSE '' END AS last_claimed_at "
     "FROM automations"
 )
 
@@ -358,8 +365,10 @@ class Automation:
     last_finished_at: str
     consecutive_failures: int = 0
     not_before: str = ""
-    #: Attempts recorded for this row; read-only, from ``automation_attempts``.
+    #: ``once`` rows only, read from ``automation_attempts``: how many attempts
+    #: were claimed, and when the latest was.
     attempt_count: int = 0
+    last_claimed_at: str = ""
 
 
 # -- Time helpers -------------------------------------------------------------
@@ -427,7 +436,10 @@ def _from_row(row: sqlite3.Row) -> Automation:
         consecutive_failures=int(row["consecutive_failures"] or 0),
         not_before=str(row["not_before"] or ""),
         attempt_count=int(
-            row["attempt_count"] if "attempt_count" in row.keys() else 0
+            (row["attempt_count"] if "attempt_count" in row.keys() else 0) or 0
+        ),
+        last_claimed_at=str(
+            (row["last_claimed_at"] if "last_claimed_at" in row.keys() else "") or ""
         ),
     )
 
@@ -1085,17 +1097,26 @@ def register_automation(
 
 
 def _once_due(automation: Automation) -> datetime | None:
-    """``not_before`` plus a retry step per attempt already made.
+    """``not_before``; after an attempt, one retry step past its claim.
 
-    Keyed by the attempt count, so an attempt that never reached a run -- a
-    refused admission, or a process killed before it finished -- is retried
-    under a NEW ``(automation_id, due_at)`` fence key rather than finding its
-    old key claimed forever.
+    An attempt that never reached a run -- a refused admission, or a process
+    killed before the run started -- is retried under a NEW
+    ``(automation_id, due_at)`` fence key. The key is strictly later than every
+    earlier one (each earlier key was claimed at or after it came due), and it
+    is measured from the latest CLAIM, not from ``not_before``, so a wake
+    resumed late does not find all its retries already due at once (Codex
+    refute 2026-09-27, P2). Past ``MAX_ONCE_ATTEMPTS`` it stays due so the run
+    path can retire it rather than leave it pending forever.
     """
     base = _parse(automation.not_before)
-    if base is None or automation.attempt_count >= MAX_ONCE_ATTEMPTS:
+    if base is None:
         return None
-    return base + timedelta(seconds=ONCE_RETRY_SECONDS * automation.attempt_count)
+    if automation.attempt_count <= 0:
+        return base
+    last = _parse(automation.last_claimed_at)
+    if last is None:
+        return None
+    return max(base, last) + timedelta(seconds=ONCE_RETRY_SECONDS)
 
 
 def _due_instant(automation: Automation, now: datetime) -> str:
@@ -1529,6 +1550,16 @@ def run_due_automation(
     moment = _as_utc(now or datetime.now(timezone.utc))
     store = AutomationStore(base)
 
+    if (
+        automation.trigger_kind == TRIGGER_ONCE
+        and automation.attempt_count >= MAX_ONCE_ATTEMPTS
+    ):
+        # Out of attempts, however they ended -- including five processes killed
+        # before their runs started, which never reach `_retire_once`.
+        _retire_once(store, automation, ran=False, now=moment)
+        _record_refusal(base, automation, "gave_up", moment, consumer_id)
+        return "gave_up"
+
     # The claim is INSIDE the guarded region: a SQLite failure here used to
     # escape with no attempt row and no refusal, so the owner saw nothing at all.
     try:
@@ -1547,6 +1578,23 @@ def run_due_automation(
         # already owns. Rare, and previously invisible -- record it.
         _record_refusal(base, automation, "attempt_exists", moment, consumer_id)
         return "attempt_exists"
+
+    # The due scan's row is a snapshot: another process may have retired or
+    # paused it since -- a spent wake, or an owner's pause. Re-read under the
+    # claim and run only what is still active (Codex refute 2026-09-27, P1).
+    try:
+        live = store.get(automation.automation_id)
+    except Exception:  # noqa: BLE001 - unreadable is not active
+        logger.exception("automation re-read failed automation=%s",
+                         automation.automation_id)
+        live = None
+    if live is None or live.retired_at or live.desired_state != STATE_ACTIVE:
+        _close_attempt_quietly(
+            store, automation, due_at, status="skipped", reason="not_active",
+            now=moment, succeeded=None,
+        )
+        _record_refusal(base, automation, "not_active", moment, consumer_id)
+        return "not_active"
 
     try:
         blocked = _runtime_authority_reason(base, automation)
@@ -1596,7 +1644,15 @@ def run_due_automation(
         from tinyassets.engine_mcp_server import _admission_parts, _engine_run_admit
 
         ticket, _refused_by = _admission_parts(
-            _engine_run_admit(universe_id=automation.universe_id, want_ticket=True)
+            _engine_run_admit(
+                universe_id=automation.universe_id,
+                want_ticket=True,
+                # A wake can re-wake itself, so its budget must be real: an
+                # unreadable ledger refuses rather than admitting with no
+                # count (Codex refute 2026-09-27, P1). Cadences keep their
+                # existing behaviour.
+                fail_closed=automation.trigger_kind == TRIGGER_ONCE,
+            )
         )
         if ticket is None:
             store.finish_attempt(
@@ -1622,6 +1678,11 @@ def run_due_automation(
             from tinyassets.engine_admissions import attach_run
 
             attach_run(ticket, str(run_id or ""))
+            if run_id:
+                # A wake is delivered when its run exists, not when the run
+                # returns: a process killed mid-run must not re-run the work
+                # after its lease frees (Codex refute 2026-09-27, P1).
+                _retire_once(store, automation, ran=True, now=moment)
             if callable(on_run_started):
                 on_run_started(run_id)
 
@@ -1738,6 +1799,7 @@ def _close_attempt_quietly(
     status: str,
     reason: str,
     now: datetime,
+    succeeded: bool | None = False,
 ) -> None:
     try:
         store.finish_attempt(
@@ -1747,7 +1809,7 @@ def _close_attempt_quietly(
             status=status,
             reason=reason,
             now=now,
-            succeeded=False,
+            succeeded=succeeded,
         )
     except Exception:  # noqa: BLE001 - the refusal record is still owed
         logger.exception(
