@@ -504,7 +504,10 @@ def test_the_private_evidence_table_is_classified_as_the_owners_data(tmp_path):
     from tinyassets.account_deletion import PRESERVED_TABLES, PRINCIPAL_KEYS
     from tinyassets.scoped_reset import MAIN_DB_TABLE_CLASSIFICATIONS
 
-    assert MAIN_DB_TABLE_CLASSIFICATIONS.get("learned_model_evidence") == "preserve_or_block"
+    # "preserve", not "preserve_or_block": Codex round 3 showed the latter promised a
+    # blocking check this table does not have, so it was preserved unconditionally
+    # while claiming otherwise. Account deletion is what removes it.
+    assert MAIN_DB_TABLE_CLASSIFICATIONS.get("learned_model_evidence") == "preserve"
     assert "learned_model_evidence" not in PRESERVED_TABLES, (
         "the PRIVATE table is the owner's data and must not be preserved on delete")
     # Account deletion finds it by column, so the column has to be a principal key.

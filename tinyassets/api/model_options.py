@@ -70,11 +70,11 @@ def _granted_only(connection):
     """
     from dataclasses import replace as _replace
 
-    from tinyassets.storage.learned_models import LEARNED_MODEL_BASIS
+    from tinyassets.providers.served_model_plan import _CANDIDATE_ONLY_BASES
 
     return _replace(connection, models=tuple(
         model for model in connection.models
-        if model.availability_basis != LEARNED_MODEL_BASIS
+        if model.availability_basis not in _CANDIDATE_ONLY_BASES
     ))
 
 

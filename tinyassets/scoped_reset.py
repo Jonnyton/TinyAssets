@@ -99,16 +99,22 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     # been learned, which is why it must be classified rather than left to the
     # unclassified-table gate.
     "learned_models": "preserve",
-    # The PRIVATE half of the same feature, classified exactly like agent_turns --
-    # owner-scoped private data that a scoped reset preserves or blocks on, and
-    # that ACCOUNT DELETION removes by its owner_user_id column (already a detected
-    # principal key, so no map entry is needed there).
+    # The PRIVATE half of the same feature. PRESERVED by a scoped reset, and removed
+    # by ACCOUNT DELETION through its owner_user_id column (already a detected
+    # principal key, so it needs no entry in that map).
     #
-    # Losing an owner's evidence can only ever un-publish nothing: an id already
-    # promoted stays promoted, because the shared row carries no user data and the
-    # other owners' evidence is untouched. That asymmetry is deliberate -- a
-    # published id is a fact about the id, so one person leaving does not retract it.
-    "learned_model_evidence": "preserve_or_block",
+    # Deliberately "preserve" and not "preserve_or_block": Codex round 3 pointed out
+    # that the earlier `preserve_or_block` here promised a blocking check this table
+    # has none of, so it was preserved unconditionally while the classification
+    # claimed otherwise. There is no reason these inactive owner-only facts should
+    # block a home reset -- they name no run, hold no authority and reference no
+    # home -- so the honest classification is the one that says what happens.
+    #
+    # Losing an owner's evidence un-publishes nothing: an id already promoted stays
+    # promoted, because the shared row carries no user data and the other owners'
+    # evidence is untouched. That asymmetry is deliberate -- a published id is a fact
+    # about the id, so one contributor leaving does not retract it.
+    "learned_model_evidence": "preserve",
 })
 
 FAULT_POINTS = (

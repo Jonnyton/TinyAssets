@@ -43,11 +43,17 @@ from tinyassets.storage.current_home import check_current_home
 from tinyassets.storage.learned_models import (
     LEARNED_MODEL_BASIS,
     LEARNED_SOURCE_KIND,
+    OWN_VERIFIED_BASIS,
 )
 from tinyassets.storage.model_preferences import ModelPreferenceStore
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 _LOG = logging.getLogger("universe_server.served_model_plan")
+
+#: Bases that are OFFERS to grant, never admitted candidates. One set, read by the
+#: split below and by api/model_options' legacy plan, so a third basis cannot be
+#: added in one place and admitted in the other.
+_CANDIDATE_ONLY_BASES = frozenset({LEARNED_MODEL_BASIS, OWN_VERIFIED_BASIS})
 
 
 def _assert_plan_snapshot(snapshot):
@@ -198,6 +204,15 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
     # existing access machinery marks them outside the accepted scope, so they
     # surface as "needs access" and become selectable when the owner grants it.
     # A catalog row is evidence, never permission.
+    # THIS OWNER's own verified ids first. The founder's rule is that an id which
+    # worked for one owner "stays on that user's own list forever" even when it
+    # never becomes public -- and Codex round 3 found the store was keeping it while
+    # nothing ever listed it, so a solo user's ARN silently vanished from their own
+    # picker as soon as they stopped declaring it. Keeping a row nobody reads is not
+    # keeping it.
+    models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, owner,
+                                          already=models))
+    # ...then what the PLATFORM published, which needed two distinct owners.
     models.extend(_catalog_candidates(base, LEARNED_SOURCE_KIND, already=models))
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
@@ -207,6 +222,34 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
         member.provider, "native-subscription:" + member.provider, "subscription", "fresh",
         True, True,
         tuple(models), default_model_id="" if "" in declared else None,
+    )
+
+
+def _own_verified_candidates(base, source_kind, owner, *, already):
+    """Ids THIS owner has already made work on this kind of source.
+
+    Their own history, not anyone else's: read from the private evidence table
+    scoped to this owner, so nothing here depends on the promotion threshold. A
+    solo user keeps every id they have ever used even though none of it is public.
+
+    Carries its own basis so the list can be honest about the difference between
+    "you have run this" and "two owners elsewhere have run this". Like the
+    published rows, these are candidates and NOT admitted: the owner may have
+    narrowed their model access since, and re-granting is the existing one-tap path.
+    """
+    from tinyassets.storage.learned_models import LearnedModelCatalog
+
+    have = {model.model_id for model in already}
+    try:
+        rows = LearnedModelCatalog(base).evidence_ids(source_kind, owner)
+    except (OSError, sqlite3.DatabaseError, ValueError) as exc:
+        _LOG.warning("own verified model evidence unreadable: %s", type(exc).__name__)
+        return ()
+    return tuple(
+        Model(row.model_id, True, frozenset({"text"}),
+              pricing=Pricing("fresh", unmetered=True),
+              availability_basis=OWN_VERIFIED_BASIS)
+        for row in rows if row.model_id and row.model_id not in have
     )
 
 
@@ -405,11 +448,11 @@ def prepare_owned_model_plan(
                 # Selectable choices that fail are worse than absent ones.
                 contributed = tuple(
                     model for model in catalog.models
-                    if model.availability_basis == LEARNED_MODEL_BASIS
+                    if model.availability_basis in _CANDIDATE_ONLY_BASES
                 )
                 filtered = replace(catalog, models=tuple(
                     model for model in catalog.models
-                    if model.availability_basis != LEARNED_MODEL_BASIS
+                    if model.availability_basis not in _CANDIDATE_ONLY_BASES
                 ))
                 # Said, not merely withheld: the reason is what puts it under the
                 # dropdown's "Needs access" group with the one-tap grant, so the

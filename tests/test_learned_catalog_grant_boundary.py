@@ -37,6 +37,10 @@ configured = integration.configured
 #: being learned, which is what makes it a clean probe.
 LEARNED_ID = "vendor-newline-9-1"
 
+#: An id only ever verified by ONE owner, so it can never be published. Stands in
+#: for the account-bearing selector the threshold is meant to keep private.
+SOLO_ID = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/solo-1"
+
 
 def _document(configured, binding=None):
     # The binding is passed explicitly because a grant REBINDS the serving provider
@@ -262,3 +266,79 @@ def test_the_legacy_plan_also_refuses_to_admit_a_learned_id(configured_legacy_pr
     # the assertion above.
     assert ids == ["", "owner-typed-4-6"]
     assert replace(connection, models=admitted.models) == admitted
+
+
+def test_the_owner_threaded_into_the_catalog_is_the_same_identity_the_journal_uses():
+    """The one assumption the whole privacy property rests on.
+
+    "Two distinct owners" only protects a private selector if one human cannot hold
+    two owner values. The coordinator passes `self.owner`, which comes from
+    `check_served_agent_tool_authority` -> `capability.principal_id` -- the value
+    `provider_assignment` compares against `agent["created_by"]`, i.e. the
+    authenticated USER, and the same value the turn journal scopes its rows by and
+    that account deletion treats as a principal key.
+
+    Pinned by reading the coordinator's own source, because the alternative -- a
+    universe id, a bind key, a credential digest -- would each be per-universe or
+    per-credential and would let one person publish their own ARN by creating a
+    second universe or reconnecting a source.
+    """
+    import inspect
+
+    from tinyassets.account_deletion import PRINCIPAL_KEYS
+    from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
+
+    source = inspect.getsource(AgentTurnCoordinator._learn_verified_model)
+    assert "owner_user_id=self.owner" in source, (
+        "the catalog must be keyed on the turn's OWNER, not on its universe")
+    for wrong in ("universe_dir.name", "graph_id", "bind_key", "connection_id",
+                  "reference_digest"):
+        assert f"owner_user_id={wrong}" not in source, wrong
+    # The journal is scoped by the same attribute, so the two cannot drift apart
+    # without this test noticing.
+    run = inspect.getsource(AgentTurnCoordinator._run)
+    assert "self.owner = self._check_scope()" in run
+    assert "owner_user_id" in PRINCIPAL_KEYS
+
+
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_a_solo_owners_own_verified_id_stays_on_their_own_list(configured):
+    """Codex round 3: the store kept it and nothing ever listed it.
+
+    The founder's rule is that an id which worked for one owner "stays on that
+    user's own list forever" even though it never becomes public. I tested that the
+    STORE kept the row and claimed the requirement met -- but `evidence_ids` had no
+    production caller, so the picker never showed it and a solo user's ARN vanished
+    from their own list the moment they stopped declaring it. Keeping a row nobody
+    reads is not keeping it.
+
+    Asserted on the options DOCUMENT, which is what a client reads, because
+    asserting the store is the exact mistake that hid this.
+    """
+    # One owner only: nothing here is published, so this cannot pass via the
+    # shared table.
+    LearnedModelCatalog(configured.rig.base).record(
+        source_kind="subscription", model_id=SOLO_ID, owner_user_id="owner")
+    document = _document(configured)
+
+    row = _row(document, SOLO_ID)
+    assert row is not None, (
+        "an id this owner has already made work must stay on their own list")
+    assert row["availability_basis"] == "owner_verified_here", (
+        "and must say it is THEIR history, not that two other owners verified it")
+    # Still a candidate, not an admitted one: their access may have narrowed since.
+    assert row["in_candidate_catalog"] is False
+    assert {reason["reason"] for reason in row["reasons"]} == {"model_access_optin_required"}
+    # It reached them WITHOUT being published, which is the whole point.
+    assert LearnedModelCatalog(configured.rig.base).for_source_kind("subscription") == []
+
+
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_another_owners_evidence_never_reaches_this_list(configured):
+    """The other half: their own history only, not anyone else's."""
+    LearnedModelCatalog(configured.rig.base).record(
+        source_kind="subscription", model_id="someone-elses-private-7",
+        owner_user_id="a-different-owner")
+    document = _document(configured)
+    assert _row(document, "someone-elses-private-7") is None, (
+        "one owner's unpublished evidence must never appear in another's list")

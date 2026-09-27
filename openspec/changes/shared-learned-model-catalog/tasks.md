@@ -93,5 +93,20 @@ never cross it, and nothing has to classify a string or name a vendor.
       the count is returned to nobody.
 - [x] `docs/concerns/2026-09-26-learned-catalog-private-selectors.md` DELETED — the
       threshold resolves it. The contention concern stays open.
-- [ ] Round 3 Codex verdict on this shape, then rebase onto bounded-results'
-      dispatch ceiling, sync the spec delta and archive.
+- [x] Round 3 Codex verdict (final; the cap is spent). Two must-fix, one of which
+      was not mine to fix:
+      - [x] P2 FIXED — `evidence_ids` had no production caller, so a solo owner's
+            verified id was stored and never listed. `_own_verified_candidates`
+            unions their own history into their own candidates with its own basis
+            (`owner_verified_here`), asserted on the options DOCUMENT this time,
+            because asserting the store is what hid it.
+      - [x] Accuracy FIXED — the private table was `preserve_or_block`, which
+            promised a blocking check it does not have. Now `preserve`, which is
+            what actually happens; account deletion removes it by column.
+      - [ ] P1 ESCALATED — two account subjects do not make a selector public, and
+            neither would two verified PEOPLE: colleagues share one org's private
+            deployment id. No threshold value or charset fixes that; it needs an
+            explicit sharing boundary (the per-universe opt-in that was option 2).
+            Founder decision. docs/concerns/2026-09-26-learned-catalog-private-selectors.md
+- [ ] Rebase onto bounded-results' dispatch ceiling when it lands, then sync the
+      spec delta and archive — after the publication boundary is settled.

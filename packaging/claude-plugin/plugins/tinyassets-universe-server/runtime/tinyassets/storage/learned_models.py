@@ -76,6 +76,10 @@ _EVIDENCE_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_evidence (
 #: granted.
 LEARNED_SOURCE_KIND = "subscription"
 LEARNED_MODEL_BASIS = "platform_verified_elsewhere"
+#: An id THIS owner has already made work here. Distinct from the published basis
+#: because the two are different claims: "you have run this" versus "two owners
+#: elsewhere have run this". Neither is admitted without the owner's model access.
+OWN_VERIFIED_BASIS = "owner_verified_here"
 
 #: Every column the SHARED table will ever have. A test asserts the shipped table
 #: matches, so adding a fourth column has to be a deliberate act that updates this
