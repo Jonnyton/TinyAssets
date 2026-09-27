@@ -313,3 +313,60 @@ def test_an_unreadable_list_file_is_not_silently_unlisted(tmp_path, monkeypatch)
     monkeypatch.setattr("pathlib.Path.stat", denied)
     with pytest.raises(PublicModelListError, match="cannot be read"):
         lists.newest_listed_cached("subscription")
+
+
+def test_listed_rows_survive_the_compact_projection_for_the_served_agent():
+    """The cross-lane seam: my rows through the bounded-results lane's reader.
+
+    #4037 narrows `model_options` for the served agent. It carries
+    `availability_basis` as data and does not bucket on it, which is what lets this
+    change add bases without touching that lane — but neither lane had a test for the
+    two together, and the whole point of the listed rows is that an agent can SEE an
+    id it must ask the owner to grant.
+    """
+    from tinyassets.engine_read_views import compact_model_options
+
+    def row(model_id, basis, selectable):
+        return {
+            "reference": {"provider_ref": "codex", "model_id": model_id},
+            "source_kind": "subscription", "availability_basis": basis,
+            "freshness": "fresh", "in_candidate_catalog": selectable,
+            "reasons": [] if selectable else [
+                {"reason": "model_access_optin_required", "component": ""}],
+            "labels": [], "order_index": 0 if selectable else None,
+            "pricing": {"freshness": "fresh", "unmetered": True, "charges": [],
+                        "unknown_components": []},
+            "provider_default": model_id == "", "tools": True, "context_tokens": 1,
+            "input_modalities": ["text"], "output_modalities": ["text"],
+            "scores": None, "basis": None,
+        }
+
+    document = {
+        "kind": "advisory_model_options", "generation": 1, "policy_source": "saved",
+        "mode": "automatic", "order": [], "source_failures": [], "unavailable": [],
+        "preferences": {"generation": 1, "policy": None, "updated_at": ""},
+        "universe_id": "u-1", "choice_authority": "accepted_manifest", "sources": [],
+        "binding_state": "serving",
+        "options": [
+            row("", "executor_default", True),
+            row("claude-fable-5-1", "publicly_listed", False),
+            row("my-private-arn-1", "owner_verified_here", False),
+        ],
+    }
+    compact = compact_model_options(document)
+    top = {entry["model_id"]: entry for entry in compact["sources"][0]["top"]}
+
+    # All three reach the agent, and the counts distinguish offered from selectable.
+    assert set(top) == {"", "claude-fable-5-1", "my-private-arn-1"}
+    assert compact["sources"][0]["models"] == 3
+    assert compact["sources"][0]["selectable"] == 1
+
+    # A listed id is visible, NOT selectable, and says why -- which is what makes the
+    # agent able to ask the owner for the grant instead of silently failing.
+    listed = top["claude-fable-5-1"]
+    assert listed["availability_basis"] == "publicly_listed"
+    assert listed["selectable"] is False
+    assert listed["reasons"] == ["model_access_optin_required"]
+
+    # The owner's own id is carried with its own basis, not conflated with the list.
+    assert top["my-private-arn-1"]["availability_basis"] == "owner_verified_here"
