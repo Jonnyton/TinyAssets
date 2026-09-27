@@ -1,3 +1,10 @@
+---
+severity: note
+title: In-node delivery post-MVP hardening
+filed: '2026-09-19'
+summary: exact-code review approves JSON RPC; refusal ordering, separate-ledger crash accounting, node-kind diagnostics and legacy owner fallback remain explicit follow-through
+---
+
 # In-node delivery: non-blocking post-MVP follow-through
 
 **Filed:** 2026-09-19  

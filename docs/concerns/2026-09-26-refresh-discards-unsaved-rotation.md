@@ -1,3 +1,10 @@
+---
+severity: P1
+title: A rotation the vault cannot accept is still lost
+filed: '2026-09-26'
+summary: the write is retried to the deadline and then reported honestly as terminal, but the rotated authorization itself is gone. Somewhere durable to put it is a storage-shape question
+---
+
 # Rotated authorization is discarded after a failed save
 
 **Filed:** 2026-09-26

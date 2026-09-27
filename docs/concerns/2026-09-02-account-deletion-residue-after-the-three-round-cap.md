@@ -1,3 +1,10 @@
+---
+severity: P2
+title: What account deletion still does not do, after three review rounds
+filed: '2026-09-02'
+summary: shipped path deletes the user's data and refuses rather than touching anyone else's; residue is no retry worker for an unreachable Stripe, no global fence over writers, and blocking rather than anonymising foreign rows
+---
+
 # What account deletion still does not do, after three review rounds
 
 **Filed:** 2026-09-02, at the `AGENTS.md` three-round cap on PR #2774.

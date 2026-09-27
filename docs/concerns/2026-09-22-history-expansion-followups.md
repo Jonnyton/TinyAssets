@@ -1,3 +1,10 @@
+---
+severity: note
+title: History expansion followups
+filed: '2026-09-22'
+summary: retained long reply accepted live; organic owner use and peripheral expansion cases remain unverified
+---
+
 # History expansion followups after PR3916
 
 **Filed:** 2026-09-22 UTC. **Severity:** note.

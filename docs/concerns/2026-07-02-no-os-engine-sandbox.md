@@ -1,3 +1,10 @@
+---
+severity: P1
+title: No OS engine sandbox
+filed: '2026-07-02'
+summary: in-process confinement only; the denylist fails open
+---
+
 # P1 - No OS-level engine sandbox; `converse` is in-process-confined only
 
 **Filed:** 2026-07-02

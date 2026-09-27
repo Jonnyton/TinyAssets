@@ -1,3 +1,10 @@
+---
+severity: note
+title: Ordinary node edit clean-use watch
+filed: '2026-09-23'
+summary: output/timeout editing accepted live; independent customer use not yet observed
+---
+
 # Ordinary node edit clean-use watch
 
 September23,2026 UTC. PR3924 deployed1f121719; independent review,171 focused

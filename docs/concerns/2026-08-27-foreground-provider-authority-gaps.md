@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Foreground provider authority gaps
+filed: '2026-08-27'
+summary: '4 unfixed: `max_invocations` counts node definitions, mock bypass keyed on `__module__`, receipt published before claim, denials masked as "connect your provider"'
+---
+
 # Four unfixed authority gaps in the foreground run provider
 
 **Filed:** 2026-08-27

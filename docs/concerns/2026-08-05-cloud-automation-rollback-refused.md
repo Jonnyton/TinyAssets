@@ -1,3 +1,10 @@
+---
+severity: null
+title: Cloud automation rollback refused >24h
+filed: '2026-08-05'
+summary: tested, not fixed
+---
+
 # Cloud automation rollback refused more than 24h after setup
 
 **Filed:** 2026-08-05 | **Verified:** 2026-08-05

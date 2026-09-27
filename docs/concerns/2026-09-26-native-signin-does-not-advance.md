@@ -1,3 +1,10 @@
+---
+severity: P1
+title: A native sign-in failure cannot advance the turn
+filed: '2026-09-26'
+summary: '`_finish_native_failure` produces `indeterminate` -> `held_native_unknown`, which `_next_after_signin` refuses because that state is not proof nothing ran. The founder''s own complaint ("didn''t route me to Opus"). Scoped, including the second reader: `effects_evidence` treats `capacity_no_effects` as the ONLY no-effect native terminal'
+---
+
 # Native sign-in failure still does not advance the turn
 
 **Filed:** 2026-09-26

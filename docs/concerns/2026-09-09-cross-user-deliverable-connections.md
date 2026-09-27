@@ -1,3 +1,10 @@
+---
+severity: note
+title: Cross-user deliverable connections
+filed: '2026-09-09'
+summary: structured delivery candidate awaits release proof; full artifact transfer remains open
+---
+
 # Cross-user node-to-node deliverable connections
 
 **Filed:** 2026-09-09

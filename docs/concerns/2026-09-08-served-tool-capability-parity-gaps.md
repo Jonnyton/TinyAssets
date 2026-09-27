@@ -1,3 +1,10 @@
+---
+severity: note
+title: Served tool capability parity gaps
+filed: '2026-09-08'
+summary: source audit finds missing stop/trigger/dependency controls and discovery contradictions; secret custody and person-only approval remain deliberate boundaries
+---
+
 # Served tool capability parity gaps
 
 **Filed:** 2026-09-08
