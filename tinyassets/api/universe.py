@@ -220,6 +220,27 @@ def _extract_set_premise(
     )
 
 
+def _extract_set_visibility(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """Ledger row for an owner's exposure decision.
+
+    Exposing a universe to other users is an authority change, so it is ledgered
+    like every other universe write — the ledger is how "the owner chose this"
+    stays auditable after the fact, independent of the provenance key.
+    """
+    requested = str(kwargs.get("visibility", "") or "")
+    return (
+        "visibility",
+        f"visibility -> {result.get('visibility', '') or requested}",
+        {
+            "visibility": result.get("visibility", ""),
+            "previous_visibility": result.get("previous_visibility", ""),
+            "requested": requested,
+        },
+    )
+
+
 def _extract_add_canon(
     kwargs: dict[str, Any], result: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
@@ -689,6 +710,7 @@ WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
     "set_premise": (_extract_set_premise, None),
+    "set_visibility": (_extract_set_visibility, None),
     "soul.edit": (_extract_soul_edit, None),
     "declare_universe_loop": (_extract_declare_universe_loop, None),
     "set_engine": (_extract_set_engine, None),
@@ -1733,19 +1755,28 @@ def _epoch2_operational_snapshot(udir: Path) -> dict[str, Any]:
     return _epoch2_operational_read(udir).summary
 
 
-_TOP_LEVEL_OPERATIONAL_DATA_DIRS = frozenset({
-    "lance",
-    "output",
-    "runs",
-    "wiki",
-})
+def _is_listable_universe_dir(path: Path, owned: set[str]) -> bool:
+    """A universe is a directory somebody OWNS (founder, 2026-09-02).
 
+    This used to be a four-name denylist (``lance``/``output``/``runs``/``wiki``)
+    standing in for a definition, so the platform's own backups and every past
+    prune's archive were universes, and each new operational directory needed
+    another name in the frozenset -- ``lancedb``, daemon memory, retained inputs,
+    the workspace pool and stored offers were already missing from it. Ownership
+    is the definition; operational directories need no list because they were
+    never universes.
 
-def _is_listable_universe_dir(path: Path) -> bool:
+    ``owned`` comes from ``daemon_server.owned_universe_ids``. Passing it in
+    rather than reading it here keeps one ownership query per enumeration
+    instead of one per directory.
+    """
     return (
         path.is_dir()
         and not path.name.startswith(".")
-        and path.name not in _TOP_LEVEL_OPERATIONAL_DATA_DIRS
+        # EXACT, not case-folded. A universe id is both a path component and an
+        # authority key, and resolving those to different spellings breaks one of
+        # them -- see `daemon_server.owned_universe_id` for the two ways it broke.
+        and path.name in owned
     )
 
 
@@ -1768,11 +1799,22 @@ def _action_list_universes(**_kwargs: Any) -> str:
         })
 
     from tinyassets.api import visibility
+    from tinyassets.daemon_server import owned_universe_ids
+
+    try:
+        owned = owned_universe_ids(base)
+    except Exception as exc:  # noqa: BLE001 - fail closed, and say why
+        logger.exception("ownership lookup failed while listing universes")
+        return json.dumps({
+            "universes": [],
+            "count": 0,
+            "note": f"Ownership store unavailable: {exc}",
+        })
 
     universes = []
     hidden_by_visibility = 0
     for child in sorted(all_entries):
-        if not _is_listable_universe_dir(child):
+        if not _is_listable_universe_dir(child, owned):
             continue
         # Existence is a privileged, separately-granted capability: a universe
         # whose declared level withholds discovery (e.g. `unlisted`) is not
@@ -1814,17 +1856,81 @@ def _action_list_universes(**_kwargs: Any) -> str:
     return json.dumps(result)
 
 
+class _OwnershipUnavailable(RuntimeError):
+    """The ownership store could not be read. NOT the same as unowned."""
+
+
+def _owned_universe_id(uid: str) -> str:
+    """The owned id ``uid`` names, or ``""`` when nobody owns it.
+
+    Raises :class:`_OwnershipUnavailable` when the store cannot be read.
+    Returning ``""`` there would refuse the request as "Universe not found",
+    which tells the caller an existing universe does not exist -- a lie, from a
+    transient SQLite lock. Fail closed AND loudly: the request is still refused,
+    but for the reason that is true.
+    """
+    from tinyassets.daemon_server import owned_universe_id
+
+    base = _base_path()
+    if not base.is_dir():
+        # No data root is not a broken store: there is nothing here, so nobody
+        # owns anything. Raising here would turn every read on a fresh install
+        # into "Ownership store unavailable".
+        return ""
+    try:
+        return owned_universe_id(base, uid)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ownership lookup failed for %s", uid)
+        raise _OwnershipUnavailable(str(exc)) from exc
+
+
+def _available_universe_ids() -> list[str]:
+    """What to offer when an id is not found: the universes SOMEBODY OWNS.
+
+    This used to list every directory under the data root, so a "not found"
+    answer published the whole graveyard -- the archives, the migration backup
+    and the operational stores -- to any caller who guessed a wrong id.
+    """
+    from tinyassets.daemon_server import owned_universe_ids
+
+    base = _base_path()
+    if not base.is_dir():
+        return []
+    try:
+        owned = owned_universe_ids(base)
+    except Exception:  # noqa: BLE001 - fail closed
+        logger.exception("ownership lookup failed while listing available ids")
+        return []
+    from tinyassets.api import visibility
+
+    return sorted(
+        d.name for d in base.iterdir()
+        if _is_listable_universe_dir(d, owned)
+        # Existence is separately granted. Without this, asking for an id that
+        # does not exist answers with every owned universe, private and unlisted
+        # ones included -- the enumeration gate the listing applies, skipped by
+        # taking the error path.
+        and visibility.visibility_permits(d.name, "discover_existence")
+    )
+
+
 def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
-    if not udir.is_dir():
+    # A DIRECTORY IS NOT A UNIVERSE. Filtering the enumeration was half the fix:
+    # reading one BY ID still answered with a full universe payload for
+    # `cloud-automation-inputs` and for the migration backup, reproduced against
+    # production on 2026-09-02. The graveyard was still browsable, which is what
+    # the founder reported.
+    try:
+        owner_id = _owned_universe_id(uid)
+    except _OwnershipUnavailable as exc:
+        return json.dumps({"error": f"Ownership store unavailable: {exc}"})
+    if not udir.is_dir() or not owner_id:
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "available": _available_universe_ids(),
         })
 
     # Metadata gate: inspect returns describe-surface metadata (premise, daemon
@@ -4622,6 +4728,120 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": f"Failed to write premise: {exc}"})
 
 
+#: The levels this owner-facing verb OFFERS — deliberately narrower than
+#: ``visibility.LEVELS``. A level is a promise, and a promise no reader enforces
+#: is decoration: six universe read actions that return raw content
+#: (``get_activity``, ``read_premise``, ``read_canon``, ``read_source``,
+#: ``read_output``, ``query_world``) are gated only by the legacy ``public_read``
+#: bit through ``_universe_acl_error``, and ``set_universe_visibility`` sets that
+#: bit for ANY level granting a visitor a capability. So `metadata_only` (which
+#: promises to withhold content) and `unlisted` (which promises to withhold
+#: metadata) would both be mis-served. Offering only the two the platform enforces
+#: end to end keeps this surface honest; the gap is
+#: `docs/concerns/2026-09-26-content-readers-gate-on-the-legacy-bit.md`, and when
+#: it closes the other two levels belong here.
+#:
+#: This is also exactly the binary the founder described on 2026-09-26 — private
+#: unless the owner makes it accessible — rather than a refinement nobody asked for.
+_OFFERED_VISIBILITY_LEVELS = frozenset({"private", "public"})
+
+
+def _action_set_universe_visibility(
+    universe_id: str = "", visibility: str = "", **_kwargs: Any
+) -> str:
+    """Change a universe's declared visibility — the owner's exposure decision.
+
+    A universe is born `private` (founder, 2026-09-26: nothing in a user's
+    universe is visible, accessible or interactable to another user unless its
+    owner exposed it). This is the only way it stops being private, and it is the
+    reason private-by-default is a boundary rather than a wall: before this
+    action existed, `set_universe_visibility` had no production caller outside
+    the creation path and the boot backfill, so an owner could not publish at
+    all.
+
+    Authority: OWNER-only, which is strictly narrower than write. Registration in
+    ``WRITE_ACTIONS`` makes ``_universe_acl_error`` demand write access and makes
+    the dispatcher ledger the decision — necessary, and not sufficient. That gate
+    accepts ``write`` OR ``admin`` (``permissions._WRITE_PERMISSIONS``), so relying
+    on it alone let a delegated *writer* publish someone else's universe and have
+    it recorded as the owner's choice (Codex cross-family review of PR #4019,
+    reproduced end-to-end: `status=updated`, `chosen_by=owner`, and the migration
+    then classified that universe as owner-chosen and left it public).
+
+    Exposing a universe to other users is not an editing operation, so it takes
+    the canonical per-universe ownership predicate — ``universe_owner_actor``,
+    the explicit ``admin`` ACL row, the same signal ``connect_llm``,
+    ``source_channel`` and the pending-request rail use. This is a narrowing on
+    top of the central gate, not a second copy of it: the ACL check still runs
+    first and this only ever refuses more.
+    """
+    from tinyassets.api import visibility as _visibility
+    from tinyassets.api.source_channel import universe_owner_actor
+    from tinyassets.principals import named_principal
+
+    offered = _OFFERED_VISIBILITY_LEVELS
+    uid = _request_universe(universe_id)
+    if not _universe_dir(uid).is_dir():
+        return json.dumps({"error": f"Universe '{uid}' not found."})
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor or not universe_owner_actor(_base_path(), uid, actor):
+        # The SAME envelope the central ACL gate returns for a non-writer, so a
+        # delegated writer learns exactly what a reader learns.
+        return json.dumps(permissions.universe_access_error(
+            universe_id=uid, write=True, action="set_visibility",
+            surface="universe",
+        ))
+
+    requested = (visibility or "").strip()
+    if not requested:
+        return json.dumps({
+            "error": f"visibility is required; expected one of {sorted(offered)}.",
+        })
+    if requested not in offered:
+        known = _visibility.parse_level(requested) is not None
+        return json.dumps({
+            "error": (
+                f"visibility {requested!r} is not offered; expected one of "
+                f"{sorted(offered)}."
+            ),
+            "reason": "level_not_enforced" if known else "unknown_level",
+            "detail": (
+                f"{requested!r} is a real level, but the platform does not yet "
+                "enforce its content boundary on every reader, so this surface "
+                "does not offer it (docs/concerns/"
+                "2026-09-26-content-readers-gate-on-the-legacy-bit.md)."
+            ) if known else "",
+        })
+    previous = _visibility.declared_level_name(uid)
+    try:
+        resolved = _visibility.set_universe_visibility(
+            uid, requested, source=_visibility.LEVEL_SOURCE_OWNER
+        )
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({
+        "universe_id": uid,
+        "status": "updated",
+        "visibility": resolved.name,
+        "previous_visibility": previous,
+        "chosen_by": "owner",
+        "capabilities": {
+            cap: resolved.permits(cap) for cap in _visibility.CAPABILITIES
+        },
+        "note": (
+            f"'{uid}' is now {resolved.name}. "
+            + (
+                "Other users can see it to the extent that level allows; you "
+                "and anyone you granted access keep full access either way."
+                if resolved is not _visibility.PRIVATE
+                else "No other user can discover, inspect or read it. People "
+                "you granted access to keep full access."
+            )
+        ),
+    })
+
+
 _CANON_SAME_FILENAME_BEHAVIOR = (
     "A later ingest of the same canon-source filename replaces the stored "
     "source bytes and manifest entry when the content hash changes; identical "
@@ -5484,13 +5704,16 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
 
     uid = universe_id
     udir = _universe_dir(uid)
-    if not udir.is_dir():
+    # The same question the listing and `inspect` ask: selecting a directory
+    # nobody owns is selecting something that is not a universe.
+    try:
+        owner_id = _owned_universe_id(uid)
+    except _OwnershipUnavailable as exc:
+        return json.dumps({"error": f"Ownership store unavailable: {exc}"})
+    if not udir.is_dir() or not owner_id:
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "available": _available_universe_ids(),
         })
 
     # Explicit universe selection is not global (universe-creation spec:
@@ -5536,17 +5759,33 @@ def _action_create_universe(
     base = _base_path()
     # Creation-time visibility declaration: a new universe must be born with an
     # explicit level so undeclared rows stop being produced (undeclared fails
-    # closed). The creator may choose a level; default is the host-knob
-    # `DEFAULT_CREATE_VISIBILITY`. Validate up front so a bad value fails the
-    # create loudly rather than silently leaving the universe undeclared.
+    # closed). The creator may choose a level; otherwise the universe is born
+    # `private` (`DEFAULT_CREATE_VISIBILITY`, founder 2026-09-26). Validate up
+    # front so a bad value fails the create loudly rather than silently leaving
+    # the universe undeclared.
+    #
+    # The provenance matters as much as the level: a level this caller asked for
+    # is the OWNER's choice, the fallback is the platform's. The migration that
+    # closes the defaulted-public records reads exactly that distinction, so a
+    # universe born private-by-default must not claim its owner chose privacy.
     from tinyassets.api import visibility as _visibility
 
-    create_level = (visibility or "").strip() or _visibility.DEFAULT_CREATE_VISIBILITY
-    if _visibility.parse_level(create_level) is None:
+    chosen_level = (visibility or "").strip()
+    create_level = chosen_level or _visibility.DEFAULT_CREATE_VISIBILITY
+    create_level_source = (
+        _visibility.LEVEL_SOURCE_OWNER if chosen_level else "default"
+    )
+    # Birth offers the same levels the post-birth verb offers, and for the same
+    # reason (`_OFFERED_VISIBILITY_LEVELS`): a level whose content boundary no
+    # reader enforces must not be selectable. This became reachable when the
+    # dispatcher started forwarding `visibility`, which it needs to do for
+    # `set_visibility` — so the two writers are held to one list rather than
+    # birth quietly accepting more than the verb.
+    if create_level not in _OFFERED_VISIBILITY_LEVELS:
         return json.dumps({
             "error": (
                 f"Invalid visibility {create_level!r}; expected one of "
-                f"{sorted(_visibility.LEVELS)}."
+                f"{sorted(_OFFERED_VISIBILITY_LEVELS)}."
             ),
         })
     # universe-creation D2: universe_id is optional. When absent, generate one
@@ -5568,7 +5807,45 @@ def _action_create_universe(
     if udir.exists():
         return json.dumps({"error": f"Universe '{uid}' already exists."})
 
+    founder = ""
     try:
+        # THE OWNER IS CLAIMED BEFORE THE DIRECTORY EXISTS. Creation used to
+        # mkdir and seed here and grant ownership ~90 lines below, which left a
+        # window where the directory was on disk and owned by nobody. That was
+        # merely untidy while an unowned directory was still readable; now that
+        # a universe nobody owns grants no capability (`visibility_permits`), the
+        # window is a functional hole -- the creator's own reads inside it would
+        # be refused, and `first_contact`'s seeding reads through the same gate.
+        # `first_contact` already claims the home before materializing; explicit
+        # creation now does the same (Codex review 2026-09-26).
+        founder = permissions.current_actor_id()
+        # NO UNOWNED UNIVERSE, EVER (founder rule 2026-08-28). This used to fall
+        # through to `founder_id: ""` -- it created the universe, granted nobody,
+        # bound nobody, and returned success. The question "whose is this?" then
+        # had no answer, and that question is what every multi-tenant guarantee
+        # is built on. The public MCP surface already refuses at the door
+        # (`_universe_birth_refusal`) and `ensure_founder_home` needs
+        # `create_universe` scope, so no production path reaches here
+        # unauthenticated today -- and "no caller does that today" is precisely
+        # the reasoning that has been wrong twice already in this repo.
+        #
+        # Refusing BEFORE the mkdir means a refusal leaves nothing behind at all,
+        # rather than relying on rollback to remove a bare directory.
+        if not permissions.is_authenticated_request() or not (founder or "").strip():
+            raise PermissionError(
+                "a universe must belong to someone: refusing to create one with no "
+                "authenticated owner"
+            )
+        from tinyassets.daemon_server import grant_universe_access
+
+        grant_universe_access(
+            base,
+            universe_id=uid,
+            actor_id=founder,
+            permission="admin",
+            granted_by=founder,
+        )
+
         udir.mkdir(parents=True, exist_ok=True)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
         loop_branch_def_id = str(branch_def_id or "").strip()
@@ -5636,46 +5913,22 @@ def _action_create_universe(
         # through here), so no universe is ever produced undeclared. This is on
         # the critical path: a failure rolls the partial create back via the
         # outer except, keeping create atomic.
-        _visibility.set_universe_visibility(uid, create_level)
+        _visibility.set_universe_visibility(
+            uid, create_level, source=create_level_source
+        )
         result["visibility"] = create_level
 
-        founder = permissions.current_actor_id()
-        # NO UNOWNED UNIVERSE, EVER (founder rule 2026-08-28; enforced here
-        # 2026-08-29). This used to fall through to `founder_id: ""` — it created
-        # the universe, granted nobody, bound nobody, and returned success. The
-        # question "whose is this?" then had no answer, and that question is what
-        # every multi-tenant guarantee is built on.
-        #
-        # The public MCP surface already refuses at the door (`_universe_birth_refusal`),
-        # and `ensure_founder_home` needs `create_universe` scope, so no production
-        # path reaches here unauthenticated today. That made this a LATENT hole rather
-        # than a live one — and "no caller does that today" is precisely the reasoning
-        # that has been wrong twice already in this repo. An invariant the founder
-        # states should be structurally true, not true by luck.
-        #
-        # Raising rolls back the partial create through the outer handler, so a
-        # refusal never leaves a bare directory behind.
-        if not permissions.is_authenticated_request() or not (founder or "").strip():
-            raise PermissionError(
-                "a universe must belong to someone: refusing to create one with no "
-                "authenticated owner"
-            )
-        from tinyassets.daemon_server import grant_universe_access, set_founder_home
-
-        grant_universe_access(
-            base,
-            universe_id=uid,
-            actor_id=founder,
-            permission="admin",
-            granted_by=founder,
-        )
+        # The admin grant was written BEFORE the directory existed (top of this
+        # try), because a universe nobody owns now grants no capability. What is
+        # left here is the HOME binding, which needs the completed directory to
+        # decide whether an existing home is living.
         # Bind this as the founder's home when they don't already have a
         # LIVING one — no binding, or a binding to a removed/incomplete dir.
         # "Living" means COMPLETE (soul.md present), not a bare/partial dir,
         # so a broken home rebinds to this fresh one (Codex 2026-07-15).
         # Explicit later creates by a founder with a living home do NOT
         # reassign home.
-        from tinyassets.daemon_server import get_founder_home
+        from tinyassets.daemon_server import get_founder_home, set_founder_home
 
         _home = get_founder_home(base, founder)
         if not _home or not (base / _home / "soul.md").is_file():
@@ -5703,6 +5956,26 @@ def _action_create_universe(
                 shutil.rmtree(udir)
         except OSError:
             pass
+        # ...and the grant written before it, so a failed create leaves neither a
+        # bare directory nor an ownership row for a universe that never existed.
+        # An owner left holding an admin grant on a nonexistent universe has to be
+        # TOLD, whatever the create failed with: it is the one piece of state this
+        # rollback cannot clean up, and it silently blocks the id.
+        revoke_failed = ""
+        try:
+            from tinyassets.daemon_server import revoke_universe_access
+
+            if founder:
+                revoke_universe_access(base, universe_id=uid, actor_id=founder)
+        except Exception as revoke_exc:  # noqa: BLE001 - the create already failed
+            logger.exception("rollback: could not revoke the create grant for %s", uid)
+            revoke_failed = str(revoke_exc)
+        if revoke_failed:
+            return json.dumps({"error": (
+                f"Failed to create universe: {exc}. The ownership grant could NOT "
+                f"be taken back ({revoke_failed}); '{uid}' is claimed but not "
+                "created."
+            )})
         if isinstance(exc, OSError):
             return json.dumps({"error": f"Failed to create universe: {exc}"})
         raise
@@ -6482,6 +6755,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "give_direction": _action_give_direction,
     "read_premise": _action_read_premise,
     "set_premise": _action_set_premise,
+    "set_visibility": _action_set_universe_visibility,
     "soul.edit": _action_soul_edit,
     "set_engine": _action_set_engine,
     "offer_engine": _action_offer_engine,
@@ -6587,6 +6861,7 @@ def _universe_impl(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
+    visibility: str = "",
     *,
     allow_named_universe_id: bool = False,
 ) -> str:
@@ -6662,6 +6937,7 @@ def _universe_impl(
         "tier": tier,
         "enabled": enabled,
         "tag": tag,
+        "visibility": visibility,
         "anchor_json": anchor_json,
     }
 

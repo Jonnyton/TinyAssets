@@ -506,9 +506,13 @@ def read_graph(
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
-    Cross-user delivery: target=receiver with query=receiver_id reads the allowed
-    sender's contract; target=output_links lists your graph_id's links;
-    target=delivery with query=delivery_id reads your side's safe receipt.
+    Cross-user delivery: target=receivers searches receivers other owners opened to
+    discovery (optional query=text over description/owner; the result is capped by
+    limit, not exhaustive) — this is how you find a receiver_id you were never told;
+    target=receiver with query=receiver_id reads one contract you may see;
+    target=output_links lists your graph_id's links;
+    target=delivery with query=delivery_id reads your side's safe receipt, which
+    on the receiving side names the sending principal and universe.
     target=run_file reads exact owned run-bound binary chunks; run_file_limits
     reports technical intake/read/retention limits. No sender paths are exposed.
     Files the user attached in the app arrive inside their message as a delimited
@@ -628,11 +632,14 @@ def read_graph(
             return file_limits(universe_id=graph_id)
         return read_file(universe_id=graph_id, run_id=run_id, file_id=file_id,
                          offset=file_offset, count=file_max_bytes)
-    if normalized in {"receiver", "output_links", "delivery"}:
-        action = {"receiver": "inspect_receiver", "output_links": "list_output_links",
+    if normalized in {"receiver", "receivers", "output_links", "delivery"}:
+        action = {"receiver": "inspect_receiver", "receivers": "discover_receivers",
+                  "output_links": "list_output_links",
                   "delivery": "get_delivery"}[normalized]
         payload = ({"receiver_id": query} if normalized == "receiver"
-                   else {"delivery_id": query} if normalized == "delivery" else {})
+                   else {"delivery_id": query} if normalized == "delivery"
+                   else {"query": query, "limit": limit} if normalized == "receivers"
+                   else {})
         return _extensions_impl(action=action, universe_id=graph_id,
                                 payload_json=json.dumps(payload))
     if normalized == "status":
@@ -791,6 +798,10 @@ def read_graph(
             "agent",
             "agent_bindings",
             "agent_binding",
+            "receiver",
+            "receivers",
+            "output_links",
+            "delivery",
         ),
     )
 
@@ -880,7 +891,7 @@ def write_graph(
     name: str = "",
     description: str = "",
     tags: str = "",
-    visibility: str = "public",
+    visibility: str = "",
     text: str = "",
     graph_id: str = "",
     request_type: str = "general",
@@ -904,9 +915,19 @@ def write_graph(
     """Create or queue TinyAssets graph state.
 
     Cross-user structured delivery: target=receiver operation=create takes
-    payload_json {branch_def_id,node_id,input_keys,allowed_senders,description}.
+    payload_json {branch_def_id,node_id,input_keys,allowed_senders,description}
+    plus the optional exposure fields {open_to_all,discoverable,sender_rate_limit}.
     It exposes a pinned selected entry only to those exact sender principals;
-    an empty list permits nobody. Update adds receiver_id and expected_generation;
+    an empty list permits nobody. open_to_all=true accepts ANY authenticated user
+    (there is no "*" sender); discoverable=true lists it under read_graph
+    target=receivers. Both default false on create; update KEEPS any exposure field
+    you omit, so closing one is an explicit false rather than an omission.
+    sender_rate_limit caps accepted deliveries per
+    sending principal per hour (default 60, 1..100000) and refuses by name.
+    input_keys cannot advertise delivery_sender_id or
+    delivery_sender_universe_id: declare either in the receiving branch's
+    state_schema and the platform fills it with the sender's identity.
+    Update adds receiver_id and expected_generation;
     revoke takes those two fields. target=output_link operation=connect takes
     {branch_def_id,node_id,receiver_id,expected_generation,mapping}, where mapping
     maps source output names to advertised receiver input names. Disconnect takes
@@ -942,7 +963,15 @@ def write_graph(
             The founder's home universe is auto-created on first contact; use
             target=universe to create an additional universe (or the home when
             a create-scoped sign-in declined auto-birth).
-        operation: With target=goal, set_canonical. With target=agent,
+        operation: With target=universe, set_visibility changes who else may see
+            that universe, taking `visibility` as `private` or `public` and
+            `graph_id` for the universe. Everything in a universe is private until
+            its owner uses this: no other user can discover, inspect or read it,
+            while the owner and anyone they granted access keep full access either
+            way. Owner-only — a collaborator holding write on the universe is
+            refused, because editing it is not authority to decide who else sees
+            it.
+            With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update/bind_serving_provider/set_serving.
             With target=automation, create/list/get/pause/resume/delete — one
@@ -982,7 +1011,10 @@ def write_graph(
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
-        visibility: Shared-goal visibility, usually public.
+        visibility: Shared-goal visibility, usually public. With
+            target=universe operation=set_visibility, the universe level to
+            declare instead — `private` or `public`. Empty means nobody stated
+            one, which is never read as a request to publish.
         text: Request text to queue (or optional purpose with target=universe).
         graph_id: Optional target graph/universe identifier.
         goal_id: With target=goal operation=set_canonical, the Goal identifier.
@@ -1164,6 +1196,17 @@ def write_graph(
                 universe_id=graph_id,
                 branch_def_id=branch_id,
             )
+        # EXPOSURE, the other half of private-by-default (founder 2026-09-26).
+        # A universe is born `private`, and this is the owner's only way to change
+        # that. Before it existed, `set_universe_visibility` had no production
+        # caller outside the creation path and the boot backfill, so an owner
+        # could not publish their own universe at all.
+        if (operation or "").strip() == "set_visibility":
+            return _universe_impl(
+                action="set_visibility",
+                universe_id=graph_id,
+                visibility=visibility,
+            )
         # Opt-in birth on the canonical surface (2026-07-02): the founder's
         # explicit ask creates their universe. Routes through the ledgered
         # create (scope-gated costly; binds founder_home; seeds OKF bundle).
@@ -1242,7 +1285,12 @@ def write_graph(
             name
             or description
             or tags
-            or visibility != "public"
+            # `visibility` used to default to "public" on this signature, so the
+            # stray-parameter check had to spell that value out. It now defaults
+            # to empty precisely so `operation=set_visibility` can tell "the
+            # owner asked for public" from "nobody said" — an ambient "public"
+            # default on an exposure verb would publish a universe by accident.
+            or visibility not in ("", "public")
             or changes_json
         ):
             return json.dumps({"error": "request_validation_error"})
@@ -1528,6 +1576,14 @@ def write_graph(
             "agent",
             "agent_binding",
             "source_channel",
+            # Supported above and dispatched, but absent from this list until
+            # 2026-09-26 -- so an agent that guessed a write target was told a set
+            # that omitted the cross-user delivery ones, and a prompt naming them
+            # read as routing to an unsupported target.
+            "receiver",
+            "output_link",
+            "run_file",
+            "model_preferences",
         ),
     )
 
@@ -2151,6 +2207,19 @@ _PLATFORM_FAULT_TELLS = (
     "already consumed",
 )
 
+#: OUR OWN refusal when the request does not fit the selected model's published
+#: context window (``providers/router``). It raises a bare ``PermissionError``
+#: with no attempts behind it, so every taxonomy below reads "unknown" and the
+#: owner is told "we could not identify why" about the one failure whose cause we
+#: measured ourselves -- live 2026-09-26, turn 8dc8ada56b8e4d1cbfd2e4f37a111e7d,
+#: killed by a 1,274,067-byte tool result. These are the router's exact words;
+#: matching the sentence, not a keyword, keeps an unrelated provider message that
+#: happens to say "context" out of this class.
+_CONTEXT_OVERFLOW_TELLS = (
+    "selected model cannot fit this inference context",
+    "selected model cannot fit this workflow context",
+)
+
 
 #: Classes whose remedy is time. Only these carry a measured wait into the
 #: notice; for anything else a number would send the owner away to wait out a
@@ -2455,6 +2524,19 @@ def _has_native_auth_clue(exc: BaseException) -> bool:
     return False
 
 
+def _context_overflow(exc: BaseException) -> bool:
+    """True when this turn, or anything it wraps, is our own context refusal."""
+    seen: set[int] = set()
+    node: BaseException | None = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        text = str(node).lower()
+        if any(tell in text for tell in _CONTEXT_OVERFLOW_TELLS):
+            return True
+        node = node.__cause__ or node.__context__
+    return False
+
+
 def _served_failure_code(exc: BaseException) -> str:
     """Reduce observed diagnostics to a closed code before any durable write."""
     from tinyassets.conversation_failure import FAILURE_CODES
@@ -2462,6 +2544,12 @@ def _served_failure_code(exc: BaseException) -> str:
     try:
         if any(tell in str(exc).lower() for tell in _PLATFORM_FAULT_TELLS):
             return "platform_fault"
+        # Before the taxonomies: this refusal is ours and carries no attempt for
+        # them to read, so consulting them first is how a measured cause became
+        # "unknown". Read the whole chain -- a wrapper that says "exhausted"
+        # must not bury the measurement underneath it.
+        if _context_overflow(exc):
+            return "context_window_exceeded"
         for code in (getattr(exc, "failure_class", None), _attempt_class(exc)):
             if isinstance(code, str) and code in FAILURE_CODES:
                 return code
@@ -2961,6 +3049,7 @@ def universe(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
+    visibility: str = "",
 ) -> str:
     """Inspect and steer a workflow's universe.
 
@@ -2976,7 +3065,7 @@ def universe(
         action: One of — reads: list, inspect, read_output, query_world,
             get_activity, get_recent_events, get_ledger, read_premise,
             list_canon, read_canon, list_sources, read_source; writes: submit_request,
-            give_direction, set_premise, add_canon, add_canon_from_path,
+            give_direction, set_premise, set_visibility, add_canon, add_canon_from_path,
             create_universe, switch_universe; learning: soul.edit (teach the
             universe — inputs_json {changes: {governed file: new body},
             source, context, name?}; persists per its soul.edit.md policy);
@@ -3070,6 +3159,7 @@ def universe(
         enabled=enabled,
         tag=tag,
         anchor_json=anchor_json,
+        visibility=visibility,
     )
 
 
@@ -3243,7 +3333,7 @@ def extensions(
       create_source, revoke_source, list_sources.
     - Structured cross-owner delivery: create_receiver, update_receiver,
       revoke_receiver, connect_output, disconnect_output, deliver_output,
-      inspect_receiver, list_output_links, get_delivery.
+      inspect_receiver, discover_receivers, list_output_links, get_delivery.
     - Judgments: compare_runs, get_node_output, judge_run, list_judgments,
       list_node_versions, rollback_node, suggest_node_edit.
     - Project memory: project_memory_get, project_memory_list,
@@ -4168,6 +4258,21 @@ def create_streamable_http_app() -> Starlette:
             # Initialize storage before the scheduler's immediate tick can open
             # the same fresh database and race its first journal-mode switch.
             initialize_consumer(data_dir())
+            # A deploy recreates the container mid-turn, so every progressing
+            # agent turn row predates this boot and nothing is executing it.
+            # Settle them before anything can read them as activity (founder,
+            # 2026-09-26: a killed turn showed "thinking" for 35 minutes).
+            # Hygiene, not a gate: an unsettleable row leaves the boot-ownership
+            # guard in `universe_working_turn` to keep it out of the indicator.
+            from tinyassets.agent_turn_reconcile import reconcile_orphaned_turns
+
+            try:
+                orphans = reconcile_orphaned_turns(data_dir())
+            except Exception:  # noqa: BLE001 - serving must not wait on cleanup
+                logger.exception("orphaned agent turn reconciliation failed")
+            else:
+                if orphans:
+                    logger.warning("settled %d orphaned agent turn(s)", len(orphans))
             # The scheduler starts whenever the daemon serves — schedules are a user's
             # own automations and do not belong to the inbound channel surface
             # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates

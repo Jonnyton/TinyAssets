@@ -18,6 +18,63 @@ The system should get simpler as models improve. Every scaffold is temporary unl
 
 ---
 
+## Operating Principles
+
+Founder-stated principles, kept in the founder's own wording. They shaped the
+architecture below, so they live here rather than in `AGENTS.md`, which holds only
+the loop and the facts a model would otherwise get wrong.
+
+- **24/7 uptime, zero hosts online.** Every surface works with no host online —
+  chatbot users through the live connector, daemon hosts installing the tray in
+  under 5 minutes, contributors cloning and running cleanly, plus discovery,
+  remix, converge, the paid-market inbox, and moderation. Take the task
+  unblocking the largest currently-broken surface; treat every outage as equal
+  severity, because tiering is what starves the quiet surfaces.
+- **The founder's desktop is never infrastructure** (2026-09-21). `DESKTOP-KCPMGP3`
+  is the founder's home PC: never enroll it, route platform work to it, or use it
+  as a fallback. Platform service dependencies are cloud-only, and an existing
+  local registration, tunnel, provider login or heartbeat is not permission.
+- **The platform has no LLM** (2026-09-24). Only a powered universe calls an LLM,
+  with its owner's own connected credentials, for that universe alone. No platform
+  model, no shared/host/maintainer credential, no fallback. The founder's
+  subscription is the founder universe's only.
+- **No vendor-specific compute or connection code** (2026-09-24). Any LLM or
+  platform connects through vendor-neutral connectors the user's agent configures;
+  a new vendor never needs a patch. Existing vendor paths are migration debt
+  (§ *Module: Providers*). Dev tooling is exempt.
+- **Shape → live MVP → user-test → then harden** (2026-08-20). One review for
+  shape, approach and single-user safety holes; ship the MVP live; test as a real
+  user; *then* harden what live use shows matters. Never gate a first draft behind
+  a hardening gauntlet — only live users reveal whether the shape is right.
+- **The floor, and only the floor, blocks a deploy:** cross-user read or effect;
+  auth or credential exposure; unrecoverable loss of user data; wrong money; an
+  irreversible external act without consent; public connector down. Everything
+  else is tracked and re-judged after live use.
+- **If you know the next step, take it** (2026-09-17/24), approvals inside the
+  agreed work included. Ask only about new spending, irreversible or
+  outward-facing acts outside the agreed work, and PLAN.md changes. Gates default
+  autonomously; a true host-only ask is a `docs/host-actions.md` row with the
+  smallest possible scope, and it must not block unrelated work.
+- **Test through the app agent as a user would** (2026-09-24). Ask the way a
+  casual, naive user would; never feed it an answer it is supposed to work out,
+  because that is a false "works" signal real users get no help behind. Never
+  build or edit users' workflows yourself — enable the agent to do it. Scope is
+  the basic capability set, not the current user's needs: a basic capability stays
+  listed until cleared, even with nobody blocked on it.
+- **User uploads are authoritative.** Preserved verbatim — never summarized,
+  truncated, or reformatted.
+- **A pasted client chat is a bug report.** Extract the issues and fix them.
+- **Spec what is hard to reverse, build the rest.** Public MCP/API surface,
+  storage shape, authority/permissions, migrations and money get a proposal and
+  design before code; everything else is built, proven live, and specced from what
+  shipped, which is more accurate than what was predicted.
+- **The rulebook only shrinks.** A new rule must displace an old one; the ratchet
+  (`scripts/check_context_budget.py`) enforces it. Keep a rule only if it encodes
+  project knowledge unavailable from the repo — and put it where the agent needs
+  it, not in an always-loaded file.
+
+---
+
 ## Scoping Rules
 
 These five rules govern what features, primitives, and architecture get built — and what does not. They run in scoping cadence: irreducibility test first, then composition test, then privacy specialization, then architectural placement, then runtime tier targeting. Any new feature, design note, or audit recommendation must clear all five before it is shippable as platform code. Cross-provider readers (Codex, Cursor, OSS contributors): read these before proposing a new tool, action, evaluator, or primitive. Depth and worked examples live in lead memory files; PLAN.md carries the rule + why + how-to-apply only.
@@ -38,6 +95,10 @@ These five rules govern what features, primitives, and architecture get built �
 3. **The community commons**: shared libraries of everything users publish, and nodes opened to cross-user interaction.
 
 Isolation makes this safe. The floor is cross-user only, and every provider process is OS-jailed to its owner's universe, so powerful primitives (shell and file work included) are safe inside a universe. The platform never trades a universe's power for a shared-host safety it can get from the jail.
+
+**Private by default.** In the founder's words, 2026-09-26: *"nodes in users universes should be private unless they make them other user accessible or visible or interactable in some way"*, and *"universes and the nodes in them need to be default private and we need to make sure that is set correctly for new users also"*.
+
+So: nothing in a universe is visible, accessible or interactable to other users unless its owner exposes it. The platform never declares an open level on an owner's behalf — **every** creation path writes `private` (including first-contact home materialization, which is the new-user path), the declaring migration writes `private`, and a Branch is born private too. Exposure is a separate, explicit owner action. A level the platform does not enforce on every reader is not offered at all. As-built: `openspec/specs/universe-visibility/spec.md`.
 
 Depth: lead memory `project_minimal_primitives_principle.md`.
 

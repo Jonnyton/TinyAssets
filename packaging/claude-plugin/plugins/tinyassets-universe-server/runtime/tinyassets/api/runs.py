@@ -2291,13 +2291,23 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
     active_tiers = all_tiers if flag_on else ["universe_id"]
 
     universe_id = _request_universe(kwargs.get("universe_id") or "")
-    # Don't expose a private universe's activity.log / scope-mismatch warnings.
-    from tinyassets.api.permissions import (
-        universe_access_allows,
-        universe_access_error,
-    )
+    # Don't expose a universe's activity.log / scope-mismatch warnings. These are
+    # raw log LINES, so the gate is `read_content`, not the legacy read bit.
+    #
+    # It used to be `universe_access_allows(write=False)` alone. That bit is
+    # `public_read`, which `set_universe_visibility` turns on whenever a level
+    # grants a public visitor ANY capability — so a `metadata_only` universe,
+    # whose whole point is that it withholds content, disclosed its literal
+    # activity lines to any authenticated principal here. Reproduced by the Codex
+    # cross-family review of PR #4019, which could only be reached deliberately
+    # once that PR gave an owner a way to select `metadata_only`.
+    #
+    # `visibility_permits` is tighten-only — it ANDs the legacy gate with the
+    # declared level — so this subsumes the old check rather than replacing it.
+    from tinyassets.api.permissions import universe_access_error
+    from tinyassets.api.visibility import visibility_permits
 
-    if not universe_access_allows(universe_id, write=False):
+    if not visibility_permits(universe_id, "read_content"):
         return json.dumps(universe_access_error(
             universe_id=universe_id, write=False,
             action="get_memory_scope_status", surface="extensions",

@@ -52,6 +52,9 @@ def _data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _seed(tmp_path: Path) -> Path:
     udir = tmp_path / "u-test"
     udir.mkdir()
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(udir.parent, udir.name)
     seed_okf_bundle(udir, purpose="To help my founder bring their projects to life.")
     # Register + declare so disclosure is evaluable. Declared `public`, so an
     # unauthenticated in-process caller (T0) is served the universe's public
@@ -66,7 +69,7 @@ def _declare(base: Path, uid: str) -> None:
     from tinyassets.daemon_server import ensure_universe_registered
 
     ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
-    vis.set_universe_visibility(uid, "public")
+    vis.set_universe_visibility(uid, "public", source="owner")
 
 
 def _become_founder(base: Path, uid: str = "u-test", actor_id: str = "founder-1") -> None:

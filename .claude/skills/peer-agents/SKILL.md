@@ -70,15 +70,15 @@ Two more habits that fell out of the same incident:
 - **Default (read-only-ish).** claude: plain `-p` (Read/Glob/Grep allowed, edit/bash denied). codex: `-s read-only -c approval_policy=never`. Safe to point at the live checkout.
 - **`--write` (full agent).** claude: `--dangerously-skip-permissions`. codex: `--full-auto` (workspace-write sandbox — weak on Windows). **Always point `--cwd` at a `wf-*` worktree in write mode, never the live checkout or main.** The peer can then edit, run tests, and iterate on its own.
 
-Useful flags: `--timeout SEC` (default 1800), `--effort minimal|low|medium|high|xhigh` (codex only — use `low` for trivial tasks, it's much faster), `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
+Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — gpt-6-astra rejects it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Model defaults are frontier, always.** claude runs `--model fable` (alias tracking the latest Claude model — currently claude-fable-5 on a Max subscription); codex runs with no `-m`, so it uses the model from the host's `~/.codex/config.toml` (currently `gpt-5.6-sol`) and automatically tracks whatever the host configures next. Override only with a reason: `--model M`, or `WORKFLOW_CODEX_MODEL` for codex.
+**Model defaults are frontier, always.** claude runs `--model fable` (alias tracking the latest Claude model); codex runs with no `-m`, taking the model from the host's `~/.codex/config.toml` — currently **gpt-6-astra** — and tracks whatever the host configures next. Override only with a reason: `--model M`, or `WORKFLOW_CODEX_MODEL`.
 
 ## When to use which peer
 
-- **Cross-family review is the AGENTS.md rule:** research-derived findings and non-trivial changes need opposite-family review. If you are Kimi/Claude, dispatch review to codex; if you are Codex/OpenAI, dispatch to claude.
+- **Which changes need a review is not decided here.** `AGENTS.md` § *The loop* (item 4) owns the scope — floor-class changes and gate files, one round, after the PR opens; this skill owns the mechanics. When one is owed: if you are Kimi/Claude, dispatch to codex; if you are Codex/OpenAI, dispatch to claude.
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
-- **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree. `--effort low` for small tasks.
+- **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree.
 
 - **External implementation examples:** a repo search for precedent owns the focused brief, enforced read-only role, source map, and direct-to-coder return. `peer-agents` may run that role but does not replace its research contract.
 - **Internal repository localization:** use the harness's read-only codebase explorer or a focused read task; do not invoke the external precedent workflow.
