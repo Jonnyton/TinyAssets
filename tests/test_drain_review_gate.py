@@ -1684,3 +1684,80 @@ def test_workflows_pass_the_diff_key_and_still_never_check_out_the_head(workflow
     for call in receipt_calls:
         assert "--diff-key" in call, call
     assert "--print-diff-key" in text
+
+
+def _meta(blob: str, *, status: str = "A") -> bytes:
+    return f":000000 100644 {'0' * 40} {blob} {status}".encode()
+
+
+def test_one_path_cannot_spell_two_entries() -> None:
+    """Round-1 finding: tab/newline-joined entries let one path equal two.
+
+    A reviewed file named `!<TAB>M<LF>.github/workflows/payload.yml` and a
+    replacement adding `!` and `.github/workflows/payload.yml` serialized
+    identically, so an inert fixture could become a live workflow under the
+    same key.
+    """
+    gate = _gate_module()
+    blob = "c" * 40
+    meta = _meta(blob)
+    one_path = b"!\t" + meta.lstrip(b":") + b"\n.github/workflows/payload.yml"
+    reviewed = meta + b"\0" + one_path + b"\0"
+    replacement = meta + b"\0!\0" + meta + b"\0.github/workflows/payload.yml\0"
+    assert gate.diff_key_from_raw(reviewed) != gate.diff_key_from_raw(replacement)
+
+
+def test_abbreviated_ids_are_refused_not_hashed() -> None:
+    """Round-1 finding: two different blobs can share an abbreviation."""
+    gate = _gate_module()
+    with pytest.raises(ValueError):
+        gate.diff_key_from_raw(b":000000 100644 0000000 eb40e032 A\0a.py\0")
+
+
+def test_diff_key_uses_full_ids_whatever_core_abbrev_says(pr_repo: _Repo) -> None:
+    """`--full-index` alone printed abbreviated ids; `--no-abbrev` must win."""
+    pr_repo.git("config", "core.abbrev", "7")
+    short = pr_repo.key()
+    pr_repo.git("config", "core.abbrev", "12")
+    assert pr_repo.key() == short
+    raw = subprocess.run(
+        ["git", "diff", "--raw", "--no-renames", "--full-index", "--no-abbrev", "-z",
+         "main", "pr"], cwd=pr_repo.root, capture_output=True, check=True,
+    ).stdout
+    assert re.search(rb" [0-9a-f]{40} [0-9a-f]{40} M\0", raw), raw
+
+
+def _run_blocks(workflow: Path) -> list[str]:
+    import yaml
+
+    blocks = []
+    for job in yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"].values():
+        blocks += [str(step["run"]) for step in job.get("steps", []) if "run" in step]
+    return blocks
+
+
+@pytest.mark.parametrize("workflow", [WORKFLOW, POLICY_WORKFLOW])
+def test_no_step_checks_out_or_runs_the_pr_head(workflow: Path) -> None:
+    """The head's objects are fetched for the key; its tree never lands on disk."""
+    for block in _run_blocks(workflow):
+        code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
+        for verb in ("git checkout", "git switch", "git worktree", "git reset",
+                     "git restore", "git read-tree", "git archive"):
+            assert verb not in code, (workflow.name, verb)
+
+
+def test_scope_guard_passes_the_computed_key_verbatim() -> None:
+    text = POLICY_WORKFLOW.read_text(encoding="utf-8")
+    assert "DIFF_KEY: ${{ steps.diffkey.outputs.key }}" in text
+    assert text.count('--diff-key "${DIFF_KEY}"') == 2
+    assert '"${BASE_OID}" "${HEAD_OID}"' in text
+    assert "base.sha }}" in text and "head.sha }}" in text
+
+
+def test_auto_enroll_keys_the_base_and_head_from_one_read() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "headRefOid,baseRefOid" in text
+    assert "BASE_OID=\"$(jq -r '.baseRefOid' <<<\"$PR_JSON\")\"" in text
+    assert "BASE_OID: ${{ github.event.pull_request.base.sha }}" not in text
+    assert text.count('--diff-key "$DIFF_KEY"') == 1
+    assert 'DIFF_KEY="$(python scripts/drain_review_gate.py --print-diff-key' in text

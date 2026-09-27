@@ -25,6 +25,10 @@ from pathlib import Path
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _DIFF_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+# One `git diff --raw` record header with FULL object ids (SHA-1 or SHA-256).
+_RAW_META_RE = re.compile(
+    rb":[0-7]{6} [0-7]{6} ([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) [A-Z][0-9]*"
+)
 _ARTIFACT_RE = re.compile(
     r"Drain-Review-Artifact: "
     r"(docs/[A-Za-z0-9_./-]+\.md|https://github\.com/\S+)"
@@ -253,7 +257,7 @@ def diff_key(base: str, head: str, *, cwd: Path | None = None) -> str:
     """The identity of the CHANGE a PR makes, independent of its commit history.
 
     sha256 over every path in `git diff merge-base(base, head)..head`, each
-    with both modes and both FULL blob ids (`--raw --full-index`, no rename
+    with both modes and both FULL blob ids (`--raw --no-abbrev`, no rename
     detection). Blob ids are content hashes, so this pins exactly which bytes
     the PR replaces and with what, including binary files, and nothing else:
 
@@ -276,16 +280,33 @@ def diff_key(base: str, head: str, *, cwd: Path | None = None) -> str:
         ).stdout
 
     merge_base = git("merge-base", base, head).strip().decode("ascii")
-    raw = git("diff", "--raw", "--no-renames", "--full-index", "-z", merge_base, head)
+    # `--no-abbrev` is what makes the ids full: `--full-index` alone still
+    # prints abbreviated ids in --raw output, and two different blobs can share
+    # an abbreviation (cross-family review 2026-09-27 built such a pair).
+    raw = git(
+        "diff", "--raw", "--no-renames", "--full-index", "--no-abbrev", "-z", merge_base, head
+    )
+    return diff_key_from_raw(raw)
+
+
+def diff_key_from_raw(raw: bytes) -> str:
+    """Hash `git diff --raw -z --no-abbrev` output; refuse anything else."""
     fields = raw.split(b"\0")
     if fields and fields[-1] == b"":
         fields.pop()
     if len(fields) % 2:
         raise ValueError("unexpected `git diff --raw -z` output")
-    entries = sorted(
-        path + b"\t" + meta.lstrip(b":") for meta, path in zip(fields[0::2], fields[1::2])
-    )
-    return hashlib.sha256(b"\n".join(entries)).hexdigest()
+    pairs = sorted(zip(fields[1::2], fields[0::2]))
+    digest = hashlib.sha256()
+    for path, meta in pairs:
+        if _RAW_META_RE.fullmatch(meta) is None:
+            raise ValueError(f"unexpected `git diff --raw` record: {meta!r}")
+        # Length-prefixed, never delimiter-joined: a path may contain a tab or
+        # a newline, and joining would let one path spell two entries.
+        for part in (path, meta):
+            digest.update(len(part).to_bytes(8, "big"))
+            digest.update(part)
+    return digest.hexdigest()
 
 
 def blocking_review_reason(

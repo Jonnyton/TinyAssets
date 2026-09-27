@@ -76,18 +76,20 @@ jobs:
           GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN || github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          BASE_OID: ${{ github.event.pull_request.base.sha }}
         shell: bash
         run: |
           set -euo pipefail
 
           PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
-            --json autoMergeRequest,body,headRefName,headRefOid)"
+            --json autoMergeRequest,body,headRefName,headRefOid,baseRefOid)"
           STATE="$(jq -r \
             'if .autoMergeRequest == null then "no" else "yes" end' \
             <<<"$PR_JSON")"
           HEAD_REF="$(jq -r '.headRefName' <<<"$PR_JSON")"
           HEAD_OID="$(jq -r '.headRefOid' <<<"$PR_JSON")"
+          # Base and head from the SAME read, never the event's base with the
+          # current head: a rebase between the two would key the wrong diff.
+          BASE_OID="$(jq -r '.baseRefOid' <<<"$PR_JSON")"
           jq -r '.body // ""' <<<"$PR_JSON" > "$RUNNER_TEMP/pr-body.md"
 
           # Same diff key as pr-scope-guard.yml; empty on any failure, which
@@ -95,7 +97,9 @@ jobs:
           DIFF_KEY=""
           if git fetch --no-tags --filter=blob:none origin \
                 "+refs/pull/${PR}/head:refs/remotes/pr/head" \
-              && git cat-file -e "${HEAD_OID}^{commit}"; then
+                "+refs/heads/main:refs/remotes/origin/main" \
+              && git cat-file -e "${HEAD_OID}^{commit}" \
+              && git cat-file -e "${BASE_OID}^{commit}"; then
             DIFF_KEY="$(python scripts/drain_review_gate.py --print-diff-key \
               "$BASE_OID" "$HEAD_OID")" || DIFF_KEY=""
           fi
