@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The connect ask does not appear when the credential dies
+filed: '2026-09-01'
+summary: the rail asks only when NO binding exists, so a bound-but-expired universe is unserved and un-asked
+---
+
 # The "connect a model" ask appears only when nothing is bound, not when the credential dies
 
 **Filed:** 2026-09-01, from the founder's instruction after his universe stopped

@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Node-timeout test wait margin
+filed: '2026-09-23'
+summary: a five-second test wait straddles measured runner overhead; no runtime regression established
+---
+
 # A node-timeout runner test sits on its own wait deadline
 
 **Filed:** 2026-09-23. Measured on Windows at `1f121719` + the queued-deadline lane.

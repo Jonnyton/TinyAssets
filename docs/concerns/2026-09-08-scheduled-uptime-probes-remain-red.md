@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Scheduled uptime coverage remains incomplete
+filed: '2026-09-08'
+summary: deployed classifier honestly reports unavailable execution-quality and rendered observations; natural post-merge classification verified; cadence and independent coverage remain open
+---
+
 # Scheduled uptime acceptance lacks execution-quality and rendered coverage
 
 **Classification update, 2026-09-19 06:20 UTC:** PR #3880 is merged and

@@ -25,7 +25,8 @@ lint → type check → unit tests → build → integration → e2e (optional)
 ```
 
 Run on every PR and push to main; failures block merge (branch protection, no
-force-push to main, ≥1 approval). Configure as parallel jobs (lint/typecheck/test
+force-push to main). Review is NOT per-PR here — `AGENTS.md` § *The loop* item 4
+scopes it to floor-class changes and gate files. Configure as parallel jobs (lint/typecheck/test
 separately) with dependency caching; if the pipeline exceeds ~10 min, optimize —
 cache deps, parallelize, path-filter unchanged areas, shard tests — don't skip.
 
@@ -43,9 +44,8 @@ secrets only in the deploy platform/vault. Automate dependency updates
 
 ## Pre-launch checklist
 
-- **Code:** all tests pass; build clean (no warnings); lint/types pass; reviewed
-  and approved; no stray `console.log`/debug TODOs; error handling covers expected
-  failures.
+- **Code:** all tests pass; build clean (no warnings); lint/types pass; no stray
+  `console.log`/debug TODOs; error handling covers expected failures.
 - **Security:** no secrets in code; `npm audit` clean of critical/high; input
   validation on user-facing endpoints; authn/authz in place; security headers
   (CSP/HSTS); rate limiting on auth; CORS scoped, not wildcard. (See

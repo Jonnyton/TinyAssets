@@ -1109,6 +1109,22 @@ class _BackgroundAssignedProviderSession:
                 )
             )
         universe_dir = self._base_path / self._task.universe_id
+        # NO pre-launch credential refresh here, deliberately. This attempt's
+        # authority is already minted and PINS the assignment generation, and a
+        # refresh renews the accepted source, which advances it -- so refreshing
+        # here fails the very check it was meant to help, and the PermissionError
+        # is swallowed into ProviderAuthorityHeldError below, which cannot fall
+        # back either. Codex refute-review P1 #3 reproduced both halves on the
+        # foreground twin of this lane.
+        #
+        # The refresh belongs where nothing is pinned yet, which is the served
+        # entry (`provider_assignment.authorize_served_provider_call_async`).
+        # Covering this lane means moving the seam ahead of the authority mint, and
+        # that is its own change:
+        # docs/concerns/2026-09-26-pr4032-refresh-launch-integration.md. A finished
+        # sign-in still surfaces from the launch itself, now typed as a sign-in
+        # failure rather than an outage
+        # (providers/codex_provider._terminal_auth_failure).
         snapshot = None
         carrier = None
         try:

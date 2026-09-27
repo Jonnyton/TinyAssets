@@ -1,3 +1,10 @@
+---
+severity: P2
+title: One key serves both dedupe and muting
+filed: '2026-08-28'
+summary: the agent rewords its prose, dedupe misses, and the rail grows a second tab for a grant already pending
+---
+
 # One key serves both "same ask?" and "what did they mute?" — so rewording defeats dedupe
 
 **Filed:** 2026-08-28

@@ -1,3 +1,10 @@
+---
+severity: P2
+title: GH_TOKEN still reaches the daemon's container config
+filed: '2026-09-24'
+summary: 'the entrypoint strips it from the process, but it stays in the shared env file; the first backup-only move would have chowned `/etc/tinyassets` to root:root and locked the daemon out (withdrawn from #3966)'
+---
+
 # GH_TOKEN still reaches the daemon's container config through the shared env file
 
 **Filed:** 2026-09-24

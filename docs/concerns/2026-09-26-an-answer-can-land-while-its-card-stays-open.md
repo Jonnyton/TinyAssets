@@ -1,3 +1,10 @@
+---
+severity: P1
+title: A pending-request answer can land while its card stays open
+filed: '2026-09-26'
+summary: '`resolve_request` returns `False` on a storage fault and three branches report "answered" anyway: the credential is deposited / the grant widened / the key deleted, and the tab stays pending and re-answerable. `bind_model_access` and `_rotate_answer` handle it; deposit, extend and remove do not'
+---
+
 # A pending-request answer can land while its card stays open
 
 **Filed:** 2026-09-26, from the Codex refute-review of PR #4021

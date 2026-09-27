@@ -40,8 +40,13 @@ BUDGET_SCRIPT = REPO_ROOT / "scripts" / "check_context_budget.py"
 RULEBOOK = (
     "AGENTS.md",
     "CLAUDE.md",
-    "docs/reference/quality-gates.md",
     "docs/reference/executable-gates.md",
+)
+
+# Deleted on purpose by the 2026-09-26 recut. A procedure doc is where a rule goes
+# to hide, so their ABSENCE is pinned the same way a size is.
+FORBIDDEN = (
+    "docs/reference/quality-gates.md",
     "docs/reference/delivery-flow.md",
 )
 
@@ -53,8 +58,8 @@ RULE_DIRS = ("docs/reference/*.md", ".agents/skills/*/SKILL.md")
 # so "the rulebook only shrinks" would rest on a reviewer noticing. Capping the
 # TOTALS makes displacement mechanical — a pin may go up only if another comes
 # down by at least as much — while lowering any pin stays free.
-POST_CUT_TOTAL = 25262        # sum of the per-file pins
-POST_CUT_AGGREGATE_TOTAL = 110231   # sum of the directory pins
+POST_CUT_TOTAL = 4403         # sum of the per-file pins
+POST_CUT_AGGREGATE_TOTAL = 58835    # sum of the directory pins
 
 # How far a file may sit under its pin before the pin must come down. Small enough
 # that banked headroom cannot hide a re-grown rule, large enough that a typo fix
@@ -87,6 +92,25 @@ def test_every_rulebook_file_is_pinned(cb) -> None:
         "the pinned set drifted from the rulebook AGENTS.md declares; dropping a "
         "file from CONFIG is the cheapest way to escape its pin"
     )
+
+
+def test_the_deleted_procedure_docs_stay_deleted(cb) -> None:
+    """Recreating one is how the rulebook grows back, so it fails like an overrun."""
+    assert set(cb.FORBIDDEN) == set(FORBIDDEN)
+    for rel in FORBIDDEN:
+        assert not (REPO_ROOT / rel).exists(), f"{rel} came back"
+
+
+def test_recreating_a_deleted_doc_goes_red(cb, tmp_path: Path) -> None:
+    _fake_repo(cb, tmp_path)
+    revived = tmp_path / FORBIDDEN[0]
+    revived.parent.mkdir(parents=True, exist_ok=True)
+    revived.write_bytes(b"# quality gates")
+
+    _results, _combined, hard_busted, _imported, missing = cb.run(tmp_path)
+
+    assert hard_busted
+    assert any(FORBIDDEN[0] in entry for entry in missing)
 
 
 def test_aggregate_pins_cover_the_rule_directories(cb) -> None:
@@ -164,10 +188,19 @@ def test_combined_ceiling_is_not_loose(cb) -> None:
     assert cb.COMBINED_HARD_BYTES <= always
 
 
-def test_agents_md_states_the_rule() -> None:
-    text = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    assert "The rulebook only shrinks" in text
-    assert "a new rule must displace an old one" in text
+def test_the_rule_is_stated_where_it_now_lives() -> None:
+    """The principle is PLAN.md's; the loop carries the one line an agent acts on.
+
+    Before the 2026-09-26 recut both sentences sat in AGENTS.md. The founder's bar
+    moved principles to `PLAN.md`, so asserting the old wording in the always-loaded
+    file would pin the rulebook to the shape the recut removed.
+    """
+    plan = (REPO_ROOT / "PLAN.md").read_text(encoding="utf-8")
+    assert "The rulebook only shrinks" in plan
+    assert "A new rule must displace an old one" in plan
+
+    agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "A new rule deletes an old one" in agents
 
 
 # ------------------------------------------------------- can it actually fail?

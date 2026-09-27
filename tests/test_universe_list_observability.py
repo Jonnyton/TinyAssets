@@ -60,7 +60,7 @@ def _declare_public(base, uid, udir):
 
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
     set_founder_home(base, founder_sub=f"test-owner::{uid}", universe_id=uid)
-    set_universe_visibility(uid, "public")
+    set_universe_visibility(uid, "public", source="owner")
 
 
 @pytest.fixture

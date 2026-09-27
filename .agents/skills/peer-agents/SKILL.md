@@ -17,7 +17,7 @@ python scripts/peer_agent.py claude --out output/peer-review.md \
     --prompt-file brief.md
 
 # Have Codex fix something in a worktree (write mode):
-python scripts/peer_agent.py codex --out output/codex-fix.md \
+python scripts/peer_agent.py codex --model gpt-6-astra --out output/codex-fix.md \
     --prompt "Fix the failing test in tests/test_universe_nodes.py and run it" \
     --cwd ../wf-bug126 --write
 
@@ -72,11 +72,11 @@ Two more habits that fell out of the same incident:
 
 Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — gpt-6-astra rejects it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Model defaults are frontier, always.** claude runs `--model fable` (alias tracking the latest Claude model); codex runs with no `-m`, taking the model from the host's `~/.codex/config.toml` — currently **gpt-6-astra** — and tracks whatever the host configures next. Override only with a reason: `--model M`, or `WORKFLOW_CODEX_MODEL`.
+**Models are pinned, not inherited.** claude: `--model fable` (latest Claude). **codex: `-m gpt-6-astra`, always explicit** (founder, 2026-09-27) — never the host's `~/.codex/config.toml` default, which is silently whatever it last said and is named nowhere in the result. Override only with a stated reason (`--model M`, `WORKFLOW_CODEX_MODEL`).
 
 ## When to use which peer
 
-- **Which changes need a review is not decided here.** `AGENTS.md` § *Working Norms* and `docs/reference/quality-gates.md` own the scope (floor-class changes and receipt-gated paths, one round, dispatched in parallel after the PR opens); this skill owns the mechanics. When one is owed: if you are Kimi/Claude, dispatch to codex; if you are Codex/OpenAI, dispatch to claude.
+- **Which changes need a review is not decided here.** `AGENTS.md` § *The loop* (item 4) owns the scope — floor-class changes and gate files, one round, after the PR opens; this skill owns the mechanics. When one is owed: if you are Kimi/Claude, dispatch to codex; if you are Codex/OpenAI, dispatch to claude.
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
 - **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree.
 
