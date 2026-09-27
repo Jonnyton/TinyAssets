@@ -218,20 +218,6 @@ class AgentTurnCoordinator:
         except Exception:  # noqa: BLE001 - bookkeeping never replaces the outcome
             _LOG.warning("could not release agent turn boot ownership")
 
-    def _release_turn(self):
-        """This boot has stopped executing the turn, whatever state it reached.
-
-        Deliberately not "the turn is terminal": a cancelled or timed-out task
-        leaves a progressing row behind with nothing running it, and that row is
-        exactly the one a status surface must stop painting as activity.
-        """
-        if self.turn is None:
-            return
-        try:
-            BOOT.release(self.context.universe_dir.name, self.turn.turn_id)
-        except Exception:  # noqa: BLE001 - bookkeeping never replaces the outcome
-            _LOG.warning("could not release agent turn boot ownership")
-
     async def run(self):
         try:
             return await self._run()
