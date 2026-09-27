@@ -198,11 +198,33 @@ def test_a_rejection_for_another_source_is_still_recorded(tmp_path, monkeypatch)
     assert "codex" in refresh_rejected_sources(tmp_path, universe_id=UID)
 
 
+def _deposit(universe_dir, service="codex", refresh="r-1"):
+    """A real subscription record, because a card only stands for a live credential."""
+    import base64
+
+    from tinyassets.credential_vault import (
+        llm_subscription_credential_record,
+        write_credential_vault,
+    )
+
+    document = base64.b64encode(json.dumps({
+        "tokens": {"id_token": ID_TOKEN, "access_token": "a", "refresh_token": refresh},
+    }).encode()).decode()
+    write_credential_vault(
+        universe_dir,
+        [llm_subscription_credential_record(service=service, auth_json_b64=document)],
+        owner_user_id="owner", universe_id=UID,
+    )
+
+
 def test_the_card_names_the_source_from_the_record_and_asks_for_a_sign_in(tmp_path):
     from tinyassets.api.pending_requests import SIGN_IN_SHAPE, _reconnect_requests
 
+    universe = tmp_path / UID
+    universe.mkdir(exist_ok=True)
+    _deposit(universe)
     record_refresh_rejected(tmp_path, universe_id=UID, service="codex")
-    cards = _reconnect_requests(tmp_path, UID)
+    cards = _reconnect_requests(tmp_path, UID, universe)
     assert len(cards) == 1
     card = cards[0]
     assert card["title"] == "codex needs you to sign in again"
@@ -218,4 +240,71 @@ def test_the_card_names_the_source_from_the_record_and_asks_for_a_sign_in(tmp_pa
 def test_no_rejection_means_no_card(tmp_path):
     from tinyassets.api.pending_requests import _reconnect_requests
 
-    assert _reconnect_requests(tmp_path, UID) == []
+    assert _reconnect_requests(tmp_path, UID, tmp_path / UID) == []
+
+
+
+# --------------------------------------------------------------------------- #
+# 5. The card matches what the surface can actually honour.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_rejection_for_a_removed_credential_raises_no_card(tmp_path):
+    """Codex refute-review round 2, item 3: a rejection must not outlive its credential.
+
+    The row says a stored sign-in was refused. If the owner has since REMOVED that
+    credential there is nothing to sign back in to, and the card would ask them to
+    repair a connection they deleted.
+    """
+    from tinyassets.api.pending_requests import _reconnect_requests
+
+    universe = tmp_path / UID
+    universe.mkdir(exist_ok=True)
+    record_refresh_rejected(tmp_path, universe_id=UID, service="codex")
+    assert _reconnect_requests(tmp_path, UID, universe) == []
+
+
+def test_only_one_reconnect_card_is_offered_at_a_time(tmp_path):
+    """Codex refute-review round 2, P1: there is ONE connect panel and `connectBody`
+    MOVES it, so a second card re-configured it on every render -- and the rail
+    re-renders every 15 seconds, resetting a sign-in in progress and leaving the second
+    card with no panel at all. One card at a time is what the surface can honour.
+    """
+    from tinyassets.api.pending_requests import _reconnect_requests
+
+    universe = tmp_path / UID
+    universe.mkdir(exist_ok=True)
+    _deposit(universe, service="codex")
+    _deposit(universe, service="claude")
+    record_refresh_rejected(
+        tmp_path, universe_id=UID, service="claude", when="2026-09-20T00:00:00Z")
+    record_refresh_rejected(
+        tmp_path, universe_id=UID, service="codex", when="2026-09-26T00:00:00Z")
+
+    cards = _reconnect_requests(tmp_path, UID, universe)
+    assert len(cards) == 1
+    # The OLDEST rejection first: the one that has been broken longest.
+    assert cards[0]["title"] == "claude needs you to sign in again"
+
+    # ...and the next appears once that one is resolved.
+    clear_refresh_rejected(tmp_path, universe_id=UID, service="claude")
+    cards = _reconnect_requests(tmp_path, UID, universe)
+    assert len(cards) == 1 and cards[0]["title"] == "codex needs you to sign in again"
+
+
+def test_a_source_without_a_brokered_sign_in_gets_the_ordinary_shapes(tmp_path):
+    from tinyassets.api.pending_requests import (
+        _MODEL_CONNECT_SHAPES,
+        SIGN_IN_SHAPE,
+        _reconnect_requests,
+    )
+
+    universe = tmp_path / UID
+    universe.mkdir(exist_ok=True)
+    _deposit(universe, service="claude")
+    record_refresh_rejected(tmp_path, universe_id=UID, service="claude")
+    card = _reconnect_requests(tmp_path, UID, universe)[0]
+    shapes = card["action"]["setup"]["shapes"]
+    assert SIGN_IN_SHAPE not in shapes, "a sign-in was offered for a source without one"
+    assert shapes == list(_MODEL_CONNECT_SHAPES)
+    assert "one tap" not in card["body"]

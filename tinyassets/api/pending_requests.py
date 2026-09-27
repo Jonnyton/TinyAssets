@@ -1563,7 +1563,7 @@ _RECONNECT_REQUEST_PREFIX = "reconnect-source"
 SIGN_IN_SHAPE = "sign_in"
 
 
-def _reconnect_requests(base: Any, uid: str) -> list[dict[str, object]]:
+def _reconnect_requests(base: Any, uid: str, udir: Any) -> list[dict[str, object]]:
     """One card per source whose stored sign-in the provider has refused.
 
     Derived, never stored, exactly like the connect entry above: it follows the
@@ -1575,13 +1575,37 @@ def _reconnect_requests(base: Any, uid: str) -> list[dict[str, object]]:
     assembled from the service the vault reports, so no provider appears in platform
     text.
     """
-    from tinyassets.credential_vault import refresh_rejected_sources
+    from tinyassets.credential_vault import load_credential_vault, refresh_rejected_sources
     from tinyassets.onboarding import DEVICE_SIGN_IN_SERVICE
 
+    rejected = refresh_rejected_sources(base, universe_id=uid)
+    if not rejected:
+        return []
+    # A rejection outlives nothing. The row says a stored sign-in was refused; if that
+    # credential has since been REMOVED there is no longer anything to sign back in to,
+    # and the card would ask the owner to repair a connection they deleted (Codex
+    # refute-review round 2, item 3).
+    try:
+        deposited = {
+            str(record.get("service") or "").strip().lower()
+            for record in load_credential_vault(udir)
+            if record.get("credential_type") == "llm_subscription"
+        }
+    except (ValueError, OSError):
+        deposited = set(rejected)   # unreadable vault: keep the cards rather than hide them
+    live = sorted(
+        ((service, at) for service, at in rejected.items()
+         if service and service in deposited),
+        key=lambda row: (row[1], row[0]),
+    )
+    # AT MOST ONE. There is a single connect panel and `connectBody` MOVES it, so a
+    # second card re-configured it on every render -- and the rail re-renders every 15
+    # seconds, which reset a sign-in the owner was part-way through and left the second
+    # card with no panel at all (Codex refute-review round 2, P1). One card at a time is
+    # the shape the surface can actually honour: the oldest rejection first, the next
+    # once that one is resolved.
     cards: list[dict[str, object]] = []
-    for service, rejected_at in sorted(refresh_rejected_sources(base, universe_id=uid).items()):
-        if not service:
-            continue
+    for service, rejected_at in live[:1]:
         cards.append({
             "request_id": f"{_RECONNECT_REQUEST_PREFIX}:{service}",
             "kind": "LLM",
@@ -1656,7 +1680,7 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     # FIRST in the rail: a refused sign-in is the reason a powered universe is not
     # working, so it outranks both the agent's asks and the optional
     # "connect another" entry. Derived the same way, for the same reasons.
-    rows = [*_reconnect_requests(_base_path(), uid), *rows]
+    rows = [*_reconnect_requests(_base_path(), uid, udir), *rows]
     return {
         "universe_id": uid,
         "pending": [{**r, "grant_sentence": _grant_sentence(r)} for r in rows],
