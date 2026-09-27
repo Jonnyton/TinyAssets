@@ -34,8 +34,8 @@ def pytest_configure(config: pytest.Config) -> None:
     and could not be removed from an ordinary shell.
 
     Failing here costs one clear error; the alternative costs an elevated
-    cleanup and a directory nobody can delete. See ``AGENTS.md`` § *Testing*
-    and ``scripts/clear_sandbox_temp_dirs.ps1``.
+    cleanup and a directory nobody can delete. Recovery:
+    ``scripts/clear_sandbox_temp_dirs.ps1 -Apply`` from an elevated shell.
 
     On Windows, ALSO pass a SHORT ``--basetemp`` (e.g.
     ``C:/Users/<you>/AppData/Local/Temp/ta-pt``): pytest's default root plus a

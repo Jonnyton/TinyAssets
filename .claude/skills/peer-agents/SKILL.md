@@ -76,7 +76,7 @@ Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (
 
 ## When to use which peer
 
-- **Which changes need a review is not decided here.** `AGENTS.md` § *Working Norms* and `docs/reference/quality-gates.md` own the scope (floor-class changes and receipt-gated paths, one round, dispatched in parallel after the PR opens); this skill owns the mechanics. When one is owed: if you are Kimi/Claude, dispatch to codex; if you are Codex/OpenAI, dispatch to claude.
+- **Which changes need a review is not decided here.** `AGENTS.md` § *The loop* (item 4) owns the scope — floor-class changes and gate files, one round, after the PR opens; this skill owns the mechanics. When one is owed: if you are Kimi/Claude, dispatch to codex; if you are Codex/OpenAI, dispatch to claude.
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
 - **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree.
 
