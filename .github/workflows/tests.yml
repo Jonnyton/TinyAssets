@@ -60,8 +60,9 @@ on:
   # acceptable for a merge gate, which is why `required-tests` is REQUIRED only
   # via `pull_request`, where the trigger is deterministic.
   #
-  # Accepted side effect: `required-tests` and `slow-tests` have no job-level
-  # `if:`, so they run on the schedule too. `heavy-tests` runs only what the required gate excludes; it is no longer a superset of
+  # Accepted side effect: `required-tests` (and its shards) and `slow-tests`
+  # have no job-level `if:` that can skip them — the aggregate's `always()`
+  # cannot evaluate false — so they run on the schedule too. `heavy-tests` runs only what the required gate excludes; it is no longer a superset of
   # `required-tests`, so that is duplicated work. It is deliberate — runners are
   # free here, and the alternative is a job-level `if:` on the REQUIRED job.
   #
@@ -131,20 +132,33 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  required-tests:
-    # This exact string is the branch-protection context. Renaming the job
-    # ORPHANS the old required context: it stays "Expected — waiting for
-    # status" forever and every PR blocks indefinitely (it does NOT fail open;
-    # corrected 2026-08-02 per Codex review). Change the name only together
-    # with the `gh api` protection update in
-    # docs/decisions/ADR-003-required-test-aggregator.md.
-    name: required-tests
+  # The required surface runs as SHARDS in parallel, then ONE aggregate job
+  # (`required-tests`, below) decides the gate over the union. Measured before
+  # the split: ~21,900 tests serially, 19-22 min on an idle runner (runs
+  # 36284043853, 36283801757), 40+ under contention. Each test FILE is owned by
+  # exactly one shard via a stable path hash (ci_required_tests.shard_of), so
+  # the split is complete and disjoint by construction.
+  #
+  # Not pytest-xdist: parallelism is across RUNNERS, so no two shards share a
+  # process, temp dir or sqlite file — the in-process nondeterminism documented
+  # in ci_required_tests.py does not apply.
+  #
+  # The shard count appears twice — the matrix and `--expect-shards` in the
+  # aggregate — and test_tests_workflow pins them equal. A shard added to one
+  # and not the other is either a missing shard (gate red) or an unowned file
+  # set (tests silently never run); the test is what stops the second.
+  required-tests-shard:
+    # Deliberately NOT `required-tests`: only the aggregate may carry the
+    # protection context, or a green shard could satisfy it alone.
+    name: required-tests shard ${{ matrix.shard }}/6
     runs-on: ubuntu-latest
-    # 30 was measured against the 2026-07-22 suite (25:48) and the suite has
-    # since outgrown it — run 30766011005 was killed at exactly 30:15 with the
-    # tests still going. 50 buys headroom for one honest full measurement; the
-    # ADR documents the fast-subset escape hatch if the latency bites.
-    timeout-minutes: 50
+    timeout-minutes: 30
+    strategy:
+      # One red shard must not cancel the rest: the aggregate would then report
+      # missing shards instead of the actual failures.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
 
     steps:
       - uses: actions/checkout@v4
@@ -160,34 +174,83 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
 
-      - name: Run the required test surface
+      - name: Run this shard of the required test surface
         env:
           # Keep the suite off the real repo tree and off any host state. The
           # conftest already forces mock providers and sqlite_only storage; this
           # is belt-and-braces for anything that reads the env directly.
           TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data
         run: |
-          mkdir -p "$TINYASSETS_DATA_DIR"
-          # The script owns the pytest invocation AND the pass/fail decision:
-          # it fails on any failure not listed in .github/known-failing-tests.txt.
-          # No `|| true`, no `continue-on-error` — its exit code IS the gate.
+          mkdir -p "$TINYASSETS_DATA_DIR" shard-out
+          # The shard applies the same quarantine comparison to its own tests
+          # (a red shard names its new failures), but the AGGREGATE is the gate.
           #
-          # --exclude-from drops the 47 files holding ~90% of the wall clock,
-          # taking this from ~37 min to ~4. That matters because `strict`
-          # protection requires a PR to be up to date at merge time and main
-          # takes a commit every ~10 min: at 37 min only 5% of gaps are long
-          # enough to land anything, which would wedge every merge including
-          # the drain. At ~4 min, 79% are.
-          #
+          # --exclude-from drops the files holding most of the heavy wall
+          # clock; they run in `heavy-tests` on the hourly schedule instead.
           # Excluding them was VERIFIED safe, not assumed: every failure the
           # exclusion run reported was also failing in the same-tree full run.
-          # The excluded files still run in `heavy-tests`, on a best-effort
-          # schedule of one nominal slot per hour — NOT "on every main push", which was
-          # the original claim here and was wrong: app-performed merges raise no
-          # push event. See the `schedule:` trigger comment.
-          python scripts/ci_required_tests.py --junit junit.xml \
+          # NOT "on every main push" — app-performed merges raise no push
+          # event. See the `schedule:` trigger comment.
+          python scripts/ci_required_tests.py \
+            --junit "shard-out/junit-shard-${{ matrix.shard }}.xml" \
             --exclude-from .github/heavy-test-files.txt \
-            --min-ran 10700
+            --shard "${{ matrix.shard }}/6" --profile shard
+
+      - name: Upload shard result
+        # always(): a red shard's junit and manifest are what let the aggregate
+        # report the real failures rather than "missing shard".
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-required-shard-${{ matrix.shard }}
+          path: shard-out/
+          if-no-files-found: warn
+          overwrite: true
+
+  required-tests:
+    # This exact string is the branch-protection context. Renaming the job
+    # ORPHANS the old required context: it stays "Expected — waiting for
+    # status" forever and every PR blocks indefinitely (it does NOT fail open;
+    # corrected 2026-08-02 per Codex review). Change the name only together
+    # with the `gh api` protection update in
+    # docs/decisions/ADR-003-required-test-aggregator.md.
+    name: required-tests
+    needs: required-tests-shard
+    # `always()` is the ONE condition this job may carry, and it is required,
+    # not optional. Without it a failed or cancelled shard makes GitHub SKIP
+    # this job, and a skipped required check is accepted by branch protection
+    # as satisfied — a red shard would merge green. always() cannot evaluate
+    # false, so the job cannot be skipped: it always runs and always reports.
+    # Pinned by test_required_tests_cannot_decline_to_report.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: junit-required-shard-*
+          path: shards/
+          merge-multiple: true
+
+      - name: Decide the gate over the union of all shards
+        env:
+          SHARD_RESULT: ${{ needs.required-tests-shard.result }}
+        run: |
+          # The script fails on a shard job result other than success (even if
+          # its files look complete) and on a MISSING, duplicated, truncated or
+          # differently-split shard, before the quarantine comparison.
+          # No `|| true`, no `continue-on-error` — the exit code IS the gate.
+          python scripts/ci_required_tests.py --aggregate shards/ \
+            --expect-shards 6 --shard-job-result "$SHARD_RESULT" \
+            --junit junit.xml --min-ran 10700
 
       - name: Upload junit
         if: always()
@@ -215,8 +278,13 @@ jobs:
   # job without that comparison reverts the wrong change.
   # Tracked: docs/concerns/2026-08-27-full-tests-permanently-red.md
   #
-  # `github.event_name != 'pull_request'` therefore admits schedule, push and
-  # workflow_dispatch — schedule is what actually carries it (see above).
+  # Schedule and manual dispatch ONLY (2026-09-27). It used to be every
+  # non-PR event, and once merges started raising `push` it ran on every
+  # merge: 18 main pushes x ~41 min in one 4 h window, 15 of 15 red at
+  # baseline, on a runner pool capped near 20 jobs that PR CI and the deploy
+  # were queuing for. An hourly tripwire needs no per-merge copy. Naming the
+  # events also keeps a future `merge_group` trigger from inheriting it.
+  # docs/design-notes/2026-09-27-lean-ci-pipeline.md
   # Was `full-tests`, which re-ran the ENTIRE required suite a second time.
   # Measured on Linux CI run 33037400288: required-tests 7m26s / 10,700 tests;
   # full-tests 45m09s / 13,865. The ~3,100-test difference IS the heavy list;
@@ -231,7 +299,7 @@ jobs:
   # letting the job pick a number it can meet.
   heavy-tests:
     name: heavy-tests
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

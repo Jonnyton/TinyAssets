@@ -15,13 +15,20 @@ Two callers, one receipt format:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import subprocess
 import sys
 from collections.abc import Iterable
 from pathlib import Path
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_DIFF_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+# One `git diff --raw` record header with FULL object ids (SHA-1 or SHA-256).
+_RAW_META_RE = re.compile(
+    rb":[0-7]{6} [0-7]{6} ([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) [A-Z][0-9]*"
+)
 _ARTIFACT_RE = re.compile(
     r"Drain-Review-Artifact: "
     r"(docs/[A-Za-z0-9_./-]+\.md|https://github\.com/\S+)"
@@ -53,6 +60,7 @@ def review_allows_merge(
     force: bool = False,
     artifact_must_be_comment_on: tuple[str, int] | None = None,
     trusted_comment_urls: frozenset[str] | None = None,
+    diff_key: str | None = None,
 ) -> bool:
     """Allow ordinary PRs; drain PRs — and force-flagged calls — need a receipt.
 
@@ -74,7 +82,7 @@ def review_allows_merge(
         return False
 
     lines = leading_lines(body, 3)
-    if not (_attests_approval(lines, head) and len(lines) == 3):
+    if not (_attests_approval(lines, head, diff_key) and len(lines) == 3):
         return False
     artifact = lines[2]
     if _ARTIFACT_RE.fullmatch(artifact) is None:
@@ -122,21 +130,30 @@ def leading_lines(text: str, count: int) -> list[str]:
     return lines
 
 
-def _attests_approval(lines: list[str], head: str) -> bool:
-    """Do these leading lines OPEN with an approval of `head`?
+def _attests_approval(lines: list[str], head: str, diff_key: str | None = None) -> bool:
+    """Do these leading lines OPEN with an approval of `head`, or of its diff?
 
     ONE definition of what an approval looks like, used for the PR body and for
     the cited comment alike. Exact string equality on the first two non-blank
     lines, in order, so `BLOCK`, a lower-case verdict, trailing prose, or a head
     line for any other commit all refuse.
+
+    The second line binds the approval to what was reviewed, in one of two ways:
+
+    * `Drain-Review-Head: <sha>` — this exact commit. Any push voids it.
+    * `Drain-Review-Diff: <key>` — this exact CHANGE, as `diff_key` computes it
+      for the current head. Merging main in or rebasing leaves the key alone
+      unless the PR's own change moves with it, so it survives the catch-ups
+      that voided receipts on 2026-09-26 without accepting any content the
+      reviewer did not see. Only honoured when the caller computed a key.
     """
-    return lines[:2] == [
-        "Drain-Review-Verdict: APPROVE",
-        f"Drain-Review-Head: {head}",
-    ]
+    bindings = [f"Drain-Review-Head: {head}"]
+    if diff_key is not None and _DIFF_KEY_RE.fullmatch(diff_key):
+        bindings.append(f"Drain-Review-Diff: {diff_key}")
+    return len(lines) >= 2 and lines[0] == "Drain-Review-Verdict: APPROVE" and lines[1] in bindings
 
 
-def comment_attests_approval(comment_body: str, head: str) -> bool:
+def comment_attests_approval(comment_body: str, head: str, diff_key: str | None = None) -> bool:
     """Does this comment OPEN by publishing an approval of `head`?
 
     Comment identity was not enough. Cross-family review 2026-09-26, finding 6:
@@ -147,7 +164,7 @@ def comment_attests_approval(comment_body: str, head: str) -> bool:
     gap too (finding 7), because the comment must name the CURRENT head, which
     needs no clock.
     """
-    return _attests_approval(leading_lines(comment_body, 2), head)
+    return _attests_approval(leading_lines(comment_body, 2), head, diff_key)
 
 
 def artifact_names_trusted_comment(
@@ -183,7 +200,9 @@ def artifact_names_trusted_comment(
     return match["url"].lower() in trusted_comment_urls
 
 
-def published_approval_urls(stream: str, *, head: str) -> frozenset[str] | None:
+def published_approval_urls(
+    stream: str, *, head: str, diff_key: str | None = None
+) -> frozenset[str] | None:
     """URLs of comments that PUBLISH a trusted approval of `head`.
 
     The workflow reads the PR's issue comments, reviews and review comments and
@@ -227,9 +246,77 @@ def published_approval_urls(stream: str, *, head: str) -> frozenset[str] | None:
             # The projection uses `(.body // "")`, so an absent body means the
             # inventory is not the shape this gate reads. Refuse it.
             return None
-        if association in _TRUSTED_ASSOCIATIONS and comment_attests_approval(body, head):
+        if association in _TRUSTED_ASSOCIATIONS and comment_attests_approval(
+            body, head, diff_key
+        ):
             urls.add(url.lower())
     return frozenset(urls)
+
+
+def diff_key(base: str, head: str, *, cwd: Path | None = None) -> str:
+    """The identity of the CHANGE a PR makes, independent of its commit history.
+
+    sha256 over every path in `git diff merge-base(base, head)..head`, each
+    with both modes and both FULL blob ids (`--raw --no-abbrev`, no rename
+    detection). Blob ids are content hashes, so this pins exactly which bytes
+    the PR replaces and with what, including binary files, and nothing else:
+
+    * merge main in, or rebase, where main did not touch the PR's files: the
+      merge base moves, but every path's before/after blob is unchanged -> SAME
+      key;
+    * any edit to the PR's own change, or a catch-up where main DID touch a
+      file the PR changes (the "before" blob or the merged "after" blob moves)
+      -> DIFFERENT key, so the reviewer re-reviews exactly when the reviewed
+      change is no longer the change being merged.
+
+    Deliberately not `git patch-id`: it hashes only textual hunk lines, so two
+    different binary changes to the same path would share an id.
+
+    Raises on any git failure; callers must treat that as "no key" (deny).
+    """
+    def git(*args: str) -> bytes:
+        return subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, check=True
+        ).stdout
+
+    merge_base = git("merge-base", base, head).strip().decode("ascii")
+    # `--no-abbrev` is what makes the ids full: `--full-index` alone still
+    # prints abbreviated ids in --raw output, and two different blobs can share
+    # an abbreviation (cross-family review 2026-09-27 built such a pair).
+    raw = git(
+        "diff",
+        "--raw",
+        "--no-renames",
+        "--full-index",
+        "--no-abbrev",
+        # A gitlink change must never vanish from the key: without this, a
+        # `.gitmodules` entry with `ignore = all` hides submodule edits.
+        "--ignore-submodules=none",
+        "-z",
+        merge_base,
+        head,
+    )
+    return diff_key_from_raw(raw)
+
+
+def diff_key_from_raw(raw: bytes) -> str:
+    """Hash `git diff --raw -z --no-abbrev` output; refuse anything else."""
+    fields = raw.split(b"\0")
+    if fields and fields[-1] == b"":
+        fields.pop()
+    if len(fields) % 2:
+        raise ValueError("unexpected `git diff --raw -z` output")
+    pairs = sorted(zip(fields[1::2], fields[0::2]))
+    digest = hashlib.sha256()
+    for path, meta in pairs:
+        if _RAW_META_RE.fullmatch(meta) is None:
+            raise ValueError(f"unexpected `git diff --raw` record: {meta!r}")
+        # Length-prefixed, never delimiter-joined: a path may contain a tab or
+        # a newline, and joining would let one path spell two entries.
+        for part in (path, meta):
+            digest.update(len(part).to_bytes(8, "big"))
+            digest.update(part)
+    return digest.hexdigest()
 
 
 def blocking_review_reason(
@@ -370,7 +457,12 @@ def _blocking_review(args: argparse.Namespace) -> int:
 
     body = _read_text(args.body_file)
     comments = _read_text(args.review_comments_file)
-    trusted = None if comments is None else published_approval_urls(comments, head=args.head)
+    key = args.diff_key or None
+    trusted = (
+        None
+        if comments is None
+        else published_approval_urls(comments, head=args.head, diff_key=key)
+    )
     if body is not None and review_allows_merge(
         branch=args.branch,
         head=args.head,
@@ -378,6 +470,7 @@ def _blocking_review(args: argparse.Namespace) -> int:
         force=True,
         artifact_must_be_comment_on=(args.review_repo, args.review_pr),
         trusted_comment_urls=trusted,
+        diff_key=key,
     ):
         print("allow")
         return 0
@@ -385,11 +478,34 @@ def _blocking_review(args: argparse.Namespace) -> int:
     return 2
 
 
+def _print_diff_key(argv: list[str]) -> int:
+    """`--print-diff-key BASE HEAD`: the value a reviewer stamps as Drain-Review-Diff."""
+    parser = argparse.ArgumentParser(prog="drain_review_gate.py --print-diff-key")
+    parser.add_argument("base", help="the PR's base, e.g. origin/main")
+    parser.add_argument("head", nargs="?", default="HEAD")
+    args = parser.parse_args(argv)
+    try:
+        print(diff_key(args.base, args.head))
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        print(f"could not compute the diff key: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def main() -> int:
+    if sys.argv[1:2] == ["--print-diff-key"]:
+        return _print_diff_key(sys.argv[2:])
     parser = argparse.ArgumentParser()
     parser.add_argument("--branch", required=True)
     parser.add_argument("--head", required=True)
     parser.add_argument("--body-file", type=Path, required=True)
+    parser.add_argument(
+        "--diff-key",
+        default="",
+        help="The PR's diff key as computed by the workflow (diff_key), which "
+        "lets a `Drain-Review-Diff:` receipt match. Empty or malformed means "
+        "only `Drain-Review-Head:` receipts can match.",
+    )
     parser.add_argument(
         "--require-receipt",
         action="store_true",
@@ -489,7 +605,11 @@ def main() -> int:
         return 2
 
     if review_allows_merge(
-        branch=args.branch, head=args.head, body=body, force=args.require_receipt
+        branch=args.branch,
+        head=args.head,
+        body=body,
+        force=args.require_receipt,
+        diff_key=args.diff_key or None,
     ):
         print("allow")
         return 0
