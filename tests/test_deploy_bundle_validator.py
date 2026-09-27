@@ -514,6 +514,12 @@ def test_every_equivalent_duration_compose_accepts_is_accepted(tmp_path: Path, v
     `180000ms` -- all the same bound as the shipped `180s`, all valid compose
     (Codex on #4039, P2). A gate that blocks deploys, INCLUDING a rollback, must
     not refuse the next maintainer for writing an equivalent value.
+
+    The oracle for WHICH forms compose accepts is
+    `docs/audits/2026-09-26-pr4039-compose-repro.py` -- it runs `docker compose
+    config` over each one. Re-run it before widening or narrowing this list; the
+    first version of this test asserted from a guess about compose and was wrong
+    about a bare integer (see the test below).
     """
     source = re.sub(
         r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
