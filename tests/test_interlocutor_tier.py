@@ -112,6 +112,9 @@ def _make_universe(base: Path, uid: str, *, level: str | None = None) -> Path:
     """A registered universe with a seeded OKF bundle and a founder fact."""
     udir = base / uid
     udir.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(udir.parent, udir.name)
     seed_okf_bundle(udir, purpose="To help my founder bring their projects to life.")
     (udir / "founder.md").write_text(
         f"# Founder\nMy founder is {FOUNDER_FACT}.", encoding="utf-8"

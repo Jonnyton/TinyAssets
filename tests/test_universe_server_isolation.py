@@ -92,6 +92,20 @@ def _authenticate(user_id: str, scopes: list[str] | None = None) -> None:
     auth_middleware("ok")
 
 
+def _own(base: Path, uid: str) -> None:
+    """Give the directory an OWNER, which is what makes it a universe.
+
+    2026-09-02: a universe exists because an ownership row names it, not because
+    a folder is on disk (``tests/test_a_universe_needs_an_owner.py``). A
+    ``founder_home`` binding, NOT an ACL grant -- the D0c model this module
+    asserts hangs on "a universe with zero ACL rows is public", and seeding a
+    grant would make every fixture here private.
+    """
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(base, founder_sub=f"test-owner::{uid}", universe_id=uid)
+
+
 def _make_universe(base: Path, uid: str) -> Path:
     udir = base / uid
     udir.mkdir(parents=True)
@@ -101,6 +115,7 @@ def _make_universe(base: Path, uid: str) -> Path:
     from tinyassets.api.visibility import set_universe_visibility
 
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    _own(base, uid)
     set_universe_visibility(uid, "public", source="owner")
     return udir
 
@@ -116,6 +131,7 @@ def _make_private_universe(base: Path, uid: str) -> Path:
     udir = base / uid
     udir.mkdir(parents=True)
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    _own(base, uid)
     # `private` sets public_read=False AND declares the explicit level, so the
     # legacy gate and the visibility layer agree (no inconsistent row).
     set_universe_visibility(uid, "private", source="owner")

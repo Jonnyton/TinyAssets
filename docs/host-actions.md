@@ -12,6 +12,21 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Clear the ACL-locked sandbox temp directories (2026-09-26)
+
+Only an elevated shell can do this one. 68 directories under
+`%TEMP%` plus `.codex-test-tmp/` and `.pytest-tmp/` inside the checkout carry
+sandbox-token ACLs the interactive user cannot read, list, or delete — not just
+cannot delete: `Get-Acl` itself fails. `scripts/dev_hygiene.py` reports them as
+`acl_locked_needs_elevation` and deliberately never tries to force them.
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/clear_sandbox_temp_dirs.ps1 -Apply
+```
+
+Prevention is already in `tests/conftest.py`, which refuses a temp root inside
+the repo.
+
 ## Decide: make a blocking review verdict a required check (2026-09-26)
 
 A Tier 2 review verdict is posted as a PR comment, and auto-merge doesn't read

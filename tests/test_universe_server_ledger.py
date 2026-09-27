@@ -353,6 +353,14 @@ def test_switch_universe_appends_ledger(universe: str, monkeypatch) -> None:
     """
     other = "other-uni"
     (us._base_path() / other).mkdir(parents=True)
+    # ...and an OWNER, because switching to a directory nobody owns is switching
+    # to something that is not a universe (2026-09-02 --
+    # tests/test_a_universe_needs_an_owner.py).
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(
+        us._base_path(), founder_sub=f"test-owner::{other}", universe_id=other,
+    )
 
     from tinyassets.auth import middleware
 

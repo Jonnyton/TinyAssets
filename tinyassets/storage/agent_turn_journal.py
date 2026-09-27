@@ -19,6 +19,7 @@ from tinyassets.providers.agent_chat_codec import AgentReply, ToolRequest
 from tinyassets.storage import agent_turn_records as records
 from tinyassets.storage import db_path
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
+from tinyassets.storage.agent_turn_boot import BOOT, BootTurns
 from tinyassets.storage.agent_turn_records import (
     RoundInput,
     RoundSnapshot,
@@ -409,7 +410,12 @@ class AgentTurnJournal:
                 "INSERT INTO agent_turns VALUES (?, ?, ?, 1, 1, 'ready', 0, ?, ?)",
                 (*scope, raw, self._ledger.timestamp()),
             )
-            return _read(conn, scope)
+            snapshot = _read(conn, scope)
+        # Creating the row IS this boot taking the turn on: both adapters reach a
+        # turn only through here, and the caller is about to execute it. Claimed
+        # after the commit, so a rolled-back create claims nothing.
+        BOOT.claim(scope[1], scope[2])
+        return snapshot
 
     def get(self, owner: str, universe: str, turn_id: str) -> TurnSnapshot | None:
         scope = _scope(owner, universe, turn_id)
@@ -419,7 +425,7 @@ class AgentTurnJournal:
             return _read(conn, scope)
 
     def universe_working_turn(
-        self, universe: str, *, now: datetime, max_age_s: float
+        self, universe: str, *, now: datetime, max_age_s: float, boot: BootTurns = BOOT,
     ) -> dict[str, object] | None:
         """The newest still-progressing turn for ONE universe, or ``None``.
 
@@ -442,6 +448,15 @@ class AgentTurnJournal:
         coordinator, so an older progressing row is one a killed process left
         behind -- a caller must not paint it as activity, and hiding it would
         make a wedged row unobservable.
+
+        A progressing row THIS boot is not running is skipped entirely, which is
+        not the silent fallback the stale bound avoids: the age bound is a guess
+        about whether a turn is still going, while boot ownership is a positive
+        determination that no process is executing it. Belt and braces behind
+        ``agent_turn_reconcile``, which settles such a row into its terminal
+        state at startup; if that failed, this still refuses to report a dead
+        container's leftover as thinking (founder, 2026-09-26: a deploy killed a
+        turn and the indicator ran for 35 minutes on the row it left behind).
         """
         uid = records.identity(universe)
         if max_age_s <= 0:
@@ -477,6 +492,8 @@ class AgentTurnJournal:
                 continue
             started = row["created_at"]
             if not isinstance(started, str) or not started.endswith("Z"):
+                continue
+            if not boot.holds(uid, row["turn_id"], created_at=started):
                 continue
             try:
                 when = datetime.fromisoformat(started[:-1] + "+00:00")

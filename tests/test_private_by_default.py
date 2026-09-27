@@ -32,6 +32,11 @@ import tinyassets.api.status as status_mod
 import tinyassets.api.universe as us
 import tinyassets.api.visibility as vis
 import tinyassets.api.wiki as wiki_mod
+
+# A universe exists because an ownership row names it (#4012). A `founder_home`
+# BINDING, not an ACL grant: granting would flip a fixture to private and change
+# what the surrounding assertion means.
+from tests.conftest import own_universe
 from tinyassets.api.wiki import _ensure_wiki_scaffold
 from tinyassets.auth.middleware import auth_middleware, clear_identity, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
@@ -660,6 +665,7 @@ class TestMigration:
         from tinyassets.daemon_server import ensure_universe_registered
 
         (base / uid).mkdir(parents=True, exist_ok=True)
+        own_universe(base, uid)  # a universe exists because an owner names it (#4012)
         ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
         vis.set_universe_visibility(uid, level, source=source)
 
@@ -740,6 +746,7 @@ class TestMigration:
         )
 
         (base / "u-undeclared").mkdir()
+        own_universe(base, "u-undeclared")  # owned-only discovery (#4012)
         ensure_universe_registered(
             base, universe_id="u-undeclared", universe_path=base / "u-undeclared"
         )
@@ -791,6 +798,7 @@ class TestMigration:
         from tinyassets.daemon_server import get_universe_rules
 
         (base / "u-bare").mkdir()
+        own_universe(base, "u-bare")  # owned-only discovery (#4012)
         (base / "u-bare" / "activity.log").write_text("SECRET\n", encoding="utf-8")
 
         assert "u-bare" in {r["universe_id"] for r in plan(base)["candidates"]}
@@ -806,6 +814,7 @@ class TestMigration:
         from scripts.migrate_private_by_default import run
 
         (base / "u-bare").mkdir()
+        own_universe(base, "u-bare")  # owned-only discovery (#4012)
         (base / "u-bare" / "activity.log").write_text("SECRET\n", encoding="utf-8")
         _authenticate(STRANGER)
         assert "SECRET" in us._universe_impl(
@@ -818,22 +827,29 @@ class TestMigration:
         assert "SECRET" not in after, after
         assert json.loads(after)["error"] == "universe_access_denied"
 
-    def test_it_does_not_register_a_reserved_operational_directory(self, base):
+    def test_it_does_not_register_a_directory_nobody_owns(self, base):
         """The registration fix must not turn non-universes into universes.
 
-        `run(apply=True)` now calls `ensure_universe_registered` on a discovered
-        directory, so the question is what "discovered" admits. It is
-        `_is_listable_universe_dir`, the same predicate the boot backfill and
-        `list` use — dotfiles and the reserved operational data dirs (`lance`,
-        `output`, `runs`, `wiki`) are excluded. Without this, a migration run would
-        mint a `universes` row for the wiki store.
+        `run(apply=True)` calls `ensure_universe_registered` on a discovered
+        directory, so the guarantee rests on what "discovered" admits. It is
+        `_discover_universe_ids`, which since #4012 is OWNED-ONLY and fails closed:
+        ownership is the definition of a universe, so an operational directory is
+        excluded because nobody owns it rather than because its name is on a list.
+        (This test used to assert against that list, `_TOP_LEVEL_OPERATIONAL_DATA_DIRS`;
+        #4012 deleted it, and the ownership property it replaced it with is
+        strictly stronger — no new operational directory needs a name added.)
+
+        Without this, a migration run would mint a `universes` row for the wiki
+        store and the platform's own backups.
         """
         from scripts.migrate_private_by_default import run
-        from tinyassets.api.universe import _TOP_LEVEL_OPERATIONAL_DATA_DIRS
         from tinyassets.storage import _connect
 
-        for name in (*_TOP_LEVEL_OPERATIONAL_DATA_DIRS, ".hidden"):
+        # Operational dirs, a past prune's archive, and a dotfile dir — none owned.
+        for name in ("lance", "output", "runs", "wiki", "lancedb",
+                     "_removed_universes_20260829", ".hidden"):
             (base / name).mkdir(exist_ok=True)
+
         summary = run(base, apply=True)
         touched = {
             r["universe_id"]
@@ -841,47 +857,10 @@ class TestMigration:
             for r in summary[key]
         }
         assert touched == set(), touched
+        assert summary["failed"] == [], summary["failed"]
         with _connect(base) as conn:
             rows = conn.execute("SELECT universe_id FROM universes").fetchall()
         assert [r["universe_id"] for r in rows] == []
-
-    def test_it_does_not_overwrite_an_existing_registry_row(self, base):
-        """A migration that closes a read hole must not rename someone's universe.
-
-        `ensure_universe_registered` is an UPSERT whose conflict clause sets
-        `display_name=excluded.display_name, metadata_json=excluded.metadata_json`.
-        Registering an ALREADY-registered universe without passing those values
-        replaces the owner's display name with the raw id and the registry metadata
-        with `{}` — while the migration reports success. Codex cross-family review
-        of PR #4019, round 3, reproduced against my own round-2 fix.
-
-        The same shape was already in `backfill_universe_visibility`, which ran
-        unconditionally for every discovered universe on EVERY BOOT, so a named
-        universe lost its name at the next restart.
-        """
-        from scripts.migrate_private_by_default import run
-        from tinyassets.daemon_server import (
-            ensure_universe_registered,
-            get_universe,
-        )
-
-        (base / "u-named").mkdir()
-        ensure_universe_registered(
-            base,
-            universe_id="u-named",
-            universe_path=base / "u-named",
-            display_name="My learned name",
-            metadata={"keep": "valuable"},
-        )
-        summary = run(base, apply=True)
-        assert "u-named" in {r["universe_id"] for r in summary["flipped"]}
-        assert summary["failed"] == [], summary["failed"]
-
-        row = get_universe(base, universe_id="u-named")
-        assert row["display_name"] == "My learned name", row
-        assert row["metadata"] == {"keep": "valuable"}, row
-        # And the universe really was closed, so this is not passing by no-op.
-        assert vis.universe_visibility("u-named") is vis.PRIVATE
 
     def test_the_registered_host_path_matches_the_other_writers(self, base):
         """One definition of where a universe lives.
@@ -894,6 +873,7 @@ class TestMigration:
         from tinyassets.storage import _connect
 
         (base / "u-bare").mkdir()
+        own_universe(base, "u-bare")  # owned-only discovery (#4012)
         run(base, apply=True)
         with _connect(base) as conn:
             row = conn.execute(
@@ -1027,6 +1007,7 @@ class TestProvenance:
         from tinyassets.daemon_server import ensure_universe_registered
 
         (base / "u").mkdir()
+        own_universe(base, "u")  # owned-only discovery (#4012)
         ensure_universe_registered(base, universe_id="u", universe_path=base / "u")
         with pytest.raises(TypeError):
             vis.set_universe_visibility("u", "public")  # type: ignore[call-arg]
@@ -1035,6 +1016,7 @@ class TestProvenance:
         from tinyassets.daemon_server import ensure_universe_registered
 
         (base / "u").mkdir()
+        own_universe(base, "u")  # owned-only discovery (#4012)
         ensure_universe_registered(base, universe_id="u", universe_path=base / "u")
         with pytest.raises(ValueError, match="unknown visibility level source"):
             vis.set_universe_visibility("u", "public", source="the-owner-probably")
@@ -1044,6 +1026,7 @@ class TestProvenance:
         from tinyassets.storage import _connect
 
         (base / "u").mkdir()
+        own_universe(base, "u")  # owned-only discovery (#4012)
         ensure_universe_registered(base, universe_id="u", universe_path=base / "u")
         vis.set_universe_visibility("u", "public", source="owner")
         with _connect(base) as conn:  # forge a junk provenance

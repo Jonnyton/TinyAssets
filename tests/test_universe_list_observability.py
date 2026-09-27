@@ -44,16 +44,22 @@ def hidden_only_base(tmp_path, monkeypatch):
 
 
 def _declare_public(base, uid, udir):
-    """Declare a universe explicitly public.
+    """Register a universe, give it an OWNER, and declare it explicitly public.
 
     Under the universe-visibility contract an undeclared universe is withheld
     from enumeration/status (fail closed); these observability tests assert
     public-universe listing behavior, so they must declare intent.
+
+    The owner is what makes it a universe at all (2026-09-02: a directory on
+    disk is not one -- ``tests/test_a_universe_needs_an_owner.py``). A
+    ``founder_home`` binding rather than an ACL grant, because a universe with
+    zero ACL rows is PUBLIC and that is the state under test here.
     """
     from tinyassets.api.visibility import set_universe_visibility
-    from tinyassets.daemon_server import ensure_universe_registered
+    from tinyassets.daemon_server import ensure_universe_registered, set_founder_home
 
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    set_founder_home(base, founder_sub=f"test-owner::{uid}", universe_id=uid)
     set_universe_visibility(uid, "public", source="owner")
 
 
@@ -69,7 +75,12 @@ def populated_base(tmp_path, monkeypatch):
 
 @pytest.fixture
 def operational_dirs_base(tmp_path, monkeypatch):
-    """Base dir contains storage subsystem directories beside universes."""
+    """Base dir contains storage subsystem directories beside universes.
+
+    The four names the retired ``_TOP_LEVEL_OPERATIONAL_DATA_DIRS`` denylist
+    carried, kept here on purpose: they must still be excluded now that the
+    denylist is gone and ownership decides.
+    """
     udir = tmp_path / "alpha"
     udir.mkdir()
     for name in ("wiki", "runs", "lance", "output"):

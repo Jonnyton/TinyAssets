@@ -76,6 +76,16 @@ def universe_with_log(tmp_path, monkeypatch):
 
     udir = tmp_path / "test-universe"
     udir.mkdir()
+    # Point the resolver at THIS root and give the directory an owner. Since
+    # 2026-09-02 a universe exists because an ownership row names it, so the
+    # default resolvers this fixture exercises skip an unowned directory -- and
+    # without the data-dir override they were consulting the host's real root.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(
+        tmp_path, founder_sub="test-owner::test-universe", universe_id="test-universe",
+    )
     log = udir / "activity.log"
     log.write_text(
         "[2026-04-19 10:00:00] Commit: evaluating scene-1\n"
@@ -161,6 +171,16 @@ def test_dispatch_guard_empty_match_adds_absence_caveat(tmp_path, monkeypatch):
 
     udir = tmp_path / "no-dispatch-universe"
     udir.mkdir()
+    # ...and an owner plus this data root, or the default resolvers skip it
+    # (2026-09-02: a universe exists because an ownership row names it).
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(
+        tmp_path,
+        founder_sub="test-owner::no-dispatch-universe",
+        universe_id="no-dispatch-universe",
+    )
     (udir / "activity.log").write_text(
         "[2026-04-19 10:00:00] [revert_gate] reverting scene-3\n"
         "[2026-04-19 10:01:00] Commit: evaluating scene-1\n",
@@ -203,6 +223,16 @@ def test_dispatch_guard_missing_log_adds_absence_caveat(tmp_path, monkeypatch):
 
     udir = tmp_path / "fresh-dispatch-universe"
     udir.mkdir()
+    # ...and an owner plus this data root, or the default resolvers skip it
+    # (2026-09-02: a universe exists because an ownership row names it).
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(
+        tmp_path,
+        founder_sub="test-owner::fresh-dispatch-universe",
+        universe_id="fresh-dispatch-universe",
+    )
     def _fake_universe_dir(uid, _expected="fresh-dispatch-universe"):
         # Assert the RESOLVED uid rather than ignoring it. Without this the
         # `_default_universe` patch below is not load-bearing: the resolver
@@ -272,6 +302,16 @@ def test_missing_log_returns_empty_with_caveat(tmp_path, monkeypatch):
 
     udir = tmp_path / "fresh-universe"
     udir.mkdir()  # no activity.log inside
+    # ...but an owner and this data root, or the default resolvers skip it
+    # (2026-09-02: a universe exists because an ownership row names it).
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(
+        tmp_path,
+        founder_sub="test-owner::fresh-universe",
+        universe_id="fresh-universe",
+    )
     def _fake_universe_dir(uid, _expected="fresh-universe"):
         # Assert the RESOLVED uid rather than ignoring it. Without this the
         # `_default_universe` patch below is not load-bearing: the resolver

@@ -72,6 +72,26 @@ def test_universe_treasury_status_is_read_only(monkeypatch, tmp_path: Path) -> N
         )
         conn.commit()
 
+    # A universe with an OWNER: a universe nobody owns is not readable at all
+    # (#4012, 2026-09-02), so the ownership row has to exist before the read.
+    from tests.conftest import own_universe
+
+    # The env var as well as the patched `universe_api._base_path`: the default
+    # resolver lives in `api.helpers` and reads the env, so patching one module's
+    # `_base_path` leaves the ownership lookup pointed at the host's real root.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    (tmp_path / "u-treasury").mkdir()
+    own_universe(tmp_path, "u-treasury")
+    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "u-treasury")
+
+    # Row snapshot rather than the file's mtime. Both sides of this merge reached
+    # the same base-path diagnosis; main kept the mtime proxy and ordered the
+    # ownership write before the baseline to keep it true. That works only while
+    # every schema write happens before the baseline, and
+    # `_universe_acl_error` -> `get_universe_rules` -> `initialize_author_server`
+    # can still create a missing table during the call. Comparing the rows of the
+    # tables that existed BEFORE keeps the real subject -- no pre-existing data is
+    # mutated -- and cannot be broken by a later migration.
     before = _snapshot_rows(tmp_path / DB_FILENAME)
     result = json.loads(universe_api._universe_impl(
         action="treasury_status",
@@ -79,17 +99,7 @@ def test_universe_treasury_status_is_read_only(monkeypatch, tmp_path: Path) -> N
     ))
     after = _snapshot_rows(tmp_path / DB_FILENAME, only=list(before))
 
-    # READ-ONLY-NESS asserted as the property, not as the file's mtime.
-    #
-    # The mtime proxy held only while the ACL preflight resolved a DIFFERENT data
-    # dir than the handler (see the base-path note above): now that both agree,
-    # `_universe_acl_error` -> `get_universe_rules` -> `initialize_author_server`
-    # legitimately creates the missing schema in this very file, so the mtime moves
-    # for a reason that has nothing to do with `treasury_status` writing anything.
-    # Comparing the rows of the tables that existed BEFORE the call keeps the real
-    # subject (no pre-existing data is mutated) and stops asserting a proxy that
-    # was true by accident.
-    assert after == before
+    assert after == before, "treasury_status must not mutate pre-existing data"
     # The subject here is READ-ONLY-NESS. This used to also assert the id
     # equalled `_default_universe()`, which held only while the caller was
     # nobody and "the caller's universe" and "the single-tenant fallback" were

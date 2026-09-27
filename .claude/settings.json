@@ -37,6 +37,12 @@
             "command": "python \".claude/hooks/session_sync_gate_hook.py\"",
             "shell": "powershell",
             "timeout": 25
+          },
+          {
+            "type": "command",
+            "command": "python \".claude/hooks/dev_hygiene_hook.py\"",
+            "shell": "powershell",
+            "timeout": 50
           }
         ]
       }

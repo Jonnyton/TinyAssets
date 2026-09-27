@@ -4226,6 +4226,21 @@ def create_streamable_http_app() -> Starlette:
             # Initialize storage before the scheduler's immediate tick can open
             # the same fresh database and race its first journal-mode switch.
             initialize_consumer(data_dir())
+            # A deploy recreates the container mid-turn, so every progressing
+            # agent turn row predates this boot and nothing is executing it.
+            # Settle them before anything can read them as activity (founder,
+            # 2026-09-26: a killed turn showed "thinking" for 35 minutes).
+            # Hygiene, not a gate: an unsettleable row leaves the boot-ownership
+            # guard in `universe_working_turn` to keep it out of the indicator.
+            from tinyassets.agent_turn_reconcile import reconcile_orphaned_turns
+
+            try:
+                orphans = reconcile_orphaned_turns(data_dir())
+            except Exception:  # noqa: BLE001 - serving must not wait on cleanup
+                logger.exception("orphaned agent turn reconciliation failed")
+            else:
+                if orphans:
+                    logger.warning("settled %d orphaned agent turn(s)", len(orphans))
             # The scheduler starts whenever the daemon serves — schedules are a user's
             # own automations and do not belong to the inbound channel surface
             # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates
