@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Shared egress IP has attribution but no per-tenant rate or quota
+filed: '2026-09-26'
+summary: every universe's outbound traffic leaves one droplet IP, so one universe getting that address rate-limited or blocklisted degrades every other universe; the proxy records who (`audit.jsonl`/`network.jsonl`) but nothing limits rate or quota per tenant. Bounded today only because calls ride a connection the user holds and the harness jail has `share_net=False`
+---
+
 # Every universe's outbound traffic shares one IP, with attribution but no per-tenant rate or quota
 
 **Filed:** 2026-09-26, on closing PR #2751 unmerged. That PR argued the network

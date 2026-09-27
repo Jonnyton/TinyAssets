@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Archived a universe that WAS bound
+filed: '2026-08-28'
+summary: live-data cleanup removed `u-01ky3zh1arr8qth8jee7zx63pq` while its `founder_home` row still pointed at it; recovered because the step archived rather than deleted
+---
+
 # I archived a universe that WAS bound to a WorkOS user
 
 **Severity:** P2 (recovered) · **Filed:** 2026-08-28 · **Surface:** live `/data` on the droplet

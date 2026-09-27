@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Capacitor CLI still resolves a vulnerable UUID library
+filed: '2026-09-03'
+summary: high/critical mobile build-chain advisories are removed, but current `@capacitor/cli` still reaches `uuid@7.0.3` through `xcode`; build-time only, no compatible upstream update yet
+---
+
 # Capacitor CLI still resolves a vulnerable UUID library
 
 **Filed:** 2026-09-03

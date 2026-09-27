@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Served provider authority is converse-only
+filed: '2026-08-27'
+summary: the live paste-inference call is refused every time (`provider request source is not trusted`); widening it is the rejected keystone, and the agent-asks rail needs no widening
+---
+
 # A served provider call may only ever be `converse`, so paste-inference cannot run
 
 **Filed:** 2026-08-27

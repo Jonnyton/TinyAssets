@@ -1,3 +1,10 @@
+---
+severity: P2
+title: A turn reaches only the universe's one selected agent
+filed: '2026-09-26'
+summary: reserve_prepared_turn re-resolves the single turn_consumer and refuses any other binding, so a custom UI can render rooms but cannot make "click room B" a turn; the bridge refuses by name instead of retargeting
+---
+
 # A turn reaches only the universe's one selected agent, so a custom UI cannot address a room
 
 **Filed:** 2026-09-26

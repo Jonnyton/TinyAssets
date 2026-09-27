@@ -115,6 +115,13 @@ def _same_origin_json(request: Any, public_resource: str = "") -> bool:
     return parts.netloc in allowed
 
 
+#: The one subscription service this daemon can complete by BROKERED SIGN-IN rather
+#: than by the owner pasting something. Named here, in the module that implements that
+#: flow, so a caller deciding whether to OFFER a sign-in can ask instead of knowing:
+#: `api.pending_requests` reads this and names no source itself.
+DEVICE_SIGN_IN_SERVICE = "codex"
+
+
 def onboarding_enabled() -> bool:
     """Whether the onboarding app route serves content (dark flag)."""
     return os.environ.get("TINYASSETS_ONBOARDING_APP", "").strip().lower() in _TRUTHY
@@ -574,12 +581,55 @@ def _read_home(identity: Any, *, raise_errors: bool = False) -> str:
             return ""
 
 
+def _owned_target_universe(identity: Any, wanted: str) -> str | None:
+    """The universe a device sign-in may deposit into, or None when it may not.
+
+    The target comes from the CARD plus the caller's identity, and nothing else. It is
+    resolved through the same check every other write on this surface uses -- an
+    explicit ``admin`` ACL row for this actor, never the permissive access helper -- so
+    a caller naming a universe they do not administer is refused rather than redirected
+    to their own. An empty ``wanted`` means the card named none, and the caller's home
+    is the answer, which is what the surface did for every request before.
+
+    Runs in a worker thread under the request identity, like `_bootstrap_home`.
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.daemon_server import list_universe_acl
+    from tinyassets.principals import named_principal
+
+    target = str(wanted or "").strip()
+    if not target:
+        return _bootstrap_home(identity)
+    with identity_context(identity):
+        actor = named_principal(getattr(identity, "user_id", "") or "")
+        if not actor:
+            return None
+        try:
+            rows = list_universe_acl(_base_path(), universe_id=target)
+        except Exception:  # noqa: BLE001 - an unreadable ACL is not a grant
+            return None
+    owns = any(
+        row.get("actor_id") == actor and row.get("permission") == "admin"
+        for row in rows
+    )
+    return target if owns else None
+
+
 def _bootstrap_home(identity: Any) -> str:
     """The signed-in user's OWN home universe id, created on first contact if
     it does not exist yet (the same ``ensure_founder_home`` the conversation
     entry uses). "" when the identity cannot create one. Runs in a worker
-    thread under the request identity. This is the ONLY universe a credential
-    from the app may land in — a client-supplied universe id is ignored."""
+    thread under the request identity.
+
+    This is the DEFAULT universe a credential from the app lands in, and for every
+    route but the device sign-in it is the only one: a client-supplied universe id is
+    ignored. The sign-in route takes its target from the reconnect card instead,
+    because a card exists precisely to repair one NAMED connection -- and it resolves
+    that target through :func:`_owned_target_universe`, which requires an explicit
+    admin ACL row for the caller and refuses anything else rather than quietly falling
+    back to here. The invariant that mattered is intact: a credential still only lands
+    in a universe this caller administers."""
     from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.api.helpers import _base_path
     from tinyassets.auth.middleware import identity_context
@@ -612,9 +662,34 @@ async def _handle_openai_device_start(request: Any) -> Any:
     data = await _read_small_json(request)
     if data is None:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
+    # The caller says which source it is signing back in to, and this route completes
+    # exactly one. Before, it ignored the field and deposited for its own service
+    # whatever was asked, so a reconnect card for a different source would have
+    # silently replaced the wrong credential (Codex refute-review, P1 #5).
+    #
+    # The universe is NOT taken from the caller, and that is deliberate rather than an
+    # oversight: `_bootstrap_home` states the invariant -- the signed-in user's own
+    # home is the only universe a credential from the app may land in, and a
+    # client-supplied id is ignored. Honouring one here would reverse that decision,
+    # so the card's target is the home and a request naming anything else is refused
+    # rather than quietly redirected.
+    asked = str(data.get("service") or DEVICE_SIGN_IN_SERVICE).strip().lower()
+    if asked != DEVICE_SIGN_IN_SERVICE:
+        # This daemon completes exactly one service by brokered sign-in. A card for any
+        # other source offers its own shapes instead, so reaching here means the caller
+        # asked for a flow that does not exist -- refused loudly rather than silently
+        # completing the one service this route does know.
+        return JSONResponse({"error": "sign_in_unsupported_for_service"}, status_code=400)
     identity = current_identity()
-    home = await run_in_threadpool(_bootstrap_home, identity)
-    if not home:
+    # The TARGET is the card's universe plus this caller's identity, resolved through
+    # the same admin-ACL check every other write here uses. A universe the caller does
+    # not administer fails loudly; it is never quietly replaced with their own.
+    target = await run_in_threadpool(
+        _owned_target_universe, identity, str(data.get("universe_id") or ""),
+    )
+    if target is None:
+        return JSONResponse({"error": "sign_in_universe_not_yours"}, status_code=403)
+    if not target:
         return JSONResponse({"error": "no_home_universe"}, status_code=409)
     try:
         started = await start_device_auth()
@@ -623,7 +698,7 @@ async def _handle_openai_device_start(request: Any) -> Any:
         # opaque handle.
         handle = register_flow(
             user_id=identity.user_id,
-            universe_id=home,
+            universe_id=target,
             device_auth_id=started["device_auth_id"],
             user_code=started["user_code"],
         )
@@ -704,7 +779,7 @@ async def _handle_openai_device_poll(request: Any) -> Any:
         status = 401 if err == "authentication_required" else 400
         return JSONResponse({"status": "failed", "error": err}, status_code=status)
     return JSONResponse(
-        {"status": "connected", "service": "codex"},
+        {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE},
         headers={"Cache-Control": "no-store"},
     )
 
@@ -880,7 +955,7 @@ async def _handle_openai_exchange(request: Any) -> Any:
         status = 401 if err == "authentication_required" else 400
         return JSONResponse({"status": "failed", "error": err}, status_code=status)
     return JSONResponse(
-        {"status": "connected", "service": "codex"},
+        {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE},
         headers={"Cache-Control": "no-store"},
     )
 

@@ -121,11 +121,16 @@ def _build_record(service: str, material: str) -> dict[str, Any]:
         }
     # codex: the base64 string is the at-rest field; strip transport whitespace.
     normalized = material.translate(str.maketrans("", "", " \t\r\n"))
-    return {
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "auth_json_b64": normalized,
-    }
+    # Through the shared builder, so the deposit is STAMPED. Both newest-wins
+    # comparators fall back to the record's stamp when the stored document carries
+    # none, and an unstamped deposit gave them nothing to read -- so a
+    # yesterday-stamped document already on disk could be restored over a
+    # credential deposited moments ago (Codex refute-review, P1 #4).
+    from tinyassets.credential_vault import llm_subscription_credential_record
+
+    return llm_subscription_credential_record(
+        service="codex", auth_json_b64=normalized,
+    )
 
 
 def connect_llm(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
@@ -227,7 +232,14 @@ def connect_llm(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             "detail": "the deposit could not be completed",
         }
 
-    # 6. Non-secret projection + the serving re-point hint. Never the token,
+    # 6. The owner just replaced the secret, so the "sign in again" card must go.
+    #    Cleared AFTER the write and before the projection: a card still standing
+    #    over a working connection is how a fixed setup keeps reading as broken.
+    from tinyassets.credential_vault import clear_refresh_rejected
+
+    clear_refresh_rejected(base, universe_id=uid, service=service)
+
+    # 7. Non-secret projection + the serving re-point hint. Never the token,
     #    decoded bytes, or any digest. Deposit is write-only; serving stays held.
     agent_binding_id, expected_revision = _serving_hint(base, universe_id=uid, actor=actor)
     return {

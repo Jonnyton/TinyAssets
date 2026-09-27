@@ -1,3 +1,10 @@
+---
+severity: P0
+title: Provider subprocesses can read every user's universe
+filed: '2026-09-24'
+summary: 'workflow-node model CLIs ran in `/app` with shell/file tools and could list `/data`; Claude path fixed in #3953, vendor-neutral jail for all providers in progress'
+---
+
 # Provider subprocesses can read every user's universe
 
 **Filed:** 2026-09-24, from the PR #3953 root-cause work.

@@ -1,3 +1,10 @@
+---
+severity: P0
+title: Public-site privacy, deps, and CI secret exposure
+filed: '2026-07-27'
+summary: a same-repo PR can request 19 secrets
+---
+
 # P0 - Public-site privacy, dependencies, and CI secret exposure
 
 **Filed:** 2026-07-27 | **Verified:** 2026-07-27 | **Severity:** P0

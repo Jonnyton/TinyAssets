@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Cancel is advisory, and the run timeout is doing its job
+filed: '2026-08-31'
+summary: 'the owner''s ability to stop a borrowed workflow is what bounds it; #2752 reached the running child, the rest of the surface still checks between nodes'
+---
+
 # Cancellation lifecycle: original advisory finding and remaining proof
 
 ## Current evidence: September 9, 2026 UTC

@@ -35,8 +35,15 @@ def test_all_mcp_server_surfaces_register_tools_through_structured_adapter() -> 
 
         if "def _register_structured_tool" not in text:
             failures.append(f"{rel_path}: missing _register_structured_tool")
-        if "return _structured_return(fn(*args, **kwargs))" not in text:
+        # Both facts, matched independently of how the call is laid out: the
+        # adapter returns through `_structured_return`, and what it wraps is the
+        # handler's OWN result. Pinning the single-line spelling
+        # `_structured_return(fn(*args, **kwargs))` made this fail the moment the
+        # call grew a keyword argument, which is formatting, not a parity change.
+        if "return _structured_return(" not in text:
             failures.append(f"{rel_path}: adapter does not wrap with _structured_return")
+        if "fn(*args, **kwargs)" not in text:
+            failures.append(f"{rel_path}: adapter does not wrap the handler's own result")
         if len(registration_lines) != 1:
             calls = ", ".join(
                 f"L{lineno}: {line}" for lineno, line in registration_lines

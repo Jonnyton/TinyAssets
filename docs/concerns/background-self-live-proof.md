@@ -1,3 +1,10 @@
+---
+severity: note
+title: Background self awaits deployed continuity proof
+filed: '2026-09-09'
+summary: runtime recovery and checkpoint validation are implemented; independent review, deployment and automatic-cycle proof remain open
+---
+
 # Background self still needs deployed execution proof
 
 Founder request, 2026-09-09: build and test the actual proactive background system. Prior staged prompt exercises did not prove useful work or automatic continuity.
