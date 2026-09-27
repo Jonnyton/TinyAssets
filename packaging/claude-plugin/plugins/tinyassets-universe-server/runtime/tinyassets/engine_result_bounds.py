@@ -49,6 +49,23 @@ CONTEXT_SHARE = 0.15
 #: under-estimate here makes the ceiling smaller, which is the safe direction.
 BYTES_PER_TOKEN = 3
 
+#: ``(tool, target)`` reads whose contract IS exact bytes, where a ceiling
+#: corrupts the answer rather than bounding it.
+#:
+#: ``read_graph target="run_file"`` returns base64 of an owned run-bound file plus
+#: the ``next_offset`` cursor to continue. Truncating it destroys the bytes AND the
+#: cursor, so the agent cannot even page to recover -- measured 2026-09-26 on the
+#: real dispatch path: a 256 KB chunk (a 349,681-byte reply) came back as a
+#: 24,576-byte marker carrying neither ``bytes_base64`` nor ``next_offset``. The
+#: caller already bounds this read with ``file_max_bytes`` (default 524288,
+#: maximum 1048576); that parameter is the contract governing its size, and a
+#: second ceiling layered over it only breaks the first one.
+#:
+#: This is about a CONTRACT, not about size. Nothing belongs here because it is
+#: merely big -- being big is what the ceiling is for. A read earns a place here
+#: only by being unusable when partial.
+EXACT_BYTE_READS = frozenset({("read_graph", "run_file")})
+
 #: Env override for the ceiling, in bytes. A deploy-level escape hatch.
 CEILING_ENV = "TINYASSETS_ENGINE_RESULT_CEILING_BYTES"
 #: The selected model's context window in tokens, when the caller that spawned
@@ -96,6 +113,26 @@ _MARKER_NOTE = (
 def narrowing_hint(tool: str) -> str:
     """The one line telling this tool's caller how to ask for less."""
     return NARROWING_HINTS.get(tool, _GENERIC_HINT)
+
+
+def ceiling_exempt(tool: str, arguments: object, exempt=EXACT_BYTE_READS) -> bool:
+    """True when this exact ``(tool, target)`` read must not be bounded.
+
+    ``exempt`` is a parameter because the two surfaces owe different sets: the
+    engine exempts only the exact-byte reads, while the connector additionally
+    owes ``model_options`` its complete document (a spec requirement, for the
+    owner's model picker). Neither set is a place to put something for being big.
+
+    A read with no ``target`` argument, or an unreadable one, is NOT exempt:
+    defaulting to exempt would mean any call the middleware cannot parse escapes
+    the ceiling, which is the failure this whole module exists to prevent.
+    """
+    if not isinstance(arguments, dict):
+        return False
+    target = arguments.get("target")
+    if not isinstance(target, str):
+        return False
+    return (tool, target.strip().lower()) in exempt
 
 
 def ceiling_for_context(context_tokens: object) -> int:
