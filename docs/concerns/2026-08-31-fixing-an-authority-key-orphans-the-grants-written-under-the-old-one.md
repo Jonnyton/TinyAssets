@@ -12,13 +12,13 @@ summary: hit live, blocking the founder's universe mid-run with `missing_consent
 ```
 external write failed - checkout_repo/workspace:
   no active workspace_checkout consent for
-  checkout:http_7931…:api.github.com/jonnyton/tinyassets   [missing_consent]
+  checkout:http_7931…:api.github.com/tinyassets/tinyassets   [missing_consent]
 ```
 
 The consent was there. It was written as:
 
 ```
-checkout:http_7931…:github.com/jonnyton/tinyassets
+checkout:http_7931…:github.com/tinyassets/tinyassets
 ```
 
 Same universe, same connection, same repository, same owner, same grant —

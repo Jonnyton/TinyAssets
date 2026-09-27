@@ -80,7 +80,7 @@ boundary:
 1. **Soul declares its authorized hands.** Add an effect-authority scope to the soul (extend
    `edit_authority` semantics, or a sibling `effect_authority` list) naming the sinks/destinations
    this universe is permitted to effect — e.g. Tiny's soul declares
-   `github_pr:Jonnyton/TinyAssets`. This is the universe's own typed declaration of its hands, in
+   `github_pr:TinyAssets/TinyAssets`. This is the universe's own typed declaration of its hands, in
    `soul.md`, versioned like everything else.
 2. **The effector resolves authority from the soul of the running universe**, not from a global
    env map. `_read_capability(destination)` becomes "is this destination within the running
@@ -92,7 +92,7 @@ boundary:
    (`TINYASSETS_EXTERNAL_WRITE_ENABLED`) and dry-run defaults are unchanged.
 
 Result: Tiny is the sole PR-effector for TinyAssets **because its soul is the only soul that
-declares `github_pr:Jonnyton/TinyAssets` as an authorized hand** — architecture, not env config.
+declares `github_pr:TinyAssets/TinyAssets` as an authorized hand** — architecture, not env config.
 A game universe declares its own destinations. The mechanism is identical for all.
 
 ### Scope discipline (irreducibility / no over-build)

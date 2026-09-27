@@ -54,11 +54,17 @@ _ci = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_ci)
 
 # The one expression `heavy-tests` may use. Admits schedule, push and
-# workflow_dispatch; excludes pull_request. Pinned exactly rather than by
-# substring: `github.event_name != 'pull_request' && github.event_name ==
-# 'push'` also contains "pull_request" and "!=" while excluding schedules
-# entirely, which is the bug this file guards against.
-_FULL_TESTS_IF = "github.event_name != 'pull_request'"
+# workflow_dispatch; excludes pull_request and merge_group. Pinned exactly
+# rather than by substring: `github.event_name != 'pull_request' &&
+# github.event_name == 'push'` also contains "pull_request" and "!=" while
+# excluding schedules entirely, which is the bug this file guards against.
+_FULL_TESTS_IF = (
+    "github.event_name != 'pull_request' && github.event_name != 'merge_group'"
+)
+
+# The checks branch protection requires from this workflow. A merge queue waits
+# for every required check on the merge-group commit, so each must run there.
+_REQUIRED_JOBS = ("required-tests", "slow-tests")
 
 _CONCURRENCY_GROUP = (
     "tests-${{ github.event.pull_request.number || github.run_id }}"
@@ -221,6 +227,25 @@ def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
         f"non-PR run with another. Use a single fixed minute, or prove a "
         f"shorter runtime first."
     )
+
+
+def test_required_checks_run_in_the_merge_queue() -> None:
+    """A required check with no `merge_group` trigger never reports in the queue.
+
+    GitHub then holds every queued PR until the status-check timeout and ejects
+    it. The job must also carry no `if:` that could skip it there: a skipped
+    required check reads as passed, which would merge the group untested.
+    """
+    wf = _load()
+    triggers = _triggers(wf)
+    assert "merge_group" in triggers, "tests.yml must trigger on merge_group"
+    types = (triggers["merge_group"] or {}).get("types", ["checks_requested"])
+    assert "checks_requested" in types
+    for job in _REQUIRED_JOBS:
+        assert "if" not in wf["jobs"][job], (
+            f"required job {job!r} must not carry an `if:`; a skipped required "
+            f"check passes the merge queue without running"
+        )
 
 
 def test_heavy_tests_runs_on_every_non_pr_event() -> None:

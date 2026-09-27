@@ -29,7 +29,7 @@ Linux/Ubuntu/Python 3.11 PR run 34306784859 passed all 27 new tests, including a
 21 POSIX-specific cases, and the new current-admin cache regression. Affected
 six-file result: 181 passed, two unchanged Windows-only skips. No missing tests
 or regressions versus baseline 34305496977. Actual checkout 2c321ed5 has the
-identical full tree to approved bf39c447. [Proof](https://github.com/Jonnyton/TinyAssets/pull/3568#issuecomment-5595397012).
+identical full tree to approved bf39c447. [Proof](https://github.com/TinyAssets/TinyAssets/pull/3568#issuecomment-5595397012).
 PR #3568 merged as cb74e216. Deploy 34308081219 passed authenticated public
 canary and protected revision containment at 2026-09-09 03:42 UTC; shipped spec
 is synchronized. [Release proof](../../../docs/reviews/2026-09-08-attributable-storage-proof.md).

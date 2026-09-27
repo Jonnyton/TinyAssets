@@ -11,7 +11,7 @@ This is returning-user proof, not a fresh identity or first-contact test.
 
 - Runtime PR3859 merged normally as cee95ccbde4cacee0ef293bcb487302cc4d7e4db.
 - Fable5.1 approved exact reviewed head e33ca3a2 with no blocking findings:
-  https://github.com/Jonnyton/TinyAssets/pull/3859#issuecomment-5688986615.
+  https://github.com/TinyAssets/TinyAssets/pull/3859#issuecomment-5688986615.
 - `gh run view 35031497127 --log --job 104590809987`: required regression gate
   passed22:53UTC,18117 passed,54 skipped, zero NEW failures. Existing quarantined
   failures/errors remain; this is not a claim of zero total suite failures.

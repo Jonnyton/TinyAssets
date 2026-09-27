@@ -614,7 +614,7 @@ def test_runtime_image_is_resolved_and_validated_before_provisioning():
     assert "scp" not in run
     assert "re.fullmatch" in run
     assert (
-        r"ghcr\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}"
+        r"ghcr\.io/tinyassets/tinyassets-daemon@sha256:[0-9a-f]{64}"
         in run
     )
     assert 'echo "image=${runtime_image}" >> "$GITHUB_OUTPUT"' in run
@@ -633,15 +633,15 @@ def test_runtime_image_grammar_rejects_tags_and_output_injection():
 
     assert "raw_runtime_image[0] == raw_runtime_image[-1]" in run
     assert """raw_runtime_image[0] in {"'", '"'}""" in run
-    valid = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "a" * 64
+    valid = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "a" * 64
     for accepted in (valid, f"'{valid}'", f'"{valid}"'):
         assert re.fullmatch(grammar, normalize(accepted))
     for adversarial in (
-        "ghcr.io/jonnyton/tinyassets-daemon:latest",
+        "ghcr.io/tinyassets/tinyassets-daemon:latest",
         "other.example/tinyassets-daemon@sha256:" + "a" * 64,
         valid + "\nforged=value",
         valid + "\rforged=value",
-        "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "A" * 64,
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "A" * 64,
         f'"{valid}\nforged=value"',
         f"'{valid}\rforged=value'",
         f'"{valid}\'',
@@ -668,7 +668,7 @@ def test_validated_runtime_image_is_persisted_into_exactly_one_fresh_assignment(
     assert "steps.runtime-image.outputs.image" in str(step.get("env", {}))
 
     run = step["run"]
-    assert "ghcr\\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}" in run
+    assert "ghcr\\.io/tinyassets/tinyassets-daemon@sha256:[0-9a-f]{64}" in run
     assert 'Path("/etc/tinyassets/env")' in run
     assert "env_path.is_symlink()" in run
     assert 'line.startswith("TINYASSETS_IMAGE=")' in run

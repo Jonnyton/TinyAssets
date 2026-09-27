@@ -86,7 +86,7 @@ Independent Claude review of exact head
 `python scripts/peer_agent.py claude --out output/resource-policy-code-review-round2-claude.md --prompt-file output/resource-policy-code-review-round2-brief.md --timeout 480`.
 The peer found no introduced blocking issue and independently checked the
 quiescent/live WAL behavior, read-only SQL restrictions and ACL-race regression.
-[Full review and disposition](https://github.com/Jonnyton/TinyAssets/pull/3560#issuecomment-5594942162).
+[Full review and disposition](https://github.com/TinyAssets/TinyAssets/pull/3560#issuecomment-5594942162).
 
 Required Linux CI tested an identical full tree; deployment, public canary and
 protected revision containment passed for merge `0eb1388f` on September 9 UTC.

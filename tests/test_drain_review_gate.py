@@ -382,7 +382,7 @@ def test_required_scope_check_fails_closed_on_unreviewed_drain_head() -> None:
 # failing REQUIRED check holds a PR.
 # ---------------------------------------------------------------------------
 
-REPO = "Jonnyton/TinyAssets"
+REPO = "TinyAssets/TinyAssets"
 PR = 4242
 ARTIFACT_URL = f"https://github.com/{REPO}/pull/{PR}#issuecomment-5841421637"
 TRUSTED_COMMENTS = ((ARTIFACT_URL, "OWNER"),)
@@ -615,11 +615,11 @@ def test_a_verdict_may_live_in_a_comment_review_or_review_comment(
 def test_repo_casing_in_the_artifact_url_is_tolerated(tmp_path: Path) -> None:
     # GitHub resolves owner/repo case-insensitively; refusing a stamper who
     # typed a different casing would be a wall, not a gate.
-    url = f"https://github.com/jonnyton/tinyassets/pull/{PR}#issuecomment-5841421637"
+    url = f"https://github.com/tinyassets/tinyassets/pull/{PR}#issuecomment-5841421637"
     completed = _run_blocking(
         tmp_path,
         body=_receipt_body(url=url),
-        comments=((url.replace("jonnyton/tinyassets", REPO), "OWNER"),),
+        comments=((url.replace("tinyassets/tinyassets", REPO), "OWNER"),),
     )
 
     assert completed.returncode == 0

@@ -174,7 +174,7 @@ def test_no_platform_module_hard_codes_a_repository() -> None:
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 if id(node) in docstrings:
                     continue
-                source_link = "https://github.com/jonnyton/tinyassets"
+                source_link = "https://github.com/tinyassets/tinyassets"
                 lower = node.value.lower()
                 if source_link in lower and (
                     "github repository" in lower or lower.strip() == source_link
@@ -184,7 +184,7 @@ def test_no_platform_module_hard_codes_a_repository() -> None:
                     continue
                 # A concrete owner/name pair for the platform's own repo, reaching
                 # the runtime as a VALUE rather than described in prose.
-                if "jonnyton/tinyassets" in lower:
+                if "tinyassets/tinyassets" in lower:
                     rel = path.relative_to(root.parent).as_posix()
                     offenders.append(f"{rel}:{node.lineno}")
     assert not offenders, (

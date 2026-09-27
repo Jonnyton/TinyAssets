@@ -108,7 +108,7 @@ def test_set_creates_empty_env_when_no_legacy_file_exists(tmp_path):
     result = _run_helper(
         tmp_path,
         ["set", "TINYASSETS_IMAGE"],
-        stdin="ghcr.io/jonnyton/tinyassets-daemon@sha256:abc\n",
+        stdin="ghcr.io/tinyassets/tinyassets-daemon@sha256:abc\n",
         env_file=env_file,
         legacy_file=legacy_file,
     )
@@ -116,7 +116,7 @@ def test_set_creates_empty_env_when_no_legacy_file_exists(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (
         env_file.read_text(encoding="utf-8")
-        == "TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon@sha256:abc\n"
+        == "TINYASSETS_IMAGE=ghcr.io/tinyassets/tinyassets-daemon@sha256:abc\n"
     )
     assert "creating empty env file" in result.stderr
     assert not list(env_file.parent.glob("env.value.*"))

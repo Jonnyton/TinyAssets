@@ -13,7 +13,7 @@ This folder connects TinyAssets to Jonathan Farnsworth's broader public project 
 
 ## Public Repos
 
-- TinyAssets: https://github.com/Jonnyton/TinyAssets
+- TinyAssets: https://github.com/TinyAssets/TinyAssets
 - Portfolio index: https://github.com/Jonnyton/portfolio-index
 - Echoes of the Cosmos: https://github.com/Jonnyton/echoes-of-the-cosmos
 - Fantasy Agent TinyAssets Lab: https://github.com/Jonnyton/fantasy-agent-workflow-lab

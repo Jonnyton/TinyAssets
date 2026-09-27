@@ -104,7 +104,7 @@ test_provider_sandbox, test_codex_cli_compat and test_mirror_parity_gate, using
 pytest -q --tb=short -rs. Ruff and diff checks pass;396 shipping mirrors/import.
 Final isolated exact-head review48549 terminated APPROVE270s, independently
 reproducing56 route tests, mirror parity and Ruff:
-https://github.com/Jonnyton/TinyAssets/pull/3728#issuecomment-5611864132
+https://github.com/TinyAssets/TinyAssets/pull/3728#issuecomment-5611864132
 PR marked ready and normal squash auto-merge enabled02:44UTC on unchanged head.
 Ready-event CI superseded the earlier run; Tests34430615987 required job102725219716
 passed03:00:55UTC with zero new failures (known9 failures/2errors unchanged).

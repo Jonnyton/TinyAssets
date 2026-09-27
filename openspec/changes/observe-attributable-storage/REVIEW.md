@@ -19,7 +19,7 @@ Claude reviewed `bf39c4478bb368fd5724270e8a151e3295957cbf` against
 `python scripts/peer_agent.py claude --out output/storage-observation-code-claude.md --prompt-file output/storage-observation-code-brief.md --timeout 480`.
 No introduced blockers; approval is contingent on all 21 new POSIX-specific tests
 passing Linux. Independent Windows run: six passed, 21 skipped, not traversal
-proof. [Durable exact-head receipt](https://github.com/Jonnyton/TinyAssets/pull/3568#issuecomment-5595344630).
+proof. [Durable exact-head receipt](https://github.com/TinyAssets/TinyAssets/pull/3568#issuecomment-5595344630).
 
 AGREE on path/ownership scope, no content reads or private identifiers, work/cache
 bounds, partial/unknown semantics, unchanged quota and authority, descriptor
@@ -37,7 +37,7 @@ Linux condition satisfied: run 34306784859 passed all 27 new tests, including al
 21 POSIX cases, plus the new admin-cache regression. Actual checkout 2c321ed5 has
 the identical full tree to approved bf39c447. The affected suite has 181 passes
 and two unchanged Windows-only skips, no regression or missing case against its
-baseline. [Reconciliation](https://github.com/Jonnyton/TinyAssets/pull/3568#issuecomment-5595397012).
+baseline. [Reconciliation](https://github.com/TinyAssets/TinyAssets/pull/3568#issuecomment-5595397012).
 PR #3568 merged as cb74e216. Deploy 34308081219 passed authenticated public
 canary and revision containment at 2026-09-09 03:42 UTC. No broader policy or owner
 acceptance is inferred. Approval was published without changing the reviewed head;
