@@ -202,6 +202,10 @@ step 5's visibility change didn't take. Fix it, then
 
 ## 8. Enable the merge queue on `main` (L)
 
+Precondition: #4058 is on `main`. It limits `heavy-tests` to schedule and
+workflow_dispatch. Without it, the non-required, hour-long `heavy-tests` job
+also runs on every queue entry.
+
 ```bash
 gh api -X POST repos/TinyAssets/TinyAssets/rulesets --input docs/ops/merge-queue-ruleset.json -q '.id'
 ```
