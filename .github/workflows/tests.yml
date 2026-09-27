@@ -278,8 +278,13 @@ jobs:
   # job without that comparison reverts the wrong change.
   # Tracked: docs/concerns/2026-08-27-full-tests-permanently-red.md
   #
-  # `github.event_name != 'pull_request'` therefore admits schedule, push and
-  # workflow_dispatch — schedule is what actually carries it (see above).
+  # Schedule and manual dispatch ONLY (2026-09-27). It used to be every
+  # non-PR event, and once merges started raising `push` it ran on every
+  # merge: 18 main pushes x ~41 min in one 4 h window, 15 of 15 red at
+  # baseline, on a runner pool capped near 20 jobs that PR CI and the deploy
+  # were queuing for. An hourly tripwire needs no per-merge copy. Naming the
+  # events also keeps a future `merge_group` trigger from inheriting it.
+  # docs/design-notes/2026-09-27-lean-ci-pipeline.md
   # Was `full-tests`, which re-ran the ENTIRE required suite a second time.
   # Measured on Linux CI run 33037400288: required-tests 7m26s / 10,700 tests;
   # full-tests 45m09s / 13,865. The ~3,100-test difference IS the heavy list;
@@ -294,7 +299,7 @@ jobs:
   # letting the job pick a number it can meet.
   heavy-tests:
     name: heavy-tests
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
