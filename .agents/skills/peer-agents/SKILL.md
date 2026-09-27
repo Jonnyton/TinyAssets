@@ -72,7 +72,7 @@ Two more habits that fell out of the same incident:
 
 Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — gpt-6-astra rejects it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Models are pinned, not inherited.** claude runs `--model fable` (alias tracking the latest Claude model). **codex runs `-m gpt-6-astra`, always — pass it explicitly** (founder rule, 2026-09-27). Do not rely on the host's `~/.codex/config.toml` default: a dispatch that inherits its model is silently whatever that file last said, so the review you get back is not the one you think you asked for, and nothing in the result names the model. `--model M` / `WORKFLOW_CODEX_MODEL` override only with a stated reason.
+**Models are pinned, not inherited.** claude: `--model fable` (latest Claude). **codex: `-m gpt-6-astra`, always explicit** (founder, 2026-09-27) — never the host's `~/.codex/config.toml` default, which is silently whatever it last said and is named nowhere in the result. Override only with a stated reason (`--model M`, `WORKFLOW_CODEX_MODEL`).
 
 ## When to use which peer
 
