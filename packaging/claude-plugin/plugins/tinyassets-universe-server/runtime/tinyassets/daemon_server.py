@@ -753,29 +753,39 @@ def register_universe_if_absent(
     universe_id: str,
     universe_path: str | Path | None = None,
 ) -> bool:
-    """Register a universe only when it has no ``universes`` row yet.
+    """Make sure a universe has a registry row, WITHOUT touching an existing one.
 
-    Returns ``True`` when a row was written. Use this, not
-    :func:`ensure_universe_registered`, whenever you are registering only to
-    satisfy a foreign key — which is every caller that wants a row to exist and
-    has nothing to say about the universe's NAME.
+    Returns ``True`` when this call inserted the row. Use this, not
+    :func:`ensure_universe_registered`, whenever you need the universe to exist and
+    have nothing to say about its NAME.
 
     ``ensure_universe_registered`` is an UPSERT whose conflict clause is
     ``display_name=excluded.display_name, metadata_json=excluded.metadata_json``,
     and both of those parameters are optional. Calling it for an ALREADY-registered
     universe without passing them therefore **destroys** them: the display name
     becomes the raw ``universe_id`` and the registry metadata becomes ``{}``, and
-    the call reports success.
+    the call reports success. It is the odd one out in this module —
+    :func:`ensure_universe_rules` and :func:`ensure_default_branch` both use
+    ``DO NOTHING`` and preserve what is already there.
 
     That is not hypothetical, and it was not rare. The visibility backfill did it
     for every discovered universe on every boot, so a universe its owner had named
-    lost that name at the next restart (found by the Codex cross-family review of
-    PR #4019). The notes, work-target and hard-priority helpers in this module did
-    it on every call, three of them on READS — so listing a universe's notes
-    renamed it.
+    lost that name at the next restart. The notes, work-target and hard-priority
+    helpers in this module did it on every call, three of them on READS — so
+    listing a universe's notes renamed it.
+
+    **A single atomic statement, deliberately.** An earlier cut checked for the row
+    and then called ``ensure_universe_registered`` when absent, which left a window:
+    between the check and the write another caller could register the universe WITH
+    a name, and this call's UPSERT would then erase it. Reproduced by the
+    cross-family review of PR #4045 (two threads, pause after the absence check) and
+    judged floor-class, because registry metadata has no other copy in this write
+    path. ``INSERT ... ON CONFLICT DO NOTHING`` has no such window: a row that
+    appears in the meantime simply wins.
 
     Registration is all those callers need. Renaming has its own caller,
-    :func:`set_universe_display_name`, so "only if absent" loses nothing.
+    :func:`set_universe_display_name`, so "never touch an existing row" loses
+    nothing.
 
     ``universe_path`` defaults to ``base_path / universe_id``. Pass it when you
     already hold the real path rather than letting this re-derive one.
@@ -784,19 +794,25 @@ def register_universe_if_absent(
     if not uid:
         return False
     initialize_author_server(base_path)
+    resolved = universe_path if universe_path is not None else Path(base_path) / uid
     with _connect(base_path) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM universes WHERE universe_id = ?", (uid,)
-        ).fetchone()
-    if row is not None:
-        return False
-    ensure_universe_registered(
-        base_path,
-        universe_id=uid,
-        universe_path=universe_path if universe_path is not None
-        else Path(base_path) / uid,
-    )
-    return True
+        cursor = conn.execute(
+            """
+            INSERT INTO universes (
+                universe_id, display_name, host_path, created_at, metadata_json
+            ) VALUES (?, ?, ?, ?, '{}')
+            ON CONFLICT(universe_id) DO NOTHING
+            """,
+            (uid, uid, str(Path(resolved).resolve()), _now()),
+        )
+        inserted = cursor.rowcount == 1
+    # Always, not only when inserted: these are the rows that make the registry row
+    # usable, `universe_rules` is what actually carries the FK onto `universes`, and
+    # both are `DO NOTHING` inserts that preserve anything already recorded. Running
+    # them unconditionally also repairs a universe whose row exists without them.
+    ensure_universe_rules(base_path, universe_id=uid)
+    ensure_default_branch(base_path, universe_id=uid)
+    return inserted
 
 
 def set_universe_display_name(

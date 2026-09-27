@@ -11,8 +11,14 @@ reads**: listing a universe's notes, work targets, or hard priorities renamed it
 The same shape in the visibility backfill (fixed in #4019) ran on every boot, so a
 universe its owner had named lost that name at the next restart.
 
-This is a data-loss guard, so each half is mutation-checked: removing the absence
-check in `register_universe_if_absent` turns these red.
+Those helpers register so the universe has its rules row and default branch, not
+because `notes` / `work_targets` / `hard_priorities` reference `universes` —
+`PRAGMA foreign_key_list` is empty for all three. `universe_rules` is the table that
+actually carries the FK onto `universes` (established by the cross-family review of
+PR #4045, correcting the rationale I first wrote here).
+
+This is a data-loss guard, so it is mutation-checked: making the insert clobber
+again turns these red.
 """
 
 from __future__ import annotations
@@ -107,6 +113,84 @@ def test_repeated_calls_still_do_not_rename_it(named_universe):
         for helper_name in _FK_ONLY_HELPERS:
             getattr(ds, helper_name)(udir)
     _assert_name_intact(base)
+
+
+class TestRegistrationIsAtomic:
+    """The window the cross-family review of #4045 reproduced.
+
+    The first cut checked for the row and then called `ensure_universe_registered`
+    when absent. Between those two steps another caller could register the universe
+    WITH a name, and the UPSERT would erase it — a successful READ destroying
+    committed user data, judged floor-class because registry metadata has no other
+    copy in this write path. A single `INSERT ... ON CONFLICT DO NOTHING` has no
+    window.
+    """
+
+    def test_a_row_that_appears_first_wins(self, tmp_path, monkeypatch):
+        """The collapsed race: the row exists by the time we write, and survives."""
+        from tinyassets.daemon_server import get_universe
+        from tinyassets.storage import _connect
+
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        (tmp_path / "u-race").mkdir()
+        # Another writer gets there first, with a name and metadata.
+        ensure_universe_registered(
+            tmp_path, universe_id="u-race", universe_path=tmp_path / "u-race",
+            display_name="Owner name", metadata={"only_copy": "owner data"},
+        )
+        with _connect(tmp_path) as conn:
+            created = conn.execute(
+                "SELECT created_at FROM universes WHERE universe_id = ?", ("u-race",)
+            ).fetchone()["created_at"]
+
+        assert register_universe_if_absent(tmp_path, universe_id="u-race") is False
+        row = get_universe(tmp_path, universe_id="u-race")
+        assert row["display_name"] == "Owner name", row
+        assert row["metadata"] == {"only_copy": "owner data"}, row
+        # created_at untouched proves the row was not rewritten at all.
+        with _connect(tmp_path) as conn:
+            after = conn.execute(
+                "SELECT created_at FROM universes WHERE universe_id = ?", ("u-race",)
+            ).fetchone()["created_at"]
+        assert after == created
+
+    def test_concurrent_callers_cannot_erase_a_name(self, tmp_path, monkeypatch):
+        """Eight threads through the real helpers while a name is set.
+
+        Asserts the invariant rather than a schedule, so it cannot pass by winning a
+        race: whatever interleaving occurs, the owner's name and metadata are intact.
+        """
+        import threading
+
+        import tinyassets.daemon_server as ds
+
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        udir = tmp_path / "u-threads"
+        udir.mkdir()
+        ds.ensure_universe_registered(
+            tmp_path, universe_id="u-threads", universe_path=udir,
+            display_name=OWNER_NAME, metadata=dict(OWNER_META),
+        )
+
+        barrier = threading.Barrier(8)
+        errors: list[BaseException] = []
+
+        def worker(fn_name: str) -> None:
+            try:
+                barrier.wait(timeout=30)
+                getattr(ds, fn_name)(udir)
+            except BaseException as exc:  # noqa: BLE001 - surfaced below
+                errors.append(exc)
+
+        names = list(_FK_ONLY_HELPERS) * 3  # 9 -> trimmed to the barrier size
+        threads = [threading.Thread(target=worker, args=(n,)) for n in names[:8]]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+
+        assert not errors, errors
+        _assert_name_intact(tmp_path, "u-threads")
 
 
 class TestThePredicateItself:
