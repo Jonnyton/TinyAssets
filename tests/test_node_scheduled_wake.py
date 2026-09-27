@@ -390,9 +390,9 @@ def test_a_stale_snapshot_of_a_spent_or_paused_row_does_not_run(
     graph = _Graph()
     monkeypatch.setattr(automations_module, "_execute", graph)
     store = AutomationStore(home)
-    now = datetime.now(timezone.utc)
-
     _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
+    # Read the clock AFTER the wake exists: its not_before is its creation second.
+    now = datetime.now(timezone.utc)
     [(wake, key)] = due_automations(home, universe_id=UNIVERSE, now=now)
     store.retire_for_reason(wake.automation_id, reason="ran", now=now)
     assert run_due_automation(home, wake, key, now=now) == "not_active"
@@ -423,8 +423,8 @@ def test_a_wake_admits_fail_closed_and_a_cadence_does_not(
 
     monkeypatch.setattr(engine, "_engine_run_admit", admit)
     monkeypatch.setattr(automations_module, "_execute", _Graph())
-    now = datetime.now(timezone.utc)
     _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
+    now = datetime.now(timezone.utc)  # after the wake: its not_before is now-ish
     _register_cadence(home, now - timedelta(hours=1))
     for automation, key in due_automations(home, universe_id=UNIVERSE, now=now):
         run_due_automation(home, automation, key, now=now)
