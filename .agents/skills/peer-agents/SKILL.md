@@ -17,7 +17,7 @@ python scripts/peer_agent.py claude --out output/peer-review.md \
     --prompt-file brief.md
 
 # Have Codex fix something in a worktree (write mode):
-python scripts/peer_agent.py codex --out output/codex-fix.md \
+python scripts/peer_agent.py codex -m gpt-6-astra --out output/codex-fix.md \
     --prompt "Fix the failing test in tests/test_universe_nodes.py and run it" \
     --cwd ../wf-bug126 --write
 
@@ -72,7 +72,7 @@ Two more habits that fell out of the same incident:
 
 Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — gpt-6-astra rejects it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Model defaults are frontier, always.** claude runs `--model fable` (alias tracking the latest Claude model); codex runs with no `-m`, taking the model from the host's `~/.codex/config.toml` — currently **gpt-6-astra** — and tracks whatever the host configures next. Override only with a reason: `--model M`, or `WORKFLOW_CODEX_MODEL`.
+**Models are pinned, not inherited.** claude runs `--model fable` (alias tracking the latest Claude model). **codex runs `-m gpt-6-astra`, always — pass it explicitly** (founder rule, 2026-09-27). Do not rely on the host's `~/.codex/config.toml` default: a dispatch that inherits its model is silently whatever that file last said, so the review you get back is not the one you think you asked for, and nothing in the result names the model. `--model M` / `WORKFLOW_CODEX_MODEL` override only with a stated reason.
 
 ## When to use which peer
 
