@@ -29,6 +29,18 @@
 
 ## Remaining before this is user-ready
 
+- [ ] **First run through the app has no way to create the app experience.**
+      Installing a bundle needs an `app_experience` binding, and a binding needs
+      *some* existing definition — `_require_definition`
+      (`tinyassets/custom_agents.py`) checks existence only, not authorship, so a
+      universe's own agent CAN bind against any public definition and keep the
+      bundle in the private configuration. But the app's own path cannot: App
+      design's Apply requires inspecting a supported *public layout* design first,
+      so a user with no layout installed sees `install` refuse with "Install an app
+      experience first". The agent route works today; the app route needs either a
+      "create my app experience" action or a content-free shell definition to bind
+      against. A shell publishes a public row, so it is public surface and belongs
+      in its own change, not folded in after a review round.
 - [ ] Rendered real-browser proof through `ui-test`; harness evidence is not it.
 - [ ] Sync verified behavior into canonical specs and archive when it lands.
 - [ ] Deferred and not claimed: device capability negotiation, notification
