@@ -1,3 +1,10 @@
+---
+severity: P2
+title: One run error carries one failure class
+filed: '2026-09-26'
+summary: a summary holding both a pre-wire `[missing_consent]` refusal and a delivered 401 classifies as one of them and omits the other repair; reversing the precedence only moves the loss, so the fix is per-row classification
+---
+
 # One run error carries one failure class, so a mixed run loses a repair
 
 **Filed:** 2026-09-26, from the Codex refute-review of PR #4021

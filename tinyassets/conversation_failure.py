@@ -86,6 +86,12 @@ _CLASS_WORDS = {
         "the connected model replied in a format this universe could not read; "
         "try again, or choose another model"
     ),
+    "context_window_exceeded": (
+        "the conversation plus what its tools read back grew larger than the "
+        "selected model's context window, so the request was refused before it "
+        "was sent; connecting a model with a larger context window is the fix, "
+        "and starting a fresh conversation for this request also works"
+    ),
     "unknown": (
         "we could not identify why; we cannot tell whether this is a connection, "
         "usage, billing, or platform problem, so rather than guess we have "
@@ -98,6 +104,9 @@ FAILURE_CODES = frozenset(_CLASS_WORDS)
 #: ``unknown`` has no position; the turn's own ledger may still supply one.
 STAGE_OF_CLASS = {
     "setup_required": "before_send",
+    # Measured by us, against the selected model's own published window, before
+    # anything was sent -- so it is a before_send fact, not a provider verdict.
+    "context_window_exceeded": "before_send",
     "auth_invalid": "connection",
     "native_auth_clue": "connection",
     "endpoint_unreachable": "connection",

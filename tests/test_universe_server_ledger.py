@@ -183,6 +183,10 @@ def test_write_actions_table_is_exhaustive() -> None:
     """
     expected = {
         "submit_request", "give_direction", "set_premise",
+        # An owner's exposure decision (founder 2026-09-26): it changes who else
+        # may see the universe, so it is gated at WRITE strength by the same
+        # central ACL check, and ledgered like every other write.
+        "set_visibility",
         "add_canon", "add_canon_from_path",
         "control_daemon", "switch_universe", "create_universe",
         "queue_cancel",
@@ -349,6 +353,14 @@ def test_switch_universe_appends_ledger(universe: str, monkeypatch) -> None:
     """
     other = "other-uni"
     (us._base_path() / other).mkdir(parents=True)
+    # ...and an OWNER, because switching to a directory nobody owns is switching
+    # to something that is not a universe (2026-09-02 --
+    # tests/test_a_universe_needs_an_owner.py).
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(
+        us._base_path(), founder_sub=f"test-owner::{other}", universe_id=other,
+    )
 
     from tinyassets.auth import middleware
 

@@ -1,6 +1,9 @@
-"""Context-budget invariant: always-loaded instruction files stay within budget.
+"""Context-budget invariant: the rulebook only shrinks.
 
-Wraps `scripts/check_context_budget.py` under the Invariant contract.
+Wraps `scripts/check_context_budget.py` under the Invariant contract. Every
+rulebook file is pinned at its post-cut byte size (`AGENTS.md`, `CLAUDE.md`, and
+the three `docs/reference/` procedures); lowering a pin is allowed, raising one
+is the edit this invariant exists to make visible.
 
 **This one blocks.** It was propose-only until 2026-08-25 on the reasoning that
 the always-loaded set is host-managed, so a bust should surface drift for a
@@ -41,7 +44,7 @@ def _load_budget_module():
 
 class ContextBudgetInvariant(Invariant):
     name = "context-budget"
-    description = "Always-loaded instruction files stay within their budgets."
+    description = "Rulebook files stay at or under their pinned byte size."
     pre_commit_scope = True  # blocks: a budget that only warns is what let 17.6 KB become 62 KB
     poll_interval_s = None  # on-demand
     auto_heal = False  # no auto-heal: which content to move is editorial, so a human decides
@@ -71,9 +74,9 @@ class ContextBudgetInvariant(Invariant):
             return CheckResult(
                 status=Status.VIOLATED,
                 message=(
-                    f"{reason} over declared HARD budget; "
-                    f"always-loaded total {combined} bytes "
-                    f"(combined ceiling {mod.COMBINED_HARD_BYTES}). "
+                    f"{reason} grew past its pin -- the rulebook only shrinks, so "
+                    f"displace an old rule instead of adding one; always-loaded "
+                    f"total {combined} bytes (ceiling {mod.COMBINED_HARD_BYTES}). "
                     f"Run: python scripts/check_context_budget.py"
                 ),
                 evidence=evidence,

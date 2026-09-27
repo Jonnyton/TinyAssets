@@ -31,6 +31,9 @@ regression riding in on a green check.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -56,7 +59,66 @@ MIN_RAN_FLOOR = 10000
 MIN_RAN_FLOORS = {
     "full": MIN_RAN_FLOOR,   # every test under tests/
     "heavy": 2000,           # .github/heavy-test-files.txt only (~2,235 today)
+    # ONE shard of the required gate (~3,600 of ~21,900 at 6 shards). The union
+    # floor is checked again by `--aggregate`, but the union floor alone cannot
+    # see one shard collapsing: 5 of 6 shards still clear it comfortably.
+    "shard": 1000,
 }
+
+
+# ---- sharding ---------------------------------------------------------------
+#
+# The required gate runs as N parallel jobs. Each test FILE belongs to exactly
+# one shard, decided by a stable hash of its repo-relative path, so the
+# partition is complete and disjoint by construction: every collected file maps
+# to some index in 1..N, and the workflow runs every index. Hashing rather than
+# a committed durations table: nothing to regenerate, and a new file lands in a
+# shard without anyone touching this code. Measured imbalance at 6 shards on
+# 2026-09-27 junit: max shard 220-254s against a 187-201s mean.
+#
+# Enforced through `pytest_ignore_collect` (this module is loaded with `-p`), so
+# a shard never IMPORTS another shard's files: a collection error is reported
+# once, by the shard that owns the file, not six times.
+
+
+def shard_of(relpath: str, total: int) -> int:
+    """1-based shard index owning a repo-relative test file path."""
+    digest = hashlib.sha256(relpath.replace("\\", "/").encode("utf-8")).hexdigest()
+    return int(digest, 16) % total + 1
+
+
+def parse_shard(raw: str) -> tuple[int, int]:
+    """Parse `I/N` into (index, total), rejecting anything outside 1 <= I <= N."""
+    try:
+        index_s, total_s = raw.split("/")
+        index, total = int(index_s), int(total_s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--shard must look like I/N, got {raw!r}") from None
+    if not 1 <= index <= total:
+        raise argparse.ArgumentTypeError(f"--shard {raw!r}: need 1 <= I <= N")
+    return index, total
+
+
+def pytest_addoption(parser) -> None:  # pragma: no cover - exercised via pytest -p
+    parser.addoption("--ci-shard", default=None, help="I/N: run only files hashed to shard I")
+
+
+def pytest_ignore_collect(collection_path, config):
+    """Skip test files owned by another shard. Directories and conftests pass."""
+    raw = config.getoption("--ci-shard", default=None)
+    # is_file() FIRST: a directory can be named `x.py`, and pytest asks about
+    # directories before descending. Hashing one would hand the directory to
+    # one shard and its files to others, and no shard would run them.
+    if not raw or not collection_path.is_file() or collection_path.suffix != ".py":
+        return None
+    if collection_path.name in ("conftest.py", "__init__.py"):
+        return None
+    try:
+        rel = collection_path.resolve().relative_to(Path(config.rootpath).resolve()).as_posix()
+    except ValueError:
+        return None
+    index, total = parse_shard(raw)
+    return True if shard_of(rel, total) != index else None
 
 
 def _min_ran_arg(raw: str) -> int:
@@ -178,8 +240,6 @@ def collect_outcomes(junit: Path) -> tuple[set[str], set[str]]:
 
 
 def summarise(lines: list[str]) -> None:
-    import os
-
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     text = "\n".join(lines)
     print(text)
@@ -191,6 +251,182 @@ def summarise(lines: list[str]) -> None:
     if path:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(text + "\n")
+
+
+def evaluate(
+    failing: set[str], ran: set[str], min_ran: int, pytest_exits: list[int], heading: str
+) -> int:
+    """Compare outcomes to the quarantine ledger: the gate's pass/fail decision.
+
+    Shared by a single run and by `--aggregate`, which passes the UNION of every
+    shard's outcomes and every shard's pytest exit code. Per-shard verdicts are
+    sound too: `stale` requires an entry to have RUN, so a shard never marks a
+    test it did not own as stale.
+    """
+    tolerated, flaky, problems = parse_quarantine(QUARANTINE)
+    known = tolerated | flaky
+
+    new_failures = sorted(failing - known)
+    # An entry that ran and did NOT fail is fixed (or renamed/deleted). Either
+    # way the line is stale and must go, or the list slowly stops meaning
+    # anything. Entries that did not run at all are left alone — a
+    # platform-skipped test is not evidence of anything. `flaky` entries are
+    # exempt by definition.
+    stale = sorted(n for n in tolerated if n in ran and n not in failing)
+
+    lines = [
+        heading,
+        "",
+        f"- ran: **{len(ran)}**",
+        f"- failing: **{len(failing)}**",
+        f"- known-broken on main: **{len(tolerated)}** (+{len(flaky)} flaky)",
+        f"- NEW failures: **{len(new_failures)}**",
+        f"- stale quarantine entries: **{len(stale)}**",
+    ]
+
+    if problems:
+        lines += ["", "**Malformed quarantine file:**", ""]
+        lines += [f"- `{p}`" for p in problems]
+
+    if new_failures:
+        lines += [
+            "",
+            "**FAILED — this PR introduces test failures that `main` does not have.**",
+            "",
+        ]
+        lines += [f"- `{n}`" for n in new_failures[:50]]
+        if len(new_failures) > 50:
+            lines.append(f"- …and {len(new_failures) - 50} more")
+
+    if stale:
+        lines += [
+            "",
+            "**FAILED — quarantined tests are passing now. Delete these lines from",
+            f"`{QUARANTINE.relative_to(REPO_ROOT).as_posix()}`:**",
+            "",
+        ]
+        lines += [f"- `{n}`" for n in stale[:50]]
+        if len(stale) > 50:
+            lines.append(f"- …and {len(stale) - 50} more")
+
+    if not new_failures and not stale and not problems:
+        # ASCII only: this also runs on a Windows console (cp1252), where a
+        # stray emoji raises UnicodeEncodeError and takes the gate down with it.
+        lines += ["", "No new failures."]
+
+    summarise(lines)
+
+    if new_failures or stale or problems:
+        return 1
+
+    vacuous = vacuity_failure(len(ran), min_ran)
+    if vacuous:
+        summarise(["", f"**FAILED — {vacuous}**"])
+        return 1
+
+    # Guard the inverse of a green check: pytest failed for a reason the
+    # comparison did not explain (collection error, usage error, no tests run).
+    # Exit codes: 0 ok, 1 tests failed (already explained above), 2 interrupted,
+    # 4 usage error, 5 no tests collected.
+    unexplained = [code for code in pytest_exits if code not in (0, 1)]
+    if unexplained:
+        summarise(
+            [
+                "",
+                f"**FAILED — pytest exited {unexplained[0]} with no new test failures",
+                "to explain it (usage error, interruption, or nothing collected).**",
+            ]
+        )
+        return 1
+
+    return 0
+
+
+def aggregate(
+    directory: Path, expected: int, junit_out: Path, min_ran: int, shard_job_result: str
+) -> int:
+    """Merge shard results and decide the gate. Every shard must be accounted for.
+
+    A lost shard must never read as green: a shard whose job died before
+    uploading, was cancelled, or ran a different split leaves a hole the union
+    comparison cannot see (its tests are simply absent from `ran`, and 5 of 6
+    shards clear the union floor). So the shard set is checked BEFORE any
+    comparison, and each shard's truncation signals fail the whole gate.
+    """
+    problems: list[str] = []
+    if shard_job_result != "success":
+        # Checked here, not in shell, so it is unit-tested: a shard that failed
+        # AFTER writing clean-looking results must still fail the gate.
+        problems.append(f"shard jobs concluded {shard_job_result!r}, not 'success'")
+    manifests: dict[int, dict] = {}
+    for path in sorted(directory.rglob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            index, total, code = int(data["shard"]), int(data["total"]), int(data["pytest_exit"])
+        except (ValueError, KeyError, TypeError) as exc:
+            problems.append(f"{path.name}: unreadable shard manifest ({exc!r})")
+            continue
+        if total != expected or not 1 <= index <= expected:
+            problems.append(f"{path.name}: shard ran as {index}/{total}, expected N={expected}")
+            continue
+        if index in manifests:
+            problems.append(f"{path.name}: shard {index} reported twice")
+            continue
+        manifests[index] = {"exit": code, "junit": path.with_suffix(".xml")}
+
+    missing = sorted(set(range(1, expected + 1)) - set(manifests))
+    if missing:
+        problems.append(f"missing shard(s) {missing} of {expected}: no manifest uploaded")
+
+    failing: set[str] = set()
+    ran: set[str] = set()
+    owner: dict[str, int] = {}
+    merged = ET.Element("testsuites")
+    for index, info in sorted(manifests.items()):
+        if info["exit"] == 3:
+            problems.append(f"shard {index}: pytest INTERNALERROR (exit 3), run truncated")
+        if not info["junit"].exists():
+            problems.append(f"shard {index}: pytest exited {info['exit']} but wrote no junit xml")
+            continue
+        try:
+            root = ET.parse(info["junit"]).getroot()
+        except ET.ParseError as exc:
+            problems.append(f"shard {index}: junit xml does not parse ({exc})")
+            continue
+        merged.extend([root] if root.tag == "testsuite" else list(root.iter("testsuite")))
+        shard_failing, shard_ran = collect_outcomes(info["junit"])
+        overlap = sorted(n for n in shard_ran if n in owner)
+        if overlap:
+            # Disjoint by construction; the same test in two shards means the
+            # partition is broken and every count built on it is suspect.
+            problems.append(
+                f"shard {index}: {len(overlap)} test(s) also ran in shard "
+                f"{owner[overlap[0]]}, e.g. {overlap[0]}"
+            )
+        for nid in shard_ran:
+            owner.setdefault(nid, index)
+        failing |= shard_failing
+        ran |= shard_ran
+
+    # Written even when failing, so the `junit-required-tests` artifact (what
+    # --emit-quarantine and duration measurements read) keeps its old shape.
+    ET.ElementTree(merged).write(junit_out, encoding="utf-8", xml_declaration=True)
+
+    if problems:
+        summarise(
+            ["### Required tests - SHARD SET INCOMPLETE", "", "The gate fails closed:", ""]
+            + [f"- {p}" for p in problems]
+        )
+        return 1
+
+    per_shard = ", ".join(f"{i}: exit {m['exit']}" for i, m in sorted(manifests.items()))
+    return evaluate(
+        failing,
+        ran,
+        min_ran,
+        [m["exit"] for m in manifests.values()],
+        f"### Required tests ({expected} shards; {per_shard})",
+    )
 
 
 def main() -> int:
@@ -256,7 +492,55 @@ def main() -> int:
             "reproducible from a CI artifact, never hand-typed."
         ),
     )
+    ap.add_argument(
+        "--shard",
+        type=parse_shard,
+        metavar="I/N",
+        help=(
+            "Run only the test files hashed to shard I of N (see shard_of), and "
+            "write a manifest beside --junit recording the shard and pytest's "
+            "exit code for --aggregate. Requires --profile shard."
+        ),
+    )
+    ap.add_argument(
+        "--aggregate",
+        metavar="DIR",
+        help=(
+            "Run no tests. Merge the shard junit files and manifests under DIR, "
+            "fail if any of the --expect-shards shards is missing or broken, "
+            "write the union to --junit, and apply the quarantine comparison "
+            "and vacuity floor to the union. This is the `required-tests` verdict."
+        ),
+    )
+    ap.add_argument(
+        "--expect-shards",
+        type=int,
+        metavar="N",
+        help="With --aggregate: the shard count the workflow matrix runs.",
+    )
+    ap.add_argument(
+        "--shard-job-result",
+        metavar="RESULT",
+        help=(
+            "With --aggregate: `needs.<shard job>.result`. Anything but "
+            "`success` fails the gate, whatever the shard files say."
+        ),
+    )
     args = ap.parse_args()
+
+    if args.shard and args.profile != "shard":
+        raise SystemExit("--shard requires --profile shard (the per-shard floor).")
+    if args.profile == "shard" and not args.shard:
+        raise SystemExit("--profile shard is only meaningful with --shard I/N.")
+    if args.aggregate and (
+        args.shard
+        or not args.expect_shards
+        or args.expect_shards < 1
+        or args.shard_job_result is None
+    ):
+        raise SystemExit(
+            "--aggregate needs --expect-shards N >= 1, --shard-job-result, and no --shard."
+        )
 
     # BEFORE running anything. argparse can only check the LOWEST profile floor
     # (the profile is not known while parsing), so `--profile full --min-ran
@@ -284,9 +568,20 @@ def main() -> int:
             print(nid)
         return 0
 
+    if args.aggregate:
+        return aggregate(
+            Path(args.aggregate),
+            args.expect_shards,
+            Path(args.junit),
+            args.min_ran,
+            args.shard_job_result,
+        )
+
     junit = Path(args.junit)
-    if junit.exists():
-        junit.unlink()
+    manifest = junit.with_suffix(".json")
+    for stale_output in (junit, manifest):
+        if stale_output.exists():
+            stale_output.unlink()
 
     # SERIAL ON PURPOSE — do not "optimise" this back to pytest-xdist.
     #
@@ -408,10 +703,29 @@ def main() -> int:
                 f"run (an empty include list would silently run nothing)."
             )
         cmd += present
+    if args.shard:
+        # Loads THIS module as a pytest plugin for its pytest_ignore_collect.
+        # `-p` imports by module name, hence scripts/ on PYTHONPATH below.
+        cmd += ["-p", "ci_required_tests", f"--ci-shard={args.shard[0]}/{args.shard[1]}"]
     cmd += [*args.pytest_arg]
     print("+ " + " ".join(cmd), flush=True)
-    proc = subprocess.run(cmd, cwd=REPO_ROOT)
+    env = None
+    if args.shard:
+        env = dict(os.environ)
+        scripts_dir = str(Path(__file__).resolve().parent)
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [scripts_dir, env.get("PYTHONPATH")]))
+    proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env)
     print(f"pytest exit code: {proc.returncode}", flush=True)
+    if args.shard:
+        # Written unconditionally, BEFORE any verdict: the aggregate needs to
+        # know this shard ran and how pytest exited even when the junit is
+        # missing or this shard's own verdict is red.
+        manifest.write_text(
+            json.dumps(
+                {"shard": args.shard[0], "total": args.shard[1], "pytest_exit": proc.returncode}
+            ),
+            encoding="utf-8",
+        )
 
     # Exit 3 = INTERNALERROR (e.g. a crashed xdist worker). When that happens the
     # run is TRUNCATED: tests are silently dropped from the report, so a
@@ -441,83 +755,12 @@ def main() -> int:
         )
         return 1
 
-    tolerated, flaky, problems = parse_quarantine(QUARANTINE)
-    known = tolerated | flaky
     failing, ran = collect_outcomes(junit)
-
-    new_failures = sorted(failing - known)
-    # An entry that ran and did NOT fail is fixed (or renamed/deleted). Either
-    # way the line is stale and must go, or the list slowly stops meaning
-    # anything. Entries that did not run at all are left alone — a
-    # platform-skipped test is not evidence of anything. `flaky` entries are
-    # exempt by definition.
-    stale = sorted(n for n in tolerated if n in ran and n not in failing)
-
-    lines = [
-        "### Required tests",
-        "",
-        f"- ran: **{len(ran)}**",
-        f"- failing: **{len(failing)}**",
-        f"- known-broken on main: **{len(tolerated)}** (+{len(flaky)} flaky)",
-        f"- NEW failures: **{len(new_failures)}**",
-        f"- stale quarantine entries: **{len(stale)}**",
-    ]
-
-    if problems:
-        lines += ["", "**Malformed quarantine file:**", ""]
-        lines += [f"- `{p}`" for p in problems]
-
-    if new_failures:
-        lines += [
-            "",
-            "**FAILED — this PR introduces test failures that `main` does not have.**",
-            "",
-        ]
-        lines += [f"- `{n}`" for n in new_failures[:50]]
-        if len(new_failures) > 50:
-            lines.append(f"- …and {len(new_failures) - 50} more")
-
-    if stale:
-        lines += [
-            "",
-            "**FAILED — quarantined tests are passing now. Delete these lines from",
-            f"`{QUARANTINE.relative_to(REPO_ROOT).as_posix()}`:**",
-            "",
-        ]
-        lines += [f"- `{n}`" for n in stale[:50]]
-        if len(stale) > 50:
-            lines.append(f"- …and {len(stale) - 50} more")
-
-    if not new_failures and not stale and not problems:
-        # ASCII only: this also runs on a Windows console (cp1252), where a
-        # stray emoji raises UnicodeEncodeError and takes the gate down with it.
-        lines += ["", "No new failures."]
-
-    summarise(lines)
-
-    if new_failures or stale or problems:
-        return 1
-
-    vacuous = vacuity_failure(len(ran), args.min_ran)
-    if vacuous:
-        summarise(["", f"**FAILED — {vacuous}**"])
-        return 1
-
-    # Guard the inverse of a green check: pytest failed for a reason the
-    # comparison did not explain (collection error, usage error, no tests run).
-    # Exit codes: 0 ok, 1 tests failed (already explained above), 2 interrupted,
-    # 4 usage error, 5 no tests collected.
-    if proc.returncode not in (0, 1):
-        summarise(
-            [
-                "",
-                f"**FAILED — pytest exited {proc.returncode} with no new test failures",
-                "to explain it (usage error, interruption, or nothing collected).**",
-            ]
-        )
-        return 1
-
-    return 0
+    if args.shard:
+        heading = f"### Required tests - shard {args.shard[0]}/{args.shard[1]}"
+    else:
+        heading = "### Required tests"
+    return evaluate(failing, ran, args.min_ran, [proc.returncode], heading)
 
 
 if __name__ == "__main__":

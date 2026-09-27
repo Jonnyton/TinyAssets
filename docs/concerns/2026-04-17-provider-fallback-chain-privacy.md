@@ -1,3 +1,10 @@
+---
+severity: null
+title: Provider fallback-chain privacy
+filed: '2026-04-17'
+summary: gemini/groq/grok still in the chains
+---
+
 # Privacy Q6.3 - third-party providers remain in the fallback chains
 
 **Filed:** 2026-04-17 | **Verified:** 2026-07-25 | **Re-verified:** 2026-08-25

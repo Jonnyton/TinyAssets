@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Request rail refresh erases drafts
+filed: '2026-09-08'
+summary: polling rebuilds active fields; a visible reply vanished before Send reply, blocking ordinary user interaction
+---
+
 # Request rail refresh erases an owner's in-progress reply
 
 Verified 2026-09-08 20:39 UTC in the rendered returning-user app conversation,

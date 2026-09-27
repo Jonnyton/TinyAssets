@@ -12,6 +12,31 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Create the TinyAssets GitHub org (Free plan) and tell the lead (2026-09-27)
+
+You decided to move `Jonnyton/TinyAssets` into an org so the repo can use
+GitHub's merge queue, which personal-account repos don't get. Creating an org
+needs your account, so it's yours. Go to <https://github.com/organizations/plan>,
+pick **Free**, name it exactly `TinyAssets`, and choose "My personal account" as
+the owner. Skip inviting anyone. Then tell the lead. The lead runs the transfer
+and the cutover from `docs/ops/org-transfer-runbook.md`. Don't transfer the repo
+yourself, because the image path and deploy chain have to switch in a set order.
+
+## Clear the ACL-locked sandbox temp directories (2026-09-26)
+
+Only an elevated shell can do this one. 68 directories under
+`%TEMP%` plus `.codex-test-tmp/` and `.pytest-tmp/` inside the checkout carry
+sandbox-token ACLs the interactive user cannot read, list, or delete — not just
+cannot delete: `Get-Acl` itself fails. `scripts/dev_hygiene.py` reports them as
+`acl_locked_needs_elevation` and deliberately never tries to force them.
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/clear_sandbox_temp_dirs.ps1 -Apply
+```
+
+Prevention is already in `tests/conftest.py`, which refuses a temp root inside
+the repo.
+
 ## Decide: make a blocking review verdict a required check (2026-09-26)
 
 A Tier 2 review verdict is posted as a PR comment, and auto-merge doesn't read
@@ -24,39 +49,6 @@ it is approved. That is discipline, not enforcement. The durable option: have
 whenever a PR declares `infra-change` or a Tier 2 title, so a BLOCK holds the PR
 the way a failing required check does. That changes a gate file, so it's yours to
 approve. Say yes and an agent builds it.
-
-## Codex is usage-limited, so a cross-family pass is OWED on what lands meanwhile (2026-09-25)
-
-`codex exec` answers only:
-
-> ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage
-> to purchase more credits or try again at Sep 27th, 2026 5:15 PM.
-
-`codex login status` still reports "Logged in using ChatGPT", so this is a
-credit balance, not an auth failure, and no agent can fix it.
-
-**The standing arrangement while it lasts** (founder directive): the
-cross-family pass is POSTPONED, not skipped. An authority-path PR lands on a
-**Claude Tier 2 review plus a lead-stamped receipt** in its place, and the
-cross-family pass is **owed** afterwards for anything that landed that way. The
-founder neither reviews nor stamps; do not record it as though they did.
-
-Owing a cross-family pass after the 2026-09-27 17:15 reset:
-
-- **PR #3981** (`tinyassets/providers/router.py`) -- free-model sibling retry.
-
-Background: `pr-scope-guard` requires an exact-head review receipt for any
-behavioural change to an authority path (`AUTHORITY_RE` in
-`.github/workflows/pr-scope-guard.yml`, checked by
-`scripts/authority_behavior_check.py`). The receipt is head-pinned, so every
-push needs a fresh review -- batch fixes into one push rather than pushing
-incrementally.
-
-The ask: top up Codex credits at https://chatgpt.com/codex/settings/usage, or
-let the 2026-09-27 17:15 reset land and we run the owed passes then. Either way
-an agent must never write the `Drain-Review-Verdict: APPROVE` receipt for its
-own work -- the gate exists because a PR can neuter its own checks from its own
-checkout, and a self-issued receipt is the failure it names.
 
 ## Delete the platform's model-credential repository secrets (2026-09-24)
 
@@ -118,28 +110,6 @@ Only the founder's profile is connected. The free-only OpenRouter onboarding
 test (capability C5/C1) needs the second profile's extension connected so it
 can run as that user. No other founder step is needed; the agent drives the
 rest.
-
-## Decide: what should be publicly discoverable, now that the site shows it?
-
-The rewritten `/commons` page lists what the endpoint reports as publicly
-discoverable. Driving it live on 2026-09-02 showed seven of twelve rows are not
-universes anyone published: `_backup_subject_migration_20260829T055340Z`,
-`_removed_legacy_20260829`, `_removed_universes_20260828`,
-`_removed_universes_20260829`, plus the `scratch`, `daemon_wikis` and
-`cloud-automation-inputs` working buckets. All are `visibility=public` because
-maintenance created them that way, not because anyone chose to publish.
-
-Nothing sensitive leaks — the public projection is id, phase, word count and a
-coarse timestamp — but the bucket names disclose when removals and an identity
-migration happened, and the page reads like an accident. The site does **not**
-filter them, deliberately: hiding rows while claiming to show "what is public"
-is exactly the dishonesty the public-read boundary exists to prevent.
-
-Your call, because the fix writes to live universe records. Suggested shape is
-in `docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`:
-create maintenance holding records private, flip the seven existing ones (do
-not delete — they are migration backups), and decide whether an unpublished
-universe should default to `public` at all.
 
 ## Decide: should a deposit serve the universe by itself?
 

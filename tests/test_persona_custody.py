@@ -52,6 +52,9 @@ def universe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     udir = root / "u-test"
     udir.mkdir()
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(udir.parent, udir.name)
     seed_okf_bundle(udir, purpose="To help my founder bring their projects to life.")
     (udir / "identity.md").write_text(
         "---\nname: Lumen\nstatus: learned\n---\n\n# Identity\nI am Lumen.",
@@ -61,7 +64,7 @@ def universe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         f"# Founder\nMy founder is {FOUNDER_FACT}.", encoding="utf-8"
     )
     ensure_universe_registered(root, universe_id="u-test", universe_path=udir)
-    vis.set_universe_visibility("u-test", "public")
+    vis.set_universe_visibility("u-test", "public", source="owner")
     return udir
 
 

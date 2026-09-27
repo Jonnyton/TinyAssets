@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Durable workspace waiting follow-ups
+filed: '2026-09-24'
+summary: exactly-once start is in-process only (latent double-run with two daemons), an unreadable waiter DB strands queued runs, and a double dispatch/settle failure wedges a queue
+---
+
 # Durable workspace waiting: follow-ups from its Tier 1 review
 
 **Filed:** 2026-09-24, from the PR #3950 review at head `d452d16d`. The verdict
