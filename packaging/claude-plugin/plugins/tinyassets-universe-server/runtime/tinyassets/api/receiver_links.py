@@ -113,6 +113,9 @@ def save_receiver(
     description="",
     receiver_id=None,
     expected_generation=None,
+    open_to_all=None,
+    discoverable=None,
+    sender_rate_limit=None,
 ):
     principal = _principal(write=True)
     base = _base()
@@ -123,8 +126,28 @@ def save_receiver(
         or len(set(input_keys)) != len(input_keys)
     ):
         raise ValueError("receiver input_keys must be an explicit list of unique names")
-    projection = project_receiver_entry(branch, node_id, contract_input_keys=input_keys)
+    # The platform fills these from trusted link authority at acceptance. Keeping
+    # them OUT of the advertised contract is what makes them unforgeable: a sender's
+    # mapping is validated against the contract, so a name that cannot be advertised
+    # cannot be mapped onto. Refuse loudly rather than dropping the key.
+    reserved = sorted(set(input_keys) & set(store.SENDER_ATTRIBUTION_FIELDS))
+    if reserved:
+        raise ValueError(
+            "these receiver inputs are filled by the platform with the sender's "
+            "identity and cannot be advertised: " + ", ".join(reserved)
+        )
     fields = {item["name"]: item for item in branch.state_schema}
+    # Attribution fields the receiver's own schema declares are ALWAYS supplied by
+    # acceptance, so projection's presence preflight has to count them as present
+    # while the contract below still excludes them. Without this, the documented
+    # recipe -- declare the field, read it in a node -- refused the receiver with
+    # MissingRequiredInputs, because the field is neither advertised nor defaulted.
+    # `contract_input_keys` is presence-preflight-only by contract (see
+    # `project_receiver_entry`), which is exactly the semantics needed here.
+    supplied = [key for key in store.SENDER_ATTRIBUTION_FIELDS if key in fields]
+    projection = project_receiver_entry(
+        branch, node_id, contract_input_keys=[*input_keys, *supplied],
+    )
     defaults = _state_schema_defaults(branch.state_schema)
     # Explicitly advertised input metadata, not the receiver's private defaults
     # or arbitrary schema metadata. A default may contain private startup inputs.
@@ -148,6 +171,9 @@ def save_receiver(
         description=description,
         receiver_id=receiver_id,
         expected_generation=expected_generation,
+        open_to_all=open_to_all,
+        discoverable=discoverable,
+        sender_rate_limit=sender_rate_limit,
     )
 
 
@@ -161,6 +187,21 @@ def inspect_receiver(*, receiver_id, owner_universe_id=None):
         receiver_id=receiver_id,
         principal_id=principal,
         owner_universe_id=owner_universe_id,
+    )
+
+
+def discover_receivers(*, universe_id, query="", limit=25):
+    """List receivers other owners opened to discovery, for an authenticated user.
+
+    Admin on the CALLER's own universe, like every other delivery read here: this
+    is an act by an identified universe owner, not an anonymous directory lookup.
+    Read-only, so it takes no owner-write fence.
+    """
+    principal = _principal(write=False)
+    base = _base()
+    _require_admin(base, universe_id, principal)
+    return store.discover_receivers(
+        base, principal_id=principal, query=query, limit=limit
     )
 
 

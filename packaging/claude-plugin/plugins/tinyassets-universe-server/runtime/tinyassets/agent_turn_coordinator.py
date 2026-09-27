@@ -25,6 +25,7 @@ from tinyassets.providers.agent_model_plan import AgentModelPlan
 from tinyassets.providers.native_agent_input import render_native_input
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
+from tinyassets.storage.agent_turn_boot import BOOT
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
 from tinyassets.storage.agent_turn_records import load_result
 
@@ -193,6 +194,20 @@ class AgentTurnCoordinator:
                     stage = "tool"
         return effects, stage, self.turn.turn_id
 
+    def _release_turn(self):
+        """This boot has stopped executing the turn, whatever state it reached.
+
+        Deliberately not "the turn is terminal": a cancelled or timed-out task
+        leaves a progressing row behind with nothing running it, and that row is
+        exactly the one a status surface must stop painting as activity.
+        """
+        if self.turn is None:
+            return
+        try:
+            BOOT.release(self.context.universe_dir.name, self.turn.turn_id)
+        except Exception:  # noqa: BLE001 - bookkeeping never replaces the outcome
+            _LOG.warning("could not release agent turn boot ownership")
+
     async def run(self):
         try:
             return await self._run()
@@ -210,6 +225,8 @@ class AgentTurnCoordinator:
                 except Exception:
                     _LOG.exception("could not close settled interactive agent progress")
             raise
+        finally:
+            self._release_turn()
 
     async def _run(self):
         self.owner = self._check_scope()

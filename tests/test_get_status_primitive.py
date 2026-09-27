@@ -172,6 +172,9 @@ def _write_activity_log(tmp_path, lines):
     os.environ["TINYASSETS_DATA_DIR"] = str(tmp_path)
     udir = tmp_path / "track_q_universe"
     udir.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, "track_q_universe")
     (udir / "activity.log").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
@@ -229,6 +232,9 @@ def test_get_status_evidence_caveats_flag_empty_log(tmp_path) -> None:
     os.environ["TINYASSETS_DATA_DIR"] = str(tmp_path)
     udir = tmp_path / "empty_universe"
     udir.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, "empty_universe")
     payload = json.loads(get_status(universe_id="empty_universe"))
     ec = payload["evidence_caveats"]
     # No log → both evidence keys should carry caveats.
@@ -554,6 +560,9 @@ def test_get_status_session_boundary_no_prior_when_empty_log(tmp_path) -> None:
     os.environ["TINYASSETS_DATA_DIR"] = str(tmp_path)
     udir = tmp_path / "empty_sb_universe"
     udir.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, "empty_sb_universe")
     payload = json.loads(get_status(universe_id="empty_sb_universe"))
     sb = payload["session_boundary"]
     assert sb["prior_session_context_available"] is False
@@ -572,6 +581,9 @@ def test_get_status_session_boundary_does_not_use_environment_actor(
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = tmp_path / "active_sb_universe"
     udir.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, "active_sb_universe")
     (udir / "activity.log").write_text(
         f"[2026-04-24 12:00:00] [{user}] some activity\n",
         encoding="utf-8",

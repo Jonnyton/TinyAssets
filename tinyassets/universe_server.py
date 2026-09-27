@@ -506,9 +506,13 @@ def read_graph(
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
-    Cross-user delivery: target=receiver with query=receiver_id reads the allowed
-    sender's contract; target=output_links lists your graph_id's links;
-    target=delivery with query=delivery_id reads your side's safe receipt.
+    Cross-user delivery: target=receivers searches receivers other owners opened to
+    discovery (optional query=text over description/owner; the result is capped by
+    limit, not exhaustive) — this is how you find a receiver_id you were never told;
+    target=receiver with query=receiver_id reads one contract you may see;
+    target=output_links lists your graph_id's links;
+    target=delivery with query=delivery_id reads your side's safe receipt, which
+    on the receiving side names the sending principal and universe.
     target=run_file reads exact owned run-bound binary chunks; run_file_limits
     reports technical intake/read/retention limits. No sender paths are exposed.
     Files the user attached in the app arrive inside their message as a delimited
@@ -628,11 +632,14 @@ def read_graph(
             return file_limits(universe_id=graph_id)
         return read_file(universe_id=graph_id, run_id=run_id, file_id=file_id,
                          offset=file_offset, count=file_max_bytes)
-    if normalized in {"receiver", "output_links", "delivery"}:
-        action = {"receiver": "inspect_receiver", "output_links": "list_output_links",
+    if normalized in {"receiver", "receivers", "output_links", "delivery"}:
+        action = {"receiver": "inspect_receiver", "receivers": "discover_receivers",
+                  "output_links": "list_output_links",
                   "delivery": "get_delivery"}[normalized]
         payload = ({"receiver_id": query} if normalized == "receiver"
-                   else {"delivery_id": query} if normalized == "delivery" else {})
+                   else {"delivery_id": query} if normalized == "delivery"
+                   else {"query": query, "limit": limit} if normalized == "receivers"
+                   else {})
         return _extensions_impl(action=action, universe_id=graph_id,
                                 payload_json=json.dumps(payload))
     if normalized == "status":
@@ -791,6 +798,10 @@ def read_graph(
             "agent",
             "agent_bindings",
             "agent_binding",
+            "receiver",
+            "receivers",
+            "output_links",
+            "delivery",
         ),
     )
 
@@ -904,9 +915,19 @@ def write_graph(
     """Create or queue TinyAssets graph state.
 
     Cross-user structured delivery: target=receiver operation=create takes
-    payload_json {branch_def_id,node_id,input_keys,allowed_senders,description}.
+    payload_json {branch_def_id,node_id,input_keys,allowed_senders,description}
+    plus the optional exposure fields {open_to_all,discoverable,sender_rate_limit}.
     It exposes a pinned selected entry only to those exact sender principals;
-    an empty list permits nobody. Update adds receiver_id and expected_generation;
+    an empty list permits nobody. open_to_all=true accepts ANY authenticated user
+    (there is no "*" sender); discoverable=true lists it under read_graph
+    target=receivers. Both default false on create; update KEEPS any exposure field
+    you omit, so closing one is an explicit false rather than an omission.
+    sender_rate_limit caps accepted deliveries per
+    sending principal per hour (default 60, 1..100000) and refuses by name.
+    input_keys cannot advertise delivery_sender_id or
+    delivery_sender_universe_id: declare either in the receiving branch's
+    state_schema and the platform fills it with the sender's identity.
+    Update adds receiver_id and expected_generation;
     revoke takes those two fields. target=output_link operation=connect takes
     {branch_def_id,node_id,receiver_id,expected_generation,mapping}, where mapping
     maps source output names to advertised receiver input names. Disconnect takes
@@ -1528,6 +1549,14 @@ def write_graph(
             "agent",
             "agent_binding",
             "source_channel",
+            # Supported above and dispatched, but absent from this list until
+            # 2026-09-26 -- so an agent that guessed a write target was told a set
+            # that omitted the cross-user delivery ones, and a prompt naming them
+            # read as routing to an unsupported target.
+            "receiver",
+            "output_link",
+            "run_file",
+            "model_preferences",
         ),
     )
 
@@ -2151,6 +2180,19 @@ _PLATFORM_FAULT_TELLS = (
     "already consumed",
 )
 
+#: OUR OWN refusal when the request does not fit the selected model's published
+#: context window (``providers/router``). It raises a bare ``PermissionError``
+#: with no attempts behind it, so every taxonomy below reads "unknown" and the
+#: owner is told "we could not identify why" about the one failure whose cause we
+#: measured ourselves -- live 2026-09-26, turn 8dc8ada56b8e4d1cbfd2e4f37a111e7d,
+#: killed by a 1,274,067-byte tool result. These are the router's exact words;
+#: matching the sentence, not a keyword, keeps an unrelated provider message that
+#: happens to say "context" out of this class.
+_CONTEXT_OVERFLOW_TELLS = (
+    "selected model cannot fit this inference context",
+    "selected model cannot fit this workflow context",
+)
+
 
 #: Classes whose remedy is time. Only these carry a measured wait into the
 #: notice; for anything else a number would send the owner away to wait out a
@@ -2455,6 +2497,19 @@ def _has_native_auth_clue(exc: BaseException) -> bool:
     return False
 
 
+def _context_overflow(exc: BaseException) -> bool:
+    """True when this turn, or anything it wraps, is our own context refusal."""
+    seen: set[int] = set()
+    node: BaseException | None = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        text = str(node).lower()
+        if any(tell in text for tell in _CONTEXT_OVERFLOW_TELLS):
+            return True
+        node = node.__cause__ or node.__context__
+    return False
+
+
 def _served_failure_code(exc: BaseException) -> str:
     """Reduce observed diagnostics to a closed code before any durable write."""
     from tinyassets.conversation_failure import FAILURE_CODES
@@ -2462,6 +2517,12 @@ def _served_failure_code(exc: BaseException) -> str:
     try:
         if any(tell in str(exc).lower() for tell in _PLATFORM_FAULT_TELLS):
             return "platform_fault"
+        # Before the taxonomies: this refusal is ours and carries no attempt for
+        # them to read, so consulting them first is how a measured cause became
+        # "unknown". Read the whole chain -- a wrapper that says "exhausted"
+        # must not bury the measurement underneath it.
+        if _context_overflow(exc):
+            return "context_window_exceeded"
         for code in (getattr(exc, "failure_class", None), _attempt_class(exc)):
             if isinstance(code, str) and code in FAILURE_CODES:
                 return code
@@ -3243,7 +3304,7 @@ def extensions(
       create_source, revoke_source, list_sources.
     - Structured cross-owner delivery: create_receiver, update_receiver,
       revoke_receiver, connect_output, disconnect_output, deliver_output,
-      inspect_receiver, list_output_links, get_delivery.
+      inspect_receiver, discover_receivers, list_output_links, get_delivery.
     - Judgments: compare_runs, get_node_output, judge_run, list_judgments,
       list_node_versions, rollback_node, suggest_node_edit.
     - Project memory: project_memory_get, project_memory_list,
@@ -4168,6 +4229,21 @@ def create_streamable_http_app() -> Starlette:
             # Initialize storage before the scheduler's immediate tick can open
             # the same fresh database and race its first journal-mode switch.
             initialize_consumer(data_dir())
+            # A deploy recreates the container mid-turn, so every progressing
+            # agent turn row predates this boot and nothing is executing it.
+            # Settle them before anything can read them as activity (founder,
+            # 2026-09-26: a killed turn showed "thinking" for 35 minutes).
+            # Hygiene, not a gate: an unsettleable row leaves the boot-ownership
+            # guard in `universe_working_turn` to keep it out of the indicator.
+            from tinyassets.agent_turn_reconcile import reconcile_orphaned_turns
+
+            try:
+                orphans = reconcile_orphaned_turns(data_dir())
+            except Exception:  # noqa: BLE001 - serving must not wait on cleanup
+                logger.exception("orphaned agent turn reconciliation failed")
+            else:
+                if orphans:
+                    logger.warning("settled %d orphaned agent turn(s)", len(orphans))
             # The scheduler starts whenever the daemon serves — schedules are a user's
             # own automations and do not belong to the inbound channel surface
             # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates

@@ -427,6 +427,10 @@ def _seed_brain_universe(monkeypatch, tmp_path, uid="u-brain"):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = tmp_path / uid
     seed_okf_bundle(udir, purpose="help the founder", loop_branch_def_id="")
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02): the
+    # persona assembler refuses content on a universe nobody owns.
+    own_universe(tmp_path, uid)
     monkeypatch.setattr(s, "_ACTOR_ID", "sub-brain")
     monkeypatch.setattr(s, "_GRAPH_ID", uid)
     mock_engine_admission(monkeypatch, {uid})
@@ -1227,10 +1231,29 @@ def test_read_graph_connections_target_lists_own_http_connections_end_to_end(
     # SHARED universe is the job of
     # test_connections_list_isolates_by_owner_not_just_universe, which actually
     # deposits a second owner's connection; this assertion is only a graph-pin check.)
+    # TWO cases, because they exercise different code. A name nobody owns is not
+    # a universe since 2026-09-02, so that read is REFUSED at the access gate --
+    # which is stronger, but it returns BEFORE the connection ledger is queried,
+    # so on its own it no longer covers the ledger's universe filtering (Codex
+    # review round 2, P2). The OWNED-but-connection-less universe is what keeps
+    # that coverage: it reaches the ledger and the ledger must return nothing.
+    second = "u-also-mine"
+    (tmp_path / second).mkdir(parents=True)
+    grant_universe_access(tmp_path, universe_id=second, actor_id="founder-cx",
+                          permission="admin", granted_by="founder-cx")
+    monkeypatch.setattr(s, "_GRAPH_ID", second)
+    mock_engine_admission(monkeypatch, {s._GRAPH_ID})
+    owned_other = json.loads(s.read_graph(target="connections"))
+    assert owned_other.get("error") is None, owned_other
+    assert owned_other.get("connections") == [], owned_other
+    assert owned_other.get("count") == 0, owned_other
+
     monkeypatch.setattr(s, "_GRAPH_ID", "u-not-mine")
     mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     other = json.loads(s.read_graph(target="connections"))
-    assert other.get("connections") == [] and other.get("count") == 0
+    assert not other.get("connections"), other
+    assert other.get("count", 0) == 0, other
+    assert other.get("error") == "not_found", other
 
 
 def test_read_graph_branches_target_lists_own_workflows_end_to_end(monkeypatch, tmp_path):

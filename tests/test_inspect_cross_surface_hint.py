@@ -19,6 +19,14 @@ def _call_inspect(universe_id="test-u"):
         patch("tinyassets.api.universe._universe_dir", return_value=fake_udir),
         patch.object(Path, "is_dir", return_value=True),
         patch("tinyassets.api.visibility.visibility_permits", return_value=True),
+        # inspect also requires an ownership row to name the universe (a
+        # directory on disk is not one, 2026-09-02). This file's subject is the
+        # cross_surface_hint FIELD, and every other precondition here is already
+        # mocked, so the ownership answer is mocked alongside them.
+        patch(
+            "tinyassets.api.universe._owned_universe_id",
+            return_value=universe_id,
+        ),
         patch("tinyassets.api.visibility.declared_level_name", return_value="public"),
         patch("tinyassets.api.universe._read_json", return_value=None),
         patch("tinyassets.api.universe._read_text", return_value=""),

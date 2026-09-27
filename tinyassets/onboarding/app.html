@@ -47,8 +47,30 @@
     .connection-confirm .btn{margin:0 .5rem .25rem 0}
     .connection-confirm:focus{outline:2px solid var(--accent);outline-offset:2px}
     .btn:disabled{opacity:.5;cursor:default}
-    .model-bar{padding:.5rem 1rem;display:flex;flex-wrap:wrap;gap:.65rem;align-items:center;border-top:1px solid var(--line)}
+    .model-bar{padding:.5rem 1rem;display:flex;flex-wrap:wrap;gap:.65rem;align-items:center;border-top:1px solid var(--line);
+      position:relative}   /* the anchor for #model-menu */
     .model-bar button{max-width:100%;overflow-wrap:anywhere;text-align:left}
+    /* Choosing a model is a dropdown list, not a settings screen. Founder,
+       2026-09-26: "how you change what model the universe is using is not clear,
+       it should just be a list dropdown menu when they click on it." Opens
+       upwards: the bar sits just above the composer at the bottom of the view. */
+    .model-menu{position:absolute;bottom:calc(100% - .2rem);left:1rem;z-index:15;
+      min-width:min(22rem,calc(100vw - 2rem));max-width:calc(100vw - 2rem);max-height:60vh;overflow-y:auto;
+      background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+      box-shadow:0 12px 40px rgba(0,0,0,.45);padding:.3rem}
+    .model-menu[hidden]{display:none}
+    .model-menu-item{display:flex;gap:.5rem;align-items:baseline;width:100%;text-align:left;
+      background:none;border:0;color:var(--ink);font:inherit;padding:.5rem .6rem;border-radius:8px;cursor:pointer}
+    .model-menu-item:hover:not(:disabled),.model-menu-item:focus-visible{background:var(--surface-2)}
+    .model-menu-item:disabled{color:var(--ink-dim);cursor:not-allowed}
+    .model-menu-item[aria-checked="true"]{font-weight:600}
+    /* The check column is fixed-width so the labels line up whether or not a row
+       is the current one. */
+    .model-menu-tick{flex:none;width:1rem}
+    .model-menu-why{color:var(--ink-dim);font-size:.78rem}
+    .model-menu-note{padding:.45rem .6rem;color:var(--ink-dim);font-size:.75rem}
+    .model-menu-divider{margin:.3rem 0;padding:.3rem .6rem 0;border-top:1px solid var(--line);
+      color:var(--ink-dim);font-size:.72rem;text-transform:uppercase;letter-spacing:.4px}
     .model-dialog{color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);width:min(42rem,calc(100% - 2rem));max-height:85vh;padding:1.2rem;overflow:auto}
     .model-dialog::backdrop{background:#0008}
     .model-dialog select{width:100%;max-width:100%;margin:.4rem 0;padding:.6rem;background:var(--surface);color:var(--ink);border:1px solid var(--line)}
@@ -165,20 +187,11 @@
     .chip button:hover{color:var(--ink)}
     .status-line{min-height:1.15rem;padding:0 1rem .4rem;font-size:.78rem;color:var(--ink-dim);text-align:center}
     .status-line--voice{padding-top:0}
-    /* The working indicator. A 0.78rem grey line under the composer was the
-       whole signal that a turn was running, and a four-minute turn read as
-       nothing happening at all (founder, 2026-09-26). This one is a bar the eye
-       lands on: full width, accent-bordered, ink (not dim), with a pulsing dot. */
-    .working{display:flex;align-items:center;gap:.6rem;margin:0 1rem .5rem;padding:.55rem .8rem;
-      border:1px solid var(--accent);border-left-width:4px;border-radius:10px;
-      background:var(--surface-2);   /* fallback first: a browser without color-mix still gets a bar */
-      background:color-mix(in srgb,var(--accent) 16%,var(--surface));color:var(--ink);font-size:.95rem}
-    .working-dot{flex:none;width:.65rem;height:.65rem;border-radius:50%;background:var(--accent);
-      animation:working-pulse 1.4s ease-in-out infinite}
-    .working-text{font-weight:600}
-    .working-note{color:var(--ink-dim);font-size:.85rem;font-weight:400}
-    @keyframes working-pulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
-    @media(prefers-reduced-motion:reduce){.working-dot{animation:none;opacity:1}}
+    /* There is ONE working indicator and it is `.status-line` above. #4020 added
+       a second, louder banner as well; the founder had both on screen at once and
+       said so: "there are now 2 indicators at once that my universe is thinking,
+       i preferred only the original one at the bottom" (2026-09-26). The banner is
+       gone; what it knew (server-reported turn state) now drives that one line. */
     /* A line waiting behind an in-flight turn. It is the founder's own message
        and stays their bubble; the mark says the universe has not seen it yet. */
     .msg--queued{opacity:.72;border:1px dashed var(--accent-ink)}
@@ -378,14 +391,10 @@
         </aside>
       </div>
       <div id="attachments" class="attachments" hidden></div>
-      <div id="working-banner" class="working" role="status" aria-live="polite"
-           aria-label="Universe activity" hidden>
-        <span class="working-dot" aria-hidden="true"></span>
-        <span id="working-text" class="working-text">Your universe is thinking…</span>
-        <span id="working-note" class="working-note"></span>
-      </div>
       <div id="model-bar" class="model-bar">
-        <button id="btn-models" class="btn btn--ghost" type="button" aria-haspopup="dialog" aria-controls="model-dialog">Change model ▾</button>
+        <button id="btn-models" class="btn btn--ghost" type="button" aria-haspopup="true"
+                aria-expanded="false" aria-controls="model-menu">Change model ▾</button>
+        <div id="model-menu" class="model-menu" role="menu" aria-labelledby="btn-models" hidden></div>
         <span id="model-next" class="muted">Next message: saved default</span>
       </div>
       <form id="composer" class="composer">
@@ -426,14 +435,15 @@
       <div class="layout-actions"><button id="btn-layout-publish" class="btn">Publish publicly</button><button id="btn-layout-close" class="btn">Close</button></div>
     </dialog>
     <dialog id="model-dialog" class="model-dialog" aria-labelledby="model-title">
-      <h2 id="model-title">Your agent's model</h2>
+      <!-- Choosing a model moved OUT of here and into the #model-menu dropdown on
+           the bar. What is left is the part that was never a choice of model:
+           granting model access to a connected source, the availability
+           inventory, and the fallback order. Deleting those with the picker copy
+           would have removed the only way to grant model access at all. -->
+      <h2 id="model-title">Model access and availability</h2>
       <p id="model-actual" class="muted">No answering model reported yet.</p>
       <p id="model-saved" class="muted"></p>
       <p id="model-status" role="status" aria-live="polite"></p>
-      <label for="model-primary">Choose a model</label>
-      <select id="model-primary"><option value="">Automatic</option></select>
-      <p class="muted">“Use in this chat” lasts in this tab until you reload or sign out. “Set as default” applies to future messages and visits. Models needing access are listed under “All connected models and availability”.</p>
-      <p class="muted">Automatic prefers your available subscription or local sources, then ranks eligible alternatives. It uses only access and spending you have approved.</p>
       <div id="model-fallback-editor" hidden>
         <h3>Fallback order</h3>
         <p class="muted">Used in order when a model reaches its limits. An empty list means no fallback.</p>
@@ -442,13 +452,7 @@
         <select id="model-fallback-add"></select>
         <button id="btn-model-fallback-add" class="btn btn--link" type="button">Add fallback</button>
       </div>
-      <p id="model-preview" class="muted"></p>
-      <div class="model-actions">
-        <button id="btn-model-use" class="btn btn--primary" type="button">Use in this chat</button>
-        <button id="btn-model-save" class="btn btn--ghost" type="button">Set as default</button>
-        <button id="btn-model-saved" class="btn btn--link" type="button">Use saved default</button>
-      </div>
-      <details><summary>All connected models and availability</summary><ul id="model-inventory"></ul></details>
+      <details open><summary>All connected models and availability</summary><ul id="model-inventory"></ul></details>
       <details><summary>Model access for connected sources</summary>
         <p class="muted">Adding model access is separate from choosing a model. New API access is free-only; existing spending limits stay unchanged.</p>
         <ul id="model-access-sources"></ul>
@@ -1643,24 +1647,40 @@
     if(seconds<60) return "for "+seconds+"s";
     return "for "+Math.floor(seconds/60)+"m "+(seconds%60)+"s";
   }
+  // Is the status line currently OURS to rewrite or clear? Only the server-driven
+  // sentence is; a queue count, an attachment notice or a failure line belongs to
+  // whoever wrote it and is never touched here.
+  let serverStatusLine=false;
   function renderWorking(){
-    const banner=$("working-banner"); if(!banner) return;
-    const since=workingSince();
-    banner.hidden=!since;
-    if(!since){
-      const idle=$("working-note"); if(idle) idle.textContent="";
+    // ONE indicator, and it is the original line under the composer. #4020 added a
+    // second, louder banner alongside it and the founder had both at once: "there
+    // are now 2 indicators at once that my universe is thinking, i preferred only
+    // the original one at the bottom" (2026-09-26).
+    //
+    // A turn THIS page started has already written that line in sendTurn /
+    // sendVoiceTurn / queueTurn, and those know things this does not - the number
+    // of messages waiting behind the turn, whether the queue failed to save. So
+    // this speaks ONLY for a turn the page would otherwise say nothing at all
+    // about: another window, a request answered somewhere else, or one still
+    // running across a reload. That is the whole reason the server field exists,
+    // and it is also what keeps the two from fighting over one element.
+    //
+    // The flag is dropped on the way out: a local turn has taken the line, so our
+    // sentence is no longer on screen and we must not later "clear" what that path
+    // wrote (a queue count outlives the turn it was queued behind).
+    if(turnStartedAt){ serverStatusLine=false; return; }
+    if(!serverTurnLive()){
+      // Ours to clear, or nobody's. A line another path wrote stays.
+      if(serverStatusLine){ serverStatusLine=false; setStatusLine(""); }
       return;
     }
-    const text=$("working-text"); if(text) text.textContent="Your universe is thinking…";
-    const note=$("working-note");
-    if(note){
-      // Where it came from is said only when THIS page did not start it —
-      // otherwise the founder is looking at their own send and it is noise.
-      const elsewhere=(!turnStartedAt&&serverTurnLive())
-        ? "started in another window, by a request you answered, or before this page loaded"
-        : "";
-      note.textContent=[workingElapsed(since),elsewhere].filter(Boolean).join(" · ");
-    }
+    serverStatusLine=true;
+    const elapsed=workingElapsed(workingSince());
+    // Said because this page did NOT start it: without it the founder is looking
+    // at a turn they have no other evidence of.
+    const detail=[elapsed,"started in another window, by a request you answered, "+
+      "or before this page loaded"].filter(Boolean).join(" · ");
+    setStatusLine("Your universe is thinking... " + detail);
   }
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The universe's actual
@@ -2583,6 +2603,125 @@
       return this.snapshot.choice_authority==="accepted_manifest"&&
         [this.draft.saved_default,...this.draft.fallbacks].every(ref=>this.usable(this.row(ref)));
     },
+    // ---- the dropdown ---------------------------------------------------
+    //
+    // "how you change what model the universe is using is not clear, it should
+    // just be a list dropdown menu when they click on it" (founder, 2026-09-26).
+    // Clicking the bar button opens THIS: Automatic, then every model the
+    // universe can actually use, current one ticked. One click applies it as the
+    // saved default and closes. No confirm step, because a click IS the decision.
+    //
+    // It reads the same `rows()` the availability inventory reads, and applies
+    // through the same `save()` the old "Set as default" button used, so the
+    // request the server sees is byte-identical to before.
+    menuIsOpen(){const menu=$("model-menu");return !!menu&&!menu.hidden;},
+    async menuOpen(){
+      const menu=$("model-menu");if(!menu) return;
+      menu.hidden=false;$("btn-models").setAttribute("aria-expanded","true");
+      this.renderMenu();
+      // A still-fresh snapshot is reused; otherwise the list says it is loading
+      // rather than showing an empty or stale set of choices.
+      if(!this.fresh()) await this.refresh();
+      if(this.menuIsOpen()) this.focusMenu(0);
+    },
+    menuClose(opts){
+      const menu=$("model-menu");if(!menu||menu.hidden) return;
+      menu.hidden=true;menu.replaceChildren();
+      $("btn-models").setAttribute("aria-expanded","false");
+      if(!opts||opts.restoreFocus!==false) $("btn-models").focus();
+    },
+    menuItems(){
+      return Array.from(($("model-menu")||{children:[]}).children)
+        .filter(node=>node.classList&&node.classList.contains("model-menu-item")&&!node.disabled);
+    },
+    focusMenu(index){
+      const items=this.menuItems();if(!items.length) return;
+      const at=(index+items.length)%items.length;
+      items[at].focus();
+    },
+    // One row. `why` is the honest short reason a row cannot be picked.
+    menuRow(label,checked,onPick,why){
+      const item=document.createElement("button");
+      item.type="button";item.className="model-menu-item";
+      item.setAttribute("role","menuitemradio");
+      item.setAttribute("aria-checked",checked?"true":"false");
+      const tick=document.createElement("span");
+      tick.className="model-menu-tick";tick.textContent=checked?"✓":"";
+      tick.setAttribute("aria-hidden","true");
+      const text=document.createElement("span");text.textContent=label;
+      item.appendChild(tick);item.appendChild(text);
+      if(why){
+        const note=document.createElement("span");note.className="model-menu-why";note.textContent=why;
+        item.appendChild(note);
+      }
+      if(onPick) item.addEventListener("click",()=>onPick());
+      else item.disabled=true;
+      $("model-menu").appendChild(item);
+      return item;
+    },
+    menuNote(text,className){
+      const note=document.createElement("div");
+      note.className=className||"model-menu-note";note.textContent=text;
+      $("model-menu").appendChild(note);
+      return note;
+    },
+    renderMenu(){
+      const menu=$("model-menu");if(!menu||menu.hidden) return;
+      menu.replaceChildren();
+      const saved=(this.snapshot&&this.snapshot.preferences.policy)||null;
+      const current=saved&&saved.mode==="explicit"?saved.saved_default:null;
+      const pickable=!this.busy&&this.fresh();
+      this.menuRow("Automatic",!current,pickable?()=>this.choose(""):null);
+      // Everything the universe can actually use, then - only if there are any -
+      // the ones that cannot be used yet, greyed under one small divider with
+      // their reason. A model is never silently absent.
+      const usable=[],blocked=[];
+      for(const row of this.rows()) (this.usable(row)?usable:blocked).push(row);
+      const isCurrent=key=>!!current&&this.key(current)===key;
+      for(const row of usable){
+        const key=this.key(row.reference);
+        this.menuRow(this.label(row.reference),isCurrent(key),pickable?()=>this.choose(key):null);
+      }
+      // The current choice is ALWAYS shown as current, at the top of the list,
+      // even when it can no longer be used - whether its model went away entirely
+      // or merely stopped being available. The universe is configured that way and
+      // a list that showed it unticked, or only down under "needs access", would
+      // misreport what the universe is set to.
+      if(current&&!usable.some(row=>isCurrent(this.key(row.reference)))){
+        const row=this.row(current);
+        const why=row ? "— currently unavailable" : "— unavailable";
+        this.menuRow(this.label(current),true,null,why);
+      }
+      if(!this.fresh()) this.menuNote(this.busy?"Loading your models…":"This list needs a refresh.");
+      else if(!usable.length) this.menuNote("No model is available to choose yet.");
+      if(blocked.length){
+        this.menuNote("Needs access","model-menu-divider");
+        for(const row of blocked){
+          const reasons=(row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ");
+          this.menuRow(this.label(row.reference),false,null,"— "+(reasons||"availability unconfirmed"));
+        }
+      }
+      // Not a model row: the way through to access, availability and fallback
+      // order. Classed apart so it is never counted as one of the choices.
+      const more=this.menuRow("Model access and availability…",false,()=>{
+        this.menuClose({restoreFocus:false});this.open();
+      });
+      more.className+=" model-menu-item--more";
+    },
+    // A click in the list IS the decision: apply it as the saved default now.
+    async choose(key){
+      if(this.busy||!this.fresh()) return;
+      this.select(key);
+      if(!this.canApply()){
+        // Said in the list rather than swallowed - the row was offered, so the
+        // reason it did not take belongs where the founder is looking.
+        this.renderMenu();
+        this.menuNote("That model needs model access before it can be the default.");
+        return;
+      }
+      this.menuClose({restoreFocus:false});
+      await this.save();
+    },
     observe(text){this.actual=text;this.paintHeader();},
     paintHeader(){
       const policy=modelChoiceForNextTurn||(this.snapshot&&this.snapshot.preferences.policy);
@@ -2595,6 +2734,8 @@
       this.busy=false;this.stale=true;this.recovery=null;this.nativeDrafts={};modelChoiceForNextTurn=null;
       this.actual="No answering model reported yet";
       if($("model-dialog").open) $("model-dialog").close();
+      // The previous account's model list must not stay on screen either.
+      this.menuClose({restoreFocus:false});
       this.paintHeader();
     },
     status(text){$("model-status").textContent=text;},
@@ -2641,21 +2782,17 @@
     },
     render(){
       this.paintHeader();
-      const rows=this.rows(),primary=$("model-primary"),add=$("model-fallback-add");
-      primary.replaceChildren();add.replaceChildren();this.option(primary,"","Automatic",false);
+      // The everyday choice of model is the dropdown now, so it is repainted from
+      // the same place every refresh and every save already went through.
+      this.renderMenu();
+      const rows=this.rows(),add=$("model-fallback-add");
+      add.replaceChildren();
       this.option(add,"","Choose an alternative",false);
       const draft=this.draft||this.automatic(),chosen=draft.saved_default;
       for(const row of rows){
-        const ref=row.reference,key=this.key(ref),reasons=(row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ");
-        const health=(row.labels||[]).includes("recent_sign_in_failure") ? "sign-in failure; check connection" : "";
-        const label=this.label(ref)+(reasons ? " — "+reasons : health ? " — "+health : "");
-        // Keep the everyday selector actionable; retain every unavailable
-        // model and its reason in the full inventory, including a saved choice.
-        if(this.usable(row)||(chosen&&this.key(chosen)===key)) this.option(primary,key,label,!this.usable(row));
+        const ref=row.reference,key=this.key(ref);
         if(this.usable(row)&&(!chosen||this.key(chosen)!==key)&&!draft.fallbacks.some(r=>this.key(r)===key)) this.option(add,key,this.label(ref),false);
       }
-      if(chosen&&!this.row(chosen)) this.option(primary,this.key(chosen),this.label(chosen)+" — unavailable",true);
-      primary.value=chosen ? this.key(chosen) : "";primary.disabled=this.busy||!this.fresh();
       $("model-fallback-editor").hidden=draft.mode!=="explicit";
       const list=$("model-fallbacks");list.replaceChildren();
       draft.fallbacks.forEach((ref,index)=>{
@@ -2714,12 +2851,6 @@
       }
       $("btn-model-restore").hidden=!this.recovery;$("btn-model-restore").disabled=this.busy;
       $("model-saved").textContent="Saved default: "+(this.snapshot ? this.policyLabel(this.snapshot.preferences.policy) : "Not loaded");
-      $("model-preview").textContent=draft.mode==="automatic"
-        ?"Current saved routing preview (changes after saving; not an execution receipt): "+(this.snapshot&&this.snapshot.order.length ? this.snapshot.order.map(ref=>this.label(ref)).join(" → ") : "No eligible model confirmed")
-        :"Selected order: "+[chosen,...draft.fallbacks].map(ref=>this.label(ref)).join(" → ");
-      const applicable=this.canApply();
-      $("btn-model-use").disabled=this.busy||!applicable||this.snapshot.choice_authority!=="accepted_manifest";
-      $("btn-model-save").disabled=this.busy||!applicable;
       $("btn-model-refresh").disabled=this.busy;
       $("btn-model-fallback-add").disabled=this.busy||!this.fresh();add.disabled=this.busy||!this.fresh();
     },
@@ -2745,13 +2876,12 @@
       if(delta===0) refs.splice(index,1);else [refs[index],refs[index+delta]]=[refs[index+delta],refs[index]];
       this.render();
     },
-    use(){
-      if(this.busy||!this.canApply()||this.snapshot.choice_authority!=="accepted_manifest") return;
-      modelChoiceForNextTurn=copyModelChoice(this.draft);this.paintHeader();
-      this.status("Next messages will use this choice. Already sent or queued messages keep their original choice.");
-      $("model-dialog").close();
-    },
-    useSaved(){modelChoiceForNextTurn=null;this.draft=copyModelChoice(this.snapshot&&this.snapshot.preferences.policy||this.automatic());this.render();this.status("Next messages will use the saved default. Queued messages are unchanged.");},
+    // "Use in this chat" and "Use saved default" are gone: one choice IS the
+    // default now, so a this-tab-only override had no way in and nothing to undo.
+    // `modelChoiceForNextTurn` stays null and every turn reads the saved
+    // preference, which is what the server already did for a null choice - see
+    // captureTurnOptions. The variable itself is untouched because a queued line
+    // and an in-flight record both persist the choice they were sent with.
     accessContext(source){
       const snapshot=this.snapshot;
       if(!this.fresh()||!snapshot.binding||!source||!source.bind_key) return null;
@@ -2917,15 +3047,38 @@
       }finally{if(epoch===this.epoch){this.busy=false;this.render();}}
     },
     init(){
-      $("btn-models").addEventListener("click",()=>this.open());
+      // The bar button toggles the dropdown; it no longer opens a dialog.
+      $("btn-models").addEventListener("click",()=>{
+        if(this.menuIsOpen()) this.menuClose(); else this.menuOpen();
+      });
+      const menu=$("model-menu");
+      menu.addEventListener("keydown",event=>{
+        const items=this.menuItems(),at=items.indexOf(document.activeElement);
+        if(event.key==="Escape"){ event.preventDefault(); this.menuClose(); return; }
+        if(event.key==="ArrowDown"){ event.preventDefault(); this.focusMenu(at+1); return; }
+        if(event.key==="ArrowUp"){ event.preventDefault(); this.focusMenu(at-1); return; }
+        if(event.key==="Home"){ event.preventDefault(); this.focusMenu(0); return; }
+        if(event.key==="End"){ event.preventDefault(); this.focusMenu(items.length-1); return; }
+        // Tabbing out of the list closes it, the way a native dropdown does.
+        if(event.key==="Tab") this.menuClose({restoreFocus:false});
+      });
+      // Escape from the button itself, and an outside click anywhere, close it.
+      // Registered on the document ONCE, and it checks containment rather than
+      // assuming the click came from outside.
+      $("btn-models").addEventListener("keydown",event=>{
+        if(event.key==="Escape"&&this.menuIsOpen()){ event.preventDefault(); this.menuClose(); }
+        if(event.key==="ArrowDown"&&this.menuIsOpen()){ event.preventDefault(); this.focusMenu(0); }
+      });
+      document.addEventListener("click",event=>{
+        if(!this.menuIsOpen()) return;
+        const target=event.target;
+        if(menu.contains(target)||$("btn-models").contains(target)) return;
+        this.menuClose({restoreFocus:false});
+      });
       $("btn-model-close").addEventListener("click",()=>$("model-dialog").close());
       $("model-dialog").addEventListener("close",()=>$("btn-models").focus());
       $("btn-model-refresh").addEventListener("click",()=>this.refresh());
-      $("model-primary").addEventListener("change",e=>this.select(e.target.value));
       $("btn-model-fallback-add").addEventListener("click",()=>this.addFallback($("model-fallback-add").value));
-      $("btn-model-use").addEventListener("click",()=>this.use());
-      $("btn-model-save").addEventListener("click",()=>this.save());
-      $("btn-model-saved").addEventListener("click",()=>this.useSaved());
       $("btn-model-restore").addEventListener("click",()=>this.restoreAccess());
       $("btn-model-connect").addEventListener("click",()=>{$("model-dialog").close();openConnectRequest();});
     }
@@ -3951,7 +4104,7 @@
     activeTurn=null; turnStartedAt=0; liveInflight=null;
     // The working indicator is this screen's state as much as the composer is:
     // the previous account's turn must not be reported to whoever signs in next.
-    serverTurn=null;
+    serverTurn=null; serverStatusLine=false;
     setStatusLine(""); renderWorking();
   }
   function clearAccountScopedState(){

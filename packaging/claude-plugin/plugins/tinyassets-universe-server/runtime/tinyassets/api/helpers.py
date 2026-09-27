@@ -67,21 +67,78 @@ def _universe_dir(universe_id: str) -> Path:
     return result
 
 
+def _owned_universe_dir_name(base: Path, name: str) -> str:
+    """``name`` if it is a universe here -- an owned id WITH a directory -- else ``""``.
+
+    A pointer (`.active_universe`, ``UNIVERSE_SERVER_DEFAULT_UNIVERSE``, a
+    directory listing) has to satisfy both halves before a resolver hands it
+    back: an ownership row names it, and the directory is really there. The
+    answer is always ``name`` itself, never a re-spelling -- a universe id is
+    simultaneously a path component and an authority key, and any function that
+    returns one spelling to a caller who needs the other breaks it (see
+    `daemon_server.owned_universe_id` for both directions this failed in).
+    """
+    from tinyassets.daemon_server import owned_universe_id
+
+    candidate = (name or "").strip()
+    if not candidate or not base.is_dir():
+        return ""
+    # Path-traversal guarded like `_universe_dir`: a pointer is caller-influenced
+    # (a marker file, an env var), so `../outside` must not even be stat'ed as a
+    # candidate universe.
+    try:
+        resolved = (base / candidate).resolve()
+        if not resolved.is_relative_to(base.resolve()) or resolved == base.resolve():
+            return ""
+    except OSError:
+        return ""
+    if not resolved.is_dir():
+        return ""
+    return candidate if owned_universe_id(base, candidate) else ""
+
+
 def _default_universe() -> str:
-    """Return the default universe ID, or first available."""
+    """Return the default universe ID, or first available.
+
+    A universe is a directory somebody OWNS (founder, 2026-09-02), so every
+    branch here resolves through :func:`_owned_universe_dir_name`. A MARKER OR
+    AN ENV VALUE IS A POINTER, NOT A GRANT: both used to be returned before any
+    ownership check, so a stale ``.active_universe`` or a configured default
+    naming ``scratch`` routed requests into an operational directory. The final
+    branch returned the first non-hidden directory, which handed out an
+    operational store that sorted first (``cloud-automation-inputs``,
+    ``_aaa-scratch``) as the default universe.
+    """
     base = _base_path()
+    from tinyassets.daemon_server import owned_universe_ids
     from tinyassets.storage import active_universe_id
     active = active_universe_id(base)
     if active:
-        return active
+        resolved = _owned_universe_dir_name(base, active)
+        if resolved:
+            return resolved
 
     default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
     if default:
-        return default
+        resolved = _owned_universe_dir_name(base, default)
+        if resolved:
+            return resolved
+        # An unowned configured default still answers when the data root holds
+        # no universes at all -- a fresh install pointing at the name it is
+        # about to create. It never wins over a real one.
+        if not owned_universe_ids(base):
+            return default
 
     if base.is_dir():
         for child in sorted(base.iterdir()):
-            if child.is_dir() and not child.name.startswith("."):
+            if (
+                child.is_dir()
+                and not child.name.startswith(".")
+                # The DIRECTORY name, resolved case-insensitively against the
+                # ownership rows, so a restored `U-Mine` is returned as the path
+                # that exists rather than the ACL spelling that does not.
+                and _owned_universe_dir_name(base, child.name)
+            ):
                 return child.name
     return "default-universe"
 
@@ -126,19 +183,30 @@ def _designated_public_universe() -> str:
     use a root-global ``.active_universe`` marker to decide which universe a
     chatbot speaks as"). Env-designated default wins; otherwise the first
     non-serial public directory; else the literal ``default-universe``.
+
+    Every branch requires an OWNER, for the same reason as
+    :func:`_default_universe` -- landing an authenticated founder in an
+    operational directory is the same bug whichever resolver does it.
     """
-    default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
-    if default:
-        return default
     from tinyassets.ids import is_universe_serial
 
     base = _base_path()
+    default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
+    if default:
+        resolved = _owned_universe_dir_name(base, default)
+        if resolved:
+            return resolved
     if base.is_dir():
+        from tinyassets.daemon_server import owned_universe_ids
+
+        if default and not owned_universe_ids(base):
+            return default
         for child in sorted(base.iterdir()):
             if (
                 child.is_dir()
                 and not child.name.startswith(".")
                 and not is_universe_serial(child.name)
+                and _owned_universe_dir_name(base, child.name)
             ):
                 return child.name
     return "default-universe"
@@ -216,6 +284,7 @@ __all__ = [
     "_base_path",
     "_default_universe",
     "_find_all_pages",
+    "_owned_universe_dir_name",
     "_read_json",
     "_read_text",
     "_scoped_wiki_root",
