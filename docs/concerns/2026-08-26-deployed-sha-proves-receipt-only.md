@@ -1,3 +1,10 @@
+---
+severity: P2
+title: '`deployed_sha` proves the receipt, not the running binary'
+filed: '2026-08-26'
+summary: a rollback with an intact receipt reads as shipped
+---
+
 # `deployed_sha` proves the receipt, not the running binary
 
 **Filed:** 2026-08-26 | **Verified:** 2026-08-26 | **Severity:** P2

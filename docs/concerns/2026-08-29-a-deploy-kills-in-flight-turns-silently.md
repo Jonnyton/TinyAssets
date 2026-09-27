@@ -1,3 +1,10 @@
+---
+severity: P1
+title: A deploy kills every in-flight turn, silently
+filed: '2026-08-29'
+summary: 'the container is recreated under a running served turn: no reply, no log line, the thread reloads without it; killed two live tests in one day'
+---
+
 # A deploy kills every in-flight turn, and nothing tells anyone
 
 **Filed:** 2026-08-29

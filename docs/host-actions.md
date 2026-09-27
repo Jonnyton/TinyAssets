@@ -12,6 +12,16 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Create the TinyAssets GitHub org (Free plan) and tell the lead (2026-09-27)
+
+You decided to move `Jonnyton/TinyAssets` into an org so the repo can use
+GitHub's merge queue, which personal-account repos don't get. Creating an org
+needs your account, so it's yours. Go to <https://github.com/organizations/plan>,
+pick **Free**, name it exactly `TinyAssets`, and choose "My personal account" as
+the owner. Skip inviting anyone. Then tell the lead. The lead runs the transfer
+and the cutover from `docs/ops/org-transfer-runbook.md`. Don't transfer the repo
+yourself, because the image path and deploy chain have to switch in a set order.
+
 ## Clear the ACL-locked sandbox temp directories (2026-09-26)
 
 Only an elevated shell can do this one. 68 directories under

@@ -1,72 +1,98 @@
-"""Every concern file is linked from the table, and every link resolves.
+"""Every concern file carries its own index row, and nobody hand-keeps a table.
 
 `AGENTS.md` names `docs/concerns/README.md` as the thing to skim when an area
 has known-unresolved findings, and a concern's whole purpose is to be found by
-the next session. On 2026-08-31 ten of twenty-eight files were missing from that
-table -- including a **P0** (`authenticated_external_call` failing in production
-for three days). Each was filed correctly and then not linked, which is a
-one-line omission with the same effect as not filing it.
+the next session. On 2026-08-31 ten of twenty-eight files were missing from the
+hand-kept table, including a **P0**. Filing and linking were two steps, so they
+drifted.
 
-Filing and linking are two steps, so they drift. This makes them one step: the
-table and the directory have to agree, in both directions.
+The first fix made the table and the directory agree in both directions. That
+worked, and it made every PR that filed or resolved a concern edit the same
+table, so parallel PRs conflicted on it. Since 2026-09-27 the row lives in each
+file's front-matter and `scripts/concerns_index.py` prints the table. Filing is
+one step again, and it touches one file.
 """
 from __future__ import annotations
 
+import importlib.util
 import pathlib
+import re
 
 import pytest
 
-CONCERNS = pathlib.Path(__file__).resolve().parents[1] / "docs" / "concerns"
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+CONCERNS = _ROOT / "docs" / "concerns"
 README = CONCERNS / "README.md"
 
+_spec = importlib.util.spec_from_file_location(
+    "concerns_index", _ROOT / "scripts" / "concerns_index.py"
+)
+assert _spec and _spec.loader
+index = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(index)
 
-def _files() -> set[str]:
-    return {p.name for p in CONCERNS.glob("*.md") if p.name != "README.md"}
+
+def _files() -> list[str]:
+    return [p.name for p in index.concern_files(CONCERNS)]
 
 
-def test_every_concern_file_is_linked_from_the_readme() -> None:
-    """A concern nobody links is a concern nobody reads."""
-    text = README.read_text(encoding="utf-8")
-    unlinked = sorted(name for name in _files() if name not in text)
-    assert not unlinked, (
-        "these concern files are not mentioned anywhere in "
-        "docs/concerns/README.md, so nothing points at them:\n  "
-        + "\n  ".join(unlinked)
-        + "\n\nIf you did not file these: CI tests your PR MERGED INTO main, so "
-        "a concern filed in another lane while your PR was open shows up here. "
-        "Adding the row is one line and the right fix -- the index is only "
-        "useful if it is complete at merge time."
+@pytest.mark.parametrize("name", _files())
+def test_each_concern_carries_its_index_row(name: str) -> None:
+    """A concern without valid front-matter is missing from the index, i.e. unread."""
+    meta = index.read_front_matter(CONCERNS / name)
+    # `filed` is what makes "re-verify a premise before acting on it" possible.
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", meta["filed"])
+
+
+def test_the_index_lists_every_concern_exactly_once() -> None:
+    table = index.render(CONCERNS)
+    linked = re.findall(r"\]\(([^)]+\.md)\)", table)
+    assert sorted(linked) == sorted(_files())
+
+
+def test_the_readme_does_not_grow_a_hand_kept_table_again() -> None:
+    """The table is what every parallel PR used to conflict on."""
+    rows = [
+        line
+        for line in README.read_text(encoding="utf-8").splitlines()
+        if line.startswith("|") and re.search(r"\]\([^)]+\.md\)", line)
+    ]
+    assert not rows, (
+        "docs/concerns/README.md has concern table rows again. Put severity, "
+        "title, filed and summary in the concern file's front-matter instead; "
+        "`python scripts/concerns_index.py` prints the table:\n  " + "\n  ".join(rows[:5])
     )
 
 
-def test_every_link_in_the_readme_resolves_to_a_file() -> None:
-    """The other direction, and the one that bites after a RESOLUTION.
-
-    A concern is resolved by DELETING its file (AGENTS.md). Delete the file and
-    leave the row and the table advertises a finding that is fixed, with a link
-    that 404s in the browser and resolves to nothing in a clone.
-    """
-    import re
-
-    text = README.read_text(encoding="utf-8")
-    linked = set(re.findall(r"\]\((\d{4}-\d{2}-\d{2}-[^)]+\.md)\)", text))
-    dangling = sorted(name for name in linked if not (CONCERNS / name).exists())
-    assert not dangling, (
-        "docs/concerns/README.md links files that do not exist "
-        "(resolved without removing the row?):\n  " + "\n  ".join(dangling)
-    )
+def test_invalid_front_matter_is_refused(tmp_path: pathlib.Path) -> None:
+    cases = {
+        "none.md": "# no front-matter\n",
+        "unclosed.md": "---\nseverity: P1\n",
+        "bad-sev.md": "---\nseverity: P9\ntitle: t\nfiled: '2026-09-27'\n---\n",
+        "no-title.md": "---\nseverity: P1\nfiled: '2026-09-27'\n---\n",
+        "bad-date.md": "---\nseverity: P1\ntitle: t\nfiled: soon\n---\n",
+    }
+    for name, text in cases.items():
+        path = tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ValueError):
+            index.read_front_matter(path)
 
 
-@pytest.mark.parametrize("name", sorted(_files()))
-def test_each_concern_says_when_it_was_filed(name: str) -> None:
-    """The date is what makes "re-verify a premise before acting on it" possible.
+def test_render_orders_by_severity_then_newest_and_escapes_pipes(tmp_path: pathlib.Path) -> None:
+    def write(name: str, severity: str, filed: str, summary: str = "s") -> None:
+        (tmp_path / name).write_text(
+            f"---\nseverity: {severity}\ntitle: {name}\nfiled: '{filed}'\n"
+            f"summary: '{summary}'\n---\n\nbody\n",
+            encoding="utf-8",
+        )
 
-    Deliberately loose: it accepts `**Filed:**`, `**Found**`, `**Hit live**` and
-    the other openings already in use here, because the point is that a reader
-    can date the claim -- not that everyone words it identically.
-    """
-    head = (CONCERNS / name).read_text(encoding="utf-8")[:1200]
-    assert "2026-" in head or "2025-" in head, (
-        f"{name} does not date its claim in the first 1200 characters, so a "
-        "reader cannot tell how stale it is"
-    )
+    write("a.md", "P2", "2026-09-01")
+    write("b.md", "P0", "2026-08-01")
+    write("c.md", "P2", "2026-09-20", summary="x | y")
+    write("d.md", "null", "2026-09-25")
+    rows = index.render(tmp_path).splitlines()[2:]
+    assert [re.search(r"\]\(([^)]+)\)", r).group(1) for r in rows] == [
+        "b.md", "c.md", "a.md", "d.md",
+    ]
+    assert "x \\| y" in rows[1]

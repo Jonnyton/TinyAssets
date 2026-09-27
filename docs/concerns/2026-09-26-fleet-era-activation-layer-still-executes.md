@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The fleet-era activation layer is dead, still runs, and still shapes `get_status`
+filed: '2026-09-26'
+summary: 'the layer that used to decide WHETHER background work may run was replaced live on 2026-08-30 but is still wired in: every consumer tick evaluates a retired concept and records `no_serving_runtime`, `get_status` still publishes `epoch2_operational` worker counts for a fleet that does not exist, and the measured subtraction is −18,361 production / −12,863 test lines. Re-verified 2026-09-26 on `31a1776c`'
+---
+
 # The fleet-era activation layer is dead, still runs, and still shapes `get_status`
 
 **Filed:** 2026-09-26, on archiving `openspec/changes/retire-activation-layer/` unstarted

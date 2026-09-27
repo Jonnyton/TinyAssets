@@ -1,3 +1,10 @@
+---
+severity: P1
+title: App connection removal and reconnect
+filed: '2026-09-19'
+summary: the remove primitive exists; unpowered app controls and dependent model lifecycle remain unverified live
+---
+
 # App connection removal and guided reconnection are incomplete
 
 **Correction, 2026-09-19:** source inspection of current origin/main

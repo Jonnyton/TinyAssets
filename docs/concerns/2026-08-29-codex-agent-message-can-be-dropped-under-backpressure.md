@@ -1,3 +1,10 @@
+---
+severity: P2
+title: A codex `agent_message` can be dropped under backpressure
+filed: '2026-08-29'
+summary: only `TurnCompleted` is guaranteed; a finished turn with its reply item dropped fails "omitted result or usage" instead of returning the reply
+---
+
 # A codex `agent_message` can be dropped under backpressure, and then a finished turn fails
 
 **Filed:** 2026-08-29 (Codex round 2 on the turn-wait change, P1 evidence)

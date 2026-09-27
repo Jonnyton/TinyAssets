@@ -187,10 +187,18 @@ def bound_tool_text(text: str, *, tool: str, limit: int) -> str | None:
     byte-for-byte -- bounding is not reformatting, and a result that fits is
     never rewritten.
 
-    The envelope is itself JSON and itself under ``limit``: the marker fields
-    are budgeted first and the verbatim head gets whatever is left. A head of
-    zero bytes still returns the marker, because "your result did not fit"
-    is information the agent needs even when none of the content survives.
+    The envelope is JSON, and its verbatim head is budgeted so the whole thing
+    fits ``limit``. A head of zero bytes still returns the marker, because "your
+    result did not fit" is information the agent needs even when none of the
+    content survives.
+
+    **The marker fields themselves are a floor, so a ``limit`` smaller than they
+    are yields an envelope larger than ``limit``** — roughly 430 bytes with no
+    content at all. That is deliberate: reporting the truncation matters more than
+    honouring an impossible budget, and silently returning nothing would be the one
+    outcome worse than either. It is unreachable in practice because
+    ``resolve_ceiling`` clamps to ``MIN_CEILING_BYTES`` (4096); callers passing
+    ``limit`` directly should stay above the floor.
     """
     if not isinstance(text, str):
         return None

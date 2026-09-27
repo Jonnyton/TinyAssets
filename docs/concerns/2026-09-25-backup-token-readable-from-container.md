@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Backup's broad GitHub token readable in the container
+filed: '2026-09-25'
+summary: live `gho_` token (repo, workflow) in the compose env_file; the entrypoint strip leaves it in pid 1's environ, readable by the daemon user
+---
+
 # The host backup's broad GitHub token is readable inside the container
 
 **Filed:** 2026-09-25 · **Verified:** 2026-09-25 against production `1238502d` · **Severity:** P1

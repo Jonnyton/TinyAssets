@@ -116,7 +116,9 @@ def test_ios_asset_installer_rejects_an_alpha_channel_in_store_art(tmp_path: Pat
 def test_ios_build_and_release_install_real_artwork() -> None:
     build_workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
     assert "python3 scripts/add_ios_assets.py" in build_workflow
-    assert build_workflow.count('".github/workflows/ios-release.yml"') == 2
+    # Once: in the main-push paths. The PR trigger was cut on 2026-09-27 (no
+    # platform builds on PRs, docs/design-notes/2026-09-27-lean-ci-pipeline.md).
+    assert build_workflow.count('".github/workflows/ios-release.yml"') == 1
     assert "python3 scripts/add_ios_assets.py" in RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
 

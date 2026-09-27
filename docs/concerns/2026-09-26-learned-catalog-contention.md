@@ -1,3 +1,10 @@
+---
+severity: P2
+title: A shared catalog read can degrade a model list under contention
+filed: '2026-09-26'
+summary: the 250 ms bound drops learned rows rather than stalling, measured 0.78 s read under an exclusive lock; best-effort write loss is fine, a silently shorter model list is not reported to the user
+---
+
 # Learned catalog contention remains synchronous and client-invisible
 
 Nonblocking follow-up at `b655942b7579731962e75451a9618f99e04da000`.

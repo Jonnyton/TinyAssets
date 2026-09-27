@@ -1,3 +1,10 @@
+---
+severity: P0
+title: Unauthenticated LAN session leak + CSRF writes
+filed: '2026-07-21'
+summary: do not LAN-run
+---
+
 # P0 - Unauthenticated LAN exposure leaks sessions and permits CSRF writes
 
 **Filed:** 2026-07-21

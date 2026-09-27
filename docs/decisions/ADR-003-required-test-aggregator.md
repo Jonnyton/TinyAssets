@@ -341,5 +341,17 @@ xdist note above and these 81 failures are the same class.
   `required-tests` and the excluded heavy files stay a non-required
   post-merge/scheduled tripwire (`heavy-tests`, split out 2026-08-27) — change it via the documented context-rename
   procedure, never by weakening this gate in place.
+- **Sharded 2026-09-27.** The serial job had regrown to ~21,900 tests and
+  19-22 minutes idle (40+ under runner contention). `required-tests` is now
+  an aggregate over six parallel `required-tests shard I/6` jobs; each test
+  file is owned by exactly one shard via a stable path hash
+  (`ci_required_tests.shard_of`), enforced in `pytest_ignore_collect` so a
+  shard never imports another's files. The context name is unchanged, so no
+  protection update was needed. The aggregate runs under `if: always()` (a
+  skipped required check reads as passing) and fails closed on a missing,
+  duplicated, truncated or differently-split shard before applying the same
+  quarantine comparison and `--min-ran` floor to the union. Parallelism is
+  across runners, not pytest-xdist, so the in-process nondeterminism above
+  does not apply.
 - The `known-failing-tests.txt` count is a standing cleanup backlog; each entry
   removed is a real regression the gate can newly catch.
