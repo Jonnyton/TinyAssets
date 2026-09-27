@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Installer tests are mostly dead on a Windows dev box
+filed: '2026-09-25'
+summary: the two halves of `test_host_uptime_installers.py` need different `bash`; 21 of them never start under Git Bash (no `flock`) yet report as failures, and DrvFs reports every mode as 777
+---
+
 # `test_host_uptime_installers.py` is mostly dead on a Windows dev box
 
 **Filed:** 2026-09-25 · **Verified:** 2026-09-25 on `b976df9a`, Windows 11, `.venv` Python · **Severity:** P2

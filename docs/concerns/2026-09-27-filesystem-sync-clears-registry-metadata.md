@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Filesystem sync clears registry metadata
+filed: '2026-09-27'
+summary: '`sync_universes_from_filesystem` resets `universes.metadata_json` to `{}` on every sync; inert today because no caller writes or reads that field, and floor-class the moment one does'
+---
+
 # `sync_universes_from_filesystem` clears `universes.metadata_json`
 
 **Filed:** 2026-09-27 | **Verified:** 2026-09-27 | **Severity:** P2

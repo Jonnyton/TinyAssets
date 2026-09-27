@@ -1,3 +1,10 @@
+---
+severity: note
+title: Removing an accepted model source needs owner reconsent
+filed: '2026-09-15'
+summary: reconnect preserves membership; explicit removal of an unavailable source remains a separate owner-approved action
+---
+
 # Removing an unavailable accepted model source needs owner reconsent
 
 **Filed:** 2026-09-15

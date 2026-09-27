@@ -1,3 +1,10 @@
+---
+severity: null
+title: '`test_record_and_get_stats` flake'
+filed: '2026-04-26'
+summary: predates the 2026-08-25 migration and was never triaged into a severity
+---
+
 # Flake investigation — `test_record_and_get_stats_roundtrip`
 
 **Status:** Investigation. No code changes shipped. Reproduction not seen today; structural flake-mode hypothesis identified.

@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The forge table is platform knowledge, and deleting it re-broke a live fix
+filed: '2026-08-31'
+summary: 'I removed #2753 FORGE_GIT_HOSTS and inverted its regression test, reopening the GitHub checkout 403; restored. The agnosticism argument is real and needs a migration, not a deletion'
+---
+
 # The forge table is platform knowledge — and deleting it re-broke a live fix
 
 **Filed:** 2026-08-31

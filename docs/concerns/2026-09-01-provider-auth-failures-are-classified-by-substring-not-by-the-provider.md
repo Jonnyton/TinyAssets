@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Provider auth failures are classified by substring, not by the provider
+filed: '2026-09-01'
+summary: '`classify_unavailable` guesses auth vs network from words like "token"; three review rounds each found a message on the wrong side; the provider should emit a typed class, and the Claude quick-exit path discards stderr'
+---
+
 # Provider auth failures are classified by substring, not by the provider
 
 **Filed:** 2026-09-01, after three Codex review rounds on #2758 each found a

@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The working indicator goes dark while a turn is retrying after a capacity fallback
+filed: '2026-09-26'
+summary: '`WORKING_STATES` excludes the two retryable holds, so a poll landing in the sub-second window between a capacity failure and its retry reports idle; widening the set would instead stick the indicator on for terminal holds. Needs journal-recorded retry ownership, which is a storage-shape change'
+---
+
 # The working indicator goes dark while a turn is retrying after a capacity fallback
 
 **Filed:** 2026-09-26

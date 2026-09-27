@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The scheduled tripwire has been red continuously
+filed: '2026-08-27'
+summary: '`full-tests`, now `heavy-tests`: 107 unquarantined failures, since before the reset; a permanent red carries no more signal than a permanent green'
+---
+
 # The scheduled tripwire has been red continuously, so it carries no signal
 
 **Filed:** 2026-08-27
