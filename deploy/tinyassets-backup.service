@@ -20,7 +20,7 @@
 
 [Unit]
 Description=TinyAssets daemon state backup (nightly two-tier snapshot to BACKUP_DEST + GH releases)
-Documentation=https://github.com/TinyAssets/TinyAssets/blob/main/deploy/HETZNER-DEPLOY.md
+Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/deploy/HETZNER-DEPLOY.md
 After=docker.service network-online.target
 Wants=network-online.target
 

@@ -7,7 +7,7 @@
 
 [Unit]
 Description=TinyAssets bounded daemon image retention (post-deploy + daily)
-Documentation=https://github.com/TinyAssets/TinyAssets/blob/main/deploy/hetzner-bootstrap.sh
+Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/deploy/hetzner-bootstrap.sh
 After=docker.service
 
 [Service]

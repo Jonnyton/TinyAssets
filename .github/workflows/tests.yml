@@ -25,11 +25,6 @@ on:
     # No `paths:` — see above. Drafts get `opened`/`synchronize` too, so the gate
     # gives signal before a PR is marked ready and becomes auto-merge eligible.
     types: [opened, reopened, synchronize, ready_for_review]
-  # The merge queue. `required-tests` and `slow-tests` are required checks, and
-  # a queue waits for every required check to report on the merge-group commit;
-  # without this trigger nothing reports and every queued PR times out.
-  merge_group:
-    types: [checks_requested]
   push:
     branches: [main]
   # The post-merge tripwire's only reliable AUTOMATIC trigger on this repo.
@@ -283,12 +278,8 @@ jobs:
   # job without that comparison reverts the wrong change.
   # Tracked: docs/concerns/2026-08-27-full-tests-permanently-red.md
   #
-  # The condition therefore admits schedule, push and workflow_dispatch —
-  # schedule is what actually carries it (see above). It excludes
-  # `merge_group` as well as `pull_request`: heavy-tests is not required, is
-  # red at baseline, and takes up to an hour, so running it on every queue
-  # entry would spend an hour of runner per PR to report nothing the queue
-  # reads.
+  # `github.event_name != 'pull_request'` therefore admits schedule, push and
+  # workflow_dispatch — schedule is what actually carries it (see above).
   # Was `full-tests`, which re-ran the ENTIRE required suite a second time.
   # Measured on Linux CI run 33037400288: required-tests 7m26s / 10,700 tests;
   # full-tests 45m09s / 13,865. The ~3,100-test difference IS the heavy list;
@@ -303,7 +294,7 @@ jobs:
   # letting the job pick a number it can meet.
   heavy-tests:
     name: heavy-tests
-    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

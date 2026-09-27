@@ -31,8 +31,8 @@ A controlled pair, an hour apart on the same repository:
 
 | PR | merged by | `build-image` result |
 |---|---|---|
-| [#2259](https://github.com/TinyAssets/TinyAssets/pull/2259) | `app/github-actions` | **no run**; sha `9879311f` built only by a later manual dispatch |
-| [#2260](https://github.com/TinyAssets/TinyAssets/pull/2260) | `Jonnyton` (human) | **`event=push`, automatic**; sha `3b874d65` built and deployed unattended |
+| [#2259](https://github.com/Jonnyton/TinyAssets/pull/2259) | `app/github-actions` | **no run**; sha `9879311f` built only by a later manual dispatch |
+| [#2260](https://github.com/Jonnyton/TinyAssets/pull/2260) | `Jonnyton` (human) | **`event=push`, automatic**; sha `3b874d65` built and deployed unattended |
 
 Same workflow, same path filters, same branch. The only difference is **who the
 merge was attributed to**.
@@ -86,10 +86,6 @@ Options, ranked, with what each costs:
    is personal-account owned. Adopting it means transferring the repo, changing
    protection, and adapting all three required checks for `merge_group` —
    `policy` and `Diff scope declared` currently read PR-specific payloads.
-   *Adopted 2026-09-27:* the repo moves to the `TinyAssets` org and the
-   required checks gain `merge_group` triggers. Enrollment still has to run on
-   the PAT, and the PAT has to be re-minted for the org as its resource owner.
-   See `docs/ops/org-transfer-runbook.md`.
 4. **Drop `strict`** — removes the re-sync race with a one-line protection
    change, but lets checks pass against a stale base so incompatible PR
    combinations can merge. On an automated high-frequency merge path that
@@ -99,7 +95,7 @@ Options, ranked, with what each costs:
 
 Smallest ask, option 2 (option 1 is the same shape with an App):
 
-1. Create a fine-grained PAT scoped to `TinyAssets/TinyAssets` with
+1. Create a fine-grained PAT scoped to `Jonnyton/TinyAssets` with
    **Pull requests: write** and **Contents: write**.
 2. Add it as an Actions secret.
 3. Point `auto-enroll-merge.yml` at that secret. It is exactly one line —

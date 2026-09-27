@@ -11,7 +11,7 @@
 #
 # Environment variables sourced from /etc/tinyassets/env:
 #   GITHUB_TOKEN       — fine-grained PAT with issues:write
-#   GITHUB_REPOSITORY  — owner/repo  (default: TinyAssets/TinyAssets)
+#   GITHUB_REPOSITORY  — owner/repo  (default: Jonnyton/TinyAssets)
 #   DISK_WARN_PCT      — disk_watch GH-alert threshold (default 80)
 #   DISK_AUTOPRUNE_PCT — prune trigger threshold (default 85)
 #   DISK_WATCH_PATH    — path to check, default /var/lib/docker for
@@ -26,7 +26,7 @@
 
 [Unit]
 Description=TinyAssets disk watchdog + rotation + auto-prune (hourly)
-Documentation=https://github.com/TinyAssets/TinyAssets/blob/main/docs/ops/log-aggregation-runbook.md
+Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/docs/ops/log-aggregation-runbook.md
 After=network-online.target
 Wants=network-online.target
 
