@@ -474,6 +474,44 @@ assert(/over the /.test($('ui-status').textContent),$('ui-status').textContent);
 assert(/bytes/.test($('ui-status').textContent),$('ui-status').textContent);
 AppLayout.uncertain=false;
 
+// ---- a brand-new account installs from nothing (lead, 2026-09-26) -----
+// No binding, no published definition, nothing adopted. The person asking for a
+// UI must not be told to go and adopt a stranger's layout first.
+binding=null;
+AppLayout.installation=null;AppLayout.candidates=[];AppLayout.loaded=true;
+AppLayout.saturated=false;AppLayout.uncertain=false;
+AppLayout.enabled=true;AppLayout.home=HOME;AppLayout.principal=PRINCIPAL;
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.library=[];u.unreadable='';u.selection=null;
+calls=[];
+const fresh=await u.install(bundleOf({ui_id:'from-nothing',name:'From nothing'}));
+assert(fresh.ok,'a fresh account can install: '+JSON.stringify(fresh));
+const binds=calls.filter(c=>c.tool==='write_graph'&&c.args.operation==='bind');
+assert.equal(binds.length,1,'exactly one place is created');
+assert(!('agent_definition_id' in binds[0].args),
+ 'the bootstrap names NO definition -- sending "" would ask the server to keep one');
+assert.equal(JSON.parse(binds[0].args.payload_json).role,'app_experience');
+assert.equal(binding.agent_definition_id,undefined,'the created row carries no definition');
+assert.deepEqual(binding.configuration.ui_library.map(b=>b.ui_id),['from-nothing']);
+assert.equal(u.library.length,1);
+
+// And it can then be switched to and remembered, which is the whole journey.
+await u.choose('from-nothing');
+assert(u.active&&u.active.ui_id==='from-nothing');
+assert.deepEqual(binding.configuration.ui_selection,{version:1,state:'active',ui_id:'from-nothing'});
+// Every write after the bootstrap keeps naming no definition, so the update path
+// cannot quietly adopt one on the account's behalf.
+for(const c of calls.filter(c=>c.tool==='write_graph'))
+ assert(!('agent_definition_id' in c.args),'no write adopts a definition: '+JSON.stringify(c.args));
+
+// A second install reuses the one place rather than creating another.
+AppLayout.uncertain=false;
+const bindsBefore=calls.filter(c=>c.tool==='write_graph'&&c.args.operation==='bind').length;
+const secondUI=await u.install(bundleOf({ui_id:'second-one',name:'Second'}));
+assert(secondUI.ok,JSON.stringify(secondUI));
+assert.equal(calls.filter(c=>c.tool==='write_graph'&&c.args.operation==='bind').length,bindsBefore,
+ 'the second install updates the existing place');
+assert.deepEqual(binding.configuration.ui_library.map(b=>b.ui_id).sort(),['from-nothing','second-one']);
+
 // ---- sign-out tears the bridge down ----------------------------------
 u.reset();
 assert.equal(u.frame,null);

@@ -390,9 +390,27 @@
       await this.remember({version:1,state:"default"},
         "Default chat restored.","Default chat restored for this visit only");
     },
+    // Create this account's own private app experience: no published definition,
+    // owner-only, and idempotent on the server, so a double click or a retry after
+    // an unconfirmed reply returns the same place rather than minting a second one
+    // or overwriting what the first one stored.
+    async bootstrap(){
+      const outcome=await AppLayout.writeConfiguration({definitionId:"",noun:"App experience",
+        mutate:()=>{}});
+      if(!outcome.ok){
+        this.status("Could not set up your app experience ("+
+          (outcome.error&&outcome.error.message||outcome.reason||"unavailable")+"). Nothing was changed.");
+        this.paint();
+      }
+      return outcome;
+    },
     async remember(selection,saved,unsaved){
-      const definitionId=AppLayout.installation&&AppLayout.installation.definition_id;
-      if(!definitionId){ this.selection=selection; this.status(unsaved+"; no app-experience installation exists to save it in."); this.paint(); return; }
+      if(!AppLayout.installation){
+        // Remembering a choice is not worth creating storage the person did not
+        // ask for; the switch still applied for this visit.
+        this.selection=selection; this.status(unsaved+"; no app experience exists yet to save it in."); this.paint(); return;
+      }
+      const definitionId=(AppLayout.installation&&AppLayout.installation.definition_id)||"";
       const outcome=await AppLayout.writeConfiguration({definitionId,noun:"UI choice",
         mutate:config=>{config.ui_selection=JSON.parse(JSON.stringify(selection));}});
       if(!outcome.ok){
@@ -409,8 +427,16 @@
       if(!this.enabled||this.busy) return {ok:false,reason:"not ready"};
       const parsed=this.parseBundle(component);
       if(!parsed.ok){ this.status("Cannot install: "+parsed.reason); this.paint(); return parsed; }
-      const definitionId=AppLayout.installation&&AppLayout.installation.definition_id;
-      if(!definitionId){ this.status("Install an app experience first (App design), then install a UI into it."); this.paint(); return this.unsupported("no installation"); }
+      // A fresh account has no app experience yet. Create its private one first
+      // rather than telling the person asking for a UI to go and adopt somebody
+      // else's published layout: nothing is published by this, and the binding it
+      // makes has no definition behind it (see custom_agents.create_binding).
+      if(!AppLayout.installation){
+        const ready=await this.bootstrap();
+        if(!ready.ok) return ready;
+      }
+      // Whatever design this experience has adopted, if any. "" is normal.
+      const definitionId=(AppLayout.installation&&AppLayout.installation.definition_id)||"";
       // Refuse rather than overwrite what could not be read. An install used to
       // rebuild `ui_library` from this controller's cache, and `adopt` empties that
       // cache when ANY stored entry is unsupported -- so installing next to a
@@ -424,7 +450,7 @@
       // last observed. Reaching the same limit inside the guarded mutation works
       // but marks the shared editor uncertain -- correct for a race, wrong for a
       // size this app could see coming.
-      const observedConfig=AppLayout.installation.configuration;
+      const observedConfig=AppLayout.installation&&AppLayout.installation.configuration;
       if(observedConfig){
         const candidate=JSON.parse(JSON.stringify(observedConfig));
         candidate.ui_library=this.library.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);

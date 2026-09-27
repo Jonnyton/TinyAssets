@@ -142,13 +142,19 @@
     },
 
     // ---- reads (idempotent, never create anything) ----
+    // A definition id is NOT required. A first-run app experience is private
+    // configuration with no published design behind it, which is the point of the
+    // bootstrap: the account gets somewhere of its own before it has adopted or
+    // published anything. Ownership, home, role and the absent provider_ref are
+    // what make a binding this controller's to read and write.
     eligible(b){
       return !!(b&&b.created_by===this.principal&&b.universe_id===this.home&&
-        b.status==="configured"&&b.agent_binding_id&&b.agent_definition_id&&
+        b.status==="configured"&&b.agent_binding_id&&
         Number.isInteger(b.revision)&&b.configuration&&
         b.configuration.role===this.ROLE&&
         !Object.prototype.hasOwnProperty.call(b.configuration,"provider_ref"));
     },
+    definitionOf(b){ return b&&b.agent_definition_id?String(b.agent_definition_id):""; },
     async currentBindings(){
       const epoch=this.epoch,home=this.home,principal=this.principal;
       const me=await fetchMe();
@@ -201,8 +207,16 @@
     async consume(binding,epoch,home){
       if(!this.eligible(binding)||!this.fence(epoch,home)) throw new Error("Installation ownership or role is not valid");
       this.installation={binding_id:String(binding.agent_binding_id),revision:binding.revision,
-        definition_id:String(binding.agent_definition_id),created_by:String(binding.created_by||""),
+        definition_id:this.definitionOf(binding),created_by:String(binding.created_by||""),
         configuration:JSON.parse(JSON.stringify(binding.configuration))};
+      // Nothing to read, and nothing wrong: this account has its own private app
+      // experience and has not adopted a published layout. The default
+      // arrangement stays, and the custom-UI switcher still gets the handover.
+      if(!this.installation.definition_id){
+        this.restore();
+        this.status("Your app experience is set up. No published layout is applied, so the default arrangement is in use.");
+        return;
+      }
       const agent=await this.getDefinition(binding.agent_definition_id);
       if(!this.fence(epoch,home)) return;
       const read=this.readDefinition(agent);
@@ -313,22 +327,27 @@
         const previous=opts.previous?opts.previous(b,config):null;
         opts.mutate(config);
         const result=await MCP.callTool("write_graph",{target:"agent_binding",operation:b?"update":"bind",
-          graph_id:home,agent_definition_id:definitionId,...(b?{agent_binding_id:b.agent_binding_id,expected_revision:b.revision}:{}),
+          graph_id:home,...(definitionId?{agent_definition_id:definitionId}:{}),
+          ...(b?{agent_binding_id:b.agent_binding_id,expected_revision:b.revision}:{}),
           payload_json:JSON.stringify(config)});
         if(!this.fence(epoch,home))return {ok:false,reason:"stale"};
         const written=result&&result.binding;
+        // Compared through definitionOf so a null and an omitted id are the same
+        // answer. Sending `agent_definition_id:""` would have asked the server to
+        // KEEP whatever definition the row had, which is not what an empty
+        // definitionId means here.
         if(!result||result.error||result.status!=="configured"||!written||!this.eligible(written)||
-           written.updated_by!==this.principal||written.agent_definition_id!==definitionId||
+           written.updated_by!==this.principal||this.definitionOf(written)!==definitionId||
            (b&&written.agent_binding_id!==b.agent_binding_id))throw Error(noun+" save was not confirmed");
         const doc=await MCP.callTool("read_graph",{target:"agent_binding",graph_id:home,
           agent_binding_id:written.agent_binding_id},{idempotent:true});
         if(!this.fence(epoch,home))return {ok:false,reason:"stale"};
         const check=doc&&doc.binding;
         if(!this.eligible(check)||check.updated_by!==this.principal||check.agent_binding_id!==written.agent_binding_id||
-           check.agent_definition_id!==definitionId||check.revision!==written.revision||
+           this.definitionOf(check)!==definitionId||check.revision!==written.revision||
            JSON.stringify(check.configuration)!==JSON.stringify(config))throw Error(noun+" read-back did not match");
         this.installation={binding_id:check.agent_binding_id,revision:check.revision,
-          definition_id:check.agent_definition_id,configuration:JSON.parse(JSON.stringify(check.configuration))};
+          definition_id:this.definitionOf(check),configuration:JSON.parse(JSON.stringify(check.configuration))};
         this.candidates=[check];
         return {ok:true,binding:check,previous};
       }catch(err){
@@ -342,7 +361,7 @@
     async saveTurn(definitionId,selection){
       const outcome=await this.writeConfiguration({
         definitionId,noun:"Selection",
-        previous:(b,config)=>b?{definition_id:b.agent_definition_id,
+        previous:(b,config)=>b?{definition_id:this.definitionOf(b),
           selection:JSON.parse(JSON.stringify(config.turn_consumer||{version:1,state:"disabled"}))}:null,
         precheck:selection.state==="active"?async()=>{
           const agent=await this.getDefinition(definitionId);

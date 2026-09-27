@@ -160,7 +160,17 @@ CREATE INDEX IF NOT EXISTS idx_agent_lineage_parent
 CREATE TABLE IF NOT EXISTS agent_bindings (
     agent_binding_id TEXT PRIMARY KEY,
     universe_id TEXT NOT NULL,
-    agent_definition_id TEXT NOT NULL,
+    -- NULLABLE on purpose. NULL means this universe holds private app-experience
+    -- configuration without having adopted any PUBLISHED design -- the state a
+    -- fresh account is in, and the only way to give it a private place for that
+    -- configuration without publishing a row about the account first.
+    --
+    -- It is a safety property, not only bookkeeping: SQLite never matches NULL
+    -- with `= ?`, so a definition-less binding is invisible to every reader that
+    -- resolves a binding BY definition (consumer selection, serving activation,
+    -- model bootstrap). It therefore cannot be selected to answer a conversation
+    -- or be served, which is right -- there is no executable design behind it.
+    agent_definition_id TEXT,
     configuration_json TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     status TEXT NOT NULL DEFAULT 'configured'
@@ -485,10 +495,68 @@ def _ensure_schema(base_path: str | Path) -> Path:
             with conn:
                 conn.executescript(_SCHEMA)
                 _migrate_serving_status(conn)
+                _migrate_nullable_binding_definition(conn)
         finally:
             conn.close()
         _SCHEMA_INITIALIZED.add(key)
     return path
+
+
+def _migrate_nullable_binding_definition(conn: sqlite3.Connection) -> None:
+    """Drop the NOT NULL on ``agent_bindings.agent_definition_id``.
+
+    A fresh account needs a private place for its app-experience configuration
+    before it has adopted any published design. SQLite cannot relax NOT NULL with
+    ALTER, so the table is rebuilt; every row is copied unchanged, ids and
+    revisions included, so no CAS precondition held by a live client is disturbed.
+
+    Runs after :func:`_migrate_serving_status`, whose own rebuild emits the older
+    NOT NULL shape — ordering matters, and this migration would be undone if the
+    two were swapped.
+    """
+
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_bindings'"
+    ).fetchone()
+    sql = str(row[0] or "") if row is not None else ""
+    if not sql or "agent_definition_id TEXT NOT NULL" not in sql:
+        return
+    conn.execute("DROP INDEX IF EXISTS idx_agent_binding_universe")
+    conn.execute("DROP INDEX IF EXISTS idx_agent_binding_definition")
+    conn.execute("ALTER TABLE agent_bindings RENAME TO agent_bindings_pre_nullable")
+    conn.executescript(
+        """
+        CREATE TABLE agent_bindings (
+            agent_binding_id TEXT PRIMARY KEY,
+            universe_id TEXT NOT NULL,
+            agent_definition_id TEXT,
+            configuration_json TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            status TEXT NOT NULL DEFAULT 'configured'
+                CHECK (status IN ('configured', 'serving')),
+            created_by TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            FOREIGN KEY(agent_definition_id)
+                REFERENCES agent_definitions(agent_definition_id) ON DELETE RESTRICT
+        );
+        INSERT INTO agent_bindings (
+            agent_binding_id, universe_id, agent_definition_id,
+            configuration_json, revision, status, created_by, updated_by,
+            created_at, updated_at
+        )
+        SELECT agent_binding_id, universe_id, agent_definition_id,
+               configuration_json, revision, status, created_by, updated_by,
+               created_at, updated_at
+          FROM agent_bindings_pre_nullable;
+        DROP TABLE agent_bindings_pre_nullable;
+        CREATE INDEX idx_agent_binding_universe
+            ON agent_bindings(universe_id, updated_at DESC);
+        CREATE INDEX idx_agent_binding_definition
+            ON agent_bindings(agent_definition_id);
+        """
+    )
 
 
 def _migrate_serving_status(conn: sqlite3.Connection) -> None:
@@ -975,7 +1043,13 @@ def _binding_from_row(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "agent_binding_id": str(row["agent_binding_id"]),
         "universe_id": str(row["universe_id"]),
-        "agent_definition_id": str(row["agent_definition_id"]),
+        # NULL stays None. `str(None)` is the literal "None", which reads as a
+        # definition id and gets looked up as one.
+        "agent_definition_id": (
+            None
+            if row["agent_definition_id"] is None
+            else str(row["agent_definition_id"])
+        ),
         "configuration": json.loads(str(row["configuration_json"])),
         "revision": int(row["revision"]),
         "status": str(row["status"]),
@@ -1010,6 +1084,34 @@ def _require_definition(
         raise AgentNotFoundError(f"agent definition {definition_id!r} was not found")
 
 
+def _existing_definitionless_binding(
+    conn: sqlite3.Connection,
+    *,
+    universe_id: str,
+    created_by: str,
+    role: str,
+) -> sqlite3.Row | None:
+    """The caller's own definition-less binding for ``role``, if it already exists.
+
+    Scoped to the CALLER as well as the universe: another principal's private
+    configuration is never returned or reused, so a bootstrap can never hand one
+    account a binding another account owns.
+    """
+
+    return conn.execute(
+        """
+        SELECT *
+        FROM agent_bindings
+        WHERE universe_id = ?
+          AND created_by = ?
+          AND agent_definition_id IS NULL
+          AND json_extract(configuration_json, '$.role') = ?
+        ORDER BY created_at ASC, agent_binding_id ASC
+        """,
+        (universe_id, created_by, role),
+    ).fetchone()
+
+
 def create_binding(
     base_path: str | Path,
     *,
@@ -1018,7 +1120,20 @@ def create_binding(
     created_by: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Create private universe configuration for a public definition."""
+    """Create private universe configuration, optionally for a public definition.
+
+    An EMPTY ``definition_id`` is the first-run bootstrap: it creates the caller's
+    private configuration with no published definition behind it, so a fresh
+    account has somewhere of its own to keep an app experience before it has
+    adopted — or published — any design. That call is **idempotent**: a second one
+    returns the existing row untouched rather than minting a second binding or
+    rewriting the configuration the first one stored. Overwriting here would be a
+    data-loss path, because the caller of a bootstrap does not pass the fields it
+    is not trying to change.
+
+    A non-empty ``definition_id`` behaves exactly as before and still requires the
+    definition to exist.
+    """
 
     uid = (universe_id or "").strip()
     did = (definition_id or "").strip()
@@ -1027,8 +1142,6 @@ def create_binding(
     actor = named_principal(created_by)
     if not uid:
         raise AgentValidationError("universe_id is required")
-    if not did:
-        raise AgentValidationError("definition_id is required")
     if not actor:
         raise AgentValidationError("an authenticated created_by actor is required")
     configuration = _normalize_binding_payload(payload)
@@ -1036,7 +1149,22 @@ def create_binding(
     created_at = time.time()
 
     with _agent_connect(base_path) as conn:
-        _require_definition(conn, did)
+        if not did:
+            role = str(configuration.get("role") or "").strip()
+            if not role:
+                raise AgentValidationError(
+                    "a binding with no definition_id must name a role"
+                )
+            existing = _existing_definitionless_binding(
+                conn, universe_id=uid, created_by=actor, role=role
+            )
+            if existing is not None:
+                # Register-if-absent. The stored configuration is returned as it
+                # stands; this call learns that the place exists, it does not
+                # claim the right to change what is in it.
+                return _binding_from_row(existing)
+        else:
+            _require_definition(conn, did)
         conn.execute(
             """
             INSERT INTO agent_bindings (
@@ -1049,7 +1177,7 @@ def create_binding(
             (
                 binding_id,
                 uid,
-                did,
+                did or None,
                 _canonical_json(configuration),
                 actor,
                 actor,
@@ -1187,10 +1315,15 @@ def update_binding(
             )
             if current is None:
                 raise AgentNotFoundError(f"agent binding {bid!r} was not found")
-            selected_definition = requested_definition or str(
-                current["agent_definition_id"]
+            current_definition = current["agent_definition_id"]
+            selected_definition = requested_definition or (
+                None if current_definition is None else str(current_definition)
             )
-            _require_definition(conn, selected_definition)
+            # A definition-less binding stays definition-less unless this call
+            # adopts one. Without this, `str(None)` became the id "None" and every
+            # configuration update to a fresh app experience failed its lookup.
+            if selected_definition is not None:
+                _require_definition(conn, selected_definition)
             cursor = conn.execute(
                 """
                 UPDATE agent_bindings

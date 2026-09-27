@@ -235,3 +235,55 @@ the write window MAY.
 #### Scenario: Size is measured as the server measures it
 - **WHEN** a bundle's content is multi-byte
 - **THEN** its size is counted in encoded bytes against the server's cap
+
+### Requirement: A universe can hold private app-experience configuration with nothing published
+
+A binding's definition reference SHALL be optional. A caller SHALL be able to
+create its own private app-experience configuration without any published
+definition existing, so a new account has somewhere of its own to keep a UI
+bundle before it has adopted or published any design. That creation SHALL be
+scoped to the calling owner, SHALL be idempotent — a repeat returning the existing
+row with its stored configuration unchanged rather than minting a second row or
+overwriting what is there — and SHALL require a role, since there is no definition
+to identify the row by. A definition-less binding SHALL NOT be selectable as a
+conversation consumer nor activatable for serving, because no executable design
+stands behind it. Adopting a published definition later SHALL still verify that
+the definition exists.
+
+#### Scenario: A new account installs a UI having published nothing
+- **WHEN** an owner with no binding and no published definition installs a bundle
+- **THEN** its private configuration is created with no definition reference
+- **AND** nothing about that account is published or publicly listable
+
+#### Scenario: A repeated bootstrap is not a way to erase a library
+- **WHEN** the creation is repeated after a bundle has been stored in it
+- **THEN** the existing row is returned with its stored configuration intact
+- **AND** no second row exists for that owner and role
+
+#### Scenario: Another owner is never handed someone else's private row
+- **WHEN** a second owner bootstraps in the same universe
+- **THEN** it receives its own row rather than the first owner's
+- **AND** the first owner's configuration is not readable through it
+
+#### Scenario: A definition-less binding is invisible to definition lookups
+- **WHEN** any reader resolves a binding by its definition reference
+- **THEN** a definition-less binding is not among the results
+- **AND** a binding that did adopt a definition still is
+
+#### Scenario: Existing stored bindings survive the shape change
+- **WHEN** a database created under the previous required-reference shape is opened
+- **THEN** every stored binding keeps its identifier, revision and definition
+- **AND** a client's held revision precondition is still valid
+
+### Requirement: The served surface names where an interface gets built
+
+An agent asked to build an interface SHALL be able to find the primitive from the
+served surface without guessing. The resident guidance index SHALL name a chapter
+covering interface building, and that chapter SHALL state the storage call, the
+component's exact fields and bounds, the bridge's complete capability list, and how
+a UI is switched to and shared.
+
+#### Scenario: An agent looking for a place to build a UI finds one
+- **WHEN** the served guidance for the graph-writing handle is read
+- **THEN** it names an interface chapter in the resident index
+- **AND** that chapter names the UI component kind and the four bridge calls

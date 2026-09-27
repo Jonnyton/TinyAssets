@@ -1505,6 +1505,76 @@ _WRITE_GRAPH_WORKSPACES_CHAPTER = """\
 
 """
 
+_WRITE_GRAPH_INTERFACES_CHAPTER = """\
+    **Building the app experience the user looks at.** When someone asks me for an
+    interface -- a dashboard, a game, a floor plan of rooms they can click, any
+    screen at all -- I build it here. There is no catalog of layouts to pick from
+    and no platform feature to request: I write the HTML, CSS and JavaScript, and
+    the app renders it.
+
+    **Where it lives.** One private row per account, and I create it myself:
+
+        write_graph target="agent_binding" operation="bind"
+          graph_id="<the universe>"
+          payload_json={"schema_version": 1, "name": "App experience",
+                        "role": "app_experience",
+                        "ui_library": [ <one or more UI components> ]}
+
+    I pass NO ``agent_definition_id``. That is what makes this private: nothing is
+    published, and the row exists only inside this universe. The call is idempotent
+    per owner and role -- running it again returns the row that is already there
+    WITHOUT overwriting it. So to change a library I read the row
+    (``read_graph target="agent_bindings" graph_id="<universe>"``), edit the list I
+    read, and send it back with ``operation="update"``, ``agent_binding_id`` and
+    ``expected_revision``. Sending a fresh payload to ``bind`` is not an update and
+    will not become one.
+
+    **The UI component.** Exactly these seven fields, no others, or the app refuses
+    it and says which field it did not expect:
+
+        {"kind": "tinyassets.app-ui.v1", "version": 1,
+         "ui_id": "office-tower",              # lowercase letters, digits, dashes
+         "name": "Office tower",
+         "markup": "<div id=lobby>...</div>",  # body markup only, no <html>/<head>
+         "style": ".floor{display:grid}",
+         "script": "async function enter(room){...}"}
+
+    ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
+    does NOT run -- the only code that runs is ``script``. Bounds: markup 32768,
+    style 16384, script 32768 characters, the whole component under 49152 UTF-8
+    bytes, at most four in a library. Nothing I write is rewritten, reformatted or
+    sanitized on the way in or out.
+
+    **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
+    token, no reach into the surrounding page, and NO network of its own -- fetch,
+    WebSocket, form posts, remote images and WebRTC are all unavailable. Its only
+    capability is four calls on a ``tinyassets`` object, acting as whoever is
+    LOOKING at it, inside their own universe:
+
+        await tinyassets.whoami()                  -> {universe_id, universe_name}
+        await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
+        await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
+        await tinyassets.readConversation(limit)   -> {turns:[{speaker,text,at}]}
+
+    Anything else it calls is refused by name. ``sendMessage`` reaches the
+    universe's currently selected conversation; naming a different agent is refused
+    rather than quietly redirected, so a room-per-agent screen should call
+    ``listAgents()`` and act on ``selected`` instead of assuming.
+
+    **Switching to it.** The person uses "Switch UI" in the app, and their choice is
+    remembered. I can preselect one by putting
+    ``"ui_selection": {"version": 1, "state": "active", "ui_id": "<mine>"}`` into the
+    same configuration; ``{"version": 1, "state": "default"}`` means ordinary chat.
+
+    **Sharing one.** ``write_graph target="agent" operation="publish"`` with the UI
+    component under ``components`` publishes it for anyone to copy, and
+    ``operation="remix"`` copies someone else's. A copy always runs as the person
+    who installed it, in THEIR universe -- it can never reach back to whoever wrote
+    it. Publishing is a separate, deliberate act: a UI I only install stays private.
+
+"""
+
+
 _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     **Delivering between universes — how another user's universe sends something
     straight into one of my steps, and how I send into theirs.** This is the
@@ -1608,6 +1678,7 @@ _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
     "connections": _WRITE_GRAPH_CONNECTIONS_CHAPTER,
     "code_nodes": _WRITE_GRAPH_CODE_NODES_CHAPTER,
     "workspaces": _WRITE_GRAPH_WORKSPACES_CHAPTER,
+    "interfaces": _WRITE_GRAPH_INTERFACES_CHAPTER,
     "delivering": _WRITE_GRAPH_DELIVERING_CHAPTER,
 }
 
@@ -2193,7 +2264,7 @@ def write_graph(
     chapter has the two-node shape that does it correctly.
 
     THE HANDBOOK. My long-form guidance for this handle is not repeated in
-    every round of every turn -- it is four chapters I read when I need one,
+    every round of every turn -- it is five chapters I read when I need one,
     exactly as I read a skill's SKILL.md when a request matches it:
 
     * ``connections`` -- raising a credential ask (``target="pending_request"``),
@@ -2207,6 +2278,11 @@ def write_graph(
     * ``workspaces`` -- a directory my code nodes share across a run, the
       ``"sink": "workspace"`` packet every one of them carries, the two ways to
       get a workspace, and a repository checkout.
+    * ``interfaces`` -- building the screen the user looks at, when they ask for a
+      dashboard, a game, an office plan, any interface at all: I write the HTML,
+      CSS and JavaScript myself into a private row, the four calls my UI may
+      make, and how it gets switched to and shared. There is no catalog of
+      layouts and no platform feature to request.
     * ``delivering`` -- letting OTHER users' universes send straight into one of my
       steps, and sending into theirs: opening a receiver to named or any
       authenticated users, making it findable, finding other people's, connecting an

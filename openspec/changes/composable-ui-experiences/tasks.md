@@ -29,7 +29,12 @@
 
 ## Remaining before this is user-ready
 
-- [ ] **First run through the app has no way to create the app experience.**
+- [x] **First run works from nothing.** A binding's definition reference is now
+      optional; an owner-scoped, idempotent bootstrap creates the private
+      app-experience row with nothing published, and the `interfaces` handbook
+      chapter tells an agent where to build. (Superseded the note below, kept for
+      the reasoning.)
+- [ ] ~~First run through the app has no way to create the app experience.~~
       Installing a bundle needs an `app_experience` binding, and a binding needs
       *some* existing definition — `_require_definition`
       (`tinyassets/custom_agents.py`) checks existence only, not authorship, so a
