@@ -96,6 +96,7 @@ jobs:
           filter: blob:none
 
       - name: Compute the PR's diff key
+        if: github.event_name == 'pull_request_target'
         id: diffkey
         env:
           PR: ${{ github.event.pull_request.number }}

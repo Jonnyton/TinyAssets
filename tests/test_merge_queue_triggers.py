@@ -55,8 +55,13 @@ def test_every_required_context_runs_on_merge_group() -> None:
             f"{name}:{job_id} must report the protected context {context!r}"
         )
         # A job-level `if:` can skip the job, and branch protection counts a
-        # skipped required check as passed.
-        assert "if" not in job, f"{name}:{job_id} must not carry a job-level if:"
+        # skipped required check as passed. `always()` is the one condition
+        # allowed: it cannot evaluate false (the sharded `required-tests`
+        # aggregate needs it to report when a shard fails).
+        assert _if(job) in ("", "always()"), (
+            f"{name}:{job_id} must not carry a job-level if: that can skip it; "
+            f"got {_if(job)!r}"
+        )
 
 
 def test_scope_guard_gate_steps_run_only_on_the_pull_request() -> None:

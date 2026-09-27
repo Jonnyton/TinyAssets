@@ -242,9 +242,11 @@ def test_required_checks_run_in_the_merge_queue() -> None:
     types = (triggers["merge_group"] or {}).get("types", ["checks_requested"])
     assert "checks_requested" in types
     for job in _REQUIRED_JOBS:
-        assert "if" not in wf["jobs"][job], (
-            f"required job {job!r} must not carry an `if:`; a skipped required "
-            f"check passes the merge queue without running"
+        condition = _expr(wf["jobs"][job].get("if", ""))
+        assert condition in ("", "always()"), (
+            f"required job {job!r} must not carry an `if:` that can skip it; a "
+            f"skipped required check passes the merge queue without running. "
+            f"Got {condition!r}"
         )
 
 
