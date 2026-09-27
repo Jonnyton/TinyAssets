@@ -2730,7 +2730,9 @@
         return;
       }
       this.menuClose({restoreFocus:false});
-      await this.save();
+      // Only a pick from the list closes things; a save from the dialog leaves
+      // the dialog open so the next edit can follow it.
+      if(await this.save()) $("model-dialog").close();
     },
     observe(text){this.actual=text;this.paintHeader();},
     paintHeader(){
@@ -2811,8 +2813,8 @@
           const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";btn.textContent=text;
           btn.setAttribute("aria-label",text+" "+this.label(ref));
           btn.disabled=this.busy||!this.fresh()||(delta!==0&&(index+delta<0||index+delta>=draft.fallbacks.length));
-          btn.addEventListener("click",()=>{
-            this.move(index,delta);
+          btn.addEventListener("click",async()=>{
+            await this.move(index,delta);
             const next=$("model-fallbacks").children[Math.max(0,delta ? index+delta : index-1)];
             const focus=next&&next.children[delta===-1?1:delta===1?2:3];
             (focus&&!focus.disabled ? focus : $("model-fallback-add")).focus();
@@ -2877,14 +2879,28 @@
       if(this.busy||!this.fresh()||!this.draft||this.draft.mode!=="explicit") return;
       const row=this.rows().find(r=>this.key(r.reference)===key);
       if(!this.usable(row)||key===this.key(this.draft.saved_default)||this.draft.fallbacks.some(r=>this.key(r)===key)) return;
-      this.draft.fallbacks.push(copyModelChoice(row.reference));this.render();
+      this.draft.fallbacks.push(copyModelChoice(row.reference));
+      return this.persistEdit();
     },
     move(index,delta){
       if(this.busy||!this.fresh()||!this.draft) return;
       const refs=this.draft.fallbacks;
       if(index<0||index>=refs.length||index+delta<0||index+delta>=refs.length) return;
       if(delta===0) refs.splice(index,1);else [refs[index],refs[index+delta]]=[refs[index+delta],refs[index]];
-      this.render();
+      return this.persistEdit();
+    },
+    // Every fallback edit is saved as it is made. The dialog has no Save button
+    // (#4027 removed it), and before this an added fallback lived only on screen:
+    // the founder "had claude opus selected as fallback" and the server had none.
+    // An edit that cannot be saved is undone, so the list never shows a
+    // fallback the server does not have.
+    async persistEdit(){
+      if(!this.canApply()){
+        this.draft=copyModelChoice(this.snapshot.preferences.policy||this.automatic());
+        this.status("That change was not saved: every model in the order needs model access first.");
+        this.render();return false;
+      }
+      return this.save();
     },
     // "Use in this chat" and "Use saved default" are gone: one choice IS the
     // default now, so a this-tab-only override had no way in and nothing to undo.
@@ -3042,18 +3058,24 @@
         const result=await response.json();
         if(epoch!==this.epoch) return;
         if(result.error==="model_preferences_conflict"){
-          this.stale=true;this.status("Your saved settings changed elsewhere. Refresh models and review before saving again.");return;
+          // What is saved now is unknown here, so no order is shown until a refresh reads it.
+          this.stale=true;this.draft=null;
+          this.status("Not saved: your saved settings changed elsewhere. Refresh models to see what is saved, then try again.");return false;
         }
         if(!response.ok||result.error||result.universe_id!==uid) throw new Error("save unavailable");
         this.snapshot.preferences={generation:result.generation,policy:result.policy,updated_at:result.updated_at};
+        // The dialog shows what the server saved and stays editable: the snapshot
+        // carries the new generation, so the next edit saves against it.
+        this.draft=copyModelChoice(result.policy||this.automatic());
         modelChoiceForNextTurn=null;
-        this.stale=true;
         this.status("Default and fallback order saved. Your next messages will use this default; already sent messages are unchanged.");
-        $("model-dialog").close();
+        return true;
       }catch(_err){
         if(epoch===this.epoch){
-          this.stale=true;this.status("Could not confirm the save. Refresh to check your saved settings before trying again.");
+          this.stale=true;this.draft=null;
+          this.status("Could not confirm the save. Refresh to check your saved settings before trying again.");
         }
+        return false;
       }finally{if(epoch===this.epoch){this.busy=false;this.render();}}
     },
     init(){
