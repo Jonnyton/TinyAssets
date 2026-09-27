@@ -217,8 +217,13 @@ MCP.callTool=async(name,args)=>{
   :{status:"serving",agent_binding:{agent_binding_id:"binding-a",revision:4}};
 };
 let fetch=async(url,options)=>{
- requests.push({url,method:options.method,body:JSON.parse(options.body)});
- return {ok:!response.error,status:response.error?409:200,json:async()=>response};
+ const body=JSON.parse(options.body);
+ requests.push({url,method:options.method,body});
+ // With no fixed reply the fake server does what the real one does: saves the
+ // policy it was sent and answers with it and the next generation.
+ const reply=response||{universe_id:"home-a",generation:body.expected_generation+1,
+   policy:body.policy,updated_at:"2026-09-27T00:00:00Z"};
+ return {ok:!reply.error,status:reply.error?409:200,json:async()=>reply};
 };
 __FUNCTIONS__
 (async()=>{
@@ -238,12 +243,6 @@ __FUNCTIONS__
    focusReturned:focused===$("btn-models"),ui}));
 })().catch(err=>{console.error(err);process.exitCode=1;});
 """
-    response = response or {
-        "universe_id": "home-a",
-        "generation": 3,
-        "policy": {"version": 1, "mode": "automatic", "saved_default": None, "fallbacks": []},
-        "updated_at": "2026-09-10T19:30:00Z",
-    }
     program = (
         program.replace("__DOC__", json.dumps(catalogue() if doc is None else doc))
         .replace("__RESPONSE__", json.dumps(response))
@@ -266,7 +265,7 @@ def choose(name):
 
 
 def add(name):
-    return "ModelPicker.addFallback(ModelPicker.key(" + json.dumps(ref(name)) + "));"
+    return "await ModelPicker.addFallback(ModelPicker.key(" + json.dumps(ref(name)) + "));"
 
 
 def pick(name):
@@ -280,21 +279,19 @@ def test_selection_order_is_copied_and_actual_receipt_is_separate(tmp_path):
         choose("first")
         + add("second")
         + add("third")
-        + "ModelPicker.move(1,-1);await ModelPicker.menuOpen();"
+        + "await ModelPicker.move(1,-1);await ModelPicker.menuOpen();"
         + pick("first")
         + 'ModelPicker.draft.saved_default.model_id="changed after applying";'
         + 'ModelPicker.observe("Answered by another source, reported model");',
     )
     # What went to the server is a COPY: editing the draft afterwards cannot
     # rewrite the request that already left.
-    body = result["requests"][0]["body"]["policy"]
+    body = result["requests"][-1]["body"]["policy"]
     assert body["saved_default"] == ref("first")
     assert body["fallbacks"] == [ref("third"), ref("second")]
     # The answering-model receipt is separate from the choice, and stays separate.
     assert "reported model" in result["ui"]["model-actual"]["text"]
-    # The button follows what the SERVER confirmed, not what was clicked, so with
-    # this fixture's automatic reply it reads Automatic. That the label follows a
-    # confirmed save is pinned by
+    # That the label follows what the SERVER confirmed is pinned by
     # test_one_choice_is_the_default_and_creates_no_tab_local_override.
     assert result["ui"]["btn-models"]["text"].startswith("Model: ")
 
@@ -312,17 +309,22 @@ def test_configured_source_claims_are_visible_without_disabling_permitted_choice
 
 def test_remove_last_fallback_preserves_explicit_empty_list(tmp_path):
     result = run_picker(
-        tmp_path, choose("first") + add("second") + "ModelPicker.move(0,0);"
+        tmp_path, choose("first") + add("second") + "await ModelPicker.move(0,0);"
     )
     # Removing the last fallback leaves an EXPLICIT choice with an empty list,
     # not a silent fall back to Automatic.
     assert result["draft"]["fallbacks"] == []
     assert result["draft"]["mode"] == "explicit"
+    # ...and that is what was saved.
+    assert result["requests"][-1]["body"]["policy"]["fallbacks"] == []
+    assert result["requests"][-1]["body"]["policy"]["mode"] == "explicit"
 
 
 def test_duplicates_primary_and_repeated_fallback_are_not_added(tmp_path):
     result = run_picker(tmp_path, choose("first") + add("first") + add("second") + add("second"))
     assert result["draft"]["fallbacks"] == [ref("second")]
+    # Refused edits send nothing: one save, for the one real addition.
+    assert len(result["requests"]) == 1
 
 
 def test_automatic_replaces_the_whole_current_order(tmp_path):
@@ -343,8 +345,8 @@ def test_automatic_replaces_the_whole_current_order(tmp_path):
     # ...and choosing it from the dropdown saves exactly that.
     applied = run_picker(tmp_path, choose("first") + add("second")
                          + 'await ModelPicker.menuOpen();await ModelPicker.choose("");')
-    assert applied["requests"][0]["body"]["policy"]["mode"] == "automatic"
-    assert applied["requests"][0]["body"]["policy"]["fallbacks"] == []
+    assert applied["requests"][-1]["body"]["policy"]["mode"] == "automatic"
+    assert applied["requests"][-1]["body"]["policy"]["fallbacks"] == []
 
 
 @pytest.mark.parametrize(
@@ -421,7 +423,8 @@ def test_save_exact_home_and_generation_never_grants_or_silently_switches(tmp_pa
     ]
     assert result["choice"] is None
     assert result["snapshot"]["preferences"]["generation"] == 3
-    assert result["stale"] and not result["busy"]
+    # A confirmed save leaves the dialog editable against the new generation.
+    assert not result["stale"] and not result["busy"]
 
 
 @pytest.mark.parametrize("error", ["model_preferences_conflict", "model_preference_home_changed"])
@@ -445,6 +448,72 @@ def test_ambiguous_save_requires_read_not_automatic_replay(tmp_path):
     )
     assert len(result["requests"]) == 1
     assert "Could not confirm" in result["ui"]["model-status"]["text"]
+
+
+def explicit(default, fallbacks=()):
+    return {"version": 1, "mode": "explicit", "saved_default": ref(default),
+            "fallbacks": [ref(name) for name in fallbacks]}
+
+
+def test_adding_a_fallback_in_the_dialog_saves_it(tmp_path):
+    """The live bug: the dialog showed a fallback the server never had.
+
+    Adding one is the whole action - there is no Save button - so the add itself
+    must POST the order, and the dialog must stay open afterwards.
+    """
+    doc = catalogue()
+    doc["preferences"]["policy"] = explicit("first")
+    result = run_picker(tmp_path, add("second"), doc)
+    assert result["requests"] == [{
+        "url": "/mcp/app/models/preferences?universe_id=home-a",
+        "method": "POST",
+        "body": {"expected_generation": 2, "policy": explicit("first", ["second"])},
+    }]
+    assert result["snapshot"]["preferences"]["policy"] == explicit("first", ["second"])
+    assert result["dialogOpen"] is True, "a save from the dialog must not close it"
+    shown = result["ui"]["model-fallbacks"]["children"]
+    assert [row["text"].split("Move up")[0] for row in shown] == ["owned:future-source · second"]
+    assert "saved" in result["ui"]["model-status"]["text"]
+
+
+def test_two_dialog_edits_in_a_row_both_save(tmp_path):
+    """The first save must not leave the dialog stale and swallow the second edit."""
+    doc = catalogue()
+    doc["preferences"]["policy"] = explicit("first")
+    result = run_picker(tmp_path, add("second") + add("third")
+                        + "await ModelPicker.move(0,1);await ModelPicker.move(1,0);", doc)
+    sent = [(r["body"]["expected_generation"], r["body"]["policy"]["fallbacks"])
+            for r in result["requests"]]
+    assert sent == [
+        (2, [ref("second")]),
+        (3, [ref("second"), ref("third")]),
+        (4, [ref("third"), ref("second")]),
+        (5, [ref("third")]),
+    ]
+    assert result["snapshot"]["preferences"]["generation"] == 6
+    assert result["snapshot"]["preferences"]["policy"] == explicit("first", ["third"])
+    assert result["draft"] == explicit("first", ["third"])
+    assert result["dialogOpen"] is True and not result["stale"]
+
+
+@pytest.mark.parametrize("failure", ["conflict", "network"])
+def test_an_unsaved_fallback_is_never_left_on_screen(tmp_path, failure):
+    doc = catalogue()
+    doc["preferences"]["policy"] = explicit("first")
+    steps = add("second")
+    if failure == "network":
+        steps = 'fetch=async()=>{requests.push({});throw new Error("network");};' + steps
+    result = run_picker(
+        tmp_path, steps, doc,
+        response={"error": "model_preferences_conflict"} if failure == "conflict" else None,
+    )
+    assert len(result["requests"]) == 1
+    # Nothing the server may not have is shown, and the status says it did not save.
+    assert result["ui"]["model-fallbacks"]["children"] == []
+    assert result["stale"], "no further edit until a refresh reads what is saved"
+    status = result["ui"]["model-status"]["text"]
+    assert "Not saved" in status or "Could not confirm" in status
+    assert result["snapshot"]["preferences"]["generation"] == 2
 
 
 def test_refresh_failure_retains_labelled_stale_rows_and_blocks_changes(tmp_path):
