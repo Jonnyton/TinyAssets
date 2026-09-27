@@ -172,3 +172,19 @@ target, never a narrowing of this one.
 - **WHEN** a source is revoked or expires during refresh
 - **THEN** that source loses its model rows without concealing independent sources
 - **AND** a changed home, admin scope, serving binding or assignment refuses the whole snapshot
+
+<!-- Unchanged by this proposal, restated verbatim so this MODIFIED block is the
+     requirement in full. A delta that lists a subset of scenarios is legitimate,
+     but this one restates the prose and most scenarios, so it reads as a whole
+     replacement — and syncing it as one would have silently deleted these two. -->
+
+#### Scenario: Existing native default
+- **WHEN** the owner has a current legacy native serving chain
+- **THEN** its provider default is visible as legacy_single_provider
+- **AND** the read neither invents an actual model name nor grants expanded model selection
+
+#### Scenario: Existing legacy HTTP configuration
+- **WHEN** the current legacy serving chain survives the read's final authority fence
+- **THEN** legacy_source identifies its provider, bind key and configured fixed model
+- **AND** these fields are not actual answering-model receipts or newly admitted candidates
+- **AND** revocation during refresh clears the legacy-source projection
