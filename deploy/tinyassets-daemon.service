@@ -23,7 +23,7 @@
 
 [Unit]
 Description=TinyAssets MCP daemon + cloudflared tunnel sidecar
-Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/deploy/HETZNER-DEPLOY.md
+Documentation=https://github.com/TinyAssets/TinyAssets/blob/main/deploy/HETZNER-DEPLOY.md
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target

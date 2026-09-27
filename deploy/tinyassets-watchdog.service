@@ -15,7 +15,7 @@
 
 [Unit]
 Description=TinyAssets daemon watchdog (probe + restart on 3 consecutive reds)
-Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/deploy/HETZNER-DEPLOY.md
+Documentation=https://github.com/TinyAssets/TinyAssets/blob/main/deploy/HETZNER-DEPLOY.md
 After=tinyassets-daemon.service
 # Don't race the daemon's own startup at boot. Give daemon 60s to bind.
 
