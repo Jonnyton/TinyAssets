@@ -47,18 +47,6 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \".claude/hooks/codex_dispatch_nudge.py\"",
-            "shell": "powershell",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
         "matcher": "Bash",
@@ -77,10 +65,6 @@
           {
             "type": "command",
             "command": "python \".claude/hooks/supervisor_check.py\""
-          },
-          {
-            "type": "command",
-            "command": "python \".claude/hooks/keep_working_while_waiting.py\""
           }
         ]
       }

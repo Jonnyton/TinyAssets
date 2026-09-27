@@ -1,3 +1,10 @@
+---
+severity: P2
+title: '`write_graph` never documents `name` and `description`'
+filed: '2026-09-26'
+summary: the served build handle's `Args:` block covers 7 of its 9 parameters, on main, on every FastMCP version; an undocumented parameter is one the agent cannot use
+---
+
 # The served `write_graph` never tells the agent what `name` and `description` are for
 
 **Filed:** 2026-09-26 (lead's finding on PR #4000 round 2; sharpened here)

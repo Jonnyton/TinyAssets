@@ -1,3 +1,10 @@
+---
+severity: P2
+title: 25 open concerns keep their load-bearing finding only in a review transcript
+filed: '2026-09-26'
+summary: the recut swept the 152 uncited transcripts, but 89 are cited and 25 of those are cited by an open concern that points at the transcript instead of stating the finding; moving each one is a read-and-rewrite per concern, not a sweep
+---
+
 # 25 open concerns keep their load-bearing finding only in a review transcript
 
 **Filed:** 2026-09-26

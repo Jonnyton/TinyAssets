@@ -1,3 +1,10 @@
+---
+severity: P1
+title: A served founder turn pays for 3+ whole round-trips
+filed: '2026-09-25'
+summary: 'measured: ~70 KB per round-trip, three times, for one trivial message; 63 KB of it is the tool block (61% one tool''s manual) and the learning call cannot leave the request without an authority change'
+---
+
 # A served founder turn pays for 3+ whole round-trips, and 63 KB of them repeats
 
 **Filed:** 2026-09-25

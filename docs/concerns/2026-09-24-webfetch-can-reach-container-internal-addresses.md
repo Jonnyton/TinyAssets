@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Model web tools can reach container-internal addresses
+filed: '2026-09-24'
+summary: WebFetch from a universe turn is not blocked from localhost/bridge/metadata (SSRF); not yet verified live
+---
+
 # Model web tools can reach container-internal addresses
 
 **Filed:** 2026-09-24, from the PR #3953 Tier 2 review (not a blocker there).

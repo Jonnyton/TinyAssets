@@ -12,6 +12,16 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Create the TinyAssets GitHub org (Free plan) and tell the lead (2026-09-27)
+
+You decided to move `Jonnyton/TinyAssets` into an org so the repo can use
+GitHub's merge queue, which personal-account repos don't get. Creating an org
+needs your account, so it's yours. Go to <https://github.com/organizations/plan>,
+pick **Free**, name it exactly `TinyAssets`, and choose "My personal account" as
+the owner. Skip inviting anyone. Then tell the lead. The lead runs the transfer
+and the cutover from `docs/ops/org-transfer-runbook.md`. Don't transfer the repo
+yourself, because the image path and deploy chain have to switch in a set order.
+
 ## Clear the ACL-locked sandbox temp directories (2026-09-26)
 
 Only an elevated shell can do this one. 68 directories under
@@ -100,28 +110,6 @@ Only the founder's profile is connected. The free-only OpenRouter onboarding
 test (capability C5/C1) needs the second profile's extension connected so it
 can run as that user. No other founder step is needed; the agent drives the
 rest.
-
-## Decide: what should be publicly discoverable, now that the site shows it?
-
-The rewritten `/commons` page lists what the endpoint reports as publicly
-discoverable. Driving it live on 2026-09-02 showed seven of twelve rows are not
-universes anyone published: `_backup_subject_migration_20260829T055340Z`,
-`_removed_legacy_20260829`, `_removed_universes_20260828`,
-`_removed_universes_20260829`, plus the `scratch`, `daemon_wikis` and
-`cloud-automation-inputs` working buckets. All are `visibility=public` because
-maintenance created them that way, not because anyone chose to publish.
-
-Nothing sensitive leaks — the public projection is id, phase, word count and a
-coarse timestamp — but the bucket names disclose when removals and an identity
-migration happened, and the page reads like an accident. The site does **not**
-filter them, deliberately: hiding rows while claiming to show "what is public"
-is exactly the dishonesty the public-read boundary exists to prevent.
-
-Your call, because the fix writes to live universe records. Suggested shape is
-in `docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`:
-create maintenance holding records private, flip the seven existing ones (do
-not delete — they are migration backups), and decide whether an unpublished
-universe should default to `public` at all.
 
 ## Decide: should a deposit serve the universe by itself?
 

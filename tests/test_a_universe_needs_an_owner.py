@@ -105,7 +105,10 @@ def _owned_universe(base: Path, uid: str, owner: str, *, level: str = "public") 
     grant_universe_access(
         base, universe_id=uid, actor_id=owner, permission="admin", granted_by=owner,
     )
-    vis.set_universe_visibility(uid, level)
+    # `source="owner"` because this helper stands in for a universe whose owner
+    # declared a level; an omitted provenance would read as a platform default
+    # and the private-by-default migration would flip it.
+    vis.set_universe_visibility(uid, level, source="owner")
     return udir
 
 
@@ -369,7 +372,7 @@ class TestOwnedUniversesKeepEverything:
         (udir / "soul.md").write_text("# home\n", encoding="utf-8")
         ensure_universe_registered(base, universe_id="u-home-only", universe_path=udir)
         set_founder_home(base, founder_sub=owner.user_id, universe_id="u-home-only")
-        vis.set_universe_visibility("u-home-only", "public")
+        vis.set_universe_visibility("u-home-only", "public", source="owner")
 
         assert _listed_ids(base) == ["u-home-only"]
         assert json.loads(
@@ -389,7 +392,7 @@ class TestOwnedUniversesKeepEverything:
             base, universe_id="u-shared", actor_id="workos|collab",
             permission="write", granted_by="workos|founder",
         )
-        vis.set_universe_visibility("u-shared", "public")
+        vis.set_universe_visibility("u-shared", "public", source="owner")
 
         assert _listed_ids(base) == ["u-shared"]
 
@@ -686,7 +689,7 @@ class TestAnUnownedUniverseGrantsNothing:
 
         d = _bare_directory(base, name)
         ensure_universe_registered(base, universe_id=name, universe_path=d)
-        vis.set_universe_visibility(name, "public")
+        vis.set_universe_visibility(name, "public", source="owner")
         return d
 
     @pytest.mark.parametrize(

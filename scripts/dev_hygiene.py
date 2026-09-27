@@ -176,7 +176,7 @@ DISPOSABLE_IGNORED_GLOBS = ("*.pyc", "*.pyo")
 # 1, answer 4). Tool-owned caches above need no content check — nothing but the
 # tool writes them. `.agents/supervisor/` is repo state, so its contents are
 # verified against the filenames its producers actually emit
-# (`scripts/supervisor.py`, `.claude/hooks/keep_working_while_waiting.py`): one
+# (`scripts/supervisor.py`, and a since-removed keep-working hook): one
 # `events.jsonl`, one `seen.json`, and `keep-working-<session-uuid>.json`.
 # Anything else in there keeps the worktree.
 DISPOSABLE_DIR_CONTENT_RULES: dict[str, tuple[str, ...]] = {

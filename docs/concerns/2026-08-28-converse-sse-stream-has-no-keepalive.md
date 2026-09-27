@@ -1,3 +1,10 @@
+---
+severity: P2
+title: 'Long `converse` responses: the origin pings every 15s; delivery through the tunnel is unproven'
+filed: '2026-08-28'
+summary: the "silent stream" premise was false (`tests/test_mcp_sse_keepalive.py`); whether long turns are still cut end to end, and by what, is open until a >3-minute live `converse` is captured
+---
+
 # A long `converse` response: the origin pings every 15s; delivery through the tunnel is unproven
 
 **Filed:** 2026-08-28. **Premise corrected:** 2026-08-29.

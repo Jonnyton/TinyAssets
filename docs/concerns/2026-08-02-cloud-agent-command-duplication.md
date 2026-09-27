@@ -1,3 +1,10 @@
+---
+severity: null
+title: Cloud-agent command duplication
+filed: '2026-08-02'
+summary: predates the 2026-08-25 migration and was never triaged into a severity
+---
+
 # Cloud agent-command duplication fence
 
 Freshness: 2026-08-02 14:12 PT. Current main is `47248cf1`; open draft PR #2145 is conflicting, and its active cloud worktree and remote are clean at docs-only head `672698d1`, based on merge-base `244266f2`. Runtime/continuation code was last changed by `fe624bc9`.

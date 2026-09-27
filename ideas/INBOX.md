@@ -271,3 +271,4 @@ Needs promotion to an OpenSpec change before any build.
   The served reply should quote the run's evidence (the node output / the
   delivered body) rather than recompute a number in prose. Served prompt -
   founder-owned.
+- Anchor a refreshable credential's ISSUER outside the credential itself. The refresh endpoint is derived from `iss` in a stored identity token, so a JWKS signature check only proves self-consistency: an attacker-controlled `iss` points at their metadata and their keys. Provenance needs the issuer pinned where the token cannot reach -- recorded at deposit, or bound to the grant. Filed 2026-09-27 after removing a JWKS check that bought self-consistency at the cost of an unhardened key fetch.
