@@ -115,6 +115,13 @@ def _same_origin_json(request: Any, public_resource: str = "") -> bool:
     return parts.netloc in allowed
 
 
+#: The one subscription service this daemon can complete by BROKERED SIGN-IN rather
+#: than by the owner pasting something. Named here, in the module that implements that
+#: flow, so a caller deciding whether to OFFER a sign-in can ask instead of knowing:
+#: `api.pending_requests` reads this and names no source itself.
+DEVICE_SIGN_IN_SERVICE = "codex"
+
+
 def onboarding_enabled() -> bool:
     """Whether the onboarding app route serves content (dark flag)."""
     return os.environ.get("TINYASSETS_ONBOARDING_APP", "").strip().lower() in _TRUTHY
@@ -603,10 +610,27 @@ async def _handle_openai_device_start(request: Any) -> Any:
     data = await _read_small_json(request)
     if data is None:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
+    # The caller says which source it is signing back in to, and this route completes
+    # exactly one. Before, it ignored the field and deposited for its own service
+    # whatever was asked, so a reconnect card for a different source would have
+    # silently replaced the wrong credential (Codex refute-review, P1 #5).
+    #
+    # The universe is NOT taken from the caller, and that is deliberate rather than an
+    # oversight: `_bootstrap_home` states the invariant -- the signed-in user's own
+    # home is the only universe a credential from the app may land in, and a
+    # client-supplied id is ignored. Honouring one here would reverse that decision,
+    # so the card's target is the home and a request naming anything else is refused
+    # rather than quietly redirected.
+    asked = str(data.get("service") or DEVICE_SIGN_IN_SERVICE).strip().lower()
+    if asked != DEVICE_SIGN_IN_SERVICE:
+        return JSONResponse({"error": "sign_in_unsupported_for_service"}, status_code=400)
     identity = current_identity()
     home = await run_in_threadpool(_bootstrap_home, identity)
     if not home:
         return JSONResponse({"error": "no_home_universe"}, status_code=409)
+    wanted = str(data.get("universe_id") or "").strip()
+    if wanted and wanted != home:
+        return JSONResponse({"error": "sign_in_universe_not_yours"}, status_code=403)
     try:
         started = await start_device_auth()
         # The raw device tuple is a bearer capability for the credential; it
@@ -695,7 +719,7 @@ async def _handle_openai_device_poll(request: Any) -> Any:
         status = 401 if err == "authentication_required" else 400
         return JSONResponse({"status": "failed", "error": err}, status_code=status)
     return JSONResponse(
-        {"status": "connected", "service": "codex"},
+        {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE},
         headers={"Cache-Control": "no-store"},
     )
 
@@ -871,7 +895,7 @@ async def _handle_openai_exchange(request: Any) -> Any:
         status = 401 if err == "authentication_required" else 400
         return JSONResponse({"status": "failed", "error": err}, status_code=status)
     return JSONResponse(
-        {"status": "connected", "service": "codex"},
+        {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE},
         headers={"Cache-Control": "no-store"},
     )
 
