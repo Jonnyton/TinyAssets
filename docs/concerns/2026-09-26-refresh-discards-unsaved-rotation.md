@@ -1,0 +1,36 @@
+---
+severity: P1
+title: A rotation the vault cannot accept is still lost
+filed: '2026-09-26'
+summary: the write is retried to the deadline and then reported honestly as terminal, but the rotated authorization itself is gone. Somewhere durable to put it is a storage-shape question
+---
+
+# Rotated authorization is discarded after a failed save
+
+**Filed:** 2026-09-26
+**Verified:** 2026-09-26, Windows/Python 3.14, PR #4032 at `776abaaf`
+**Severity:** P1
+
+## Source (verbatim)
+
+> Rotated authorization is discarded after a failed save.
+
+Source: finding 1 of the Codex refute-review of PR #4032 (head `6a94d242`), recorded as a comment on that PR. The finding is quoted above in full; the review transcript is not kept in the repo.
+
+Code at that commit: `credential_refresh.py:242-255 and subscription_refresh.py:639-640`.
+
+The PR comment carries the reviewer's verification commands and observed outputs.
+Concurrent working-tree fixes were not reviewed; this finding is pinned to the
+requested committed head, not a claim about those edits.
+
+## Closure
+
+Persist a recoverable rotated result, distinguish post-spend persistence failure, and prevent launching or retrying the old token.
+
+
+## Partially closed on `claude/credential-refresh`
+
+**Verified:** 2026-09-26, Windows/Python 3.14, at the branch head that carries the
+fix (not `776abaaf`, which this finding was pinned to). The LIE is fixed, not the loss: an unsaveable rotation now raises `RefreshRejected` rather than `RefreshUnavailable` (`credential_refresh.py`, `test_an_unsaveable_rotation_is_terminal_not_transient`). The refresh token has been spent by that point, so the stored one is dead and 'try later' was false; the owner is now told to sign in again, which is the only thing that works.
+
+STILL OPEN: the rotated authorization is still lost. Closing it needs somewhere durable to put a rotated secret that the vault write could not accept -- which is a storage-shape question, not a retry-loop tweak.

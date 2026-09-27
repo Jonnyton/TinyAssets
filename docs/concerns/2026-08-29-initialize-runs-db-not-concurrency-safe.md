@@ -1,3 +1,10 @@
+---
+severity: P2
+title: '`initialize_runs_db()` is not concurrency-safe'
+filed: '2026-08-29'
+summary: '`executescript` upgrades a deferred transaction outside `busy_timeout`; racing boots fail with `database is locked` even on a fresh DB'
+---
+
 # `initialize_runs_db()` is not safe under concurrent callers
 
 **Filed:** 2026-08-29 (found by the schedules lane while proving its migration) · **Severity:** P2 —

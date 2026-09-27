@@ -985,3 +985,110 @@ def test_trace_route_is_identity_scoped_allowlisted_and_rate_limited(monkeypatch
         )[0]
         == 200
     )
+
+
+# --------------------------------------------------------------------------- #
+# The reconnect card's target: the card names it, the caller's ACL decides.
+# --------------------------------------------------------------------------- #
+
+
+def _grant_admin(base, universe_id, actor):
+    from tinyassets import daemon_server
+
+    (base / universe_id).mkdir(parents=True, exist_ok=True)
+    daemon_server.grant_universe_access(
+        base, universe_id=universe_id, actor_id=actor,
+        permission="admin", granted_by=actor,
+    )
+
+
+def test_a_sign_in_lands_in_the_universe_the_card_names(tmp_path, monkeypatch):
+    """The card exists to repair ONE named connection, so it names its universe.
+
+    Before, the route always chose the caller's home, so a card for a second universe
+    could not repair it (Codex refute-review round 1, P1 #5).
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.onboarding import openai_device
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    base = _base_path()
+    identity = _user("owner-a")
+    _grant_admin(base, "u-second", "owner-a")
+
+    async def fake_start():
+        return {"device_auth_id": "dev-secret", "user_code": "AB-CD",
+                "verification_url": "https://sign-in.example.net/device", "interval": 5}
+
+    monkeypatch.setattr(openai_device, "start_device_auth", fake_start)
+    status, body = _drive(
+        "/mcp/app/openai/device/start",
+        {"service": "codex", "universe_id": "u-second"},
+        identity=identity, monkeypatch=monkeypatch,
+    )
+    assert status == 200, body
+    # The flow is bound to the universe the CARD named, not to the caller's home.
+    flow = openai_device.lookup_flow(body["flow"], user_id="owner-a")
+    assert flow.universe_id == "u-second"
+    openai_device.release_flow(body["flow"])
+
+
+def test_another_users_universe_is_refused_not_redirected(tmp_path, monkeypatch):
+    """The cross-user negative. A universe the caller does not administer must FAIL,
+    never be quietly replaced with their own -- a silent substitution would deposit a
+    credential somewhere the owner never asked for."""
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.onboarding import openai_device
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    base = _base_path()
+    _grant_admin(base, "u-theirs", "owner-b")
+
+    monkeypatch.setattr(openai_device, "start_device_auth", lambda: pytest.fail(
+        "no flow may be started for a universe the caller does not administer"))
+    status, body = _drive(
+        "/mcp/app/openai/device/start",
+        {"service": "codex", "universe_id": "u-theirs"},
+        identity=_user("owner-a"), monkeypatch=monkeypatch,
+    )
+    assert status == 403, body
+    assert body.get("error") == "sign_in_universe_not_yours"
+
+
+def test_a_service_this_daemon_cannot_sign_into_is_refused(tmp_path, monkeypatch):
+    """A claude-service card. Anthropic's terms forbid a third-party subscription
+    OAuth, so there is no brokered sign-in for it -- the card offers the ordinary
+    shapes, and a request reaching this route for it must be refused rather than
+    completing the one service this route does know."""
+    from tinyassets.onboarding import openai_device
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(openai_device, "start_device_auth", lambda: pytest.fail(
+        "a sign-in was started for a service this route cannot deposit"))
+    status, body = _drive(
+        "/mcp/app/openai/device/start", {"service": "claude"},
+        identity=_user("owner-a"), monkeypatch=monkeypatch,
+    )
+    assert status == 400, body
+    assert body.get("error") == "sign_in_unsupported_for_service"
+
+
+def test_no_named_universe_still_uses_the_callers_own_home(tmp_path, monkeypatch):
+    """The setup card names no universe, and that path must keep working."""
+    from tinyassets.onboarding import openai_device
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+    async def fake_start():
+        return {"device_auth_id": "dev-secret", "user_code": "AB-CD",
+                "verification_url": "https://sign-in.example.net/device", "interval": 5}
+
+    monkeypatch.setattr(openai_device, "start_device_auth", fake_start)
+    status, body = _drive(
+        "/mcp/app/openai/device/start", {"service": "codex"},
+        identity=_user("owner-a"), monkeypatch=monkeypatch,
+    )
+    assert status == 200, body
+    flow = openai_device.lookup_flow(body["flow"], user_id="owner-a")
+    assert flow.universe_id, "the caller's own home should have been resolved"
+    openai_device.release_flow(body["flow"])

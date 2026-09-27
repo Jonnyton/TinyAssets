@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
-"""Decide whether a pull request may use trusted auto-merge enrollment."""
+"""Decide whether a pull request may use trusted auto-merge enrollment.
+
+Two callers, one receipt format:
+
+* `auto-enroll-merge.yml` asks whether a drain PR may be enrolled at all;
+* `pr-scope-guard.yml` — a REQUIRED check — asks, via `--blocking-review`,
+  whether a release-critical / authority / `infra-change` / Tier 2 PR carries
+  the exact-head `Drain-Review-Verdict: APPROVE` receipt it now needs. That is
+  what makes a blocking review verdict enforceable: before 2026-09-26 the
+  verdict was a PR comment, and PR #3989 auto-merged at the exact head its
+  reviewer had BLOCKED.
+"""
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
+import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -13,30 +27,236 @@ _ARTIFACT_RE = re.compile(
     r"(docs/[A-Za-z0-9_./-]+\.md|https://github\.com/\S+)"
 )
 
+# A comment ON THIS PR, by URL. The three anchors are the three places a review
+# verdict can live on a pull request: a top-level issue comment, a submitted
+# review, and an inline review comment. Anything else — a docs path, a link to
+# another PR, another repository, a bare commit URL — is not the durable,
+# timestamped artifact this receipt is supposed to point at.
+_COMMENT_ARTIFACT_RE = re.compile(
+    r"Drain-Review-Artifact: (?P<url>https://github\.com/"
+    r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/(?P<pr>[1-9][0-9]*)"
+    r"#(?:issuecomment-[0-9]+|pullrequestreview-[0-9]+|discussion_r[0-9]+))"
+)
 
-def review_allows_merge(*, branch: str, head: str, body: str, force: bool = False) -> bool:
+# `author_association` as GitHub computes it at read time — trusted metadata,
+# not something a comment body can claim. CONTRIBUTOR and NONE are excluded:
+# anyone can comment on a public repo's PR, and the receipt must not be
+# satisfiable by a drive-by comment.
+_TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+
+def review_allows_merge(
+    *,
+    branch: str,
+    head: str,
+    body: str,
+    force: bool = False,
+    artifact_must_be_comment_on: tuple[str, int] | None = None,
+    trusted_comment_urls: frozenset[str] | None = None,
+) -> bool:
     """Allow ordinary PRs; drain PRs — and force-flagged calls — need a receipt.
 
-    `force=True` is used by the scope guard for PRs that edit the files
-    DEFINING the required-tests gate: those can neuter the check from the
-    PR's own checkout, so a label (declaration) is not authorization — an
-    exact-head review receipt is required regardless of branch name.
+    `force=True` is used by the scope guard for PRs that need a blocking
+    review verdict before they may merge: release-critical or authority paths,
+    the `infra-change` declaration, or a Tier 2 title. Those can neuter the
+    checks that judge them or escalate a privilege, so a label (declaration)
+    is not authorization — an exact-head review receipt is required regardless
+    of branch name.
+
+    With `artifact_must_be_comment_on=(repo, pr)` the receipt's artifact must
+    additionally name a comment on THAT pull request, present in
+    `trusted_comment_urls`. A missing inventory (the API read failed) denies:
+    a receipt we cannot corroborate is not a receipt.
     """
     if not force and not branch.startswith("drain/"):
         return True
     if not _SHA_RE.fullmatch(head):
         return False
 
-    lines = body.splitlines()
-    verdicts = [line for line in lines if line.startswith("Drain-Review-Verdict:")]
-    reviewed_heads = [line for line in lines if line.startswith("Drain-Review-Head:")]
-    artifacts = [line for line in lines if line.startswith("Drain-Review-Artifact:")]
-    return (
-        verdicts == ["Drain-Review-Verdict: APPROVE"]
-        and reviewed_heads == [f"Drain-Review-Head: {head}"]
-        and len(artifacts) == 1
-        and _ARTIFACT_RE.fullmatch(artifacts[0]) is not None
+    lines = leading_lines(body, 3)
+    if not (_attests_approval(lines, head) and len(lines) == 3):
+        return False
+    artifact = lines[2]
+    if _ARTIFACT_RE.fullmatch(artifact) is None:
+        return False
+    if artifact_must_be_comment_on is None:
+        return True
+    repo, pr = artifact_must_be_comment_on
+    return artifact_names_trusted_comment(
+        artifact, repo=repo, pr=pr, trusted_comment_urls=trusted_comment_urls
     )
+
+
+def leading_lines(text: str, count: int) -> list[str]:
+    """The first `count` non-blank lines, trailing whitespace removed.
+
+    **A receipt is only read at the TOP of the text**, and that is the whole
+    anti-hiding rule. Nothing can precede the first line of a document, so no
+    construct can be open when it is read: an HTML comment, a fence, a
+    `<details>`, a blockquote or a list all have to START somewhere, and if one
+    does, the first non-blank line is its opener and not the verdict.
+
+    This replaced a markdown scanner, and the reason is worth keeping. Three
+    cross-family review rounds each found defects in that scanner, in BOTH
+    directions -- approvals hidden in a nested `<details>`, in an HTML comment, in
+    a lazily-continued blockquote, in a list-nested quote; and honest receipts
+    wrongly refused after a heading, after a fence marker inside an HTML block,
+    after a literal `<!--` in a code example. Each fix created the next round's
+    findings, which `AGENTS.md` names as a loop rather than progress, and says to
+    answer with a redesign: recurring findings in one area mean the shape is
+    wrong. Modelling GitHub's renderer was the wrong shape. A position that
+    cannot have anything in front of it needs no renderer.
+
+    Trailing whitespace is stripped because an editor adding a space must not
+    void a receipt, and trailing whitespace can hide nothing. Leading blank
+    lines are skipped for the same reason.
+    """
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line:
+            continue
+        lines.append(line)
+        if len(lines) == count:
+            break
+    return lines
+
+
+def _attests_approval(lines: list[str], head: str) -> bool:
+    """Do these leading lines OPEN with an approval of `head`?
+
+    ONE definition of what an approval looks like, used for the PR body and for
+    the cited comment alike. Exact string equality on the first two non-blank
+    lines, in order, so `BLOCK`, a lower-case verdict, trailing prose, or a head
+    line for any other commit all refuse.
+    """
+    return lines[:2] == [
+        "Drain-Review-Verdict: APPROVE",
+        f"Drain-Review-Head: {head}",
+    ]
+
+
+def comment_attests_approval(comment_body: str, head: str) -> bool:
+    """Does this comment OPEN by publishing an approval of `head`?
+
+    Comment identity was not enough. Cross-family review 2026-09-26, finding 6:
+    the gate accepted any trusted-author comment as the artifact, so a body
+    receipt citing an OWNER comment that said `VERDICT: BLOCK` for this exact
+    head passed. Checking the comment's own attestation is what makes the
+    artifact evidence rather than a bookmark — and it closes the stale-comment
+    gap too (finding 7), because the comment must name the CURRENT head, which
+    needs no clock.
+    """
+    return _attests_approval(leading_lines(comment_body, 2), head)
+
+
+def artifact_names_trusted_comment(
+    artifact_line: str,
+    *,
+    repo: str,
+    pr: int,
+    trusted_comment_urls: frozenset[str] | None,
+) -> bool:
+    """Does this artifact line name a trusted comment on THIS pull request?
+
+    Three independent conditions, all required:
+
+    * the URL is shaped like a comment anchor on `repo`'s PR `pr` — not a docs
+      path, not another PR, not another repository;
+    * that exact URL is in the inventory read from the API, so the comment
+      actually EXISTS (a receipt can otherwise cite an invented comment id);
+    * the inventory only ever contains comments whose `author_association` is
+      trusted, so a drive-by commenter cannot supply the artifact.
+
+    Fails closed when the inventory is unavailable.
+    """
+    if trusted_comment_urls is None:
+        return False
+    match = _COMMENT_ARTIFACT_RE.fullmatch(artifact_line)
+    if match is None:
+        return False
+    # GitHub resolves owner/repo case-insensitively, so a stamper who types a
+    # different casing must not be refused; the PR number is compared as the
+    # canonical decimal string the regex already constrained.
+    if match["repo"].lower() != repo.lower() or match["pr"] != str(pr):
+        return False
+    return match["url"].lower() in trusted_comment_urls
+
+
+def published_approval_urls(stream: str, *, head: str) -> frozenset[str] | None:
+    """URLs of comments that PUBLISH a trusted approval of `head`.
+
+    The workflow reads the PR's issue comments, reviews and review comments and
+    appends each object to one file (`gh api --jq '.[] | {...}'` emits one
+    compact object per line, with the body's newlines JSON-escaped). Both
+    filters happen HERE, not in a jq expression, so they are unit tested rather
+    than buried in a shell string:
+
+    * `author_association` must be trusted — GitHub computes it at read time, so
+      it is not something a comment body can claim about itself;
+    * the comment must itself attest `APPROVE` at this exact head. A trusted
+      author's comment saying `VERDICT: BLOCK` is not an approval, and before
+      this filter existed the gate accepted one as the artifact.
+
+    Returns `None` on anything unparseable — a partially understood inventory
+    must deny, never silently shrink to a set that a receipt cannot match and
+    also never grow past what was actually read.
+    """
+    decoder = json.JSONDecoder()
+    urls: set[str] = set()
+    index = 0
+    length = len(stream)
+    while index < length:
+        while index < length and stream[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        try:
+            obj, end = decoder.raw_decode(stream, index)
+        except ValueError:
+            return None
+        index = end
+        if not isinstance(obj, dict):
+            return None
+        url = obj.get("url")
+        association = obj.get("association")
+        body = obj.get("body")
+        if not isinstance(url, str) or not isinstance(association, str):
+            return None
+        if not isinstance(body, str):
+            # The projection uses `(.body // "")`, so an absent body means the
+            # inventory is not the shape this gate reads. Refuse it.
+            return None
+        if association in _TRUSTED_ASSOCIATIONS and comment_attests_approval(body, head):
+            urls.add(url.lower())
+    return frozenset(urls)
+
+
+def blocking_review_reason(
+    *,
+    hits: Iterable[str],
+    footprint_exempt: bool = False,
+) -> str | None:
+    """Why this PR needs a blocking-review receipt, or `None` if it does not.
+
+    Gate-defining and authority paths only — **exactly the set that already
+    needed one**. A Tier 2 title and the `infra-change` label were built as
+    additional triggers and then CUT: measured against the 60 most recently
+    merged PRs they would have made 29 of them wait for a stamp, and the founder's
+    direction is that the process is already bloated. PR #3989's fix does not need
+    a wider net; it needs a receipt that cannot be satisfied by a refusal, which
+    is `comment_attests_approval`.
+
+    `footprint_exempt` says the gate PROVED the whole footprint cannot change
+    behaviour — a deletion-only quarantine ledger edit, or an authority file whose
+    AST is unchanged.
+    """
+    if footprint_exempt:
+        return None
+    listed = sorted({hit.strip() for hit in hits if hit.strip()})
+    if listed:
+        return "it edits gate-defining or authority-critical files: " + ", ".join(listed)
+    return None
 
 
 def ledger_entries(text: str) -> set[str]:
@@ -120,6 +340,51 @@ def ledger_edit_needs_receipt(base_text: str | None, head_text: str | None) -> b
     return bool(head_entries - base_entries)
 
 
+def _read_text(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _blocking_review(args: argparse.Namespace) -> int:
+    """`--blocking-review`: is a receipt due, and does the body carry one?"""
+    hits_text = _read_text(args.review_hits_file)
+    if hits_text is None:
+        # The gate could not see its own path list. Refuse rather than read an
+        # unreadable file as "no release-critical paths touched".
+        print("deny")
+        print("the release-critical/authority path list could not be read", file=sys.stderr)
+        return 2
+
+    reason = blocking_review_reason(
+        hits=hits_text.splitlines(),
+        footprint_exempt=args.review_footprint_exempt,
+    )
+    if reason is None:
+        print("receipt-not-required")
+        return 0
+    print(f"a blocking-review receipt is required because {reason}", file=sys.stderr)
+
+    body = _read_text(args.body_file)
+    comments = _read_text(args.review_comments_file)
+    trusted = None if comments is None else published_approval_urls(comments, head=args.head)
+    if body is not None and review_allows_merge(
+        branch=args.branch,
+        head=args.head,
+        body=body,
+        force=True,
+        artifact_must_be_comment_on=(args.review_repo, args.review_pr),
+        trusted_comment_urls=trusted,
+    ):
+        print("allow")
+        return 0
+    print("deny")
+    return 2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--branch", required=True)
@@ -155,7 +420,39 @@ def main() -> int:
         help="Git tree size of the head ledger blob, compared against the "
         "bytes actually fetched to catch truncation and failed fetches.",
     )
+    parser.add_argument(
+        "--blocking-review",
+        action="store_true",
+        help="Decide the blocking-review receipt requirement for a PR: prints "
+        "receipt-not-required / allow (exit 0) or deny (exit 2), with the "
+        "reason on stderr. Requires --review-*.",
+    )
+    parser.add_argument(
+        "--review-hits-file",
+        type=Path,
+        help="One release-critical or authority path per line, after exemptions.",
+    )
+    parser.add_argument(
+        "--review-footprint-exempt",
+        action="store_true",
+        help="The gate PROVED the whole release-critical/authority footprint is "
+        "behaviourally inert (deletion-only ledger edit, AST-identical "
+        "authority file).",
+    )
+    parser.add_argument("--review-repo", default="", help="owner/repo of this PR.")
+    parser.add_argument("--review-pr", type=int, help="This PR's number.")
+    parser.add_argument(
+        "--review-comments-file",
+        type=Path,
+        help="JSON objects ({url, association}) for this PR's comments, "
+        "reviews and review comments. Unreadable => deny when a receipt is due.",
+    )
     args = parser.parse_args()
+
+    if args.blocking_review:
+        if args.review_hits_file is None or args.review_pr is None or not args.review_repo:
+            parser.error("--blocking-review needs --review-hits-file, --review-pr, --review-repo")
+        return _blocking_review(args)
 
     if args.ledger_head_file is not None:
         def _read_bytes(path: Path | None) -> bytes | None:

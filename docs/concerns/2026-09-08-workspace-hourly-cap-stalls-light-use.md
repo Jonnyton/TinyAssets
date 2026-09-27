@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Workspace cap correction awaits owner acceptance
+filed: '2026-09-08'
+summary: duplicate ten-start gate removed and scoped usage shipped with authenticated deploy proof; owner-held rendered acceptance and broader consumption-policy simplification remain open
+---
+
 # Workspace hourly-cap correction awaits owner acceptance
 
 **Current state (2026-09-09 02:55 UTC):** the duplicate ten-start refusal is

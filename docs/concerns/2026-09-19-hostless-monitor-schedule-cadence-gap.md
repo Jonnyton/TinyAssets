@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Hostless monitor schedule cadence gap
+filed: '2026-09-19'
+summary: five-minute requested cron has multi-hour observed gaps; existing external checks share GitHub scheduling, and host-local watchdogs cannot prove independent coverage
+---
+
 # Hostless monitoring has an unbounded observed schedule gap
 
 **Filed / verified:** 2026-09-19 06:36 UTC. **Severity:** P1.
