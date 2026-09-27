@@ -74,6 +74,9 @@ def _create_universe(tmp_path, monkeypatch: pytest.MonkeyPatch) -> str:
     universe_id = "status-identity-universe"
     universe_dir = tmp_path / universe_id
     universe_dir.mkdir()
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(universe_dir.parent, universe_dir.name)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", universe_id)
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "ambient-maintainer")
