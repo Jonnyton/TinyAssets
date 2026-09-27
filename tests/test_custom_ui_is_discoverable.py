@@ -61,14 +61,11 @@ def test_the_chapter_is_fetchable_by_the_route_the_index_advertises() -> None:
         "markup",
         "style",
         "script",
-        # The storage call, and the omission that makes it private.
-        'target="agent_binding"',
-        'operation="bind"',
-        "agent_definition_id",
+        # The storage calls: read first, then a compare-and-set save naming the
+        # revision read (0 for a first save).
+        'read_graph target="app_ui"',
+        'write_graph target="app_ui" operation="save"',
         "ui_library",
-        # Updating is a different operation with a precondition; a re-`bind` is
-        # not an update and the chapter has to say so.
-        'operation="update"',
         "expected_revision",
         # The complete capability list. An agent that programs against an action
         # the bridge does not have writes a UI that fails at runtime.
@@ -93,8 +90,8 @@ def test_the_chapter_states_the_limits_that_cause_refusals() -> None:
     # Bounds read from the controller rather than restated here, so a bound that
     # changes without the chapter changing fails this instead of misleading an
     # agent into writing a bundle that is refused.
-    from pathlib import Path
     import re
+    from pathlib import Path
 
     controller = Path("tinyassets/onboarding/app_ui.js").read_text(encoding="utf-8")
 

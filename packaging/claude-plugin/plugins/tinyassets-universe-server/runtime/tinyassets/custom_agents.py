@@ -160,17 +160,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_lineage_parent
 CREATE TABLE IF NOT EXISTS agent_bindings (
     agent_binding_id TEXT PRIMARY KEY,
     universe_id TEXT NOT NULL,
-    -- NULLABLE on purpose. NULL means this universe holds private app-experience
-    -- configuration without having adopted any PUBLISHED design -- the state a
-    -- fresh account is in, and the only way to give it a private place for that
-    -- configuration without publishing a row about the account first.
-    --
-    -- It is a safety property, not only bookkeeping: SQLite never matches NULL
-    -- with `= ?`, so a definition-less binding is invisible to every reader that
-    -- resolves a binding BY definition (consumer selection, serving activation,
-    -- model bootstrap). It therefore cannot be selected to answer a conversation
-    -- or be served, which is right -- there is no executable design behind it.
-    agent_definition_id TEXT,
+    agent_definition_id TEXT NOT NULL,
     configuration_json TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     status TEXT NOT NULL DEFAULT 'configured'
@@ -188,6 +178,21 @@ CREATE INDEX IF NOT EXISTS idx_agent_binding_universe
 
 CREATE INDEX IF NOT EXISTS idx_agent_binding_definition
     ON agent_bindings(agent_definition_id);
+
+-- Which user-authored UIs a person keeps in a universe, and which one they are
+-- using. Deliberately NOT an agent binding: a UI choice has no definition, is
+-- never served, and must not appear to any binding reader. One row per
+-- (person, universe); the primary key is what makes a concurrent first save
+-- produce one row rather than two.
+CREATE TABLE IF NOT EXISTS universe_app_ui (
+    owner_user_id TEXT NOT NULL,
+    universe_id TEXT NOT NULL,
+    ui_library_json TEXT NOT NULL,
+    ui_selection_json TEXT,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (owner_user_id, universe_id)
+);
 """
 
 
@@ -495,68 +500,10 @@ def _ensure_schema(base_path: str | Path) -> Path:
             with conn:
                 conn.executescript(_SCHEMA)
                 _migrate_serving_status(conn)
-                _migrate_nullable_binding_definition(conn)
         finally:
             conn.close()
         _SCHEMA_INITIALIZED.add(key)
     return path
-
-
-def _migrate_nullable_binding_definition(conn: sqlite3.Connection) -> None:
-    """Drop the NOT NULL on ``agent_bindings.agent_definition_id``.
-
-    A fresh account needs a private place for its app-experience configuration
-    before it has adopted any published design. SQLite cannot relax NOT NULL with
-    ALTER, so the table is rebuilt; every row is copied unchanged, ids and
-    revisions included, so no CAS precondition held by a live client is disturbed.
-
-    Runs after :func:`_migrate_serving_status`, whose own rebuild emits the older
-    NOT NULL shape — ordering matters, and this migration would be undone if the
-    two were swapped.
-    """
-
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_bindings'"
-    ).fetchone()
-    sql = str(row[0] or "") if row is not None else ""
-    if not sql or "agent_definition_id TEXT NOT NULL" not in sql:
-        return
-    conn.execute("DROP INDEX IF EXISTS idx_agent_binding_universe")
-    conn.execute("DROP INDEX IF EXISTS idx_agent_binding_definition")
-    conn.execute("ALTER TABLE agent_bindings RENAME TO agent_bindings_pre_nullable")
-    conn.executescript(
-        """
-        CREATE TABLE agent_bindings (
-            agent_binding_id TEXT PRIMARY KEY,
-            universe_id TEXT NOT NULL,
-            agent_definition_id TEXT,
-            configuration_json TEXT NOT NULL,
-            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
-            status TEXT NOT NULL DEFAULT 'configured'
-                CHECK (status IN ('configured', 'serving')),
-            created_by TEXT NOT NULL,
-            updated_by TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            FOREIGN KEY(agent_definition_id)
-                REFERENCES agent_definitions(agent_definition_id) ON DELETE RESTRICT
-        );
-        INSERT INTO agent_bindings (
-            agent_binding_id, universe_id, agent_definition_id,
-            configuration_json, revision, status, created_by, updated_by,
-            created_at, updated_at
-        )
-        SELECT agent_binding_id, universe_id, agent_definition_id,
-               configuration_json, revision, status, created_by, updated_by,
-               created_at, updated_at
-          FROM agent_bindings_pre_nullable;
-        DROP TABLE agent_bindings_pre_nullable;
-        CREATE INDEX idx_agent_binding_universe
-            ON agent_bindings(universe_id, updated_at DESC);
-        CREATE INDEX idx_agent_binding_definition
-            ON agent_bindings(agent_definition_id);
-        """
-    )
 
 
 def _migrate_serving_status(conn: sqlite3.Connection) -> None:
@@ -1043,13 +990,7 @@ def _binding_from_row(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "agent_binding_id": str(row["agent_binding_id"]),
         "universe_id": str(row["universe_id"]),
-        # NULL stays None. `str(None)` is the literal "None", which reads as a
-        # definition id and gets looked up as one.
-        "agent_definition_id": (
-            None
-            if row["agent_definition_id"] is None
-            else str(row["agent_definition_id"])
-        ),
+        "agent_definition_id": str(row["agent_definition_id"]),
         "configuration": json.loads(str(row["configuration_json"])),
         "revision": int(row["revision"]),
         "status": str(row["status"]),
@@ -1084,34 +1025,6 @@ def _require_definition(
         raise AgentNotFoundError(f"agent definition {definition_id!r} was not found")
 
 
-def _existing_definitionless_binding(
-    conn: sqlite3.Connection,
-    *,
-    universe_id: str,
-    created_by: str,
-    role: str,
-) -> sqlite3.Row | None:
-    """The caller's own definition-less binding for ``role``, if it already exists.
-
-    Scoped to the CALLER as well as the universe: another principal's private
-    configuration is never returned or reused, so a bootstrap can never hand one
-    account a binding another account owns.
-    """
-
-    return conn.execute(
-        """
-        SELECT *
-        FROM agent_bindings
-        WHERE universe_id = ?
-          AND created_by = ?
-          AND agent_definition_id IS NULL
-          AND json_extract(configuration_json, '$.role') = ?
-        ORDER BY created_at ASC, agent_binding_id ASC
-        """,
-        (universe_id, created_by, role),
-    ).fetchone()
-
-
 def create_binding(
     base_path: str | Path,
     *,
@@ -1120,20 +1033,7 @@ def create_binding(
     created_by: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Create private universe configuration, optionally for a public definition.
-
-    An EMPTY ``definition_id`` is the first-run bootstrap: it creates the caller's
-    private configuration with no published definition behind it, so a fresh
-    account has somewhere of its own to keep an app experience before it has
-    adopted — or published — any design. That call is **idempotent**: a second one
-    returns the existing row untouched rather than minting a second binding or
-    rewriting the configuration the first one stored. Overwriting here would be a
-    data-loss path, because the caller of a bootstrap does not pass the fields it
-    is not trying to change.
-
-    A non-empty ``definition_id`` behaves exactly as before and still requires the
-    definition to exist.
-    """
+    """Create private universe configuration for a public definition."""
 
     uid = (universe_id or "").strip()
     did = (definition_id or "").strip()
@@ -1142,6 +1042,8 @@ def create_binding(
     actor = named_principal(created_by)
     if not uid:
         raise AgentValidationError("universe_id is required")
+    if not did:
+        raise AgentValidationError("definition_id is required")
     if not actor:
         raise AgentValidationError("an authenticated created_by actor is required")
     configuration = _normalize_binding_payload(payload)
@@ -1149,22 +1051,7 @@ def create_binding(
     created_at = time.time()
 
     with _agent_connect(base_path) as conn:
-        if not did:
-            role = str(configuration.get("role") or "").strip()
-            if not role:
-                raise AgentValidationError(
-                    "a binding with no definition_id must name a role"
-                )
-            existing = _existing_definitionless_binding(
-                conn, universe_id=uid, created_by=actor, role=role
-            )
-            if existing is not None:
-                # Register-if-absent. The stored configuration is returned as it
-                # stands; this call learns that the place exists, it does not
-                # claim the right to change what is in it.
-                return _binding_from_row(existing)
-        else:
-            _require_definition(conn, did)
+        _require_definition(conn, did)
         conn.execute(
             """
             INSERT INTO agent_bindings (
@@ -1177,7 +1064,7 @@ def create_binding(
             (
                 binding_id,
                 uid,
-                did or None,
+                did,
                 _canonical_json(configuration),
                 actor,
                 actor,
@@ -1315,15 +1202,10 @@ def update_binding(
             )
             if current is None:
                 raise AgentNotFoundError(f"agent binding {bid!r} was not found")
-            current_definition = current["agent_definition_id"]
-            selected_definition = requested_definition or (
-                None if current_definition is None else str(current_definition)
+            selected_definition = requested_definition or str(
+                current["agent_definition_id"]
             )
-            # A definition-less binding stays definition-less unless this call
-            # adopts one. Without this, `str(None)` became the id "None" and every
-            # configuration update to a fresh app experience failed its lookup.
-            if selected_definition is not None:
-                _require_definition(conn, selected_definition)
+            _require_definition(conn, selected_definition)
             cursor = conn.execute(
                 """
                 UPDATE agent_bindings
@@ -1481,21 +1363,181 @@ def set_binding_serving_in_transaction(
     return _binding_from_row(updated)
 
 
+#: How many UIs one person keeps per universe. The app reads at most this many.
+APP_UI_LIBRARY_LIMIT = 4
+_APP_UI_FIELDS = frozenset({"ui_library", "ui_selection"})
+_MAX_APP_UI_SELECTION_BYTES = 1024
+
+
+def _app_ui_document(row: sqlite3.Row | None, universe_id: str) -> dict[str, Any]:
+    if row is None:
+        return {"universe_id": universe_id, "ui_library": [], "ui_selection": None,
+                "revision": 0, "updated_at": None}
+    selection = row["ui_selection_json"]
+    return {
+        "universe_id": universe_id,
+        "ui_library": json.loads(str(row["ui_library_json"])),
+        "ui_selection": None if selection is None else json.loads(str(selection)),
+        "revision": int(row["revision"]),
+        "updated_at": float(row["updated_at"]),
+    }
+
+
+def _app_ui_scope(owner_user_id: str, universe_id: str) -> tuple[str, str]:
+    from tinyassets.principals import named_principal
+
+    owner = named_principal(owner_user_id)
+    uid = (universe_id or "").strip()
+    if not owner:
+        raise AgentValidationError("an authenticated owner is required")
+    if not uid:
+        raise AgentValidationError("universe_id is required")
+    return owner, uid
+
+
+def _check_app_ui_fields(changes: dict[str, Any]) -> None:
+    unknown = sorted(set(changes) - _APP_UI_FIELDS)
+    if unknown:
+        raise AgentValidationError(
+            f"app UI payload field {unknown[0]!r} is not one of {sorted(_APP_UI_FIELDS)}"
+        )
+    if not changes:
+        raise AgentValidationError("app UI payload must set ui_library or ui_selection")
+    if "ui_library" in changes:
+        library = changes["ui_library"]
+        if not isinstance(library, list):
+            raise AgentValidationError("ui_library must be a list")
+        if len(library) > APP_UI_LIBRARY_LIMIT:
+            raise AgentValidationError(
+                f"ui_library holds {len(library)} UIs; the limit is {APP_UI_LIBRARY_LIMIT}"
+            )
+        seen: set[str] = set()
+        for entry in library:
+            ui_id = entry.get("ui_id") if isinstance(entry, dict) else None
+            if not isinstance(ui_id, str) or not ui_id:
+                raise AgentValidationError("every ui_library entry must be an object with a ui_id")
+            if ui_id in seen:
+                raise AgentValidationError(f"ui_id {ui_id!r} is listed twice")
+            seen.add(ui_id)
+    if "ui_selection" in changes and not isinstance(changes["ui_selection"], dict):
+        raise AgentValidationError("ui_selection must be an object")
+
+
+def get_app_ui(
+    base_path: str | Path, *, owner_user_id: str, universe_id: str,
+) -> dict[str, Any]:
+    """The caller's own UI library and choice in ``universe_id``.
+
+    An absent row reads as an empty library at revision 0 -- the state a fresh
+    account is in, and the revision a first save names.
+    """
+
+    owner, uid = _app_ui_scope(owner_user_id, universe_id)
+    with _agent_connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM universe_app_ui WHERE owner_user_id = ? AND universe_id = ?",
+            (owner, uid),
+        ).fetchone()
+    return _app_ui_document(row, uid)
+
+
+def save_app_ui(
+    base_path: str | Path,
+    *,
+    owner_user_id: str,
+    universe_id: str,
+    expected_revision: int,
+    changes: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare-and-set the caller's UI library and/or choice.
+
+    Only the fields in ``changes`` are written; an omitted field keeps its stored
+    value, so saving a choice can never erase the library. ``expected_revision``
+    is the revision last read -- 0 when no row exists yet. Each branch is ONE
+    statement, so there is no read-then-write window: two first saves racing
+    both name revision 0, the primary key admits one row, and the other gets
+    :class:`AgentConflictError`.
+    """
+
+    owner, uid = _app_ui_scope(owner_user_id, universe_id)
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 0
+    ):
+        raise AgentValidationError("expected_revision must be a non-negative integer")
+    if not isinstance(changes, dict):
+        raise AgentValidationError("app UI payload must be a JSON object")
+    _check_app_ui_fields(changes)
+    # Each field is bounded on its own, because a partial save never sees the
+    # other one: a large library and a separately saved choice must not add up
+    # to a row over the cap.
+    _check_size(changes.get("ui_library", []))
+    selection_bytes = len(_canonical_json(changes.get("ui_selection")).encode("utf-8"))
+    if selection_bytes > _MAX_APP_UI_SELECTION_BYTES:
+        raise AgentValidationError(
+            f"ui_selection exceeds {_MAX_APP_UI_SELECTION_BYTES} bytes of canonical JSON"
+        )
+    library = (_canonical_json(changes["ui_library"])
+               if "ui_library" in changes else None)
+    selection = (_canonical_json(changes["ui_selection"])
+                 if "ui_selection" in changes else None)
+    now = time.time()
+    with _agent_connect(base_path) as conn:
+        if expected_revision == 0:
+            written = conn.execute(
+                """
+                INSERT INTO universe_app_ui (
+                    owner_user_id, universe_id, ui_library_json, ui_selection_json,
+                    revision, updated_at
+                ) VALUES (?, ?, ?, ?, 1, ?)
+                ON CONFLICT(owner_user_id, universe_id) DO NOTHING
+                """,
+                (owner, uid, library if library is not None else "[]", selection, now),
+            ).rowcount
+        else:
+            written = conn.execute(
+                """
+                UPDATE universe_app_ui
+                   SET ui_library_json = COALESCE(?, ui_library_json),
+                       ui_selection_json = COALESCE(?, ui_selection_json),
+                       revision = revision + 1,
+                       updated_at = ?
+                 WHERE owner_user_id = ? AND universe_id = ? AND revision = ?
+                """,
+                (library, selection, now, owner, uid, expected_revision),
+            ).rowcount
+        row = conn.execute(
+            "SELECT * FROM universe_app_ui WHERE owner_user_id = ? AND universe_id = ?",
+            (owner, uid),
+        ).fetchone()
+    if written != 1:
+        current = 0 if row is None else int(row["revision"])
+        raise AgentConflictError(
+            f"app UI changed: expected revision {expected_revision}, current is {current}; "
+            "read it again before saving"
+        )
+    return _app_ui_document(row, uid)
+
+
 __all__ = [
     "AGENT_SCHEMA_VERSION",
     "AgentConflictError",
     "AgentNotFoundError",
     "AgentValidationError",
+    "APP_UI_LIBRARY_LIMIT",
     "MAX_AGENT_JSON_BYTES",
     "MAX_COMPONENTS",
     "MAX_LINEAGE_DEPTH",
     "create_binding",
+    "get_app_ui",
     "get_binding",
     "get_definition",
     "import_definition",
     "list_bindings",
     "list_definitions",
     "publish_definition",
+    "save_app_ui",
     "set_binding_provider_ref_in_transaction",
     "set_binding_serving_in_transaction",
     "update_binding",

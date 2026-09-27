@@ -6,8 +6,8 @@ has: the recorded tool arguments, the refusal text, and the fields that reach th
 frame. Asserting only that "nothing happened" would pass against a bridge that
 silently did the wrong thing.
 
-Both real controllers run together, so the private-configuration write is the
-actual revision-guarded path rather than a stand-in for it.
+Both real controllers run together against a server double that enforces the
+app_ui store's compare-and-set, so the write path under test is the shipped one.
 """
 # ruff: noqa: E501 -- embedded JavaScript fixture mirrors controller expressions
 import shutil
@@ -47,10 +47,17 @@ const window={addEventListener:(name,fn)=>{if(name==='message')listeners.push(fn
  removeEventListener:(name,fn)=>{if(name==='message')listeners=listeners.filter(f=>f!==fn);}};
 const emit=event=>{for(const fn of [...listeners])fn(event);};
 
-// --- server double: one binding row with a real revision --------------------
+// --- server double: one binding (agents) + the viewer's app_ui row ----------
+// The app_ui double enforces what the store does: compare-and-set on revision,
+// 0 meaning "no row yet", and only the named fields written.
 const HOME='u-alice',PRINCIPAL='alice';
 let me={principal_id:PRINCIPAL,universe_id:HOME,setup:'connected'};
-let binding=null, definitions={}, calls=[], sends=[], conversation=[];
+let binding=null, definitions={}, calls=[], allCalls=[], sends=[], conversation=[];
+let appUi=null, raceNext=false;
+const clone=v=>JSON.parse(JSON.stringify(v));
+const stored=(library,selection)=>({universe_id:HOME,ui_library:library||[],
+ ui_selection:selection||null,revision:1,updated_at:1});
+const settle=async(n)=>{for(let i=0;i<(n||10);i++)await new Promise(r=>setImmediate(r));};
 let otherConversation=[{speaker:'universe',text:'BOBS PRIVATE TURN',ts:1,truncated:false}];
 let statusUniverseOverride='';
 const fetchMe=async()=>me;
@@ -59,6 +66,23 @@ const sendTurn=async(message,display,opts)=>{sends.push({message,display,opts});
 const MCP={
  async callTool(tool,args){
   calls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
+  allCalls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
+  if(tool==='read_graph'&&args.target==='app_ui'){
+   assert.equal(args.graph_id,HOME);
+   return {app_ui:appUi?clone(appUi):{universe_id:args.graph_id,ui_library:[],ui_selection:null,revision:0,updated_at:null}};
+  }
+  if(tool==='write_graph'&&args.target==='app_ui'){
+   assert.equal(args.operation,'save');
+   // Someone else saved between this client's read and its write.
+   if(raceNext){ raceNext=false; appUi=appUi?{...appUi,revision:appUi.revision+1}:stored([],null); }
+   const current=appUi?appUi.revision:0;
+   if(args.expected_revision!==current)
+    return {error:'app_ui_conflict',detail:'app UI changed: expected revision '+args.expected_revision+', current is '+current};
+   const changes=JSON.parse(args.payload_json);
+   for(const key of Object.keys(changes)) assert(['ui_library','ui_selection'].includes(key),key);
+   appUi={...(appUi||stored([],null)),...clone(changes),revision:current+1,updated_at:2};
+   return {status:'saved',app_ui:clone(appUi)};
+  }
   if(tool==='read_graph'&&args.target==='agent_bindings')return {bindings:binding?[binding]:[]};
   if(tool==='read_graph'&&args.target==='agent_binding')return {binding};
   if(tool==='read_graph'&&args.target==='agent')return {agent:definitions[args.agent_definition_id]||{agent_definition_id:args.agent_definition_id,components:{}}};
@@ -88,10 +112,11 @@ const MCP={
 const bundleOf=over=>Object.assign({kind:'tinyassets.app-ui.v1',version:1,ui_id:'office',
  name:'Office building',markup:'<div id="lobby">Lobby</div>',style:'#lobby{color:red}',
  script:'tinyassets.whoami()'},over||{});
-const installed=(library,selection)=>({agent_binding_id:'b1',universe_id:HOME,agent_definition_id:'d1',
+// An agent binding for list_agents to find. It carries no UI: the UI lives in
+// the app_ui row, and nothing in these checks may read or write it here.
+const installed=()=>({agent_binding_id:'b1',universe_id:HOME,agent_definition_id:'d1',
  status:'configured',revision:1,created_by:PRINCIPAL,updated_by:PRINCIPAL,
- configuration:Object.assign({schema_version:1,name:'App experience',role:'app_experience',private:{keep:1}},
-  library?{ui_library:library}:{},selection?{ui_selection:selection}:{})});
+ configuration:{schema_version:1,name:'App experience',role:'app_experience',private:{keep:1}}});
 '''
 
 CHECKS = r'''
@@ -127,15 +152,15 @@ assert(!u.readSelection({ui_selection:{version:2,state:'default'}}).ok);
 assert.deepEqual(u.readSelection({ui_selection:{version:1,state:'active',ui_id:'office'}}).selection,
  {version:1,state:'active',ui_id:'office'});
 
-// ---- one read serves both controllers, and it applies the saved choice -----
-binding=installed([bundleOf()],{version:1,state:'active',ui_id:'office'});
+// ---- its own row is read once, and the saved choice is applied ------------
+binding=installed();
+appUi=stored([bundleOf()],{version:1,state:'active',ui_id:'office'});
 definitions['d1']={agent_definition_id:'d1',content_fingerprint:'f'.repeat(64),components:{}};
 AppLayout.enable(HOME,PRINCIPAL); u.enable(HOME,PRINCIPAL);
-await new Promise(r=>setImmediate(r)); await new Promise(r=>setImmediate(r));
-await new Promise(r=>setImmediate(r)); await new Promise(r=>setImmediate(r));
+await settle();
 assert(u.active&&u.active.ui_id==='office','the remembered UI must be applied: '+$('ui-status').textContent);
-// AppUI listed no bindings of its own: only AppLayout's read is on the wire.
-assert.equal(calls.filter(c=>c.tool==='read_graph'&&c.args.target==='agent_bindings').length,1);
+assert.equal(calls.filter(c=>c.tool==='read_graph'&&c.args.target==='app_ui').length,1);
+assert.equal(u.revision,1);
 
 // ---- the frame is created with the isolation the boundary depends on ------
 const frame=u.frame;
@@ -231,7 +256,8 @@ assert(/selected conversation only/.test(unselected.error),unselected.error);
 assert.equal(sends.length,1);
 
 // ---- switching persists through the ONE revision-guarded write ----------
-const startRevision=binding.revision;
+const startRevision=appUi.revision;
+const bindingBefore=JSON.stringify(binding);
 calls=[];
 await u.chooseDefault();
 assert.equal(u.active,null,'default chat is applied immediately');
@@ -239,36 +265,37 @@ assert.equal($('ui-frame-host').hidden,true);
 assert(!$('view-chat').classes.has('ui-custom-active'));
 const wrote=calls.filter(c=>c.tool==='write_graph');
 assert.equal(wrote.length,1);
+assert.equal(wrote[0].args.target,'app_ui');
+assert.equal(wrote[0].args.graph_id,HOME);
 assert.equal(wrote[0].args.expected_revision,startRevision);
-assert.deepEqual(JSON.parse(wrote[0].args.payload_json).ui_selection,{version:1,state:'default'});
-assert.deepEqual(JSON.parse(wrote[0].args.payload_json).private,{keep:1},'other private config survives');
-assert.deepEqual(JSON.parse(wrote[0].args.payload_json).ui_library,[bundleOf()],'the library survives a selection write');
+assert.deepEqual(JSON.parse(wrote[0].args.payload_json),{ui_selection:{version:1,state:'default'}},
+ 'a choice writes the choice and nothing else');
+assert.deepEqual(appUi.ui_library,[bundleOf()],'the library survives a selection write');
+assert.equal(JSON.stringify(binding),bindingBefore,'no agent binding is touched by a UI choice');
+assert.equal(u.revision,startRevision+1);
 
 await u.choose('office');
 assert(u.active&&u.active.ui_id==='office');
-assert.deepEqual(binding.configuration.ui_selection,{version:1,state:'active',ui_id:'office'});
+assert.deepEqual(appUi.ui_selection,{version:1,state:'active',ui_id:'office'});
 
-// ---- a stale observed revision is a conflict, never an overwrite --------
-binding={...binding,revision:binding.revision+5};
-const before=binding.revision;
-AppLayout.uncertain=false;
+// ---- a save that loses a race is refused, never an overwrite ------------
+raceNext=true;
+const raced=appUi.ui_selection;
 await u.chooseDefault();
-assert.equal(binding.revision,before,'a stale write must not land');
-assert(AppLayout.uncertain,'the conflict is reported, not retried');
+assert.deepEqual(appUi.ui_selection,raced,'a stale write must not land');
+assert(/not saved \(app UI changed/.test($('ui-status').textContent),$('ui-status').textContent);
+assert.equal(calls.filter(c=>c.tool==='write_graph'&&c.args.target==='app_ui').length,3,
+ 'the conflict is reported, not retried');
 
 // ---- a remixed bundle acts as the REMIXER ------------------------------
 // Bob authored it; Alice installs the component into her own library. Nothing
 // about Bob travels into the calls it can make.
-AppLayout.uncertain=false;
 const bobs=bundleOf({ui_id:'bob-tower',name:'Bob tower',
  script:'tinyassets.call("list_agents",{graph_id:"u-bob"})'});
-binding={...binding,revision:binding.revision};
-AppLayout.installation={binding_id:binding.agent_binding_id,revision:binding.revision,
- definition_id:binding.agent_definition_id,configuration:JSON.parse(JSON.stringify(binding.configuration))};
-AppLayout.candidates=[binding]; AppLayout.loaded=true; AppLayout.saturated=false;
 const outcome=await u.install(bobs);
 assert(outcome.ok,JSON.stringify(outcome));
-assert.equal(binding.configuration.ui_library.length,2);
+assert.equal(appUi.ui_library.length,2);
+assert.deepEqual(appUi.ui_selection,raced,'an install leaves the choice alone');
 await u.choose('bob-tower');
 assert(u.active&&u.active.ui_id==='bob-tower');
 const bobFrame=u.frame.contentWindow;
@@ -341,12 +368,8 @@ assert.equal(u.enabled,false);
 
 // The funnel the app actually calls must revoke too, not just the handler.
 me={principal_id:PRINCIPAL,universe_id:HOME,setup:'connected'};
-binding=installed([bundleOf()],{version:1,state:'active',ui_id:'office'});
-AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
- configuration:JSON.parse(JSON.stringify(binding.configuration))};
-AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
-AppLayout.uncertain=false;AppLayout.enabled=true;AppLayout.home=HOME;AppLayout.principal=PRINCIPAL;
-u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.adopt(AppLayout.installation);
+appUi=stored([bundleOf()],{version:1,state:'active',ui_id:'office'});
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.adopt(clone(appUi));
 assert(u.active,'the saved UI is mounted again');
 u.homeChanged('u-carol');
 assert.equal(u.frame,null,'homeChanged tears the frame down');
@@ -355,12 +378,8 @@ u.homeChanged('u-carol');   // idempotent on an already-reset controller
 
 // ---- a reply is owed to the frame that asked (Codex P2) ----------------
 me={principal_id:PRINCIPAL,universe_id:HOME,setup:'connected'};
-binding=installed([bundleOf(),bundleOf({ui_id:'second',name:'Second'})],null);
-AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
- configuration:JSON.parse(JSON.stringify(binding.configuration))};
-AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
-AppLayout.uncertain=false;AppLayout.enabled=true;AppLayout.home=HOME;AppLayout.principal=PRINCIPAL;
-u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.adopt(AppLayout.installation);
+appUi=stored([bundleOf(),bundleOf({ui_id:'second',name:'Second'})],null);
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.adopt(clone(appUi));
 u.mount(u.library[0]);
 const frameA=u.frame.contentWindow;
 emit({source:frameA,data:{ta_ui:1,type:'ready'}});
@@ -370,7 +389,7 @@ const postsA=frameA.posts.length;
 emit({source:frameA,data:{ta_ui:1,type:'call',id:'r1',action:'read_conversation',params:{}}});
 u.mount(u.library[1]);
 const frameB=u.frame.contentWindow;
-for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));
+await settle();
 assert.equal(frameB.posts.filter(m=>m.type==='result'&&m.id==='r1').length,0,
  "bundle A's answer must not reach bundle B");
 assert.equal(frameA.posts.length,postsA,'and it is not delivered to a torn-down frame either');
@@ -380,31 +399,26 @@ assert.equal(u.pending,0,"a stale completion must not decrement the new frame's 
 // One stored bundle is a future version this app cannot parse. Installing must
 // not rebuild the library from a cache that dropped it.
 const future={...bundleOf({ui_id:'from-tomorrow'}),version:2};
-binding=installed([bundleOf(),future],null);
-AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
- configuration:JSON.parse(JSON.stringify(binding.configuration))};
-AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
-AppLayout.uncertain=false;
-u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.adopt(AppLayout.installation);
+appUi=stored([bundleOf(),future],null);
+u.adopt(clone(appUi));
 assert(u.unreadable,'an unreadable library is remembered as unreadable, not as empty');
 assert.deepEqual(u.library,[]);
-const storedBefore=JSON.stringify(binding.configuration.ui_library);
+const storedBefore=JSON.stringify(appUi);
 calls=[];
 const refused=await u.install(bundleOf({ui_id:'newcomer'}));
 assert(!refused.ok,'install must refuse rather than overwrite');
-assert.equal(calls.filter(c=>c.tool==='write_graph').length,0,'and write nothing');
-assert.equal(AppLayout.uncertain,false,
- 'refusing up front must not leave the shared editor uncertain; only the write backstop does that');
-assert.equal(JSON.stringify(binding.configuration.ui_library),storedBefore,
- 'the bundle it could not parse is still stored');
+assert.equal(calls.length,0,'and neither reads nor writes');
+assert.equal(JSON.stringify(appUi),storedBefore,'the bundle it could not parse is still stored');
 
-// The guarded mutation is the backstop: even with a clean cache, a library that
-// became unreadable since the read is refused inside the write window.
+// The re-read inside the save is the backstop: even with a clean cache, a
+// library that is unreadable NOW is refused before anything is written.
 u.unreadable='';u.library=[bundleOf()];
-AppLayout.uncertain=false;
+calls=[];
 const sneaky=await u.install(bundleOf({ui_id:'newcomer'}));
-assert(!sneaky.ok,'the mutation re-checks what the write actually observed');
-assert.equal(JSON.stringify(binding.configuration.ui_library),storedBefore);
+assert(!sneaky.ok,'the mutation re-checks what the save actually read');
+assert.equal(calls.filter(c=>c.tool==='write_graph').length,0,'and writes nothing');
+assert.equal(JSON.stringify(appUi),storedBefore);
+assert(/cannot be read/.test($('ui-status').textContent),$('ui-status').textContent);
 
 // ---- size is measured in UTF-8 bytes, not UTF-16 units (Codex P2) ------
 // Characters that cost three bytes each. A character-counting limit accepts
@@ -415,102 +429,55 @@ assert(u.bytes(cjk.markup)>3*19000,'the fixture really is multi-byte');
 const cjkRead=u.parseBundle(cjk);
 assert(!cjkRead.ok,'a bundle over the BYTE limit is refused');
 assert(/bytes/.test(cjkRead.reason),cjkRead.reason);
-// And the whole configuration is checked before a write, not just one bundle.
-binding=installed([],null);
-AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
- configuration:JSON.parse(JSON.stringify(binding.configuration))};
-AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.uncertain=false;
-u.adopt(AppLayout.installation);
-const near=u.MAX_MARKUP-1024;   // inside the field bound AND the bundle budget
-for(let i=0;i<u.LIBRARY_LIMIT-1;i++){
- AppLayout.uncertain=false;
- const r=await u.install(bundleOf({ui_id:'big-'+i,markup:'x'.repeat(near)}));
- assert(r.ok,'a bundle inside its own budget installs: '+JSON.stringify(r));
-}
-assert(u.bytes(JSON.stringify(binding.configuration))<u.MAX_CONFIG_BYTES);
 
-// With bulk already in the configuration, one more bundle crosses the cap. The
-// refusal must come from this app, before a write, naming the size.
-binding=installed([],null);
-binding.configuration.private={bulk:'p'.repeat(u.MAX_CONFIG_BYTES-30000)};
-AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
- configuration:JSON.parse(JSON.stringify(binding.configuration))};
-AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
-AppLayout.uncertain=false;
-u.adopt(AppLayout.installation);
-const storedBulk=JSON.stringify(binding.configuration);
+// ---- a full library refuses by count, checked against the stored row -----
+// The cache says there is room; the row already holds LIBRARY_LIMIT. The save
+// reads the row, so the refusal comes from what is stored, not from the cache.
+appUi=stored(Array.from({length:u.LIBRARY_LIMIT},(_,i)=>bundleOf({ui_id:'full-'+i})),null);
+u.adopt(stored([],null));
+const storedFull=JSON.stringify(appUi);
 calls=[];
-const tooBig=await u.install(bundleOf({ui_id:'straw',markup:'y'.repeat(u.MAX_MARKUP)}));
-assert(!tooBig.ok,'a bundle that would bust the binding cap is refused');
+const overflow=await u.install(bundleOf({ui_id:'one-too-many'}));
+assert(!overflow.ok,'a fifth UI is refused');
 assert.equal(calls.filter(c=>c.tool==='write_graph').length,0,'and nothing is written');
-assert.equal(JSON.stringify(binding.configuration),storedBulk);
-assert(/over the /.test($('ui-status').textContent),$('ui-status').textContent);
-// This size was visible BEFORE the write, so the refusal must not leave the
-// shared editor uncertain -- that state is for outcomes nobody can be sure of.
-assert.equal(AppLayout.uncertain,false,
- 'a size this app could see coming is refused without an uncertain write');
-
-// ---- the in-write cap is the backstop for a RACE (Codex P2) -----------
-// The pre-write check reads the configuration last OBSERVED; the stored one can
-// have grown since. Make them disagree: observed small, stored already near the
-// cap, same revision so CAS is satisfied. The pre-write check passes and the
-// guarded mutation must refuse -- and THAT refusal legitimately marks the shared
-// editor uncertain, which the pre-write one must not.
-binding=installed([],null);
-binding.configuration.private={bulk:'q'.repeat(u.MAX_CONFIG_BYTES-30000)};
-AppLayout.installation={binding_id:'b1',revision:binding.revision,definition_id:'d1',
- configuration:{schema_version:1,name:'App experience',role:'app_experience'}};  // the small view
-AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
-AppLayout.uncertain=false;
-u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.library=[];u.unreadable='';
-const storedRace=JSON.stringify(binding.configuration);
-calls=[];
-const raced=await u.install(bundleOf({ui_id:'raced',markup:'z'.repeat(u.MAX_MARKUP)}));
-assert(!raced.ok,'the guarded mutation refuses what the stale view allowed');
-assert.equal(JSON.stringify(binding.configuration),storedRace,'and nothing was written');
-assert(AppLayout.uncertain,'a refusal inside the write window IS uncertain');
-// The reason must survive out to the user, not be flattened to "failed".
-assert(/over the /.test($('ui-status').textContent),$('ui-status').textContent);
-assert(/bytes/.test($('ui-status').textContent),$('ui-status').textContent);
-AppLayout.uncertain=false;
+assert.equal(JSON.stringify(appUi),storedFull);
+assert(/remove one first/.test($('ui-status').textContent),$('ui-status').textContent);
+// Re-installing a ui_id already there replaces it rather than counting twice.
+u.adopt(clone(appUi));
+const replaced=await u.install(bundleOf({ui_id:'full-0',name:'Renamed'}));
+assert(replaced.ok,JSON.stringify(replaced));
+assert.equal(appUi.ui_library.length,u.LIBRARY_LIMIT);
+assert.equal(appUi.ui_library.find(b=>b.ui_id==='full-0').name,'Renamed');
 
 // ---- a brand-new account installs from nothing (lead, 2026-09-26) -----
-// No binding, no published definition, nothing adopted. The person asking for a
-// UI must not be told to go and adopt a stranger's layout first.
-binding=null;
-AppLayout.installation=null;AppLayout.candidates=[];AppLayout.loaded=true;
-AppLayout.saturated=false;AppLayout.uncertain=false;
-AppLayout.enabled=true;AppLayout.home=HOME;AppLayout.principal=PRINCIPAL;
+// No row, no binding, no published definition. The first save creates the row
+// at revision 0 -> 1; there is no setup step and nothing is published.
+appUi=null; binding=null;
 u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.library=[];u.unreadable='';u.selection=null;
 calls=[];
 const fresh=await u.install(bundleOf({ui_id:'from-nothing',name:'From nothing'}));
 assert(fresh.ok,'a fresh account can install: '+JSON.stringify(fresh));
-const binds=calls.filter(c=>c.tool==='write_graph'&&c.args.operation==='bind');
-assert.equal(binds.length,1,'exactly one place is created');
-assert(!('agent_definition_id' in binds[0].args),
- 'the bootstrap names NO definition -- sending "" would ask the server to keep one');
-assert.equal(JSON.parse(binds[0].args.payload_json).role,'app_experience');
-assert.equal(binding.agent_definition_id,undefined,'the created row carries no definition');
-assert.deepEqual(binding.configuration.ui_library.map(b=>b.ui_id),['from-nothing']);
+const firstSaves=calls.filter(c=>c.tool==='write_graph');
+assert.equal(firstSaves.length,1,'exactly one write creates the row');
+assert.equal(firstSaves[0].args.target,'app_ui');
+assert.equal(firstSaves[0].args.expected_revision,0);
+assert.deepEqual(appUi.ui_library.map(b=>b.ui_id),['from-nothing']);
+assert.equal(appUi.revision,1);
 assert.equal(u.library.length,1);
 
 // And it can then be switched to and remembered, which is the whole journey.
 await u.choose('from-nothing');
 assert(u.active&&u.active.ui_id==='from-nothing');
-assert.deepEqual(binding.configuration.ui_selection,{version:1,state:'active',ui_id:'from-nothing'});
-// Every write after the bootstrap keeps naming no definition, so the update path
-// cannot quietly adopt one on the account's behalf.
-for(const c of calls.filter(c=>c.tool==='write_graph'))
- assert(!('agent_definition_id' in c.args),'no write adopts a definition: '+JSON.stringify(c.args));
-
-// A second install reuses the one place rather than creating another.
-AppLayout.uncertain=false;
-const bindsBefore=calls.filter(c=>c.tool==='write_graph'&&c.args.operation==='bind').length;
+assert.deepEqual(appUi.ui_selection,{version:1,state:'active',ui_id:'from-nothing'});
 const secondUI=await u.install(bundleOf({ui_id:'second-one',name:'Second'}));
 assert(secondUI.ok,JSON.stringify(secondUI));
-assert.equal(calls.filter(c=>c.tool==='write_graph'&&c.args.operation==='bind').length,bindsBefore,
- 'the second install updates the existing place');
-assert.deepEqual(binding.configuration.ui_library.map(b=>b.ui_id).sort(),['from-nothing','second-one']);
+assert.deepEqual(appUi.ui_library.map(b=>b.ui_id).sort(),['from-nothing','second-one']);
+assert.equal(appUi.revision,3);
+assert.equal(binding,null,'no agent binding was created for any of it');
+
+// Across EVERY step above, the UI controller never wrote an agent binding.
+assert.equal(allCalls.filter(c=>c.tool==='write_graph'&&c.args.target!=='app_ui').length,0,
+ 'every UI write goes to app_ui: '+JSON.stringify(allCalls.filter(c=>c.tool==='write_graph').map(c=>c.args.target)));
 
 // ---- sign-out tears the bridge down ----------------------------------
 u.reset();
@@ -549,12 +516,7 @@ SAMPLE_CHECKS = r'''
 (async()=>{
 const u=AppUI;
 // Install it the way a universe's own agent would, then select it.
-binding=installed([],null);
-definitions['d1']={agent_definition_id:'d1',content_fingerprint:'f'.repeat(64),components:{}};
-AppLayout.installation={binding_id:'b1',revision:1,definition_id:'d1',
- configuration:JSON.parse(JSON.stringify(binding.configuration))};
-AppLayout.candidates=[binding];AppLayout.loaded=true;AppLayout.saturated=false;
-AppLayout.enabled=true;AppLayout.home=HOME;AppLayout.principal=PRINCIPAL;
+appUi=null;
 u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;
 
 const installOutcome=await u.install(OFFICE);
@@ -575,9 +537,9 @@ assert(delivered.markup.includes('onerror='),'an inline handler survives verbati
 assert(delivered.markup.includes('&amp;'),'entities are not re-encoded');
 assert(delivered.markup.includes('<![CDATA['),'nothing is parsed and re-serialised');
 
-// And it survives the round trip through the private configuration it is stored
-// in: what the binding holds parses back to the same bundle.
-const reread=u.readLibrary(binding.configuration);
+// And it survives the round trip through the row it is stored in: what the
+// store holds parses back to the same bundle.
+const reread=u.readLibrary(appUi);
 assert(reread.ok,reread.reason);
 assert.strictEqual(reread.entries[0].script,OFFICE.script);
 

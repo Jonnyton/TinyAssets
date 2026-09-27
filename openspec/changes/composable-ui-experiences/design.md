@@ -226,31 +226,56 @@ work. One `send_message` in flight at a time.
 
 ### Where a bundle lives
 
-Two stores already have bounds, ownership, privacy, revision guards and a
-publish/remix path; a third file store would be new storage shape needing its own
-migration, so it is not introduced here.
-
-- **Private, unpublished:** the existing non-serving `app_experience`
-  `AgentBinding` configuration (`ui_library`, `ui_selection`), written through
-  `write_graph target:agent_binding` — which the universe's own agent can call.
-  Private by default: publishing is a separate, explicit act.
+- **Private, unpublished:** the viewer's own row in `universe_app_ui`, keyed
+  `PRIMARY KEY (owner_user_id, universe_id)` and holding `ui_library` and
+  `ui_selection` as JSON plus a `revision`. Read with `read_graph target="app_ui"`
+  and written with `write_graph target="app_ui" operation="save"` on both the
+  public connector and the engine surface, so the universe's own agent can write
+  it. Private by default: publishing is a separate, explicit act.
 - **Shared:** a `tinyassets.app-ui.v1` component inside a public agent
   definition, via the `publish`/`remix` path `app_layout.js` already uses. A
-  remix copies the component into the remixer's *own* binding, where it runs
-  against the remixer's bridge. The author's universe is never addressed.
+  remix copies the component into the remixer's *own* row, where it runs against
+  the remixer's bridge. The author's universe is never addressed.
 
-`ui_library` is a **list**, not an object: `_check_binding_content_fields`
-rejects reserved key names like `messages`, and a list has no user-chosen keys to
-collide. Bundle bytes are bounded so a full library cannot exceed
-`MAX_AGENT_JSON_BYTES` (`tinyassets/custom_agents.py:26`); a test ties the JS
-constants to that Python constant rather than restating it.
+**Why not an agent binding.** The first cut kept the library in the
+`app_experience` `AgentBinding` configuration. A fresh account has no binding,
+and a binding needs a published definition, so the next cut made
+`agent_bindings.agent_definition_id` nullable. A cross-family review of that
+change returned REJECT (2026-09-26): the table rebuild was not atomic, so a crash
+or a second initializer stranded every existing binding; definition-less rows
+reached model bootstrap, consumer selection, serving and `_serving_hint`, none of
+which select by definition; and the bootstrap had no uniqueness to stop two rows.
+All three came from one cause: a UI choice is not an agent binding. So it has its
+own table, created with `CREATE TABLE IF NOT EXISTS` (no rename, no copy, no
+migration), and `agent_bindings` is byte-for-byte what it was.
+
+**Writes.** One compare-and-set statement per save, no read-then-write window:
+`expected_revision = 0` is `INSERT ... ON CONFLICT(owner_user_id, universe_id) DO
+NOTHING`, anything else is `UPDATE ... WHERE revision = ?`. Two first saves
+racing both name 0; the key admits one row and the other is refused as a
+conflict. An omitted field keeps its stored value, so saving a choice never
+erases the library. `ON CONFLICT DO UPDATE` was considered and not used: it
+cannot express "update only at this revision, but never create when a revision
+above 0 was named", which is what stops a stale client resurrecting a deleted row.
+
+**Authority.** The row is keyed by the authenticated caller, never by anything
+the caller names, and universe access is the same read/write check agent
+bindings use (`api/custom_agents._binding_access`). Account deletion removes a
+person's rows in every universe (`PERSON_KEYED_DESPITE_UNIVERSE`), like
+`universe_model_preferences`.
+
+`ui_library` is a **list** of at most four components, each a `ui_id`-keyed
+object with no duplicate ids. Its canonical JSON is capped at
+`MAX_AGENT_JSON_BYTES`, and bundle bytes are bounded so a full library fits that
+cap by construction; a test ties the JS constants to the Python ones rather than
+restating them. `ui_selection` is capped separately (1 KiB), because a partial
+save never sees the other field.
 
 ### One system, not two
 
-The switcher is the existing "App design" surface, and the UI selection lives in
-the same binding configuration as `turn_consumer`, read and written through
-`AppLayout`'s existing read-back-and-CAS helpers. The layout editor keeps
-working; a user with no bundle sees exactly what they see today.
+The switcher is the existing "App design" surface; the layout editor and its
+`app_experience` binding are unchanged. The UI controller owns its own read and
+its one CAS write path. A user with no bundle sees exactly what they see today.
 
 ### Deferred, and named so it is not mistaken for shipped
 

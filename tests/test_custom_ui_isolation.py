@@ -205,14 +205,16 @@ def test_the_home_transition_funnel_revokes_the_bridge() -> None:
     assert "AppUI.reset()" in clear.group(1), clear.group(1)
 
 
-def test_bundle_bounds_fit_the_real_binding_cap() -> None:
-    """The JS bounds are derived from the Python cap, not a coincidence.
+def test_bundle_bounds_fit_the_real_library_cap() -> None:
+    """The JS bounds are derived from the Python caps, not a coincidence.
 
-    A full library must still fit one canonical-JSON binding configuration. This
-    reads the enforcing constant rather than restating its value, so raising
-    either side without the other fails here instead of at a user's write.
+    A full library must fit the canonical-JSON cap the store enforces on
+    ``ui_library``, BY CONSTRUCTION -- which is why the install path carries no
+    size check of its own. This reads the enforcing constants rather than
+    restating their values, so raising either side without the other fails here
+    instead of at a user's write.
     """
-    from tinyassets.custom_agents import MAX_AGENT_JSON_BYTES
+    from tinyassets.custom_agents import APP_UI_LIBRARY_LIMIT, MAX_AGENT_JSON_BYTES
 
     def constant(name: str) -> int:
         found = re.search(rf"\b{name}:(\d+)", APP_UI)
@@ -222,12 +224,11 @@ def test_bundle_bounds_fit_the_real_binding_cap() -> None:
     per_bundle = constant("MAX_BUNDLE_BYTES")
     library = constant("LIBRARY_LIMIT")
 
-    # The configuration-wide check the install path enforces must BE the server's
-    # cap, not a number that resembles it.
-    assert constant("MAX_CONFIG_BYTES") == MAX_AGENT_JSON_BYTES
+    # The app and the store agree on how many UIs a library holds.
+    assert library == APP_UI_LIBRARY_LIMIT
 
-    # And the sizes must be measured the way the server measures them. Counting
-    # UTF-16 units accepted three CJK bundles that together bust the byte cap.
+    # Sizes are measured the way the server measures them. Counting UTF-16
+    # units accepted multi-byte bundles that the byte cap then refused.
     assert "new TextEncoder().encode(String(value)).length" in APP_UI
     assert "JSON.stringify(component).length" not in APP_UI
 
@@ -237,7 +238,6 @@ def test_bundle_bounds_fit_the_real_binding_cap() -> None:
     assert constant("MAX_STYLE") <= per_bundle
     assert constant("MAX_SCRIPT") <= per_bundle
 
-    # And a full library plus the rest of the configuration must fit the cap the
-    # server actually enforces, with room left for layout and turn selection.
-    assert per_bundle * library < MAX_AGENT_JSON_BYTES
-    assert MAX_AGENT_JSON_BYTES - per_bundle * library >= 32 * 1024
+    # A full library -- every bundle at its budget, plus the list's brackets and
+    # commas -- fits the cap the store enforces.
+    assert per_bundle * library + library + 1 <= MAX_AGENT_JSON_BYTES

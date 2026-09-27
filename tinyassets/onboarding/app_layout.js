@@ -142,19 +142,13 @@
     },
 
     // ---- reads (idempotent, never create anything) ----
-    // A definition id is NOT required. A first-run app experience is private
-    // configuration with no published design behind it, which is the point of the
-    // bootstrap: the account gets somewhere of its own before it has adopted or
-    // published anything. Ownership, home, role and the absent provider_ref are
-    // what make a binding this controller's to read and write.
     eligible(b){
       return !!(b&&b.created_by===this.principal&&b.universe_id===this.home&&
-        b.status==="configured"&&b.agent_binding_id&&
+        b.status==="configured"&&b.agent_binding_id&&b.agent_definition_id&&
         Number.isInteger(b.revision)&&b.configuration&&
         b.configuration.role===this.ROLE&&
         !Object.prototype.hasOwnProperty.call(b.configuration,"provider_ref"));
     },
-    definitionOf(b){ return b&&b.agent_definition_id?String(b.agent_definition_id):""; },
     async currentBindings(){
       const epoch=this.epoch,home=this.home,principal=this.principal;
       const me=await fetchMe();
@@ -193,30 +187,13 @@
         if(err&&err.authRequired){ sessionExpired(); return; }
         this.restore();
         this.status("Could not read your installed layout ("+(err&&err.message||"unknown error")+"). The default arrangement is in use.");
-      }finally{ if(this.fence(epoch,home)){
-        this.busy=false; this.paint();
-        // ONE read of this binding serves both controllers. The custom-UI
-        // switcher reads its library and remembered choice out of the
-        // configuration verified here rather than listing the bindings again --
-        // two readers racing on `candidates`/`loaded`/`saturated` is a bug, not a
-        // duplicate request. Every settle path above reaches this line, so the
-        // handover happens exactly once per read, including the failures.
-        if(typeof AppUI!=="undefined") AppUI.adopt(this.installation);
-      } }
+      }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
     },
     async consume(binding,epoch,home){
       if(!this.eligible(binding)||!this.fence(epoch,home)) throw new Error("Installation ownership or role is not valid");
       this.installation={binding_id:String(binding.agent_binding_id),revision:binding.revision,
-        definition_id:this.definitionOf(binding),created_by:String(binding.created_by||""),
+        definition_id:String(binding.agent_definition_id),created_by:String(binding.created_by||""),
         configuration:JSON.parse(JSON.stringify(binding.configuration))};
-      // Nothing to read, and nothing wrong: this account has its own private app
-      // experience and has not adopted a published layout. The default
-      // arrangement stays, and the custom-UI switcher still gets the handover.
-      if(!this.installation.definition_id){
-        this.restore();
-        this.status("Your app experience is set up. No published layout is applied, so the default arrangement is in use.");
-        return;
-      }
       const agent=await this.getDefinition(binding.agent_definition_id);
       if(!this.fence(epoch,home)) return;
       const read=this.readDefinition(agent);
@@ -299,82 +276,55 @@
       const previous=this.previousTurn;
       if(previous)await this.saveTurn(previous.definition_id,previous.selection);
     },
-    // The ONE private-configuration write. Turn-consumer selection and custom-UI
-    // selection are different DATA in the same binding, so they must not be two
-    // write paths: a second copy of this fence/CAS/read-back sequence is how one
-    // of them drifts. `opts.mutate` is the only difference between callers.
-    //
-    // Never called for its side effect alone: it returns the outcome so a caller
-    // can report in its own words without re-reading anything.
-    async writeConfiguration(opts){
-      if(!this.enabled||this.busy||this.uncertain||!this.loaded||this.saturated||this.candidates.length>1)
-        return {ok:false,reason:"not_ready"};
-      const noun=opts.noun||"Selection",definitionId=String(opts.definitionId||"");
+    async saveTurn(definitionId,selection){
+      if(!this.enabled||this.busy||this.uncertain||!this.loaded||this.saturated||this.candidates.length>1)return;
       const epoch=this.epoch,home=this.home,observed=this.installation;
       this.busy=true;this.paint();
       try{
         const rows=await this.currentBindings();
-        if(!this.fence(epoch,home))return {ok:false,reason:"stale"};
+        if(!this.fence(epoch,home))return;
         const b=rows[0];
         if((!observed&&b)||(observed&&(!b||b.agent_binding_id!==observed.binding_id||b.revision!==observed.revision)))
           throw Error("Installation changed; refresh before selecting again");
         if(b&&(!this.eligible(b)||b.updated_by!==this.principal))throw Error("Installation is not owner-controlled");
-        if(opts.precheck){
-          await opts.precheck(b);
-          if(!this.fence(epoch,home))return {ok:false,reason:"stale"};
-        }
-        const config=b?JSON.parse(JSON.stringify(b.configuration)):{schema_version:1,name:"App experience",role:this.ROLE};
-        const previous=opts.previous?opts.previous(b,config):null;
-        opts.mutate(config);
-        const result=await MCP.callTool("write_graph",{target:"agent_binding",operation:b?"update":"bind",
-          graph_id:home,...(definitionId?{agent_definition_id:definitionId}:{}),
-          ...(b?{agent_binding_id:b.agent_binding_id,expected_revision:b.revision}:{}),
-          payload_json:JSON.stringify(config)});
-        if(!this.fence(epoch,home))return {ok:false,reason:"stale"};
-        const written=result&&result.binding;
-        // Compared through definitionOf so a null and an omitted id are the same
-        // answer. Sending `agent_definition_id:""` would have asked the server to
-        // KEEP whatever definition the row had, which is not what an empty
-        // definitionId means here.
-        if(!result||result.error||result.status!=="configured"||!written||!this.eligible(written)||
-           written.updated_by!==this.principal||this.definitionOf(written)!==definitionId||
-           (b&&written.agent_binding_id!==b.agent_binding_id))throw Error(noun+" save was not confirmed");
-        const doc=await MCP.callTool("read_graph",{target:"agent_binding",graph_id:home,
-          agent_binding_id:written.agent_binding_id},{idempotent:true});
-        if(!this.fence(epoch,home))return {ok:false,reason:"stale"};
-        const check=doc&&doc.binding;
-        if(!this.eligible(check)||check.updated_by!==this.principal||check.agent_binding_id!==written.agent_binding_id||
-           this.definitionOf(check)!==definitionId||check.revision!==written.revision||
-           JSON.stringify(check.configuration)!==JSON.stringify(config))throw Error(noun+" read-back did not match");
-        this.installation={binding_id:check.agent_binding_id,revision:check.revision,
-          definition_id:this.definitionOf(check),configuration:JSON.parse(JSON.stringify(check.configuration))};
-        this.candidates=[check];
-        return {ok:true,binding:check,previous};
-      }catch(err){
-        if(!this.fence(epoch,home))return {ok:false,reason:"stale"};
-        if(err&&err.authRequired){sessionExpired();return {ok:false,reason:"auth"};}
-        this.uncertain=true;
-        this.status((err&&err.message||noun+" unavailable")+". Nothing was retried. Refresh the installation before another change.");
-        return {ok:false,reason:"failed",error:err};
-      }finally{if(this.fence(epoch,home)){this.busy=false;this.paint();}}
-    },
-    async saveTurn(definitionId,selection){
-      const outcome=await this.writeConfiguration({
-        definitionId,noun:"Selection",
-        previous:(b,config)=>b?{definition_id:this.definitionOf(b),
-          selection:JSON.parse(JSON.stringify(config.turn_consumer||{version:1,state:"disabled"}))}:null,
-        precheck:selection.state==="active"?async()=>{
+        if(selection.state==="active"){
           const agent=await this.getDefinition(definitionId);
+          if(!this.fence(epoch,home))return;
           if(agent.content_fingerprint!==selection.definition_fingerprint||
              !this.turnComponent(agent.components&&agent.components[selection.component_key]).ok)
             throw Error("Selected definition is no longer compatible");
-        }:null,
-        mutate:config=>{config.turn_consumer=JSON.parse(JSON.stringify(selection));}});
-      if(!outcome.ok)return outcome;
-      this.previousTurn=outcome.previous;
-      this.status(selection.state==="disabled"?"Default conversation restored for future messages. Existing work is not cancelled or replayed.":
-        "Conversation design selected for future messages. Execution checks still apply. Your model choice and private data are unchanged.");
-      return outcome;
+        }
+        const config=b?JSON.parse(JSON.stringify(b.configuration)):{schema_version:1,name:"App experience",role:this.ROLE};
+        const previous=b?{definition_id:b.agent_definition_id,
+          selection:JSON.parse(JSON.stringify(config.turn_consumer||{version:1,state:"disabled"}))}:null;
+        config.turn_consumer=JSON.parse(JSON.stringify(selection));
+        const result=await MCP.callTool("write_graph",{target:"agent_binding",operation:b?"update":"bind",
+          graph_id:home,agent_definition_id:definitionId,...(b?{agent_binding_id:b.agent_binding_id,expected_revision:b.revision}:{}),
+          payload_json:JSON.stringify(config)});
+        if(!this.fence(epoch,home))return;
+        const written=result&&result.binding;
+        if(!result||result.error||result.status!=="configured"||!written||!this.eligible(written)||
+           written.updated_by!==this.principal||written.agent_definition_id!==definitionId||
+           (b&&written.agent_binding_id!==b.agent_binding_id))throw Error("Selection save was not confirmed");
+        const doc=await MCP.callTool("read_graph",{target:"agent_binding",graph_id:home,
+          agent_binding_id:written.agent_binding_id},{idempotent:true});
+        if(!this.fence(epoch,home))return;
+        const check=doc&&doc.binding;
+        if(!this.eligible(check)||check.updated_by!==this.principal||check.agent_binding_id!==written.agent_binding_id||
+           check.agent_definition_id!==definitionId||check.revision!==written.revision||
+           JSON.stringify(check.configuration)!==JSON.stringify(config))throw Error("Selection read-back did not match");
+        this.previousTurn=previous;
+        this.installation={binding_id:check.agent_binding_id,revision:check.revision,
+          definition_id:check.agent_definition_id,configuration:JSON.parse(JSON.stringify(check.configuration))};
+        this.candidates=[check];
+        this.status(selection.state==="disabled"?"Default conversation restored for future messages. Existing work is not cancelled or replayed.":
+          "Conversation design selected for future messages. Execution checks still apply. Your model choice and private data are unchanged.");
+      }catch(err){
+        if(!this.fence(epoch,home))return;
+        if(err&&err.authRequired){sessionExpired();return;}
+        this.uncertain=true;
+        this.status((err&&err.message||"Selection unavailable")+". Nothing was retried. Refresh the installation before another change.");
+      }finally{if(this.fence(epoch,home)){this.busy=false;this.paint();}}
     },
 
     // ---- editor draft (order + inclusion + density) ----

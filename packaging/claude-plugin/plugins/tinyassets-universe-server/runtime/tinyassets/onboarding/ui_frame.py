@@ -56,7 +56,7 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
   // WebRTC is a real egress channel that CSP does not cover: ICE gathering
   // resolves attacker-controlled STUN hostnames, so a bundle could encode the
   // conversation it was shown into DNS lookups without any permission and
-  // without touching `connect-src` (Codex, 2026-09-26). A CSP directive for it
+  // without touching `connect-src` (review, 2026-09-26). A CSP directive for it
   // does not exist, so the capability is REMOVED from the realm instead -- which
   // is enforced by JS semantics rather than by policy support.
   //

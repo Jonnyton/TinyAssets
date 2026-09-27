@@ -13,10 +13,11 @@
   // picked fields, never spread from a server payload, so a field added upstream
   // later cannot ride out to untrusted code.
   //
-  // Storage is the existing private `app_experience` AgentBinding — the bundles
-  // in `ui_library` and the choice in `ui_selection`, written through
-  // AppLayout.writeConfiguration so the layout editor and this share ONE
-  // revision-guarded write path rather than two that drift.
+  // Storage is the viewer's own `app_ui` row (read_graph/write_graph
+  // target="app_ui"): the bundles in `ui_library` and the choice in
+  // `ui_selection`, one row per person and universe, keyed server-side by who is
+  // signed in. It is not an agent binding and never appears to a binding reader.
+  // Every write is compare-and-set on the row's revision.
   const AppUI={
     KIND:"tinyassets.app-ui.v1",VERSION:1,PROTOCOL:1,
     SHELL_KIND:"tinyassets.app-experience-shell.v1",
@@ -27,22 +28,22 @@
     // The frame's own response header sandboxes it too, so this is the second of
     // two independent locks, not the only one.
     SANDBOX:"allow-scripts",
-    // Bounds chosen so a FULL library still fits the binding's canonical-JSON cap
-    // (MAX_AGENT_JSON_BYTES in tinyassets/custom_agents.py). A test derives that
-    // relation from the Python constant rather than restating the number here.
+    // Bounds chosen so a FULL library of LIBRARY_LIMIT bundles fits the stored
+    // library's canonical-JSON cap (MAX_AGENT_JSON_BYTES in
+    // tinyassets/custom_agents.py) by construction, so no install can reach it.
+    // A test derives that relation from the Python constants rather than
+    // restating the numbers here. Sizes are UTF-8 BYTES, because that is what the
+    // server caps: counting UTF-16 units let multi-byte bundles pass here and
+    // fail at write time (Codex, 2026-09-26).
     MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
-    // Sizes are UTF-8 BYTES, because that is what the server caps. Counting
-    // UTF-16 units let three separately-accepted CJK bundles blow the binding cap
-    // at write time (Codex, 2026-09-26), which surfaces as an unexplained
-    // "uncertain" shared editor rather than a refusal the user can act on.
-    // MAX_CONFIG_BYTES must equal MAX_AGENT_JSON_BYTES; a test asserts that.
-    MAX_CONFIG_BYTES:262144,
     LIBRARY_LIMIT:4,MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
 
     epoch:0,home:"",principal:"",enabled:false,busy:false,
     library:[],unreadable:"",selection:null,active:null,frame:null,listener:null,
+    // The stored row's revision as last read; 0 means no row exists yet.
+    revision:0,
     // Bumped on every mount AND unmount. A request captures it, so a reply owed
     // to the bundle that was on screen a moment ago cannot settle a promise in
     // the one that replaced it -- both bootstraps number requests from r1, so the
@@ -137,6 +138,7 @@
       this.epoch++; this.unmount();
       this.enabled=false; this.home=""; this.principal="";
       this.library=[]; this.unreadable=""; this.selection=null; this.busy=false;
+      this.revision=0;
       $("btn-ui-switch").hidden=true;
       this.status(""); this.paint();
     },
@@ -160,21 +162,37 @@
       this.epoch++; this.home=id; this.principal=principal; this.enabled=true;
       $("btn-ui-switch").hidden=false;
       this.paint();
-      // No read of its own: AppLayout owns the binding read, and reading the
-      // same rows concurrently would have two controllers racing on one
-      // `candidates`/`loaded`/`saturated` state. It hands the result to `adopt`.
-      //
-      // A read already settled for this home (AppLayout stayed enabled while this
-      // controller was reset) would otherwise never be handed over at all.
-      if(AppLayout.enabled&&AppLayout.loaded&&AppLayout.home===this.home) this.adopt(AppLayout.installation);
+      this.load();
     },
-    // Called by AppLayout once its binding read has settled. The configuration
-    // handed over is the one AppLayout already verified as the viewer's own,
-    // owner-controlled, non-serving app-experience installation.
-    adopt(installation){
+    // One read of the viewer's own row. The server keys it by the signed-in
+    // caller, so there is nothing here to name and no owner to check.
+    async fetchRow(){
+      const doc=await MCP.callTool("read_graph",{target:"app_ui",graph_id:this.home},{idempotent:true});
+      const row=doc&&doc.app_ui;
+      if(!row||doc.error||!Number.isInteger(row.revision)||row.revision<0||row.universe_id!==this.home)
+        throw Error((doc&&(doc.detail||doc.error))||"unexpected app UI reply");
+      return row;
+    },
+    // Refresh and first load. Fenced like every other request here: a reply for
+    // a home this controller has left is dropped.
+    async load(){
+      if(!this.enabled||this.busy) return;
+      const epoch=this.epoch,home=this.home;
+      this.busy=true; this.paint();
+      try{
+        const row=await this.fetchRow();
+        if(!this.fence(epoch,home)) return;
+        this.adopt(row);
+      }catch(err){
+        if(!this.fence(epoch,home)) return;
+        if(err&&err.authRequired){ sessionExpired(); return; }
+        this.status("Could not read your installed UIs ("+(err&&err.message||"unknown error")+"). Default chat is in use.");
+      }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
+    },
+    adopt(row){
       if(!this.enabled) return;
-      const configuration=installation&&installation.configuration||null;
-      const library=this.readLibrary(configuration),selection=this.readSelection(configuration);
+      this.revision=row.revision;
+      const library=this.readLibrary(row),selection=this.readSelection(row);
       this.unmount();
       if(!library.ok){
         // An unreadable library is remembered as unreadable, NOT as empty. An
@@ -196,8 +214,6 @@
       }else this.status(this.library.length?"Default chat is in use.":"");
       this.paint();
     },
-    // Refresh re-runs the ONE read, which calls `adopt` again when it settles.
-    load(){ if(this.enabled) AppLayout.loadInstallation(); },
 
     // ---- rendering: the bundle never enters this document ------------------
     mount(entry){
@@ -390,31 +406,42 @@
       await this.remember({version:1,state:"default"},
         "Default chat restored.","Default chat restored for this visit only");
     },
-    // Create this account's own private app experience: no published definition,
-    // owner-only, and idempotent on the server, so a double click or a retry after
-    // an unconfirmed reply returns the same place rather than minting a second one
-    // or overwriting what the first one stored.
-    async bootstrap(){
-      const outcome=await AppLayout.writeConfiguration({definitionId:"",noun:"App experience",
-        mutate:()=>{}});
-      if(!outcome.ok){
-        this.status("Could not set up your app experience ("+
-          (outcome.error&&outcome.error.message||outcome.reason||"unavailable")+"). Nothing was changed.");
-        this.paint();
-      }
-      return outcome;
+    // The ONE write path. Re-reads the row so `mutate` works on what is stored
+    // now rather than on this controller's cache, then saves only the fields
+    // `mutate` returns, compare-and-set on the revision just read. A save that
+    // loses a race is refused by the server and reported; nothing is retried.
+    // A fresh account needs no setup step: its first save (revision 0) creates
+    // the row, and nothing about it is published.
+    async save(noun,mutate){
+      if(!this.enabled||this.busy) return {ok:false,reason:"not ready"};
+      const epoch=this.epoch,home=this.home;
+      this.busy=true; this.paint();
+      try{
+        const row=await this.fetchRow();
+        if(!this.fence(epoch,home)) return {ok:false,reason:"stale"};
+        const changes=mutate(JSON.parse(JSON.stringify(row)));
+        const result=await MCP.callTool("write_graph",{target:"app_ui",operation:"save",
+          graph_id:home,expected_revision:row.revision,payload_json:JSON.stringify(changes)});
+        if(!this.fence(epoch,home)) return {ok:false,reason:"stale"};
+        const saved=result&&result.app_ui;
+        if(!result||result.error||result.status!=="saved"||!saved||saved.universe_id!==home||
+           saved.revision!==row.revision+1)
+          throw Error((result&&(result.detail||result.error))||noun+" save was not confirmed");
+        for(const key of Object.keys(changes))
+          if(JSON.stringify(saved[key])!==JSON.stringify(changes[key])) throw Error(noun+" save did not match");
+        this.revision=saved.revision;
+        return {ok:true,row:saved};
+      }catch(err){
+        if(!this.fence(epoch,home)) return {ok:false,reason:"stale"};
+        if(err&&err.authRequired){ sessionExpired(); return {ok:false,reason:"auth"}; }
+        return {ok:false,reason:"failed",error:err};
+      }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
     },
     async remember(selection,saved,unsaved){
-      if(!AppLayout.installation){
-        // Remembering a choice is not worth creating storage the person did not
-        // ask for; the switch still applied for this visit.
-        this.selection=selection; this.status(unsaved+"; no app experience exists yet to save it in."); this.paint(); return;
-      }
-      const definitionId=(AppLayout.installation&&AppLayout.installation.definition_id)||"";
-      const outcome=await AppLayout.writeConfiguration({definitionId,noun:"UI choice",
-        mutate:config=>{config.ui_selection=JSON.parse(JSON.stringify(selection));}});
+      const outcome=await this.save("UI choice",()=>({ui_selection:JSON.parse(JSON.stringify(selection))}));
       if(!outcome.ok){
-        this.status(unsaved+" — the choice was not saved ("+(outcome.reason||"unavailable")+").");
+        const why=outcome.error&&outcome.error.message||outcome.reason||"unavailable";
+        this.status(unsaved+" — the choice was not saved ("+why+").");
       }else{
         this.selection=selection; this.status(saved);
       }
@@ -427,16 +454,6 @@
       if(!this.enabled||this.busy) return {ok:false,reason:"not ready"};
       const parsed=this.parseBundle(component);
       if(!parsed.ok){ this.status("Cannot install: "+parsed.reason); this.paint(); return parsed; }
-      // A fresh account has no app experience yet. Create its private one first
-      // rather than telling the person asking for a UI to go and adopt somebody
-      // else's published layout: nothing is published by this, and the binding it
-      // makes has no definition behind it (see custom_agents.create_binding).
-      if(!AppLayout.installation){
-        const ready=await this.bootstrap();
-        if(!ready.ok) return ready;
-      }
-      // Whatever design this experience has adopted, if any. "" is normal.
-      const definitionId=(AppLayout.installation&&AppLayout.installation.definition_id)||"";
       // Refuse rather than overwrite what could not be read. An install used to
       // rebuild `ui_library` from this controller's cache, and `adopt` empties that
       // cache when ANY stored entry is unsupported -- so installing next to a
@@ -446,40 +463,18 @@
         this.status("Your installed UIs cannot be read ("+this.unreadable+"), so installing would overwrite them. Nothing was changed.");
         this.paint(); return this.unsupported("library unreadable");
       }
-      // Refuse an over-cap install BEFORE the write, against the configuration
-      // last observed. Reaching the same limit inside the guarded mutation works
-      // but marks the shared editor uncertain -- correct for a race, wrong for a
-      // size this app could see coming.
-      const observedConfig=AppLayout.installation&&AppLayout.installation.configuration;
-      if(observedConfig){
-        const candidate=JSON.parse(JSON.stringify(observedConfig));
-        candidate.ui_library=this.library.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
-        const size=this.bytes(JSON.stringify(candidate));
-        if(size>this.MAX_CONFIG_BYTES){
-          this.status("This UI would take your app experience to "+size+" bytes, over the "+
-            this.MAX_CONFIG_BYTES+"-byte limit. Nothing was changed.");
-          this.paint(); return this.unsupported("configuration full");
-        }
-      }
       let next=null;
-      const outcome=await AppLayout.writeConfiguration({definitionId,noun:"UI install",
-        // Built from the configuration the write actually observed, not from the
-        // cache -- so a library that changed since the last read is re-checked
-        // inside the guarded window instead of being replaced by a stale view.
-        mutate:config=>{
-          const observed=this.readLibrary(config);
-          if(!observed.ok) throw Error("Your installed UIs cannot be read ("+observed.reason+"); nothing was overwritten");
-          next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
-          if(next.length>this.LIBRARY_LIMIT)
-            throw Error("You already have "+this.LIBRARY_LIMIT+" UIs installed; remove one first");
-          const candidate=JSON.parse(JSON.stringify(config));
-          candidate.ui_library=JSON.parse(JSON.stringify(next));
-          const size=this.bytes(JSON.stringify(candidate));
-          if(size>this.MAX_CONFIG_BYTES)
-            throw Error("This UI would take your app experience to "+size+
-              " bytes, over the "+this.MAX_CONFIG_BYTES+"-byte limit; nothing was changed");
-          config.ui_library=candidate.ui_library;
-        }});
+      const outcome=await this.save("UI install",row=>{
+        // Built from the row the save actually read, not from the cache -- so a
+        // library that changed since the last read is re-checked here instead
+        // of being replaced by a stale view.
+        const observed=this.readLibrary(row);
+        if(!observed.ok) throw Error("Your installed UIs cannot be read ("+observed.reason+"); nothing was overwritten");
+        next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
+        if(next.length>this.LIBRARY_LIMIT)
+          throw Error("You already have "+this.LIBRARY_LIMIT+" UIs installed; remove one first");
+        return {ui_library:JSON.parse(JSON.stringify(next))};
+      });
       if(!outcome.ok){
         const why=outcome.error&&outcome.error.message||outcome.reason||"unavailable";
         this.status("The UI was not installed ("+why+")."); this.paint(); return outcome;
@@ -522,7 +517,7 @@
         list.appendChild(item);
       }
       if(!this.library.length)
-        AppLayout.line(list,"No custom UI installed. Your universe can write one into this app experience.","muted");
+        AppLayout.line(list,"No custom UI installed. Ask your universe to build one.","muted");
       $("btn-ui-refresh").disabled=this.busy;
     },
     open(){

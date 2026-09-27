@@ -1,332 +1,335 @@
 """A fresh account can hold a UI bundle before it has published anything.
 
-Installing a bundle needs somewhere private to put it, and that used to mean an
-`app_experience` binding, which used to mean a published agent definition. So the
-person most likely to ask for a custom UI — someone who has just signed up — was
-the one person who could not have one, and the only way out was to adopt a
-stranger's published layout first.
-
-A binding may now carry no definition at all. These tests are about what that must
-NOT cost: it must not publish anything, must not be reusable by another account,
-must not mint a second place on a retry, and must never be picked up by the paths
-that need a real design behind them.
+The UIs a person keeps, and which one they use, live in their own row of
+``universe_app_ui`` -- keyed by (person, universe), compare-and-set on a
+revision. It used to be squeezed into an ``app_experience`` agent binding, which
+needed a published definition, then a nullable definition column, which leaked
+definition-less rows into every binding reader and needed a table rebuild. These
+tests pin the replacement: the first save creates the row with nothing
+published, two first saves racing leave ONE row, a stale save is refused rather
+than overwriting, and ``agent_bindings`` is exactly the shape it always was.
 """
 
 from __future__ import annotations
 
+import json
+import sqlite3
+import threading
+from pathlib import Path
+
 import pytest
 
 from tinyassets.custom_agents import (
+    AgentConflictError,
     AgentValidationError,
-    create_binding,
-    get_binding,
+    _agent_connect,
+    get_app_ui,
     list_bindings,
-    publish_definition,
-    update_binding,
+    list_definitions,
+    save_app_ui,
 )
 
+ALICE, BOB = "alice", "bob"
+HOME = "u-alice"
 
-@pytest.fixture()
-def base(tmp_path):
+
+def _bundle(ui_id: str = "office") -> dict:
+    return {"kind": "tinyassets.app-ui.v1", "version": 1, "ui_id": ui_id,
+            "name": "Office", "markup": "<div id=lobby>Lobby</div>",
+            "style": "#lobby{color:red}", "script": "tinyassets.whoami()"}
+
+
+def _rows(base: Path) -> list[sqlite3.Row]:
+    with _agent_connect(base) as conn:
+        return conn.execute("SELECT * FROM universe_app_ui").fetchall()
+
+
+def test_a_new_account_saves_a_ui_with_nothing_published(tmp_path) -> None:
+    empty = get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME)
+    assert empty == {"universe_id": HOME, "ui_library": [], "ui_selection": None,
+                     "revision": 0, "updated_at": None}
+
+    saved = save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                        expected_revision=0, changes={"ui_library": [_bundle()]})
+
+    assert saved["revision"] == 1
+    assert saved["ui_library"] == [_bundle()], "stored verbatim, not rewritten"
+    assert get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME) == saved
+    # Nothing about the account became public, and no binding was minted.
+    assert list_definitions(tmp_path) == []
+    assert list_bindings(tmp_path, universe_id=HOME) == []
+
+
+def test_a_partial_save_keeps_the_field_it_did_not_name(tmp_path) -> None:
+    first = save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                        expected_revision=0, changes={"ui_library": [_bundle()]})
+    choice = {"version": 1, "state": "active", "ui_id": "office"}
+    second = save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                         expected_revision=first["revision"],
+                         changes={"ui_selection": choice})
+
+    assert second["revision"] == 2
+    assert second["ui_library"] == [_bundle()], "saving a choice erased the library"
+    assert second["ui_selection"] == choice
+
+    third = save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                        expected_revision=2,
+                        changes={"ui_library": [_bundle(), _bundle("den")]})
+    assert third["ui_selection"] == choice, "saving a library erased the choice"
+
+
+def test_a_stale_save_is_refused_and_changes_nothing(tmp_path) -> None:
+    save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                expected_revision=0, changes={"ui_library": [_bundle()]})
+    current = save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                          expected_revision=1, changes={"ui_library": [_bundle("den")]})
+
+    for stale in (0, 1, 7):
+        with pytest.raises(AgentConflictError, match="current is 2"):
+            save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                        expected_revision=stale, changes={"ui_library": []})
+    assert get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME) == current
+
+
+def test_naming_a_revision_for_a_row_that_does_not_exist_creates_nothing(tmp_path) -> None:
+    with pytest.raises(AgentConflictError, match="current is 0"):
+        save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                    expected_revision=3, changes={"ui_library": [_bundle()]})
+    assert _rows(tmp_path) == []
+
+
+def test_each_person_has_their_own_row_in_the_same_universe(tmp_path) -> None:
+    mine = save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                       expected_revision=0, changes={"ui_library": [_bundle()]})
+    # Bob's first save in the same universe is revision 0 for HIS row: Alice's
+    # row is neither visible to him nor a conflict for him.
+    assert get_app_ui(tmp_path, owner_user_id=BOB, universe_id=HOME)["revision"] == 0
+    save_app_ui(tmp_path, owner_user_id=BOB, universe_id=HOME,
+                expected_revision=0, changes={"ui_library": []})
+    assert get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME) == mine
+
+
+def test_two_concurrent_first_saves_leave_exactly_one_row(tmp_path) -> None:
+    """The race the binding bootstrap had: both callers see no row, both write.
+
+    Here both name revision 0; the primary key admits one row and the loser is
+    told it lost. Drop the key and this goes red (see the PR's mutation table).
+    """
+    get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME)  # schema up front
+    gate = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def save(ui_id: str) -> None:
+        gate.wait()
+        try:
+            outcomes.append(save_app_ui(
+                tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                expected_revision=0,
+                changes={"ui_selection": {"version": 1, "state": "active", "ui_id": ui_id}},
+            ))
+        except Exception as exc:  # noqa: BLE001 -- the type IS the assertion
+            outcomes.append(exc)
+
+    threads = [threading.Thread(target=save, args=(ui_id,)) for ui_id in ("office", "den")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    rows = _rows(tmp_path)
+    assert len(rows) == 1
+    assert int(rows[0]["revision"]) == 1
+    won = [o for o in outcomes if isinstance(o, dict)]
+    lost = [o for o in outcomes if isinstance(o, BaseException)]
+    assert len(won) == 1 and len(lost) == 1, outcomes
+    assert isinstance(lost[0], AgentConflictError), repr(lost[0])
+    # The row holds the WINNER's choice, not a blend and not the loser's.
+    assert json.loads(rows[0]["ui_selection_json"]) == won[0]["ui_selection"]
+
+
+@pytest.mark.parametrize("changes, needle", [
+    ({}, "must set ui_library or ui_selection"),
+    ({"ui_library": [], "agent_definition_id": "d1"}, "is not one of"),
+    ({"ui_library": {}}, "ui_library must be a list"),
+    ({"ui_library": [_bundle(str(i)) for i in range(5)]}, "the limit is 4"),
+    ({"ui_library": [_bundle(), _bundle()]}, "listed twice"),
+    ({"ui_library": ["office"]}, "must be an object with a ui_id"),
+    ({"ui_selection": "office"}, "ui_selection must be an object"),
+    ({"ui_selection": {"pad": "x" * 2000}}, "ui_selection exceeds"),
+])
+def test_malformed_saves_are_refused_by_reason(tmp_path, changes, needle) -> None:
+    with pytest.raises(AgentValidationError, match=needle):
+        save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                    expected_revision=0, changes=changes)
+    assert _rows(tmp_path) == []
+
+
+def test_a_library_over_the_cap_is_refused(tmp_path) -> None:
+    from tinyassets.custom_agents import MAX_AGENT_JSON_BYTES
+
+    fat = _bundle()
+    fat["script"] = "x" * MAX_AGENT_JSON_BYTES
+    with pytest.raises(AgentValidationError, match="exceeds"):
+        save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                    expected_revision=0, changes={"ui_library": [fat]})
+
+
+def test_agent_bindings_is_the_shape_main_has(tmp_path) -> None:
+    """The UI store must not reach into agent_bindings at all.
+
+    Its definition column stays NOT NULL, so no binding without a design behind
+    it can exist for consumer selection, serving or model bootstrap to trip on.
+    """
+    save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                expected_revision=0, changes={"ui_library": [_bundle()]})
+    with _agent_connect(tmp_path) as conn:
+        sql = str(conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_bindings'"
+        ).fetchone()[0])
+        assert "agent_definition_id TEXT NOT NULL" in sql
+        assert conn.execute("SELECT COUNT(*) FROM agent_bindings").fetchone()[0] == 0
+        with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+            conn.execute(
+                "INSERT INTO agent_bindings (agent_binding_id, universe_id, "
+                "agent_definition_id, configuration_json, created_by, updated_by, "
+                "created_at, updated_at) VALUES ('b', ?, NULL, '{}', 'alice', 'alice', 1, 1)",
+                (HOME,),
+            )
+
+
+def test_account_deletion_removes_the_persons_rows_everywhere_and_only_theirs(
+    tmp_path,
+) -> None:
+    from tests.test_account_deletion import (
+        HOME_A,
+        HOME_B,
+        A,
+        B,
+        _seed_auth,
+        _seed_outbound,
+        _seed_user,
+    )
+    from tinyassets.account_deletion import delete_account
+
+    base = tmp_path / "data"
+    base.mkdir()
+    _seed_user(base, A, HOME_A)
+    _seed_user(base, B, HOME_B)
+    _seed_outbound(base)
+    _seed_auth(base)
+    save_app_ui(base, owner_user_id=A, universe_id=HOME_A,
+                expected_revision=0, changes={"ui_library": [_bundle()]})
+    # A's row in B's universe is A's personal choice, so it goes with A too.
+    save_app_ui(base, owner_user_id=A, universe_id=HOME_B,
+                expected_revision=0, changes={"ui_library": []})
+    kept = save_app_ui(base, owner_user_id=B, universe_id=HOME_B,
+                       expected_revision=0, changes={"ui_library": [_bundle("den")]})
+
+    delete_account(base, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                   delete_identity=lambda sub: "deleted")
+
+    assert get_app_ui(base, owner_user_id=A, universe_id=HOME_A)["revision"] == 0
+    assert get_app_ui(base, owner_user_id=A, universe_id=HOME_B)["revision"] == 0
+    assert get_app_ui(base, owner_user_id=B, universe_id=HOME_B) == kept
+
+
+# --------------------------------------------------------------------------- #
+# the graph handle: authority is the binding check, the row is the caller's
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def homes(tmp_path, monkeypatch):
+    from tinyassets.daemon_server import grant_universe_access, set_founder_home
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    for owner in (ALICE, BOB):
+        uid = "u-" + owner
+        (tmp_path / uid).mkdir()
+        set_founder_home(tmp_path, founder_sub=owner, universe_id=uid,
+                         platform_generated=True)
+        grant_universe_access(tmp_path, universe_id=uid, actor_id=owner,
+                              permission="admin")
     return tmp_path
 
 
-def _experience(name: str = "App experience") -> dict:
-    return {"schema_version": 1, "name": name, "role": "app_experience"}
+def _as(name: str):
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+
+    return identity_context(Identity(user_id=name, username=name, capabilities=["write"]))
 
 
-def _bootstrap(base, *, universe: str = "u-alice", actor: str = "alice", payload=None):
-    return create_binding(
-        base,
-        universe_id=universe,
-        definition_id="",
-        created_by=actor,
-        payload=payload if payload is not None else _experience(),
-    )
+def _write(universe: str, revision: int, payload: dict) -> dict:
+    from tinyassets.universe_server import write_graph
+
+    return json.loads(write_graph(target="app_ui", operation="save", graph_id=universe,
+                                  expected_revision=revision,
+                                  payload_json=json.dumps(payload)))
 
 
-def test_a_new_account_gets_a_private_place_with_nothing_published(base) -> None:
-    binding = _bootstrap(base)
+def _read(universe: str) -> dict:
+    from tinyassets.universe_server import read_graph
 
-    assert binding["agent_definition_id"] is None
-    assert binding["status"] == "configured"
-    assert binding["revision"] == 1
-    assert binding["created_by"] == "alice"
-    assert binding["configuration"]["role"] == "app_experience"
-
-    # The point of the whole thing: nothing about this account became public.
-    from tinyassets.custom_agents import list_definitions
-
-    assert list_definitions(base) == []
-
-    # And it is reachable as its own row, so a UI can be stored in it.
-    assert get_binding(
-        base, universe_id="u-alice", binding_id=binding["agent_binding_id"]
-    )["agent_binding_id"] == binding["agent_binding_id"]
+    return json.loads(read_graph(target="app_ui", graph_id=universe))
 
 
-def test_bootstrapping_twice_returns_the_same_place_untouched(base) -> None:
-    first = _bootstrap(base)
-
-    # A real install writes a library into it. A second bootstrap must not be a
-    # way to wipe that: the caller of a bootstrap is not passing the fields it is
-    # not trying to change.
-    stored = dict(first["configuration"])
-    stored["ui_library"] = [{"kind": "tinyassets.app-ui.v1", "ui_id": "office"}]
-    update_binding(
-        base,
-        universe_id="u-alice",
-        binding_id=first["agent_binding_id"],
-        expected_revision=first["revision"],
-        updated_by="alice",
-        payload=stored,
-    )
-
-    second = _bootstrap(base)
-
-    assert second["agent_binding_id"] == first["agent_binding_id"]
-    assert second["revision"] == 2, "the update landed and the retry did not bump it"
-    assert second["configuration"]["ui_library"] == stored["ui_library"]
-    assert len(list_bindings(base, universe_id="u-alice")) == 1
-
-    # Idempotent under a differing payload too — that is the retry-after-an
-    # -unconfirmed-reply case, where the client may resend a default document.
-    third = _bootstrap(base, payload=_experience("Renamed by a retry"))
-    assert third["agent_binding_id"] == first["agent_binding_id"]
-    assert third["configuration"]["name"] == "App experience"
-    assert third["configuration"]["ui_library"] == stored["ui_library"]
+def test_the_handle_saves_and_reads_the_callers_own_row(homes) -> None:
+    with _as(ALICE):
+        assert _read("u-alice")["app_ui"]["revision"] == 0
+        saved = _write("u-alice", 0, {"ui_library": [_bundle()]})
+        assert saved["status"] == "saved", saved
+        assert saved["app_ui"]["revision"] == 1
+        assert _read("u-alice")["app_ui"] == saved["app_ui"]
+        assert _write("u-alice", 0, {"ui_library": []})["error"] == "app_ui_conflict"
+        assert _write("u-alice", 1, {"nope": 1})["error"] == "app_ui_validation_error"
+    rows = _rows(homes)
+    assert [(r["owner_user_id"], r["universe_id"]) for r in rows] == [(ALICE, "u-alice")]
 
 
-def test_another_account_never_reuses_someone_elses_place(base) -> None:
-    mine = _bootstrap(base, actor="alice")
-    theirs = _bootstrap(base, actor="bob")
-
-    assert theirs["agent_binding_id"] != mine["agent_binding_id"]
-    assert theirs["created_by"] == "bob"
-
-    # Same universe, two owners, two private places. Returning Alice's row to Bob
-    # would hand him her configuration.
-    rows = list_bindings(base, universe_id="u-alice")
-    assert {row["created_by"] for row in rows} == {"alice", "bob"}
-
-
-def test_a_different_role_gets_its_own_place(base) -> None:
-    experience = _bootstrap(base)
-    other = _bootstrap(
-        base, payload={"schema_version": 1, "name": "Other", "role": "something_else"}
-    )
-    assert other["agent_binding_id"] != experience["agent_binding_id"]
-
-    # A role is what makes the lookup specific, so it is required when there is no
-    # definition to identify the binding by.
-    with pytest.raises(AgentValidationError, match="must name a role"):
-        _bootstrap(base, payload={"schema_version": 1, "name": "No role"})
+def test_another_person_can_neither_read_nor_write_into_a_universe_they_lack(homes) -> None:
+    with _as(ALICE):
+        _write("u-alice", 0, {"ui_library": [_bundle()]})
+    with _as(BOB):
+        read = _read("u-alice")
+        assert "app_ui" not in read and read.get("error"), read
+        written = _write("u-alice", 0, {"ui_library": [_bundle("den")]})
+        assert "app_ui" not in written and written.get("error"), written
+    with _as(ALICE):
+        assert _read("u-alice")["app_ui"]["ui_library"] == [_bundle()]
+    assert len(_rows(homes)) == 1
 
 
-def test_configuration_updates_work_without_ever_adopting_a_definition(base) -> None:
-    binding = _bootstrap(base)
-    stored = dict(binding["configuration"])
-    stored["ui_selection"] = {"version": 1, "state": "active", "ui_id": "office"}
+def test_an_unknown_operation_is_refused_by_name(homes) -> None:
+    from tinyassets.universe_server import write_graph
 
-    updated = update_binding(
-        base,
-        universe_id="u-alice",
-        binding_id=binding["agent_binding_id"],
-        expected_revision=binding["revision"],
-        updated_by="alice",
-        payload=stored,
-    )
-
-    # The regression this pins: the definition stayed None instead of becoming the
-    # literal string "None" and failing its own existence check.
-    assert updated["agent_definition_id"] is None
-    assert updated["configuration"]["ui_selection"]["ui_id"] == "office"
-    assert updated["revision"] == 2
+    with _as(ALICE):
+        refused = json.loads(write_graph(target="app_ui", operation="delete",
+                                         graph_id="u-alice", payload_json="{}"))
+    assert refused["error"] == "unknown_app_ui_operation"
+    assert refused["allowed_operations"] == ["save"]
 
 
-def test_adopting_a_published_design_later_still_works(base) -> None:
-    binding = _bootstrap(base)
-    definition = publish_definition(
-        base,
-        author_id="alice",
-        payload={
-            "schema_version": 1,
-            "name": "A layout",
-            "components": {
-                "layout": {
-                    "kind": "tinyassets.app-layout.v1",
-                    "version": 1,
-                    "surfaces": ["conversation"],
-                    "density": "compact",
-                }
-            },
-        },
-    )
+def test_the_route_the_handbook_names_works_on_the_engine_surface(tmp_path, monkeypatch) -> None:
+    """The interfaces chapter tells the universe's own agent to read and save
+    ``target="app_ui"``. Driven through the engine handles it is actually given:
+    a chapter naming a route that surface refuses is a broken instruction."""
+    from tests.engine_authority_helpers import seed_bound_engine
+    from tinyassets import engine_mcp_server as engine
 
-    adopted = update_binding(
-        base,
-        universe_id="u-alice",
-        binding_id=binding["agent_binding_id"],
-        expected_revision=binding["revision"],
-        updated_by="alice",
-        payload=binding["configuration"],
-        definition_id=definition["agent_definition_id"],
-    )
-    assert adopted["agent_definition_id"] == definition["agent_definition_id"]
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(engine, "_ACTOR_ID", ALICE)
+    monkeypatch.setattr(engine, "_GRAPH_ID", HOME)
+    (tmp_path / HOME).mkdir()
+    seed_bound_engine(monkeypatch)
 
-    # A nonexistent one is still refused — relaxing NULL must not relax that.
-    with pytest.raises(LookupError):
-        update_binding(
-            base,
-            universe_id="u-alice",
-            binding_id=binding["agent_binding_id"],
-            expected_revision=adopted["revision"],
-            updated_by="alice",
-            payload=binding["configuration"],
-            definition_id="agent_definition_does_not_exist",
-        )
-
-
-def test_a_definitionless_binding_is_invisible_to_definition_lookups(base) -> None:
-    """The safety half of making the column nullable.
-
-    A binding with no design behind it must never be chosen to answer a
-    conversation or be activated for serving. That is not a separate guard: SQLite
-    does not match NULL with `= ?`, so every reader that resolves a binding BY
-    definition simply cannot see it. This asserts the property those readers rely
-    on, at the storage layer where it actually holds.
-    """
-    import sqlite3
-
-    from tinyassets.custom_agents import _agent_connect
-
-    experience = _bootstrap(base)
-    definition = publish_definition(
-        base,
-        author_id="alice",
-        payload={
-            "schema_version": 1,
-            "name": "Real",
-            "components": {"c": {"kind": "k", "version": 1}},
-        },
-    )
-    adopted = create_binding(
-        base,
-        universe_id="u-alice",
-        definition_id=definition["agent_definition_id"],
-        created_by="alice",
-        payload=_experience("Adopted"),
-    )
-
-    with _agent_connect(base) as conn:
-        conn.row_factory = sqlite3.Row
-        for probe in (definition["agent_definition_id"], "", "None", "null"):
-            found = conn.execute(
-                "SELECT agent_binding_id FROM agent_bindings WHERE agent_definition_id = ?",
-                (probe,),
-            ).fetchall()
-            ids = {str(row["agent_binding_id"]) for row in found}
-            assert experience["agent_binding_id"] not in ids, probe
-
-        # The adopted one IS found, so the query itself works and the absence
-        # above is about NULL rather than about a broken probe.
-        found = conn.execute(
-            "SELECT agent_binding_id FROM agent_bindings WHERE agent_definition_id = ?",
-            (definition["agent_definition_id"],),
-        ).fetchall()
-        assert {str(r["agent_binding_id"]) for r in found} == {
-            adopted["agent_binding_id"]
-        }
-
-
-def test_existing_databases_migrate_without_touching_a_row(base) -> None:
-    """The migration rebuilds the table, so it has to preserve ids and revisions.
-
-    A live client holds a revision as a CAS precondition. Renumbering during a
-    migration would turn its next write into a phantom conflict.
-    """
-    import sqlite3
-
-    from tinyassets.custom_agents import _agent_connect, _migrate_nullable_binding_definition
-
-    definition = publish_definition(
-        base,
-        author_id="alice",
-        payload={
-            "schema_version": 1,
-            "name": "Pre-migration",
-            "components": {"c": {"kind": "k", "version": 1}},
-        },
-    )
-    binding = create_binding(
-        base,
-        universe_id="u-alice",
-        definition_id=definition["agent_definition_id"],
-        created_by="alice",
-        payload=_experience(),
-    )
-    bumped = update_binding(
-        base,
-        universe_id="u-alice",
-        binding_id=binding["agent_binding_id"],
-        expected_revision=1,
-        updated_by="alice",
-        payload=_experience("Bumped"),
-    )
-    assert bumped["revision"] == 2
-
-    # Put the OLD shape back, then migrate forward again.
-    with _agent_connect(base) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("DROP INDEX IF EXISTS idx_agent_binding_universe")
-        conn.execute("DROP INDEX IF EXISTS idx_agent_binding_definition")
-        conn.execute("ALTER TABLE agent_bindings RENAME TO agent_bindings_old")
-        conn.execute(
-            """
-            CREATE TABLE agent_bindings (
-                agent_binding_id TEXT PRIMARY KEY,
-                universe_id TEXT NOT NULL,
-                agent_definition_id TEXT NOT NULL,
-                configuration_json TEXT NOT NULL,
-                revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
-                status TEXT NOT NULL DEFAULT 'configured'
-                    CHECK (status IN ('configured', 'serving')),
-                created_by TEXT NOT NULL,
-                updated_by TEXT NOT NULL,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                FOREIGN KEY(agent_definition_id)
-                    REFERENCES agent_definitions(agent_definition_id) ON DELETE RESTRICT
-            )
-            """
-        )
-        conn.execute(
-            "INSERT INTO agent_bindings SELECT * FROM agent_bindings_old"
-        )
-        conn.execute("DROP TABLE agent_bindings_old")
-        assert "NOT NULL" in str(
-            conn.execute(
-                "SELECT sql FROM sqlite_master WHERE name = 'agent_bindings'"
-            ).fetchone()[0]
-        )
-
-        _migrate_nullable_binding_definition(conn)
-
-        sql = str(
-            conn.execute(
-                "SELECT sql FROM sqlite_master WHERE name = 'agent_bindings'"
-            ).fetchone()[0]
-        )
-        assert "agent_definition_id TEXT NOT NULL" not in sql
-        rows = conn.execute("SELECT * FROM agent_bindings").fetchall()
-        assert len(rows) == 1
-        assert str(rows[0]["agent_binding_id"]) == binding["agent_binding_id"]
-        assert int(rows[0]["revision"]) == 2, "a renumbered revision is a phantom conflict"
-        assert str(rows[0]["agent_definition_id"]) == definition["agent_definition_id"]
-
-        # Idempotent: running it again on the new shape changes nothing.
-        _migrate_nullable_binding_definition(conn)
-        assert len(conn.execute("SELECT * FROM agent_bindings").fetchall()) == 1
-
-    # And the bootstrap works on the migrated database.
-    assert _bootstrap(base)["agent_definition_id"] is None
+    empty = json.loads(engine.read_graph(target="app_ui"))
+    assert empty["app_ui"]["revision"] == 0, empty
+    saved = json.loads(engine.write_graph(
+        target="app_ui", operation="save", expected_revision=0,
+        payload_json=json.dumps({"ui_library": [_bundle()]}),
+    ))
+    assert saved["status"] == "saved", saved
+    assert json.loads(engine.read_graph(target="app_ui"))["app_ui"] == saved["app_ui"]
+    rows = _rows(tmp_path)
+    assert [(r["owner_user_id"], r["universe_id"]) for r in rows] == [(ALICE, HOME)]

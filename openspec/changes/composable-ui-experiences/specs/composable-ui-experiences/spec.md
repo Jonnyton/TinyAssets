@@ -150,10 +150,10 @@ SHALL be able to address a named agent in the viewing user's universe.
 ### Requirement: Switching is on the fly, remembered, and does not fork the layout system
 
 The app SHALL offer an explicit choice between the default chat experience and any
-installed bundle, SHALL apply it without reload, and SHALL persist it in the same
-private `app_experience` binding configuration that holds the existing layout and
-turn-consumer selection, under the same read-back and revision-guarded write
-discipline. A universe with no bundle SHALL behave exactly as before.
+installed bundle, SHALL apply it without reload, and SHALL persist it in the
+viewer's own UI row under a revision-guarded write. A universe with no bundle
+SHALL behave exactly as before, and the layout editor's storage SHALL be
+unaffected.
 
 #### Scenario: Choice survives a new sign-in
 - **WHEN** a user selects an installed bundle and later signs in again
@@ -161,7 +161,7 @@ discipline. A universe with no bundle SHALL behave exactly as before.
 - **AND** returning to default chat is available at all times
 
 #### Scenario: Concurrent selection write is refused, not overwritten
-- **WHEN** the binding revision observed before the write is stale
+- **WHEN** the row revision observed before the write is stale
 - **THEN** the write is refused as a conflict and the current selection is reloaded
 - **AND** nothing is retried automatically
 
@@ -236,44 +236,39 @@ the write window MAY.
 - **WHEN** a bundle's content is multi-byte
 - **THEN** its size is counted in encoded bytes against the server's cap
 
-### Requirement: A universe can hold private app-experience configuration with nothing published
+### Requirement: A person's UI library and choice live in their own row
 
-A binding's definition reference SHALL be optional. A caller SHALL be able to
-create its own private app-experience configuration without any published
-definition existing, so a new account has somewhere of its own to keep a UI
-bundle before it has adopted or published any design. That creation SHALL be
-scoped to the calling owner, SHALL be idempotent — a repeat returning the existing
-row with its stored configuration unchanged rather than minting a second row or
-overwriting what is there — and SHALL require a role, since there is no definition
-to identify the row by. A definition-less binding SHALL NOT be selectable as a
-conversation consumer nor activatable for serving, because no executable design
-stands behind it. Adopting a published definition later SHALL still verify that
-the definition exists.
+Each person SHALL have at most one UI row per universe, holding their UI library
+and their UI choice, keyed by the authenticated caller and the universe and never
+by a caller-supplied identity. It SHALL NOT be an agent binding and SHALL NOT
+appear to, or change, any agent-binding reader. A first save SHALL create the row
+with nothing published. Every save SHALL be compare-and-set on the revision the
+caller read, SHALL write only the fields it names, and SHALL be refused as a
+conflict rather than overwrite when the revision is stale. Deleting an account
+SHALL remove that person's rows in every universe and no one else's.
 
 #### Scenario: A new account installs a UI having published nothing
-- **WHEN** an owner with no binding and no published definition installs a bundle
-- **THEN** its private configuration is created with no definition reference
-- **AND** nothing about that account is published or publicly listable
+- **WHEN** an owner with no row and no published definition installs a bundle
+- **THEN** a first save at revision 0 creates their row holding it
+- **AND** nothing about that account is published, and no agent binding is created
 
-#### Scenario: A repeated bootstrap is not a way to erase a library
-- **WHEN** the creation is repeated after a bundle has been stored in it
-- **THEN** the existing row is returned with its stored configuration intact
-- **AND** no second row exists for that owner and role
+#### Scenario: Two first saves at once leave one row
+- **WHEN** two saves for the same person and universe both name revision 0
+- **THEN** exactly one row exists and exactly one save succeeded
+- **AND** the other is refused as a conflict
 
-#### Scenario: Another owner is never handed someone else's private row
-- **WHEN** a second owner bootstraps in the same universe
-- **THEN** it receives its own row rather than the first owner's
-- **AND** the first owner's configuration is not readable through it
+#### Scenario: Saving a choice does not erase the library
+- **WHEN** a save names only the UI choice
+- **THEN** the stored library is unchanged
 
-#### Scenario: A definition-less binding is invisible to definition lookups
-- **WHEN** any reader resolves a binding by its definition reference
-- **THEN** a definition-less binding is not among the results
-- **AND** a binding that did adopt a definition still is
+#### Scenario: Another person is never handed someone else's row
+- **WHEN** a second person reads or saves in the same universe
+- **THEN** they reach their own row, or are refused when they lack access
+- **AND** the first person's row is neither readable nor changed through it
 
-#### Scenario: Existing stored bindings survive the shape change
-- **WHEN** a database created under the previous required-reference shape is opened
-- **THEN** every stored binding keeps its identifier, revision and definition
-- **AND** a client's held revision precondition is still valid
+#### Scenario: Agent bindings keep their shape
+- **WHEN** the UI store is created or written
+- **THEN** every agent binding still requires a definition reference
 
 ### Requirement: The served surface names where an interface gets built
 

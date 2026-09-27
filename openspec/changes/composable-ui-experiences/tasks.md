@@ -19,21 +19,20 @@
 - [x] Implement the parent-side bridge: frozen allowlist refusing by name,
       frame-source check, viewer-pinned home, picked-field replies, replies fenced
       to the frame that asked, and the grant ended on any identity or home change.
-- [x] Add the on-the-fly switcher and persist it in the existing `app_experience`
-      binding configuration through ONE read-back-and-CAS write path shared with
-      the layout editor, fed by one binding read.
+- [x] Add the on-the-fly switcher and persist library + choice in the viewer's own
+      `universe_app_ui` row (`target="app_ui"`), one CAS write path, keyed by
+      (person, universe); `agent_bindings` untouched.
 - [x] Get a bundle into a universe two ways: the existing publish/remix path, so a
-      remix installs into the remixer's own binding and runs as the remixer; and a
-      first run from nothing, where a binding's definition reference is optional and
-      an owner-scoped, idempotent bootstrap creates the private row with nothing
-      published and never overwrites what it finds.
+      remix installs into the remixer's own row and runs as the remixer; and a
+      first run from nothing, where the first save creates the row with nothing
+      published.
 - [x] Name the primitive where an agent reaches for it: the `interfaces` handbook
       chapter, in the resident index, paid for out of the capped resident set, with
       its promised calls checked against the bridge's real allowlist.
 - [x] Prove it: isolation, allowlist, cross-user refusal, remix identity,
-      discoverability and the bootstrap, with the isolation boundary, the bridge
-      allowlist and the bootstrap's data-loss guards mutation-scored (39/39 red, 2
-      decoys green).
+      discoverability and the storage, with the isolation boundary and the bridge
+      allowlist mutation-scored, and the row's uniqueness mutation-checked (drop
+      the key or the conflict clause and the concurrent-save test goes red).
 
 ## Remaining
 
