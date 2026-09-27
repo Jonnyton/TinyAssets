@@ -8,11 +8,11 @@
 
 > Endpoint trust permits exfiltration and bypasses hardened egress.
 
-Source: finding 2 in [the pinned PR review](../audits/2026-09-26-pr-4032-review.md).
+Source: finding 2 of the Codex refute-review of PR #4032 (head `6a94d242`), recorded as a comment on that PR. The finding is quoted above in full; the review transcript is not kept in the repo.
 
 Code at that commit: `subscription_refresh.py:205-215, 331, 352, 378-440; connection_oauth/transport.py:43-62`.
 
-The review contains the verification commands, observed probe outputs, and limits.
+The PR comment carries the reviewer's verification commands and observed outputs.
 Concurrent working-tree fixes were not reviewed; this finding is pinned to the
 requested committed head, not a claim about those edits.
 
