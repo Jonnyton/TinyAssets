@@ -66,13 +66,16 @@ backstop, `universe_intelligence.served_absolute_cap_s(universe config)`
 (3600s, with a per-universe override). The node's `timeout_seconds` does not
 shorten an agent turn. There is one bound and it matches converse.
 
-## D4. Code nodes reach served tools through their run session (slice 2)
+## D4. Code nodes reach granted served tools (slice 2)
 
-`invoke_mcp_action(name, **args)` with `name` in the served set and granted by
-the node goes to the run session. The session holds the trusted owner and
-universe. It opens the pinned engine tool route and calls that one tool. The
-default grant for an owner-authored node is the whole served set. The alias
-table stays as it is for its existing names.
+`invoke_mcp_action(name, **args)` with `name` in the served set opens the
+pinned engine tool route for that one tool. Owner and universe come from the
+run's immutable `BranchExecutionContext`, never from the node. The call is
+allowed only when provenance is `own` and the definition author is the owner,
+and the route read rechecks current serving-owner authority. The grant is
+exactly the served names in the node's `tools_allowed`. If it names none, the
+node gets the whole served set, which is what the owner's chat has. The alias
+table is unchanged for its existing names.
 
 ## Custom agents become configurations
 

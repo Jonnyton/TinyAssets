@@ -8,6 +8,7 @@ pins, identity binding and owner checks. Only the model's HTTP wire is scripted.
 
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
 from fastmcp import Client
@@ -43,14 +44,15 @@ def _agent_branch(tools_allowed, *, author="acct_alice"):
         node = NodeDefinition(
             node_id="steward", display_name="Steward",
             prompt_template="Keep the orchard ledger in your brain.",
-            llm_policy=policy, tools_allowed=list(tools_allowed),
+            llm_policy=policy, tools_allowed=list(tools_allowed), output_keys=["ledger"],
         )
         branch = BranchDefinition(
             branch_def_id="branch_repo_spec_loop", name="Agent step", author=author,
             visibility="private",
             graph_nodes=[GraphNodeRef(id="steward", node_def_id="steward")],
             edges=[EdgeDefinition(from_node="steward", to_node="END")],
-            entry_point="steward", node_defs=[node], state_schema=[],
+            entry_point="steward", node_defs=[node],
+            state_schema=[{"name": "ledger", "type": "str"}],
         )
         initialize_author_server(tmp_path)
         save_branch_definition(tmp_path, branch_def=branch.to_dict())
@@ -71,10 +73,18 @@ def engine(tmp_path, monkeypatch, work_agent):
     ensure_universe_registered(tmp_path, universe_id="universe_alice", universe_path=udir)
     visibility.set_universe_visibility("universe_alice", "private", source="owner")
     monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", _REAL_PREPARE)
+    # The real persona and the whole served tool block do not fit the 32k
+    # synthetic catalogue model; a large-context model is what an agent would pick.
+    from tests import test_work_model_selection as selection
+
+    small = selection._model
+    monkeypatch.setattr(selection, "_model",
+                        lambda *a, **k: dict(small(*a, **k), context_length=1_000_000))
     monkeypatch.setattr(engine_mcp_server, "_ACTOR_ID", "acct_alice")
     monkeypatch.setattr(engine_mcp_server, "_GRAPH_ID", "universe_alice")
     state = work_agent
     state.routes, state.offered, state.results, state.script = [], [], [], []
+    state.plain = []
 
     def client(route, timeout):
         state.routes.append((route.actor_id, route.graph_id))
@@ -91,6 +101,15 @@ def engine(tmp_path, monkeypatch, work_agent):
             state.offered.append(sorted(t["function"]["name"] for t in body.get("tools") or []))
             state.results.extend(m.get("content") for m in body.get("messages") or []
                                  if m.get("role") == "tool")
+            if not body.get("tools"):
+                # An ordinary prompt node: one plain model call, no tools offered.
+                state.plain.append(body)
+                return {"status": 200, "body": json.dumps({
+                    "model": "actual-work-model", "choices": [{
+                        "message": {"role": "assistant", "content": "plain answer"},
+                        "finish_reason": "stop",
+                    }], "usage": {"prompt_tokens": 3, "completion_tokens": 4, "cost": 0},
+                })}
             calls = state.script.pop(0) if state.script else []
             message = {"role": "assistant", "content": None if calls else "steward done"}
             if calls:
@@ -119,7 +138,8 @@ def _run(tmp_path, monkeypatch, tools_allowed, *, author="acct_alice"):
 def _branches_authored_in_alice(tmp_path):
     from tinyassets.daemon_server import list_branch_definitions
 
-    return [b for b in list_branch_definitions(tmp_path, author="acct_alice")
+    return [b for b in list_branch_definitions(tmp_path, author="acct_alice", include_private=True,
+                                               viewer="acct_alice")
             if b.get("name") == "Orchard follow-up"]
 
 
@@ -146,9 +166,12 @@ def test_background_agent_node_uses_its_own_brain_and_graph_on_a_private_univers
     # 2. ... and the agent read it back in the same turn (the tool result the model saw).
     assert any(MARK in (content or "") for content in engine.results), engine.results
     # 3. write_graph built a branch owned by this universe's owner.
-    assert len(_branches_authored_in_alice(tmp_path)) == 1
+    assert len(_branches_authored_in_alice(tmp_path)) == 1, engine.results
     # The node's answer is the run's output, and both rounds are metered on the one receipt.
-    assert "steward done" in json.dumps(result)
+    from tinyassets.runs import get_run
+
+    output = get_run(tmp_path, result["run_id"])["output"]
+    assert output.get("ledger") == "steward done", output
     with sqlite3.connect(db_path(tmp_path)) as conn:
         rows = [json.loads(r[0]) for r in conn.execute(
             "SELECT record_json FROM provider_invocation_reservations ORDER BY ordinal")]
@@ -202,4 +225,174 @@ def test_the_tools_cannot_be_pointed_at_another_users_universe(tmp_path, monkeyp
     _run(tmp_path, monkeypatch, ["agent"])
     assert set(engine.routes) == {("acct_alice", "universe_alice")}
     assert (bob / "identity.md").read_text(encoding="utf-8") == before
-    assert all("universe_bob" not in (content or "") for content in engine.results)
+    # Unknown parameters are refused by the tool schema; nothing of Bob's comes back.
+    assert all("Bob's private work" not in (content or "") for content in engine.results)
+
+
+def test_a_workflow_mixes_plain_steps_and_differently_granted_agents(
+    tmp_path, monkeypatch, authenticate_request, engine,
+):
+    """Foreground: any number of agent nodes beside an ordinary prompt node, each
+    with its own grant. The ordinary node stays one plain call."""
+    from tests.test_run_provider_session import _branch, _run_branch
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    branch = _branch(node_count=3)
+    policy = {"preferred": {"model": "synthetic-model"}, "fallback_chain": []}
+    for node in branch.node_defs:
+        node.llm_policy = policy
+    branch.node_defs[1].tools_allowed = ["agent", "read_brain"]
+    branch.node_defs[2].tools_allowed = ["agent"]
+    engine.script = [[_call("read_brain")], [], [_call("write_brain", identity=MARK)], []]
+    result = _run_branch(tmp_path, monkeypatch, authenticate_request, branch,
+                         open_provider=True, model_access=ModelAccess("discovered"))[0]
+
+    assert result["terminal_status"] == "completed", (result, engine.errors)
+    assert len(engine.plain) == 1
+    assert [o for o in engine.offered if o] == [["read_brain"], ["read_brain"],
+                              sorted(SERVED_ENGINE_MCP_TOOLS), sorted(SERVED_ENGINE_MCP_TOOLS)]
+    assert MARK in (tmp_path / "universe_alice" / "identity.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("tools_allowed,agent", [([], False), (["agent"], True),
+                                                 (["universe_self", "read_brain"], True)])
+def test_the_compiler_names_only_agent_nodes_and_gives_them_the_turn_backstop(
+    tools_allowed, agent,
+):
+    from tinyassets.graph_compiler import _build_prompt_template_node
+    from tinyassets.universe_intelligence import served_absolute_cap_s
+
+    seen = []
+
+    def provider(prompt, system, *, role, config=None, **kwargs):
+        seen.append(config)
+        return "ok"
+
+    node = NodeDefinition(node_id="step", display_name="Step", prompt_template="Go.",
+                          tools_allowed=tools_allowed, timeout_seconds=300.0)
+    _build_prompt_template_node(node, provider_call=provider, event_sink=None)({})
+    (config,) = seen
+    assert config.agent_node_id == ("step" if agent else "")
+    assert config.absolute_cap_s == pytest.approx(
+        served_absolute_cap_s(None) if agent else 300.0, rel=0.01,
+    )
+
+
+def test_codex_native_turn_enables_only_the_grant(tmp_path, monkeypatch):
+    from tests.engine_authority_helpers import seed_engine_authority
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
+
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    seed_engine_authority(tmp_path)
+    (tmp_path / ".engine_mcp_http_routes.json").write_text(json.dumps({"u-a": {
+        "version": 1, "actor_id": "actor-a", "url": "http://127.0.0.1:8790/mcp",
+        "port": 8790, "secret": "s" * 43,
+    }}), encoding="utf-8")
+    config = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="actor-a",
+                         engine_mcp_graph_id="u-a")
+
+    def enabled(cfg):
+        (server,) = [a for a in _codex_engine_mcp_args(cfg, {}) if "mcp_servers." in a]
+        return server.split("enabled_tools=[", 1)[1].split("]", 1)[0]
+
+    assert enabled(config) == ",".join(f'"{t}"' for t in SERVED_ENGINE_MCP_TOOLS)
+    narrowed = replace(config, engine_tool_grant=("read_brain", "write_graph"))
+    assert enabled(narrowed) == '"write_graph","read_brain"'
+
+
+def test_claude_native_turn_denies_what_the_grant_withholds():
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.shared_self import _granted_config
+    from tinyassets.universe_intelligence import _ENGINE_MCP_ALLOWED
+
+    base = ModelConfig(allowed_tools=("WebFetch",) + _ENGINE_MCP_ALLOWED,
+                       disallowed_tools=("Bash",))
+    assert _granted_config(base, {"tools_allowed": ["agent"]}) is base
+    narrowed = _granted_config(base, {"tools_allowed": ["agent", "read_brain"]})
+    assert narrowed.engine_tool_grant == ("read_brain",)
+    assert narrowed.allowed_tools == ("WebFetch", "mcp__tinyassets__read_brain")
+    assert "mcp__tinyassets__write_brain" in narrowed.disallowed_tools
+    assert "Bash" in narrowed.disallowed_tools
+    assert "mcp__tinyassets__read_brain" not in narrowed.disallowed_tools
+
+
+# --------------------------------------------------------------------------- #
+# Slice 2: a code node reaches its granted served tools, pinned the same way
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def code_node_engine(tmp_path, monkeypatch):
+    """Real route authority and real engine handlers for universe u-a / actor-a."""
+    from tests.engine_authority_helpers import seed_engine_authority
+    from tinyassets.universe_bundle import seed_okf_bundle
+
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    seed_okf_bundle(tmp_path / "u-a", purpose="Actor A's universe.", loop_branch_def_id="")
+    seed_engine_authority(tmp_path)
+    (tmp_path / ".engine_mcp_http_routes.json").write_text(json.dumps({"u-a": {
+        "version": 1, "actor_id": "actor-a", "url": "http://127.0.0.1:8790/mcp",
+        "port": 8790, "secret": "s" * 43,
+    }}), encoding="utf-8")
+    monkeypatch.setattr(engine_mcp_server, "_ACTOR_ID", "actor-a")
+    monkeypatch.setattr(engine_mcp_server, "_GRAPH_ID", "u-a")
+    routes = []
+
+    def client(route, timeout):
+        routes.append((route.actor_id, route.graph_id))
+        return Client(engine_mcp_server.mcp)
+
+    monkeypatch.setattr(engine_tool_client, "_make_client", client)
+    return routes
+
+
+def _invoker(tools_allowed, **context):
+    from tinyassets.graph_compiler import BranchExecutionContext, _build_node_mcp_invoker
+
+    ctx = BranchExecutionContext(**{
+        "actor": "universe:u-a", "universe_id": "u-a", "caller_provenance": "own",
+        "owner_user_id": "actor-a", "definition_author": "actor-a", **context,
+    })
+    node = NodeDefinition(node_id="code", display_name="Code",
+                          source_code="def run(state): return {}",
+                          tools_allowed=list(tools_allowed))
+    return _build_node_mcp_invoker(node, event_sink=None, execution_context=ctx)
+
+
+def test_a_code_node_calls_every_served_tool_by_default(tmp_path, code_node_engine):
+    invoke = _invoker([])
+    wrote = invoke("write_brain", identity=MARK)
+    assert wrote["is_error"] is False and wrote["data"]["ok"] is True, wrote
+    read = invoke("read_brain")
+    assert MARK in read["data"]["brain"]["identity"]
+    assert set(code_node_engine) == {("actor-a", "u-a")}
+
+
+def test_a_code_node_grant_narrows_its_served_tools(tmp_path, code_node_engine):
+    from tinyassets.graph_compiler import CompilerError
+
+    invoke = _invoker(["read_run_file", "read_brain"])
+    assert "identity" in invoke("read_brain")["data"]["brain"]
+    with pytest.raises(CompilerError, match="not granted the served tool 'write_brain'"):
+        invoke("write_brain", identity=MARK)
+    assert MARK not in (tmp_path / "u-a" / "identity.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("context", [
+    {"caller_provenance": "public-foreign"},
+    {"definition_author": "actor-b"},
+    {"owner_user_id": ""},
+    # Another user's universe: the engine route/authority is actor-a's, never theirs.
+    {"owner_user_id": "actor-b", "definition_author": "actor-b"},
+    {"universe_id": "u-b"},
+])
+def test_a_code_node_never_reaches_served_tools_outside_its_owners_own_run(
+    tmp_path, code_node_engine, context,
+):
+    from tinyassets.graph_compiler import CompilerError
+
+    with pytest.raises(CompilerError):
+        _invoker([], **context)("write_brain", identity=MARK)
+    assert code_node_engine == []
+    assert MARK not in (tmp_path / "u-a" / "identity.md").read_text(encoding="utf-8")

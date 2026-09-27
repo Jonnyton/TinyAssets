@@ -2075,6 +2075,71 @@ def _node_enqueue_branch_run(
     })
 
 
+def _node_served_tool_call(
+    node: NodeDefinition,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    allowed: set[str],
+    execution_context: "BranchExecutionContext | None",
+    should_cancel: Callable[[], bool] | None,
+) -> dict[str, Any]:
+    """One served tool, called as the run's owner and pinned to its universe.
+
+    The grant is the node's ``tools_allowed``: naming no served tool grants all
+    of them (what the owner's chat has), naming some grants exactly those. Owner
+    and universe come from the run's immutable execution context, never from the
+    node. Foreign code is refused before its sandbox starts; this rechecks it.
+    """
+    import asyncio
+
+    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+
+    granted = allowed & set(SERVED_ENGINE_MCP_TOOLS)
+    if granted and name not in granted:
+        raise CompilerError(
+            f"Node '{node.node_id}' is not granted the served tool '{name}'; "
+            f"its grant is {sorted(granted)}."
+        )
+    ctx = execution_context
+    owner = (getattr(ctx, "owner_user_id", "") or "").strip()
+    universe = (getattr(ctx, "universe_id", "") or "").strip()
+    if (not owner or not universe
+            or getattr(ctx, "caller_provenance", "") != "own"
+            or (getattr(ctx, "definition_author", "") or "").strip() != owner):
+        raise CompilerError(
+            f"Node '{node.node_id}' may call served tools only in its owner's own "
+            "run of a branch that owner authored."
+        )
+    # Current serving-owner authority is checked by the route read itself.
+    if should_cancel is not None and should_cancel():
+        raise CompilerError(f"Node '{node.node_id}': run cancelled before '{name}'")
+
+    async def _call():
+        from tinyassets.engine_tool_client import open_engine_tools
+
+        async with open_engine_tools(actor_id=owner, graph_id=universe,
+                                     enabled_tools=(name,)) as tools:
+            return await tools.call(name, arguments)
+
+    try:
+        result = asyncio.run(_call())
+    except Exception as exc:
+        if _is_cancel_exception(exc):
+            raise
+        raise CompilerError(
+            f"Node '{node.node_id}' served tool '{name}' failed: {exc}"
+        ) from exc
+    text = "".join(
+        getattr(part, "text", "") for part in (getattr(result, "content", None) or ())
+    )
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        data = None
+    return {"is_error": bool(getattr(result, "isError", False)), "text": text, "data": data}
+
+
 def _build_node_mcp_invoker(
     node: NodeDefinition,
     *,
@@ -2087,6 +2152,7 @@ def _build_node_mcp_invoker(
     file_source: Any = None,
     file_inputs: dict[str, Any] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[..., dict[str, Any]]:
     allowed = set(node.tools_allowed or [])
     shared_enqueue_budget = enqueue_budget or NodeEnqueueBudget()
@@ -2096,6 +2162,13 @@ def _build_node_mcp_invoker(
         if not requested:
             raise CompilerError(
                 f"Node '{node.node_id}' invoke_mcp_action requires action_name."
+            )
+        from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+
+        if requested in SERVED_ENGINE_MCP_TOOLS:
+            return _node_served_tool_call(
+                node, requested, kwargs, allowed=allowed,
+                execution_context=execution_context, should_cancel=should_cancel,
             )
         resolved = _NODE_MCP_ACTION_ALIASES.get(requested)
         if resolved is None:
@@ -2328,7 +2401,7 @@ def _build_source_code_node(
                 base_path=base_path, enqueue_context=enqueue_context,
                 enqueue_budget=enqueue_budget, delivery_source=delivery_source,
                 file_source=file_source, file_inputs=file_inputs,
-                should_cancel=should_cancel,
+                should_cancel=should_cancel, execution_context=execution_context,
             )
             # The sandbox answers RPCs from a drain THREAD, which carries no
             # ContextVars: without this, an RPC resolved the daemon's env
