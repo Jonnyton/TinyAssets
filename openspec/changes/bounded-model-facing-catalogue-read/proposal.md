@@ -91,8 +91,18 @@ is that one read serves two callers who want opposite things.
 - Live turn `8dc8ada56b8e4d1cbfd2e4f37a111e7d`, 2026-09-26 23:27Z, free account.
 - PR #4037 (engine-side ceiling and projections), head `8f4a8bcd`.
 - `docs/concerns/2026-09-26-public-connector-structured-content-is-unbounded.md`.
-- Row size measured from what `model_options_document` actually emits, not from a
-  trimmed fixture: **~856 bytes/row**, so 1,274,067 bytes is roughly **1,500
-  rows**. The blowout is row COUNT, so the answer is a per-source sample plus
-  totals; a smarter per-row trim would have produced ~250 KB and still ended the
-  turn.
+- Row size **estimated**, not measured: ~856 bytes/row, from a row hand-built
+  out of the fields `model_options_document` emits (#4028's author, who built it,
+  states it is an estimate of a typical row rather than a measurement of the live
+  payload). On that estimate 1,274,067 bytes is roughly 1,500 rows. **Re-divide
+  against the real payload if one is ever captured** — a reasons-heavy or
+  score-less row could move it materially.
+
+  What the estimate does and does not carry: it supports the *diagnosis* that the
+  blowout is row COUNT rather than a few pathological rows, which is why the
+  answer is a per-source sample plus totals and why a smarter per-row trim would
+  have produced a few hundred KB and still ended the turn. It does **not**
+  underpin the size of the bounded reply — that follows from the compact row and
+  the per-source head, both of which #4037's tests measure directly against a
+  351-row catalogue. A wrong row-size estimate would change this section's
+  narrative, not the requirement.
