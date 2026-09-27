@@ -51,9 +51,19 @@ order SHALL remain reachable rather than omitted.
 
 ### Requirement: A single tool result on the connector is bounded, and says when it was
 
-Every `read_graph` and `get_status` reply the connector returns SHALL bound its
+Every `read_graph` reply the connector returns SHALL bound its
 `structured_content` to a ceiling on a single tool result, not only its text
 content block.
+
+The ceiling SHALL apply to `read_graph` and to no other handle. It SHALL NOT apply
+to `converse` (which carries the universe's own reply to its founder — that reply
+is the product, and clipping it is data loss the user reads, not a bound), to
+`read_page` or `write_page` (which carry content the user authored; Hard Rule 9),
+or to `get_status` (which the owner's own app reads for `active_host` and
+`supervisor_liveness`, so bounding it breaks the client exactly as bounding
+`model_options` would break the model picker). Extending the ceiling to a further
+handle SHALL require establishing, for that handle, that a partial reply is still
+a true one.
 
 When a reply exceeds that ceiling it SHALL be replaced by a marker carrying: that
 it was truncated, the original size, the ceiling applied, the size returned, a
@@ -63,10 +73,20 @@ ceiling. Truncation SHALL NOT be silent: a reply MUST never be reduced without
 the marker, because a caller that cannot tell it received a prefix will report
 that prefix as the whole answer.
 
-`target=model_options` SHALL be the sole exemption from this ceiling, because the
-requirement "Shared unpowered model catalogue" requires its complete document for
-the owner's picker. The exempt set SHALL be stated in this specification, and
-adding a target to it SHALL require amending this requirement.
+Two `read_graph` targets SHALL be exempt, for two distinct and stated reasons, and
+no others:
+
+- `target=run_file`, whose contract is exact bytes. Truncating it destroys both the
+  bytes and the `next_offset` cursor that would let the caller page, so a partial
+  reply is unrecoverable rather than merely incomplete. `file_max_bytes` is the
+  parameter that bounds this read.
+- `target=model_options`, because the requirement "Shared unpowered model
+  catalogue" requires its complete document for the owner's picker.
+
+The exempt set SHALL be stated in this specification, and adding a target SHALL
+require amending this requirement. A target SHALL qualify only by being unusable
+when partial or by a stated completeness requirement — never by being large, which
+is the condition the ceiling exists to handle.
 
 #### Scenario: An oversized read is marked, not clipped
 - **WHEN** a read's structured reply exceeds the single-result ceiling
@@ -78,10 +98,17 @@ adding a target to it SHALL require amending this requirement.
 - **WHEN** a read's structured reply is within the ceiling
 - **THEN** it is returned unchanged, with no marker and no reformatting
 
-#### Scenario: Only the picker's catalogue is exempt
+#### Scenario: Only the picker's catalogue and the exact-byte read are exempt
 - **WHEN** `target=model_options` returns more than the ceiling
 - **THEN** the complete document is returned, because the picker's requirement demands it
-- **AND** no other target is exempt
+- **WHEN** `target=run_file` returns more than the ceiling
+- **THEN** the exact bytes and the `next_offset` cursor are returned intact
+- **AND** a sibling target of the same handle, such as `run_file_limits`, is still bounded
+
+#### Scenario: A handle a ceiling would destroy is not bounded at all
+- **WHEN** `converse`, `read_page`, `write_page` or `get_status` returns more than the ceiling
+- **THEN** the reply is returned unbounded, because a partial reply there is a false one
+- **AND** the owner's app continues to read the status fields it depends on
 
 ## MODIFIED Requirements
 

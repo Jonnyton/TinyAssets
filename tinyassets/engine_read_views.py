@@ -14,12 +14,24 @@ always beside a page, so the agent can see there are 347 models even when it is
 looking at 8 of them. Nothing here decides anything for the agent; it decides
 what arrives unasked.
 
-Scope: the ENGINE surface only. ``read_model_options`` and ``get_status``
-themselves are unchanged, because the owner's own model picker in the app is
-specified to receive the complete catalogue
-(``openspec/specs/live-mcp-connector-surface/spec.md``, "Complete choices, not a
-first-page sample"). Narrowing what the picker receives is a spec change and does
-not belong in a bug fix.
+Scope, per function — the module name says "engine" because that is where both
+started, and one of them has since outgrown it:
+
+* ``compact_model_options`` is SHARED. The engine's ``read_graph
+  target="model_options"`` answers with it by default, and the connector serves it
+  as its own target, ``model_options_summary``. One projection, so the two
+  surfaces cannot drift into disagreeing about what a compact catalogue is.
+* ``universe_status_view`` is ENGINE-ONLY, and must stay that way: the app reads
+  ``active_host`` and ``supervisor_liveness`` straight off the connector's
+  ``get_status`` (``tinyassets/onboarding/app.html:3800``, ``:3864``, ``:3867``),
+  so applying this projection there would break the status dot.
+
+What neither function touches: ``read_model_options`` (the collector) and
+``model_options_document()`` (the row). Both still emit exactly what they emitted
+before, because the owner's own model picker is specified to receive the complete
+catalogue (``openspec/specs/live-mcp-connector-surface/spec.md``, "Complete
+choices, not a first-page sample"). The bounded reply is a separate target the
+caller asks for, never a narrowing of the picker's read.
 """
 
 from __future__ import annotations

@@ -59,13 +59,25 @@ is that one read serves two callers who want opposite things.
    document, same `structured_content`. The picker needs no client change, and
    the existing requirement and its test stand as written.
 
-3. **A ceiling on `structured_content` for every other target.** The engine's
+3. **A ceiling on `structured_content`, for `read_graph` only.** The engine's
    marker (`truncated: true`, `original_bytes`, `ceiling_bytes`,
-   `returned_bytes`, a verbatim head, and a one-line hint naming that target's
-   own narrowing parameters) applies on the connector too, with **exactly one
-   exemption: `model_options`**, which (2) requires to stay complete. The
-   exemption is a list, it is named in the spec, and it is meant to shrink to
-   zero — a second entry is evidence the split in (1) was not carried through.
+   `returned_bytes`, a verbatim head, and a one-line hint naming how to narrow)
+   applies on the connector too, from the same module, so there is one definition
+   of "too big" rather than two that drift.
+
+   **Two targets exempt, for different reasons:** `run_file`, whose contract is
+   exact bytes and which `file_max_bytes` already bounds; and `model_options`,
+   which (2) requires to stay complete. A target qualifies by being unusable when
+   partial or by a stated completeness requirement — never by being large, which
+   is what the ceiling is for.
+
+   **An allowlist of handles.** `converse` carries the universe's reply to its
+   founder, `read_page`/`write_page` carry content the user authored (Hard Rule 9),
+   and `get_status` is read by the owner's own app (`active_host`,
+   `supervisor_liveness` — `tinyassets/onboarding/app.html:3800`, `:3864`,
+   `:3867`). None is bounded. `get_status` needs the same split this change makes
+   for the catalogue; that is a separate capability, **out of scope** here rather
+   than a third exemption.
 
 4. **The description tells a model which one to read.** `model_options`'s own
    text says it is the complete catalogue, that it exceeds a megabyte on a large

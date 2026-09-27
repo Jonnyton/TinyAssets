@@ -62,15 +62,49 @@ documents for `conversation` and `run_output`.
 
 ## The exemption list is the part to watch
 
-Requirement (3) bounds `structured_content` for every target but
-`model_options`. That exemption exists only because requirement (2) demands the
-complete document for the picker.
+**Corrected while building this.** The first draft said the ceiling covers every
+`read_graph` and `get_status` reply with `model_options` as the single exemption,
+and that the list should shrink to zero. Enumerating the actual consumers rather
+than assuming them changed all three claims.
 
-A second entry on that list means someone hit the same wall and widened the hole
-instead of splitting the read. The spec names the list explicitly so adding to it
-is a visible spec change rather than a quiet constant edit, and a test asserts its
-membership. The intended end state is an empty list: the picker eventually pages
-like everything else, and `model_options` loses its exemption in its own change.
+**Two exemptions, not one, and they are different in kind.**
+
+- `run_file`'s contract is exact bytes. Measured on the real dispatch path: a
+  256 KB chunk (a 349,681-byte reply) came back as a 24,576-byte marker carrying
+  neither `bytes_base64` nor `next_offset`, so the caller could not even page to
+  recover — a file its owner uploaded became unreadable to their own universe.
+  This exemption is **permanent**: `file_max_bytes` already bounds the read, and a
+  byte ceiling layered over it only breaks the first one.
+- `model_options` is the picker's completeness requirement. This one **is**
+  temporary, and (1) is what eventually retires it.
+
+So "shrink to zero" was wrong. The right invariant: a target qualifies by being
+unusable when partial, or by a stated completeness requirement — **never by being
+large**, which is the condition the ceiling exists to handle. A third entry
+justified by size is the smell, not a third entry as such.
+
+**An allowlist of handles, not a denylist.** The ceiling covers `read_graph` and
+nothing else, because every other handle registered on this surface carries
+something a ceiling would destroy rather than bound:
+
+- `converse` carries the universe's own reply to its founder. That reply is the
+  product; clipping it is data loss the user reads.
+- `read_page` / `write_page` carry content the user authored — Hard Rule 9.
+- `get_status` is read by the owner's own app: `active_host` and
+  `supervisor_liveness` at `tinyassets/onboarding/app.html:3800`, `:3864`, `:3867`
+  drive the status dot. Bounding it breaks the client in exactly the way bounding
+  `model_options` would break the picker.
+
+`get_status` therefore needs the same split this change performs for the
+catalogue — a complete client read beside a bounded model-facing one. That is a
+separate capability and a separate change; it is **out of scope** here rather than
+a third exemption, because calling it an exemption would imply the ceiling should
+eventually reach it as written, and it should not.
+
+The lesson worth keeping: both corrections came from enumerating consumers —
+`grep` for what reads the field, and read the client — not from reasoning about
+what a payload looks like. The first draft of this design was wrong in the same
+way for `get_status` that PR #4037 was wrong for `run_file`.
 
 ## What stays out of scope
 
