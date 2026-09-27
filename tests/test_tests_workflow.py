@@ -302,10 +302,22 @@ def test_required_tests_cannot_decline_to_report() -> None:
             f"running on out-of-scope PRs, and the required context then hangs "
             f"on 'Expected — waiting for status' forever"
         )
-    assert "if" not in wf["jobs"]["required-tests"], (
-        "the REQUIRED job must have no job-level `if:` — a skipped job reports "
-        "conclusion=skipped, which protection treats as SUCCESS, so a mistaken "
-        "condition fails open and merges untested code"
+    # The aggregate is the one exception, and it is forced rather than
+    # allowed: it `needs` the shards, and a job whose need failed is SKIPPED
+    # unless its condition says otherwise -- so with no `if:` a red shard would
+    # skip the required check and merge green. `always()` is the only condition
+    # that can never evaluate false. Anything else (`success()`, `!cancelled()`)
+    # reintroduces a skip path.
+    condition = _expr(wf["jobs"]["required-tests"].get("if", ""))
+    assert condition == "always()", (
+        f"the REQUIRED aggregate's `if:` must be exactly `always()`, got "
+        f"{condition!r}: without it a failed shard SKIPS the required check, "
+        f"and protection treats skipped as SUCCESS"
+    )
+    assert "if" not in wf["jobs"]["required-tests-shard"], (
+        "shards must have no job-level `if:` -- a skipped shard never uploads, "
+        "and although the aggregate then fails closed, the PR is blocked for a "
+        "reason that is not a test result"
     )
 
 
@@ -369,7 +381,7 @@ def test_heavy_tests_uses_the_reviewed_runner_and_floor() -> None:
 def test_required_and_heavy_do_not_overlap() -> None:
     """The point of the split: the suite runs once across the two jobs."""
     jobs = _load()["jobs"]
-    req = "\n".join(s.get("run", "") for s in jobs["required-tests"]["steps"])
+    req = "\n".join(s.get("run", "") for s in jobs["required-tests-shard"]["steps"])
     heavy = "\n".join(s.get("run", "") for s in jobs["heavy-tests"]["steps"])
     assert "--exclude-from .github/heavy-test-files.txt" in req
     assert "--include-from .github/heavy-test-files.txt" in heavy
@@ -399,3 +411,88 @@ def test_every_heavy_listed_path_still_exists() -> None:
         "deleted the tests, or the required gate keeps --ignore-ing a ghost."
     )
     assert len(set(entries)) == len(entries), "duplicate entries in the heavy list"
+
+
+# ---- sharding ----------------------------------------------------------------
+
+
+def _shard_count_declarations() -> dict[str, object]:
+    jobs = _load()["jobs"]
+    shard_job = jobs["required-tests-shard"]
+    shard_run = "\n".join(s.get("run", "") for s in shard_job["steps"])
+    agg_run = "\n".join(s.get("run", "") for s in jobs["required-tests"]["steps"])
+    return {
+        "matrix": shard_job["strategy"]["matrix"]["shard"],
+        "shard_arg": re.findall(r'--shard\s+"\$\{\{ matrix\.shard \}\}/(\d+)"', shard_run),
+        "name": re.findall(r"/(\d+)$", str(shard_job["name"])),
+        "expect": re.findall(r"--expect-shards[\s=]+(\d+)", agg_run),
+    }
+
+
+def test_every_shard_count_declaration_agrees() -> None:
+    """The shard count is written in four places; they must be ONE number.
+
+    Matrix larger than `--shard .../N`: two jobs run the same shard and a
+    duplicate manifest fails the gate. Matrix SMALLER: some hash buckets have
+    no job, those files never run, and -- unless `--expect-shards` also
+    disagrees -- nothing notices. That silent case is why the matrix must be
+    exactly 1..N rather than merely N entries long.
+    """
+    d = _shard_count_declarations()
+    assert len(d["shard_arg"]) == 1 and len(d["expect"]) == 1 and len(d["name"]) == 1, d
+    n = int(d["shard_arg"][0])
+    assert n >= 2, "a single shard is the old serial job with extra steps"
+    assert d["matrix"] == list(range(1, n + 1)), d
+    assert int(d["expect"][0]) == n, d
+    assert int(d["name"][0]) == n, d
+
+
+def test_only_the_aggregate_carries_the_protection_context() -> None:
+    """A shard named `required-tests` would let one green shard satisfy it."""
+    jobs = _load()["jobs"]
+    shard_name = str(jobs["required-tests-shard"]["name"])
+    assert shard_name.startswith("required-tests shard "), shard_name
+    names = [str(j.get("name", k)) for k, j in jobs.items()]
+    assert names.count("required-tests") == 1
+
+
+def test_aggregate_waits_for_every_shard_and_reads_their_results() -> None:
+    jobs = _load()["jobs"]
+    shard, agg = jobs["required-tests-shard"], jobs["required-tests"]
+    assert agg.get("needs") in ("required-tests-shard", ["required-tests-shard"])
+    # fail-fast would cancel sibling shards, turning one real failure into
+    # "missing shards" and hiding what actually broke.
+    assert shard["strategy"].get("fail-fast") is False
+
+    upload = next(s for s in shard["steps"] if "upload-artifact" in str(s.get("uses", "")))
+    assert _expr(upload.get("if", "")) == "always()", "a red shard must still upload"
+    assert upload["with"]["name"] == "junit-required-shard-${{ matrix.shard }}"
+    download = next(s for s in agg["steps"] if "download-artifact" in str(s.get("uses", "")))
+    assert download["with"]["pattern"] == "junit-required-shard-*"
+
+    decide = next(s for s in agg["steps"] if "--aggregate" in str(s.get("run", "")))
+    run = str(decide["run"])
+    assert "ci_required_tests.py --aggregate" in run
+    # The job result is checked as well as the files: a shard that failed
+    # AFTER writing a clean-looking junit must still fail the gate.
+    # The failure itself is unit-tested in test_ci_required_tests; here, pin
+    # that the real job result reaches it and that the step's exit code is the
+    # script's (a single command, nothing after it that could exit 0).
+    assert decide["env"]["SHARD_RESULT"] == "${{ needs.required-tests-shard.result }}"
+    assert '--shard-job-result "$SHARD_RESULT"' in run
+    code = [
+        line.strip()
+        for line in run.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert code[0].startswith("python scripts/ci_required_tests.py --aggregate"), code
+    assert all(line.startswith("--") for line in code[1:]), code
+    assert all(line.endswith("\\") for line in code[:-1]), code
+    assert "continue-on-error" not in decide
+
+
+def test_shards_run_the_reviewed_runner_with_the_shard_floor() -> None:
+    run = "\n".join(s.get("run", "") for s in _load()["jobs"]["required-tests-shard"]["steps"])
+    assert "ci_required_tests.py" in run
+    assert "--profile shard" in run
+    assert "--min-ran" not in run, "the per-shard floor comes from --profile shard"
