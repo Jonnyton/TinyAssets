@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Visibility test double turns undeclared into public
+filed: '2026-09-26'
+summary: '`tests/conftest.py`''s autouse fixture resolves an undeclared universe to `PUBLIC` for every module but two, so nothing outside those two crosses the startup/default boundary now that boot declares `private`; a coverage hole, no regression attributed'
+---
+
 # The visibility test double turns "undeclared" into "public" repo-wide
 
 **Filed:** 2026-09-26 | **Verified:** 2026-09-26 | **Severity:** P2

@@ -584,8 +584,9 @@ def test_the_fluentd_drop_gap_has_a_concern_file():
     """The journal is durable; everything upstream of the sidecar is not.
 
     A runbook line is guidance, not a tracked item — it has no home to be deleted
-    from when the gap is closed. `docs/concerns/` is that home, and the row in its
-    README is what makes the gap visible to a reader who never opens the runbook.
+    from when the gap is closed. `docs/concerns/` is that home, and the file's
+    front-matter row is what makes the gap visible in `scripts/concerns_index.py`
+    to a reader who never opens the runbook.
     """
     concern = REPO_ROOT / "docs" / "concerns" / (
         "2026-09-26-fluentd-driver-drops-while-vector-is-down.md"
@@ -593,8 +594,10 @@ def test_the_fluentd_drop_gap_has_a_concern_file():
     assert concern.exists(), (
         "the fluentd-drop gap must be a tracked concern, not only a runbook line"
     )
-    index = (REPO_ROOT / "docs" / "concerns" / "README.md").read_text(encoding="utf-8")
-    assert concern.name in index, "concern file is not linked from docs/concerns/README.md"
+    head = concern.read_text(encoding="utf-8")[:2000]
+    assert head.startswith("---\n") and "\nseverity:" in head, (
+        "concern file has no front-matter, so scripts/concerns_index.py cannot list it"
+    )
 
     text = concern.read_text(encoding="utf-8")
     # The blocker is the specific reason this is not fixed in the same change, and

@@ -1,3 +1,10 @@
+---
+severity: P1
+title: The refresh endpoint is trusted from an unverified id_token
+filed: '2026-09-26'
+summary: the issuer and client are read from an unsigned identity token and the refresh token is then sent there. Transport hardening and single-read resolution are done; the signature check against the issuer's JWKS is not, and it must NOT verify `exp`
+---
+
 # Endpoint trust permits exfiltration and bypasses hardened egress
 
 **Filed:** 2026-09-26

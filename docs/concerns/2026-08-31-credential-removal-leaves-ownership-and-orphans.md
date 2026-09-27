@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Credential removal leaves ownership and orphans
+filed: '2026-08-31'
+summary: '`forget_credential` does not clear the deposit-ownership row, so a DIFFERENT principal''s re-deposit is refused as a transfer; and an absent connection row skips the owner check entirely'
+---
+
 # Two gaps a credential removal leaves behind
 
 **Found 2026-08-31** by a Codex refute review of PR #2755 (Q2 and Q3), which

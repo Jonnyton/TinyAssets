@@ -1,3 +1,10 @@
+---
+severity: null
+title: Synthesis skip echoes
+filed: '2026-04-16'
+summary: predates the 2026-08-25 migration and was never triaged into a severity
+---
+
 # Synthesis-skip diagnosis — echoes_of_the_cosmos Mission 9
 
 **Status:** Diagnosis. No code changes proposed without lead approval.

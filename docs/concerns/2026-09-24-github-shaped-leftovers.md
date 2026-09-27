@@ -1,3 +1,10 @@
+---
+severity: P2
+title: GitHub-shaped leftovers
+filed: '2026-09-24'
+summary: 'after GitHub became an ordinary connection: the repository-spec automation still needs a GitHub pipe no surface creates, 4 stranded pipe rows in prod, and a declared `git_host` can only be set by remove + reconnect'
+---
+
 # GitHub-shaped leftovers after "GitHub is an ordinary connection"
 
 **Filed:** 2026-09-24

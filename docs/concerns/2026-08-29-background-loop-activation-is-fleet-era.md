@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The background loop cannot run on the current shape
+filed: '2026-08-29'
+summary: its activation layer is fleet-era; the "24/7 background self" has been dead since 2026-08-07
+---
+
 # P2 - The background loop cannot run on the current shape: its activation layer is fleet-era
 
 **Filed:** 2026-08-29

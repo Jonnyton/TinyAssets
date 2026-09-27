@@ -1,3 +1,10 @@
+---
+severity: P2
+title: '"Connect any LLM" is real for one endpoint shape, not every shape'
+filed: '2026-09-03'
+summary: '`anthropic_messages` is offered but the deposit always sends `bearer` and `header_name` is not a deposit-time field, so an endpoint following the published spec cannot authenticate; plus `get_status` reports the daemon HOST''s CLI as `llm_endpoint_bound` with no per-universe serving field, which sent the founder''s own universe chasing a phantom runtime bug'
+---
+
 # "Connect any LLM" is real for one endpoint shape, not every shape
 
 Filed 2026-09-03, from the Codex review of `claude/connect-any-llm` (verdict

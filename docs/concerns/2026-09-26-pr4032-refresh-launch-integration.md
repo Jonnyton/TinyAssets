@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Refresh is not wired into the workflow launch lanes
+filed: '2026-09-26'
+summary: the pre-launch subscription refresh runs only on the served entry, because both workflow lanes pin `assignment_generation` before their seam and a refresh renews the accepted source, which advances it. Covering them means moving the seam ahead of the receipt mint
+---
+
 # PR 4032 refresh does not preserve the launch authority lifecycle
 
 **Filed:** 2026-09-26

@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Hard-coded policy the user should be composing instead
+filed: '2026-08-31'
+summary: 'five workflow-shape caps and six platform-selected policies constrain the user''s own work; the deeper pattern is one hard-coded policy manufacturing the justification for another Also: inventory of graph-shape limits that constrain only a user''s own workflow rather than protecting another user or the host'
+---
+
 # Hard-coded policy the user should be composing instead
 
 **Founder directive, 2026-08-31.** After four consecutive gates that were all

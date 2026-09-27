@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The fluentd driver drops silently while Vector is down
+filed: '2026-09-26'
+summary: the journal is durable but everything upstream of the sidecar is not, so "the evidence is in the journal" holds only for the intervals Vector was running; the clean fix is blocked on the Alpine Vector image having no `journalctl`
+---
+
 # The fluentd log driver drops silently while the Vector sidecar is down
 
 **Filed:** 2026-09-26 · **Severity:** P2
