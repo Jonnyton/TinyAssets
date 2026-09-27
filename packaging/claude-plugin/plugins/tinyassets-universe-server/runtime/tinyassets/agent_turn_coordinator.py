@@ -170,9 +170,10 @@ class AgentTurnCoordinator:
     def _learn_verified_model(self, response):
         """Record a model id that just answered, for every universe on this KIND.
 
-        Only reached from a committed success. It records exactly three facts --
-        source kind, model id, first-verified time -- and no user or universe id;
-        see ``tinyassets/storage/learned_models.py`` for why each is safe to share.
+        Only reached from a committed success. It records the id on THIS OWNER's own
+        list and nowhere else -- there is no shared store any more, so nothing here can
+        reach another user. See ``tinyassets/storage/learned_models.py``; sharing is a
+        reviewed file per source kind (``models/``), merged by a person.
 
         The id recorded is the one THIS UNIVERSE ASKED FOR and that then succeeded
         -- its own ``model_selection.model_id`` -- and never a string the source

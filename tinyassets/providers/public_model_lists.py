@@ -125,20 +125,32 @@ def newest_listed(source_kind: str, *, directory: Path | None = None) -> tuple[s
 
 
 @lru_cache(maxsize=8)
-def _cached(source_kind: str, stamp: float) -> tuple[str, ...]:
+def _cached(source_kind: str, fingerprint: tuple[int, int]) -> tuple[str, ...]:
     return newest_listed(source_kind)
 
 
 def newest_listed_cached(source_kind: str) -> tuple[str, ...]:
-    """``newest_listed`` with the file's mtime as the cache key.
+    """``newest_listed`` keyed on the file's size AND nanosecond mtime.
 
-    The read is on the model-options path, which a client polls, and the file only
-    changes when a PR lands. Keyed on mtime rather than time-boxed so an edit in a
-    dev loop is picked up immediately and a container never serves a stale list.
+    The read is on the model-options path, which a client polls, and the file changes
+    only when a PR lands. Keyed on a fingerprint rather than time-boxed, so a dev edit
+    is picked up at once and a container never serves a stale list.
+
+    Size as well as mtime because mtime alone is not sufficient: Codex replaced a file's
+    contents while preserving its mtime and got the cached answer (#4028). Nanosecond
+    precision and the size together make a same-fingerprint content change require a
+    byte-identical length at an identical timestamp, and a real change always arrives
+    with a fresh container and an empty cache anyway.
+
+    A MISSING file is unlisted, which is normal. Any other stat failure is not: it means
+    the data exists and cannot be read, which must not masquerade as "no models".
     """
     path = lists_directory() / f"{source_kind}.json"
     try:
-        stamp = path.stat().st_mtime
-    except OSError:
+        stat = path.stat()
+    except FileNotFoundError:
         return ()
-    return _cached(source_kind, stamp)
+    except OSError as exc:
+        raise PublicModelListError(
+            f"{path.name} exists but cannot be read: {type(exc).__name__}") from exc
+    return _cached(source_kind, (stat.st_size, stat.st_mtime_ns))

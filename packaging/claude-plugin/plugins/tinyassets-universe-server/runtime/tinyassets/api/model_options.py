@@ -217,7 +217,17 @@ def _collect(base, owner, uid):
                 # Codex found this second caller still admitting them after the
                 # served_model_plan branch was fixed (#4028 round 2) -- one reader
                 # of _native_models was corrected and this one was not.
-                plan = replace(plan, catalog=Catalog(owner, uid, (_granted_only(model),)))
+                admitted = _granted_only(model)
+                plan = replace(plan, catalog=Catalog(owner, uid, (admitted,)))
+                # Withheld is not enough: each excluded row needs the REASON, or the
+                # picker cannot file it under "needs access" and the owner sees an
+                # unexplained inert row. Codex on #4028 found this path filtering
+                # correctly and reporting nothing (`reasons: []`).
+                for excluded in model.models:
+                    if excluded.model_id not in {m.model_id for m in admitted.models}:
+                        rejected.append(Ineligible(
+                            ModelRef(provider, excluded.model_id),
+                            "model_access_optin_required"))
             else:
                 rejected.append(Ineligible(ModelRef(provider, ""),
                                           "source_not_accepted" if provider not in accepted

@@ -228,3 +228,88 @@ def test_a_failed_record_never_raises_at_the_call_site(tmp_path, monkeypatch):
     monkeypatch.setattr(module.OwnModelHistory, "record", explode)
     assert record_verified_model(tmp_path, source_kind="subscription",
                                  model_id="a-1", owner_user_id="alice") is False
+
+
+# ---------------------------------------------------------------------------
+# The lists have to REACH production. Codex on #4028: they did not.
+# ---------------------------------------------------------------------------
+
+
+def test_the_lists_are_packaged_into_the_runtime_artifacts():
+    """A list nobody ships is a list nobody reads.
+
+    `lists_directory()` resolves `models/` relative to the package, so the data has to
+    be copied alongside it in every artifact. The Dockerfile copied the package and not
+    the lists, and the plugin staging omitted them too, so the whole feature would have
+    shipped doing nothing — silently, because an absent directory reads as "unlisted".
+    """
+    from tinyassets.providers.public_model_lists import lists_directory
+
+    root = lists_directory().parent
+
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY models/ /app/models/" in dockerfile, (
+        "the image must carry the lists beside the package it resolves them from")
+    # And the resolved location inside the image must actually be /app/models: the
+    # package lands at /app/tinyassets, so parents[2] is /app.
+    assert "COPY --from=builder /build/tinyassets /app/tinyassets" in dockerfile
+
+    plugin = (root / "packaging" / "claude-plugin" / "plugins"
+              / "tinyassets-universe-server" / "runtime")
+    if (plugin / "tinyassets").is_dir():
+        assert (plugin / "models" / "subscription.json").is_file(), (
+            "the plugin runtime resolves models/ from its own root; stage it there")
+
+
+def test_a_list_only_change_triggers_a_deploy():
+    """Otherwise a merged model addition sits in the repo and reaches nobody.
+
+    The build workflow is path-filtered, so data the runtime reads has to be in the
+    filter or a list-only PR builds no image and deploys nothing.
+    """
+    from tinyassets.providers.public_model_lists import lists_directory
+
+    workflow = (lists_directory().parent / ".github" / "workflows"
+                / "build-image.yml").read_text(encoding="utf-8")
+    assert "'models/**'" in workflow, (
+        "a list-only PR is a real behaviour change for every user on that source kind")
+
+
+def test_a_content_change_at_the_same_mtime_is_not_served_from_cache(tmp_path, monkeypatch):
+    """Codex on #4028: replacing contents while preserving mtime returned the old list.
+
+    The key carries the size as well as the nanosecond mtime, so a stale answer needs a
+    byte-identical length at an identical timestamp.
+    """
+    import os
+
+    import tinyassets.providers.public_model_lists as lists
+
+    directory = _write(tmp_path, ["old-1"])
+    path = directory / "subscription.json"
+    monkeypatch.setattr(lists, "lists_directory", lambda: directory)
+    lists._cached.cache_clear()
+    assert lists.newest_listed_cached("subscription") == ("old-1",)
+
+    stat = path.stat()
+    # Two DISTINCT classes, so this test is about the cache and not about the
+    # newest-per-class reduction (which would keep only one of `new-2`/`new-3`).
+    _write(tmp_path, sorted(["alpha-2", "beta-3"]))
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))   # same mtime, new contents
+    assert sorted(lists.newest_listed_cached("subscription")) == ["alpha-2", "beta-3"]
+
+
+def test_an_unreadable_list_file_is_not_silently_unlisted(tmp_path, monkeypatch):
+    """"Exists but cannot be read" must not masquerade as "no models"."""
+    import tinyassets.providers.public_model_lists as lists
+
+    directory = _write(tmp_path, ["a-1"])
+    monkeypatch.setattr(lists, "lists_directory", lambda: directory)
+    lists._cached.cache_clear()
+
+    def denied(self):
+        raise PermissionError("no")
+
+    monkeypatch.setattr("pathlib.Path.stat", denied)
+    with pytest.raises(PublicModelListError, match="cannot be read"):
+        lists.newest_listed_cached("subscription")

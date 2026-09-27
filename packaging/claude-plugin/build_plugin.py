@@ -90,7 +90,21 @@ def _stage_runtime() -> int:
         shutil.rmtree(legacy_fantasy)
 
     tinyassets_dir.mkdir(parents=True, exist_ok=True)
-    return _copy_tree(TINYASSETS_SRC, tinyassets_dir)
+    staged = _copy_tree(TINYASSETS_SRC, tinyassets_dir)
+
+    # The public model lists are DATA the runtime reads, resolved relative to the
+    # package (`public_model_lists.lists_directory()` -> parents[2]/"models"), which in
+    # this layout is RUNTIME_ROOT. Without them every source kind reads as unlisted and
+    # the picker silently loses its shared models -- Codex found the same omission in
+    # the Docker image on #4028, where the feature would have shipped dead.
+    lists_src = REPO_ROOT / "models"
+    if lists_src.is_dir():
+        lists_dst = RUNTIME_ROOT / "models"
+        if lists_dst.exists():
+            shutil.rmtree(lists_dst)
+        lists_dst.mkdir(parents=True, exist_ok=True)
+        staged += _copy_tree(lists_src, lists_dst)
+    return staged
 
 
 def _probe_import() -> None:

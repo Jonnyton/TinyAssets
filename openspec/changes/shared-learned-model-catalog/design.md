@@ -1,3 +1,19 @@
+# SUPERSEDED — kept for the refutations, not as the design
+
+The shipped design is in `proposal.md`: a typed id is personal forever, and sharing
+is a reviewed file per source kind (`models/<source-kind>.json`) plus the ordinary PR
+flow. Everything below describes the THIRD of three shapes that were built and
+refuted — a platform-wide shared table with a distinct-owner promotion threshold.
+It is kept because the refutations are the reason the shipped shape is the shape:
+
+* a charset cannot tell a public model name from a private account-bearing selector;
+* "used by two owners" does not imply public — colleagues share one org's private id;
+* attestation plus peer confirmation worked and was over-built for the problem.
+
+Do not implement anything below.
+
+---
+
 # Design
 
 ## The three fields, and why nothing else

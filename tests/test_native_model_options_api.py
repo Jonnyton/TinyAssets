@@ -44,6 +44,14 @@ def test_native_public_picker_lists_default_and_discovered_model(picker, native)
                and row["availability_basis"] in ("executor_default", "executor_enumerated")]
     assert {row["reference"]["model_id"] for row in choices} == {"", "new-account-model"}
     assert all(row["in_candidate_catalog"] and not row["reasons"] for row in choices)
+    # The rows this filter EXCLUDED are checked too, or admitting one of them by
+    # mistake would pass this test (Codex on #4028). Every excluded row must have a
+    # permitted provenance, be unadmitted, carry a reason, and belong to this source.
+    excluded = [row for row in result["options"]
+                if row["reference"]["provider_ref"] == "codex" and row not in choices]
+    assert all(row["availability_basis"] in ("publicly_listed", "owner_verified_here")
+               and not row["in_candidate_catalog"] and row["reasons"]
+               for row in excluded), excluded
     source = next(row for row in result["sources"] if row["provider_ref"] == "codex")
     assert source["warnings"] == []
     assert source["observed_at"] <= source["completed_at"] < source["expires_at"]
