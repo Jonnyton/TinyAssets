@@ -110,3 +110,27 @@ never cross it, and nothing has to classify a string or name a vendor.
             Founder decision. docs/concerns/2026-09-26-learned-catalog-private-selectors.md
 - [ ] Rebase onto bounded-results' dispatch ceiling when it lands, then sync the
       spec delta and archive — after the publication boundary is settled.
+
+## Founder redesign: publication by attestation (2026-09-26)
+
+Supersedes the distinct-owner threshold as the publication RULE. Shape and the one
+open question: `attestation.md`.
+
+- [x] Design written, including the egress analysis: there is NO grant-free public
+      fetch in the substrate, and the endpoint allowlist is the stated
+      confidentiality boundary, so step 3 is an authority change rather than
+      plumbing. Narrowest form and a no-egress fallback both specified.
+- [ ] DECISION NEEDED: a platform-side attestation reader (new egress primitive,
+      boolean-only result, no redirects, pinned global-only address, per-owner rate
+      limit) versus an agent-side fetch with an attested snippet and no platform
+      egress at all.
+- [ ] Drop the threshold as the publication rule; KEEP the owner's-own-list and
+      one-owner-many-universes behaviour, which do not depend on it.
+- [ ] New owner-authorized write op to attest (public surface: its own proposal
+      section before code).
+- [ ] Shared table gains the evidence URL, query and fragment stripped; re-test the
+      cross-user floor against a URL, which is agent-supplied free text.
+- [ ] One line of served guidance where the agent learns a model worked.
+- [ ] One Codex round on the new shape (allowed: founder design change, not round 4
+      of the old one).
+- [ ] Rebase after #4037.
