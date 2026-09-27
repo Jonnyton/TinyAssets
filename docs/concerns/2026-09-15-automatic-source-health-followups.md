@@ -1,3 +1,10 @@
+---
+severity: note
+title: Automatic source-health follow-ups
+filed: '2026-09-15'
+summary: bounded advisory memory approved for MVP; post-live isolation, legacy classification and coverage observations remain
+---
+
 # Automatic source health — post-live follow-ups
 
 Filed 2026-09-15. Fable5.1 review of d2b77b84a7a6654a1cf32925bff2a0f776720e26

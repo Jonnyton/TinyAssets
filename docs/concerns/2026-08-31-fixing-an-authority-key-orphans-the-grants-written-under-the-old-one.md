@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Fixing an authority key orphans every grant written under the old one
+filed: '2026-08-31'
+summary: hit live, blocking the founder's universe mid-run with `missing_consent`; a correctness fix to a key is a silent migration
+---
+
 # Fixing an authority key silently orphans every grant written under the old one
 
 **Hit live 2026-08-31**, blocking the founder's universe mid-run:

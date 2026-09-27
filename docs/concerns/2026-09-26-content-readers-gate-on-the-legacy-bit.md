@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Six universe content readers gate on the legacy bit
+filed: '2026-09-26'
+summary: '`get_activity`, `read_premise`, `read_canon`, `read_source`, `read_output`, `query_world` check only `public_read`, which `set_universe_visibility` opens for any level granting a visitor a capability, so `metadata_only` would serve content; latent while nothing selects that level'
+---
+
 # Six universe content readers gate on the legacy bit, not on `read_content`
 
 **Filed:** 2026-09-26 | **Verified:** 2026-09-26 | **Severity:** P2

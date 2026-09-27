@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Note/work-target helpers wipe the universe registry
+filed: '2026-09-26'
+summary: four `daemon_server` helpers call the `ensure_universe_registered` UPSERT with no `display_name`/`metadata`, so listing a universe's notes resets its name to its id; `visibility.register_if_absent` is the ready fix
+---
+
 # Four note/work-target helpers wipe a universe's display name on every call
 
 **Filed:** 2026-09-26 | **Verified:** 2026-09-26 | **Severity:** P2

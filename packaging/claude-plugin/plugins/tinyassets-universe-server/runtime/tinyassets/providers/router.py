@@ -19,6 +19,7 @@ import logging
 import math
 import time
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -392,6 +393,43 @@ def _is_nested(universe_context) -> bool:
     return bool(getattr(universe_context, "provider_invocation", None))
 
 
+@asynccontextmanager
+async def _routable_authorization(inner, selection):
+    """Turn a sign-in refusal raised while AUTHORIZING into a routable outcome.
+
+    The pre-launch credential refresh runs inside this context manager, so a stored
+    sign-in the source has finished with is discovered BEFORE ``_call_routed`` is
+    entered -- which means the provider loop's ``except ProviderAuthenticationError``
+    never sees it and the exception escapes the turn entirely. Measured: the founder's
+    spent-refresh-token path ended with the turn ``abandoned``, no fallback and no
+    reply, which is the outage this exists to fix.
+
+    So it is re-raised as the aggregate the loop would have produced had the provider
+    itself refused: one ``auth_invalid`` attempt, which both turn-coordinator fallback
+    handlers require. ``side_effect_state`` is ``none`` as a FACT here, not an
+    attestation -- nothing was launched, because authorization did not finish -- and
+    that is stronger evidence than any adapter can offer about a run that did start.
+
+    Only ``ProviderAuthenticationError`` is converted. A held authority, a permission
+    refusal or a storage fault keeps travelling as itself; turning those into
+    "exhausted" would report a provider that was never asked as having failed.
+    """
+    try:
+        async with inner as authority:
+            yield authority
+    except ProviderAuthenticationError as exc:
+        raise AllProvidersExhaustedError(
+            "the stored sign-in for this source is no longer accepted",
+            attempts=[ProviderAttemptDiagnostic(
+                provider=getattr(selection, "connection_id", "") or "",
+                status="failed", skip_class="auth_invalid",
+                detail=redacted_failure_detail(str(exc)),
+                failure_class="auth_invalid", side_effect_state="none",
+            )],
+            failure_class="auth_invalid",
+        ) from None
+
+
 class ProviderRouter:
     """Routes one universe's owner-authorized LLM call, with quota tracking.
 
@@ -604,13 +642,16 @@ class ProviderRouter:
 
                 agent_turn = (_agent_execution_kind is not None
                               or config is not None and config.agent_request is not None)
-                async with authorize_served_provider_call_async(
-                    universe_dir.parent,
-                    universe_dir=universe_dir,
-                    request_carrier=universe_context.provider_request,
-                    role=role, operation=operation,
-                    model_selection=universe_context.model_selection,
-                    **({"agent_turn": True} if agent_turn else {}),
+                async with _routable_authorization(
+                    authorize_served_provider_call_async(
+                        universe_dir.parent,
+                        universe_dir=universe_dir,
+                        request_carrier=universe_context.provider_request,
+                        role=role, operation=operation,
+                        model_selection=universe_context.model_selection,
+                        **({"agent_turn": True} if agent_turn else {}),
+                    ),
+                    universe_context.model_selection,
                 ) as authority:
                     if _agent_observer is not None:
                         if not agent_turn or not callable(_agent_observer):

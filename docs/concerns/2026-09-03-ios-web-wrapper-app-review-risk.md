@@ -1,3 +1,10 @@
+---
+severity: P2
+title: iOS shell risks App Review minimum-functionality rejection
+filed: '2026-09-03'
+summary: the signed binary loads the same remotely served client as the web surface; native OAuth return and packaging may not satisfy Apple's Guideline 4.2 without a meaningful iPhone-native interaction
+---
+
 # iOS shell risks App Review minimum-functionality rejection
 
 **Filed:** 2026-09-03

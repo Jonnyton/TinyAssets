@@ -1,3 +1,10 @@
+---
+severity: P2
+title: No user Stop for a running turn
+filed: '2026-08-29'
+summary: turns now run until finished (3600s backstop); the "interrupted by the user" half of the founder's rule is unbuilt
+---
+
 # A served turn now runs until finished, and the user has no way to stop it
 
 **Filed:** 2026-08-29

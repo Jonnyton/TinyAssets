@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Codex stdout-EOF test assumes POSIX fds
+filed: '2026-09-26'
+summary: '`test_stdout_eof_with_a_live_child_ends_the_child_and_leaks_no_task` is red on a Windows dev box in isolation and is NOT in the known-failing list, so every lane re-diagnoses it; the invariant is real, the EOF mechanism is POSIX-only'
+---
+
 # The codex stdout-EOF watchdog test assumes POSIX fd semantics and is red on Windows
 
 **Filed:** 2026-09-26

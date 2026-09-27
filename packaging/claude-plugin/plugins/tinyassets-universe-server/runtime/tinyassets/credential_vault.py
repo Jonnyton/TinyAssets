@@ -974,6 +974,103 @@ def _ensure_llm_deposit_owner_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_refresh_state_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_credential_refresh_state (
+            universe_id TEXT NOT NULL,
+            service TEXT NOT NULL,
+            rejected_at TEXT NOT NULL,
+            PRIMARY KEY (universe_id, service)
+        )
+        """
+    )
+
+
+def record_refresh_rejected(
+    base_path: str | Path, *, universe_id: str, service: str, when: str = "",
+) -> None:
+    """Remember that this source's stored sign-in was refused, across restarts.
+
+    NOT a field on the `llm_subscription` record, and that is the whole point.
+    `_subscription_record_digest` hashes the ENTIRE record, and that digest is pinned
+    into the provider binding -- so stamping the rejection where it naturally belongs
+    would invalidate custody and make serving refuse outright, which is worse than
+    the problem: it would replace a turn that falls back to the owner's next model
+    with one that cannot run at all. The requirement is that the fact survives a
+    deploy (the in-memory `SOURCE_HEALTH` mark does not); this store meets it without
+    touching the bytes custody is computed from.
+
+    Idempotent, and never raises: failing to remember a rejection must not fail the
+    turn that discovered it.
+    """
+    from datetime import datetime, timezone
+
+    from tinyassets.storage import db_path
+
+    stamp = when or datetime.now(timezone.utc).isoformat()
+    try:
+        conn = sqlite3.connect(db_path(Path(base_path)), isolation_level=None)
+    except sqlite3.Error:
+        logger.warning("could not open storage to record a sign-in rejection")
+        return
+    try:
+        _ensure_refresh_state_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO llm_credential_refresh_state (universe_id, service, rejected_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (universe_id, service) DO UPDATE SET rejected_at = excluded.rejected_at
+            """,
+            (str(universe_id).strip(), str(service).strip().lower(), stamp),
+        )
+    except sqlite3.Error:
+        logger.warning("could not record a sign-in rejection")
+    finally:
+        conn.close()
+
+
+def clear_refresh_rejected(base_path: str | Path, *, universe_id: str, service: str) -> None:
+    """Forget a rejection, because a deposit or a successful refresh replaced it."""
+    from tinyassets.storage import db_path
+
+    try:
+        conn = sqlite3.connect(db_path(Path(base_path)), isolation_level=None)
+    except sqlite3.Error:
+        return
+    try:
+        _ensure_refresh_state_schema(conn)
+        conn.execute(
+            "DELETE FROM llm_credential_refresh_state WHERE universe_id = ? AND service = ?",
+            (str(universe_id).strip(), str(service).strip().lower()),
+        )
+    except sqlite3.Error:
+        logger.warning("could not clear a sign-in rejection")
+    finally:
+        conn.close()
+
+
+def refresh_rejected_sources(base_path: str | Path, *, universe_id: str) -> dict[str, str]:
+    """``{service: rejected_at}`` for this universe. Empty when nothing is refused."""
+    from tinyassets.storage import db_path
+
+    try:
+        conn = sqlite3.connect(db_path(Path(base_path)), isolation_level=None)
+    except sqlite3.Error:
+        return {}
+    try:
+        _ensure_refresh_state_schema(conn)
+        rows = conn.execute(
+            "SELECT service, rejected_at FROM llm_credential_refresh_state WHERE universe_id = ?",
+            (str(universe_id).strip(),),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
 def _read_credential_material(path: Path) -> bytes:
     if path.is_symlink() or not path.is_file():
         raise PermissionError("exactly one usable subscription credential is required")

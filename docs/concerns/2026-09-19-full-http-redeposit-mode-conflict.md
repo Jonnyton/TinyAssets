@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Full HTTP redeposit can conflict
+filed: '2026-09-19'
+summary: behavioral probe on unchanged base returns conflict when rotating an existing exact connection into full access; preserve authority and partial-outcome honesty in a separate fix
+---
+
 # Existing exact HTTP connection cannot always redeposit as full access
 
 **Filed / reproduced:** 2026-09-19 UTC, Windows Python3.14, isolated temporary

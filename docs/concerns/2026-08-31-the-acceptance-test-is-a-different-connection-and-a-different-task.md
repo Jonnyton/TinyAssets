@@ -1,3 +1,10 @@
+---
+severity: note
+title: 'The acceptance test: a different connection, a different task, zero patches'
+filed: '2026-08-31'
+summary: 'the founder''s bar for calling the credential work done: another service and another task with NO platform patch'
+---
+
 # The acceptance test: a different connection, a different task, zero patches
 
 **Founder, 2026-08-31**, after six consecutive gates fixed in one day:

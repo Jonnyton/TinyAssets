@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Review follow-ups batch 2026-09-24
+filed: '2026-09-24'
+summary: 'docs-only merges restart prod and kill turns; plus non-floor follow-ups from #3954/3956/3958/3960/3963/3964/3967/3968 and cancelled required-tests never re-triggering'
+---
+
 # Review follow-ups batch (2026-09-24)
 
 **Filed:** 2026-09-24. Non-floor findings from the Tier 1/2 reviews of that

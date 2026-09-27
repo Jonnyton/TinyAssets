@@ -474,7 +474,16 @@ def _source_endpoint(document: _Document, token_url: str, client_id: str) -> tup
         metadata = fetch_server_metadata(issuer)
     except (OAuthError, ValueError):
         return "", ""
+    # The issuer here comes from an UNVERIFIED identity token, and that is a known
+    # gap rather than an oversight. A signature check against the issuer's published
+    # keys was built and removed: with an attacker-controlled ``iss`` it proves only
+    # that the token is self-consistent, not where the credential came from, and it
+    # added an unhardened key fetch to buy that. Anchoring the issuer outside the
+    # mutable document is the real fix, and it needs a design rather than a patch:
+    # docs/concerns/2026-09-26-subscription-refresh-endpoint-trust.md.
     return metadata.token_endpoint, client
+
+
 
 
 def adopt_newer_on_disk_document(
@@ -666,7 +675,11 @@ def refresh_deposited_subscriptions(
     launch must not be lost to a blip in a service that is not even the one the
     turn is talking to.
     """
-    from tinyassets.credential_vault import load_credential_vault
+    from tinyassets.credential_vault import (
+        clear_refresh_rejected,
+        load_credential_vault,
+        record_refresh_rejected,
+    )
 
     universe = Path(universe_dir)
     launched = launching.strip().lower()
@@ -701,10 +714,14 @@ def refresh_deposited_subscriptions(
                 universe_id=universe_id,
             )
         except RefreshRejected as exc:
+            # Remembered for EVERY source, launching or not, and before the raise:
+            # the owner has to be asked to sign in again whichever turn discovered
+            # it, and an in-memory mark would be gone after the next deploy. Stored
+            # off the credential record on purpose -- see record_refresh_rejected.
+            record_refresh_rejected(base_path, universe_id=universe_id, service=service)
             if service != launched:
-                # Another source's dead credential. Recorded for its own owner's
-                # next turn by the launch that actually uses it; never this
-                # launch's failure.
+                # Another source's dead credential. The card is raised from the
+                # stored rejection above; it is never this launch's failure.
                 logger.info("a deposited sign-in for another source needs renewing")
                 continue
             from tinyassets.exceptions import ProviderAuthenticationError
@@ -715,6 +732,12 @@ def refresh_deposited_subscriptions(
         except RefreshError:
             rotated = False  # transient: launch with what is stored
         if rotated or adopted:
+            # A source that just produced a working authorization is not refused any
+            # more, so the card goes. Cleared here rather than only on a deposit,
+            # because a rotation the CLI made on disk fixes it without the owner
+            # doing anything, and a card for a connection that works is worse than
+            # no card.
+            clear_refresh_rejected(base_path, universe_id=universe_id, service=service)
             renew_accepted_source(
                 base_path=base_path,
                 universe_dir=universe,

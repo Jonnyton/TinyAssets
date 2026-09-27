@@ -1,3 +1,10 @@
+---
+severity: P2
+title: A Stripe 4xx reads as our billing being down
+filed: '2026-08-28'
+summary: every `HTTPError` becomes `BillingUnavailable`, so a config mistake of ours is reported as infrastructure sickness three layers from the truth
+---
+
 # A Stripe 4xx reads as our billing being down
 
 **Severity:** P2 · **Found:** 2026-08-28 (Codex, reviewing the checkout-lifecycle fix)

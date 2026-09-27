@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Credential deposit refusals are unobservable
+filed: '2026-08-27'
+summary: '`connect_http` logs no refusal and returns HTTP 200, so a failed deposit is byte-identical to a successful one in the daemon log; the founder''s GitHub deposit failed twice and nobody could say why'
+---
+
 # A refused credential deposit leaves no trace on either side
 
 **Filed:** 2026-08-27
