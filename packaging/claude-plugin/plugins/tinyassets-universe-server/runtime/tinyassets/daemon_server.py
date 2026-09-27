@@ -747,6 +747,58 @@ def ensure_universe_registered(
     return get_universe(base_path, universe_id=universe_id)
 
 
+def register_universe_if_absent(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    universe_path: str | Path | None = None,
+) -> bool:
+    """Register a universe only when it has no ``universes`` row yet.
+
+    Returns ``True`` when a row was written. Use this, not
+    :func:`ensure_universe_registered`, whenever you are registering only to
+    satisfy a foreign key — which is every caller that wants a row to exist and
+    has nothing to say about the universe's NAME.
+
+    ``ensure_universe_registered`` is an UPSERT whose conflict clause is
+    ``display_name=excluded.display_name, metadata_json=excluded.metadata_json``,
+    and both of those parameters are optional. Calling it for an ALREADY-registered
+    universe without passing them therefore **destroys** them: the display name
+    becomes the raw ``universe_id`` and the registry metadata becomes ``{}``, and
+    the call reports success.
+
+    That is not hypothetical, and it was not rare. The visibility backfill did it
+    for every discovered universe on every boot, so a universe its owner had named
+    lost that name at the next restart (found by the Codex cross-family review of
+    PR #4019). The notes, work-target and hard-priority helpers in this module did
+    it on every call, three of them on READS — so listing a universe's notes
+    renamed it.
+
+    Registration is all those callers need. Renaming has its own caller,
+    :func:`set_universe_display_name`, so "only if absent" loses nothing.
+
+    ``universe_path`` defaults to ``base_path / universe_id``. Pass it when you
+    already hold the real path rather than letting this re-derive one.
+    """
+    uid = str(universe_id or "").strip()
+    if not uid:
+        return False
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM universes WHERE universe_id = ?", (uid,)
+        ).fetchone()
+    if row is not None:
+        return False
+    ensure_universe_registered(
+        base_path,
+        universe_id=uid,
+        universe_path=universe_path if universe_path is not None
+        else Path(base_path) / uid,
+    )
+    return True
+
+
 def set_universe_display_name(
     base_path: str | Path,
     *,
@@ -1958,7 +2010,7 @@ def list_note_dicts(
 ) -> list[dict[str, Any]]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -1991,7 +2043,7 @@ def list_note_dicts(
 def add_note_dict(universe_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2111,7 +2163,7 @@ def delete_note_record(universe_path: str | Path, note_id: str) -> bool:
 def list_work_target_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2138,7 +2190,7 @@ def list_work_target_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
 def upsert_work_target_dict(universe_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2174,7 +2226,7 @@ def upsert_work_target_dict(universe_path: str | Path, payload: dict[str, Any]) 
 def replace_work_target_dicts(universe_path: str | Path, payloads: list[dict[str, Any]]) -> None:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2208,7 +2260,7 @@ def replace_work_target_dicts(universe_path: str | Path, payloads: list[dict[str
 def list_hard_priority_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2235,7 +2287,7 @@ def list_hard_priority_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
 def upsert_hard_priority_dict(universe_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2271,7 +2323,7 @@ def upsert_hard_priority_dict(universe_path: str | Path, payload: dict[str, Any]
 def replace_hard_priority_dicts(universe_path: str | Path, payloads: list[dict[str, Any]]) -> None:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,

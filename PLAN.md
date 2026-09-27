@@ -46,6 +46,16 @@ the loop and the facts a model would otherwise get wrong.
   shape, approach and single-user safety holes; ship the MVP live; test as a real
   user; *then* harden what live use shows matters. Never gate a first draft behind
   a hardening gauntlet — only live users reveal whether the shape is right.
+- **Private by default** (2026-09-26). *"nodes in users universes should be
+  private unless they make them other user accessible or visible or interactable in
+  some way"*, and *"universes and the nodes in them need to be default private and
+  we need to make sure that is set correctly for new users also"*. The platform
+  never declares an open level on an owner's behalf: every creation path writes
+  `private` — first-contact home materialization included, which is the new-user
+  path — the declaring migration writes `private`, and a Branch is born private
+  too. Exposure is a separate, explicit owner action, and a level the platform does
+  not enforce on every reader is not offered at all. As-built:
+  `openspec/specs/universe-visibility/spec.md`.
 - **The floor, and only the floor, blocks a deploy:** cross-user read or effect;
   auth or credential exposure; unrecoverable loss of user data; wrong money; an
   irreversible external act without consent; public connector down. Everything
@@ -95,10 +105,6 @@ These five rules govern what features, primitives, and architecture get built �
 3. **The community commons**: shared libraries of everything users publish, and nodes opened to cross-user interaction.
 
 Isolation makes this safe. The floor is cross-user only, and every provider process is OS-jailed to its owner's universe, so powerful primitives (shell and file work included) are safe inside a universe. The platform never trades a universe's power for a shared-host safety it can get from the jail.
-
-**Private by default.** In the founder's words, 2026-09-26: *"nodes in users universes should be private unless they make them other user accessible or visible or interactable in some way"*, and *"universes and the nodes in them need to be default private and we need to make sure that is set correctly for new users also"*.
-
-So: nothing in a universe is visible, accessible or interactable to other users unless its owner exposes it. The platform never declares an open level on an owner's behalf — **every** creation path writes `private` (including first-contact home materialization, which is the new-user path), the declaring migration writes `private`, and a Branch is born private too. Exposure is a separate, explicit owner action. A level the platform does not enforce on every reader is not offered at all. As-built: `openspec/specs/universe-visibility/spec.md`.
 
 Depth: lead memory `project_minimal_primitives_principle.md`.
 
