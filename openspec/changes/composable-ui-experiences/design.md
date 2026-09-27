@@ -261,8 +261,11 @@ above 0 was named", which is what stops a stale client resurrecting a deleted ro
 **Authority.** The row is keyed by the authenticated caller, never by anything
 the caller names, and universe access is the same read/write check agent
 bindings use (`api/custom_agents._binding_access`). Account deletion removes a
-person's rows in every universe (`PERSON_KEYED_DESPITE_UNIVERSE`), like
-`universe_model_preferences`.
+person's rows in every universe by the owner key ONLY (`OWNER_ONLY_TABLES`),
+never by the universe sweep: a collaborator's choice about a deleted owner's
+universe is the collaborator's, and a universe sweep could take it because a
+save can commit between the foreign-row check and the delete (review,
+2026-09-26).
 
 `ui_library` is a **list** of at most four components, each a `ui_id`-keyed
 object with no duplicate ids. Its canonical JSON is capped at

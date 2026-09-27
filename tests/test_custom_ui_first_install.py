@@ -224,6 +224,12 @@ def test_account_deletion_removes_the_persons_rows_everywhere_and_only_theirs(
                 expected_revision=0, changes={"ui_library": []})
     kept = save_app_ui(base, owner_user_id=B, universe_id=HOME_B,
                        expected_revision=0, changes={"ui_library": [_bundle("den")]})
+    # B's own choice ABOUT A's universe. It is B's, so deleting A -- and with it
+    # A's universe -- must neither take it nor be blocked by it. Sweeping this
+    # table by universe did take it: a collaborator's save can commit between
+    # the foreign-row check and the delete (review, 2026-09-26).
+    bobs_about_a = save_app_ui(base, owner_user_id=B, universe_id=HOME_A,
+                               expected_revision=0, changes={"ui_library": [_bundle("b")]})
 
     delete_account(base, founder_sub=A, cancel_billing=lambda home: "cancelled",
                    delete_identity=lambda sub: "deleted")
@@ -231,6 +237,19 @@ def test_account_deletion_removes_the_persons_rows_everywhere_and_only_theirs(
     assert get_app_ui(base, owner_user_id=A, universe_id=HOME_A)["revision"] == 0
     assert get_app_ui(base, owner_user_id=A, universe_id=HOME_B)["revision"] == 0
     assert get_app_ui(base, owner_user_id=B, universe_id=HOME_B) == kept
+    assert get_app_ui(base, owner_user_id=B, universe_id=HOME_A) == bobs_about_a
+
+
+def test_deletion_never_reaches_this_table_by_universe(tmp_path) -> None:
+    """The structural half: whatever interleaving happens, the plan for this
+    table matches ONLY the deleted person's key, so no other person's row can be
+    in the delete's WHERE clause."""
+    from tinyassets.account_deletion import deletion_plan
+
+    get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME)  # schema up front
+    with _agent_connect(tmp_path) as conn:
+        plan = deletion_plan(conn, principal=ALICE, home=HOME)
+    assert plan["universe_app_ui"] == [("owner_user_id", "principal")]
 
 
 # --------------------------------------------------------------------------- #

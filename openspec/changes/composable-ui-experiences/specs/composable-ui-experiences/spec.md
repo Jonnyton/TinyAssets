@@ -245,7 +245,8 @@ appear to, or change, any agent-binding reader. A first save SHALL create the ro
 with nothing published. Every save SHALL be compare-and-set on the revision the
 caller read, SHALL write only the fields it names, and SHALL be refused as a
 conflict rather than overwrite when the revision is stale. Deleting an account
-SHALL remove that person's rows in every universe and no one else's.
+SHALL remove that person's rows in every universe and no one else's, including
+another person's row about the deleted account's own universe.
 
 #### Scenario: A new account installs a UI having published nothing
 - **WHEN** an owner with no row and no published definition installs a bundle
