@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
+import os
+import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -183,3 +187,203 @@ def test_min_ran_at_or_above_floor_is_accepted():
     """The escape hatch is lowering MIN_RAN_FLOOR itself, in the same PR."""
     assert gate._min_ran_arg(str(gate.MIN_RAN_FLOOR)) == gate.MIN_RAN_FLOOR
     assert gate._min_ran_arg("10700") == 10700
+
+
+# ---- sharding: partition ---------------------------------------------------
+
+
+def test_parse_shard_accepts_in_range_and_rejects_the_rest():
+    assert gate.parse_shard("1/6") == (1, 6)
+    assert gate.parse_shard("6/6") == (6, 6)
+    for bad in ("0/6", "7/6", "3", "a/b", "1/0"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            gate.parse_shard(bad)
+
+
+def test_every_real_test_file_has_exactly_one_owner_and_every_shard_gets_work():
+    """Complete and disjoint over the repo's ACTUAL test files, at the CI count."""
+    files = sorted(
+        p.relative_to(gate.REPO_ROOT).as_posix()
+        for p in (gate.REPO_ROOT / "tests").rglob("test_*.py")
+    )
+    assert len(files) > 100
+    owners = {f: gate.shard_of(f, 6) for f in files}
+    assert set(owners.values()) == set(range(1, 7))
+    # Stable across calls and separator styles: every shard job computes the
+    # partition independently, so any nondeterminism would drop or double files.
+    assert all(gate.shard_of(f, 6) == owners[f] for f in files)
+    assert all(gate.shard_of(f.replace("/", "\\"), 6) == owners[f] for f in files)
+
+
+class _FakeConfig:
+    def __init__(self, root: Path, shard: str | None):
+        self.rootpath = root
+        self._shard = shard
+
+    def getoption(self, name, default=None):
+        assert name == "--ci-shard"
+        return self._shard
+
+
+def test_ignore_collect_skips_only_other_shards_test_files(tmp_path):
+    f = tmp_path / "tests" / "test_x.py"
+    f.parent.mkdir()
+    f.write_text("", encoding="utf-8")
+    owner = gate.shard_of("tests/test_x.py", 4)
+    other = owner % 4 + 1
+    assert gate.pytest_ignore_collect(f, _FakeConfig(tmp_path, f"{owner}/4")) is None
+    assert gate.pytest_ignore_collect(f, _FakeConfig(tmp_path, f"{other}/4")) is True
+    # Unsharded runs, directories and conftests are never filtered: a conftest
+    # skipped in some shard would change fixtures under that shard's tests.
+    assert gate.pytest_ignore_collect(f, _FakeConfig(tmp_path, None)) is None
+    assert gate.pytest_ignore_collect(f.parent, _FakeConfig(tmp_path, f"{other}/4")) is None
+    for name in ("conftest.py", "__init__.py"):
+        special = f.parent / name
+        special.write_text("", encoding="utf-8")
+        for i in range(1, 5):
+            assert gate.pytest_ignore_collect(special, _FakeConfig(tmp_path, f"{i}/4")) is None
+
+
+def test_real_pytest_shards_cover_every_test_exactly_once(tmp_path):
+    """Drive pytest itself with `-p ci_required_tests`, the way the gate does.
+
+    The unit tests above prove the hook's answers; this proves pytest actually
+    loads the module as a plugin and honours them, so the union of the shards
+    is exactly the unsharded run.
+    """
+    proj = tmp_path / "proj"
+    (proj / "tests" / "sub").mkdir(parents=True)
+    (proj / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (proj / "tests" / "conftest.py").write_text("", encoding="utf-8")
+    expected = set()
+    for i in range(12):
+        rel = f"tests/{'sub/' if i % 3 == 0 else ''}test_m{i}.py"
+        (proj / rel).write_text(
+            "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n", encoding="utf-8"
+        )
+        expected |= {f"{rel}::test_a", f"{rel}::test_b"}
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(_SCRIPT.parent)
+    seen: dict[str, int] = {}
+    for index in (1, 2, 3):
+        junit = tmp_path / f"j{index}.xml"
+        proc = subprocess.run(
+            [
+                sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                "-p", "ci_required_tests", f"--ci-shard={index}/3",
+                "-o", "junit_family=xunit1", f"--junitxml={junit}", "tests",
+            ],
+            cwd=proj, env=env, capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        _, ran = gate.collect_outcomes(junit)
+        assert ran, f"shard {index} ran nothing; the split did not spread 12 files"
+        for nid in ran:
+            assert nid not in seen, f"{nid} ran in shards {seen[nid]} and {index}"
+            seen[nid] = index
+    assert set(seen) == expected
+
+
+# ---- sharding: the aggregate -----------------------------------------------
+
+
+def _shard(dir_: Path, index: int, total: int, body: str | None, exit_code: int = 0) -> None:
+    (dir_ / f"junit-shard-{index}.json").write_text(
+        json.dumps({"shard": index, "total": total, "pytest_exit": exit_code}), encoding="utf-8"
+    )
+    if body is not None:
+        (dir_ / f"junit-shard-{index}.xml").write_text(
+            f"<testsuites><testsuite>{body}</testsuite></testsuites>", encoding="utf-8"
+        )
+
+
+def _cases(module: str, n: int, fail: int = 0) -> str:
+    return "".join(
+        f'<testcase file="tests/{module}.py" classname="tests.{module}" name="t{i}">'
+        f"{'<failure/>' if i < fail else ''}</testcase>"
+        for i in range(n)
+    )
+
+
+@pytest.fixture()
+def shards(tmp_path):
+    d = tmp_path / "shards"
+    d.mkdir()
+    return d
+
+
+def _aggregate(shards: Path, expected: int = 3, min_ran: int = 1) -> int:
+    return gate.aggregate(shards, expected, shards.parent / "junit.xml", min_ran)
+
+
+def test_aggregate_passes_when_every_shard_is_present_and_clean(shards):
+    for i in (1, 2, 3):
+        _shard(shards, i, 3, _cases(f"test_s{i}", 4))
+    assert _aggregate(shards) == 0
+    # The union is written back as ONE junit, the shape --emit-quarantine reads.
+    _, ran = gate.collect_outcomes(shards.parent / "junit.xml")
+    assert len(ran) == 12
+
+
+def test_aggregate_fails_on_a_missing_shard(shards, capsys):
+    """The headline property: a lost shard can never read as green."""
+    _shard(shards, 1, 3, _cases("test_s1", 4))
+    _shard(shards, 3, 3, _cases("test_s3", 4))
+    assert _aggregate(shards) == 1
+    assert "missing shard(s) [2]" in capsys.readouterr().out
+
+
+def test_aggregate_fails_when_a_shard_ran_a_different_split(shards):
+    _shard(shards, 1, 3, _cases("test_s1", 4))
+    _shard(shards, 2, 3, _cases("test_s2", 4))
+    _shard(shards, 3, 4, _cases("test_s3", 4))
+    assert _aggregate(shards) == 1
+
+
+@pytest.mark.parametrize("exit_code", [2, 3, 4, 5])
+def test_aggregate_fails_on_a_shard_exit_nothing_explains(shards, exit_code):
+    _shard(shards, 1, 3, _cases("test_s1", 4))
+    _shard(shards, 2, 3, _cases("test_s2", 4), exit_code=exit_code)
+    _shard(shards, 3, 3, _cases("test_s3", 4))
+    assert _aggregate(shards) == 1
+
+
+def test_aggregate_fails_when_a_shard_wrote_no_junit(shards):
+    _shard(shards, 1, 3, _cases("test_s1", 4))
+    _shard(shards, 2, 3, None, exit_code=1)
+    _shard(shards, 3, 3, _cases("test_s3", 4))
+    assert _aggregate(shards) == 1
+
+
+def test_aggregate_fails_when_a_shard_junit_is_corrupt(shards):
+    for i in (1, 2, 3):
+        _shard(shards, i, 3, _cases(f"test_s{i}", 4))
+    (shards / "junit-shard-2.xml").write_text("<testsuites><testsu", encoding="utf-8")
+    assert _aggregate(shards) == 1
+
+
+def test_aggregate_fails_when_one_test_ran_in_two_shards(shards):
+    _shard(shards, 1, 3, _cases("test_s1", 4))
+    _shard(shards, 2, 3, _cases("test_s1", 1))
+    _shard(shards, 3, 3, _cases("test_s3", 4))
+    assert _aggregate(shards) == 1
+
+
+def test_aggregate_fails_on_a_new_failure_in_any_shard(shards):
+    _shard(shards, 1, 3, _cases("test_s1", 4))
+    _shard(shards, 2, 3, _cases("test_s2", 4, fail=1), exit_code=1)
+    _shard(shards, 3, 3, _cases("test_s3", 4))
+    assert _aggregate(shards) == 1
+
+
+def test_aggregate_applies_the_vacuity_floor_to_the_union(shards):
+    for i in (1, 2, 3):
+        _shard(shards, i, 3, _cases(f"test_s{i}", 4))
+    assert _aggregate(shards, min_ran=13) == 1
+    assert _aggregate(shards, min_ran=12) == 0
+
+
+def test_shard_floor_sits_below_one_shard_of_the_full_floor():
+    """A shard floor above ~1/6 of the suite would fail a healthy small shard."""
+    assert 500 <= gate.MIN_RAN_FLOORS["shard"] < gate.MIN_RAN_FLOOR // 6
