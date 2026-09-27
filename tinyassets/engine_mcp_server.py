@@ -344,14 +344,27 @@ class BoundedResults(Middleware):
     result and the ceiling applies per block. ``structured_content`` is rewritten
     alongside it -- a client reading the structured half must not receive the
     megabyte the text half no longer carries.
+
+    ``EXACT_BYTE_READS`` is exempt, because a ceiling is the wrong tool for a read
+    whose contract is exact bytes: capping ``target="run_file"`` destroyed both the
+    base64 and the ``next_offset`` cursor that would have let the agent page, so
+    files the owner uploaded became unreadable to their own universe. Size is not
+    what earns an exemption; being unusable when partial is.
     """
 
     async def on_call_tool(self, context, call_next):
-        from tinyassets.engine_result_bounds import bound_tool_text, resolve_ceiling
+        from tinyassets.engine_result_bounds import (
+            bound_tool_text,
+            ceiling_exempt,
+            resolve_ceiling,
+        )
 
         result = await call_next(context)
+        message = getattr(context, "message", None)
+        tool = getattr(message, "name", "") or ""
+        if ceiling_exempt(tool, getattr(message, "arguments", None)):
+            return result
         limit = resolve_ceiling()
-        tool = getattr(getattr(context, "message", None), "name", "") or ""
         blocks, capped = [], {}
         for block in result.content or ():
             text = getattr(block, "text", None)

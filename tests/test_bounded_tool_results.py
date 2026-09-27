@@ -162,6 +162,75 @@ def test_the_capped_result_uses_the_budget_it_was_given(monkeypatch):
     assert size > limit - 600, f"used only {size} of {limit}"
 
 
+def test_an_exact_byte_read_is_not_truncated(monkeypatch):
+    """A ceiling is the wrong tool for a read whose contract is exact bytes.
+
+    REGRESSION, measured 2026-09-26 on the real dispatch path before this guard
+    existed: a 256 KB owned run-file chunk (a 349,681-byte reply) came back as a
+    24,576-byte marker carrying neither `bytes_base64` nor `next_offset`. The agent
+    lost the bytes AND the cursor that would have let it page, so a file its owner
+    uploaded in the app became unreadable to their own universe -- worse, for that
+    read, than the overflow this module exists to prevent.
+
+    `file_max_bytes` (default 524288, maximum 1048576) is the parameter that bounds
+    this read. A byte ceiling layered over it only breaks it.
+    """
+    import base64
+
+    payload = json.dumps({
+        "file_id": "f-1",
+        "bytes_base64": base64.b64encode(b"\x00\xff" * 131_072).decode(),
+        "next_offset": 262_144,
+        "eof": False,
+    })
+    s = _bind(monkeypatch, payload)
+    assert len(payload.encode()) > 300_000, "the regression needs a real chunk size"
+
+    delivered = _text(asyncio.run(s.mcp.call_tool(
+        "read_graph", {"target": "run_file", "run_id": "r-1", "file_id": "f-1"},
+    )))
+
+    # A run's bytes are generated content, so they ride inside the untrusted
+    # envelope; what matters is that the envelope carries the payload WHOLE.
+    envelope = json.loads(delivered)
+    assert envelope["untrusted"] is True
+    assert "truncated" not in envelope
+    parsed = envelope["content"]
+    assert parsed == json.loads(payload), "exact bytes must survive dispatch whole"
+    # The cursor is the part whose loss made this unrecoverable rather than merely
+    # partial: without it the agent cannot ask for the next chunk.
+    assert parsed["next_offset"] == 262_144
+    assert len(parsed["bytes_base64"]) == len(json.loads(payload)["bytes_base64"])
+
+
+def test_the_exemption_is_a_contract_not_a_size_escape(monkeypatch):
+    """Only the named (tool, target) pair is exempt; nothing else inherits it."""
+    from tinyassets.engine_result_bounds import EXACT_BYTE_READS, ceiling_exempt
+
+    assert EXACT_BYTE_READS == {("read_graph", "run_file")}
+    assert ceiling_exempt("read_graph", {"target": "run_file"})
+    assert ceiling_exempt("read_graph", {"target": "  RUN_FILE  "})
+    # A sibling target of the same tool is NOT exempt.
+    assert not ceiling_exempt("read_graph", {"target": "run_file_limits"})
+    assert not ceiling_exempt("read_graph", {"target": "model_options"})
+    # Another tool cannot borrow it, and an unreadable call never escapes the
+    # ceiling -- defaulting to exempt would let anything unparseable through.
+    assert not ceiling_exempt("bash", {"target": "run_file"})
+    for unreadable in (None, "run_file", {}, {"target": None}, {"target": 7}):
+        assert not ceiling_exempt("read_graph", unreadable), unreadable
+
+
+def test_a_sibling_of_an_exempt_target_is_still_bounded(monkeypatch):
+    """Proves the exemption is keyed on the target, through the real dispatch."""
+    huge = json.dumps({"limits": ["x" * 64 for _ in range(2_000)]})
+    s = _bind(monkeypatch, huge)
+
+    delivered = _text(asyncio.run(s.mcp.call_tool(
+        "read_graph", {"target": "run_file_limits"},
+    )))
+    assert json.loads(delivered)["truncated"] is True
+
+
 def test_a_result_within_the_ceiling_is_returned_byte_for_byte(monkeypatch):
     """Bounding is not reformatting: a result that fits is never rewritten."""
     payload = json.dumps({"universe_id": "u-pinned", "phase": "running"})
