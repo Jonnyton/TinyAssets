@@ -154,12 +154,6 @@ select = ["E", "F", "W", "I"]
 # be reflowed without breaking the JS. Plus a PowerShell one-liner in the
 # module docstring that users copy-paste verbatim.
 "scripts/claude_chat.py" = ["E501"]
-# Cross-family review reproductions, kept verbatim as evidence for the change
-# they gated. They MUST set TINYASSETS_DATA_DIR before importing production
-# modules (E402 by necessity, not by sloppiness), and their probe output lines
-# are transcripts rather than code. Reformatting a reproduction risks changing
-# what it reproduces; the findings themselves are pinned as real tests.
-"docs/audits/*-repro.py" = ["E501", "E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

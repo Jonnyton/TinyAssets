@@ -567,6 +567,85 @@ class TestWriteGraphSurface:
 # --------------------------------------------------------------------------- #
 # 6. The migration over existing records
 # --------------------------------------------------------------------------- #
+class TestABranchIsBornPrivateToo:
+    """Founder, 2026-09-26: "universes AND THE NODES IN THEM need to be default
+    private". A Branch is nodes, so its default is the same rule.
+
+    The canonical `write_graph target=branch` already did
+    `setdefault("visibility", "private")`. These cover the two INTERNAL writers
+    behind it, reachable through the deprecated `extensions` tool — and a
+    deprecated path is still a path.
+    """
+
+    @staticmethod
+    def _create(base: Path, name: str, **kw) -> dict:
+        from tinyassets.api import branches as br
+        from tinyassets.daemon_server import initialize_author_server
+
+        initialize_author_server(base)
+        return json.loads(br._ext_branch_create({"name": name, **kw}))
+
+    def test_create_branch_defaults_private(self, base):
+        _authenticate(OWNER)
+        out = self._create(base, "my-shape")
+        assert out.get("status") == "created", out
+        assert out["visibility"] == "private"
+
+    def test_an_unrecognized_visibility_does_not_publish(self, base):
+        """The fallback mattered as much as the default: it used to turn every
+        value that was not exactly "private" into `public`, so a typo published."""
+        _authenticate(OWNER)
+        for i, bad in enumerate(("publik", "world", "yes", "1", "PRIVATE")):
+            out = self._create(base, f"shape-{i}", visibility=bad)
+            assert out.get("status") == "created", (bad, out)
+            assert out["visibility"] == "private", (bad, out)
+
+    def test_case_and_whitespace_still_normalize_to_public(self, base):
+        """`"PUBLIC "` IS an explicit public — normalization is deliberate, so the
+        fail-closed fallback must not swallow a real request to publish."""
+        _authenticate(OWNER)
+        for i, ok in enumerate(("PUBLIC ", " public", "Public")):
+            out = self._create(base, f"norm-{i}", visibility=ok)
+            assert out["visibility"] == "public", (ok, out)
+
+    def test_an_explicit_public_is_still_honoured(self, base):
+        _authenticate(OWNER)
+        out = self._create(base, "shared-shape", visibility="public")
+        assert out["visibility"] == "public", out
+
+    def test_a_row_whose_visibility_field_is_absent_is_private(self, base):
+        """The READ side, forged at the row.
+
+        A branch definition written before the field existed must not be readable
+        by everyone BECAUSE the field is absent. `_resolve_readable_branch` used to
+        default a missing value to `"public"`.
+        """
+        from tinyassets.api import branches as br
+
+        # Injected at the row rather than forged in storage: branch definitions go
+        # through a git-backed backend, so a raw SQL UPDATE is not what
+        # `get_branch_definition` reads. Driving the REAL gate with the REAL
+        # pre-field row shape is the honest way to reach the branch under test.
+        fieldless = {"branch_def_id": "legacy-1", "name": "legacy-shape",
+                     "author": OWNER}
+        assert "visibility" not in fieldless
+
+        monkey = pytest.MonkeyPatch()
+        try:
+            monkey.setattr(
+                "tinyassets.daemon_server.get_branch_definition",
+                lambda *a, **k: dict(fieldless),
+            )
+            _authenticate(STRANGER)
+            assert br._resolve_readable_branch("legacy-1", str(base)) is None
+            # ... and its AUTHOR still reads it, so this closed a read rather than
+            # breaking the branch.
+            _authenticate(OWNER)
+            assert br._resolve_readable_branch("legacy-1", str(base)) is not None
+        finally:
+            monkey.undo()
+
+
 class TestMigration:
     """`scripts/migrate_private_by_default.py` — the one-shot the host runs.
 

@@ -28,7 +28,8 @@ claimed as resolved — settling it is a mass fixture migration. Design D6a.
 
 **Review round 2 (Codex, 2026-09-26, head `50802601`): ADAPT.** All three round-1
 reproductions confirmed closed. Two new `DISAGREE_EVIDENCE` findings, both fixed
-and mutation-proven; artifact `docs/audits/2026-09-26-pr4019-round2-review.md`:
+and mutation-proven (the review transcript is a PR comment, not a repo file --
+process-bloat cut):
 
 4. The migration could not close an **unregistered bare directory** — the record
    that most needs closing, since with no rules row the legacy bit defaults open.
@@ -59,7 +60,7 @@ round-2 holes confirmed closed (bare directory flipped with `failed == []`,
 excluded; `host_path` matches creation and backfill; both writers reject split
 levels; no other production route producing them; docstring accurate). It also
 checked the five tests I asked it to for the wrong-reason failure mode and found
-none. Artifact `docs/audits/2026-09-26-pr4019-round3-review.md`.
+none.
 
 6. One new `DISAGREE_EVIDENCE`, in **my own round-2 fix**: registering
    unconditionally destroyed registry data. `ensure_universe_registered` is an
@@ -91,6 +92,42 @@ schema migrations allowed), mutation-checked.
 **Read the CI summary's "NEW failures" line.** It does the differential against
 main that a local Windows run cannot, and it named the one failure among eight that
 belonged to this change.
+
+**Scope widened on the founder's confirmation, 2026-09-26:** *"universes and the
+nodes in them need to be default private and we need to make sure that is set
+correctly for new users also."*
+
+- [x] 13. **Every creation path, not just the explicit one.** Grepped every writer
+  of a new universe dir or rules row: `_action_create_universe`,
+  `first_contact.ensure_founder_home` (the NEW-USER path — `converse` with no
+  `graph_id` lands here), and `visibility.backfill_universe_visibility`. All three
+  now declare `private`; the first-contact path inherits it because it routes
+  through `_universe_impl(action="create_universe")` with no visibility. Tests in
+  `tests/test_first_contact.py`: a newcomer's first home is born `private` with
+  `source="default"`, another signed-in user is refused discovery, inspect and
+  `get_status` on it without the id leaking, and the owner still reads it.
+- [x] 14. **A Branch is nodes, so it is born private too.** The canonical
+  `write_graph target=branch` already did `setdefault("visibility", "private")`;
+  the two INTERNAL writers behind it did not. `_ext_branch_create`'s default AND
+  its fallback now go private (the fallback mattered as much: it turned every value
+  that was not exactly `"private"` into `public`, so a typo published), the
+  branch-spec builder behind `build_branch`/remix defaults private, and the
+  **read** side no longer treats a row with an ABSENT `visibility` field as public.
+  Case/whitespace still normalize, so `"PUBLIC "` is still an explicit publish.
+  Blast radius measured before pushing: 214 tests across 9 branch modules, zero
+  failures. Mutation-proven.
+- [x] 15. **Review transcripts are not repo files.** The four
+  `docs/audits/2026-09-26-pr4019-*` artifacts are deleted under the founder's
+  process-bloat cut; the verdict is a PR comment. The `pyproject.toml`
+  `per-file-ignores` entry that existed only for those repro scripts went with them
+  rather than becoming a stale entry.
+- [x] 16. Concern filed for a defect found by the creation-path sweep, not caused
+  by this change: `docs/concerns/2026-09-26-note-and-work-target-helpers-wipe-the-registry.md`
+  — four `daemon_server` note/work-target helpers call the
+  `ensure_universe_registered` UPSERT with no `display_name`/`metadata`, so listing
+  a universe's notes resets its name to its id. Same class as finding 6, on hotter
+  paths. Left out because `daemon_server.py` is held by #4012 under a head-pinned
+  receipt and `register_if_absent` makes it a four-line fix once that lands.
 
 **Cap reached.** AGENTS.md allows three rounds, so the round-3 fix is
 **unreviewed by the peer** and no round 4 was opened. Two findings stay open by
