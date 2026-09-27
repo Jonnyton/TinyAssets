@@ -99,6 +99,66 @@ order to replace a key.
 - **THEN** the ask is refused when it is RAISED, naming the deposit as the
   correct action, and no tab is shown to the owner
 
+### Requirement: A refused sign-in is renewed by signing in again, not by pasting
+
+A connection completed by SIGNING IN cannot be repaired by the `rotate_http` card
+above: there is no secret for the owner to paste, and that card's own preview refuses a
+sign-in scheme by design. When such a connection's stored sign-in stops being accepted,
+the owner SHALL instead be offered a card that starts the brokered sign-in.
+
+The refusal SHALL be recorded durably, so it survives a restart or a deploy. It SHALL
+NOT be recorded as a field on the credential record, because the record's digest is
+pinned into the provider binding: writing to it would invalidate credential custody and
+make serving refuse outright, which is a worse outcome than the refusal it describes.
+It SHALL be recorded for every refused source, not only the one a launch happened to be
+using, and SHALL be cleared both by a new deposit and by a later successful refresh,
+since a rotation the provider's own client performed repairs the connection with no
+owner action.
+
+The card SHALL be derived from that record rather than stored, so it appears when a
+refusal is recorded and disappears when anything repairs it, and cannot be dismissed
+into a state with no way back. AT MOST ONE such card SHALL be offered at a time,
+because the surface has a single connect panel that each card reconfigures; the oldest
+unresolved refusal is offered first and the next once it is resolved. No card SHALL be
+offered for a source whose credential no longer exists. A source the daemon cannot
+complete by brokered sign-in SHALL be offered its ordinary connection shapes instead of
+a sign-in it cannot finish.
+
+Answering the card SHALL deposit only into a universe the answering caller
+administers. The target SHALL come from the card plus the caller's identity and nothing
+else, resolved through the same explicit admin check other writes on this surface use;
+a universe the caller does not administer SHALL be refused rather than silently replaced
+with their own, and a service the route cannot complete SHALL be refused rather than
+completing a different one.
+
+#### Scenario: a refused sign-in survives a restart
+- **WHEN** a stored sign-in is refused and the process restarts
+- **THEN** the refusal is still known and the card is still offered, without having
+  altered the bytes credential custody is computed from
+
+#### Scenario: one card at a time
+- **WHEN** two sources' sign-ins are both refused
+- **THEN** exactly one card is offered, the one refused longest ago, and the second
+  appears only once the first is resolved
+
+#### Scenario: a repaired connection stops asking
+- **WHEN** the owner deposits a new credential, or a later refresh succeeds
+- **THEN** the card for that source is gone without the owner dismissing anything
+
+#### Scenario: no card for a credential that was removed
+- **WHEN** a refusal is recorded and the owner then removes that credential
+- **THEN** no card asks them to repair a connection they deleted
+
+#### Scenario: the sign-in repairs the connection the card names
+- **WHEN** the owner answers a card for a universe they administer
+- **THEN** the sign-in is bound to that universe, not to whichever universe the caller
+  happens to call home
+
+#### Scenario: another owner's universe is refused, not redirected
+- **WHEN** a caller answers with a universe they do not administer
+- **THEN** the request fails and no sign-in is started, because silently depositing into
+  their own universe instead would put a credential somewhere nobody asked for
+
 ### Requirement: Rotation is bounded to the owner's own connection
 
 A `rotate_http` SHALL be refused, before any write, when the caller holds no
