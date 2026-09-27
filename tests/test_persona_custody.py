@@ -64,7 +64,7 @@ def universe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         f"# Founder\nMy founder is {FOUNDER_FACT}.", encoding="utf-8"
     )
     ensure_universe_registered(root, universe_id="u-test", universe_path=udir)
-    vis.set_universe_visibility("u-test", "public")
+    vis.set_universe_visibility("u-test", "public", source="owner")
     return udir
 
 

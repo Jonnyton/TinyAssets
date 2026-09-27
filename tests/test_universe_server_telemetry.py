@@ -95,7 +95,7 @@ def _declare_public(base: Path, uid: str, udir: Path) -> None:
     # `founder_home` binding rather than an ACL grant, because a universe with
     # zero ACL rows is PUBLIC and that is the state these tests assert.
     set_founder_home(base, founder_sub=f"test-owner::{uid}", universe_id=uid)
-    set_universe_visibility(uid, "public")
+    set_universe_visibility(uid, "public", source="owner")
 
 
 # ---------------------------------------------------------------------------

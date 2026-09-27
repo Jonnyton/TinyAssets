@@ -124,7 +124,7 @@ def _make_universe(base: Path, uid: str, *, level: str | None = None) -> Path:
     )
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
     if level is not None:
-        vis.set_universe_visibility(uid, level)
+        vis.set_universe_visibility(uid, level, source="owner")
     return udir
 
 

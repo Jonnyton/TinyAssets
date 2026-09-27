@@ -636,7 +636,7 @@ def test_wiki_visibility_denial_precedes_scope_with_real_grant_control(
     ensure_universe_registered(
         data_root, universe_id=universe_id, universe_path=universe_dir
     )
-    visibility.set_universe_visibility(universe_id, "public")
+    visibility.set_universe_visibility(universe_id, "public", source="owner")
     universe_wiki = universe_dir / "wiki"
     _ensure_wiki_scaffold(universe_wiki)
     audience = "coordination" if scope == "coordination" else "discovery"
