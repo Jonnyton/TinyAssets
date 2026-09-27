@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -310,6 +311,73 @@ def _parse(stamp: str) -> datetime | None:
     except ValueError:
         return None
     return _as_utc(parsed)
+
+
+# -- Holder liveness ----------------------------------------------------------
+
+#: Directory under the data root where every running consumer holds an OS lock
+#: on a file named for its lease holder id, for the whole process lifetime.
+LIVENESS_DIR = ".consumer_liveness"
+
+_HOLDER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def holder_liveness_path(base_path: str | Path, holder: str) -> Path | None:
+    """The lock file that proves ``holder``'s process is alive, or None.
+
+    None for a holder id that is not a plain token: such an id can never be
+    proven dead, so its lease is honoured until it expires.
+    """
+    if not _HOLDER_RE.match(holder or ""):
+        return None
+    return Path(base_path) / LIVENESS_DIR / f"{holder}.lock"
+
+
+def hold_process_liveness(base_path: str | Path, holder: str) -> Any:
+    """Take this process's liveness lock. Keep the result for the process life.
+
+    The kernel drops the lock when the process dies, however it dies -- a
+    deploy's SIGKILL included. That makes "the holder is dead" a fact another
+    process can check, rather than a guess from a refresh that stopped.
+    """
+    from tinyassets.singleton_lock import acquire_singleton_lock
+
+    path = holder_liveness_path(base_path, holder)
+    if path is None:
+        raise ValueError(f"lease holder {holder!r} is not a plain token")
+    return acquire_singleton_lock(path)
+
+
+def holder_is_provably_dead(base_path: str | Path, holder: str) -> bool:
+    """True only when ``holder``'s process is gone. Never a guess.
+
+    The holder's liveness file exists and nobody holds its lock, so the
+    process that took it has exited. A missing file (a holder from a build
+    before this, or one that never started a consumer) is NOT evidence of
+    death: its lease stands until it expires. So does any probe error.
+    """
+    from tinyassets.singleton_lock import _lock_fd, _pid_path, _unlock_fd
+
+    path = holder_liveness_path(base_path, holder)
+    if path is None or not path.is_file():
+        return False
+    try:
+        fd = os.open(str(path), os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        if not _lock_fd(fd):
+            return False
+        _unlock_fd(fd)
+    finally:
+        os.close(fd)
+    # Its boot id is unique, so no live process will ever take this file again.
+    for stale in (path, _pid_path(path)):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    return True
 
 
 # -- Store --------------------------------------------------------------------
@@ -597,8 +665,12 @@ class AutomationStore:
         lease is shared state, so both processes see it.
 
         An EXPIRED lease is stealable -- a process that died mid-run must not
-        wedge its universe forever. TTL is the run timeout, and the holder
-        re-stamps it while it works, so expiry means "nobody is refreshing".
+        wedge its universe forever. So is one whose holder is PROVABLY dead
+        (``holder_is_provably_dead``): a deploy kills the process mid-run, and
+        waiting out a TTL as long as the run timeout froze every automation in
+        the universe for hours. A holder merely late to refresh is not dead.
+        TTL is the run timeout, and the holder re-stamps it while it works, so
+        expiry means "nobody is refreshing".
         """
         deadline = _iso(now + timedelta(seconds=ttl_seconds))
         moment = _as_utc(now)
@@ -615,7 +687,13 @@ class AutomationStore:
                 ).fetchone()
                 if row is not None and str(row["holder"]) != holder:
                     expires = _parse(str(row["expires_at"]))
-                    if expires is not None and expires > moment:
+                    if (
+                        expires is not None
+                        and expires > moment
+                        and not holder_is_provably_dead(
+                            self.base_path, str(row["holder"])
+                        )
+                    ):
                         conn.execute("ROLLBACK")
                         return False
                 conn.execute(
@@ -1581,6 +1659,7 @@ def _pause_if_hopeless(
 __all__ = [
     "DEFAULT_RUN_TIMEOUT_SECONDS",
     "LEASE_REFRESH_SECONDS",
+    "LIVENESS_DIR",
     "MAX_ACTIVE_PER_UNIVERSE",
     "MAX_CONSECUTIVE_FAILURES",
     "MIN_CRON_GAP_SECONDS",
@@ -1595,6 +1674,9 @@ __all__ = [
     "cancel_grace_seconds",
     "cron_min_gap_seconds",
     "due_automations",
+    "hold_process_liveness",
+    "holder_is_provably_dead",
+    "holder_liveness_path",
     "register_automation",
     "run_due_automation",
     "run_timeout_seconds",
