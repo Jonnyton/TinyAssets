@@ -34,11 +34,33 @@ from tinyassets.universe_intelligence import _build_persona_system_prompt
 
 
 def _prompt(tmp_path, tier: str) -> str:
+    """Build the served persona prompt for a REAL universe under ``tmp_path``.
+
+    A universe needs an OWNER to be readable at all (2026-09-02), and the persona
+    assembler refuses content on a universe nobody owns -- so without the
+    ownership row the prompt cannot be built and every assertion below fails on a
+    precondition rather than on its own subject. The data root has to be pointed
+    at ``tmp_path`` too, or the ownership row is written where the resolver is not
+    looking.
+    """
+    import os
+
+    from tests.conftest import own_universe
+
     universe_dir = tmp_path / "u-1"
     universe_dir.mkdir(exist_ok=True)
-    return _build_persona_system_prompt(
-        universe_dir, universe_id="u-1", tier=tier
-    )
+    previous = os.environ.get("TINYASSETS_DATA_DIR")
+    os.environ["TINYASSETS_DATA_DIR"] = str(tmp_path)
+    try:
+        own_universe(tmp_path, "u-1")
+        return _build_persona_system_prompt(
+            universe_dir, universe_id="u-1", tier=tier
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("TINYASSETS_DATA_DIR", None)
+        else:
+            os.environ["TINYASSETS_DATA_DIR"] = previous
 
 
 # --- the tool really is there, which is what makes the silence a prompt bug ---

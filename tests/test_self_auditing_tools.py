@@ -29,6 +29,18 @@ def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
     monkeypatch.delenv("TINYASSETS_TIERED_SCOPE", raising=False)
+    # A universe to report the scope status OF, and an owner so it is one. This
+    # fixture used to leave the data root empty, which resolved to a
+    # `default-universe` that did not exist -- readable only because a universe
+    # with no rules row was public by default. Since 2026-09-02 a universe
+    # exists because an ownership row names it, and a universe nobody owns
+    # grants nothing (tests/test_a_universe_needs_an_owner.py).
+    from tests.conftest import own_universe
+
+    uid = "scope-status-universe"
+    (base / uid).mkdir()
+    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
+    own_universe(base, uid)
     from tinyassets import universe_server as us
     yield us, base
 
@@ -107,6 +119,13 @@ class TestMemoryScopeStatusFlagOn:
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
         monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
         monkeypatch.setenv("TINYASSETS_TIERED_SCOPE", "on")
+        # Same reason as `ext_env` above: a universe to report on, with an owner.
+        from tests.conftest import own_universe
+
+        uid = "scope-status-universe"
+        (base / uid).mkdir()
+        monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
+        own_universe(base, uid)
         from tinyassets import universe_server as us
         yield us, base
 
@@ -154,9 +173,19 @@ class TestMemoryScopeStatusMismatchWarnings:
         monkeypatch.delenv("TINYASSETS_TIERED_SCOPE", raising=False)
 
         # Write a fake activity.log with a mismatch line into the default universe dir.
+        # The universe is created and OWNED first, then resolved -- asking
+        # `_default_universe()` for a name before any universe exists answered
+        # with the literal `default-universe` fallback, and since 2026-09-02 a
+        # directory nobody owns is not a universe, so nothing could be read back.
+        from tests.conftest import own_universe
         from tinyassets import universe_server as us
         from tinyassets.api.helpers import _default_universe
-        uid = _default_universe()
+
+        uid = "scope-mismatch-universe"
+        (base / uid).mkdir()
+        monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
+        own_universe(base, uid)
+        assert _default_universe() == uid
         udir = base / uid
         udir.mkdir(parents=True, exist_ok=True)
         log = udir / "activity.log"
