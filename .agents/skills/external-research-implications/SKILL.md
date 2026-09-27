@@ -72,23 +72,9 @@ When importing outside ideas:
 
 ### 2. Canonicalize The Outside Source
 
-Find the authoritative source, not just the first search hit.
-
-For a repo:
-
-- identify canonical URL, owner, default branch, latest commit, license,
-  language/runtime, and last push date;
-- clone read-only into a temp directory or inspect via official source APIs;
-- never vendor code as part of the study unless the user explicitly asks.
-
-For a paper:
-
-- find the paper page, PDF, repo, authors, date/version, and related artifacts;
-- prefer primary sources: arXiv, publisher, official project page, official
-  GitHub/Hugging Face repos.
-
-Use web research when freshness matters, which is almost always true for
-external projects, papers, products, standards, and active repos.
+Record what makes the claim checkable later: canonical URL, commit or version,
+date, and license. Clone read-only or use official APIs, and **never vendor
+outside code as part of a study** unless the user asks for it.
 
 ### 3. Map Both Systems
 

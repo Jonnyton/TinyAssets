@@ -25,6 +25,23 @@ Two disjuncts, both necessary:
 Neither disjunct grants anything. This module decides whether a row may be
 *reported* as activity and whether startup may *settle* it -- never whether an
 effect may run or be replayed.
+
+**Load-bearing assumption: exactly ONE process writes ``agent_turns``.** The
+second disjunct is safe only because of it. Add a second writer -- a
+``workers=N`` on the ASGI server, or another service with a WRITABLE data mount
+-- and a lone restart of one worker gives it a ``started_at`` newer than the
+other worker's in-flight rows, so startup would settle a turn that is genuinely
+RUNNING and tell the founder their live turn had been interrupted. That is the
+worse of the two failures this module exists to avoid, so the assumption is
+pinned by ``tests/test_orphaned_turn_reconcile.py`` rather than left as prose: a
+future ``workers=N`` fails a test instead of quietly reaping live turns.
+
+One known, accepted degradation: ``holds`` compares the journal's ``created_at``
+with this boot's ``started_at`` on the same wall clock, so a BACKWARDS clock step
+between boots can make a dead container's row look younger than this boot and
+survive the sweep. It self-heals on the next restart, and a non-creating
+``mode=rw`` scan cannot do better without a durable boot id on the row -- which
+is a storage-shape change this does not need.
 """
 
 from __future__ import annotations

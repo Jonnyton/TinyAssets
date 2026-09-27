@@ -52,7 +52,46 @@ Exit codes
 2   The environment could not be inventoried at all (bad --repo, no git).
 3   Escalation: the disposable set cannot bring free space above the threshold.
 
-Stdlib only. Runs from any cwd. See ``docs/reference/dev-disk-hygiene.md``.
+What runs it, without anyone asking
+-----------------------------------
+``.claude/hooks/dev_hygiene_hook.py`` (SessionStart) applies the two cheap classes
+(``basetemp,scratch``) at every session start, ~4 s, and injects an escalation into
+session context when free space is under ``TINYASSETS_DEV_HYGIENE_FLOOR_GB``.
+``scripts/install_dev_hygiene_task.ps1`` registers ``TinyAssets-DevHygiene``, an
+hourly unelevated Task Scheduler job running the FULL pass with ``--if-low-disk``
+into ``.claude/logs/dev-hygiene-full.json``; the hook reads that summary, so an
+unattended escalation is seen at the next session start without the session paying
+for a full scan. Neither can fail a session: the hook always exits 0, and a pass
+that times out injects nothing. ``TINYASSETS_DEV_HYGIENE_DISABLE`` no-ops the hook.
+
+The two things it will NOT resolve alone (exit 3 names them)
+-----------------------------------------------------------
+* ACL-locked temp dirs, from a sandbox agent pointing ``--basetemp``/``TMPDIR``
+  under a restricted token: reported ``acl_locked_needs_elevation``, cleared with an
+  ELEVATED ``powershell -ExecutionPolicy Bypass -File
+  scripts/clear_sandbox_temp_dirs.ps1 -Apply``. Prevention lives in
+  ``tests/conftest.py``, which refuses a temp root inside the repo.
+* Lanes needing a decision -- dirty, unmerged, unpushed, or holding ignored
+  content. Land or abandon them (``python scripts/wt.py done --force --reason``);
+  this tool does not choose.
+
+Reuse, so two tools cannot disagree
+-----------------------------------
+``scripts/wt.py sweep`` stays the interactive reaper. This script reuses its
+``_archive_purpose`` (an unpublished ``_PURPOSE.md`` reaches
+``.git/tinyassets-worktrees.log`` before anything is removed) and
+``git_squash_merge.is_merged_into`` for the squash-aware merge proof, and adds the
+three gates ``wt.py`` lacks: ignored-content, idleness, commits-on-no-remote.
+
+Links, on every platform: a link contributes nothing to a size and is never
+descended into. ``entry.is_dir(follow_symlinks=False)`` is True for a Windows
+junction, and a POSIX symlink's own ``lstat`` size is its target-path length --
+neither is content in this tree. ``remove_path`` refuses a link handed to it
+directly. Git writes loose objects read-only, so the remover chmod-sweeps and
+retries; a later failure reports PARTIAL removal, because ``rmtree`` deletes as it
+walks. Status parsing uses ``--porcelain -z``.
+
+Stdlib only. Runs from any cwd.
 """
 
 from __future__ import annotations

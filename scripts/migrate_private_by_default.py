@@ -198,6 +198,7 @@ def run(
 ) -> dict[str, Any]:
     """Plan, then (with ``apply``) flip every candidate to ``private``."""
     from tinyassets.api import visibility as vis
+    from tinyassets.daemon_server import register_universe_if_absent
 
     summary = plan(base_path, skip=skip)
     summary["applied"] = bool(apply)
@@ -217,11 +218,12 @@ def run(
                 # Registering UNCONDITIONALLY then destroyed data, because
                 # `ensure_universe_registered` is an UPSERT that resets
                 # `display_name` to the raw id and `metadata_json` to `{}` when
-                # those are not passed (Codex review round 3). `register_if_absent`
-                # is the single guarded form both this script and the boot backfill
-                # now use — a migration that closes a read hole must not silently
-                # rename someone's universe to do it.
-                vis.register_if_absent(base_path, uid)
+                # those are not passed (Codex review round 3).
+                # `register_universe_if_absent` is the single guarded form every
+                # FK-only caller uses, and it lives in `daemon_server` beside the
+                # UPSERT it guards — a migration that closes a read hole must not
+                # silently rename someone's universe to do it.
+                register_universe_if_absent(base_path, universe_id=uid)
                 vis.set_universe_visibility(uid, "private", source="migration")
             except Exception as exc:  # noqa: BLE001 - one bad row must not stop the rest
                 logger.error("could not flip %s: %s", uid, exc, exc_info=True)

@@ -85,6 +85,35 @@ logger = logging.getLogger("universe_server")
 _MCP_TEXT_CONTENT_MAX_CHARS = 6000
 _OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
 
+#: Seconds uvicorn keeps waiting on connections and tracked request tasks after
+#: SIGTERM, before cancelling them.
+#:
+#: Chosen, not defaulted. Uvicorn's default is to wait indefinitely, which reads
+#: generous and decides nothing: docker recreates the container with the service's
+#: ``stop_grace_period``, and with that key absent the effective bound was
+#: docker's 10-second default -- so a turn was SIGKILLed 10s into a drain nobody
+#: had chosen (founder, 2026-09-26; the same shape twice on 2026-08-29).
+#:
+#: Two things this does NOT do, both measured rather than assumed (Codex on
+#: #4039, ``docs/audits/2026-09-26-pr4039-drain-repro.py``):
+#:
+#: * It does not keep the served reply alive. sse-starlette cancels the SSE
+#:   response as soon as uvicorn starts shutting down -- 0.49s in, against a 5s
+#:   grace, while the turn itself finished at 1.99s. The turn COMPLETING is what
+#:   this buys: its effects land and ``record_exchange`` stores the answer, which
+#:   the app reads from the thread.
+#: * It does not bound the process. A FastMCP tool runs in an AnyIO worker thread
+#:   that is not cancelled, and lifespan shutdown is not covered by this timeout;
+#:   a 0.25s value still let the worker run to 1.98s. **Docker's
+#:   ``stop_grace_period`` is the real bound.**
+#:
+#: So keep this BELOW ``deploy/compose.yml``'s ``daemon.stop_grace_period``: not
+#: because it guarantees a clean exit, but so the ordinary case reaches uvicorn's
+#: own cancellation before docker's SIGKILL, instead of the two racing.
+#: ``tests/test_deploy_drains_in_flight_turns.py`` pins the ordering, because the
+#: numbers live in different files and nothing else relates them.
+GRACEFUL_SHUTDOWN_S = 170.0
+
 
 def _oauth_security_schemes() -> list[dict[str, object]]:
     """A fresh OAuth-only tool policy for OpenAI and standard MCP clients."""
@@ -668,8 +697,9 @@ def read_graph(
     Args:
         target: What to read: status, graphs, graph, branches (your own workflows
             by name + branch_def_id), goals, goal, runs, run, run_output,
-            branch, automations, automation, connections, compute, agents, agent, agent_bindings, or
-            agent_binding, model_options (all owned model choices, including
+            branch, automations, automation, connections, compute, agents, agent, agent_bindings,
+            agent_binding, app_ui (your own UI library and choice),
+            model_options (all owned model choices, including
             unavailable ones — the COMPLETE catalogue, which a large source makes
             very large; if you are reading this into a model's context use
             model_options_summary instead), model_options_summary (the same
@@ -907,6 +937,11 @@ def read_graph(
                 binding_id=agent_binding_id,
             )
         )
+    if normalized == "app_ui":
+        # The caller's own UI library + choice; keyed by the authenticated caller.
+        from tinyassets.api.app_ui import read_app_ui
+
+        return json.dumps(read_app_ui(universe_id=graph_id))
     if normalized == "compute":
         # The read sibling of write_graph target=connection operation=connect_compute:
         # list the compute providers registered for this universe (candidates). Owner-
@@ -967,6 +1002,7 @@ def read_graph(
             "agent",
             "agent_bindings",
             "agent_binding",
+            "app_ui",
             "receiver",
             "receivers",
             "output_links",
@@ -1127,7 +1163,8 @@ def write_graph(
 
     Args:
         target: What to write: goal, request, branch, universe, automation,
-            agent, agent_binding, or connection. With target=goal, the default operation proposes a
+            agent, agent_binding, app_ui, or connection. With target=goal, the default
+            operation proposes a
             Goal; operation=set_canonical sets or unsets a canonical binding.
             The founder's home universe is auto-created on first contact; use
             target=universe to create an additional universe (or the home when
@@ -1143,6 +1180,8 @@ def write_graph(
             With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update/bind_serving_provider/set_serving.
+            With target=app_ui, save: payload_json sets ui_library and/or
+            ui_selection, expected_revision is the revision read (0 when none).
             With target=automation, create/list/get/pause/resume/delete — one
             recurring run of one of YOUR workflows, owned by you, in your own
             universe. It runs on whichever provider that universe is serving on
@@ -1718,6 +1757,16 @@ def write_graph(
                 expected_revision=expected_revision,
             )
         )
+    if normalized == "app_ui":
+        if (operation or "save").strip().lower() != "save":
+            return json.dumps({"error": "unknown_app_ui_operation", "target": "app_ui",
+                               "operation": operation, "allowed_operations": ["save"]})
+        from tinyassets.api.app_ui import write_app_ui
+
+        return json.dumps(write_app_ui(
+            universe_id=graph_id, payload=payload_json,
+            expected_revision=expected_revision,
+        ))
     if normalized == "source_channel":
         # Owner self-serve source-channel approval + policy (re-applied
         # 2026-08-19 after the fe1aaf32 deploy dropped this hot-patch). A
@@ -1744,6 +1793,7 @@ def write_graph(
             "connection",
             "agent",
             "agent_binding",
+            "app_ui",
             "source_channel",
             # Supported above and dispatched, but absent from this list until
             # 2026-09-26 -- so an agent that guessed a write target was told a set
@@ -4796,7 +4846,10 @@ def main(
             assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
             assigned_consumer.start()
         try:
-            uvicorn.run(app, host=host, port=port)
+            uvicorn.run(
+                app, host=host, port=port,
+                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+            )
         finally:
             if assigned_consumer is not None:
                 assigned_consumer.stop()

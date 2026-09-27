@@ -216,9 +216,10 @@ def test_route_is_mcp_app_get(monkeypatch):
     routes = onboarding.onboarding_routes()
     by_path = {r.path: r for r in routes}
     # The SPA page (GET) + its same-origin PKCE token-exchange proxy (POST) +
-    # the one-tap OpenAI device-auth broker (POST only, identity-gated).
+    # the one-tap OpenAI device-auth broker (POST only, identity-gated) + the
+    # fixed, unauthenticated bundle host a custom UI runs inside (GET).
     assert set(by_path) == {
-        "/mcp/app", "/mcp/app/token", "/mcp/app/me",
+        "/mcp/app", "/mcp/app/token", "/mcp/app/me", "/mcp/app/ui-frame",
         "/mcp/app/model-connect/{operation}", "/mcp/app/model-callback/{flow}",
         "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
@@ -230,6 +231,9 @@ def test_route_is_mcp_app_get(monkeypatch):
     }
     assert by_path["/mcp/app/files"].methods == {"POST"}
     assert "GET" in by_path["/mcp/app"].methods
+    # The bundle host is read-only and takes no input: it carries no user content,
+    # which is why it needs no authentication (tinyassets/onboarding/ui_frame.py).
+    assert by_path["/mcp/app/ui-frame"].methods == {"GET", "HEAD"}
     assert "GET" in by_path["/mcp/app/billing/status"].methods
     assert "GET" in by_path["/mcp/app/me"].methods
     assert "GET" in by_path["/mcp/app/voice/status"].methods
