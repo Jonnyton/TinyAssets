@@ -150,6 +150,29 @@ def test_a_compact_row_keeps_what_a_choice_turns_on():
     assert "pricing" not in row and "scores" not in row and "input_modalities" not in row
 
 
+def test_a_row_this_universe_never_verified_stays_distinguishable():
+    """The shared learned catalogue (#4028) adds rows verified by someone else.
+
+    They arrive as ``availability_basis: "platform_verified_elsewhere"`` with
+    ``in_candidate_catalog: false`` and a ``model_access_optin_required`` reason.
+    The compact row has to keep all three, or the agent cannot tell a model it can
+    use from one another universe proved works.
+    """
+    from tinyassets.engine_read_views import compact_model_options
+
+    document = _catalogue({"openrouter": 2})
+    borrowed = document["options"][1]
+    borrowed["availability_basis"] = "platform_verified_elsewhere"
+    borrowed["in_candidate_catalog"] = False
+    borrowed["reasons"] = [{"reason": "model_access_optin_required", "component": "access"}]
+
+    rows = {row["model_id"]: row for row in compact_model_options(document, offset=1)["models"]}
+    assert rows["vendor/model-1"]["availability_basis"] == "platform_verified_elsewhere"
+    assert rows["vendor/model-1"]["selectable"] is False
+    assert rows["vendor/model-1"]["reasons"] == ["model_access_optin_required"]
+    assert rows["vendor/model-0"]["availability_basis"] == "discovered"
+
+
 def test_a_refusal_is_never_projected_into_data():
     from tinyassets.engine_read_views import compact_model_options, universe_status_view
 

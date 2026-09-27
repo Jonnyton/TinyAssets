@@ -99,6 +99,69 @@ def test_structured_content_is_capped_alongside_the_text(monkeypatch):
     assert huge not in rendered
 
 
+def test_the_ceiling_holds_over_the_real_loopback_http_route(monkeypatch):
+    """The transport production actually uses, not just the in-process object.
+
+    ``engine_mcp_http`` serves this server over loopback streamable-HTTP, and a
+    middleware that only fires for an in-process ``call_tool`` would leave the
+    live surface exactly as broken as it was. This drives ``mcp.http_app()``
+    through a real MCP client over the real protocol -- ASGI rather than a
+    subprocess and a port, so it stays a unit test -- with the Starlette lifespan
+    running, which the session manager requires.
+    """
+    import httpx
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    from tinyassets import engine_result_bounds as bounds
+
+    huge = json.dumps({"rows": ["x" * 64 for _ in range(4_000)]})
+    s = _bind(monkeypatch, huge)
+    monkeypatch.delenv(bounds.CEILING_ENV, raising=False)
+    monkeypatch.delenv(bounds.CONTEXT_TOKENS_ENV, raising=False)
+    app = s.mcp.http_app()
+
+    def asgi_client(**_ignored):
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://engine", timeout=30.0,
+        )
+
+    async def drive() -> str:
+        async with app.router.lifespan_context(app):
+            transport = StreamableHttpTransport(
+                "http://engine/mcp", httpx_client_factory=asgi_client,
+            )
+            async with Client(transport) as client:
+                result = await client.call_tool("read_graph", {"target": "graph"})
+                return result.content[0].text
+
+    text = asyncio.run(drive())
+    marker = json.loads(text)
+    assert marker["truncated"] is True
+    assert marker["original_bytes"] == len(huge.encode())
+    assert len(text.encode()) <= bounds.DEFAULT_CEILING_BYTES
+
+
+def test_the_capped_result_uses_the_budget_it_was_given(monkeypatch):
+    """A regression guard on the fitting loop, not on the ceiling.
+
+    The first cut of this returned 12,875 of an allowed 24,576 bytes, because
+    ``returned_bytes`` was absent when the marker overhead was measured, so the
+    first render overshot and the fallback halved the head. A ceiling that
+    silently gives back half of what it allows throws away context the model had.
+    """
+    from tinyassets import engine_result_bounds as bounds
+
+    limit = bounds.DEFAULT_CEILING_BYTES
+    rendered = bound = bounds.bound_tool_text("x" * 500_000, tool="read", limit=limit)
+    assert bound is not None
+    size = len(rendered.encode())
+    assert size <= limit
+    # Within a hair of the ceiling: overhead is the marker fields, nothing else.
+    assert size > limit - 600, f"used only {size} of {limit}"
+
+
 def test_a_result_within_the_ceiling_is_returned_byte_for_byte(monkeypatch):
     """Bounding is not reformatting: a result that fits is never rewritten."""
     payload = json.dumps({"universe_id": "u-pinned", "phase": "running"})

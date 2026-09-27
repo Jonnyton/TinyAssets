@@ -82,9 +82,16 @@ def _compact_row(row: dict) -> dict:
     """One model as the facts a choice actually turns on.
 
     Kept: who serves it, its id, where the platform's own order puts it, whether
-    it can be selected at all, its context window, tool support, and whether it
-    costs anything. Dropped: per-component pricing, modality lists, benchmark
-    scores, freshness stamps and eligibility prose -- available in the full read.
+    it can be selected at all, how its availability was established, its context
+    window, tool support, and whether it costs anything. Dropped: per-component
+    pricing, modality lists, benchmark scores, freshness stamps and eligibility
+    prose -- available in the full read.
+
+    ``availability_basis`` is kept deliberately and not for size reasons: the
+    shared learned catalogue (#4028) adds rows this universe has NOT verified
+    itself, carrying ``platform_verified_elsewhere`` with
+    ``in_candidate_catalog: false``. Dropping it would leave the agent unable to
+    tell a model it can use from one somebody else proved works.
     """
     provider_ref, model_id = _reference(row)
     pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
@@ -93,6 +100,7 @@ def _compact_row(row: dict) -> dict:
         "model_id": model_id,
         "order_index": row.get("order_index"),
         "selectable": bool(row.get("in_candidate_catalog")),
+        "availability_basis": row.get("availability_basis"),
         "context_tokens": row.get("context_tokens"),
         "tools": row.get("tools"),
         "unmetered": pricing.get("unmetered"),

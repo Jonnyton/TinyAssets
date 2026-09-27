@@ -81,6 +81,11 @@ _GENERIC_HINT = (
     "offset/limit parameters to page through the result"
 )
 
+#: Corrections allowed while fitting the envelope to the ceiling. One is enough
+#: by construction; the spares exist so a pathological escape ratio degrades to a
+#: smaller head rather than to an over-ceiling result.
+_SHRINK_ATTEMPTS = 4
+
 _MARKER_NOTE = (
     "This tool result was larger than the ceiling on a single result, so only "
     "the first bytes are below. It is NOT the whole answer -- do not report it "
@@ -160,21 +165,31 @@ def bound_tool_text(text: str, *, tool: str, limit: int) -> str | None:
         "tool": tool,
         "original_bytes": original,
         "ceiling_bytes": limit,
+        "returned_bytes": 0,
         "note": _MARKER_NOTE,
         "hint": narrowing_hint(tool),
         "content": "",
     }
+    # Every marker field is measured, ``returned_bytes`` included -- leaving one
+    # out means the first render overshoots and the head is cut far smaller than
+    # the ceiling allowed. Verified against the loopback HTTP route: the omission
+    # returned 12,875 of an allowed 24,576 bytes.
     overhead = len(json.dumps(marker, ensure_ascii=False).encode("utf-8"))
-    # JSON-escaping can grow the head past its raw byte budget, so shrink until
-    # the ENCODED envelope fits. Escapes cost at most 6 bytes per character.
     budget = limit - overhead
-    while budget > 0:
+    # JSON escaping grows the head past its raw byte budget, so shrink by the
+    # measured overflow. Removing N raw bytes removes at least N rendered bytes,
+    # so one correction suffices; the rest of the attempts absorb a digit-count
+    # change in ``returned_bytes`` itself.
+    for _ in range(_SHRINK_ATTEMPTS):
+        if budget <= 0:
+            break
         marker["content"] = _head(text, budget)
         marker["returned_bytes"] = len(marker["content"].encode("utf-8"))
         rendered = json.dumps(marker, ensure_ascii=False)
-        if len(rendered.encode("utf-8")) <= limit:
+        overflow = len(rendered.encode("utf-8")) - limit
+        if overflow <= 0:
             return rendered
-        budget //= 2
+        budget -= max(1, overflow)
     marker["content"] = ""
     marker["returned_bytes"] = 0
     return json.dumps(marker, ensure_ascii=False)
