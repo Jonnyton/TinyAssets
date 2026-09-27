@@ -70,8 +70,11 @@ on the move.
 **Change:** `desktop-release` drops `pull_request` (keep main push, tag and
 dispatch). `docker-build` limits `push` to `main`, or removes it, since
 `build-image` already builds on main. `tests` / `heavy-tests` becomes
-schedule + dispatch only. `android-build` / `ios-build` stay as they are: they
-are already path-filtered to `mobile/**` and ran 0 times tonight.
+schedule + dispatch only. `android-build` / `ios-build` drop `pull_request`
+too. The saving is small (they are path-filtered to `mobile/**` and ran 0
+times tonight); the rule is "no platform builds on PRs", and a native-shell PR
+can dispatch them. `android-release` keeps its PR run: it is the fail-closed
+release-gate check (`tests/test_android_release_pipeline.py`).
 **Keep, deploy chain (Hard Rules 11/14):** `build-image`, `deploy-prod`,
 `install-host-services`, `release-reconcile`, `uptime-canary`, `deploy-worker`,
 `dns-canary`, `p0-outage-triage`.
@@ -103,8 +106,9 @@ impact-selected run.
 
 - **M1** Shard `required-tests` (PR #4046: aggregate fails closed on a
   missing, duplicate, truncated or failed shard). No protection change.
-- **M2a** (this note's PR) `desktop-release` drops `pull_request`, and
-  `docker-build` `push` is limited to `main`. Pinned by
+- **M2a** (this note's PR) `desktop-release`, `android-build` and
+  `ios-build` drop `pull_request`, and `docker-build` `push` is limited to
+  `main`. Pinned by
   `tests/test_ci_runner_budget.py`.
 - **M2b** (after M1, same file) `heavy-tests` becomes schedule-only. No required check involved, so this
   deletes nothing a gate depends on. Saving: about 2,300 of 4,300
