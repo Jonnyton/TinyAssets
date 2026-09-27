@@ -2381,15 +2381,10 @@ def write_graph(
     * ``workspaces`` -- a directory my code nodes share across a run, the
       ``"sink": "workspace"`` packet every one of them carries, the two ways to
       get a workspace, and a repository checkout.
-    * ``interfaces`` -- building the screen the user looks at, when they ask for a
-      dashboard, a game, an office plan, any interface at all: I write the HTML,
-      CSS and JavaScript myself into a private row, the four calls my UI may
-      make, and how it gets switched to and shared. There is no catalog of
-      layouts and no platform feature to request.
-    * ``delivering`` -- letting OTHER users' universes send straight into one of my
-      steps, and sending into theirs: opening a receiver to named or any
-      authenticated users, making it findable, finding other people's, connecting an
-      output, retry-safe sending, and reading who sent what (no webhook needed).
+    * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
+      office plan, any interface they ask for: I write its HTML/CSS/JS myself.
+    * ``delivering`` -- other users' universes sending into one of my steps, and
+      mine sending into theirs: receivers, connecting an output, who sent what.
 
     I read one with ``read_graph target="handbook"
     query="write_graph.<chapter>"``; ``read_graph target="handbook"`` with no
