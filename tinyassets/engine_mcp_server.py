@@ -1526,7 +1526,9 @@ _WRITE_GRAPH_CODE_NODES_CHAPTER = """\
     AGENT NODES. A prompt node whose ``tools_allowed`` holds ``"agent"`` runs a
     full turn as me for its step (my persona, brain and every served tool, pinned
     to this universe) and writes its final answer to its output key; naming tools
-    beside it, e.g. ``["agent", "read_brain", "write_graph"]``, grants only those.
+    beside it, e.g. ``["agent", "read_brain", "write_graph"]``, grants only those;
+    a node granted both ``write_graph`` and ``run_graph`` can build and run a node
+    with any grant, so leave one out when the narrowing must hold.
 
 """
 
@@ -2268,7 +2270,8 @@ def write_graph(
     - ``operation="create"`` — create a new Branch graph from a complete Branch
       spec in ``payload_json`` (stored PRIVATE to your universe). A prompt node
       with ``"agent"`` in ``tools_allowed`` runs a whole turn as you for its step;
-      tool names beside it narrow it to exactly those.
+      tool names beside it narrow it to exactly those (granting both write_graph
+      and run_graph lets it build and run a wider node).
     - ``operation="patch"`` — edit one of YOUR OWN branches in place: pass its
       ``branch_id`` and a JSON array of edit ops in ``payload_json`` (add/remove
       edges + nodes, retune a node's prompt/source or its ``llm_policy`` model pin,

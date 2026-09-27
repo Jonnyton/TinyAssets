@@ -115,6 +115,10 @@ configurations.
 - **Runaway cost.** Each round admits against the run's existing receipt, so a
   loop ends when the receipt's invocation and token allowance is spent.
   Nested `run_graph` calls admit on their own.
+- **Grant escalation within the owner's universe.** A node granted both
+  `write_graph` and `run_graph` can build and run a node with any grant, so the
+  pair is equivalent to the full grant. It is documented, not enforced: it is
+  owner-to-owner, and the floor is cross-user only (lead ruling 2026-09-27).
 - **Prompt injection.** A turn can read untrusted text (commons, channels, run
   outputs). The grant is how the owner narrows what an injected instruction
   could reach. Foreign content stays wrapped as untrusted.
