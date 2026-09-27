@@ -14,6 +14,11 @@ name: Docker build smoke
 
 on:
   push:
+    # main only. Unfiltered, this fired on EVERY agent-branch push as well as
+    # on that branch's PR: 68 push + 61 PR runs in one 4 h window on
+    # 2026-09-27, while PR CI was starved of runners. The PR run already
+    # covers a branch; this covers what lands.
+    branches: [main]
     paths:
       - 'Dockerfile'
       - '.dockerignore'

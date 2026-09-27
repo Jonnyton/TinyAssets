@@ -1,3 +1,10 @@
+---
+severity: P3
+title: The stop-writer fence is armed by nothing and guarded by three workflows
+filed: '2026-08-27'
+summary: stale `unsafe_fenced` state archived 2026-08-29, canary watchdog re-enabled; finish `retire-cheat-loop` 2.5a (guard call sites, script, orphans, tests)
+---
+
 # The stop-writer fence is armed by nothing and guarded by three workflows — finish retiring it
 
 **Filed:** 2026-08-27 (as "recovery path deleted with the fence still armed") · **Re-scoped:** 2026-08-29

@@ -1285,3 +1285,70 @@ def test_policy_hard_fail_keeps_its_own_message(data_dir, monkeypatch):
 
     assert out.get("status") != "held"
     assert "allowed_providers" in out["error"]
+
+
+# --------------------------------------------------------------------------- #
+# Private by default reaches the NEW-USER path, not just explicit creation
+# --------------------------------------------------------------------------- #
+# Founder, 2026-09-26: "universes and the nodes in them need to be default
+# private and we need to make sure that is set correctly for new users also."
+#
+# First-contact home materialization is THE new-user path: `converse` with no
+# graph_id lands here and it is the only universe most people will ever have.
+# It routes through `_universe_impl(action="create_universe")` without passing a
+# visibility, so it inherits `DEFAULT_CREATE_VISIBILITY` — which is exactly why it
+# needs its own test rather than trusting the shared default: a future caller
+# passing an explicit level here would be invisible to the creation-path tests.
+
+
+def test_a_new_users_first_universe_is_born_private(data_dir):
+    from tinyassets.api import visibility as vis
+    from tinyassets.api.first_contact import ensure_founder_home
+
+    _login("newcomer-1")
+    uid = ensure_founder_home(data_dir, "newcomer-1")
+    assert is_universe_serial(uid), uid
+
+    assert vis.is_declared(uid), "a newborn home must not be left undeclared"
+    assert vis.universe_visibility(uid) is vis.PRIVATE
+    # Born private is the PLATFORM's default, not a decision this person made.
+    assert vis.declared_level_source(uid) == "default"
+    assert not vis.level_was_chosen_by_owner(uid)
+
+
+def test_another_user_cannot_discover_or_read_a_new_users_home(data_dir):
+    """The property the founder actually asked for, through the real callers."""
+    import tinyassets.api.status as status_mod
+    import tinyassets.api.universe as us
+    from tinyassets.api.first_contact import ensure_founder_home
+
+    _login("newcomer-1")
+    uid = ensure_founder_home(data_dir, "newcomer-1")
+    assert uid
+
+    # A different real person, fully signed in, holding no grant on that home.
+    _login("stranger-9")
+    listed = json.loads(us._action_list_universes())
+    assert uid not in {u["id"] for u in listed["universes"]}
+    assert uid not in json.dumps(listed), "a refusal must not leak the id"
+
+    assert json.loads(
+        us._action_inspect_universe(universe_id=uid)
+    )["error"] == "universe_access_denied"
+    assert json.loads(status_mod.get_status(uid))["error"] == "universe_access_denied"
+
+
+def test_the_owner_still_reads_their_own_new_home(data_dir):
+    """Guard against the test above passing because the home is simply broken."""
+    import tinyassets.api.universe as us
+    from tinyassets.api.first_contact import ensure_founder_home
+
+    _login("newcomer-1")
+    uid = ensure_founder_home(data_dir, "newcomer-1")
+
+    out = json.loads(us._action_inspect_universe(universe_id=uid))
+    assert out.get("error") != "universe_access_denied", out
+    assert out["visibility"] == "private"
+    assert uid in {
+        u["id"] for u in json.loads(us._action_list_universes())["universes"]
+    }

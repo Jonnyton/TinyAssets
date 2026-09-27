@@ -63,8 +63,8 @@ When importing outside ideas:
 1. Run `python scripts/openspec_flow.py audit` for the live work queue, and
    skim `docs/concerns/README.md` if the area has known-unresolved findings.
 2. Run `python scripts/provider_context_feed.py --provider <provider> --phase claim`
-   so prior-provider memories, idea-feed items, pending implications, and
-   automation notes are visible before scoping.
+   once, so prior-provider memories and pending implications are visible before
+   scoping. That is the only scan; there is no per-phase repeat.
 4. If you will write a durable artifact, check no open PR or active branch
    already owns those files (`python scripts/worktree_status.py`).
 6. Load `PLAN.md` sections relevant to the study. Full-load only when the
@@ -247,57 +247,20 @@ in the durable artifact so a later reader knows whose finding it was.
 ### 8. Review Scope Lives In AGENTS.md
 
 A research finding needs no review of its own to be built. When one IS owed
-(floor-class change or gate-defining file, per `AGENTS.md` § *Working Norms*),
+(floor-class change or gate file, per `AGENTS.md` § *The loop* item 4),
 dispatch it to the other family via `peer-agents` and keep the verdict artifact
 with the change: it is a real gate, not a rubber stamp, and the reviewer may
 change the plan.
 
-### 9. Create A Pickup Packet
+### 9. Leave The Next Step Somewhere Real
 
-A study is not complete until another provider can pick up the next step with
-no chat history.
-
-Before creating the pickup packet, run
-`python scripts/provider_context_feed.py --provider <provider> --phase plan`.
-Before writing a review artifact, run the same command with `--phase review`.
-Before folding the concept into a PR/worktree lane, run it with
-`--phase foldback`. The feed is not build authority; it is the mandatory scan
-that prevents provider memories, loose ideas, or related implication lanes from
-being missed.
-
-For every `Adopt` or `Adapt` concept, create a pickup packet in the report and
-mirror it into the right shared queue:
-
-- an OpenSpec change when there is an actionable next step now;
-- `ideas/PIPELINE.md` Active Promotions row when the concept should not be
-  forgotten but still needs review, design, or sizing;
-- `docs/exec-plans/active/` when delivery needs multiple checkpoints;
-- `PLAN.md` or a design note only when design truth has been accepted.
-
-The pickup packet records:
-
-- concept name;
-- source artifact and source URLs;
-- initial provider and required reviewer provider;
-- affected domains and "applies when touching" cues;
-- next home (`openspec/changes/`, `ideas/PIPELINE.md`, design note, or exec plan);
-- exact next action;
-- file write boundary;
-- blockers and dependencies;
-- verification or exit check;
-- whether build work is blocked on cross-provider review.
-- worktree landing packet: branch, worktree dir, base/dependency, write-set,
-  first slice, verification gates, GitHub PR/fold-back path, PLAN module refs,
-  memory refs, related implication refs, and optional bottom-of-lane idea feed
-  refs.
-
-Do not leave a concept only in a report or final chat. If no pickup entry is
-created, say why in the report.
-
-For cross-cutting concepts, put the "applies when touching" cues in the
-OpenSpec change or `ideas/PIPELINE.md` text. A future builder working on a
-different task should be able to notice the implication during the
-provider-session cross-implication scan before coding.
+A study is not finished while its next step exists only in a report or a chat.
+Put it in the home that fits — an OpenSpec change when there is an actionable
+step now, `ideas/PIPELINE.md` when it should not be forgotten yet, a design note
+only once design truth is accepted — and name the concept, its source URLs, the
+exact next action, and the files it may touch. For a cross-cutting concept, say
+what it applies to so a future builder notices it while working elsewhere. If you
+create no entry, say why.
 
 ### 10. Self-Iterate The Skill
 

@@ -1,3 +1,10 @@
+---
+severity: P0
+title: A subscription credential dies permanently at its first token expiry
+filed: '2026-09-01'
+summary: the served snapshot is disposable, so an OAuth refresh can never be persisted; the founder universe went dark 2026-09-01T03:23Z and re-depositing only restarts the timer (Codex CONFIRMED)
+---
+
 # A subscription credential dies permanently at its first token expiry
 
 **Filed:** 2026-09-01, from the founder's universe

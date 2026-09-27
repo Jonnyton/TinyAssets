@@ -226,7 +226,11 @@ class TestMcpRecursionLimitOverride:
     def _stub_valid_branch(self, monkeypatch):
         from unittest.mock import MagicMock
 
-        dummy_src = {"branch_def_id": "b1", "name": "test", "node_defs": [], "edges": []}
+        # `visibility: public` stated rather than omitted: an absent field now reads
+        # as PRIVATE (founder 2026-09-26), and this double's subject is the
+        # recursion limit, not the read gate.
+        dummy_src = {"branch_def_id": "b1", "name": "test", "node_defs": [],
+                     "edges": [], "visibility": "public"}
         stub_branch = MagicMock()
         stub_branch.validate.return_value = []  # no errors
         stub_branch.to_dict.return_value = dummy_src  # real scalar contract, no file manifest

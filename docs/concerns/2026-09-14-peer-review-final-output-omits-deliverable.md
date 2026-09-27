@@ -1,3 +1,10 @@
+---
+severity: note
+title: Peer review output loses its deliverable
+filed: '2026-09-14'
+summary: shared-ledger stop hook can replace a completed review with a recap; scoped recovery retains the review, but the hook still needs repair
+---
+
 # Peer review final stdout can omit the actual deliverable
 
 Observed September14 2026 in the assigned Claude Fable5.1 model-setup review,

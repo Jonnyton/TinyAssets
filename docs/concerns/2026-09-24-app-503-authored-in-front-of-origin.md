@@ -1,3 +1,10 @@
+---
+severity: P1
+title: App `POST /mcp` 503s the origin never served
+filed: '2026-09-24'
+summary: founder's resumed tab got 503s that never reached the droplet (no 5xx logged, no token renewal until reload); edge challenge/rate rule vs. a stray tunnel connector, one header set decides
+---
+
 # App `POST /mcp` 503s that the origin never served
 
 **Filed:** 2026-09-24

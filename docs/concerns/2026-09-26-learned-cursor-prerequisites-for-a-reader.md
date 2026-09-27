@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Two things the learned cursor still needs
+filed: '2026-09-26'
+summary: 'inert today: `start_learned_cursor` has no caller, so every existing conversation reads 0 and a stage-2 drain would re-extract its whole history on the founder''s own credential; the sibling soft-zero defect is fixed in #4004'
+---
+
 # Two things the learned cursor still needs before anything READS it
 
 **Filed:** 2026-09-26 (reviewer's prerequisite (2) on PR #4001; the concurrency item added by the lead's review of #4004)

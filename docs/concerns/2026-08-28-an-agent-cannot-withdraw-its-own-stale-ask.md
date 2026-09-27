@@ -1,3 +1,10 @@
+---
+severity: P2
+title: An agent cannot withdraw its own stale ask
+filed: '2026-08-28'
+summary: the rail is append-only from the agent side, so asks it knows are obsolete sit in the founder's face until the founder clears them
+---
+
 # An agent can raise a request but never withdraw one, so the rail fills with asks it knows are wrong
 
 **Filed:** 2026-08-28

@@ -1,3 +1,10 @@
+---
+severity: P1
+title: A refused outbound effect completes the run silently
+filed: '2026-08-28'
+summary: GitHub said 403, the run said `completed` with no error and the log said nothing; the reason sat unread in the effect-evidence map
+---
+
 # A refused outbound effect still completes the run, logs nothing, and reports no error
 
 **Filed:** 2026-08-28

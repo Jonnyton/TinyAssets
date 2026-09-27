@@ -242,6 +242,9 @@ def test_describe_branch_response_contains_related_wiki_pages_key(tmp_path, monk
         "graph_nodes": [],
         "edges": [],
         "state_schema": [],
+        # Stated, not omitted: an absent field now reads as PRIVATE. The sibling
+        # fixture below already declared it; this one relied on the old fail-open.
+        "visibility": "public",
     }
     # Patch the real daemon_server module, not a compatibility alias.
     # Also patch list_branch_definitions + list_branch_versions called for lineage.
@@ -302,6 +305,7 @@ def test_describe_branch_related_wiki_pages_not_missing_when_no_matches(tmp_path
         "graph_nodes": [],
         "edges": [],
         "state_schema": [],
+        "visibility": "public",  # stated: an absent field now reads as PRIVATE
     }
     with (
         patch("tinyassets.daemon_server.get_branch_definition", return_value=branch_data),

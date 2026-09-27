@@ -1,3 +1,10 @@
+---
+severity: note
+title: Bootstrap/deletion hardening
+filed: '2026-09-18'
+summary: independent review distinguishes non-secret orphan/ghost-directory and future multi-worker concerns from the guarded credential resurrection race
+---
+
 # Bootstrap/deletion non-blocking follow-ups
 
 **Filed:** 2026-09-18
