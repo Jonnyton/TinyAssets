@@ -2256,8 +2256,9 @@ def write_graph(
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds or cron_expr. It schedules your own workflow
-    using existing creation checks and the universe's current serving provider.
+    exactly one of interval_seconds or cron_expr. Runs never overlap:
+    interval_seconds=300 (the minimum) reruns as each run ends, at most every
+    5 min.
     To control an existing trigger, first read ``read_graph target="automation"``
     (or ``target="automations"``), then pass its automation_id and current
     expected_revision. Pause stops future triggers; resume reactivates the existing

@@ -81,14 +81,31 @@ CHAPTER_ORDER = ("connections", "code_nodes", "workspaces", "delivering")
 #: three times, leaving a connection dead for ten days. `rotate_http` replaces it
 #: in one card, so this had to go rather than sit beside its replacement
 #: contradicting it.
-REMOVED_PASSAGE = (
-    "**If you are ROTATING a key rather than retiring it, carry both into the "
-    "new ``connect_http`` ask.**"
+#:
+#: 2026-09-27: the founder's universe went looking for a "completion hook"
+#: because nothing said automation runs never overlap -- which makes a
+#: 300-second interval already "rerun when the last run ended". Saying so costs
+#: resident text and the served descriptions sit at their 30,000-char ratchet;
+#: this sentence paid for it. The create checks it describes still refuse by name.
+#:
+#: Each entry is ``(passage, marker)``: the verbatim passage the allowance is
+#: derived from, and a word that occurs ONLY in it, so its absence is a cheap,
+#: direct check that the passage went rather than merely being rephrased.
+REMOVED_PASSAGES = (
+    (
+        "**If you are ROTATING a key rather than retiring it, carry both into the "
+        "new ``connect_http`` ask.**",
+        "ROTATING",
+    ),
+    (
+        "It schedules your own workflow using existing creation checks and the "
+        "universe's current serving provider.",
+        "creation",
+    ),
 )
-#: A word that occurs ONLY in that passage, so its absence is a cheap, direct
-#: check that the passage went rather than merely being rephrased.
-REMOVED_PASSAGE_MARKER = "ROTATING"
-DELIBERATELY_REMOVED: Counter = Counter(REMOVED_PASSAGE.split())
+DELIBERATELY_REMOVED: Counter = sum(
+    (Counter(passage.split()) for passage, _marker in REMOVED_PASSAGES), Counter()
+)
 
 
 def _normalized(text: str) -> str:
@@ -174,8 +191,8 @@ def test_the_split_lost_no_guidance():
     allowed — that is the point — and so is added text; losing any of it is not.
 
     The one exception is a later change that MEANT to delete a passage. Its
-    allowance is DERIVED from `REMOVED_PASSAGE` — so no deficit larger than that
-    passage can hide behind it — and this test then anchors the exemption to the
+    allowance is DERIVED from `REMOVED_PASSAGES` — so no deficit larger than those
+    passages can hide behind it — and this test then anchors the exemption to the
     text: the passage is gone, and so is the word that occurred only in it. A word
     list alone would excuse a global deficit in those words wherever it happened.
     """
@@ -194,8 +211,10 @@ def test_the_split_lost_no_guidance():
     )
     # The exemption is anchored to the TEXT, not to its words: it only covers a
     # passage that is actually gone.
-    assert REMOVED_PASSAGE not in text
-    assert REMOVED_PASSAGE_MARKER not in text
+    flat = " ".join(text.split())
+    for passage, marker in REMOVED_PASSAGES:
+        assert passage not in flat
+        assert marker not in text
     assert sum(before.values()) == 4968  # provenance, stated in the fixture header
 
 
