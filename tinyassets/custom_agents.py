@@ -178,6 +178,21 @@ CREATE INDEX IF NOT EXISTS idx_agent_binding_universe
 
 CREATE INDEX IF NOT EXISTS idx_agent_binding_definition
     ON agent_bindings(agent_definition_id);
+
+-- Which user-authored UIs a person keeps in a universe, and which one they are
+-- using. Deliberately NOT an agent binding: a UI choice has no definition, is
+-- never served, and must not appear to any binding reader. One row per
+-- (person, universe); the primary key is what makes a concurrent first save
+-- produce one row rather than two.
+CREATE TABLE IF NOT EXISTS universe_app_ui (
+    owner_user_id TEXT NOT NULL,
+    universe_id TEXT NOT NULL,
+    ui_library_json TEXT NOT NULL,
+    ui_selection_json TEXT,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (owner_user_id, universe_id)
+);
 """
 
 
@@ -1348,21 +1363,187 @@ def set_binding_serving_in_transaction(
     return _binding_from_row(updated)
 
 
+#: The one bound on a person's UI library: its canonical-JSON bytes, NOT a count.
+#: There is no limit on how many UIs someone keeps (founder rule: limit usage,
+#: never structure). Sized so a light user never meets it -- about 85 UIs at the
+#: per-UI maximum, and far more at a typical size -- while one row stays a sane
+#: size to read back whole. No per-universe storage quota covers database rows
+#: yet; when one does, this should be charged against it instead.
+MAX_APP_UI_LIBRARY_BYTES = 4 * 1024 * 1024
+_APP_UI_FIELDS = frozenset({"ui_library", "ui_selection"})
+_MAX_APP_UI_SELECTION_BYTES = 1024
+
+
+def _app_ui_document(row: sqlite3.Row | None, universe_id: str) -> dict[str, Any]:
+    if row is None:
+        return {"universe_id": universe_id, "ui_library": [], "ui_selection": None,
+                "revision": 0, "updated_at": None}
+    selection = row["ui_selection_json"]
+    return {
+        "universe_id": universe_id,
+        "ui_library": json.loads(str(row["ui_library_json"])),
+        "ui_selection": None if selection is None else json.loads(str(selection)),
+        "revision": int(row["revision"]),
+        "updated_at": float(row["updated_at"]),
+    }
+
+
+def _app_ui_scope(owner_user_id: str, universe_id: str) -> tuple[str, str]:
+    from tinyassets.principals import named_principal
+
+    owner = named_principal(owner_user_id)
+    uid = (universe_id or "").strip()
+    if not owner:
+        raise AgentValidationError("an authenticated owner is required")
+    if not uid:
+        raise AgentValidationError("universe_id is required")
+    return owner, uid
+
+
+def _check_app_ui_fields(changes: dict[str, Any]) -> None:
+    unknown = sorted(set(changes) - _APP_UI_FIELDS)
+    if unknown:
+        raise AgentValidationError(
+            f"app UI payload field {unknown[0]!r} is not one of {sorted(_APP_UI_FIELDS)}"
+        )
+    if not changes:
+        raise AgentValidationError("app UI payload must set ui_library or ui_selection")
+    if "ui_library" in changes:
+        library = changes["ui_library"]
+        if not isinstance(library, list):
+            raise AgentValidationError("ui_library must be a list")
+        seen: set[str] = set()
+        for entry in library:
+            ui_id = entry.get("ui_id") if isinstance(entry, dict) else None
+            if not isinstance(ui_id, str) or not ui_id:
+                raise AgentValidationError("every ui_library entry must be an object with a ui_id")
+            if ui_id in seen:
+                raise AgentValidationError(f"ui_id {ui_id!r} is listed twice")
+            seen.add(ui_id)
+    if "ui_selection" in changes and not isinstance(changes["ui_selection"], dict):
+        raise AgentValidationError("ui_selection must be an object")
+
+
+def get_app_ui(
+    base_path: str | Path, *, owner_user_id: str, universe_id: str,
+) -> dict[str, Any]:
+    """The caller's own UI library and choice in ``universe_id``.
+
+    An absent row reads as an empty library at revision 0 -- the state a fresh
+    account is in, and the revision a first save names.
+    """
+
+    owner, uid = _app_ui_scope(owner_user_id, universe_id)
+    with _agent_connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM universe_app_ui WHERE owner_user_id = ? AND universe_id = ?",
+            (owner, uid),
+        ).fetchone()
+    return _app_ui_document(row, uid)
+
+
+def save_app_ui(
+    base_path: str | Path,
+    *,
+    owner_user_id: str,
+    universe_id: str,
+    expected_revision: int,
+    changes: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare-and-set the caller's UI library and/or choice.
+
+    Only the fields in ``changes`` are written; an omitted field keeps its stored
+    value, so saving a choice can never erase the library. ``expected_revision``
+    is the revision last read -- 0 when no row exists yet. Each branch is ONE
+    statement, so there is no read-then-write window: two first saves racing
+    both name revision 0, the primary key admits one row, and the other gets
+    :class:`AgentConflictError`.
+    """
+
+    owner, uid = _app_ui_scope(owner_user_id, universe_id)
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 0
+    ):
+        raise AgentValidationError("expected_revision must be a non-negative integer")
+    if not isinstance(changes, dict):
+        raise AgentValidationError("app UI payload must be a JSON object")
+    _check_app_ui_fields(changes)
+    # Each field is bounded on its own, because a partial save never sees the
+    # other one: a large library and a separately saved choice must not add up
+    # to a row over the cap.
+    library_bytes = len(_canonical_json(changes.get("ui_library", [])).encode("utf-8"))
+    if library_bytes > MAX_APP_UI_LIBRARY_BYTES:
+        raise AgentValidationError(
+            f"ui_library is {library_bytes} bytes of canonical JSON; "
+            f"the limit is {MAX_APP_UI_LIBRARY_BYTES}"
+        )
+    selection_bytes = len(_canonical_json(changes.get("ui_selection")).encode("utf-8"))
+    if selection_bytes > _MAX_APP_UI_SELECTION_BYTES:
+        raise AgentValidationError(
+            f"ui_selection exceeds {_MAX_APP_UI_SELECTION_BYTES} bytes of canonical JSON"
+        )
+    library = (_canonical_json(changes["ui_library"])
+               if "ui_library" in changes else None)
+    selection = (_canonical_json(changes["ui_selection"])
+                 if "ui_selection" in changes else None)
+    now = time.time()
+    with _agent_connect(base_path) as conn:
+        if expected_revision == 0:
+            written = conn.execute(
+                """
+                INSERT INTO universe_app_ui (
+                    owner_user_id, universe_id, ui_library_json, ui_selection_json,
+                    revision, updated_at
+                ) VALUES (?, ?, ?, ?, 1, ?)
+                ON CONFLICT(owner_user_id, universe_id) DO NOTHING
+                """,
+                (owner, uid, library if library is not None else "[]", selection, now),
+            ).rowcount
+        else:
+            written = conn.execute(
+                """
+                UPDATE universe_app_ui
+                   SET ui_library_json = COALESCE(?, ui_library_json),
+                       ui_selection_json = COALESCE(?, ui_selection_json),
+                       revision = revision + 1,
+                       updated_at = ?
+                 WHERE owner_user_id = ? AND universe_id = ? AND revision = ?
+                """,
+                (library, selection, now, owner, uid, expected_revision),
+            ).rowcount
+        row = conn.execute(
+            "SELECT * FROM universe_app_ui WHERE owner_user_id = ? AND universe_id = ?",
+            (owner, uid),
+        ).fetchone()
+    if written != 1:
+        current = 0 if row is None else int(row["revision"])
+        raise AgentConflictError(
+            f"app UI changed: expected revision {expected_revision}, current is {current}; "
+            "read it again before saving"
+        )
+    return _app_ui_document(row, uid)
+
+
 __all__ = [
     "AGENT_SCHEMA_VERSION",
     "AgentConflictError",
     "AgentNotFoundError",
     "AgentValidationError",
     "MAX_AGENT_JSON_BYTES",
+    "MAX_APP_UI_LIBRARY_BYTES",
     "MAX_COMPONENTS",
     "MAX_LINEAGE_DEPTH",
     "create_binding",
+    "get_app_ui",
     "get_binding",
     "get_definition",
     "import_definition",
     "list_bindings",
     "list_definitions",
     "publish_definition",
+    "save_app_ui",
     "set_binding_provider_ref_in_transaction",
     "set_binding_serving_in_transaction",
     "update_binding",

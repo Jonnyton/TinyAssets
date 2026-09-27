@@ -18,8 +18,13 @@ must be editable, including instance selection and phone notification routing.
 - Bound the first implementation proof to one experience remixed between a
   desktop view and a phone view, with voice and notification handoff scenarios.
 
-This is a proposal for review, not an implemented UI builder. The public format
-and private binding contract need shape review before implementation.
+**Implementation status (2026-09-26).** The shape review settled the renderer
+isolation contract, so the first slice is now built rather than proposed:
+executable `tinyassets.app-ui.v1` bundles, an isolated sandboxed renderer with a
+closed message bridge acting as the viewing user, an on-the-fly switcher, and
+sharing through the existing publish/remix path. See design.md, "Implementation
+slice: executable UI bundles". Device negotiation, notification routing and voice
+handoff remain proposed only.
 
 ## Capabilities
 
@@ -30,8 +35,12 @@ and private binding contract need shape review before implementation.
 
 ### Modified Capabilities
 
-None in this proposal. Implementation must add reviewed deltas to affected
-existing contracts before changing their API or storage behavior.
+- `governed-agent-consumers`: its "SHALL NOT claim arbitrary executable UI"
+  limitation is the gap this closes, so that claim is narrowed to the
+  layout/turn-consumer adapter it was written about, and the private installation
+  requirement now states that its reference to a public definition is optional —
+  a receiver that has published nothing still has somewhere of its own to install
+  into.
 
 ## Impact
 

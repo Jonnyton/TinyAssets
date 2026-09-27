@@ -272,6 +272,9 @@ _PINNED_READ_TARGETS = frozenset({
     "status", "graph", "branches", "branch", "runs", "run", "run_output",
     "compute", "connections", "automations", "automation", "conversation",
     "model_options", "agent_bindings", "agent_binding", "run_file", "run_file_limits",
+    # The founder's own UI library and choice (their row only, keyed by who
+    # they are): what the interfaces chapter reads before it edits a library.
+    "app_ui",
     # What you have asked your user for and what came back. Read-only and
     # carries no credential material — the answer to a credential ask goes to
     # the vault, never into this read.
@@ -1608,6 +1611,77 @@ _WRITE_GRAPH_WORKSPACES_CHAPTER = """\
 
 """
 
+_WRITE_GRAPH_INTERFACES_CHAPTER = """\
+    **Building the app experience the user looks at.** When someone asks me for an
+    interface -- a dashboard, a game, a floor plan of rooms they can click, any
+    screen at all -- I build it here. There is no catalog of layouts to pick from
+    and no platform feature to request: I write the HTML, CSS and JavaScript, and
+    the app renders it.
+
+    **Where it lives.** One private row per person and universe, holding their
+    UI library and which one they are using. Nothing is published by it, and
+    there is no setup step: the first save creates it. Read it first:
+
+        read_graph target="app_ui"   -> {"app_ui": {"ui_library": [...],
+                                          "ui_selection": ..., "revision": N}}
+
+    then send back the whole edited list with the revision I read (0 when there
+    is no row yet):
+
+        write_graph target="app_ui" operation="save" expected_revision=N
+          payload_json={"ui_library": [ <one or more UI components> ]}
+
+    A field I leave out keeps its stored value, so saving a library never
+    clears the choice. If someone else saved in between, the save is refused as
+    a conflict and nothing is overwritten; I read again and redo the edit.
+
+    **The UI component.** Exactly these seven fields, no others, or the app refuses
+    it and says which field it did not expect:
+
+        {"kind": "tinyassets.app-ui.v1", "version": 1,
+         "ui_id": "office-tower",              # lowercase letters, digits, dashes
+         "name": "Office tower",
+         "markup": "<div id=lobby>...</div>",  # body markup only, no <html>/<head>
+         "style": ".floor{display:grid}",
+         "script": "async function enter(room){...}"}
+
+    ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
+    does NOT run -- the only code that runs is ``script``. Bounds: markup 32768,
+    style 16384, script 32768 characters, the whole component under 49152 UTF-8
+    bytes. There is no limit on how many UIs a library holds -- only on its total
+    size, 4194304 bytes. Nothing I write is rewritten, reformatted or sanitized on
+    the way in or out.
+
+    **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
+    token, no reach into the surrounding page, and NO network of its own -- fetch,
+    WebSocket, form posts, remote images and WebRTC are all unavailable. Its only
+    capability is four calls on a ``tinyassets`` object, acting as whoever is
+    LOOKING at it, inside their own universe:
+
+        await tinyassets.whoami()                  -> {universe_id, universe_name}
+        await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
+        await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
+        await tinyassets.readConversation(limit)   -> {turns:[{speaker,text,at}]}
+
+    Anything else it calls is refused by name. ``sendMessage`` reaches the
+    universe's currently selected conversation; naming a different agent is refused
+    rather than quietly redirected, so a room-per-agent screen should call
+    ``listAgents()`` and act on ``selected`` instead of assuming.
+
+    **Switching to it.** The person uses "Switch UI" in the app, and their choice is
+    remembered. I can preselect one by saving
+    ``"ui_selection": {"version": 1, "state": "active", "ui_id": "<mine>"}`` to the
+    same row; ``{"version": 1, "state": "default"}`` means ordinary chat.
+
+    **Sharing one.** ``write_graph target="agent" operation="publish"`` with the UI
+    component under ``components`` publishes it for anyone to copy, and
+    ``operation="remix"`` copies someone else's. A copy always runs as the person
+    who installed it, in THEIR universe -- it can never reach back to whoever wrote
+    it. Publishing is a separate, deliberate act: a UI I only install stays private.
+
+"""
+
+
 _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     **Delivering between universes — how another user's universe sends something
     straight into one of my steps, and how I send into theirs.** This is the
@@ -1712,6 +1786,7 @@ _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
     "code_nodes": _WRITE_GRAPH_CODE_NODES_CHAPTER,
     "workspaces": _WRITE_GRAPH_WORKSPACES_CHAPTER,
     "delivering": _WRITE_GRAPH_DELIVERING_CHAPTER,
+    "interfaces": _WRITE_GRAPH_INTERFACES_CHAPTER,
 }
 
 #: Every served handle that keeps chapters outside its description.
@@ -2297,7 +2372,7 @@ def write_graph(
     chapter has the two-node shape that does it correctly.
 
     THE HANDBOOK. My long-form guidance for this handle is not repeated in
-    every round of every turn -- it is four chapters I read when I need one,
+    every round of every turn -- it is five chapters I read when I need one,
     exactly as I read a skill's SKILL.md when a request matches it:
 
     * ``connections`` -- raising a credential ask (``target="pending_request"``),
@@ -2311,10 +2386,10 @@ def write_graph(
     * ``workspaces`` -- a directory my code nodes share across a run, the
       ``"sink": "workspace"`` packet every one of them carries, the two ways to
       get a workspace, and a repository checkout.
-    * ``delivering`` -- letting OTHER users' universes send straight into one of my
-      steps, and sending into theirs: opening a receiver to named or any
-      authenticated users, making it findable, finding other people's, connecting an
-      output, retry-safe sending, and reading who sent what (no webhook needed).
+    * ``delivering`` -- other users' universes sending into one of my steps, and
+      mine sending into theirs: receivers, connecting an output, who sent what.
+    * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
+      office plan, any interface they ask for: I write its HTML/CSS/JS myself.
 
     I read one with ``read_graph target="handbook"
     query="write_graph.<chapter>"``; ``read_graph target="handbook"`` with no
@@ -2512,12 +2587,33 @@ def write_graph(
             ))
         finally:
             _current_identity.reset(token)
+    if t == "app_ui":
+        # The founder's own UI library + choice, compare-and-set. The row is keyed
+        # by the bound founder identity, so there is no universe or person to name.
+        if (operation or "save").strip().lower() != "save":
+            return json.dumps({"error": "app_ui supports operation='save' only"})
+        ticket, refused = _admission_parts(
+            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
+        )
+        if ticket is None:
+            return _engine_refusal("app_ui", refused)
+        from tinyassets.api.app_ui import write_app_ui
+        from tinyassets.auth.middleware import _current_identity
+
+        token = _bind_founder_identity(("write",))
+        try:
+            return json.dumps(write_app_ui(
+                universe_id=_GRAPH_ID, payload=payload_json,
+                expected_revision=expected_revision,
+            ))
+        finally:
+            _current_identity.reset(token)
     if t != "branch":
         return json.dumps({
             "error": (
                 "write_graph on the served surface supports scoped setup and workflows: "
                 "target must be 'branch', 'automation', 'webhook', 'pending_request', "
-                "'model_preferences' or discovery-only 'connection' "
+                "'model_preferences', 'app_ui' or discovery-only 'connection' "
                 f"(got '{target or '(empty)'}'). "
                 "Credential deposit, broad connection changes, agent-binding "
                 "mutation and goals are not available here."

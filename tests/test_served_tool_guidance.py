@@ -57,8 +57,9 @@ TAIL_ANCHOR = "A branch is a stored graph SHAPE"
 #: 2026-09-26 with open receivers: an agent asked to let other users send its
 #: universe something reached for a public webhook because no chapter named the
 #: cross-user delivery primitive. Appended last, so the reconstruction order the
-#: tests below assert is unchanged.
-CHAPTER_ORDER = ("connections", "code_nodes", "workspaces", "delivering")
+#: tests below assert is unchanged. `interfaces` (user-authored app UIs) was
+#: appended after it the same day, for the same reason.
+CHAPTER_ORDER = ("connections", "code_nodes", "workspaces", "delivering", "interfaces")
 
 #: The passage a LATER change deliberately DELETED, verbatim.
 #:

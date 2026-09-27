@@ -174,7 +174,14 @@ def app_config() -> dict[str, Any]:
 
 def _csp(nonce: str, issuer: str) -> str:
     """Strict CSP: inline script/style only via this request's nonce; network
-    limited to same-origin ``/mcp`` plus the AuthKit token endpoint origin."""
+    limited to same-origin ``/mcp`` plus the AuthKit token endpoint origin.
+
+    ``frame-src 'self'`` is the one grant a user-authored UI bundle needs, and it
+    grants only the fixed ``/mcp/app/ui-frame`` bootstrap — which sandboxes itself
+    to an opaque origin from its own response header (``ui_frame.FRAME_CSP``).
+    ``script-src`` stays nonce-only on purpose: a bug that inserted bundle script
+    into this page would still not execute it.
+    """
     connect = "'self'"
     if issuer:
         parts = urlsplit(issuer)
@@ -186,6 +193,7 @@ def _csp(nonce: str, issuer: str) -> str:
         f"style-src 'nonce-{nonce}'; "
         f"connect-src {connect}; "
         "img-src 'self' data:; "
+        "frame-src 'self'; "
         "base-uri 'none'; "
         "form-action 'none'; "
         "frame-ancestors 'none'"
@@ -206,6 +214,7 @@ def render_app_html() -> tuple[str, str]:
     html = (
         _HTML_PATH.read_text("utf-8")
         .replace("__TA_APP_LAYOUT__", _HTML_PATH.with_name("app_layout.js").read_text("utf-8"))
+        .replace("__TA_APP_UI__", _HTML_PATH.with_name("app_ui.js").read_text("utf-8"))
         .replace(_NONCE_PLACEHOLDER, nonce)
         .replace(_CONFIG_PLACEHOLDER, blob)
         .replace(_REQUEST_TEXT_PLACEHOLDER, request_theme()["request_text"])
@@ -1688,9 +1697,11 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.onboarding.file_upload import handle_file_upload
     from tinyassets.onboarding.model_connect import handle_model_callback, handle_model_connect
     from tinyassets.onboarding.model_preferences import handle_model_preferences
+    from tinyassets.onboarding.ui_frame import handle_ui_frame
 
     return [
         Route("/mcp/app", _handle_app, methods=["GET", "HEAD"]),
+        Route("/mcp/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
         Route("/mcp/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
         Route("/mcp/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
         Route("/mcp/app/token", _handle_token, methods=["POST"]),
