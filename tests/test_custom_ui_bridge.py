@@ -144,7 +144,9 @@ assert(!u.parseBundle(fat).ok);
 assert.deepEqual(u.readLibrary(null).entries,[]);
 assert(!u.readLibrary({ui_library:{}}).ok);
 assert(!u.readLibrary({ui_library:[bundleOf(),bundleOf()]}).ok);            // duplicate ui_id
-assert(!u.readLibrary({ui_library:Array.from({length:u.LIBRARY_LIMIT+1},(_,i)=>bundleOf({ui_id:'ui-'+i}))}).ok);
+// No count cap: a long library reads, every entry kept in order.
+const longLibrary=u.readLibrary({ui_library:Array.from({length:40},(_,i)=>bundleOf({ui_id:'ui-'+i}))});
+assert(longLibrary.ok&&longLibrary.entries.length===40,longLibrary.reason);
 assert(!u.readSelection({ui_selection:{version:1,state:'active'}}).ok);      // no ui_id
 assert(!u.readSelection({ui_selection:{version:1,state:'active',ui_id:'office',extra:1}}).ok);
 assert(!u.readSelection({ui_selection:{version:1,state:'default',ui_id:'office'}}).ok);
@@ -430,24 +432,36 @@ const cjkRead=u.parseBundle(cjk);
 assert(!cjkRead.ok,'a bundle over the BYTE limit is refused');
 assert(/bytes/.test(cjkRead.reason),cjkRead.reason);
 
-// ---- a full library refuses by count, checked against the stored row -----
-// The cache says there is room; the row already holds LIBRARY_LIMIT. The save
-// reads the row, so the refusal comes from what is stored, not from the cache.
-appUi=stored(Array.from({length:u.LIBRARY_LIMIT},(_,i)=>bundleOf({ui_id:'full-'+i})),null);
+// ---- the one limit is total size, checked against the stored row -------
+// Many UIs install: there is no count to run into.
+appUi=stored(Array.from({length:40},(_,i)=>bundleOf({ui_id:'many-'+i})),null);
+u.adopt(clone(appUi));
+const fortyFirst=await u.install(bundleOf({ui_id:'many-40'}));
+assert(fortyFirst.ok,'a 41st UI installs: '+JSON.stringify(fortyFirst));
+assert.equal(appUi.ui_library.length,41);
+
+// The stored row is near the byte limit while the cache says it is empty. The
+// save reads the row, so the refusal comes from what is stored, with its size.
+const heavy=i=>bundleOf({ui_id:'heavy-'+i,markup:'x'.repeat(u.MAX_MARKUP)});
+const nearFull=[];
+while(u.bytes(JSON.stringify(nearFull.concat([heavy(nearFull.length)])))<=u.MAX_LIBRARY_BYTES)
+ nearFull.push(heavy(nearFull.length));
+assert(nearFull.length>=50,'a light user is nowhere near this: '+nearFull.length+' max-size UIs fit');
+appUi=stored(nearFull,null);
 u.adopt(stored([],null));
 const storedFull=JSON.stringify(appUi);
 calls=[];
-const overflow=await u.install(bundleOf({ui_id:'one-too-many'}));
-assert(!overflow.ok,'a fifth UI is refused');
+const overflow=await u.install(heavy('one-too-many'));
+assert(!overflow.ok,'a UI that takes the library over its byte limit is refused');
 assert.equal(calls.filter(c=>c.tool==='write_graph').length,0,'and nothing is written');
 assert.equal(JSON.stringify(appUi),storedFull);
-assert(/remove one first/.test($('ui-status').textContent),$('ui-status').textContent);
-// Re-installing a ui_id already there replaces it rather than counting twice.
+assert(/over the \d+-byte limit/.test($('ui-status').textContent),$('ui-status').textContent);
+// Re-installing a ui_id already there replaces it rather than adding to the size.
 u.adopt(clone(appUi));
-const replaced=await u.install(bundleOf({ui_id:'full-0',name:'Renamed'}));
+const replaced=await u.install(bundleOf({ui_id:'heavy-0',name:'Renamed'}));
 assert(replaced.ok,JSON.stringify(replaced));
-assert.equal(appUi.ui_library.length,u.LIBRARY_LIMIT);
-assert.equal(appUi.ui_library.find(b=>b.ui_id==='full-0').name,'Renamed');
+assert.equal(appUi.ui_library.length,nearFull.length);
+assert.equal(appUi.ui_library.find(b=>b.ui_id==='heavy-0').name,'Renamed');
 
 // ---- a brand-new account installs from nothing (lead, 2026-09-26) -----
 // No row, no binding, no published definition. The first save creates the row

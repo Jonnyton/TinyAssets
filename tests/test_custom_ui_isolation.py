@@ -208,13 +208,12 @@ def test_the_home_transition_funnel_revokes_the_bridge() -> None:
 def test_bundle_bounds_fit_the_real_library_cap() -> None:
     """The JS bounds are derived from the Python caps, not a coincidence.
 
-    A full library must fit the canonical-JSON cap the store enforces on
-    ``ui_library``, BY CONSTRUCTION -- which is why the install path carries no
-    size check of its own. This reads the enforcing constants rather than
-    restating their values, so raising either side without the other fails here
-    instead of at a user's write.
+    The library's ONE bound is its canonical-JSON bytes -- there is no count of
+    UIs (no structural caps). The app's pre-write check must BE the server's
+    number, so raising either side without the other fails here instead of at a
+    user's write.
     """
-    from tinyassets.custom_agents import APP_UI_LIBRARY_LIMIT, MAX_AGENT_JSON_BYTES
+    from tinyassets.custom_agents import MAX_APP_UI_LIBRARY_BYTES
 
     def constant(name: str) -> int:
         found = re.search(rf"\b{name}:(\d+)", APP_UI)
@@ -222,10 +221,11 @@ def test_bundle_bounds_fit_the_real_library_cap() -> None:
         return int(found.group(1))
 
     per_bundle = constant("MAX_BUNDLE_BYTES")
-    library = constant("LIBRARY_LIMIT")
+    library_bytes = constant("MAX_LIBRARY_BYTES")
 
-    # The app and the store agree on how many UIs a library holds.
-    assert library == APP_UI_LIBRARY_LIMIT
+    assert library_bytes == MAX_APP_UI_LIBRARY_BYTES
+    # And no count cap has crept back in on the client.
+    assert "LIBRARY_LIMIT" not in APP_UI
 
     # Sizes are measured the way the server measures them. Counting UTF-16
     # units accepted multi-byte bundles that the byte cap then refused.
@@ -238,6 +238,6 @@ def test_bundle_bounds_fit_the_real_library_cap() -> None:
     assert constant("MAX_STYLE") <= per_bundle
     assert constant("MAX_SCRIPT") <= per_bundle
 
-    # A full library -- every bundle at its budget, plus the list's brackets and
-    # commas -- fits the cap the store enforces.
-    assert per_bundle * library + library + 1 <= MAX_AGENT_JSON_BYTES
+    # A light user never meets the library bound: dozens of UIs, each at the
+    # per-UI maximum, still fit.
+    assert library_bytes // (per_bundle + 1) >= 50

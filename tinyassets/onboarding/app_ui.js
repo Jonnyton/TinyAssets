@@ -28,15 +28,15 @@
     // The frame's own response header sandboxes it too, so this is the second of
     // two independent locks, not the only one.
     SANDBOX:"allow-scripts",
-    // Bounds chosen so a FULL library of LIBRARY_LIMIT bundles fits the stored
-    // library's canonical-JSON cap (MAX_AGENT_JSON_BYTES in
-    // tinyassets/custom_agents.py) by construction, so no install can reach it.
-    // A test derives that relation from the Python constants rather than
-    // restating the numbers here. Sizes are UTF-8 BYTES, because that is what the
+    // Per-UI bounds, and ONE bound on the whole library: its bytes, never a count
+    // of UIs (no structural caps -- a person keeps as many as they like).
+    // MAX_LIBRARY_BYTES must equal MAX_APP_UI_LIBRARY_BYTES in
+    // tinyassets/custom_agents.py; a test derives it from the Python constant
+    // rather than restating it. Sizes are UTF-8 BYTES, because that is what the
     // server caps: counting UTF-16 units let multi-byte bundles pass here and
     // fail at write time (Codex, 2026-09-26).
     MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
-    LIBRARY_LIMIT:4,MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
+    MAX_LIBRARY_BYTES:4194304,MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
 
@@ -82,15 +82,12 @@
       return {ok:true,bundle:{kind:this.KIND,version:this.VERSION,ui_id:component.ui_id,
         name:component.name.trim(),markup:component.markup,style:component.style,script:component.script}};
     },
-    // The library is a LIST, not an object: `_check_binding_content_fields`
-    // rejects reserved key names like `messages`, and a list has no user-chosen
-    // keys to collide with one.
+    // The library is a LIST of any length, ordered as stored, with no
+    // user-chosen keys; each entry names itself by `ui_id`.
     readLibrary(configuration){
       const raw=configuration&&configuration.ui_library;
       if(raw===undefined||raw===null) return {ok:true,entries:[]};
       if(!Array.isArray(raw)) return this.unsupported("ui_library is not a list");
-      if(raw.length>this.LIBRARY_LIMIT)
-        return this.unsupported("ui_library holds "+raw.length+" UIs; this app reads at most "+this.LIBRARY_LIMIT);
       const entries=[],seen=new Set();
       for(const component of raw){
         const parsed=this.parseBundle(component);
@@ -471,8 +468,12 @@
         const observed=this.readLibrary(row);
         if(!observed.ok) throw Error("Your installed UIs cannot be read ("+observed.reason+"); nothing was overwritten");
         next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
-        if(next.length>this.LIBRARY_LIMIT)
-          throw Error("You already have "+this.LIBRARY_LIMIT+" UIs installed; remove one first");
+        // The one limit is size, and it is checked against the row this save
+        // read, so a library that grew elsewhere is measured as it now stands.
+        const size=this.bytes(JSON.stringify(next));
+        if(size>this.MAX_LIBRARY_BYTES)
+          throw Error("Your installed UIs would total "+size+" bytes, over the "+
+            this.MAX_LIBRARY_BYTES+"-byte limit; remove one first");
         return {ui_library:JSON.parse(JSON.stringify(next))};
       });
       if(!outcome.ok){

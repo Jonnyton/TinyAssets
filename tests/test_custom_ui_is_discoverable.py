@@ -102,7 +102,9 @@ def test_the_chapter_states_the_limits_that_cause_refusals() -> None:
 
     for name in ("MAX_MARKUP", "MAX_STYLE", "MAX_SCRIPT", "MAX_BUNDLE_BYTES"):
         assert str(constant(name)) in text, name
-    assert str(constant("LIBRARY_LIMIT")) in text or "four" in text
+    # The library's one bound is its total size; there is no count to state.
+    assert str(constant("MAX_LIBRARY_BYTES")) in text
+    assert "no limit on how many UIs" in text
 
     # And the two refusals that would otherwise look like platform bugs.
     assert "does NOT run" in text, "a <script> inside markup is inert"

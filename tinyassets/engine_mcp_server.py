@@ -1648,8 +1648,9 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
     does NOT run -- the only code that runs is ``script``. Bounds: markup 32768,
     style 16384, script 32768 characters, the whole component under 49152 UTF-8
-    bytes, at most four in a library. Nothing I write is rewritten, reformatted or
-    sanitized on the way in or out.
+    bytes. There is no limit on how many UIs a library holds -- only on its total
+    size, 4194304 bytes. Nothing I write is rewritten, reformatted or sanitized on
+    the way in or out.
 
     **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
     token, no reach into the surrounding page, and NO network of its own -- fetch,

@@ -151,7 +151,6 @@ def test_two_concurrent_first_saves_leave_exactly_one_row(tmp_path) -> None:
     ({}, "must set ui_library or ui_selection"),
     ({"ui_library": [], "agent_definition_id": "d1"}, "is not one of"),
     ({"ui_library": {}}, "ui_library must be a list"),
-    ({"ui_library": [_bundle(str(i)) for i in range(5)]}, "the limit is 4"),
     ({"ui_library": [_bundle(), _bundle()]}, "listed twice"),
     ({"ui_library": ["office"]}, "must be an object with a ui_id"),
     ({"ui_selection": "office"}, "ui_selection must be an object"),
@@ -164,14 +163,33 @@ def test_malformed_saves_are_refused_by_reason(tmp_path, changes, needle) -> Non
     assert _rows(tmp_path) == []
 
 
-def test_a_library_over_the_cap_is_refused(tmp_path) -> None:
-    from tinyassets.custom_agents import MAX_AGENT_JSON_BYTES
+def test_there_is_no_limit_on_how_many_uis_a_library_holds(tmp_path) -> None:
+    """No structural cap: the count is the person's business. Forty is well past
+    the four the first cut allowed, and every one is kept and read back."""
+    many = [_bundle(f"ui-{i}") for i in range(40)]
+    saved = save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                        expected_revision=0, changes={"ui_library": many})
+    assert [b["ui_id"] for b in saved["ui_library"]] == [b["ui_id"] for b in many]
+    assert get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME)["ui_library"] == many
 
-    fat = _bundle()
-    fat["script"] = "x" * MAX_AGENT_JSON_BYTES
-    with pytest.raises(AgentValidationError, match="exceeds"):
+
+def test_the_one_bound_is_total_library_bytes(tmp_path) -> None:
+    from tinyassets.custom_agents import MAX_APP_UI_LIBRARY_BYTES, _canonical_json
+
+    # Exactly at the bound is kept; one byte over is refused, whatever the count.
+    at_cap = [_bundle()]
+    at_cap[0]["script"] = ""
+    at_cap[0]["script"] = "x" * (
+        MAX_APP_UI_LIBRARY_BYTES - len(_canonical_json(at_cap).encode("utf-8"))
+    )
+    assert len(_canonical_json(at_cap).encode("utf-8")) == MAX_APP_UI_LIBRARY_BYTES
+    save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                expected_revision=0, changes={"ui_library": at_cap})
+    over = [dict(at_cap[0], script=at_cap[0]["script"] + "x")]
+    with pytest.raises(AgentValidationError, match="the limit is"):
         save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
-                    expected_revision=0, changes={"ui_library": [fat]})
+                    expected_revision=1, changes={"ui_library": over})
+    assert get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME)["revision"] == 1
 
 
 def test_agent_bindings_is_the_shape_main_has(tmp_path) -> None:

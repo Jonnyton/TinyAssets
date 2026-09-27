@@ -267,11 +267,14 @@ universe is the collaborator's, and a universe sweep could take it because a
 save can commit between the foreign-row check and the delete (review,
 2026-09-26).
 
-`ui_library` is a **list** of at most four components, each a `ui_id`-keyed
-object with no duplicate ids. Its canonical JSON is capped at
-`MAX_AGENT_JSON_BYTES`, and bundle bytes are bounded so a full library fits that
-cap by construction; a test ties the JS constants to the Python ones rather than
-restating them. `ui_selection` is capped separately (1 KiB), because a partial
+`ui_library` is a **list** of any length -- no count cap, because the founder's
+rule is to limit usage, never structure -- each entry a `ui_id`-keyed object with
+no duplicate ids. Its one bound is total canonical-JSON bytes,
+`MAX_APP_UI_LIBRARY_BYTES` (4 MiB), sized so a light user never meets it: 85 UIs
+at the per-UI maximum still fit. No per-universe storage quota covers database
+rows yet; when one exists, the library should be charged against it instead. The
+app checks the same number before a write, against the row that write read, and a
+test ties the JS constant to the Python one. `ui_selection` is capped separately (1 KiB), because a partial
 save never sees the other field.
 
 ### One system, not two

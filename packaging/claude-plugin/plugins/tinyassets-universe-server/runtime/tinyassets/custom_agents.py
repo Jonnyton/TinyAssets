@@ -1363,8 +1363,13 @@ def set_binding_serving_in_transaction(
     return _binding_from_row(updated)
 
 
-#: How many UIs one person keeps per universe. The app reads at most this many.
-APP_UI_LIBRARY_LIMIT = 4
+#: The one bound on a person's UI library: its canonical-JSON bytes, NOT a count.
+#: There is no limit on how many UIs someone keeps (founder rule: limit usage,
+#: never structure). Sized so a light user never meets it -- about 85 UIs at the
+#: per-UI maximum, and far more at a typical size -- while one row stays a sane
+#: size to read back whole. No per-universe storage quota covers database rows
+#: yet; when one does, this should be charged against it instead.
+MAX_APP_UI_LIBRARY_BYTES = 4 * 1024 * 1024
 _APP_UI_FIELDS = frozenset({"ui_library", "ui_selection"})
 _MAX_APP_UI_SELECTION_BYTES = 1024
 
@@ -1407,10 +1412,6 @@ def _check_app_ui_fields(changes: dict[str, Any]) -> None:
         library = changes["ui_library"]
         if not isinstance(library, list):
             raise AgentValidationError("ui_library must be a list")
-        if len(library) > APP_UI_LIBRARY_LIMIT:
-            raise AgentValidationError(
-                f"ui_library holds {len(library)} UIs; the limit is {APP_UI_LIBRARY_LIMIT}"
-            )
         seen: set[str] = set()
         for entry in library:
             ui_id = entry.get("ui_id") if isinstance(entry, dict) else None
@@ -1472,7 +1473,12 @@ def save_app_ui(
     # Each field is bounded on its own, because a partial save never sees the
     # other one: a large library and a separately saved choice must not add up
     # to a row over the cap.
-    _check_size(changes.get("ui_library", []))
+    library_bytes = len(_canonical_json(changes.get("ui_library", [])).encode("utf-8"))
+    if library_bytes > MAX_APP_UI_LIBRARY_BYTES:
+        raise AgentValidationError(
+            f"ui_library is {library_bytes} bytes of canonical JSON; "
+            f"the limit is {MAX_APP_UI_LIBRARY_BYTES}"
+        )
     selection_bytes = len(_canonical_json(changes.get("ui_selection")).encode("utf-8"))
     if selection_bytes > _MAX_APP_UI_SELECTION_BYTES:
         raise AgentValidationError(
@@ -1525,8 +1531,8 @@ __all__ = [
     "AgentConflictError",
     "AgentNotFoundError",
     "AgentValidationError",
-    "APP_UI_LIBRARY_LIMIT",
     "MAX_AGENT_JSON_BYTES",
+    "MAX_APP_UI_LIBRARY_BYTES",
     "MAX_COMPONENTS",
     "MAX_LINEAGE_DEPTH",
     "create_binding",
