@@ -115,6 +115,15 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     # evidence is untouched. That asymmetry is deliberate -- a published id is a fact
     # about the id, so one contributor leaving does not retract it.
     "learned_model_evidence": "preserve",
+    # The attestation pipeline's two owner-bearing tables, same treatment and same
+    # reason: private per-owner rows a scoped reset preserves and ACCOUNT DELETION
+    # removes by its owner column (`attested_by` / `confirming_owner` are matched by
+    # the column sweep, not by name here). Classified explicitly because both are
+    # created lazily -- on a first attestation -- so the unclassified-table gate
+    # would otherwise fire in production rather than in CI, which is the gap I
+    # shipped once already on this branch.
+    "learned_model_pending": "preserve",
+    "learned_model_confirmations": "preserve",
 })
 
 FAULT_POINTS = (

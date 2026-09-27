@@ -23,16 +23,27 @@ from tinyassets.storage.learned_models import (
 
 
 def record2(catalog, *, source_kind, model_id, now=None):
-    """Publish an id the way the founder's threshold requires: TWO distinct owners.
+    """Publish an id through the real path, for tests that need a published one.
 
-    Most tests here are about the SHARED table, so they need a published id, and
-    publishing now takes two owners. Tests about the threshold itself call
-    `catalog.record` directly with explicit owners.
+    Publication is now attest + two OTHER owners' confirmations (founder,
+    2026-09-26). The distinct-owner threshold no longer publishes anything, so a
+    test that just needs a row in the shared table has to go through this.
+
+    Tests about the attestation stages themselves live in
+    tests/test_learned_model_attestation.py and call the methods directly.
     """
     catalog.record(source_kind=source_kind, model_id=model_id,
                    owner_user_id="owner-one", now=now)
-    return catalog.record(source_kind=source_kind, model_id=model_id,
-                          owner_user_id="owner-two", now=now)
+    catalog.attest(source_kind=source_kind, model_id=model_id,
+                   evidence_url="https://docs.example.com/releases",
+                   snippet=f"Announcing {model_id}.", owner_user_id="owner-one", now=now)
+    state = None
+    for confirmer in ("owner-two", "owner-three"):
+        state = catalog.confirm(source_kind=source_kind, model_id=model_id,
+                                snippet=f"{model_id} is available",
+                                owner_user_id=confirmer,
+                                confirming_model_id="bootstrap-model-1", now=now)
+    return state == "published"
 
 
 def _at(minutes):
@@ -61,7 +72,7 @@ def test_the_table_has_exactly_three_columns_and_none_is_about_a_user(catalog, t
 
 def test_no_caller_supplied_identity_can_reach_the_table(catalog, tmp_path):
     """The API has no parameter for it, and the stored bytes prove nothing leaked."""
-    record2(catalog, source_kind="subscription_cli", model_id="vendor-line-4-7", now=_at(0))
+    record2(catalog, source_kind="subscription", model_id="vendor-line-4-7", now=_at(0))
     record2(catalog, source_kind="api_key_http", model_id="other-line-2-1", now=_at(1))
     with sqlite3.connect(db_path(tmp_path)) as conn:
         # The STORED DATA, not the DDL: the schema's own comments explain why the
@@ -71,20 +82,23 @@ def test_no_caller_supplied_identity_can_reach_the_table(catalog, tmp_path):
     for secret in ("owner", "universe", "user", "principal", "actor", "prompt",
                    "credential", "token", "home-a", "u-1"):
         assert secret not in stored, f"{secret!r} reached a store shared between users"
-    # What IS there is only the three facts, twice.
-    assert len(rows) == 2 and all(len(row) == 3 for row in rows)
-    assert "subscription_cli" in stored and "vendor-line-4-7" in stored
+    # What IS there is the three public facts plus the page that proved it.
+    assert len(rows) == 2 and all(len(row) == len(COLUMNS) for row in rows)
+    assert "subscription" in stored and "vendor-line-4-7" in stored
+
 
 
 def test_a_second_verification_accumulates_nothing(catalog, tmp_path):
-    """No count of verifications: "3 universes use this" is a fact about users."""
-    assert record2(catalog, source_kind="subscription_cli", model_id="x-4-7", now=_at(0)) is True
-    # A different user, later, verifying the same id.
-    assert record2(catalog, source_kind="subscription_cli", model_id="x-4-7", now=_at(99)) is False
-    rows = catalog.for_source_kind("subscription_cli")
+    """No count of verifications: "N owners use this" is a fact about users."""
+    assert catalog.record(source_kind="subscription", model_id="x-4-7",
+                          owner_user_id="owner-one", now=_at(0)) is True
+    assert catalog.record(source_kind="subscription", model_id="x-4-7",
+                          owner_user_id="owner-one", now=_at(99)) is False
+    rows = catalog.evidence_ids("subscription", "owner-one")
     assert len(rows) == 1
     assert rows[0].first_verified_at.startswith("2026-09-26T12:00"), (
         "the first verification time stands; a later one must not overwrite it")
+
 
 
 def test_one_source_kind_never_sees_another_kinds_ids(catalog):
@@ -172,24 +186,23 @@ def test_a_failed_learn_never_raises_at_the_call_site(tmp_path, monkeypatch):
 
 
 def test_the_best_effort_path_still_records_when_it_can(tmp_path):
-    # The FIRST owner stores evidence and publishes nothing, so the best-effort
-    # wrapper reports False -- it reports PUBLICATION, which is the only outcome
-    # another user can see.
+    """record() stores one owner's evidence and returns whether it created the row.
+
+    It publishes nothing, which is the point: "it worked for me" is not a claim that
+    an id is public. Publication is attest + two other owners' confirmations.
+    """
+    assert record_verified_model(tmp_path, source_kind="subscription_cli",
+                                 model_id="vendor-line-4-7",
+                                 owner_user_id="owner-one") is True
+    assert LearnedModelCatalog(tmp_path).for_source_kind("subscription_cli") == [], (
+        "recording must never publish")
+    assert [row.model_id for row in LearnedModelCatalog(tmp_path)
+            .evidence_ids("subscription_cli", "owner-one")] == ["vendor-line-4-7"]
+    # The same owner again is a no-op, so nothing accumulates.
     assert record_verified_model(tmp_path, source_kind="subscription_cli",
                                  model_id="vendor-line-4-7",
                                  owner_user_id="owner-one") is False
-    assert LearnedModelCatalog(tmp_path).for_source_kind("subscription_cli") == []
-    # The second distinct owner publishes it.
-    assert record_verified_model(tmp_path, source_kind="subscription_cli",
-                                 model_id="vendor-line-4-7",
-                                 owner_user_id="owner-two") is True
-    assert [row.model_id for row in LearnedModelCatalog(tmp_path)
-            .for_source_kind("subscription_cli")] == ["vendor-line-4-7"]
 
-
-# ---------------------------------------------------------------------------
-# End to end: the union actually reaches a universe's model list.
-# ---------------------------------------------------------------------------
 
 
 def _native_models(tmp_path, monkeypatch, declared):
@@ -397,8 +410,16 @@ def test_the_write_does_not_wait_on_a_busy_shared_database(tmp_path):
     assert elapsed < 3.0, f"the write waited {elapsed:.1f}s on a busy database"
 
 
+# The four tests that pinned the DISTINCT-OWNER THRESHOLD as the publication rule
+# were deleted rather than converted: the founder replaced that rule with attestation
+# plus peer confirmation, after review showed two genuinely different people can share
+# one organisation's private selector. The properties that survive the change are
+# covered on the new shape in tests/test_learned_model_attestation.py -- including the
+# one that matters most, that an account-bearing selector is never published and stays
+# on its owner's own list.
+
 # ---------------------------------------------------------------------------
-# The privacy boundary is the THRESHOLD, not a rule about strings.
+# The owner's own list, which is independent of how publication works.
 # Founder, 2026-09-26: an owner-typed id becomes public once it has worked for at
 # least two DISTINCT OWNERS. A private selector is unique to its owner by
 # construction, so it can never get there.
@@ -410,88 +431,6 @@ def test_the_write_does_not_wait_on_a_busy_shared_database(tmp_path):
 ARN = ("arn:aws:bedrock:us-east-1:123456789012:inference-profile/"
        "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
-
-def test_a_private_selector_stays_on_its_owners_list_forever(catalog):
-    """THE test this whole redesign exists for.
-
-    One owner uses an account-bearing ARN, as much as they like, from as many
-    universes as they like. It is never published, so no other user ever sees it.
-    """
-    for minute in range(5):
-        assert catalog.record(source_kind="subscription", model_id=ARN,
-                              owner_user_id="owner-alice", now=_at(minute)) is False
-    assert catalog.for_source_kind("subscription") == [], (
-        "an id only ever verified by ONE owner must never reach the shared table")
-    assert catalog.newest_for_source_kind("subscription") == []
-    # It is still on that owner's own list, which is the other half of the promise.
-    assert [row.model_id for row in catalog.evidence_ids("subscription", "owner-alice")] == [ARN]
-    # And no other owner's view of their own evidence contains it.
-    assert catalog.evidence_ids("subscription", "owner-bob") == []
-
-
-def test_two_distinct_owners_publish_an_id_to_everyone(catalog):
-    """The founder's threshold, met."""
-    assert catalog.record(source_kind="subscription", model_id="claude-fable-5-1",
-                          owner_user_id="owner-alice", now=_at(0)) is False, (
-        "one owner is evidence, not publication")
-    assert catalog.for_source_kind("subscription") == []
-    assert catalog.record(source_kind="subscription", model_id="claude-fable-5-1",
-                          owner_user_id="owner-bob", now=_at(30)) is True, (
-        "the second DISTINCT owner publishes it")
-    published = catalog.for_source_kind("subscription")
-    assert [row.model_id for row in published] == ["claude-fable-5-1"]
-    # The published time is the EARLIEST across the owners, so it stays a property
-    # of the id rather than of whoever happened to be second.
-    assert published[0].first_verified_at.startswith("2026-09-26T12:00")
-    # A third owner's read sees it, and publishing again changes nothing.
-    assert catalog.record(source_kind="subscription", model_id="claude-fable-5-1",
-                          owner_user_id="owner-carol", now=_at(99)) is False
-    assert len(catalog.for_source_kind("subscription")) == 1
-
-
-def test_one_owners_two_universes_count_as_one_owner(catalog):
-    """Distinct OWNERS, not distinct universes.
-
-    The same person running the same id in two of their own universes must not
-    promote it between them -- otherwise anyone could publish a private selector by
-    creating a second universe, and the threshold would protect nothing.
-    """
-    for minute in range(4):
-        # Same owner, and the store is not even told which universe: the owner is
-        # the whole key, so a second universe cannot add a distinct row.
-        assert catalog.record(source_kind="subscription", model_id=ARN,
-                              owner_user_id="owner-alice", now=_at(minute)) is False
-    assert catalog.for_source_kind("subscription") == [], (
-        "one owner's several universes are still one owner")
-    # ...and it takes a genuinely different owner to publish.
-    assert catalog.record(source_kind="subscription", model_id=ARN,
-                          owner_user_id="owner-bob", now=_at(9)) is True
-
-
-def test_the_promotion_count_is_never_returned_to_anyone(catalog):
-    """"N owners verified this" is a population fact about users.
-
-    The count exists only inside the promotion transaction. There is no API that
-    returns it, and no API that returns another owner's evidence.
-    """
-    catalog.record(source_kind="subscription", model_id="shared-1",
-                   owner_user_id="owner-alice", now=_at(0))
-    catalog.record(source_kind="subscription", model_id="shared-1",
-                   owner_user_id="owner-bob", now=_at(1))
-    # The shared row carries the three public facts and nothing about owners.
-    row = catalog.for_source_kind("subscription")[0]
-    assert (row.source_kind, row.model_id) == ("subscription", "shared-1")
-    from dataclasses import fields
-
-    names = [field.name for field in fields(row)]
-    assert names == list(COLUMNS), names
-    assert not any("owner" in name for name in names), names
-    # The only evidence reader is owner-scoped, and it does not leak the other.
-    assert [r.model_id for r in catalog.evidence_ids("subscription", "owner-alice")] == ["shared-1"]
-    assert [r.model_id for r in catalog.evidence_ids("subscription", "owner-bob")] == ["shared-1"]
-    # No public surface reports how many owners there are.
-    assert not [name for name in dir(catalog)
-                if "count" in name.lower() or "owners" in name.lower()]
 
 
 def test_the_private_evidence_table_is_classified_as_the_owners_data(tmp_path):

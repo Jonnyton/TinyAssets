@@ -139,3 +139,31 @@ def newest_per_class(rows):
                 or (candidate[0] == seen[0] and candidate[1:3] < seen[1:3])):
             best[klass] = candidate
     return [best[klass][3] for klass in sorted(best)]
+
+
+def superseded_by(model_id: str, known) -> str | None:
+    """The newest KNOWN sibling of ``model_id``'s class, if one is newer than it.
+
+    ``known`` is any iterable of objects with ``model_id`` and ``first_verified_at``.
+    Returns that sibling's id, or ``None`` when nothing known is newer.
+
+    This is the vendor-free reading of "a smart recent big model": not a list of
+    names, and not "is a member of the published newest set" -- which cannot work,
+    because an EMPTY catalog has no newest set, so no confirmer could ever qualify
+    and the catalog could never fill (the bootstrap deadlock).
+
+    "Not superseded" inverts that and is monotone. With nothing known, nothing is
+    newer, so a first confirmer qualifies; as the catalog fills, the bar rises on
+    its own. It cannot be gamed downward either: publishing more of your own OLDER
+    ids never makes yours the newest of its class, and the id in question is the one
+    a turn actually RAN on, so it cannot be invented.
+
+    An unparseable id is its own class, so it is never superseded by anything --
+    which is right: nothing known is comparable to it.
+    """
+    klass, version = model_class_and_version(model_id)
+    for row in newest_per_class(known):
+        other_class, other_version = model_class_and_version(row.model_id)
+        if other_class == klass and newer(other_version, version):
+            return row.model_id
+    return None

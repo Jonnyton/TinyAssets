@@ -62,17 +62,25 @@ def _row(document, model_id):
 
 
 def _learn(configured, model_id=LEARNED_ID):
-    """Publish an id the way the founder's threshold requires: two DISTINCT owners.
+    """PUBLISH an id through the real path, so the assertions below are not vacuous.
 
-    A single owner's id is evidence, not publication, so a one-owner call here would
-    make every assertion below vacuous.
+    Publication is now the owner's attestation plus two OTHER owners' confirmations
+    (founder, 2026-09-26). Recording alone publishes nothing, so a one-call fixture
+    here would leave the shared table empty and every assertion trivially true.
     """
     catalog = LearnedModelCatalog(configured.rig.base)
     catalog.record(source_kind="subscription", model_id=model_id,
                    owner_user_id="some-other-owner")
-    published = catalog.record(source_kind="subscription", model_id=model_id,
-                               owner_user_id="a-third-owner")
-    assert published, "the fixture must actually publish, or the test proves nothing"
+    catalog.attest(source_kind="subscription", model_id=model_id,
+                   evidence_url="https://docs.example.com/releases",
+                   snippet=f"Announcing {model_id}.", owner_user_id="some-other-owner")
+    state = None
+    for confirmer in ("a-third-owner", "a-fourth-owner"):
+        state = catalog.confirm(source_kind="subscription", model_id=model_id,
+                                snippet=f"{model_id} is available",
+                                owner_user_id=confirmer,
+                                confirming_model_id="bootstrap-model-1")
+    assert state == "published", "the fixture must actually publish, or this proves nothing"
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
@@ -177,11 +185,12 @@ def _own_evidence(base, owner):
             LearnedModelCatalog(base).evidence_ids("subscription", owner)]
 
 
-def test_only_the_id_this_universe_REQUESTED_is_published(tmp_path):
+def test_only_the_id_this_universe_REQUESTED_is_recorded(tmp_path):
     """Not the one the source reports. Codex: reported_model is source-controlled.
 
     The response deliberately carries a hostile reported_model and a placeholder
-    model; neither may reach a store every other user reads.
+    model; neither may become this owner's evidence, because evidence is what an
+    attestation is later made ABOUT.
     """
     from types import SimpleNamespace
 
@@ -191,16 +200,12 @@ def test_only_the_id_this_universe_REQUESTED_is_published(tmp_path):
         model="provider-default",
     )
     _Coordinator(tmp_path, "vendor-line-4-7")._learn_verified_model(response)
-    # One owner, so nothing is published yet -- but the id RECORDED as this owner's
-    # evidence must be the requested one, never either source-controlled string.
     assert _own_evidence(tmp_path, "owner-alice") == ["vendor-line-4-7"], (
-        "the recorded id must be the one this universe asked for, so a source "
-        "cannot inject a string into the promotion path at all")
-    assert _learned(tmp_path) == [], "one owner is evidence, not publication"
-    # A second, different owner requesting the same id publishes it -- and it is
-    # still the requested id, not the reported one.
-    _Coordinator(tmp_path, "vendor-line-4-7", owner="owner-bob")._learn_verified_model(response)
-    assert _learned(tmp_path) == ["vendor-line-4-7"]
+        "the recorded id must be the one this universe asked for, so a source cannot "
+        "inject a string into the publication path at all")
+    # And recording still publishes nothing on its own.
+    assert _learned(tmp_path) == []
+
 
 
 def test_a_provider_default_position_teaches_nobody_anything(tmp_path):

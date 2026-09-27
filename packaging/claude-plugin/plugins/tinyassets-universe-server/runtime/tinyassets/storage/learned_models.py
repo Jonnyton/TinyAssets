@@ -55,6 +55,12 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS learned_models (
   -- When this platform FIRST saw this id work at all. A property of the id, not
   -- of a person; it exists only to break a version tie.
   first_verified_at TEXT NOT NULL,
+  -- The public page that proved it is a public release. A URL with query and
+  -- fragment stripped, and the check had to pass against THIS value, so it is
+  -- provably sufficient on its own and cannot carry a tracking parameter. It is the
+  -- one field here that came from an agent, which is why it is stripped and bounded
+  -- rather than stored as given.
+  evidence_url TEXT NOT NULL,
   PRIMARY KEY(source_kind, model_id))"""
 
 _EVIDENCE_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_evidence (
@@ -67,6 +73,38 @@ _EVIDENCE_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_evidence (
   -- returns a decision, not a population.
   owner_user_id TEXT NOT NULL,
   first_verified_at TEXT NOT NULL,
+  PRIMARY KEY(source_kind, model_id, owner_user_id))"""
+
+_PENDING_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_pending (
+  -- An id one owner's agent has ATTESTED is a public release, awaiting independent
+  -- confirmation by other owners' agents. Not shared with anyone yet.
+  source_kind TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  -- The public page the attesting agent cited, query and fragment already stripped.
+  -- A confirmer re-fetches exactly this, so the stored value has to be sufficient
+  -- on its own.
+  evidence_url TEXT NOT NULL,
+  -- Who attested. Present so their OWN universes can never confirm their own
+  -- attestation; per-user data, deleted with its user, never returned by the queue.
+  --
+  -- Named owner_user_id, not attested_by, because account deletion finds per-user
+  -- rows BY COLUMN NAME from its PRINCIPAL_KEYS list. A semantically nicer name was
+  -- silently skipped by that sweep, leaving a departed owner's rows behind.
+  owner_user_id TEXT NOT NULL,
+  attested_at TEXT NOT NULL,
+  PRIMARY KEY(source_kind, model_id))"""
+
+_CONFIRMATION_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_confirmations (
+  -- One other owner's independent confirmation of a pending attestation.
+  source_kind TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  -- Per owner, so the same owner confirming repeatedly counts once. Per-user data,
+  -- and named to match PRINCIPAL_KEYS so account deletion actually finds it.
+  owner_user_id TEXT NOT NULL,
+  -- The model the confirming TURN ran on, recorded because the founder's bar is
+  -- that a confirmation comes from a current model. A public model id, not a secret.
+  confirming_model_id TEXT NOT NULL,
+  confirmed_at TEXT NOT NULL,
   PRIMARY KEY(source_kind, model_id, owner_user_id))"""
 
 #: The source KIND a native (subscription CLI) connection reports, and the
@@ -84,13 +122,20 @@ OWN_VERIFIED_BASIS = "owner_verified_here"
 #: Every column the SHARED table will ever have. A test asserts the shipped table
 #: matches, so adding a fourth column has to be a deliberate act that updates this
 #: tuple and argues with the cross-user floor.
-COLUMNS = ("source_kind", "model_id", "first_verified_at")
+COLUMNS = ("source_kind", "model_id", "first_verified_at", "evidence_url")
 
 #: Columns of the PRIVATE evidence table. It is allowed an owner, because counting
 #: distinct owners is its only job; it is classified as per-user data in both
 #: deletion sweeps.
 EVIDENCE_COLUMNS = ("source_kind", "model_id", "owner_user_id", "first_verified_at")
 
+#: How many OTHER owners' agents must independently confirm an attestation before it
+#: is published. Founder, 2026-09-26: "it still needs to be checked by other users'
+#: models with smart recent big models before it is shared more". The attester never
+#: counts toward their own total.
+CONFIRMATIONS_REQUIRED = 2
+
+#: RETIRED as the publication rule. Kept only as the name of the count in step 2.
 #: How many DISTINCT OWNERS must have made an id work before it is published to
 #: everyone with that kind of source. Founder, 2026-09-26.
 #:
@@ -119,6 +164,9 @@ class LearnedModel:
     source_kind: str
     model_id: str
     first_verified_at: str
+    #: The public page that proved it. Empty only for a row read from the private
+    #: evidence table, which has no such page -- it is one owner's own history.
+    evidence_url: str = ""
 
 
 #: BASIC SANITY ONLY. The charset used to be doing privacy work -- it was meant to
@@ -128,6 +176,9 @@ class LearnedModel:
 #: this only has to reject what is not an identifier at all: empty, unbounded,
 #: whitespace-bearing, or control characters. Printable ASCII with no spaces keeps
 #: real selectors (brackets, colons, slashes, dots) usable.
+#: A stripped https URL: no whitespace, no control characters, printable ASCII.
+_URL_SAFE = re.compile(r"\Ahttps://[\x21-\x7e]{1,2040}\Z", re.ASCII)
+
 _IDENTIFIER = re.compile(r"\A[!-~]{1,200}\Z", re.ASCII)
 
 
@@ -139,6 +190,52 @@ def _clean(value: object, field: str) -> str:
     if not _IDENTIFIER.match(text):
         raise ValueError(f"invalid learned model {field}")
     return text
+
+
+def _stamp(now: datetime | None) -> str:
+    value = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone() is not None
+
+
+def _clean_evidence_url(value: object) -> str:
+    """An https URL with query and fragment STRIPPED, bounded.
+
+    Stripped rather than stored as given, and the id check has to pass against this
+    stripped value, so the stored URL is provably sufficient on its own. A shared
+    table must not carry an agent-supplied query string: that is free-form text in a
+    cross-user store, the same class of hole as the ARN and the email address in
+    review rounds 1 and 2. It also cannot carry a tracking parameter.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    if type(value) is not str or not value.strip() or len(value) > 2048:
+        raise ValueError("invalid evidence url")
+    parts = urlsplit(value.strip())
+    if (parts.scheme != "https" or not parts.hostname or parts.username
+            or parts.password or "@" in parts.netloc):
+        raise ValueError("evidence url must be a public https page with no credentials")
+    stripped = urlunsplit(("https", parts.netloc, parts.path, "", ""))
+    if not _URL_SAFE.match(stripped):
+        raise ValueError("invalid evidence url")
+    return stripped
+
+
+def _require_id_in_snippet(model_id: str, snippet: object) -> None:
+    """The one deterministic check the platform can make with no LLM and no fetch.
+
+    The EXACT id string must appear in what the agent says it read. Bounded because
+    it is untrusted input, and never stored -- see ``attest``.
+    """
+    if type(snippet) is not str or not snippet.strip() or len(snippet) > 20000:
+        raise ValueError("invalid evidence snippet")
+    if model_id not in snippet:
+        raise ValueError("the evidence does not contain this exact model id")
 
 
 class LearnedModelCatalog:
@@ -172,61 +269,174 @@ class LearnedModelCatalog:
 
     def record(self, *, source_kind: str, model_id: str, owner_user_id: str,
                now: datetime | None = None) -> bool:
-        """Record one owner's verified id; publish it once two owners have.
+        """Record that THIS owner made this id work. Publishes nothing.
 
-        Returns whether this call PUBLISHED the id -- not whether it stored
-        evidence -- because publication is the only outcome another user can see.
+        Returns whether this call created the row. Publication is a separate,
+        deliberate act -- ``attest`` then two OTHER owners' ``confirm`` -- because
+        "it worked for me" never established that an id is public. The threshold
+        that used to publish from here was refuted in review: two genuinely
+        different people can share one organisation's private selector.
 
-        Two steps in one transaction:
-
-        1. The owner's own evidence, private, idempotent on
-           ``(source_kind, model_id, owner_user_id)``. The same owner's second
-           universe adds nothing, which is what makes "distinct OWNERS" mean what
-           it says rather than "distinct universes".
-        2. If ``PROMOTION_OWNERS`` distinct owners now have evidence for this id,
-           publish it to the shared table. A private selector cannot get here: an
-           ARN with one account number in it is unique to its owner by
-           construction, so it stays at one owner forever.
-
-        The first-verified time published is the EARLIEST across the owners who
-        verified it, so it remains a property of the id rather than of whoever
-        happened to be second.
-
-        Callers treat this as best-effort -- failing to learn must never fail the
-        call that succeeded -- but the failure is raised here rather than
-        swallowed, so the caller decides that explicitly at its own site.
+        Idempotent per owner, so one owner's several universes add one row.
         """
         kind = _clean(source_kind, "source kind")
         model = _clean(model_id, "model id")
         owner = _clean(owner_user_id, "owner")
-        stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        when = stamp.isoformat(timespec="microseconds").replace("+00:00", "Z")
+        when = _stamp(now)
+        conn = self._connect(create=True)
+        try:
+            conn.execute(_EVIDENCE_SCHEMA)
+            return conn.execute(
+                "INSERT OR IGNORE INTO learned_model_evidence VALUES (?, ?, ?, ?)",
+                (kind, model, owner, when),
+            ).rowcount == 1
+        finally:
+            conn.close()
+
+    def attest(self, *, source_kind: str, model_id: str, evidence_url: str,
+               snippet: str, owner_user_id: str, now: datetime | None = None) -> str:
+        """One owner's agent attests an id is a public release. Shares nothing yet.
+
+        The platform makes NO outbound request. There is no platform LLM and no
+        platform fetch (founder, 2026-09-26: "there is no platform llm, just other
+        users"), so it checks only what is deterministic -- that the exact id string
+        appears in the snippet the agent says it read at that URL -- and then waits
+        for other owners' agents to reach the same conclusion independently.
+
+        The snippet is CHECKED AND DISCARDED. It is agent-supplied free text, and
+        free text in a store other users read is exactly the hole that bit rounds 1
+        and 2 (an ARN, an email address). What is kept is the stripped URL and the id.
+
+        Returns the item's state: "pending".
+        """
+        kind = _clean(source_kind, "source kind")
+        model = _clean(model_id, "model id")
+        owner = _clean(owner_user_id, "owner")
+        url = _clean_evidence_url(evidence_url)
+        _require_id_in_snippet(model, snippet)
+        when = _stamp(now)
+        conn = self._connect(create=True)
+        try:
+            conn.execute(_PENDING_SCHEMA)
+            conn.execute(
+                "INSERT OR IGNORE INTO learned_model_pending VALUES (?, ?, ?, ?, ?)",
+                (kind, model, url, owner, when),
+            )
+            return "pending"
+        finally:
+            conn.close()
+
+    def pending_items(self, source_kind: str | None = None) -> list[dict[str, str]]:
+        """The opt-in work queue: what still needs independent confirmation.
+
+        Readable by any owner's agent, so it carries NO owner data -- not who
+        attested, not who has confirmed, not how many have. Just the source kind, the
+        id, and the page to check. Users build the loop that reads this; there is
+        deliberately no platform worker.
+        """
+        conn = self._connect(create=False)
+        if conn is None:
+            return []
+        try:
+            if not _has_table(conn, "learned_model_pending"):
+                return []
+            sql = (
+                "SELECT p.source_kind, p.model_id, p.evidence_url "
+                "FROM learned_model_pending p "
+                "WHERE NOT EXISTS (SELECT 1 FROM learned_models m "
+                "WHERE m.source_kind = p.source_kind AND m.model_id = p.model_id)"
+            )
+            params: tuple[str, ...] = ()
+            if source_kind is not None:
+                sql += " AND p.source_kind = ?"
+                params = (_clean(source_kind, "source kind"),)
+            if not _has_table(conn, "learned_models"):
+                conn.execute(_SCHEMA)
+            rows = conn.execute(sql + " ORDER BY p.source_kind, p.model_id", params).fetchall()
+        finally:
+            conn.close()
+        return [{"source_kind": row["source_kind"], "model_id": row["model_id"],
+                 "evidence_url": row["evidence_url"]} for row in rows]
+
+    def confirm(self, *, source_kind: str, model_id: str, snippet: str,
+                owner_user_id: str, confirming_model_id: str,
+                now: datetime | None = None) -> str:
+        """Another owner's agent independently confirms a pending attestation.
+
+        Four things must hold, each refused with its own reason rather than a
+        generic failure:
+
+        * the id is actually pending;
+        * the confirmer is NOT the attester -- their own universes never count
+          toward their own attestation, or one owner could publish alone;
+        * the exact id appears in the snippet THIS agent read (it fetched the
+          stripped URL itself, or cited its own public source);
+        * the model this confirming turn ran on is not superseded by a newer sibling
+          the platform already knows -- the vendor-free reading of "smart recent big
+          model". See ``model_class.superseded_by`` for why it is "not superseded"
+          rather than "is the newest", which would deadlock an empty catalog.
+
+        Returns "published" when this confirmation reached the threshold, else
+        "pending".
+        """
+        from tinyassets.providers.model_class import superseded_by
+
+        kind = _clean(source_kind, "source kind")
+        model = _clean(model_id, "model id")
+        owner = _clean(owner_user_id, "owner")
+        confirming_model = _clean(confirming_model_id, "confirming model id")
+        _require_id_in_snippet(model, snippet)
+        when = _stamp(now)
         conn = self._connect(create=True)
         try:
             conn.execute(_SCHEMA)
             conn.execute(_EVIDENCE_SCHEMA)
+            conn.execute(_PENDING_SCHEMA)
+            conn.execute(_CONFIRMATION_SCHEMA)
             conn.execute("BEGIN IMMEDIATE")
             try:
-                conn.execute(
-                    "INSERT OR IGNORE INTO learned_model_evidence VALUES (?, ?, ?, ?)",
-                    (kind, model, owner, when),
-                )
-                # COUNT and MIN only. No owner identity leaves this query, and the
-                # count itself is never returned to a caller or stored in the
-                # shared table -- "N owners verified this" is a fact about users.
-                owners, earliest = conn.execute(
-                    "SELECT COUNT(*), MIN(first_verified_at) FROM learned_model_evidence "
-                    "WHERE source_kind = ? AND model_id = ?",
-                    (kind, model),
+                pending = conn.execute(
+                    "SELECT evidence_url, owner_user_id FROM learned_model_pending "
+                    "WHERE source_kind = ? AND model_id = ?", (kind, model),
                 ).fetchone()
-                published = False
-                if owners >= PROMOTION_OWNERS:
-                    published = conn.execute(
-                        "INSERT OR IGNORE INTO learned_models VALUES (?, ?, ?)",
-                        (kind, model, earliest or when),
-                    ).rowcount == 1
+                if pending is None:
+                    raise ValueError("no such pending model attestation")
+                if pending["owner_user_id"] == owner:
+                    raise PermissionError(
+                        "an attestation cannot be confirmed by the owner who made it")
+                known = [
+                    LearnedModel(row["source_kind"], row["model_id"],
+                                 row["first_verified_at"], row["evidence_url"])
+                    for row in conn.execute(
+                        "SELECT source_kind, model_id, first_verified_at, evidence_url "
+                        "FROM learned_models WHERE source_kind = ?", (kind,))
+                ]
+                stale = superseded_by(confirming_model, known)
+                if stale is not None:
+                    raise PermissionError(
+                        "a confirmation needs a current model; this one is superseded")
+                conn.execute(
+                    "INSERT OR IGNORE INTO learned_model_confirmations "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (kind, model, owner, confirming_model, when),
+                )
+                confirmations = conn.execute(
+                    "SELECT COUNT(*) FROM learned_model_confirmations "
+                    "WHERE source_kind = ? AND model_id = ?", (kind, model),
+                ).fetchone()[0]
+                state = "pending"
+                if confirmations >= CONFIRMATIONS_REQUIRED:
+                    earliest = conn.execute(
+                        "SELECT MIN(first_verified_at) FROM learned_model_evidence "
+                        "WHERE source_kind = ? AND model_id = ?", (kind, model),
+                    ).fetchone()[0]
+                    conn.execute(
+                        "INSERT OR IGNORE INTO learned_models VALUES (?, ?, ?, ?)",
+                        (kind, model, earliest or when, pending["evidence_url"]),
+                    )
+                    state = "published"
                 conn.commit()
-                return published
+                return state
             except BaseException:
                 conn.rollback()
                 raise
@@ -277,13 +487,15 @@ class LearnedModelCatalog:
             ).fetchone():
                 return []
             rows = conn.execute(
-                "SELECT source_kind, model_id, first_verified_at FROM learned_models "
+                "SELECT source_kind, model_id, first_verified_at, evidence_url "
+                "FROM learned_models "
                 "WHERE source_kind = ? ORDER BY first_verified_at, model_id",
                 (kind,),
             ).fetchall()
         finally:
             conn.close()
-        return [LearnedModel(row["source_kind"], row["model_id"], row["first_verified_at"])
+        return [LearnedModel(row["source_kind"], row["model_id"], row["first_verified_at"],
+                             row["evidence_url"])
                 for row in rows]
 
     def newest_for_source_kind(self, source_kind: str) -> list[LearnedModel]:

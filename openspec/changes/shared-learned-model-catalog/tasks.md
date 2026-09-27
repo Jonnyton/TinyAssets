@@ -120,17 +120,27 @@ open question: `attestation.md`.
       fetch in the substrate, and the endpoint allowlist is the stated
       confidentiality boundary, so step 3 is an authority change rather than
       plumbing. Narrowest form and a no-egress fallback both specified.
-- [ ] DECISION NEEDED: a platform-side attestation reader (new egress primitive,
-      boolean-only result, no redirects, pinned global-only address, per-owner rate
-      limit) versus an agent-side fetch with an attested snippet and no platform
-      egress at all.
-- [ ] Drop the threshold as the publication rule; KEEP the owner's-own-list and
-      one-owner-many-universes behaviour, which do not depend on it.
-- [ ] New owner-authorized write op to attest (public surface: its own proposal
-      section before code).
-- [ ] Shared table gains the evidence URL, query and fragment stripped; re-test the
-      cross-user floor against a URL, which is agent-supplied free text.
-- [ ] One line of served guidance where the agent learns a model worked.
+- [x] DECIDED: option 2, no platform egress. Verification comes from other users'
+      agents, each with its own sandboxed web capability.
+- [x] Threshold dropped as the publication rule; the owner's-own-list and
+      one-owner-many-universes behaviour kept, both independent of it.
+- [x] `attest` / `confirm` / `pending_items` built: snippet checked and DISCARDED
+      (agent-supplied free text never enters storage), URL stripped of query and
+      fragment and the check must pass against the stripped value, attester can
+      never confirm their own, one confirmer counts once, publish at two.
+- [x] `superseded_by` for "smart recent big model", with the bootstrap deadlock
+      resolved by inverting the test. Table-driven.
+- [x] The three owner-bearing tables named `owner_user_id` so account deletion's
+      by-column sweep actually finds them -- a nicer `attested_by` was silently
+      skipped -- and all three classified in scoped_reset.
+- [x] 27 attestation tests + 119 across the four catalog modules; 523 across the
+      touched suites.
+- [ ] REMAINING: expose attest/confirm/queue as owner-authorized MCP write ops
+      (public surface -- needs its own proposal section before code) and the one
+      line of served guidance. The storage and the rules are done and tested; only
+      the agent-facing surface is unbuilt.
+
+
 - [ ] One Codex round on the new shape (allowed: founder design change, not round 4
       of the old one).
 - [ ] Rebase after #4037.

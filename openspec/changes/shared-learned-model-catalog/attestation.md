@@ -26,7 +26,40 @@ the platform only checks something deterministic and vendor-free.
    share. **Default: not shared.**
 5. One line of served guidance where the agent learns a model worked.
 
-## The open question in step 3: there is no grant-free public fetch
+## DECIDED (2026-09-26): option 2, no platform egress at all
+
+The founder settled it: *"there is no platform llm, just other users"*, and
+independent verification comes from OTHER USERS' agents, each fetching with its own
+sandboxed web capability. So the platform makes no outbound request, there is no new
+egress primitive, and no SSRF oracle to bound. The analysis below is kept because it
+records WHY, and it is the reason the staged shape exists at all.
+
+## Built shape
+
+1. The owner's agent attests: id + evidence URL (query and fragment stripped) + the
+   exact snippet it read. The platform checks only that the id appears in the
+   snippet, then the item is PENDING and shared with nobody.
+2. Two or more distinct OTHER owners' agents, each on a model that is not superseded
+   by a newer sibling already published, independently re-check -- each fetching the
+   stripped URL itself or citing its own public source -- and submit a confirmation
+   with its own snippet. The platform runs the same check on each. The attester's own
+   universes never count.
+3. Published at two confirmations. Unsure at any stage means ask the owner or do not
+   share. Default: not shared.
+4. Pending items are an opt-in queue any owner's agent may read, carrying the source
+   kind, the id and the page -- and no owner data. Users build the loop; there is no
+   platform worker.
+
+**"Smart recent big model" without vendor names.** A confirming model qualifies when
+nothing known is NEWER in its class (`model_class.superseded_by`). Not "is a member of
+the published newest set", which deadlocks: an empty catalog has no newest set, so no
+confirmer could ever qualify and the catalog could never fill. "Not superseded" is
+monotone -- a first confirmer qualifies, and the bar rises on its own as the catalog
+grows -- and it cannot be gamed downward, because publishing more of your own OLDER
+ids never makes yours the newest of its class, and the id is the one a turn actually
+ran on.
+
+## Superseded analysis: why there is no grant-free public fetch
 
 This is the part that cannot be built from what exists, and it is an authority change
 rather than plumbing.
