@@ -24,6 +24,11 @@ page never conceals how many choices exist. Ordering SHALL be the existing
 candidate order; this read SHALL NOT rank models itself, and a model outside that
 order SHALL remain reachable rather than omitted.
 
+Any continuation instruction the reply carries SHALL name a target that is itself
+bounded and that honours the selectors it names. On this surface that is
+`model_options_summary`; naming `model_options` would instruct a caller to re-fetch
+the complete catalogue, which is the condition this read exists to avoid.
+
 #### Scenario: A large source does not outgrow the reply
 - **WHEN** an owned source enumerates more models than fit a single bounded reply
 - **THEN** the reply is bounded, reports that source's full model count, and returns the head of the existing candidate order
@@ -73,8 +78,7 @@ ceiling. Truncation SHALL NOT be silent: a reply MUST never be reduced without
 the marker, because a caller that cannot tell it received a prefix will report
 that prefix as the whole answer.
 
-Two `read_graph` targets SHALL be exempt, for two distinct and stated reasons, and
-no others:
+Four `read_graph` targets SHALL be exempt, each for a stated reason, and no others:
 
 - `target=run_file`, whose contract is exact bytes. Truncating it destroys both the
   bytes and the `next_offset` cursor that would let the caller page, so a partial
@@ -82,6 +86,15 @@ no others:
   parameter that bounds this read.
 - `target=model_options`, because the requirement "Shared unpowered model
   catalogue" requires its complete document for the owner's picker.
+- `target=conversation`, a retained message chunk already bounded by the caller's
+  own `output_max_chars`, whose lossless chunk contract a client parses.
+- `target=conversation_turn`, the committed terminal reply of a custom
+  conversation — the same universe reply `converse` returns, by another route.
+
+A reply SHALL be measured as UTF-8, not as ASCII-escaped JSON. Escaping non-ASCII
+as `\uXXXX` charges six bytes per character, so an ASCII-escaped measurement
+truncates a CJK, Cyrillic or Arabic payload at roughly a sixth of the content an
+English one carries — which is not one code path for every account.
 
 The exempt set SHALL be stated in this specification, and adding a target SHALL
 require amending this requirement. A target SHALL qualify only by being unusable
@@ -97,6 +110,16 @@ is the condition the ceiling exists to handle.
 #### Scenario: A reply within the ceiling is unchanged
 - **WHEN** a read's structured reply is within the ceiling
 - **THEN** it is returned unchanged, with no marker and no reformatting
+
+#### Scenario: A message and a universe reply are never replaced by a marker
+- **WHEN** `target=conversation` returns a chunk larger than the ceiling, in any script
+- **THEN** the chunk text and its `next_offset` cursor are returned intact
+- **WHEN** `target=conversation_turn` returns a committed reply larger than the ceiling
+- **THEN** the reply and the key a client polls on are returned intact
+
+#### Scenario: A non-English reply is measured like an English one
+- **WHEN** two replies carry the same number of characters, one ASCII and one CJK
+- **THEN** the ceiling reaches the same verdict for both
 
 #### Scenario: Only the picker's catalogue and the exact-byte read are exempt
 - **WHEN** `target=model_options` returns more than the ceiling

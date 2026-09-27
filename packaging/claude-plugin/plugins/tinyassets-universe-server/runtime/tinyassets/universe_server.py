@@ -70,7 +70,10 @@ from tinyassets.auth.wiki_canary import (
     set_wiki_canary_authority,
     wiki_canary_token_matches,
 )
-from tinyassets.engine_read_views import compact_model_options
+from tinyassets.engine_read_views import (
+    CONNECTOR_MORE_TARGET,
+    compact_model_options,
+)
 from tinyassets.mcp_schema_utils import describe_signature
 
 logger = logging.getLogger("universe_server")
@@ -163,7 +166,8 @@ _CEILING_TOOLS = frozenset({"read_graph"})
 def _connector_ceiling_exempt():
     """The ``(tool, target)`` reads this surface must never bound.
 
-    Two entries, for two unrelated reasons, and the reasons are the point:
+    Four entries. Each names its reason, and not one of them is "it is big" —
+    being big is what the ceiling is FOR:
 
     * ``run_file`` — its contract is exact bytes (``EXACT_BYTE_READS``). Capping it
       destroys the base64 AND the ``next_offset`` cursor, so the caller cannot even
@@ -172,14 +176,29 @@ def _connector_ceiling_exempt():
       (``tinyassets/onboarding/app.html:1423``) and
       ``openspec/specs/live-mcp-connector-surface/spec.md`` requires its complete
       document ("Complete choices, not a first-page sample"). A model wanting a
-      bounded view reads ``target=model_options_summary`` instead; that is the
-      split, and it is why this stays at two rather than growing.
-
-    Neither entry is here for being big. Being big is what the ceiling is FOR.
+      bounded view reads ``target=model_options_summary``; that is the split.
+    * ``conversation`` — a retained message chunk, already bounded by the caller's
+      own ``output_max_chars``, with a lossless chunk contract the app depends on.
+      Replacing it drops ``chunk``/``next_offset``/``available`` and the app shows
+      "Couldn't load the rest of this message" (``app.html:3776``). A default 8,192
+      character chunk of CJK text exceeds the ceiling on its own, so this is the
+      ordinary path for a non-English conversation, not an edge case.
+    * ``conversation_turn`` — the committed terminal reply of a custom
+      conversation (``consumer_runtime.read_turn``). It is the SAME universe reply
+      ``converse`` returns, by a different route; the app polls it
+      (``app.html:3159``) and exits its loop when ``consumer_turn`` disappears.
+      Exempting ``converse`` alone left the product truncatable here.
     """
     from tinyassets.engine_result_bounds import EXACT_BYTE_READS
 
-    return EXACT_BYTE_READS | {("read_graph", "model_options")}
+    return EXACT_BYTE_READS | {
+        ("read_graph", "model_options"),
+        # Message text the user or their universe authored, with a chunk contract
+        # the client parses. Same class as read_page: Hard Rule 9 content, bounded
+        # already by the parameter the caller passed.
+        ("read_graph", "conversation"),
+        ("read_graph", "conversation_turn"),
+    }
 
 
 def _bounded_structured(structured: dict, *, tool: str) -> dict | None:
@@ -194,12 +213,23 @@ def _bounded_structured(structured: dict, *, tool: str) -> dict | None:
 
     Same marker and same ceiling as the engine surface, from the same module, so
     there is one definition of "too big" rather than two that drift.
+
+    ``ensure_ascii=False`` matters and is not cosmetic. ``json.dumps`` defaults to
+    escaping every non-ASCII character as ``\\uXXXX``, six bytes for one, so
+    measuring that way charges a CJK, Cyrillic or Arabic payload roughly six times
+    its real size: an 8,192-character Japanese message measured 49,201 bytes
+    against a 24,576 ceiling, where the same message in English measured 8,257. A
+    ceiling that truncates a Japanese user's read at a sixth of an English user's
+    content is not one code path for every account. It also matches what
+    ``bound_tool_text`` renders, so the measurement and the marker agree.
     """
     import json as _json
 
     from tinyassets.engine_result_bounds import bound_tool_text, resolve_ceiling
 
-    rendered = _json.dumps(structured, separators=(",", ":"), default=str)
+    rendered = _json.dumps(
+        structured, separators=(",", ":"), default=str, ensure_ascii=False,
+    )
     marker = bound_tool_text(rendered, tool=tool, limit=resolve_ceiling())
     return None if marker is None else _json.loads(marker)
 
@@ -900,7 +930,14 @@ def read_graph(
         # caller picks, because the server guessing which kind of caller this is
         # would be wrong exactly when a model drives the founder's own session.
         return json.dumps(
-            compact_model_options(document, query=query, offset=output_offset),
+            compact_model_options(
+                document, query=query, offset=output_offset,
+                # This surface's continuation is the summary itself: its
+                # `model_options` is the complete document and ignores these
+                # selectors, so the engine's default hint would send a caller
+                # straight back to the megabyte.
+                more_target=CONNECTOR_MORE_TARGET,
+            ),
             default=str,
         )
     return _unknown_target(

@@ -45,11 +45,21 @@ TOP_PER_SOURCE = 8
 #: more, still bounded.
 PAGE_ROWS = 25
 
-_MODEL_OPTIONS_MORE = (
-    'read_graph target="model_options" query="<text>" filters by model id or '
-    "provider; output_offset=<n> pages through the filtered rows "
-    "(next_offset tells you where to continue)"
-)
+#: The target a caller should ask again for more rows, which DIFFERS BY SURFACE and
+#: is why this is a parameter rather than a constant. On the engine, ``model_options``
+#: IS this projection and honours the selectors. On the connector it is the complete,
+#: ceiling-exempt document that ignores them — so naming it there tells a caller to
+#: re-fetch the 1.27 MB catalogue the projection exists to avoid, which is the exact
+#: failure being fixed. The connector's continuation is ``model_options_summary``.
+ENGINE_MORE_TARGET = "model_options"
+CONNECTOR_MORE_TARGET = "model_options_summary"
+
+
+def _more_hint(target: str) -> str:
+    return (
+        f'read_graph target="{target}" query="<text>" filters by model id or '
+        "provider; output_offset=<the next_offset a page returned> walks the rest"
+    )
 
 #: Status blocks that describe the HOST and the deployment, not this universe:
 #: activity-log tails, byte counts of the host's disk, ship health, supervisor
@@ -151,7 +161,10 @@ def _matches(row: dict, needle: str) -> bool:
     return needle in model_id.lower() or needle in provider_ref.lower()
 
 
-def compact_model_options(document: object, *, query: str = "", offset: int = 0) -> object:
+def compact_model_options(
+    document: object, *, query: str = "", offset: int = 0,
+    more_target: str = ENGINE_MORE_TARGET,
+) -> object:
     """Project the full advisory catalogue into a default a small model can read.
 
     An error document, or anything that is not the catalogue, passes through
@@ -167,6 +180,12 @@ def compact_model_options(document: object, *, query: str = "", offset: int = 0)
 
     Every shape carries totals and ``next_offset``, so "there are more" is never
     something the agent has to infer.
+
+    ``more_target`` names the target the caller asks again — the ENGINE default,
+    because on that surface ``model_options`` is this projection. The connector
+    MUST pass ``CONNECTOR_MORE_TARGET``: there, ``model_options`` is the complete
+    ceiling-exempt document that ignores these selectors, so pointing a caller at
+    it re-fetches the whole catalogue.
     """
     if not isinstance(document, dict) or "options" not in document or document.get("error"):
         return document
@@ -191,7 +210,7 @@ def compact_model_options(document: object, *, query: str = "", offset: int = 0)
         "selectable_models": sum(1 for row in rows if row.get("in_candidate_catalog")),
         "unavailable_count": len(document.get("unavailable") or ()),
         "source_failures": document.get("source_failures"),
-        "how_to_see_more": _MODEL_OPTIONS_MORE,
+        "how_to_see_more": _more_hint(more_target),
     }
     if needle or cursor:
         matching = _ordered([row for row in rows if not needle or _matches(row, needle)])

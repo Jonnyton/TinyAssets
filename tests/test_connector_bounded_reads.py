@@ -206,6 +206,109 @@ def test_exact_bytes_are_never_bounded_on_the_connector_either(monkeypatch):
 
 # ── scope: the handles a ceiling would destroy rather than bound ────────────
 
+def test_a_retained_message_chunk_survives_in_any_language(monkeypatch):
+    """P1 from cross-family review. Two bugs met here, and either one broke the app.
+
+    A default 8,192-character chunk of CJK text measured 49,201 bytes because
+    `json.dumps` escapes non-ASCII as `\\uXXXX` — six bytes per character — so the
+    ceiling charged a Japanese message six times its real size and truncated it
+    where the same message in English (8,257 bytes) passed. The app rejects the
+    marker and shows "Couldn't load the rest of this message" (`app.html:3776`).
+
+    Both halves are fixed: `conversation` is exempt, and the measurement no longer
+    inflates non-ASCII. The exemption alone would not have been enough — at 24,625
+    real bytes this chunk still exceeds the 24,576 ceiling.
+    """
+    chunk = {"chunk": "一" * 8192, "next_offset": 8192, "available": 20_000}
+    # The branch imports its reader locally, so patch it at the source module and
+    # stand in for the identity/home gate it runs first.
+    import tinyassets.api.permissions as permissions
+    import tinyassets.conversation_retrieval as retrieval
+    import tinyassets.shared_self as shared_self
+
+    monkeypatch.setattr(retrieval, "read_conversation_page", lambda *a, **k: chunk)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "sub-1")
+    monkeypatch.setattr(shared_self, "require_founder_home", lambda *a, **k: "u-1")
+
+    structured = _call("read_graph", {"target": "conversation",
+                                      "field_name": "m-1"}).structured_content
+
+    assert "truncated" not in structured, "a retained message is never a marker"
+    assert structured["chunk"] == chunk["chunk"], "the text arrives whole"
+    assert structured["next_offset"] == 8192, "and so does the cursor"
+
+
+def test_non_ascii_is_not_charged_six_times_its_size():
+    """The ceiling must not truncate a CJK payload where English passes."""
+    from tinyassets.engine_result_bounds import DEFAULT_CEILING_BYTES
+
+    cjk = {"chunk": "一" * 6000}
+    latin = {"chunk": "a" * 6000}
+    assert us._bounded_structured(latin, tool="read_graph") is None
+    assert us._bounded_structured(cjk, tool="read_graph") is None, (
+        "same character count, same verdict — measured as UTF-8, not as escapes"
+    )
+    # Sanity: the old ASCII-escaped measurement would have been over the ceiling.
+    assert len(json.dumps(cjk, separators=(",", ":")).encode()) > DEFAULT_CEILING_BYTES
+
+
+def test_a_custom_conversation_reply_is_never_truncated(monkeypatch):
+    """P1 from cross-family review: `converse` was exempt, this route was not.
+
+    `read_graph target="conversation_turn"` returns the SAME committed universe
+    reply `converse` does (`consumer_runtime.read_turn`). The app polls it
+    (`app.html:3159`) and leaves its loop when `consumer_turn` disappears, then
+    renders "Your universe returned an unexpected response". Exempting one route to
+    the product while leaving the other truncatable protected nothing.
+    """
+    turn = {
+        "consumer_turn": {"id": "t-1", "status": "complete"},
+        "reply": "x" * 30_000,
+    }
+    import tinyassets.consumer_runtime as consumer_runtime
+
+    monkeypatch.setattr(consumer_runtime, "read_turn", lambda *a, **k: turn,
+                        raising=False)
+    monkeypatch.setattr(us, "_extensions_impl", lambda **kw: json.dumps(turn))
+
+    structured = _call("read_graph", {"target": "conversation_turn",
+                                      "query": "k-1"}).structured_content
+
+    assert "truncated" not in structured
+    assert structured.get("consumer_turn"), "the polling key must survive"
+    assert structured["reply"] == turn["reply"], "the universe's reply is the product"
+
+
+def test_the_summary_points_at_a_bounded_continuation(catalogue):
+    """P1 from cross-family review: the hint sent callers back to the megabyte.
+
+    On the engine, `model_options` IS the compact projection and honours these
+    selectors. On the connector it is the complete, ceiling-exempt document that
+    ignores them — so naming it here told a caller to re-fetch the 1.27 MB
+    catalogue this projection exists to avoid.
+    """
+    structured = _call("read_graph", {"target": "model_options_summary"}).structured_content
+    hint = structured["how_to_see_more"]
+
+    assert "model_options_summary" in hint
+    assert 'target="model_options"' not in hint, (
+        "the connector's continuation must not name the unbounded read"
+    )
+
+    # The engine keeps its own correct default, so the two surfaces do not share
+    # one wrong answer.
+    from tinyassets.engine_read_views import (
+        CONNECTOR_MORE_TARGET,
+        ENGINE_MORE_TARGET,
+        compact_model_options,
+    )
+
+    engine_hint = compact_model_options(_catalogue(20))["how_to_see_more"]
+    assert f'target="{ENGINE_MORE_TARGET}"' in engine_hint
+    assert ENGINE_MORE_TARGET != CONNECTOR_MORE_TARGET
+
+
 def test_the_ceiling_governs_exactly_one_handle():
     """An allowlist, and the reason each other handle is out of it.
 
@@ -223,15 +326,20 @@ def test_the_exempt_set_is_two_entries_for_two_reasons():
     from tinyassets.engine_result_bounds import EXACT_BYTE_READS
 
     exempt = us._connector_ceiling_exempt()
-    assert exempt == EXACT_BYTE_READS | {("read_graph", "model_options")}
-    assert ("read_graph", "run_file") in exempt
-    assert ("read_graph", "model_options") in exempt
+    assert exempt == EXACT_BYTE_READS | {
+        ("read_graph", "model_options"),
+        ("read_graph", "conversation"),
+        ("read_graph", "conversation_turn"),
+    }
+    # Each entry earns its place by being unusable when partial, or by a stated
+    # completeness requirement — never by being large, which is what the ceiling
+    # is FOR. An entry added for size is the regression to look for.
+    assert ("read_graph", "run_file") in exempt          # exact bytes
+    assert ("read_graph", "model_options") in exempt     # the picker's spec
+    assert ("read_graph", "conversation") in exempt      # message text + cursor
+    assert ("read_graph", "conversation_turn") in exempt  # the universe's reply
     # The bounded sibling is NOT exempt — if it were, the split bought nothing.
     assert ("read_graph", "model_options_summary") not in exempt
-    assert len(exempt) == 2, (
-        "a third entry is evidence someone widened the hole instead of splitting "
-        "the read — amend the spec requirement instead"
-    )
 
 
 def test_a_positional_target_is_still_recognised():
