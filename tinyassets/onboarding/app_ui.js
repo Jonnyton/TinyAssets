@@ -1,0 +1,536 @@
+  // ---- Custom universe UI: isolated renderer + closed bridge ----------------
+  // A universe can hold executable UI bundles (`tinyassets.app-ui.v1`) its own
+  // agent writes, and this renders them. A bundle is somebody's arbitrary code —
+  // usually somebody the viewer has never met, because bundles are shared by
+  // publish/remix — so nothing here sanitizes it. It runs in the sandboxed,
+  // opaque-origin document `/mcp/app/ui-frame` serves (see ui_frame.py for the
+  // policy), which owns no storage, no cookies and no network of its own.
+  //
+  // Everything the bundle can do is in ACTIONS below and nowhere else. Each
+  // handler builds its own tool arguments and pins the universe to the VIEWING
+  // user's current home, so a bundle cannot name a universe: cross-user reach is
+  // not refused by a check, it is unrepresentable. Replies are assembled from
+  // picked fields, never spread from a server payload, so a field added upstream
+  // later cannot ride out to untrusted code.
+  //
+  // Storage is the viewer's own `app_ui` row (read_graph/write_graph
+  // target="app_ui"): the bundles in `ui_library` and the choice in
+  // `ui_selection`, one row per person and universe, keyed server-side by who is
+  // signed in. It is not an agent binding and never appears to a binding reader.
+  // Every write is compare-and-set on the row's revision.
+  const AppUI={
+    KIND:"tinyassets.app-ui.v1",VERSION:1,PROTOCOL:1,
+    SHELL_KIND:"tinyassets.app-experience-shell.v1",
+    FRAME_SRC:"/mcp/app/ui-frame",
+    // No `allow-same-origin`: that single word is the whole isolation boundary.
+    // With it the frame would share this page's origin and could read
+    // `sessionStorage` (the access token), `localStorage` and the parent DOM.
+    // The frame's own response header sandboxes it too, so this is the second of
+    // two independent locks, not the only one.
+    SANDBOX:"allow-scripts",
+    // Per-UI bounds, and ONE bound on the whole library: its bytes, never a count
+    // of UIs (no structural caps -- a person keeps as many as they like).
+    // MAX_LIBRARY_BYTES must equal MAX_APP_UI_LIBRARY_BYTES in
+    // tinyassets/custom_agents.py; a test derives it from the Python constant
+    // rather than restating it. Sizes are UTF-8 BYTES, because that is what the
+    // server caps: counting UTF-16 units let multi-byte bundles pass here and
+    // fail at write time (Codex, 2026-09-26).
+    MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
+    MAX_LIBRARY_BYTES:4194304,MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
+    ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
+    FIELDS:["kind","markup","name","script","style","ui_id","version"],
+
+    epoch:0,home:"",principal:"",enabled:false,busy:false,
+    library:[],unreadable:"",selection:null,active:null,frame:null,listener:null,
+    // The stored row's revision as last read; 0 means no row exists yet.
+    revision:0,
+    // Bumped on every mount AND unmount. A request captures it, so a reply owed
+    // to the bundle that was on screen a moment ago cannot settle a promise in
+    // the one that replaced it -- both bootstraps number requests from r1, so the
+    // ids collide by construction (Codex, 2026-09-26).
+    frameGen:0,ready:false,sending:false,pending:0,
+
+    bytes(value){ return new TextEncoder().encode(String(value)).length; },
+
+    // ---- component reader (pure; no DOM, no network, no sanitizing) ---------
+    unsupported(reason){ return {ok:false,reason}; },
+    text(value,limit){ return typeof value==="string"&&value.length<=limit; },
+    parseBundle(component){
+      if(!component||typeof component!=="object"||Array.isArray(component))
+        return this.unsupported("UI component is not an object");
+      const keys=Object.keys(component).sort();
+      const extra=keys.filter(k=>!this.FIELDS.includes(k));
+      if(extra.length) return this.unsupported("UI component carries fields this app does not render: "+extra.join(", "));
+      if(keys.length!==this.FIELDS.length)
+        return this.unsupported("UI component is missing "+this.FIELDS.filter(k=>!keys.includes(k)).join(", "));
+      if(component.kind!==this.KIND) return this.unsupported("not a "+this.KIND+" component");
+      if(component.version!==this.VERSION)
+        return this.unsupported("UI version "+String(component.version)+" is not supported; this app renders version 1");
+      if(!this.text(component.ui_id,64)||!this.ID_RE.test(component.ui_id))
+        return this.unsupported("ui_id must be lowercase letters, digits or dashes");
+      if(!this.text(component.name,this.MAX_NAME)||!component.name.trim())
+        return this.unsupported("name must be a non-empty string of at most "+this.MAX_NAME+" characters");
+      if(!this.text(component.markup,this.MAX_MARKUP))
+        return this.unsupported("markup must be a string of at most "+this.MAX_MARKUP+" characters");
+      if(!this.text(component.style,this.MAX_STYLE))
+        return this.unsupported("style must be a string of at most "+this.MAX_STYLE+" characters");
+      if(!this.text(component.script,this.MAX_SCRIPT))
+        return this.unsupported("script must be a string of at most "+this.MAX_SCRIPT+" characters");
+      const size=this.bytes(JSON.stringify(component));
+      if(size>this.MAX_BUNDLE_BYTES)
+        return this.unsupported("this UI is "+size+" bytes; the limit is "+this.MAX_BUNDLE_BYTES);
+      return {ok:true,bundle:{kind:this.KIND,version:this.VERSION,ui_id:component.ui_id,
+        name:component.name.trim(),markup:component.markup,style:component.style,script:component.script}};
+    },
+    // The library is a LIST of any length, ordered as stored, with no
+    // user-chosen keys; each entry names itself by `ui_id`.
+    readLibrary(configuration){
+      const raw=configuration&&configuration.ui_library;
+      if(raw===undefined||raw===null) return {ok:true,entries:[]};
+      if(!Array.isArray(raw)) return this.unsupported("ui_library is not a list");
+      const entries=[],seen=new Set();
+      for(const component of raw){
+        const parsed=this.parseBundle(component);
+        if(!parsed.ok) return parsed;
+        if(seen.has(parsed.bundle.ui_id)) return this.unsupported("ui_id "+parsed.bundle.ui_id+" is listed twice");
+        seen.add(parsed.bundle.ui_id); entries.push(parsed.bundle);
+      }
+      return {ok:true,entries};
+    },
+    readSelection(configuration){
+      const raw=configuration&&configuration.ui_selection;
+      if(raw===undefined||raw===null) return {ok:true,selection:null};
+      if(!raw||typeof raw!=="object"||Array.isArray(raw)) return this.unsupported("ui_selection is not an object");
+      const keys=Object.keys(raw).sort();
+      if(raw.version!==1) return this.unsupported("ui_selection version is not supported");
+      if(raw.state==="default"){
+        if(JSON.stringify(keys)!==JSON.stringify(["state","version"]))
+          return this.unsupported("a default ui_selection carries unexpected fields");
+        return {ok:true,selection:{version:1,state:"default"}};
+      }
+      if(raw.state!=="active") return this.unsupported("unknown ui_selection state");
+      if(JSON.stringify(keys)!==JSON.stringify(["state","ui_id","version"]))
+        return this.unsupported("an active ui_selection carries unexpected fields");
+      if(!this.text(raw.ui_id,64)||!this.ID_RE.test(raw.ui_id)) return this.unsupported("ui_selection names an invalid ui_id");
+      return {ok:true,selection:{version:1,state:"active",ui_id:raw.ui_id}};
+    },
+    // For inspecting a PUBLIC design: exactly one UI component, or nothing.
+    readDefinition(agent){
+      if(!agent||typeof agent!=="object"||!agent.components||typeof agent.components!=="object"||Array.isArray(agent.components))
+        return this.unsupported("definition has no components");
+      const keys=[];
+      for(const [key,component] of Object.entries(agent.components))
+        if(component&&typeof component==="object"&&component.kind===this.KIND) keys.push(key);
+      if(keys.length!==1) return this.unsupported(keys.length
+        ? "definition has "+keys.length+" UI components; this app renders exactly one"
+        : "definition has no "+this.KIND+" component");
+      const parsed=this.parseBundle(agent.components[keys[0]]);
+      if(!parsed.ok) return parsed;
+      return {ok:true,key:keys[0],bundle:parsed.bundle};
+    },
+
+    // ---- lifecycle and fencing (same shape as AppLayout) -------------------
+    fence(epoch,home){ return this.enabled&&epoch===this.epoch&&home===this.home; },
+    reset(){
+      this.epoch++; this.unmount();
+      this.enabled=false; this.home=""; this.principal="";
+      this.library=[]; this.unreadable=""; this.selection=null; this.busy=false;
+      this.revision=0;
+      $("btn-ui-switch").hidden=true;
+      this.status(""); this.paint();
+    },
+    // The SAME account can move to another home mid-session (the status poll
+    // observes it and calls setQueueScope). A bundle mounted for the old home
+    // would otherwise keep a live bridge and be served the NEW home's
+    // conversation, because `converse`/`get_status` resolve the caller's current
+    // home rather than the one the bundle was granted (Codex, 2026-09-26).
+    // Sign-out already tore the bridge down; this closes the same-login path.
+    homeChanged(home){
+      const id=String(home||"").trim();
+      if(!this.enabled||!id||id===this.home) return;
+      this.reset();
+      this.status("Your home universe changed; the custom UI was closed and its access ended.");
+    },
+    enable(home,principal){
+      if(this.enabled&&this.home===home&&this.principal===principal) return;
+      this.reset();
+      const id=String(home||"").trim();
+      if(!id||!principal) return;
+      this.epoch++; this.home=id; this.principal=principal; this.enabled=true;
+      $("btn-ui-switch").hidden=false;
+      this.paint();
+      this.load();
+    },
+    // One read of the viewer's own row. The server keys it by the signed-in
+    // caller, so there is nothing here to name and no owner to check.
+    async fetchRow(){
+      const doc=await MCP.callTool("read_graph",{target:"app_ui",graph_id:this.home},{idempotent:true});
+      const row=doc&&doc.app_ui;
+      if(!row||doc.error||!Number.isInteger(row.revision)||row.revision<0||row.universe_id!==this.home)
+        throw Error((doc&&(doc.detail||doc.error))||"unexpected app UI reply");
+      return row;
+    },
+    // Refresh and first load. Fenced like every other request here: a reply for
+    // a home this controller has left is dropped.
+    async load(){
+      if(!this.enabled||this.busy) return;
+      const epoch=this.epoch,home=this.home;
+      this.busy=true; this.paint();
+      try{
+        const row=await this.fetchRow();
+        if(!this.fence(epoch,home)) return;
+        this.adopt(row);
+      }catch(err){
+        if(!this.fence(epoch,home)) return;
+        if(err&&err.authRequired){ sessionExpired(); return; }
+        this.status("Could not read your installed UIs ("+(err&&err.message||"unknown error")+"). Default chat is in use.");
+      }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
+    },
+    adopt(row){
+      if(!this.enabled) return;
+      this.revision=row.revision;
+      const library=this.readLibrary(row),selection=this.readSelection(row);
+      this.unmount();
+      if(!library.ok){
+        // An unreadable library is remembered as unreadable, NOT as empty. An
+        // empty cache here is what let a later install rewrite `ui_library` from
+        // nothing and drop the bundles it could not parse (Codex, 2026-09-26).
+        this.library=[]; this.unreadable=library.reason; this.selection=null;
+        this.status("Installed UIs unreadable: "+library.reason+". Default chat is in use. Installing would overwrite them, so it is disabled."); this.paint(); return;
+      }
+      this.library=library.entries; this.unreadable="";
+      if(!selection.ok){
+        this.selection=null;
+        this.status("Saved UI choice unreadable: "+selection.reason+". Default chat is in use."); this.paint(); return;
+      }
+      this.selection=selection.selection;
+      if(this.selection&&this.selection.state==="active"){
+        const entry=this.library.find(b=>b.ui_id===this.selection.ui_id);
+        if(entry){ this.mount(entry); this.status("Using "+entry.name+"."); }
+        else this.status("Your saved UI ("+this.selection.ui_id+") is no longer installed. Default chat is in use.");
+      }else this.status(this.library.length?"Default chat is in use.":"");
+      this.paint();
+    },
+
+    // ---- rendering: the bundle never enters this document ------------------
+    mount(entry){
+      this.unmount();
+      const host=$("ui-frame-host"),frame=document.createElement("iframe");
+      frame.id="ui-frame"; frame.className="ui-frame"; frame.title=entry.name;
+      frame.setAttribute("sandbox",this.SANDBOX);
+      frame.setAttribute("referrerpolicy","no-referrer");
+      frame.setAttribute("src",this.FRAME_SRC);
+      this.frame=frame; this.active=entry; this.ready=false;
+      this.frameGen++; this.pending=0; this.sending=false;
+      this.listener=event=>this.receive(event);
+      window.addEventListener("message",this.listener);
+      host.replaceChildren(frame);
+      host.hidden=false;
+      $("view-chat").classList.add("ui-custom-active");
+      this.paintHeader();
+    },
+    unmount(){
+      if(this.listener){ window.removeEventListener("message",this.listener); this.listener=null; }
+      const host=$("ui-frame-host");
+      host.replaceChildren(); host.hidden=true;
+      $("view-chat").classList.remove("ui-custom-active");
+      this.frame=null; this.active=null; this.ready=false; this.sending=false; this.pending=0;
+      this.frameGen++;
+      this.paintHeader();
+    },
+
+    // ---- the bridge: one frame, one allowlist, one universe ----------------
+    // A frozen map. An action absent from it does not exist — the refusal names
+    // what was asked and nothing is guessed from a near-match.
+    ACTIONS:Object.freeze({
+      whoami:"whoami",list_agents:"listAgents",
+      send_message:"sendMessage",read_conversation:"readConversation"}),
+    receive(event){
+      // Only THIS frame's window is heard. Another frame, a popup, or the page
+      // itself cannot speak for the bundle, and the check is on the window
+      // object rather than on an origin string, which an opaque origin makes "null"
+      // for every sandboxed document on the page.
+      if(!this.frame||event.source!==this.frame.contentWindow) return;
+      const message=event.data;
+      if(!message||typeof message!=="object"||message.ta_ui!==this.PROTOCOL) return;
+      if(message.type==="ready"){ this.deliver(); return; }
+      if(message.type!=="call"||typeof message.id!=="string"||typeof message.action!=="string") return;
+      this.serve(message.id,message.action,message.params);
+    },
+    deliver(){
+      if(!this.frame||!this.active||this.ready) return;
+      this.ready=true;
+      this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:{
+        markup:this.active.markup,style:this.active.style,script:this.active.script}});
+    },
+    post(payload){
+      const frame=this.frame&&this.frame.contentWindow;
+      // The frame's origin is opaque, so it cannot be named; "*" still reaches
+      // only this window. What crosses is the bundle's own source and results the
+      // bundle asked for as the viewer -- which includes this viewer's
+      // conversation text, so it IS sensitive; see the residual-risk note in
+      // openspec/changes/composable-ui-experiences/design.md.
+      if(frame) frame.postMessage(payload,"*");
+    },
+    refuse(id,error){ this.post({ta_ui:this.PROTOCOL,type:"result",id,ok:false,error:String(error)}); },
+    // Re-checks, against the server, that the signed-in identity and home are
+    // still the ones this bundle was granted. `converse` and `get_status` resolve
+    // the CALLER's current home, so a bundle mounted before a home change would
+    // otherwise be served the new home's data.
+    async verify(){
+      const epoch=this.epoch,home=this.home,principal=this.principal;
+      const me=await fetchMe();
+      if(!this.fence(epoch,home)) throw new Error("your session changed");
+      if(!me||me.principal_id!==principal||me.universe_id!==home||me.setup!=="connected"){
+        const err=new Error("your signed-in identity or home changed; this UI's access ended");
+        err.revoke=true; throw err;
+      }
+    },
+    async serve(id,action,params){
+      // A reply is owed to the frame that ASKED. Without this, bundle A's answer
+      // reaches bundle B, and since both bootstraps number requests from r1 it
+      // settles B's own r1 promise with A's data (Codex, 2026-09-26).
+      const gen=this.frameGen;
+      const method=Object.prototype.hasOwnProperty.call(this.ACTIONS,action)?this.ACTIONS[action]:null;
+      if(!method){ this.refuse(id,"action not available: "+action); return; }
+      if(this.pending>=8){ this.refuse(id,"too many requests in flight"); return; }
+      const epoch=this.epoch,home=this.home,args=(params&&typeof params==="object"&&!Array.isArray(params))?params:{};
+      this.pending++;
+      try{
+        await this.verify();
+        const result=await this[method](args);
+        if(!this.fence(epoch,home)||gen!==this.frameGen||!this.frame) return;
+        this.post({ta_ui:this.PROTOCOL,type:"result",id,ok:true,result});
+      }catch(err){
+        if(err&&err.revoke){ this.refuse(id,err.message); this.reset(); return; }
+        if(!this.fence(epoch,home)||gen!==this.frameGen||!this.frame) return;
+        if(err&&err.authRequired){ this.refuse(id,"your session ended"); sessionExpired(); return; }
+        this.refuse(id,(err&&err.message)||"unavailable");
+      }finally{ if(gen===this.frameGen) this.pending--; }
+    },
+    // The viewer's identity, reduced to what a UI needs to greet them. No
+    // principal id, no token, no provider or credential material.
+    async whoami(){
+      return {protocol:this.PROTOCOL,universe_id:this.home,
+        universe_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
+    },
+    // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
+    // bundle cannot enumerate anybody else's universe.
+    async listAgents(){
+      const doc=await MCP.callTool("read_graph",
+        {target:"agent_bindings",graph_id:this.home,limit:AppLayout.LIST_LIMIT},{idempotent:true});
+      if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your agents are unavailable");
+      const selected=AppLayout.installation&&AppLayout.installation.configuration&&
+        AppLayout.installation.configuration.turn_consumer;
+      const selectedId=selected&&selected.state==="active"?String(AppLayout.installation.binding_id):"";
+      const agents=[];
+      for(const b of doc.bindings){
+        if(!b||typeof b!=="object"||b.universe_id!==this.home) continue;
+        // Picked fields only. A configuration is private operational data and
+        // never crosses into a bundle, so only its NAME does.
+        agents.push({agent_id:String(b.agent_binding_id||""),
+          name:String((b.configuration&&b.configuration.name)||"Unnamed agent"),
+          selected:String(b.agent_binding_id||"")===selectedId&&selectedId!==""});
+      }
+      return {agents};
+    },
+    // Sends through the app's ordinary turn path, so a bundle's message gets the
+    // same recovery, queueing and thread record a typed one gets — and appears
+    // in the shared conversation rather than a private side channel.
+    //
+    // `agent` is NOT yet honoured per message: the server admits a turn only for
+    // the universe's ONE currently selected conversation
+    // (consumer_runtime.reserve_prepared_turn). Naming a different agent is
+    // refused by name rather than silently sent to the selected one.
+    async sendMessage(args){
+      const text=typeof args.text==="string"?args.text.trim():"";
+      if(!text) throw new Error("text is required");
+      if(text.length>this.MAX_MESSAGE) throw new Error("text exceeds "+this.MAX_MESSAGE+" characters");
+      const wanted=typeof args.agent==="string"?args.agent.trim():"";
+      if(wanted){
+        const agents=await this.listAgents();
+        const match=agents.agents.find(a=>a.agent_id===wanted||a.name===wanted);
+        if(!match) throw new Error("no agent of yours is named "+wanted);
+        if(!match.selected) throw new Error(
+          "this universe sends turns to its selected conversation only; select "+match.name+" in App design first");
+      }
+      if(this.sending) throw new Error("a message from this UI is already in flight");
+      this.sending=true;
+      try{ await sendTurn(text,text,{inputMethod:"app_action"}); }
+      finally{ this.sending=false; }
+      return {sent:true};
+    },
+    // The viewer's own saved conversation, field by field.
+    //
+    // Pinned to `this.home` and the ANSWER is checked against it. `get_status`
+    // with no universe defaults to the caller's ACTIVE universe, so an unpinned
+    // read hands a bundle whichever home the account moved to rather than the one
+    // it was granted (Codex, 2026-09-26). `verify()` closes the window; this
+    // closes the read itself, so neither depends on the other being right.
+    async readConversation(args){
+      const limit=Number.isInteger(args.limit)&&args.limit>0?Math.min(args.limit,this.MAX_READ_TURNS):this.MAX_READ_TURNS;
+      const doc=await MCP.callTool("get_status",
+        {universe_id:this.home,include_conversation:true},{idempotent:true});
+      if(!doc||doc.error) throw new Error("your conversation is unavailable");
+      if(String(doc.universe_id||"")!==this.home)
+        throw new Error("that conversation belongs to another universe; this UI's access ended");
+      const conversation=doc.recent_conversation;
+      const raw=(conversation&&Array.isArray(conversation.turns))?conversation.turns:[];
+      const turns=[];
+      for(const turn of raw.slice(-limit)){
+        if(!turn||typeof turn.text!=="string") continue;
+        turns.push({speaker:String(turn.speaker||"unknown"),text:turn.text,
+          at:typeof turn.ts==="number"?turn.ts:null,truncated:!!turn.truncated});
+      }
+      return {turns};
+    },
+
+    // ---- switching: explicit, persisted through ONE write path -------------
+    async choose(uiId){
+      if(!this.enabled||this.busy) return;
+      const entry=this.library.find(b=>b.ui_id===uiId);
+      if(!entry){ this.status("That UI is not installed. Refresh."); this.paint(); return; }
+      // Apply first so the switch is immediate; persistence is what makes it
+      // survive a sign-in, and a failed write says so rather than reverting the
+      // view the user just asked for.
+      this.mount(entry);
+      await this.remember({version:1,state:"active",ui_id:entry.ui_id},
+        "Now using "+entry.name+".","Now using "+entry.name+" for this visit only");
+    },
+    async chooseDefault(){
+      if(!this.enabled||this.busy) return;
+      this.unmount();
+      await this.remember({version:1,state:"default"},
+        "Default chat restored.","Default chat restored for this visit only");
+    },
+    // The ONE write path. Re-reads the row so `mutate` works on what is stored
+    // now rather than on this controller's cache, then saves only the fields
+    // `mutate` returns, compare-and-set on the revision just read. A save that
+    // loses a race is refused by the server and reported; nothing is retried.
+    // A fresh account needs no setup step: its first save (revision 0) creates
+    // the row, and nothing about it is published.
+    async save(noun,mutate){
+      if(!this.enabled||this.busy) return {ok:false,reason:"not ready"};
+      const epoch=this.epoch,home=this.home;
+      this.busy=true; this.paint();
+      try{
+        const row=await this.fetchRow();
+        if(!this.fence(epoch,home)) return {ok:false,reason:"stale"};
+        const changes=mutate(JSON.parse(JSON.stringify(row)));
+        const result=await MCP.callTool("write_graph",{target:"app_ui",operation:"save",
+          graph_id:home,expected_revision:row.revision,payload_json:JSON.stringify(changes)});
+        if(!this.fence(epoch,home)) return {ok:false,reason:"stale"};
+        const saved=result&&result.app_ui;
+        if(!result||result.error||result.status!=="saved"||!saved||saved.universe_id!==home||
+           saved.revision!==row.revision+1)
+          throw Error((result&&(result.detail||result.error))||noun+" save was not confirmed");
+        for(const key of Object.keys(changes))
+          if(JSON.stringify(saved[key])!==JSON.stringify(changes[key])) throw Error(noun+" save did not match");
+        this.revision=saved.revision;
+        return {ok:true,row:saved};
+      }catch(err){
+        if(!this.fence(epoch,home)) return {ok:false,reason:"stale"};
+        if(err&&err.authRequired){ sessionExpired(); return {ok:false,reason:"auth"}; }
+        return {ok:false,reason:"failed",error:err};
+      }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
+    },
+    async remember(selection,saved,unsaved){
+      const outcome=await this.save("UI choice",()=>({ui_selection:JSON.parse(JSON.stringify(selection))}));
+      if(!outcome.ok){
+        const why=outcome.error&&outcome.error.message||outcome.reason||"unavailable";
+        this.status(unsaved+" — the choice was not saved ("+why+").");
+      }else{
+        this.selection=selection; this.status(saved);
+      }
+      this.paint();
+    },
+    // Install a bundle into the viewer's own library: a remix installs the
+    // COMPONENT, so it runs against this viewer's bridge and this viewer's
+    // universe. The author's universe is never addressed by an installed copy.
+    async install(component){
+      if(!this.enabled||this.busy) return {ok:false,reason:"not ready"};
+      const parsed=this.parseBundle(component);
+      if(!parsed.ok){ this.status("Cannot install: "+parsed.reason); this.paint(); return parsed; }
+      // Refuse rather than overwrite what could not be read. An install used to
+      // rebuild `ui_library` from this controller's cache, and `adopt` empties that
+      // cache when ANY stored entry is unsupported -- so installing next to a
+      // future-version bundle silently deleted it, and CAS could not notice
+      // because the revision was current (Codex, 2026-09-26).
+      if(this.unreadable){
+        this.status("Your installed UIs cannot be read ("+this.unreadable+"), so installing would overwrite them. Nothing was changed.");
+        this.paint(); return this.unsupported("library unreadable");
+      }
+      let next=null;
+      const outcome=await this.save("UI install",row=>{
+        // Built from the row the save actually read, not from the cache -- so a
+        // library that changed since the last read is re-checked here instead
+        // of being replaced by a stale view.
+        const observed=this.readLibrary(row);
+        if(!observed.ok) throw Error("Your installed UIs cannot be read ("+observed.reason+"); nothing was overwritten");
+        next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
+        // The one limit is size, and it is checked against the row this save
+        // read, so a library that grew elsewhere is measured as it now stands.
+        const size=this.bytes(JSON.stringify(next));
+        if(size>this.MAX_LIBRARY_BYTES)
+          throw Error("Your installed UIs would total "+size+" bytes, over the "+
+            this.MAX_LIBRARY_BYTES+"-byte limit; remove one first");
+        return {ui_library:JSON.parse(JSON.stringify(next))};
+      });
+      if(!outcome.ok){
+        const why=outcome.error&&outcome.error.message||outcome.reason||"unavailable";
+        this.status("The UI was not installed ("+why+")."); this.paint(); return outcome;
+      }
+      this.library=next;
+      this.status("Installed "+parsed.bundle.name+". Switch to it whenever you like.");
+      this.paint();
+      return {ok:true,bundle:parsed.bundle};
+    },
+    // Sharing is the existing path: a UI component inside a public definition.
+    // Publishing is a separate, explicit act — an installed UI stays private.
+    publishPayload(bundle,description){
+      const parsed=this.parseBundle(bundle);
+      if(!parsed.ok) return parsed;
+      return {ok:true,payload:{schema_version:1,name:parsed.bundle.name,
+        description:String(description||""),tags:[this.KIND],
+        components:{ui:JSON.parse(JSON.stringify(parsed.bundle))}}};
+    },
+
+    // ---- fixed chrome: textContent only, never markup ----------------------
+    status(text){ const node=$("ui-status"); if(node) node.textContent=text||""; },
+    paintHeader(){
+      const label=$("ui-mode");
+      if(!label) return;
+      label.hidden=!this.active;
+      label.textContent=this.active?"UI: "+this.active.name:"";
+    },
+    paint(){
+      this.paintHeader();
+      const list=$("ui-list");
+      if(!list) return;
+      list.replaceChildren();
+      const row=document.createElement("li");
+      row.appendChild(AppLayout.button("Default chat",()=>this.chooseDefault(),this.busy||!this.active));
+      list.appendChild(row);
+      for(const bundle of this.library){
+        const item=document.createElement("li"),current=!!(this.active&&this.active.ui_id===bundle.ui_id);
+        item.appendChild(AppLayout.button((current?"Using: ":"Use ")+bundle.name,
+          ()=>this.choose(bundle.ui_id),this.busy||current));
+        list.appendChild(item);
+      }
+      if(!this.library.length)
+        AppLayout.line(list,"No custom UI installed. Ask your universe to build one.","muted");
+      $("btn-ui-refresh").disabled=this.busy;
+    },
+    open(){
+      if(!this.enabled) return;
+      this.paint();
+      const dialog=$("ui-dialog");
+      if(!dialog.open) dialog.showModal();
+    },
+    init(){
+      $("btn-ui-switch").addEventListener("click",()=>this.open());
+      $("btn-ui-refresh").addEventListener("click",()=>this.load());
+      $("btn-ui-close").addEventListener("click",()=>$("ui-dialog").close());
+      this.paintHeader();
+    }
+  };

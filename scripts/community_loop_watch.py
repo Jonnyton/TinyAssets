@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-DEFAULT_REPO = "Jonnyton/TinyAssets"
+DEFAULT_REPO = "TinyAssets/TinyAssets"
 DEFAULT_API = "https://api.github.com"
 DEFAULT_TIMEOUT = 20.0
 

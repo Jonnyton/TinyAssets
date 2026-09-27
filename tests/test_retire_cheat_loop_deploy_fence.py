@@ -334,7 +334,7 @@ def test_volume_consumer_inventory_includes_stopped_containers():
 
 
 def test_safe_fleet_requires_exact_five_exact_digest_revision_and_no_old_ids():
-    image_ref = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "a" * 64
+    image_ref = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "a" * 64
     revision = "b" * 40
     observation = {
         "containers": {
@@ -360,10 +360,10 @@ def test_safe_fleet_requires_exact_five_exact_digest_revision_and_no_old_ids():
 class LifecycleHost:
     def __init__(self, volume_dir: Path) -> None:
         self.volume = volume_dir
-        self.old_image_ref = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "a" * 64
+        self.old_image_ref = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "a" * 64
         self.old_revision = "a" * 40
         self.target_image_ref = (
-            "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "b" * 64
+            "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64
         )
         self.target_revision = "b" * 40
         self.image_identities = {
@@ -2713,7 +2713,7 @@ def test_prove_rejects_image_identity_not_recorded_in_fence_state(
         "observe_fleet",
         lambda *_args, **_kwargs: pytest.fail("identity must fail before observation"),
     )
-    arbitrary_image = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "c" * 64
+    arbitrary_image = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "c" * 64
     with pytest.raises(FenceError, match="not admitted by durable fence state"):
         prove(
             host,
@@ -3324,7 +3324,7 @@ def test_post_canary_failure_includes_final_observation_diagnostic(
     with pytest.raises(FenceError, match="volume_container_names"):
         post_canary(
             object(),
-            image_ref="ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "b" * 64,
+            image_ref="ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64,
             revision="b" * 40,
             run_id=RUN_ID,
             state_path=state_path,
@@ -4665,7 +4665,7 @@ def test_partial_target_removal_replay_refuses_full_volume_fleet(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("image_ref", "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "f" * 64),
+        ("image_ref", "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "f" * 64),
         ("revision", "f" * 40),
         ("project_name", "foreign"),
     ],

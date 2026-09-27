@@ -44,7 +44,7 @@ Validation can be checked locally with a small `jsonschema` script. The
 current registry draft assumes the packaged bundle will be uploaded to a
 GitHub release at:
 
-`https://github.com/Jonnyton/TinyAssets/releases/download/v0.1.0/tinyassets-universe-server-0.1.0.mcpb`
+`https://github.com/TinyAssets/TinyAssets/releases/download/v0.1.0/tinyassets-universe-server-0.1.0.mcpb`
 
 Until that release asset exists publicly, the registry file should be treated
 as a schema-valid publishing draft rather than a fully publishable listing.

@@ -17,7 +17,7 @@ complete a deposit cannot be helped by anyone, including an operator with root
 The founder tried twice to deposit a GitHub API connection through the app and
 reported "i think i deposited it" both times. It had never landed:
 `read_graph target=connections` returns only `webhook:test`, `x:posting` and the
-legacy `jonnyton/tinyassets` repo pipe.
+legacy `tinyassets/tinyassets` repo pipe.
 
 Neither end of the system can say why.
 

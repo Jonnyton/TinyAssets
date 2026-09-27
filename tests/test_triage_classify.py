@@ -153,7 +153,7 @@ def test_disk_not_full_wrong_mountpoint():
 def test_classify_image_pull_manifest_not_found():
     diag = (
         "Error response from daemon: manifest for "
-        "ghcr.io/jonnyton/tinyassets-daemon:abc123def456 not found\n"
+        "ghcr.io/tinyassets/tinyassets-daemon:abc123def456 not found\n"
         "docker compose up: exit code 1\n"
     )
     result = tc.classify(diag)
@@ -168,7 +168,7 @@ def test_classify_image_pull_manifest_unknown():
 
 
 def test_classify_image_pull_access_denied():
-    diag = "docker: pull access denied for ghcr.io/jonnyton/tinyassets-daemon\n"
+    diag = "docker: pull access denied for ghcr.io/tinyassets/tinyassets-daemon\n"
     result = tc.classify(diag)
     assert result["class"] == tc.TriageClass.IMAGE_PULL_FAILURE
 
@@ -229,7 +229,7 @@ def test_classify_watchdog_hotloop_start_limit_hit():
         "● tinyassets-daemon.service - TinyAssets MCP daemon\n"
         "   Loaded: loaded (/etc/systemd/system/tinyassets-daemon.service)\n"
         "   Active: failed (Result: start-limit-hit) since Mon 2026-04-22\n"
-        "     Docs: https://github.com/Jonnyton/TinyAssets/...\n"
+        "     Docs: https://github.com/TinyAssets/TinyAssets/...\n"
         "  Process: 12345 ExecStart=/usr/bin/docker compose up (code=exited)\n"
     )
     result = tc.classify(diag)

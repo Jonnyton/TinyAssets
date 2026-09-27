@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _base_path
@@ -445,7 +444,10 @@ def backfill_universe_visibility(
 
     Returns a map of universe_id -> declared level name for the ones written.
     """
-    from tinyassets.daemon_server import ensure_universe_rules
+    from tinyassets.daemon_server import (
+        ensure_universe_rules,
+        register_universe_if_absent,
+    )
 
     base = _base_path()
     ids = universe_ids if universe_ids is not None else _discover_universe_ids()
@@ -458,8 +460,10 @@ def backfill_universe_visibility(
         # so the rules-row FK is satisfied (universe_rules -> universes). ONLY if
         # absent -- `ensure_universe_registered` is an UPSERT that would otherwise
         # reset an owner's display name to the raw id and wipe registry metadata,
-        # on every boot. See `register_if_absent`.
-        register_if_absent(base, uid)
+        # on every boot. See `daemon_server.register_universe_if_absent`, which
+        # lives beside the UPSERT it guards because `daemon_server` imports
+        # nothing from `tinyassets.api` and must not start.
+        register_universe_if_absent(base, universe_id=uid)
         rules = ensure_universe_rules(base, universe_id=uid)
         metadata = rules.get("metadata") if isinstance(rules, dict) else None
         if isinstance(metadata, dict) and metadata.get(LEVEL_METADATA_KEY):
@@ -467,47 +471,6 @@ def backfill_universe_visibility(
         set_universe_visibility(uid, PRIVATE.name, source="backfill")
         written[uid] = PRIVATE.name
     return written
-
-
-def register_if_absent(base: Any, universe_id: str) -> bool:
-    """Register a universe only when it has no ``universes`` row yet.
-
-    Returns ``True`` when a row was written. ``universe_rules`` has a foreign key
-    onto ``universes``, so anything that declares a level for a bare on-disk
-    directory has to register it first — but ``ensure_universe_registered`` is an
-    UPSERT whose conflict clause is
-    ``display_name=excluded.display_name, metadata_json=excluded.metadata_json``.
-    Calling it for an ALREADY-registered universe without passing those values
-    therefore **destroys** them: the display name is replaced by the raw id and
-    the registry metadata by ``{}``.
-
-    That is not hypothetical. This module's backfill ran unconditionally for every
-    discovered universe on every boot, so a universe whose owner had named it lost
-    that name at the next restart, silently, with the backfill reporting success.
-    Found by the Codex cross-family review of PR #4019 (round 3) in the
-    migration script, and the same shape was already here.
-
-    Registration is the only thing needed; a rename is a different operation with
-    its own caller, so "only if absent" loses nothing.
-    """
-    from tinyassets.daemon_server import (
-        ensure_universe_registered,
-        initialize_author_server,
-    )
-    from tinyassets.storage import _connect
-
-    uid = (universe_id or "").strip()
-    if not uid:
-        return False
-    initialize_author_server(base)
-    with _connect(base) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM universes WHERE universe_id = ?", (uid,)
-        ).fetchone()
-    if row is not None:
-        return False
-    ensure_universe_registered(base, universe_id=uid, universe_path=Path(base) / uid)
-    return True
 
 
 def _discover_universe_ids() -> list[str]:
