@@ -229,6 +229,11 @@ gh workflow run site-dns-cutover.yml --repo TinyAssets/TinyAssets -f apply=false
 gh workflow run site-dns-cutover.yml --repo TinyAssets/TinyAssets -f apply=true
 ```
 
+**Done 2026-09-27** (run 36301175692; the next uptime canary, 36301317603,
+was green). `site-dns-cutover.yml` and `scripts/site_apex_cutover.py` were
+then deleted as one-shot tooling (#4059); both are in git history. For a
+DNS emergency, use `emergency-dns.yml`.
+
 If the site 404s, re-publish with
 `gh workflow run deploy-site-react.yml --repo TinyAssets/TinyAssets -f confirm=deploy`.
 If the custom domain was dropped, run
