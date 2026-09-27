@@ -284,7 +284,17 @@ def diff_key(base: str, head: str, *, cwd: Path | None = None) -> str:
     # prints abbreviated ids in --raw output, and two different blobs can share
     # an abbreviation (cross-family review 2026-09-27 built such a pair).
     raw = git(
-        "diff", "--raw", "--no-renames", "--full-index", "--no-abbrev", "-z", merge_base, head
+        "diff",
+        "--raw",
+        "--no-renames",
+        "--full-index",
+        "--no-abbrev",
+        # A gitlink change must never vanish from the key: without this, a
+        # `.gitmodules` entry with `ignore = all` hides submodule edits.
+        "--ignore-submodules=none",
+        "-z",
+        merge_base,
+        head,
     )
     return diff_key_from_raw(raw)
 

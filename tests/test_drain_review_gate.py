@@ -1737,8 +1737,11 @@ def _run_blocks(workflow: Path) -> list[str]:
 
 
 @pytest.mark.parametrize("workflow", [WORKFLOW, POLICY_WORKFLOW])
-def test_no_step_checks_out_or_runs_the_pr_head(workflow: Path) -> None:
-    """The head's objects are fetched for the key; its tree never lands on disk."""
+def test_no_step_checks_out_the_pr_head(workflow: Path) -> None:
+    """No checkout-style verb puts the head's tree on disk.
+
+    A verb list, not a proof that nothing from the head is executed.
+    """
     for block in _run_blocks(workflow):
         code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
         for verb in ("git checkout", "git switch", "git worktree", "git reset",
@@ -1761,3 +1764,19 @@ def test_auto_enroll_keys_the_base_and_head_from_one_read() -> None:
     assert "BASE_OID: ${{ github.event.pull_request.base.sha }}" not in text
     assert text.count('--diff-key "$DIFF_KEY"') == 1
     assert 'DIFF_KEY="$(python scripts/drain_review_gate.py --print-diff-key' in text
+
+
+def test_a_submodule_change_ignored_by_config_still_changes_the_key(pr_repo: _Repo) -> None:
+    """Round-2 finding: `ignore = all` in .gitmodules hid gitlink edits from git diff."""
+    pr_repo.commit(
+        {".gitmodules": b'[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n'},
+        "submodule config",
+    )
+    before = pr_repo.key()
+    pr_repo.git("update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},sub")
+    pr_repo.git("commit", "-q", "-m", "add gitlink")
+    added = pr_repo.key()
+    assert added != before
+    pr_repo.git("update-index", "--cacheinfo", f"160000,{'2' * 40},sub")
+    pr_repo.git("commit", "-q", "-m", "move gitlink")
+    assert pr_repo.key() != added
