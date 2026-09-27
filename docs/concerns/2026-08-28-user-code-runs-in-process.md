@@ -1,3 +1,10 @@
+---
+severity: P1
+title: User code runs in the daemon process
+filed: '2026-08-28'
+summary: 'an approved source node reads the live Stripe key, every vault, every user''s refresh token, and writes the paid-tier DB. #2629 bounds WHO may approve; nothing bounds what the code does'
+---
+
 # User code runs in the daemon process, and that is the real multi-user boundary
 
 **Severity:** P1 · **Filed:** 2026-08-28 from a cross-family multi-user review

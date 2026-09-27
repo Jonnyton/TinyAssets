@@ -1,3 +1,10 @@
+---
+severity: P3
+title: Non-Source event subscriptions are stored but never fire
+filed: '2026-09-02'
+summary: '`canon_change`, `branch_run_completed`, `canon_upload` and `pr_open` can be subscribed but have no emitter; the owner-identity half was resolved (Source events carry the hook owner; an empty principal is refused)'
+---
+
 # Non-Source event subscriptions are stored but never fire
 
 **Filed:** 2026-09-02, from Codex's review of the status-truth change (T2), as

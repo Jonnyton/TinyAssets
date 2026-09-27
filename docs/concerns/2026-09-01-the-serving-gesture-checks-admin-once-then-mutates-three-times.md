@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The serving gesture checks admin once, then mutates three times
+filed: '2026-09-01'
+summary: '`ensure_founder_serving` re-checks the ACL before, not inside, its three mutations; a revocation in between still lands (Codex on #2760); the fix is on an authority path'
+---
+
 # The serving gesture checks admin once, then mutates three times
 
 **Filed:** 2026-09-01, from Codex's review of #2760 (S1). Pre-existing since

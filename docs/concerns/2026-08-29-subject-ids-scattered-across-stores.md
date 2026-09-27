@@ -1,3 +1,10 @@
+---
+severity: P2
+title: IdP subject ids are persisted in 24 columns across 5 databases
+filed: '2026-08-29'
+summary: a tenant identity change is a hand migration today, and there will be another
+---
+
 # P2 - IdP subject ids are persisted in 24 columns across 5 databases
 
 **Filed:** 2026-08-29

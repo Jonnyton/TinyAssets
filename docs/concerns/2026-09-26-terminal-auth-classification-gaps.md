@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Terminal auth classification is a phrase list
+filed: '2026-09-26'
+summary: '`_terminal_auth_failure` reads a redacted excerpt against a narrow phrase list, so a sign-in failure worded differently still reads as an outage'
+---
+
 # Phrase matching is not sufficient authentication classification
 
 **Filed:** 2026-09-26

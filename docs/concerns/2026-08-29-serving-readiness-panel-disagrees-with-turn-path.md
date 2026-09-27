@@ -1,3 +1,10 @@
+---
+severity: P2
+title: '"Connect a model" clears on a signal the turn path does not use'
+filed: '2026-08-29'
+summary: a user is told the model is connected while every turn is refused
+---
+
 # P2 - The app's "Connect a model" card clears on a signal the turn path does not use
 
 **Filed:** 2026-08-29

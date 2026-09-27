@@ -1,3 +1,10 @@
+---
+severity: P2
+title: The one file built for the universe to ship is mirrored
+filed: '2026-08-28'
+summary: '`request_theme.json` tells the agent to edit it and open a PR, but it is mirrored, so a one-file edit always fails CI and needs a human commit'
+---
+
 # The one file built for the universe to ship is mirrored, so it cannot ship it alone
 
 **Filed:** 2026-08-28

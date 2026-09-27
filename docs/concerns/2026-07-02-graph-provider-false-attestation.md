@@ -1,3 +1,10 @@
+---
+severity: P0
+title: Graph/provider false attestation
+filed: '2026-07-02'
+summary: router fallback neutralizes isolation refusals
+---
+
 # P0 - Graph/provider code can falsely attest or run in-process
 
 **Filed:** 2026-07-02 | **Verified:** 2026-07-25 | **Severity:** P0
