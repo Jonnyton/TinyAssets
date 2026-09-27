@@ -59,12 +59,17 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
     from tinyassets.conversation_store import load_recent_readonly
     from tinyassets.providers.base import UniverseContext
     from tinyassets import universe_intelligence as intelligence
+    from tinyassets.api.permissions import owner_run_identity
 
     root = require_founder_home(Path(base_path), universe_id, principal_id)
     ctx = UniverseContext(universe_dir=root, config=load_universe_config(root))
-    system = intelligence._build_persona_system_prompt(
-        root, universe_id=universe_id, tier=intelligence.interlocutor.FOUNDER,
-    )
+    # The disclosure ceiling reads the REQUEST actor, and a background wake has
+    # none bound. Read as the principal `require_founder_home` just proved owns
+    # this universe -- never as whoever happens to be bound.
+    with owner_run_identity(Path(base_path), universe_id, principal_id):
+        system = intelligence._build_persona_system_prompt(
+            root, universe_id=universe_id, tier=intelligence.interlocutor.FOUNDER,
+        )
     history = load_recent_readonly(root, f"principal:{principal_id}")
     history_block = intelligence._conversation_history_block(history)
     if history_block:
