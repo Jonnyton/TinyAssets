@@ -1,3 +1,10 @@
+---
+severity: note
+title: Owned run activity clean-use watch
+filed: '2026-09-22'
+summary: deployed diagnostics passed scoped rendered acceptance; organic owner use and historical intermittent causes remain open
+---
+
 # Watch: organic use of owned run activity
 
 **Filed:** 2026-09-22 UTC. **Status:** OPEN. PR3909/3910 are deployed and scoped rendered

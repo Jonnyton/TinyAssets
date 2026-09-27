@@ -355,7 +355,11 @@ def _patch_run_branch_dependencies(monkeypatch, branch: Any) -> None:
     )
     monkeypatch.setattr(
         "tinyassets.daemon_server.get_branch_definition",
-        lambda _base, *, branch_def_id: {"branch_def_id": branch_def_id},
+        # `visibility: public` stated: an absent field now reads as PRIVATE, and
+        # this double's subject is the provider session, not the read gate.
+        lambda _base, *, branch_def_id: {
+            "branch_def_id": branch_def_id, "visibility": "public",
+        },
     )
     monkeypatch.setattr(
         "tinyassets.branches.BranchDefinition.from_dict",

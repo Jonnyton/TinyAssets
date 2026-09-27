@@ -18,6 +18,10 @@ name: invariants
 
 on:
   pull_request:
+  # `invariants` is a required check, and a merge queue waits for every
+  # required check on the merge-group commit.
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:

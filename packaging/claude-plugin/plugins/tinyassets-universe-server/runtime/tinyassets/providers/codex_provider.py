@@ -19,6 +19,7 @@ from pathlib import Path
 
 from tinyassets.exceptions import (
     InteractiveDeadlineError,
+    ProviderAuthenticationError,
     ProviderError,
     ProviderIdleTimeoutError,
     ProviderProtocolError,
@@ -179,6 +180,45 @@ def _structured_failure_excerpt(stdout: bytes, stderr_text: str, *, machine: boo
             # cut through a credential before matching its complete shape.
             return _redacted_stderr_excerpt(" ".join((terminal_error or last_error).splitlines()))
     return _redacted_stderr_excerpt(stderr_text)
+
+
+#: Phrases in the CLI's OWN terminal error that mean the stored sign-in is
+#: finished, not that the source is having a bad minute. A spent single-use
+#: refresh token is the live case (founder's subscription, every turn since
+#: 2026-09-24): the platform now refreshes before launch, but a launch that still
+#: reaches this state must be reported as a SIGN-IN failure, not an outage.
+#:
+#: Why it matters which: a `ProviderUnavailableError` buys the source a 120s
+#: cooldown and stops the turn, while a `ProviderAuthenticationError` marks the
+#: source for reconnect and lets the router continue to the next model the owner
+#: allowed (providers/router.py, `except ProviderAuthenticationError`). One is a
+#: dead turn, the other is an answered one.
+_TERMINAL_AUTH_PHRASES = (
+    "already been used",
+    "already used",
+    "invalid_grant",
+    "sign in again",
+    "log in again",
+    "not logged in",
+    "please login",
+    "please log in",
+    "reauthenticate",
+    "re-authenticate",
+    "unauthorized",
+)
+
+
+def _terminal_auth_failure(excerpt: str) -> bool:
+    """Whether the CLI's own redacted words describe a finished sign-in.
+
+    Read from the excerpt because that is the only channel the CLI gives for this:
+    it exits 1 like any other early failure, and the reason is in its message.
+    Matched against a NARROW phrase list rather than any mention of "auth", so an
+    ordinary failure that happens to name an auth header is not turned into a
+    request for the owner to sign in again.
+    """
+    lower = excerpt.lower()
+    return any(phrase in lower for phrase in _TERMINAL_AUTH_PHRASES)
 
 
 def _codex_home_file_mounts(codex_home: Path) -> list[JailMount]:
@@ -957,6 +997,14 @@ class CodexProvider(BaseProvider):
                 logger.warning(
                     "codex exec exit %s after turn.completed; keeping the finished turn",
                     proc.returncode,
+                )
+            # A finished sign-in is classified BEFORE the exit-code heuristics: it
+            # exits 1 quickly like an outage does, and reading it as one cost the
+            # turn. Checked on EVERY non-zero exit, not only the quick one, because
+            # the CLI can also spend time failing to refresh before it gives up.
+            elif proc.returncode != 0 and _terminal_auth_failure(failure_excerpt):
+                raise ProviderAuthenticationError(
+                    "the stored sign-in is no longer accepted: " + failure_excerpt
                 )
             # Quick exit-code-1 => provider unavailable (same heuristic as claude).
             # Carry a REDACTED excerpt of codex's own words so the real cause is

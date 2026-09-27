@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Optional tool-phase diagnostics on other exception paths
+filed: '2026-09-21'
+summary: typed idle/deadline evidence is covered; generic/early-exit catches omit optional phase/age
+---
+
 # Optional tool-phase evidence on other exception paths
 
 September21,2026: exact-head Fable review of PR3905 approved release with a

@@ -34,7 +34,7 @@ def controls(tmp_path, monkeypatch):
         directory = tmp_path / uid
         directory.mkdir()
         ensure_universe_registered(tmp_path, universe_id=uid, universe_path=directory)
-        set_universe_visibility(uid, "public")
+        set_universe_visibility(uid, "public", source="owner")
     grant_universe_access(tmp_path, universe_id="ours", actor_id="owner",
                           permission="admin", granted_by="owner")
 

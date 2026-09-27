@@ -52,6 +52,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
+          # Full history of commits and trees, no file contents: enough for the
+          # merge base and `git diff --raw` that the PR's diff key reads, while
+          # still never checking out or executing PR code.
+          fetch-depth: 0
+          filter: blob:none
 
       - name: Enable auto-merge
         env:
@@ -76,17 +81,33 @@ jobs:
           set -euo pipefail
 
           PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
-            --json autoMergeRequest,body,headRefName,headRefOid)"
+            --json autoMergeRequest,body,headRefName,headRefOid,baseRefOid)"
           STATE="$(jq -r \
             'if .autoMergeRequest == null then "no" else "yes" end' \
             <<<"$PR_JSON")"
           HEAD_REF="$(jq -r '.headRefName' <<<"$PR_JSON")"
           HEAD_OID="$(jq -r '.headRefOid' <<<"$PR_JSON")"
+          # Base and head from the SAME read, never the event's base with the
+          # current head: a rebase between the two would key the wrong diff.
+          BASE_OID="$(jq -r '.baseRefOid' <<<"$PR_JSON")"
           jq -r '.body // ""' <<<"$PR_JSON" > "$RUNNER_TEMP/pr-body.md"
+
+          # Same diff key as pr-scope-guard.yml; empty on any failure, which
+          # leaves head receipts as the only match.
+          DIFF_KEY=""
+          if git fetch --no-tags --filter=blob:none origin \
+                "+refs/pull/${PR}/head:refs/remotes/pr/head" \
+                "+refs/heads/main:refs/remotes/origin/main" \
+              && git cat-file -e "${HEAD_OID}^{commit}" \
+              && git cat-file -e "${BASE_OID}^{commit}"; then
+            DIFF_KEY="$(python scripts/drain_review_gate.py --print-diff-key \
+              "$BASE_OID" "$HEAD_OID")" || DIFF_KEY=""
+          fi
 
           if python scripts/drain_review_gate.py \
               --branch "$HEAD_REF" \
               --head "$HEAD_OID" \
+              --diff-key "$DIFF_KEY" \
               --body-file "$RUNNER_TEMP/pr-body.md"; then
             REVIEW_GATE="allow"
           else

@@ -1554,6 +1554,108 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
     }
 
 
+_RECONNECT_REQUEST_PREFIX = "reconnect-source"
+
+#: The shape the app renders for a source that is completed by SIGNING IN rather
+#: than by pasting anything. ``api_key``/``local`` cannot answer this: the owner has
+#: nothing to paste, and asking them to produce a token by hand is the thing the
+#: one-tap flow exists to avoid.
+SIGN_IN_SHAPE = "sign_in"
+
+
+def _reconnect_requests(base: Any, uid: str, udir: Any) -> list[dict[str, object]]:
+    """One card per source whose stored sign-in the provider has refused.
+
+    Derived, never stored, exactly like the connect entry above: it follows the
+    recorded rejection, so it appears the moment a refresh is refused, disappears the
+    moment a deposit or a successful refresh fixes it, cannot be dismissed into a
+    state with no way back, and needs no migration.
+
+    The source is NAMED from the record, and nothing else about it is: the title is
+    assembled from the service the vault reports, so no provider appears in platform
+    text.
+    """
+    from tinyassets.credential_vault import load_credential_vault, refresh_rejected_sources
+    from tinyassets.onboarding import DEVICE_SIGN_IN_SERVICE
+
+    rejected = refresh_rejected_sources(base, universe_id=uid)
+    if not rejected:
+        return []
+    # A rejection outlives nothing. The row says a stored sign-in was refused; if that
+    # credential has since been REMOVED there is no longer anything to sign back in to,
+    # and the card would ask the owner to repair a connection they deleted (Codex
+    # refute-review round 2, item 3).
+    try:
+        deposited = {
+            str(record.get("service") or "").strip().lower()
+            for record in load_credential_vault(udir)
+            if record.get("credential_type") == "llm_subscription"
+        }
+    except (ValueError, OSError):
+        deposited = set(rejected)   # unreadable vault: keep the cards rather than hide them
+    live = sorted(
+        ((service, at) for service, at in rejected.items()
+         if service and service in deposited),
+        key=lambda row: (row[1], row[0]),
+    )
+    # AT MOST ONE. There is a single connect panel and `connectBody` MOVES it, so a
+    # second card re-configured it on every render -- and the rail re-renders every 15
+    # seconds, which reset a sign-in the owner was part-way through and left the second
+    # card with no panel at all (Codex refute-review round 2, P1). One card at a time is
+    # the shape the surface can actually honour: the oldest rejection first, the next
+    # once that one is resolved.
+    cards: list[dict[str, object]] = []
+    for service, rejected_at in live[:1]:
+        cards.append({
+            "request_id": f"{_RECONNECT_REQUEST_PREFIX}:{service}",
+            "kind": "LLM",
+            "title": f"{service} needs you to sign in again",
+            "body": (
+                f"Your {service} connection's saved sign-in is no longer accepted, so "
+                "your universe cannot use it. "
+                + (
+                    "Signing in again takes one tap and replaces it."
+                    if service == DEVICE_SIGN_IN_SERVICE
+                    else "Reconnect it below to replace it."
+                )
+                + " Nothing else about the connection changes."
+            ),
+            "fields": [],
+            # The SAME `connect` action the setup card uses, so the app answers it
+            # through the one model-connect surface instead of a second one.
+            #
+            # The sign-in shape is offered ONLY for a source this daemon can complete
+            # by brokered sign-in; the onboarding module that implements that flow is
+            # asked, so nothing is named here. Any other source falls back to the
+            # ordinary shapes, because a card offering a sign-in that does not exist
+            # is a card the owner cannot answer (Codex refute-review, P1 #5).
+            "action": {
+                "type": "connect", "use": "model",
+                "setup": {
+                    "shapes": (
+                        [SIGN_IN_SHAPE] if service == DEVICE_SIGN_IN_SERVICE
+                        else list(_MODEL_CONNECT_SHAPES)
+                    ),
+                    "service": service,
+                    # The universe this card is FOR. The sign-in route resolves it
+                    # against the caller's admin ACL rather than trusting it, so this
+                    # names the target and proves nothing.
+                    "universe_id": uid,
+                },
+            },
+            "status": "pending",
+            "sticky": True,
+            "created_at": 0.0,
+            "resolved_at": None,
+            "answer": None,
+            "feedback": None,
+            "dedupe_key": f"{_RECONNECT_REQUEST_PREFIX}:{service}",
+            "grant_sentence": "",
+            "rejected_at": rejected_at,
+        })
+    return cards
+
+
 def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     """What the app's rail renders, and what the phone reads too.
 
@@ -1579,6 +1681,10 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     connected = _serving_llm_bound(_base_path(), uid, permissions.current_actor_id().strip())
     entry = _connect_llm_request(connected=connected)
     rows = [*rows, entry] if connected else [entry, *rows]
+    # FIRST in the rail: a refused sign-in is the reason a powered universe is not
+    # working, so it outranks both the agent's asks and the optional
+    # "connect another" entry. Derived the same way, for the same reasons.
+    rows = [*_reconnect_requests(_base_path(), uid, udir), *rows]
     return {
         "universe_id": uid,
         "pending": [{**r, "grant_sentence": _grant_sentence(r)} for r in rows],

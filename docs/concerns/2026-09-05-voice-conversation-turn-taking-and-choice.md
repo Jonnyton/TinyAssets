@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Browser voice endpointing awaits organic mic retest
+filed: '2026-09-08'
+summary: selector and listening-through-replies are live; 900 ms fragment aggregation is implemented and automated, but pause timing is not yet founder-verified on the real browser/device
+---
+
 # Voice conversation turn-taking and voice choice
 
 **Filed:** 2026-09-05

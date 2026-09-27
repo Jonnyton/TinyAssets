@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Late spoken-turn failure can offer another account's text
+filed: '2026-09-20'
+summary: source-derived missing owner/home guard; typed recovery patch does not claim voice parity
+---
+
 # Late spoken-turn failure can offer another account's text
 
 **Filed: 2026-09-20.** Found by independent Fable metadata review57196 on7733074d.

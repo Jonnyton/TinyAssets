@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Served user-owned branch lifecycle
+filed: '2026-09-03'
+summary: create/inspect/edit/run/delete exist at actor scope, but explicit branch-to-universe binding, general served availability, edit CAS, and unified lifecycle spec truth remain
+---
+
 # P1 - The served user-owned branch lifecycle is not yet generic
 
 **Filed:** 2026-08-23

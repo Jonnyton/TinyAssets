@@ -1,3 +1,10 @@
+---
+severity: note
+title: Intermittent missing provider receipt in Linux load proof
+filed: '2026-09-08'
+summary: the fresh-process claim test intermittently raises a missing-receipt error on unchanged pre-patch source; live impact and root cause remain unproven
+---
+
 # Intermittent missing provider receipt in the Linux load proof
 
 **Filed:** 2026-09-08. **Verified:** GitHub-hosted Linux JUnit artifacts, as below.

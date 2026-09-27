@@ -103,12 +103,17 @@ KNOWN_DEBT: dict[str, frozenset[str]] = {
 
 
 def _universe_dispatch_keys() -> set[str]:
-    """Mirror of the local `dispatch = {...}` literal inside `universe()`."""
+    """Hand-maintained mirror of the `universe` tool's dispatchable actions.
+
+    Add a key here when you add one to ``universe_mod.UNIVERSE_ACTIONS`` and
+    document it in the tool docstring — the mirror is what makes an undocumented
+    *or* an orphaned-doc addition fail rather than pass silently.
+    """
     return {
         "list", "inspect", "read_output", "query_world",
         "get_activity", "get_recent_events", "get_ledger",
         "submit_request", "give_direction",
-        "read_premise", "set_premise", "soul.edit",
+        "read_premise", "set_premise", "set_visibility", "soul.edit",
         "add_canon", "add_canon_from_path",
         "list_canon", "read_canon", "list_sources", "read_source",
         "control_daemon", "switch_universe", "create_universe",
