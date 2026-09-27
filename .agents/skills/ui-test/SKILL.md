@@ -35,16 +35,15 @@ Preflight: `references/preflight-and-setup.md`.
 
 ## Both clients must accept every tool shape
 
-ChatGPT's Apps SDK requires `structuredContent` + `content` + `_meta` on a
-substrate-changing call; Claude tolerates `content` alone. Divergent client
-tolerance is OUR bug, not the client's. Before any `@mcp.tool` shape change
-merges, run the same substrate-changing call through BOTH clients and confirm no
-wedge, no 424, no silent timeout. One client passing is not evidence; neither are
-the adapter unit tests. If you cannot run both, stop and say so.
+Rule: cross-client MCP alignment is a project prerequisite. ChatGPT (Apps SDK strict surface)
+requires `structuredContent` + `content` + `_meta` on a substrate-changing call;
+Claude.ai (Anthropic MCP) tolerates `content` alone. Divergence is OUR bug. Before an
+`@mcp.tool` shape change merges, run the same call through both clients: no wedge,
+no 424, no silent timeout. "Direct MCP call works fine" is INSUFFICIENT; so is one
+client. No both-client verification, no merge: stop and say so.
 
-New or changed tools wrap the direct function with `_register_structured_tool(...)`
-and declare `-> dict` on the adapter, so FastMCP populates `structuredContent` while
-the direct function keeps its `-> str` back-compat return.
+New tools wrap the function with `_register_structured_tool(...)` and declare `-> dict`
+on the adapter so FastMCP fills `structuredContent`.
 
 ## Identity: incognito is not anonymous
 
