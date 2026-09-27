@@ -69,7 +69,7 @@ def _declare(base: Path, uid: str) -> None:
     from tinyassets.daemon_server import ensure_universe_registered
 
     ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
-    vis.set_universe_visibility(uid, "public")
+    vis.set_universe_visibility(uid, "public", source="owner")
 
 
 def _become_founder(base: Path, uid: str = "u-test", actor_id: str = "founder-1") -> None:

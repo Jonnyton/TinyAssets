@@ -28,6 +28,9 @@ on:
   push:
     branches: [main]
   # The post-merge tripwire's only reliable AUTOMATIC trigger on this repo.
+  # This run IS the compensator for `strict` branch protection being off, so a
+  # red `main` here is reverted first and diagnosed after -- never left red
+  # while someone investigates.
   # (`workflow_dispatch` below is also non-PR, but it needs a human to press it,
   # so it cannot carry a tripwire. Stated precisely because the first draft of
   # this comment claimed push was the only non-PR trigger, which is false.)

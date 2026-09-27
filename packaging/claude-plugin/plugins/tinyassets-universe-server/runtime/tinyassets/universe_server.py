@@ -891,7 +891,7 @@ def write_graph(
     name: str = "",
     description: str = "",
     tags: str = "",
-    visibility: str = "public",
+    visibility: str = "",
     text: str = "",
     graph_id: str = "",
     request_type: str = "general",
@@ -963,7 +963,15 @@ def write_graph(
             The founder's home universe is auto-created on first contact; use
             target=universe to create an additional universe (or the home when
             a create-scoped sign-in declined auto-birth).
-        operation: With target=goal, set_canonical. With target=agent,
+        operation: With target=universe, set_visibility changes who else may see
+            that universe, taking `visibility` as `private` or `public` and
+            `graph_id` for the universe. Everything in a universe is private until
+            its owner uses this: no other user can discover, inspect or read it,
+            while the owner and anyone they granted access keep full access either
+            way. Owner-only — a collaborator holding write on the universe is
+            refused, because editing it is not authority to decide who else sees
+            it.
+            With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update/bind_serving_provider/set_serving.
             With target=automation, create/list/get/pause/resume/delete — one
@@ -1003,7 +1011,10 @@ def write_graph(
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
-        visibility: Shared-goal visibility, usually public.
+        visibility: Shared-goal visibility, usually public. With
+            target=universe operation=set_visibility, the universe level to
+            declare instead — `private` or `public`. Empty means nobody stated
+            one, which is never read as a request to publish.
         text: Request text to queue (or optional purpose with target=universe).
         graph_id: Optional target graph/universe identifier.
         goal_id: With target=goal operation=set_canonical, the Goal identifier.
@@ -1185,6 +1196,17 @@ def write_graph(
                 universe_id=graph_id,
                 branch_def_id=branch_id,
             )
+        # EXPOSURE, the other half of private-by-default (founder 2026-09-26).
+        # A universe is born `private`, and this is the owner's only way to change
+        # that. Before it existed, `set_universe_visibility` had no production
+        # caller outside the creation path and the boot backfill, so an owner
+        # could not publish their own universe at all.
+        if (operation or "").strip() == "set_visibility":
+            return _universe_impl(
+                action="set_visibility",
+                universe_id=graph_id,
+                visibility=visibility,
+            )
         # Opt-in birth on the canonical surface (2026-07-02): the founder's
         # explicit ask creates their universe. Routes through the ledgered
         # create (scope-gated costly; binds founder_home; seeds OKF bundle).
@@ -1263,7 +1285,12 @@ def write_graph(
             name
             or description
             or tags
-            or visibility != "public"
+            # `visibility` used to default to "public" on this signature, so the
+            # stray-parameter check had to spell that value out. It now defaults
+            # to empty precisely so `operation=set_visibility` can tell "the
+            # owner asked for public" from "nobody said" — an ambient "public"
+            # default on an exposure verb would publish a universe by accident.
+            or visibility not in ("", "public")
             or changes_json
         ):
             return json.dumps({"error": "request_validation_error"})
@@ -2180,6 +2207,19 @@ _PLATFORM_FAULT_TELLS = (
     "already consumed",
 )
 
+#: OUR OWN refusal when the request does not fit the selected model's published
+#: context window (``providers/router``). It raises a bare ``PermissionError``
+#: with no attempts behind it, so every taxonomy below reads "unknown" and the
+#: owner is told "we could not identify why" about the one failure whose cause we
+#: measured ourselves -- live 2026-09-26, turn 8dc8ada56b8e4d1cbfd2e4f37a111e7d,
+#: killed by a 1,274,067-byte tool result. These are the router's exact words;
+#: matching the sentence, not a keyword, keeps an unrelated provider message that
+#: happens to say "context" out of this class.
+_CONTEXT_OVERFLOW_TELLS = (
+    "selected model cannot fit this inference context",
+    "selected model cannot fit this workflow context",
+)
+
 
 #: Classes whose remedy is time. Only these carry a measured wait into the
 #: notice; for anything else a number would send the owner away to wait out a
@@ -2484,6 +2524,19 @@ def _has_native_auth_clue(exc: BaseException) -> bool:
     return False
 
 
+def _context_overflow(exc: BaseException) -> bool:
+    """True when this turn, or anything it wraps, is our own context refusal."""
+    seen: set[int] = set()
+    node: BaseException | None = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        text = str(node).lower()
+        if any(tell in text for tell in _CONTEXT_OVERFLOW_TELLS):
+            return True
+        node = node.__cause__ or node.__context__
+    return False
+
+
 def _served_failure_code(exc: BaseException) -> str:
     """Reduce observed diagnostics to a closed code before any durable write."""
     from tinyassets.conversation_failure import FAILURE_CODES
@@ -2491,6 +2544,12 @@ def _served_failure_code(exc: BaseException) -> str:
     try:
         if any(tell in str(exc).lower() for tell in _PLATFORM_FAULT_TELLS):
             return "platform_fault"
+        # Before the taxonomies: this refusal is ours and carries no attempt for
+        # them to read, so consulting them first is how a measured cause became
+        # "unknown". Read the whole chain -- a wrapper that says "exhausted"
+        # must not bury the measurement underneath it.
+        if _context_overflow(exc):
+            return "context_window_exceeded"
         for code in (getattr(exc, "failure_class", None), _attempt_class(exc)):
             if isinstance(code, str) and code in FAILURE_CODES:
                 return code
@@ -2990,6 +3049,7 @@ def universe(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
+    visibility: str = "",
 ) -> str:
     """Inspect and steer a workflow's universe.
 
@@ -3005,7 +3065,7 @@ def universe(
         action: One of — reads: list, inspect, read_output, query_world,
             get_activity, get_recent_events, get_ledger, read_premise,
             list_canon, read_canon, list_sources, read_source; writes: submit_request,
-            give_direction, set_premise, add_canon, add_canon_from_path,
+            give_direction, set_premise, set_visibility, add_canon, add_canon_from_path,
             create_universe, switch_universe; learning: soul.edit (teach the
             universe — inputs_json {changes: {governed file: new body},
             source, context, name?}; persists per its soul.edit.md policy);
@@ -3099,6 +3159,7 @@ def universe(
         enabled=enabled,
         tag=tag,
         anchor_json=anchor_json,
+        visibility=visibility,
     )
 
 

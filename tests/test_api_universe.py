@@ -147,22 +147,26 @@ def test_module_exposes_expected_public_names() -> None:
     )
 
 
-def test_write_actions_table_has_28_entries() -> None:
+def test_write_actions_table_has_29_entries() -> None:
     """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes,
     the soul.edit learn path, the set_engine founder engine-assignment path, the
-    offer_engine market-supply path, and declare_universe_loop. (set_persona_name
-    retired — identity is learned in the self-model via soul.edit.)
+    offer_engine market-supply path, declare_universe_loop, and set_visibility.
+    (set_persona_name retired — identity is learned in the self-model via
+    soul.edit.)
 
     The count is deliberate friction: membership here is what makes the central
     universe-ACL gate check an action at WRITE strength, so adding an entry must
     be a reviewed act rather than a silent one. `declare_universe_loop` mutates
     soul.md from a caller-supplied universe_id, and omitting it left the action
-    gated at READ strength — a cross-tenant write (2026-08-05)."""
-    assert len(univ_mod.WRITE_ACTIONS) == 28
+    gated at READ strength — a cross-tenant write (2026-08-05). `set_visibility`
+    (2026-09-26) decides who else may see the universe at all, so it has to be
+    gated at WRITE strength and ledgered for the same reason."""
+    assert len(univ_mod.WRITE_ACTIONS) == 29
     assert "soul.edit" in univ_mod.WRITE_ACTIONS
     assert "set_engine" in univ_mod.WRITE_ACTIONS
     assert "offer_engine" in univ_mod.WRITE_ACTIONS
     assert "declare_universe_loop" in univ_mod.WRITE_ACTIONS
+    assert "set_visibility" in univ_mod.WRITE_ACTIONS
 
 
 def test_write_actions_entries_are_extractor_gate_tuples() -> None:

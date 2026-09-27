@@ -26,7 +26,6 @@ import pre_commit_invariant_actionlint as inv  # noqa: E402
 _REPO = Path(__file__).resolve().parent.parent
 _HOOK_SOURCE = _REPO / "scripts" / "git-hooks" / "pre-commit"
 _CI_WORKFLOW = _REPO / ".github" / "workflows" / "actionlint.yml"
-_AGENTS_MD = _REPO / "AGENTS.md"
 
 
 # ---- no-op paths -----------------------------------------------------------
@@ -170,9 +169,21 @@ def test_ci_workflow_uses_merge_base_for_pr_diff():
 # ---- docs ------------------------------------------------------------------
 
 
-def test_agents_md_documents_install_one_liner():
-    text = _AGENTS_MD.read_text(encoding="utf-8")
-    assert "actionlint" in text.lower(), (
-        "AGENTS.md must mention actionlint install so agents don't keep "
-        "flagging it missing"
+def test_the_install_one_liner_is_printed_where_the_miss_happens():
+    """The install hint must reach the agent that hit the missing binary.
+
+    This asserted a mention in AGENTS.md until 2026-09-26, when the rulebook recut
+    moved every rule to its point of use. A mention in an always-loaded file is
+    read on every unrelated turn and still absent at the moment it is needed; the
+    invariant that matters is that the checker itself prints the command, which is
+    what an agent sees when actionlint is missing.
+    """
+    source = (_REPO / "scripts" / "pre_commit_invariant_actionlint.py").read_text(
+        encoding="utf-8"
+    )
+    assert "choco install actionlint" in source
+    assert "brew install actionlint" in source
+    # ...and printed, not merely documented in the module docstring.
+    assert source.count("choco install actionlint") >= 2, (
+        "the hint must be emitted at runtime, not only described in the docstring"
     )
