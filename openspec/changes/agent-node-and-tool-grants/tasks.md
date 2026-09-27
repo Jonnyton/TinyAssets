@@ -18,4 +18,4 @@
 ## Land
 
 - [ ] 3.1 Cross-family refute round (gpt-6-astra) folded; PR(s) opened with auto-merge off.
-- [ ] 3.2 Sync delta into `openspec/specs/`, and fold/archive `shared-background-self` with this change.
+- [x] 3.2 Sync delta into `openspec/specs/agent-node/`. (`shared-background-self` keeps its own open live-proof tasks; archive this change after it lands.)

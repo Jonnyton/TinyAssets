@@ -1,5 +1,11 @@
-## ADDED Requirements
+# agent-node Specification
 
+## Purpose
+An agent is a node: a workflow step that runs the universe's conversation turn with
+the tools its owner grants, pinned to the owner's own universe. Code nodes reach the
+same served tools under the same grant.
+
+## Requirements
 ### Requirement: An agent node runs the conversation turn as a workflow step
 A prompt node whose `tools_allowed` holds the `agent` marker (legacy spelling `universe_self`)
 SHALL run the same agent loop, persona assembly and pinned engine tools as
