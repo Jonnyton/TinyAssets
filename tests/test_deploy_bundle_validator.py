@@ -53,7 +53,7 @@ REAL_COMPOSE = REPO / "deploy" / "compose.yml"
 
 RUNTIME = "/opt/tinyassets"
 ENV_FILE = "/etc/tinyassets/env"
-IMAGE = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "b" * 64
+IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64
 
 
 def _validator_source() -> str:
@@ -378,7 +378,7 @@ def test_a_literal_daemon_image_is_refused_from_the_source(tmp_path: Path):
     """The source scan still bites against the real rendering."""
     source = _source().replace(
         "image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable "
-        "ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}",
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}",
         f"image: {IMAGE}",
         1,
     )

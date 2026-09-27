@@ -706,13 +706,13 @@ def test_update_attempt_can_mutate_rollback_pr_identity_fields(tmp_path):
         row.ship_attempt_id,
         ship_status="rolled_back",
         rollback_pr_number="500",
-        rollback_pr_url="https://github.com/Jonnyton/TinyAssets/pull/500",
+        rollback_pr_url="https://github.com/TinyAssets/TinyAssets/pull/500",
     )
     rd = find_attempt(tmp_path, row.ship_attempt_id)
     assert rd is not None
     assert rd.ship_status == "rolled_back"
     assert rd.rollback_pr_number == "500"
-    assert rd.rollback_pr_url == "https://github.com/Jonnyton/TinyAssets/pull/500"
+    assert rd.rollback_pr_url == "https://github.com/TinyAssets/TinyAssets/pull/500"
 
 
 def test_old_row_without_rollback_pr_fields_loads_cleanly():

@@ -26,7 +26,7 @@ from tinyassets.api import prompts
 from tinyassets.api.http_connection import _parse_allowed_endpoints
 from tinyassets.storage.outbound_connections import _path_matches_template
 
-_REPO = "/repos/jonnyton/tinyassets"
+_REPO = "/repos/tinyassets/tinyassets"
 _PATH_RE = r"[A-Za-z0-9._\-/]{1,200}"
 
 

@@ -41,7 +41,7 @@ A coherent, dependency-verified stack (LangGraph / FastMCP / LanceDB / igraph / 
 Clone-to-green-tests in ~5 minutes on a clean machine:
 
 ```bash
-git clone https://github.com/Jonnyton/TinyAssets.git
+git clone https://github.com/TinyAssets/TinyAssets.git
 cd TinyAssets
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .[dev]

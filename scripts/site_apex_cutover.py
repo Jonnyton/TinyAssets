@@ -34,7 +34,7 @@ GH_PAGES_IPS = [
 ]
 APEX = "tinyassets.io"
 WWW = "www.tinyassets.io"
-WWW_TARGET = "jonnyton.github.io"
+WWW_TARGET = "tinyassets.github.io"
 WORKER_ROUTE_PATTERN = "tinyassets.io/mcp*"
 
 

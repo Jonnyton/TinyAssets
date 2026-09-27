@@ -37,7 +37,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-REPOSITORY = "ghcr.io/jonnyton/tinyassets-daemon"
+REPOSITORY = "ghcr.io/tinyassets/tinyassets-daemon"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 FENCE_LOCK = Path("/run/lock/tinyassets-deploy-fence.lock")
 MUTATION_LOCK = Path("/var/lock/tinyassets-host-mutation.lock")
@@ -324,7 +324,7 @@ class Registry:
     def get_token(self):
         if self.token is None:
             raw = self.request(
-                "https://ghcr.io/token?service=ghcr.io&scope=repository:jonnyton/tinyassets-daemon:pull",
+                "https://ghcr.io/token?service=ghcr.io&scope=repository:tinyassets/tinyassets-daemon:pull",
                 token=False,
             )
             try:
@@ -338,7 +338,7 @@ class Registry:
     def manifest(self, digest):
         if not DIGEST.fullmatch(digest):
             raise Refusal("invalid_registry_digest")
-        raw = self.request(f"https://ghcr.io/v2/jonnyton/tinyassets-daemon/manifests/{digest}")
+        raw = self.request(f"https://ghcr.io/v2/tinyassets/tinyassets-daemon/manifests/{digest}")
         if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
             raise Refusal("registry_manifest_hash_mismatch")
         try:
@@ -371,7 +371,7 @@ class Registry:
             raise Refusal("local_registry_identity_mismatch")
         if not isinstance(config, str) or not DIGEST.fullmatch(config):
             raise Refusal("invalid_registry_digest")
-        raw = self.request(f"https://ghcr.io/v2/jonnyton/tinyassets-daemon/blobs/{config}")
+        raw = self.request(f"https://ghcr.io/v2/tinyassets/tinyassets-daemon/blobs/{config}")
         if "sha256:" + hashlib.sha256(raw).hexdigest() != config:
             raise Refusal("registry_config_hash_mismatch")
         try:
@@ -387,7 +387,7 @@ class Registry:
             blob = descriptor.get("digest")
             if not isinstance(blob, str) or not DIGEST.fullmatch(blob):
                 raise Refusal("invalid_registry_digest")
-            self.request(f"https://ghcr.io/v2/jonnyton/tinyassets-daemon/blobs/{blob}", head=True)
+            self.request(f"https://ghcr.io/v2/tinyassets/tinyassets-daemon/blobs/{blob}", head=True)
 
 
 @contextmanager

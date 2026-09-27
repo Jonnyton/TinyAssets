@@ -26,7 +26,7 @@ as a packet whose `sink` matches the declared effect.
 ```json
 {
   "sink": "github_pull_request",
-  "destination": "Jonnyton/TinyAssets",
+  "destination": "TinyAssets/TinyAssets",
   "payload": {
     "title": "PR title — required.",
     "body":  "PR body — required, may be empty string.",
@@ -48,7 +48,7 @@ as a packet whose `sink` matches the declared effect.
   Unknown sinks return `error_kind="unknown_sink"` instead of writing.
 - **`destination`** (string, required for real writes in Phase 2) —
   per-sink destination identifier. For ``github_pull_request`` this is
-  the ``owner/repo`` slug, e.g. ``"Jonnyton/TinyAssets"``. The Phase 2
+  the ``owner/repo`` slug, e.g. ``"TinyAssets/TinyAssets"``. The Phase 2
   authority gates (capability env + consent grant) key off this value
   exactly; no wildcard or case-insensitive match. **Backward compat:**
   packets that OMIT `destination` continue to land on the Phase-1
@@ -111,9 +111,9 @@ Evidence (Phase 2 dry-run from a closed gate):
   "dry_run": true,
   "phase": "phase_2",
   "reason": "missing_capability" | "missing_consent" | "concurrent_in_flight" | "operator_kill_switch_active",
-  "destination": "Jonnyton/TinyAssets",
+  "destination": "TinyAssets/TinyAssets",
   "capability_env_var": "TINYASSETS_GITHUB_PR_CAPABILITIES",
-  "capability_lookup_failed_for": "Jonnyton/TinyAssets",
+  "capability_lookup_failed_for": "TinyAssets/TinyAssets",
   "intent": <packet>,
   "matched_output_key": "..."
 }
@@ -132,7 +132,7 @@ Evidence (Phase 2 idempotency dedup hit):
 {
   "idempotency_dedup_hit": true,
   "phase": "phase_2",
-  "destination": "Jonnyton/TinyAssets",
+  "destination": "TinyAssets/TinyAssets",
   "matched_output_key": "...",
   "evidence": <recorded-evidence>,
   "recorded_run_id": "<original run that produced the PR>",

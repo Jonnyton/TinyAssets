@@ -364,7 +364,7 @@ jobs:
               runtime_image = raw_runtime_image[1:-1]
           else:
               runtime_image = raw_runtime_image
-          if re.fullmatch(r"ghcr\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}", runtime_image) is None:
+          if re.fullmatch(r"ghcr\.io/tinyassets/tinyassets-daemon@sha256:[0-9a-f]{64}", runtime_image) is None:
               raise SystemExit(
                   "TINYASSETS_IMAGE must be the canonical immutable GHCR digest"
               )
@@ -663,7 +663,7 @@ jobs:
 
           image = sys.argv[1]
           if re.fullmatch(
-              r"ghcr\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}",
+              r"ghcr\.io/tinyassets/tinyassets-daemon@sha256:[0-9a-f]{64}",
               image,
           ) is None:
               raise SystemExit("runtime image lost canonical digest validation")

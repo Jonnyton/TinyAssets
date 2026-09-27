@@ -448,7 +448,7 @@ is at <code>/mcp</code>.</p>
 
 <h2>Links</h2>
 <ul>
-<li><a href="https://github.com/Jonnyton/TinyAssets">GitHub repository</a>
+<li><a href="https://github.com/TinyAssets/TinyAssets">GitHub repository</a>
     &mdash; source, issues, contributor onboarding.</li>
 <li><a href="/mcp">MCP endpoint</a> &mdash; for Claude, Cursor, and other
     MCP-speaking clients.</li>
@@ -4279,7 +4279,7 @@ engine is domain-agnostic.</p>
 <h2>Project</h2>
 <ul>
 <li><a href="/">TinyAssets landing page</a></li>
-<li><a href="https://github.com/Jonnyton/TinyAssets">GitHub repository</a></li>
+<li><a href="https://github.com/TinyAssets/TinyAssets">GitHub repository</a></li>
 <li>Built by Jonathan Farnsworth (<a href="https://github.com/Jonnyton">&#64;Jonnyton</a>)</li>
 </ul>
 
@@ -4308,7 +4308,7 @@ _MCP_DISCOVERY_JSON = {
     "built_by": "Jonathan Farnsworth",
     "related": {
         "landing_page": "https://tinyassets.io/",
-        "source": "https://github.com/Jonnyton/TinyAssets",
+        "source": "https://github.com/TinyAssets/TinyAssets",
         "builder_profile": "https://github.com/Jonnyton",
     },
 }

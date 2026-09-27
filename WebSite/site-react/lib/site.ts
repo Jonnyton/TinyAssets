@@ -8,22 +8,22 @@ export const SITE = {
   app: "https://tinyassets.io/mcp/app",
   /** The one public MCP endpoint (Claude.ai / ChatGPT connector URL). */
   mcp: "https://tinyassets.io/mcp",
-  repo: "https://github.com/Jonnyton/TinyAssets",
+  repo: "https://github.com/TinyAssets/TinyAssets",
   /** Android pre-release build, republished by CI on every merge to main. */
-  apk: "https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/app-debug.apk",
-  desktopSource: "https://github.com/Jonnyton/TinyAssets/tree/main/desktop-app",
-  specs: "https://github.com/Jonnyton/TinyAssets/tree/main/openspec/specs",
+  apk: "https://github.com/TinyAssets/TinyAssets/releases/download/android-latest/app-debug.apk",
+  desktopSource: "https://github.com/TinyAssets/TinyAssets/tree/main/desktop-app",
+  specs: "https://github.com/TinyAssets/TinyAssets/tree/main/openspec/specs",
   connectorSpec:
-    "https://github.com/Jonnyton/TinyAssets/blob/main/openspec/specs/live-mcp-connector-surface/spec.md",
-  designSystem: "https://github.com/Jonnyton/TinyAssets/tree/main/WebSite/design-system",
-  plan: "https://github.com/Jonnyton/TinyAssets/blob/main/PLAN.md",
-  agents: "https://github.com/Jonnyton/TinyAssets/blob/main/AGENTS.md",
+    "https://github.com/TinyAssets/TinyAssets/blob/main/openspec/specs/live-mcp-connector-surface/spec.md",
+  designSystem: "https://github.com/TinyAssets/TinyAssets/tree/main/WebSite/design-system",
+  plan: "https://github.com/TinyAssets/TinyAssets/blob/main/PLAN.md",
+  agents: "https://github.com/TinyAssets/TinyAssets/blob/main/AGENTS.md",
   /** The receipt on the home page: the founder's universe merged this itself. */
   proof: {
-    pr: "https://github.com/Jonnyton/TinyAssets/pull/2728",
+    pr: "https://github.com/TinyAssets/TinyAssets/pull/2728",
     prNumber: 2728,
     mergedOn: "2026-08-30",
-    firstPr: "https://github.com/Jonnyton/TinyAssets/pull/2720",
+    firstPr: "https://github.com/TinyAssets/TinyAssets/pull/2720",
     firstPrNumber: 2720,
   },
   contact: {

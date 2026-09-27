@@ -93,12 +93,12 @@ From the claimed worktree:
 ```powershell
 python scripts/retire_cheat_loop_github_state.py inventory `
   --operation retired_labels_v1 `
-  --repo Jonnyton/TinyAssets `
+  --repo TinyAssets/TinyAssets `
   --out output/github-label-retirement-plan.json
 
 python scripts/retire_cheat_loop_github_state.py inventory `
   --operation auto_merge_v1 `
-  --repo Jonnyton/TinyAssets `
+  --repo TinyAssets/TinyAssets `
   --with-attribution `
   --out output/github-auto-merge-retirement-plan.json
 ```

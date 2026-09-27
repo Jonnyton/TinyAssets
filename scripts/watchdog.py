@@ -136,7 +136,7 @@ def _probe(canary_script: Path, url: str, timeout: float) -> tuple[bool, str]:
     return (False, f"exit={result.returncode}: {msg[:300]}")
 
 
-GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "Jonnyton/TinyAssets")
+GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "TinyAssets/TinyAssets")
 GITHUB_API = "https://api.github.com"
 
 
