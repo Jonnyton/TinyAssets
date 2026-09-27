@@ -121,13 +121,13 @@ correctly for new users also."*
   process-bloat cut; the verdict is a PR comment. The `pyproject.toml`
   `per-file-ignores` entry that existed only for those repro scripts went with them
   rather than becoming a stale entry.
-- [x] 16. Concern filed for a defect found by the creation-path sweep, not caused
-  by this change: `docs/concerns/2026-09-26-note-and-work-target-helpers-wipe-the-registry.md`
-  — four `daemon_server` note/work-target helpers call the
-  `ensure_universe_registered` UPSERT with no `display_name`/`metadata`, so listing
-  a universe's notes resets its name to its id. Same class as finding 6, on hotter
-  paths. Left out because `daemon_server.py` is held by #4012 under a head-pinned
-  receipt and `register_if_absent` makes it a four-line fix once that lands.
+- [x] 16. A defect found by the creation-path sweep, not caused by this change:
+  `daemon_server` helpers called the `ensure_universe_registered` UPSERT with no
+  `display_name`/`metadata`, so listing a universe's notes reset its name to its
+  id. Same class as finding 6, on hotter paths. Filed as a concern here because
+  `daemon_server.py` was held by #4012 under a head-pinned receipt; **fixed in the
+  follow-up lane**, which found eight such call sites rather than four (three of
+  them reads) and deleted the concern file.
 
 **Cap reached.** AGENTS.md allows three rounds, so the round-3 fix is
 **unreviewed by the peer** and no round 4 was opened. Two findings stay open by
