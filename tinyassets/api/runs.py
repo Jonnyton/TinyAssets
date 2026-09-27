@@ -1193,7 +1193,7 @@ def enqueue_universe_branch_run(
         _append_global_ledger,
         _resolve_branch_id,
     )
-    from tinyassets.api.permissions import branch_run_actor
+    from tinyassets.api.permissions import branch_run_actor, owner_run_identity
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
     from tinyassets.runs import execute_branch_async
@@ -1225,16 +1225,20 @@ def enqueue_universe_branch_run(
     except ImportError:
         provider_call = None
 
-    outcome = execute_branch_async(
-        base_path,
-        branch=branch,
-        inputs=inputs,
-        run_name=run_name or "trigger",
-        actor=actor,
-        provider_call=provider_call,
-        _enqueue_universe_id=uid,
-        owner_user_id=principal_id,
-    )
+    # A schedule or Source event is the owner's own automation, fired from a
+    # thread no request bound. The run's worker copies THIS context, so bind the
+    # owner here or its reads of a private universe refuse their own owner.
+    with owner_run_identity(base_path, uid, principal_id):
+        outcome = execute_branch_async(
+            base_path,
+            branch=branch,
+            inputs=inputs,
+            run_name=run_name or "trigger",
+            actor=actor,
+            provider_call=provider_call,
+            _enqueue_universe_id=uid,
+            owner_user_id=principal_id,
+        )
     try:
         _append_global_ledger(
             "run_branch",
