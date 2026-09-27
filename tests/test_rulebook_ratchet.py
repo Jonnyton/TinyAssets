@@ -59,7 +59,7 @@ RULE_DIRS = ("docs/reference/*.md", ".agents/skills/*/SKILL.md", "docs/reviews/*
 # TOTALS makes displacement mechanical — a pin may go up only if another comes
 # down by at least as much — while lowering any pin stays free.
 POST_CUT_TOTAL = 4403         # sum of the per-file pins
-POST_CUT_AGGREGATE_TOTAL = 596883   # sum of the directory pins
+POST_CUT_AGGREGATE_TOTAL = 596832   # sum of the directory pins
 
 # How far a file may sit under its pin before the pin must come down. Small enough
 # that banked headroom cannot hide a re-grown rule, large enough that a typo fix
