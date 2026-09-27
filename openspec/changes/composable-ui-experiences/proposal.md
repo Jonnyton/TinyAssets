@@ -35,8 +35,12 @@ handoff remain proposed only.
 
 ### Modified Capabilities
 
-None in this proposal. Implementation must add reviewed deltas to affected
-existing contracts before changing their API or storage behavior.
+- `governed-agent-consumers`: its "SHALL NOT claim arbitrary executable UI"
+  limitation is the gap this closes, so that claim is narrowed to the
+  layout/turn-consumer adapter it was written about, and the private installation
+  requirement now states that its reference to a public definition is optional —
+  a receiver that has published nothing still has somewhere of its own to install
+  into.
 
 ## Impact
 
