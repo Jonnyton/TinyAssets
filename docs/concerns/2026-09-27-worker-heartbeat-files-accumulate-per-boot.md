@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Worker heartbeat files accumulate per boot
+filed: '2026-09-27'
+summary: each boot writes `.worker_supervisor.worker_assigned_<uuid>.json` into every universe and never removes old ones (125 in a third user's private home since 09-10); the writer also `mkdir`s a missing universe
+---
+
 # Every boot leaves a worker heartbeat file in every universe, forever
 
 **Severity:** P2 · **Filed:** 2026-09-27 · **Verified:** 2026-09-27 against `origin/main` 61c434d3

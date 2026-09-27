@@ -1,3 +1,10 @@
+---
+severity: P2
+title: '`delete_universe` leaves every database row'
+filed: '2026-09-27'
+summary: '`fantasy_daemon/api.py` rmtrees the dir only, which is how 13 dirless unowned universes accumulated; fix = `account_deletion`''s schema-derived rule scoped to one universe'
+---
+
 # `delete_universe` removes the directory and leaves every database row
 
 **Severity:** P2 · **Filed:** 2026-09-27 · **Verified:** 2026-09-27 against `origin/main` 61c434d3
