@@ -50,8 +50,8 @@ FORBIDDEN = (
     "docs/reference/delivery-flow.md",
 )
 
-# The two directories a rule can be offloaded into.
-RULE_DIRS = ("docs/reference/*.md", ".agents/skills/*/SKILL.md")
+# The directories a rule (or a transcript of one) can be offloaded into.
+RULE_DIRS = ("docs/reference/*.md", ".agents/skills/*/SKILL.md", "docs/reviews/*")
 
 # The two numbers this file duplicates, and why they are worth duplicating:
 # without them, RAISING a pin is just an edit to CONFIG that no check objects to,
@@ -59,7 +59,7 @@ RULE_DIRS = ("docs/reference/*.md", ".agents/skills/*/SKILL.md")
 # TOTALS makes displacement mechanical — a pin may go up only if another comes
 # down by at least as much — while lowering any pin stays free.
 POST_CUT_TOTAL = 4403         # sum of the per-file pins
-POST_CUT_AGGREGATE_TOTAL = 58835    # sum of the directory pins
+POST_CUT_AGGREGATE_TOTAL = 596860   # sum of the directory pins
 
 # How far a file may sit under its pin before the pin must come down. Small enough
 # that banked headroom cannot hide a re-grown rule, large enough that a typo fix

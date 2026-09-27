@@ -17,10 +17,10 @@ TITLE = "TinyAssets"
 DESCRIPTION = (
     "Create, browse, remix, collaborate on, and run durable AI workflow nodes from MCP hosts."
 )
-REPOSITORY_URL = "https://github.com/Jonnyton/TinyAssets"
+REPOSITORY_URL = "https://github.com/TinyAssets/TinyAssets"
 WEBSITE_URL = "https://tinyassets.io/connect"
 REMOTE_URL = "https://tinyassets.io/mcp"
-ICON_URL = "https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/assets/icon.png"
+ICON_URL = "https://raw.githubusercontent.com/TinyAssets/TinyAssets/main/assets/icon.png"
 
 MCPB_MANIFEST_PATH = REPO_ROOT / "packaging" / "mcpb" / "manifest.json"
 BUNDLE_PATH = REPO_ROOT / "packaging" / "dist" / "tinyassets-universe-server.mcpb"
@@ -46,7 +46,7 @@ def _sha256(path: Path) -> str:
 def _release_url(version: str) -> str:
     filename = f"tinyassets-universe-server-{version}.mcpb"
     return (
-        "https://github.com/Jonnyton/TinyAssets/releases/download/"
+        "https://github.com/TinyAssets/TinyAssets/releases/download/"
         f"v{version}/{filename}"
     )
 

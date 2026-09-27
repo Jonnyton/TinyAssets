@@ -536,7 +536,7 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert state_template == expected_state_template
     assert state_template.count(STATE_SEPARATOR) == 8
     revision = "a" * 40
-    image_ref = f"ghcr.io/jonnyton/tinyassets-daemon@sha256:{'b' * 64}"
+    image_ref = f"ghcr.io/tinyassets/tinyassets-daemon@sha256:{'b' * 64}"
     rendered_state = STATE_SEPARATOR.join(
         (
             "exited",

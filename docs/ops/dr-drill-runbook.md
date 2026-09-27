@@ -27,7 +27,7 @@ Inputs:
    archive + representative-member SHA-256 values.
 2. Reads only the primary host's final `TINYASSETS_IMAGE` assignment, removes
    at most one matching pair of surrounding quotes, and requires the canonical
-   immutable `ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest>` form. It does
+   immutable `ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest>` form. It does
    not copy the primary environment or any secrets.
 3. Resolves the newest public, available Debian x64 image serving `nyc3` across
    a bounded DigitalOcean distribution-catalog traversal. This first request

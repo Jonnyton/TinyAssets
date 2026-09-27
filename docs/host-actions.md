@@ -80,7 +80,7 @@ Its App was never configured on the droplet (no
 `/etc/tinyassets/github-app-token-refresher.env`, no private key; the timer
 skipped every run), and no App ID is recorded in the repo, so an agent cannot
 name it. In GitHub → Settings → Applications (and Developer settings → GitHub
-Apps), uninstall/delete any App installed on `Jonnyton/TinyAssets` for the
+Apps), uninstall/delete any App installed on `TinyAssets/TinyAssets` for the
 community-loop bot identity (Contents + Pull requests write).
 
 ## Rotate the production Cloudflare tunnel token (2026-09-24)
@@ -675,7 +675,7 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Sign in details | **done 2026-09-08** — the dedicated reviewer account and rotated 40-character password were verified end-to-end, transferred directly from Windows Credential Manager, and saved in Play without exposing or persisting the value. |
 | Target audience | **done** 2026-09-03 — 18 and over; submitted for review 2026-09-08 |
 | Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; submitted for review 2026-09-08 |
-| Foreground-service declaration + behavior video | **done; submitted 2026-09-08** — the 27.11-second 1080×2340 privacy-redacted candidate has SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. Public URL: `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`. Play accepted **Data sync → Network processing → Other** with this link; App content reports no declarations needing attention. |
+| Foreground-service declaration + behavior video | **done; submitted 2026-09-08** — the 27.11-second 1080×2340 privacy-redacted candidate has SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. Public URL: `https://github.com/TinyAssets/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`. Play accepted **Data sync → Network processing → Other** with this link; App content reports no declarations needing attention. |
 | Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; submitted for review 2026-09-08 |
 | Closed test: 12 testers for 14 days, then apply for production access | **you** — Play approved and published signed code `4 (1.0.3)` on 2026-09-08 at 10:35 PM PT. The Alpha track says **Available to selected testers** across all 177 configured regions. The one-member `Founder devices` list is attached, and its invited founder Google account now sees the live opt-in page with **Become a tester**. The founder has not opted in yet. Opt in that account and recruit at least 11 more real Google-account testers; the 14-day clock begins only when 12 remain continuously opted in. |
 | Promote to Production → submit for review → **Roll out** | you (final click) |
@@ -727,7 +727,7 @@ effect-evidence map of a live `authenticated_external_call` run (`delivered: tru
 reached GitHub and was refused there, not by us):
 
 ```
-POST /repos/jonnyton/tinyassets/git/refs   ->   403
+POST /repos/tinyassets/tinyassets/git/refs   ->   403
 {"message":"Resource not accessible by personal access token",
  "documentation_url":"https://docs.github.com/rest/git/refs#create-a-reference"}
 

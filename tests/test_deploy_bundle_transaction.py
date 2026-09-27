@@ -117,9 +117,9 @@ pytestmark = pytest.mark.skipif(
     ),
 )
 
-OLD_IMAGE = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "a" * 64
-NEW_IMAGE = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "b" * 64
-OTHER_IMAGE = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "c" * 64
+OLD_IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "a" * 64
+NEW_IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64
+OTHER_IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "c" * 64
 BUNDLE_KEEP = 5  # must track BUNDLE_KEEP in deploy/deploy_fail_safe.sh
 
 
@@ -847,8 +847,8 @@ def _mutate(compose_text: str, old: str, new: str) -> str:
         (
             "daemon image pinned instead of interpolated",
             "image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable "
-            "ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}",
-            "image: ghcr.io/jonnyton/tinyassets-daemon:latest",
+            "ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}",
+            "image: ghcr.io/tinyassets/tinyassets-daemon:latest",
         ),
         (
             "a vector mount dropped",
@@ -905,9 +905,9 @@ def _mutate(compose_text: str, old: str, new: str) -> str:
         (
             "daemon image pinned via a different variable",
             "image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable "
-            "ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}",
+            "ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}",
             "image: ${SOME_OTHER_IMAGE:-"
-            "ghcr.io/jonnyton/tinyassets-daemon@sha256:"
+            "ghcr.io/tinyassets/tinyassets-daemon@sha256:"
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}",
         ),
     ],
@@ -938,7 +938,7 @@ def test_invalid_bundle_is_refused_before_any_install(box: Box, label, old, new)
 
 _DAEMON_IMAGE_LINE = (
     "image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable "
-    "ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}"
+    "ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}"
 )
 
 

@@ -78,7 +78,7 @@ def receipt(sha, **extra):
     (exit 2) rather than a pass. Tests that need the unknown path stub a
     partial receipt deliberately.
     """
-    state = {"git_sha": sha, "image_tag": f"ghcr.io/jonnyton/tinyassets-daemon:{sha[:12]}"}
+    state = {"git_sha": sha, "image_tag": f"ghcr.io/tinyassets/tinyassets-daemon:{sha[:12]}"}
     state.update(extra)
     return state
 
@@ -255,7 +255,7 @@ def test_receipt_disagreeing_with_itself_is_unknown(monkeypatch, repo):
     point_at(mod, monkeypatch, repo)
     stub(mod, monkeypatch, {
         "git_sha": repo["head"],
-        "image_tag": "ghcr.io/jonnyton/tinyassets-daemon:deadbeefcafe",
+        "image_tag": "ghcr.io/tinyassets/tinyassets-daemon:deadbeefcafe",
     })
 
     assert mod.main(["--assert-contains", repo["head"]]) == 2
@@ -267,7 +267,7 @@ def test_agreeing_receipt_still_passes(monkeypatch, repo):
     head = repo["head"]
     stub(mod, monkeypatch, {
         "git_sha": head,
-        "image_tag": f"ghcr.io/jonnyton/tinyassets-daemon:{head[:12]}",
+        "image_tag": f"ghcr.io/tinyassets/tinyassets-daemon:{head[:12]}",
     })
 
     assert mod.main(["--assert-contains", head]) == 0

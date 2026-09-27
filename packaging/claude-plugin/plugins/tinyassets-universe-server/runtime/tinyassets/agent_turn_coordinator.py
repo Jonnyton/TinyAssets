@@ -32,6 +32,39 @@ from tinyassets.storage.agent_turn_records import load_result
 _LOG = logging.getLogger(__name__)
 
 
+def turn_effects(turn):
+    """What a turn's own ledger proves ran: ``(effects, stage, ref)``.
+
+    ``none`` only when no tool started and no native agent launched; ``some``
+    once any tool completed; ``unknown`` for anything in flight or indeterminate.
+    ``stage`` is ``tool`` only when the last recorded step was a tool that did
+    not complete. Read from the journal, never guessed.
+
+    A free function over a snapshot, not a method over the running coordinator:
+    the startup reconciliation answers the SAME question about a turn no process
+    is running any more, and a second implementation of it would be a second
+    definition of what the ledger proves.
+    """
+    if turn is None:
+        return "none", None, None
+    effects, stage = "none", None
+    for position, previous in enumerate(turn.rounds):
+        last = position == len(turn.rounds) - 1
+        if type(previous.candidate) is NativeInput:
+            if not (type(previous.reply) is NativeTerminal
+                    and previous.reply.status == "capacity_no_effects"):
+                effects = "some" if effects == "some" else "unknown"
+            continue
+        for tool in previous.tools:
+            if tool.state == "completed":
+                effects = "some"
+            elif tool.state in {"started", "unknown"} and effects == "none":
+                effects = "unknown"
+            if last and tool.state in {"started", "unknown", "not_sent"}:
+                stage = "tool"
+    return effects, stage, turn.turn_id
+
+
 class AgentTurnCoordinator:
     """One in-process turn; no crash resurrection or automatic effect replay."""
 
@@ -168,31 +201,8 @@ class AgentTurnCoordinator:
         ))
 
     def effects_evidence(self):
-        """What this turn's own ledger proves ran: ``(effects, stage, ref)``.
-
-        ``none`` only when no tool started and no native agent launched;
-        ``some`` once any tool completed; ``unknown`` for anything in flight or
-        indeterminate. ``stage`` is ``tool`` only when the last recorded step
-        was a tool that did not complete. Read from the journal, never guessed.
-        """
-        if self.turn is None:
-            return "none", None, None
-        effects, stage = "none", None
-        for position, previous in enumerate(self.turn.rounds):
-            last = position == len(self.turn.rounds) - 1
-            if type(previous.candidate) is NativeInput:
-                if not (type(previous.reply) is NativeTerminal
-                        and previous.reply.status == "capacity_no_effects"):
-                    effects = "some" if effects == "some" else "unknown"
-                continue
-            for tool in previous.tools:
-                if tool.state == "completed":
-                    effects = "some"
-                elif tool.state in {"started", "unknown"} and effects == "none":
-                    effects = "unknown"
-                if last and tool.state in {"started", "unknown", "not_sent"}:
-                    stage = "tool"
-        return effects, stage, self.turn.turn_id
+        """This running turn's own ledger evidence; see :func:`turn_effects`."""
+        return turn_effects(self.turn)
 
     def _release_turn(self):
         """This boot has stopped executing the turn, whatever state it reached.

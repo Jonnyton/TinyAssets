@@ -23,7 +23,7 @@ Both premises were confirmed empirically, not by reading:
 
 - `policy` reported **success** on PR #1502, which carries no writer/checker
   labels at all.
-- `gh api repos/Jonnyton/TinyAssets/branches/main/protection` returns exactly
+- `gh api repos/TinyAssets/TinyAssets/branches/main/protection` returns exactly
   `["policy", "Diff scope declared"]`, with `required_pull_request_reviews: null`
   — so no human review is required either.
 
@@ -206,7 +206,7 @@ The command that was run — note it preserves both existing contexts and
 
 ```bash
 gh api --method PATCH \
-  repos/Jonnyton/TinyAssets/branches/main/protection/required_status_checks \
+  repos/TinyAssets/TinyAssets/branches/main/protection/required_status_checks \
   -F strict=true \
   -f 'contexts[]=policy' \
   -f 'contexts[]=Diff scope declared' \
@@ -216,7 +216,7 @@ gh api --method PATCH \
 Verify it took effect:
 
 ```bash
-gh api repos/Jonnyton/TinyAssets/branches/main/protection \
+gh api repos/TinyAssets/TinyAssets/branches/main/protection \
   --jq '.required_status_checks.contexts'
 # expect: ["policy","Diff scope declared","required-tests"]
 ```
@@ -245,7 +245,7 @@ artifact. If the content did change, it needs a real re-review.
 
 ```bash
 gh api --method DELETE \
-  repos/Jonnyton/TinyAssets/branches/main/protection/required_status_checks/contexts \
+  repos/TinyAssets/TinyAssets/branches/main/protection/required_status_checks/contexts \
   -f 'contexts[]=required-tests'
 ```
 

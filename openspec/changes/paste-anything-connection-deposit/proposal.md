@@ -45,7 +45,7 @@ including for services added after this code was written.
 - **No confirmation step.** Pasting is enough; the connection is created. The
   founder was offered the tradeoff explicitly and cut the click (2026-08-27).
   What replaces it is a **receipt** — after the deposit, one plain sentence says
-  *"this key may POST to `api.github.com/repos/jonnyton/tinyassets/pulls`,
+  *"this key may POST to `api.github.com/repos/tinyassets/tinyassets/pulls`,
   nothing else"*, with change and remove right there. It gates nothing.
 - **Because nothing human reviews the host before the credential becomes usable,
   the injection fence becomes load-bearing**: pasted material is data the

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -225,6 +226,14 @@ class AssignedQueueConsumer:
         self._active: dict[str, Future[Any]] = {}
         self._runtimes: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._automation_runs: set[str] = set()
+        # Universes whose automation run ignored cancellation at timeout, with
+        # the runs of that batch. The universe stays leased AND busy until they
+        # are terminal: re-acquiring our own lease must not admit new work
+        # while a provider call we started is still running (Codex 2026-09-27).
+        self._unstopped: dict[str, set[str]] = {}
+        # This process's liveness lock (see `hold_process_liveness`). Held for
+        # the process lifetime so a dead holder's leases can be reclaimed.
+        self._liveness: Any = None
         self._recorded: dict[str, tuple[str, float]] = {}
         self._liveness_lock = threading.Lock()
         self._started_monotonic = 0.0
@@ -241,6 +250,7 @@ class AssignedQueueConsumer:
         if self._thread is not None:
             return
         self._scavenge_orphaned_credentials()
+        self._hold_liveness()
         self._thread = threading.Thread(
             target=self._run,
             name="assigned-queue-consumer",
@@ -250,6 +260,71 @@ class AssignedQueueConsumer:
         self._thread.start()
         with _CONSUMER_REGISTRY_LOCK:
             _STARTED_CONSUMERS.add(self)
+
+    def _hold_liveness(self) -> None:
+        from tinyassets.automations import (
+            LIVENESS_DIR,
+            AutomationStore,
+            hold_process_liveness,
+            holder_is_provably_dead,
+            holder_liveness_path,
+        )
+        from tinyassets.singleton_lock import _pid_path
+
+        try:
+            held = hold_process_liveness(self.base_path, self.consumer_id)
+        except Exception:  # noqa: BLE001 - without it, leases fall back to TTL
+            logger.exception("consumer liveness lock unavailable")
+            held = None
+        if held is not None and held.acquired:
+            self._liveness = held
+        elif held is not None:
+            # An UNLOCKED file under our own id would read as proof that this
+            # live process is dead. Remove it; our leases then wait out a TTL.
+            logger.error("consumer liveness lock not acquired; removing its file")
+            for path in (held.path, _pid_path(held.path)):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        # Every boot adds a file and a kill leaves it behind. A dead holder's
+        # file is removed only once NO lease names it: until then it is the
+        # proof another universe needs to reclaim that holder's lease.
+        try:
+            named = AutomationStore(self.base_path).lease_holders()
+            for stale in (self.base_path / LIVENESS_DIR).glob("*.lock"):
+                holder = stale.stem
+                if holder == self.consumer_id or holder in named:
+                    continue
+                if holder_is_provably_dead(self.base_path, holder):
+                    path = holder_liveness_path(self.base_path, holder)
+                    for leftover in (path, _pid_path(path)):
+                        try:
+                            leftover.unlink()
+                        except OSError:
+                            pass
+        except (OSError, sqlite3.Error):
+            logger.exception("consumer liveness sweep failed")
+
+    def _release_liveness(self) -> None:
+        """Drop the liveness lock only once nothing we started can still run.
+
+        Releasing it declares this process dead to every other consumer, which
+        may then take our leases. A run that survived `stop()` is still work in
+        flight, so the lock stays with the process and the kernel drops it.
+        """
+        from tinyassets.singleton_lock import release_singleton_lock
+
+        if self._liveness is None:
+            return
+        with self._lock:
+            busy = bool(self._unstopped) or any(
+                not future.done() for future in self._active.values()
+            )
+        if busy or (self._thread is not None and self._thread.is_alive()):
+            return
+        release_singleton_lock(self._liveness)
+        self._liveness = None
 
     def _liveness_snapshot(self) -> dict[str, Any]:
         with self._liveness_lock:
@@ -301,6 +376,7 @@ class AssignedQueueConsumer:
         if self._thread is None or not self._thread.is_alive():
             with _CONSUMER_REGISTRY_LOCK:
                 _STARTED_CONSUMERS.discard(self)
+        self._release_liveness()
 
     def _cancel_automation_runs(self) -> None:
         from tinyassets.runs import request_cancel
@@ -558,7 +634,11 @@ class AssignedQueueConsumer:
             self._release_universe(claimed_task.universe_id)
 
     def _reap_finished(self) -> tuple[int, set[str]]:
-        """Drop completed futures, then report free slots and busy universes."""
+        """Drop completed futures, then report free slots and busy universes.
+
+        A universe with an unstopped automation run is busy until that run is
+        terminal, then its lease -- held long on purpose -- is released.
+        """
         with self._lock:
             finished = [uid for uid, future in self._active.items() if future.done()]
             for uid in finished:
@@ -567,7 +647,58 @@ class AssignedQueueConsumer:
                     future.result()
                 except Exception:  # noqa: BLE001 - already contained, retain diagnostics
                     logger.exception("assigned queue task future failed")
-            return self.max_concurrency - len(self._active), set(self._active)
+            free = self.max_concurrency - len(self._active)
+            active = set(self._active)
+        # AFTER reaping, not before: a batch records its unstopped run before its
+        # future completes, so a future seen done here has already published it.
+        # Reading `_unstopped` first raced a batch finishing in between, which
+        # returned its universe as free (Codex round 2, 2026-09-27).
+        return free, active | self._reap_unstopped()
+
+    def _reap_unstopped(self) -> set[str]:
+        """Universes whose timed-out run is still going; release the rest.
+
+        "Still going" is the worker's own future, not the run row: a status
+        can be orphan-marked while the worker runs on, and a run id with no row
+        would otherwise hold its universe forever. A running universe's lease
+        is re-stamped here, since its batch's refresher has already stopped.
+        """
+        from datetime import datetime as _dt
+
+        from tinyassets.automations import (
+            AutomationStore,
+            cancel_grace_seconds,
+            run_timeout_seconds,
+        )
+        from tinyassets.runs import get_future
+
+        with self._lock:
+            pending = {uid: set(runs) for uid, runs in self._unstopped.items()}
+        running: set[str] = set()
+        for universe_id, run_ids in pending.items():
+            live = False
+            for run_id in run_ids:
+                future = get_future(run_id)
+                if future is not None and not future.done():
+                    live = True
+            if live:
+                running.add(universe_id)
+                try:
+                    AutomationStore(self.base_path).refresh_universe_lease(
+                        universe_id,
+                        holder=self.consumer_id,
+                        now=_dt.now(timezone.utc),
+                        ttl_seconds=run_timeout_seconds() + cancel_grace_seconds(),
+                    )
+                except Exception:  # noqa: BLE001 - the held lease still stands
+                    logger.exception(
+                        "unstopped lease refresh failed universe=%s", universe_id
+                    )
+                continue
+            with self._lock:
+                self._unstopped.pop(universe_id, None)
+            self._release_universe(universe_id)
+        return running
 
     def _submit_due_automations(
         self,
@@ -681,6 +812,12 @@ class AssignedQueueConsumer:
         )
         refresher.start()
         unreleased = False
+        batch_runs: set[str] = set()
+
+        def _started(run_id: str) -> None:
+            batch_runs.add(run_id)
+            self._note_automation_run(run_id)
+
         try:
             for automation, due_at in due:
                 # Re-read `.pause` BETWEEN rows: an owner who pauses mid-batch
@@ -699,7 +836,7 @@ class AssignedQueueConsumer:
                         automation,
                         due_at,
                         consumer_id=self.consumer_id,
-                        on_run_started=self._note_automation_run,
+                        on_run_started=_started,
                     )
                 except Exception:  # noqa: BLE001 - the next automation is owed a try
                     logger.exception(
@@ -712,8 +849,11 @@ class AssignedQueueConsumer:
                     # The run ignored cancellation and is STILL calling the
                     # provider. Handing the universe to another process now
                     # would double-spend the owner's subscription, so keep the
-                    # lease and stop the batch; the TTL frees it eventually.
+                    # lease and stop the batch. `_reap_unstopped` keeps the
+                    # universe busy -- even for us -- until the run is terminal.
                     unreleased = True
+                    with self._lock:
+                        self._unstopped[universe_id] = set(batch_runs)
                     break
         finally:
             stop_refresh.set()

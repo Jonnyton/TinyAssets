@@ -247,28 +247,35 @@ def execute_claimed_branch_task(
             "_origin_branch_task_id": str(getattr(claimed_task, "origin_branch_task_id", "") or ""),
             "_queue_branch_task_id": task_id,
         }
+        from tinyassets.api.permissions import owner_run_identity
+
         try:
-            if executor_identity.heartbeat is None:
-                outcome = execute_branch_version(
-                    root, branch_version_id=branch_version_id, **execution_kwargs
-                )
-            else:
-                with _continuous_heartbeat(
-                    executor_identity.heartbeat,
-                    interval_seconds=executor_identity.heartbeat_interval_seconds,
-                ) as assert_authority:
-
-                    def checked_status(node_id: str, status: str) -> None:
-                        assert_authority()
-                        if executor_identity.on_node_status is not None:
-                            executor_identity.on_node_status(node_id, status)
-                        assert_authority()
-
-                    execution_kwargs["on_node_status"] = checked_status
+            # The whole run reads as the owner when the admitted actor owns this
+            # universe: the owner's own background work sees what their live
+            # conversation sees. No request bound this thread, so without it every
+            # by-id read of a private universe refused its own owner.
+            with owner_run_identity(root, universe_id, actor):
+                if executor_identity.heartbeat is None:
                     outcome = execute_branch_version(
                         root, branch_version_id=branch_version_id, **execution_kwargs
                     )
-                    assert_authority()
+                else:
+                    with _continuous_heartbeat(
+                        executor_identity.heartbeat,
+                        interval_seconds=executor_identity.heartbeat_interval_seconds,
+                    ) as assert_authority:
+
+                        def checked_status(node_id: str, status: str) -> None:
+                            assert_authority()
+                            if executor_identity.on_node_status is not None:
+                                executor_identity.on_node_status(node_id, status)
+                            assert_authority()
+
+                        execution_kwargs["on_node_status"] = checked_status
+                        outcome = execute_branch_version(
+                            root, branch_version_id=branch_version_id, **execution_kwargs
+                        )
+                        assert_authority()
         except MissingRequiredInputs as exc:
             return (
                 False,

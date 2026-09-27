@@ -315,7 +315,7 @@ def test_compose_requires_explicit_workflow_image_without_latest_default():
         image = data["services"][service_name].get("image", "")
         assert "${TINYASSETS_IMAGE:?" in image, (
             f"{service_name} image must require TINYASSETS_IMAGE instead of "
-            "defaulting to ghcr.io/jonnyton/tinyassets-daemon:latest"
+            "defaulting to ghcr.io/tinyassets/tinyassets-daemon:latest"
         )
         assert ":latest" not in image
 

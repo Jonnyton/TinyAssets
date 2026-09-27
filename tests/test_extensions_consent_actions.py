@@ -71,12 +71,12 @@ def test_grant_then_list_roundtrip(us_env):
         us,
         "grant_effector_consent",
         intent="github_pull_request",
-        project_id="Jonnyton/TinyAssets",
+        project_id="TinyAssets/TinyAssets",
         author="host",
     )
     assert granted["status"] == "granted"
     assert granted["consent"]["sink"] == "github_pull_request"
-    assert granted["consent"]["destination"] == "Jonnyton/TinyAssets"
+    assert granted["consent"]["destination"] == "TinyAssets/TinyAssets"
     assert granted["consent"]["granted_by"] == "host"
     assert granted["consent"]["revoked_at"] is None
 
@@ -88,7 +88,7 @@ def test_grant_then_list_roundtrip(us_env):
     assert listed["sink_filter"] == "github_pull_request"
     assert listed["active_only"] is True
     destinations = {row["destination"] for row in listed["consents"]}
-    assert destinations == {"Jonnyton/TinyAssets"}
+    assert destinations == {"TinyAssets/TinyAssets"}
 
 
 def test_grant_defaults_granted_by_to_current_actor(us_env):
@@ -97,7 +97,7 @@ def test_grant_defaults_granted_by_to_current_actor(us_env):
         us,
         "grant_effector_consent",
         intent="github_pull_request",
-        project_id="Jonnyton/TinyAssets",
+        project_id="TinyAssets/TinyAssets",
         # author omitted -> defaults to UNIVERSE_SERVER_USER == "tester"
     )
     assert granted["status"] == "granted"
@@ -110,7 +110,7 @@ def test_grant_requires_sink(us_env):
         us,
         "grant_effector_consent",
         intent="",  # missing sink
-        project_id="Jonnyton/TinyAssets",
+        project_id="TinyAssets/TinyAssets",
         author="host",
     )
     assert "error" in result
@@ -141,18 +141,18 @@ def test_revoke_after_grant(us_env):
         us,
         "grant_effector_consent",
         intent="github_pull_request",
-        project_id="Jonnyton/TinyAssets",
+        project_id="TinyAssets/TinyAssets",
         author="host",
     )
     revoked = _call(
         us,
         "revoke_effector_consent",
         intent="github_pull_request",
-        project_id="Jonnyton/TinyAssets",
+        project_id="TinyAssets/TinyAssets",
     )
     assert revoked["status"] == "revoked"
     assert revoked["sink"] == "github_pull_request"
-    assert revoked["destination"] == "Jonnyton/TinyAssets"
+    assert revoked["destination"] == "TinyAssets/TinyAssets"
     # list with active_only=True (default) -> empty.
     active = _call(
         us, "list_effector_consents", intent="github_pull_request",
@@ -178,7 +178,7 @@ def test_revoke_requires_sink_and_destination(us_env):
         us,
         "revoke_effector_consent",
         intent="",
-        project_id="Jonnyton/TinyAssets",
+        project_id="TinyAssets/TinyAssets",
     )
     assert no_sink["failure_class"] == "missing_sink"
     no_dest = _call(

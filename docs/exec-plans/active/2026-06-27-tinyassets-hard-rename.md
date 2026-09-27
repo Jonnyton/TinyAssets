@@ -11,7 +11,7 @@ Cut the project from `Workflow` / `workflow` to `TinyAssets` / `tinyassets` acro
 
 ## Steps
 
-1. Rename GitHub repository to `Jonnyton/TinyAssets` and retarget local `origin`.
+1. Rename GitHub repository to `TinyAssets/TinyAssets` and retarget local `origin`.
 2. Move the Python package from `workflow/` to `tinyassets/` and retarget imports, entry points, packaging, plugin runtime, and tests.
 3. Rename active launchers, brand assets, service files, data/env path docs, and MCP bundle/listing IDs.
 4. Replace public website, README, app submission, registry, and design-source copy so TinyAssets is the platform and Tiny is the persona.
@@ -20,7 +20,7 @@ Cut the project from `Workflow` / `workflow` to `TinyAssets` / `tinyassets` acro
 
 ## Verification
 
-- `gh repo view Jonnyton/TinyAssets --json nameWithOwner,url`
+- `gh repo view TinyAssets/TinyAssets --json nameWithOwner,url`
 - `git remote -v`
 - `python packaging/claude-plugin/build_plugin.py`
 - `python packaging/mcpb/build_bundle.py`
