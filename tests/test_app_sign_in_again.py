@@ -76,7 +76,9 @@ def _run(script_steps, body, *, service="codex"):
     the owner's home rather than the connection the card is for.
     """
     harness = _HARNESS.replace("__SOURCE__", _sign_in_source())
-    prelude = f"SignInConnect.configure({json.dumps(service)});\n" if service else ""
+    prelude = (
+        f"SignInConnect.configure({json.dumps(service)},'u-owner');\n" if service else ""
+    )
     program = (
         harness
         + "script=" + json.dumps(script_steps) + ";\n"
@@ -302,6 +304,8 @@ def test_the_start_names_the_source_the_card_is_for():
     console.log(JSON.stringify({body:calls[0].body}));
     """)
     assert out["body"]["service"] == "codex"
+    # ...and the universe the card named, which the route validates rather than trusts.
+    assert out["body"]["universe_id"] == "u-owner"
 
 
 def test_switching_cards_cancels_the_previous_source_flow():
@@ -309,7 +313,7 @@ def test_switching_cards_cancels_the_previous_source_flow():
     out = _run([_STARTED], """
     await SignInConnect.start();
     const before={flow:SignInConnect.flow,queued:queue.length};
-    SignInConnect.configure("other-source");   // the owner opens a different card
+    SignInConnect.configure("other-source","u-owner");   // a different card
     console.log(JSON.stringify({before,flow:SignInConnect.flow,
       service:SignInConnect.service,queued:queue.length}));
     """)

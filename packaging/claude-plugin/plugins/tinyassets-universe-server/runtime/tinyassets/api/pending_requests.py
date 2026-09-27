@@ -1637,6 +1637,10 @@ def _reconnect_requests(base: Any, uid: str, udir: Any) -> list[dict[str, object
                         else list(_MODEL_CONNECT_SHAPES)
                     ),
                     "service": service,
+                    # The universe this card is FOR. The sign-in route resolves it
+                    # against the caller's admin ACL rather than trusting it, so this
+                    # names the target and proves nothing.
+                    "universe_id": uid,
                 },
             },
             "status": "pending",

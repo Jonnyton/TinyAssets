@@ -572,12 +572,55 @@ def _read_home(identity: Any, *, raise_errors: bool = False) -> str:
             return ""
 
 
+def _owned_target_universe(identity: Any, wanted: str) -> str | None:
+    """The universe a device sign-in may deposit into, or None when it may not.
+
+    The target comes from the CARD plus the caller's identity, and nothing else. It is
+    resolved through the same check every other write on this surface uses -- an
+    explicit ``admin`` ACL row for this actor, never the permissive access helper -- so
+    a caller naming a universe they do not administer is refused rather than redirected
+    to their own. An empty ``wanted`` means the card named none, and the caller's home
+    is the answer, which is what the surface did for every request before.
+
+    Runs in a worker thread under the request identity, like `_bootstrap_home`.
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.daemon_server import list_universe_acl
+    from tinyassets.principals import named_principal
+
+    target = str(wanted or "").strip()
+    if not target:
+        return _bootstrap_home(identity)
+    with identity_context(identity):
+        actor = named_principal(getattr(identity, "user_id", "") or "")
+        if not actor:
+            return None
+        try:
+            rows = list_universe_acl(_base_path(), universe_id=target)
+        except Exception:  # noqa: BLE001 - an unreadable ACL is not a grant
+            return None
+    owns = any(
+        row.get("actor_id") == actor and row.get("permission") == "admin"
+        for row in rows
+    )
+    return target if owns else None
+
+
 def _bootstrap_home(identity: Any) -> str:
     """The signed-in user's OWN home universe id, created on first contact if
     it does not exist yet (the same ``ensure_founder_home`` the conversation
     entry uses). "" when the identity cannot create one. Runs in a worker
-    thread under the request identity. This is the ONLY universe a credential
-    from the app may land in — a client-supplied universe id is ignored."""
+    thread under the request identity.
+
+    This is the DEFAULT universe a credential from the app lands in, and for every
+    route but the device sign-in it is the only one: a client-supplied universe id is
+    ignored. The sign-in route takes its target from the reconnect card instead,
+    because a card exists precisely to repair one NAMED connection -- and it resolves
+    that target through :func:`_owned_target_universe`, which requires an explicit
+    admin ACL row for the caller and refuses anything else rather than quietly falling
+    back to here. The invariant that mattered is intact: a credential still only lands
+    in a universe this caller administers."""
     from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.api.helpers import _base_path
     from tinyassets.auth.middleware import identity_context
@@ -623,14 +666,22 @@ async def _handle_openai_device_start(request: Any) -> Any:
     # rather than quietly redirected.
     asked = str(data.get("service") or DEVICE_SIGN_IN_SERVICE).strip().lower()
     if asked != DEVICE_SIGN_IN_SERVICE:
+        # This daemon completes exactly one service by brokered sign-in. A card for any
+        # other source offers its own shapes instead, so reaching here means the caller
+        # asked for a flow that does not exist -- refused loudly rather than silently
+        # completing the one service this route does know.
         return JSONResponse({"error": "sign_in_unsupported_for_service"}, status_code=400)
     identity = current_identity()
-    home = await run_in_threadpool(_bootstrap_home, identity)
-    if not home:
-        return JSONResponse({"error": "no_home_universe"}, status_code=409)
-    wanted = str(data.get("universe_id") or "").strip()
-    if wanted and wanted != home:
+    # The TARGET is the card's universe plus this caller's identity, resolved through
+    # the same admin-ACL check every other write here uses. A universe the caller does
+    # not administer fails loudly; it is never quietly replaced with their own.
+    target = await run_in_threadpool(
+        _owned_target_universe, identity, str(data.get("universe_id") or ""),
+    )
+    if target is None:
         return JSONResponse({"error": "sign_in_universe_not_yours"}, status_code=403)
+    if not target:
+        return JSONResponse({"error": "no_home_universe"}, status_code=409)
     try:
         started = await start_device_auth()
         # The raw device tuple is a bearer capability for the credential; it
@@ -638,7 +689,7 @@ async def _handle_openai_device_start(request: Any) -> Any:
         # opaque handle.
         handle = register_flow(
             user_id=identity.user_id,
-            universe_id=home,
+            universe_id=target,
             device_auth_id=started["device_auth_id"],
             user_code=started["user_code"],
         )

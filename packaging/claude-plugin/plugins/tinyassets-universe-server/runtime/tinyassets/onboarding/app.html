@@ -5938,7 +5938,7 @@
     const setup = (req.action && req.action.setup) || {};
     // Which source this card is FOR. A reconnect card names it; the setup card does
     // not, because it is connecting something new.
-    SignInConnect.configure(setup.service || "");
+    SignInConnect.configure(setup.service || "", setup.universe_id || "");
     HostedModelConnect.configure(req.sticky ? (setup.primary || null) : null);
     ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
     const panel = $("connect-panel");
@@ -6027,13 +6027,15 @@
   // app -- the founder hit exactly that. Start, show the code, poll, and let the
   // daemon deposit; the credential never touches this page.
   const SignInConnect={
-    flow:"", timer:0, busy:false, blips:0, epoch:0, service:"",
+    flow:"", timer:0, busy:false, blips:0, epoch:0, service:"", universe:"",
     // Which source the visible card is for. Set from the card, so a reconnect for one
     // source can never start a flow for another: switching cards resets whatever was
     // in flight before the new service is adopted.
-    configure(service){
-      const next=String(service||"");
-      if(next!==this.service){ this.reset(); this.service=next; }
+    configure(service,universe){
+      const next=String(service||""), where=String(universe||"");
+      if(next!==this.service||where!==this.universe){
+        this.reset(); this.service=next; this.universe=where;
+      }
     },
     // A dropped poll is retried, but not forever. Without a cap an offline client
     // kept a timer alive against a flow that had already expired, polling for as
@@ -6071,7 +6073,10 @@
           // validates both rather than choosing for us; before this it always picked
           // the user's home and deposited for its own service, so it could not repair
           // another universe's connection (Codex refute-review, P1 #5).
-          body:JSON.stringify({service:this.service,universe_id:queueScope||""})});
+          // The source AND the universe the card names. The route resolves the
+          // universe against this caller's admin ACL and refuses one they do not
+          // administer, so naming it here asks rather than asserts.
+          body:JSON.stringify({service:this.service,universe_id:this.universe})});
         const doc=await r.json().catch(()=>({}));
         if(epoch!==this.epoch) return;   // reset while this was in flight: drop it
         if(!r.ok||!doc.flow){
