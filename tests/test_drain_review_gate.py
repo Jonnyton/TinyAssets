@@ -1486,3 +1486,201 @@ def test_scope_guard_wires_the_blocking_review_decision() -> None:
         r'rm -f "\$COMMENTS_FILE"\s*\n\s*break\s*\n\s*fi\s*\n\s*done',
         text,
     ), "a partial inventory must be discarded, not read as the complete one"
+
+
+# ---- diff-keyed receipts ---------------------------------------------------
+#
+# A `Drain-Review-Diff:` receipt binds the approval to the CHANGE, so merging
+# main in or rebasing does not void it (every push used to), while any change to
+# what is being merged does.
+
+
+def _gate_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("drain_review_gate_diffkey", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _Repo:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        root.mkdir()
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "t@example.invalid")
+        self.git("config", "user.name", "t")
+        self.git("config", "commit.gpgsign", "false")
+        self.git("config", "core.autocrlf", "false")
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=self.root, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    def commit(self, files: dict[str, bytes | None], message: str) -> str:
+        for name, content in files.items():
+            path = self.root / name
+            if content is None:
+                path.unlink()
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD")
+
+    def key(self, head: str = "pr") -> str:
+        return _gate_module().diff_key("main", head, cwd=self.root)
+
+
+@pytest.fixture()
+def pr_repo(tmp_path: Path) -> _Repo:
+    repo = _Repo(tmp_path / "repo")
+    repo.commit({"a.txt": b"a\n", "b.txt": b"b\n", "bin.dat": b"\x00\x01"}, "base")
+    repo.git("checkout", "-q", "-b", "pr")
+    repo.commit({"a.txt": b"a changed by the PR\n"}, "pr change")
+    return repo
+
+
+def test_diff_key_survives_merging_an_unrelated_main_change(pr_repo: _Repo) -> None:
+    before = pr_repo.key()
+    pr_repo.git("checkout", "-q", "main")
+    pr_repo.commit({"b.txt": b"b changed on main\n"}, "main moves")
+    pr_repo.git("checkout", "-q", "pr")
+    pr_repo.git("merge", "-q", "--no-edit", "main")
+    assert pr_repo.key() == before
+
+
+def test_diff_key_survives_a_rebase_onto_an_unrelated_main_change(pr_repo: _Repo) -> None:
+    before = pr_repo.key()
+    pr_repo.git("checkout", "-q", "main")
+    pr_repo.commit({"c.txt": b"new on main\n"}, "main moves")
+    pr_repo.git("checkout", "-q", "pr")
+    pr_repo.git("rebase", "-q", "main")
+    assert pr_repo.key() == before
+
+
+def test_diff_key_changes_when_the_pr_change_changes(pr_repo: _Repo) -> None:
+    before = pr_repo.key()
+    pr_repo.commit({"a.txt": b"a changed by the PR, differently\n"}, "edit")
+    assert pr_repo.key() != before
+
+
+def test_diff_key_changes_when_main_touched_a_file_the_pr_changes(pr_repo: _Repo) -> None:
+    """The reviewed change is no longer the change being merged: re-review."""
+    before = pr_repo.key()
+    pr_repo.git("checkout", "-q", "main")
+    pr_repo.commit({"a.txt": b"a\ntail added on main\n"}, "main edits the same file")
+    pr_repo.git("checkout", "-q", "pr")
+    subprocess.run(["git", "merge", "-q", "--no-edit", "main"], cwd=pr_repo.root)
+    pr_repo.commit({"a.txt": b"a changed by the PR\ntail added on main\n"}, "resolve")
+    assert pr_repo.key() != before
+
+
+def test_diff_key_distinguishes_binary_changes(pr_repo: _Repo) -> None:
+    """`git patch-id` would give these two the same id; blob ids do not."""
+    pr_repo.commit({"bin.dat": b"\x00\x02"}, "binary one")
+    one = pr_repo.key()
+    pr_repo.commit({"bin.dat": b"\x00\x03"}, "binary two")
+    assert pr_repo.key() != one
+
+
+def test_diff_key_sees_deletions_and_mode_changes(pr_repo: _Repo) -> None:
+    before = pr_repo.key()
+    pr_repo.commit({"b.txt": None}, "delete")
+    deleted = pr_repo.key()
+    assert deleted != before
+    pr_repo.git("update-index", "--chmod=+x", "a.txt")
+    pr_repo.git("commit", "-q", "-m", "chmod")
+    assert pr_repo.key() != deleted
+
+
+def test_diff_key_fails_loudly_on_an_unknown_head(pr_repo: _Repo) -> None:
+    with pytest.raises(subprocess.CalledProcessError):
+        _gate_module().diff_key("main", "f" * 40, cwd=pr_repo.root)
+
+
+KEY = "b" * 64
+
+
+def _diff_receipt(*, key: str = KEY, url: str = ARTIFACT_URL) -> str:
+    return (
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Diff: {key}\n"
+        f"Drain-Review-Artifact: {url}\n"
+    )
+
+
+def test_a_diff_receipt_is_honoured_only_for_the_computed_key() -> None:
+    gate = _gate_module()
+    body = _diff_receipt()
+    assert gate.review_allows_merge(branch="drain/x", head=HEAD, body=body, diff_key=KEY)
+    assert not gate.review_allows_merge(branch="drain/x", head=HEAD, body=body, diff_key="c" * 64)
+    # No key computed (git failed, or an old caller): only a head receipt can match.
+    assert not gate.review_allows_merge(branch="drain/x", head=HEAD, body=body, diff_key=None)
+    # A malformed key is never a binding, even if the body repeats it verbatim.
+    assert not gate.review_allows_merge(
+        branch="drain/x", head=HEAD, body=_diff_receipt(key="xyz"), diff_key="xyz"
+    )
+    # The head receipt keeps working alongside.
+    head_body = (
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {HEAD}\n"
+        f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
+    )
+    assert gate.review_allows_merge(branch="drain/x", head=HEAD, body=head_body, diff_key=KEY)
+
+
+def test_a_comment_attests_a_diff_only_for_the_computed_key() -> None:
+    gate = _gate_module()
+    comment = f"Drain-Review-Verdict: APPROVE\nDrain-Review-Diff: {KEY}\n\nLGTM\n"
+    assert gate.comment_attests_approval(comment, HEAD, KEY)
+    assert not gate.comment_attests_approval(comment, HEAD, "c" * 64)
+    assert not gate.comment_attests_approval(comment, HEAD)
+    blocked = f"Drain-Review-Verdict: BLOCK\nDrain-Review-Diff: {KEY}\n"
+    assert not gate.comment_attests_approval(blocked, HEAD, KEY)
+
+
+def test_cli_accepts_a_diff_receipt_with_the_workflow_key(tmp_path: Path) -> None:
+    body_path = tmp_path / "body.md"
+    body_path.write_text(_diff_receipt(), encoding="utf-8")
+    base = [sys.executable, str(SCRIPT), "--branch", "drain/x", "--head", HEAD,
+            "--body-file", str(body_path)]
+    ok = subprocess.run([*base, "--diff-key", KEY], capture_output=True, text=True)
+    assert ok.returncode == 0 and ok.stdout.strip() == "allow", ok
+    denied = subprocess.run(base, capture_output=True, text=True)
+    assert denied.returncode == 2 and denied.stdout.strip() == "deny", denied
+
+
+def test_cli_prints_the_key_a_reviewer_stamps(pr_repo: _Repo) -> None:
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--print-diff-key", "main", "pr"],
+        cwd=pr_repo.root, capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == pr_repo.key()
+
+
+@pytest.mark.parametrize("workflow", [WORKFLOW, POLICY_WORKFLOW])
+def test_workflows_pass_the_diff_key_and_still_never_check_out_the_head(workflow: Path) -> None:
+    import yaml
+
+    text = workflow.read_text(encoding="utf-8")
+    jobs = yaml.safe_load(text)["jobs"]
+    for job in jobs.values():
+        for step in job.get("steps", []):
+            if "actions/checkout" in str(step.get("uses", "")):
+                # Base checkout only; history and trees for the merge base, no
+                # blobs, and no PR code checked out or run.
+                assert step["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
+                assert step["with"]["filter"] == "blob:none"
+    # One invocation = the line plus its `\`-continued lines.
+    calls = re.findall(r"python scripts/drain_review_gate\.py(?:[^\n]*\\\n)*[^\n]*", text)
+    receipt_calls = [c for c in calls if "--body-file" in c and "--ledger-head-file" not in c]
+    assert receipt_calls, "no receipt check found"
+    for call in receipt_calls:
+        assert "--diff-key" in call, call
+    assert "--print-diff-key" in text
