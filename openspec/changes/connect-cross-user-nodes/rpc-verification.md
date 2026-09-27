@@ -92,7 +92,7 @@ specification records were retained. No source changes during final review.
   files with `probe-ok`, clean tree.
 - Claude Fable 5.1 exact-code review session 2924: **APPROVE**, terminal exit 0
   after 269 seconds on 2026-09-19. Full recovered substantive result is attached
-  to [PR #3881](https://github.com/TinyAssets/TinyAssets/pull/3881#issuecomment-5740090073).
+  to [PR #3881](https://github.com/Jonnyton/TinyAssets/pull/3881#issuecomment-5740090073).
   Four non-blocking observations are recorded in
   `docs/concerns/2026-09-19-node-delivery-post-mvp-hardening.md`.
 

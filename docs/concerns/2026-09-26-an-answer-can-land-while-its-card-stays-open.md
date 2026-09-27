@@ -8,7 +8,7 @@ summary: '`resolve_request` returns `False` on a storage fault and three branche
 # A pending-request answer can land while its card stays open
 
 **Filed:** 2026-09-26, from the Codex refute-review of PR #4021
-(the Codex refute-review of PR #4021 — verdict and receipt in https://github.com/TinyAssets/TinyAssets/pull/4021#issuecomment-5850412279, full reviewer text in that PR's history (the audit file it was filed in was removed on landing, since the findings are resolved), P1 #2).
+(the Codex refute-review of PR #4021 — verdict and receipt in https://github.com/Jonnyton/TinyAssets/pull/4021#issuecomment-5850412279, full reviewer text in that PR's history (the audit file it was filed in was removed on landing, since the findings are resolved), P1 #2).
 **Severity:** P1. **Owner:** unassigned.
 
 ## The finding

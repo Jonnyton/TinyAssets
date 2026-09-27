@@ -88,7 +88,7 @@ Git2.47.3,bubblewrap0.12.0). No inferred green from missing earlier output.
 not inferred green; this fresh run is the evidence.
 
 Isolated release exact-head review APPROVE141s,15 independent lifecycle tests:
-https://github.com/TinyAssets/TinyAssets/pull/3718#issuecomment-5611165147
+https://github.com/Jonnyton/TinyAssets/pull/3718#issuecomment-5611165147
 No selected-model activation in that release. Exact checklist message sent and
 verified18:35PDT; app18:38 reports five fresh passes and deleted-webhook404.
 Refreshed history revealed the original checklist already completed16:38PDT,

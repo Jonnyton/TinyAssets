@@ -137,11 +137,12 @@ MOVED_REPO_PATTERNS = {
     r"(?i)ghcr\.io/jonnyton/": "pre-org container image path",
 }
 
-#: Dated records that cite the old slug as evidence of what was true then: an
-#: archived change's review receipts, a captured session. Their links still
-#: resolve through GitHub's redirect; rewriting them would alter the record.
+#: Records that cite the old slug as evidence of what was true then: review
+#: receipts, run links and image digests in change folders, a captured session.
+#: Their links still resolve through GitHub's redirect, and a digest names the
+#: package it was actually pushed to; rewriting them would alter the record.
 MOVED_REPO_RECORD_DIRS = (
-    ("openspec", "changes", "archive"),
+    ("openspec", "changes"),
     ("output",),
     (".cowork-revert-patches",),
     (".agents",),

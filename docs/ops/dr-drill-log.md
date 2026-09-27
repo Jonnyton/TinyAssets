@@ -13,7 +13,7 @@ Each entry: timestamp, backup source, drill Droplet details, probe result, run l
 - **Drill Droplet:** ID `566378236`, IP `159.65.46.178`
 - **Size:** `s-2vcpu-2gb`
 - **Probe:** green (direct HTTP to drill Droplet port 8001)
-- **Run:** https://github.com/TinyAssets/TinyAssets/actions/runs/24758953250
+- **Run:** https://github.com/Jonnyton/TinyAssets/actions/runs/24758953250
 
 ## 2026-07-24T04:24:14Z — PASS
 
@@ -23,8 +23,8 @@ Each entry: timestamp, backup source, drill Droplet details, probe result, run l
 - **Representative member SHA-256:** `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
 - **Drill Droplet:** ID `587165976`, IP `104.131.173.182`
 - **Base Image:** `debian-13-x64`
-- **Runtime Image:** `ghcr.io/tinyassets/tinyassets-daemon@sha256:10d4842c4d6243d031fbc97c7fc3f32540ce08040d0e5ff3f9750ccb4d63937b`
+- **Runtime Image:** `ghcr.io/jonnyton/tinyassets-daemon@sha256:10d4842c4d6243d031fbc97c7fc3f32540ce08040d0e5ff3f9750ccb4d63937b`
 - **Size:** `s-2vcpu-2gb`
 - **Probe:** green (MCP status via SSH port-forward to localhost:8001)
 - **Cleanup:** Droplet DELETE confirmed before PASS publication
-- **Run:** https://github.com/TinyAssets/TinyAssets/actions/runs/30066361115
+- **Run:** https://github.com/Jonnyton/TinyAssets/actions/runs/30066361115

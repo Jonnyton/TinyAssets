@@ -22,13 +22,13 @@ The exception is raised by `storage/provider_work_authority.py`'s
 `_agent_receipt_for_authority` during the fresh-process `claim`, after
 `issue_receipt` returned. The test uses recording doubles, not a live provider.
 
-- Historical run [34300646808](https://github.com/TinyAssets/TinyAssets/actions/runs/34300646808),
+- Historical run [34300646808](https://github.com/Jonnyton/TinyAssets/actions/runs/34300646808),
   created 2026-09-09 01:48 UTC, predates the workspace patch and contains the
   same failing test and exception in its `junit-heavy-tests` artifact.
-- Immediate baseline run [34301938622](https://github.com/TinyAssets/TinyAssets/actions/runs/34301938622)
+- Immediate baseline run [34301938622](https://github.com/Jonnyton/TinyAssets/actions/runs/34301938622)
   initially passed this test (103 other extended failures). The supplemental
   baseline run 34302359138 passed it too.
-- Candidate run [34303595238](https://github.com/TinyAssets/TinyAssets/actions/runs/34303595238)
+- Candidate run [34303595238](https://github.com/Jonnyton/TinyAssets/actions/runs/34303595238)
   has 104 extended failures: the same 103 plus this already-observed failure.
 - `git diff --exit-code 4c923557 79a4f765 --` over the load test, invocation and
   provider-call/execution test helpers, provider execution service, provider

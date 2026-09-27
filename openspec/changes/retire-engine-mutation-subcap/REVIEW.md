@@ -78,7 +78,7 @@ The new candidate must add 13 policy cases and the scheduler recovery case.
 Claude completed its independent code review in 228 seconds with exit 0 and
 APPROVE for d22c11054d08928246448e4b4a6d9e5720679a47 against c9fe06fb.
 Full review: `output/engine-subcap-code-review.md`; durable PR receipt:
-https://github.com/TinyAssets/TinyAssets/pull/3577#issuecomment-5595878957.
+https://github.com/Jonnyton/TinyAssets/pull/3577#issuecomment-5595878957.
 No blocking evidence findings. The reviewer independently ran 13 new tests,
 Ruff, strict spec validation and four-file mirror parity.
 
@@ -89,7 +89,7 @@ to approved d22c1105 (`git diff --exit-code`). JUnit comparison using
 proves 238 focused passes, no skips or regressions: 13 added policy cases and
 one scheduler recovery case; only the deliberately replaced engine-share
 reservation scenario disappears. Linux receipt:
-https://github.com/TinyAssets/TinyAssets/pull/3577#issuecomment-5596013939.
+https://github.com/Jonnyton/TinyAssets/pull/3577#issuecomment-5596013939.
 
 Normal guarded merge #3577 landed 8f1b47609330f06924246a692740448836672a48
 at 2026-09-09T04:53:16Z. Image build 34312713141 started for that revision.
