@@ -43,7 +43,7 @@ def base(tmp_path, monkeypatch):
     return root
 
 
-REPO = "jonnyton/tinyassets"
+REPO = "tinyassets/tinyassets"
 
 
 def _deposit(uid, *, scopes=(), secret="ghp_" + "x" * 36):

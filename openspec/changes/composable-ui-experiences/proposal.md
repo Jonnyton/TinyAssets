@@ -46,7 +46,7 @@ handoff remain proposed only.
 
 Owner: tiny, working through Codex. One intent: define the contract for a
 user-buildable experience spanning multiple devices. One companion PR to
-[portable harness proposal #3840](https://github.com/Jonnyton/TinyAssets/pull/3840);
+[portable harness proposal #3840](https://github.com/TinyAssets/TinyAssets/pull/3840);
 this proposal can be reviewed independently and does not assume #3840 has landed.
 
 Expected integration areas: native agent composition/interchange, the onboarding

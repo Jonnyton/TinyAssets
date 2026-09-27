@@ -35,7 +35,7 @@
 # deploys cannot silently pull a mutable tag. deploy-prod.yml resolves
 # the short-SHA tag emitted by build-image.yml to a digest ref before
 # writing this value.
-# Example: ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest>
+# Example: ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest>
 TINYASSETS_IMAGE=
 
 

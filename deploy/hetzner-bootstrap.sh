@@ -21,7 +21,7 @@
 # /etc/tinyassets content is preserved.
 #
 # Usage (on the target box, as root):
-#   curl -fsSL https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/deploy/hetzner-bootstrap.sh -o /tmp/bootstrap.sh
+#   curl -fsSL https://raw.githubusercontent.com/TinyAssets/TinyAssets/main/deploy/hetzner-bootstrap.sh -o /tmp/bootstrap.sh
 #   sudo bash /tmp/bootstrap.sh
 #
 # OR (local-clone):
@@ -46,7 +46,7 @@ TINYASSETS_USER="tinyassets"
 TINYASSETS_UID=1001
 TINYASSETS_HOME="/opt/tinyassets"
 ENV_DIR="/etc/tinyassets"
-REPO_URL="https://github.com/Jonnyton/TinyAssets.git"
+REPO_URL="https://github.com/TinyAssets/TinyAssets.git"
 REPO_REF="main"
 
 log() { echo "[bootstrap] $*"; }

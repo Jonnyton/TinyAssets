@@ -17,7 +17,7 @@ The Uptime canary workflow ID `263326518` is active and requests
 `*/5 * * * *`. Commands:
 
 ```text
-gh api repos/Jonnyton/TinyAssets/actions/workflows/263326518
+gh api repos/TinyAssets/TinyAssets/actions/workflows/263326518
 gh run list --workflow uptime-canary.yml --event schedule --limit 8 --json databaseId,createdAt,event,status,conclusion,headSha,url
 ```
 

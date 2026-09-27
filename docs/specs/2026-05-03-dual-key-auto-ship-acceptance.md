@@ -194,7 +194,7 @@ Add read-only summaries after PR-open and mirror-key recording exist:
       {
         "ship_attempt_id": "ship_20260503_abcd1234",
         "request_id": "BUG-055",
-        "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/243",
+        "pr_url": "https://github.com/TinyAssets/TinyAssets/pull/243",
         "ship_class": "docs_canary",
         "required_keys": ["codex", "cowork"],
         "key_state": {

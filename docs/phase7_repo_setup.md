@@ -37,7 +37,7 @@ providers / machines.
 ## Clone + install
 
 ```bash
-git clone https://github.com/Jonnyton/TinyAssets
+git clone https://github.com/TinyAssets/TinyAssets
 cd TinyAssets
 python -m venv .venv
 # Windows: .venv\Scripts\activate
