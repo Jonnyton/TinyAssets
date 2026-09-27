@@ -288,6 +288,13 @@ are no push runs, see "Does a merge-queue merge trigger push workflows?" above.
   CLI can't dequeue ("You cannot use GitHub CLI to remove a pull request from
   a merge queue"). To hold a PR whose review came back BLOCK after it
   enqueued, remove it in the UI: PR page → **Remove from queue**.
+- With the queue on, `gh pr merge --auto --squash` prints "merge strategy is
+  set by the merge queue". That's a notice, not an error. Once GitHub has
+  queued a PR, `autoMergeRequest` reads **null**, so a null there does not mean
+  "not armed". Check `mergeQueueEntry` (GraphQL) or `isInMergeQueue` instead.
+  Its `enqueuer` must be a user: a PR armed by `github-actions` never enters
+  the queue (seen 2026-09-27 with an empty `MERGE_ATTRIBUTION_TOKEN`), and
+  auto-enroll now fails loudly on both.
 - Merges land in batches of up to 5. `build-image`'s `decide` job already
   judges the whole served..head range, so a batch deploys once.
 - `strict` stays off. The queue now provides the "tested against current main"
