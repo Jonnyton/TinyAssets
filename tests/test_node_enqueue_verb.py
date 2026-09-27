@@ -16,7 +16,6 @@ Containment (Codex enqueue review, 2026-05-30):
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 import pytest
@@ -177,92 +176,6 @@ def _run(b, *, invocation_depth=0, thread="t", context=None, base_path="/fake/ba
     return app.invoke({}, config={"configurable": {"thread_id": thread}})
 
 
-def test_enqueue_disabled_by_default(monkeypatch):
-    # No TINYASSETS_NODE_ENQUEUE_ENABLED → fail-closed, ships dark.
-    monkeypatch.delenv("TINYASSETS_NODE_ENQUEUE_ENABLED", raising=False)
-    b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
-    with pytest.raises(CompilerError) as exc:
-        _run(b, thread="enq-off")
-    assert "disabled" in str(exc.value)
-
-
-def test_enqueue_happy_path_appends_at_depth_1(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    captured = _patch_storage(monkeypatch)
-
-    b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
-    result = _run(b, invocation_depth=0, thread="enq-ok")
-
-    assert result["status"] == "enqueued"
-    assert len(captured) == 1
-    upath, task = captured[0]
-    assert str(upath).replace("\\", "/").endswith("/fake/u")
-    assert task.branch_def_id == "patch_loop"
-    assert task.inputs == {"bug_id": "BUG-1"}
-    assert task.universe_id == "u"
-    assert task.trigger_source == "owner_queued"
-    assert task.depth == 1  # parent depth 0 + 1
-    # A root run starts a new spawn chain: origin == this task, no parent.
-    assert task.parent_branch_task_id == ""
-    assert task.origin_branch_task_id == task.branch_task_id
-
-
-def test_enqueue_carries_parent_depth_plus_one(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_DEPTH", "5")
-    captured = _patch_storage(monkeypatch)
-
-    b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
-    _run(b, invocation_depth=3, thread="enq-depth")
-
-    assert captured[0][1].depth == 4  # parent 3 + 1
-
-
-def test_enqueue_depth_cap_refuses(monkeypatch):
-    # Default cap is 2; a run already at depth 2 would enqueue at depth 3.
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.delenv("TINYASSETS_NODE_ENQUEUE_MAX_DEPTH", raising=False)
-    captured = _patch_storage(monkeypatch)
-
-    b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
-    with pytest.raises(CompilerError) as exc:
-        _run(b, invocation_depth=2, thread="enq-cap")
-    assert "exceeds cap" in str(exc.value)
-    assert captured == []  # never appended
-
-
-def test_enqueue_per_run_budget_refuses_second(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN", "1")
-    captured = _patch_storage(monkeypatch)
-
-    b = _branch(ENQUEUE_TWICE, ["enqueue_branch_run"])
-    with pytest.raises(CompilerError) as exc:
-        _run(b, thread="enq-budget")
-    assert "budget" in str(exc.value)
-    assert len(captured) == 1  # first appended, second refused
-
-
-def test_enqueue_budget_is_run_wide_across_parallel_source_nodes(monkeypatch):
-    """MAX_PER_RUN is one run-wide budget, not one allowance per node."""
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN", "1")
-    captured = _patch_storage(monkeypatch)
-
-    def _slow_append(upath, task, **caps):
-        # Widen the interval between admission and counter increment. A shared
-        # but unsynchronized list/counter can otherwise pass this by scheduling
-        # luck even though both parallel nodes observed the same old value.
-        time.sleep(0.05)
-        captured.append((upath, task))
-
-    monkeypatch.setattr(bt, "append_task_capped", _slow_append)
-    with pytest.raises(CompilerError, match="budget"):
-        _run(_parallel_enqueue_branch(), thread="enq-parallel-budget")
-
-    assert len(captured) == 1
-
-
 def test_enqueue_requires_tools_allowed(monkeypatch):
     # Even enabled, the node must declare the verb in tools_allowed.
     monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
@@ -312,59 +225,8 @@ def test_enqueue_refuses_foreign_universe(monkeypatch):
 
 # ── Fix 3: target branch authority (reuses existing visibility model) ─────────
 
-def test_enqueue_refuses_unknown_branch(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    captured = _patch_storage(monkeypatch)
-
-    def _missing(base_path, *, branch_def_id):
-        raise KeyError(branch_def_id)
-
-    monkeypatch.setattr(ds, "get_branch_definition", _missing)
-    b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
-    with pytest.raises(CompilerError) as exc:
-        _run(b, thread="enq-missing")
-    assert "does not exist" in str(exc.value)
-    assert captured == []  # validated BEFORE append
-
-
-def test_enqueue_refuses_private_branch_non_owner(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    captured = _patch_storage(
-        monkeypatch, branch_meta={"visibility": "private", "author": "someone_else"},
-    )
-    b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
-    with pytest.raises(CompilerError) as exc:
-        _run(b, thread="enq-priv", context=_ctx(actor="me"))
-    assert "private" in str(exc.value)
-    assert captured == []
-
-
-def test_enqueue_refuses_private_branch_even_for_matching_process_actor(monkeypatch):
-    """V1 has no authenticated end-user principal, so all private targets fail."""
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    captured = _patch_storage(
-        monkeypatch, branch_meta={"visibility": "private", "author": "me"},
-    )
-    b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
-    with pytest.raises(CompilerError, match="private"):
-        _run(b, thread="enq-priv-owner", context=_ctx(actor="me"))
-    assert captured == []
-
 
 # ── Fix 2: spawn lineage stamping + cap surfacing ────────────────────────────
-
-def test_enqueue_stamps_parent_and_origin(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_DEPTH", "5")
-    captured = _patch_storage(monkeypatch)
-    b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
-    _run(
-        b, invocation_depth=1, thread="enq-lineage",
-        context=_ctx(parent_branch_task_id="P1", origin_branch_task_id="O1"),
-    )
-    task = captured[0][1]
-    assert task.parent_branch_task_id == "P1"
-    assert task.origin_branch_task_id == "O1"  # propagated, not reset
 
 
 @pytest.mark.parametrize(
@@ -401,38 +263,6 @@ def test_execute_branch_derives_stable_root_origin_with_explicit_precedence(
     assert len(captured) == 1
     assert captured[0].parent_branch_task_id == parent
     assert captured[0].origin_branch_task_id == expected
-
-
-def test_enqueue_ignores_branch_authored_request_type(monkeypatch):
-    # request_type steers scheduler class + privileged downstream handling
-    # (e.g. bug_investigation direct-execution). A source node must NOT be able
-    # to pick it through enqueue_branch_run — it's forced to "branch_run".
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    captured = _patch_storage(monkeypatch)
-    src = (
-        "def run(state):\n"
-        "    invoke_mcp_action('enqueue_branch_run', branch_def_id='x',\n"
-        "        inputs={}, request_type='bug_investigation')\n"
-        "    return {'status': 'x'}\n"
-    )
-    b = _branch(src, ["enqueue_branch_run"])
-    _run(b, thread="enq-reqtype")
-    assert len(captured) == 1
-    assert captured[0][1].request_type == "branch_run"  # not 'bug_investigation'
-
-
-def test_enqueue_surfaces_queue_cap_as_compiler_error(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
-    _patch_storage(monkeypatch)
-
-    def _raise(upath, task, **caps):
-        raise bt.QueueCapExceeded("queue has 500 active task(s) (cap 500)")
-
-    monkeypatch.setattr(bt, "append_task_capped", _raise)
-    b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
-    with pytest.raises(CompilerError) as exc:
-        _run(b, thread="enq-cap-surface")
-    assert "cap 500" in str(exc.value)
 
 
 # ── BranchTask migration-safety ──────────────────────────────────────────────
