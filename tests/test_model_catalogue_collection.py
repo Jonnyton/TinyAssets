@@ -75,7 +75,13 @@ def test_final_source_failure_keeps_independent_native_choice(configured, monkey
     monkeypatch.setattr(served_model_plan, "_http_models", change_after_filter)
     result = document(collect(configured))
     assert result["order"] == [{"provider_ref": "codex", "model_id": ""}]
-    assert [row["reference"] for row in result["options"]] == result["order"]
+    # The ADMITTED options are exactly the routing order. Not every option: a
+    # subscription source also offers the reviewed public list and the owner's own
+    # verified ids, which are candidates to GRANT and deliberately absent from the
+    # order -- an unusable id in the fallback chain is a turn that fails for no reason
+    # the user can see.
+    assert [row["reference"] for row in result["options"]
+            if row["in_candidate_catalog"]] == result["order"]
     reason = "discovery_expired" if failure == "expiry" else "source_revoked"
     assert any({"reason": reason, "component": ""} in row["reasons"]
                for row in result["source_failures"])

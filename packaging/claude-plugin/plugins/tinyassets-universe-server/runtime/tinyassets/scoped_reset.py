@@ -92,6 +92,12 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     # Scoped reset's content-free coordination state.
     "scoped_reset_leases": "preserve",
     "scoped_reset_operations": "preserve",
+    # One owner's own verified model ids. PRESERVED by a scoped reset and removed by
+    # ACCOUNT DELETION through its owner_user_id column (already a detected principal
+    # key, so it needs no entry in that map). Classified explicitly because the table
+    # is created lazily on a first verified turn, so the unclassified-table gate would
+    # otherwise fire in production rather than in CI.
+    "learned_model_evidence": "preserve",
 })
 
 FAULT_POINTS = (

@@ -19,7 +19,10 @@ from tinyassets.provider_assignment import provider_assignment_admission
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.model_policy import ModelRef
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
-from tinyassets.providers.served_model_plan import prepare_owned_model_plan
+from tinyassets.providers.served_model_plan import (
+    _CANDIDATE_ONLY_BASES,
+    prepare_owned_model_plan,
+)
 from tinyassets.storage.provider_work_authority import db_path
 
 native = authority_tests.native
@@ -130,12 +133,18 @@ def test_picker_refresh_adds_new_model_without_static_release_table(native, monk
             base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
             allow_empty=True,
         )
+    def granted(plan):
+        # Reviewed-list and owner-verified rows are offers to grant, appended after
+        # discovery; this test is about what discovery itself contributes.
+        return [m for m in plan.catalog.connections[0].models
+                if m.availability_basis not in _CANDIDATE_ONLY_BASES]
+
     before = options()
     ids.append("brand-new-account-release")
     after = options()
-    assert [m.model_id for m in before.catalog.connections[0].models] == ["", "initial-model"]
-    assert [m.model_id for m in after.catalog.connections[0].models] == ["", *ids]
-    assert after.catalog.connections[0].models[-1].availability_basis == "executor_enumerated"
+    assert [m.model_id for m in granted(before)] == ["", "initial-model"]
+    assert [m.model_id for m in granted(after)] == ["", *ids]
+    assert granted(after)[-1].availability_basis == "executor_enumerated"
     assert after.catalog.connections[0].default_model_id == ""
 
 
