@@ -12,22 +12,29 @@ had nothing, so the founder was asked about it "every so often" instead. Founder
 directive 2026-09-26: *disk cleaning should be an automatic part of the
 architecture, not something I'm asked about every so often.*
 
-Four classes, each with its own proof of disposability:
+Five classes, each with its own proof of disposability:
 
 ``basetemp``
     Directories directly under the OS temp root whose name matches an
     agent-convention prefix AND whose contents have pytest's numbered-dir shape,
-    untouched for ``--min-age-hours``.
+    untouched for ``--min-age-hours``. A directory with NO agent prefix is a
+    candidate only when it holds pytest's own ``test_*N``/``popen-gw*N`` session
+    dirs — lanes also pick bare names like ``orunb``.
 ``worktree``
     Git worktrees **of this repository only**, taken from ``git worktree list
     --porcelain``. Removed only when clean of tracked *and* ignored content,
-    idle, and content-merged into ``origin/main``.
+    idle, and content-merged into ``origin/main`` — or, for a detached HEAD,
+    when that commit is on a remote-tracking ref.
 ``docker``
     Build cache only, via ``docker builder prune`` with a keep budget, and only
     when the engine answers. Never volumes, never images, never other projects.
 ``scratch``
     A closed allowlist of this repo's own scratch directory names, only when git
     confirms the path is ignored and it is older than ``--min-age-days``.
+``toolcache``
+    Package-manager download caches, cleared by the owning tool's own command
+    (``uv cache clean``, ``pip cache purge``, ``npm cache clean --force``) and
+    located by asking that tool. Never a directory this script picks.
 
 Everything else is KEPT, with a reason. **Every unknown is a KEEP**: an
 undecidable git query, a directory shape the collector does not recognise, and
@@ -112,7 +119,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from git_squash_merge import is_merged_into  # noqa: E402  (sibling-script import)
 
-CLASSES = ("basetemp", "worktree", "docker", "scratch")
+CLASSES = ("basetemp", "worktree", "docker", "scratch", "toolcache")
 
 # Temp-root directory names the agents actually produce. Measured from the repo's
 # own review docs (docs/reviews/2026-09-*.md): ta-pt-*, ta-pt2, ta-rev-*,
@@ -131,6 +138,15 @@ DRIVE_ROOT_PREFIXES = ("ta-",)
 # pytest's numbered-dir scheme: "<slug><N>" for tmp_path dirs, "pytest-<N>" under
 # pytest-of-<user>, and "garbage-<uuid>" for its own deferred cleanup.
 _NUMBERED_DIR = re.compile(r".*\d+\Z")
+
+# What an UNPREFIXED temp dir must hold to be a candidate at all: pytest's own
+# per-test dirs (``test_<name>N``, truncated to 30 chars) or xdist's per-worker
+# roots. On 2026-09-28 lanes had left 140 such dirs (``orunb``, ``orset*``,
+# ``ct_x1``...) holding ~3.8 GB that no prefix rule could see.
+_PYTEST_SESSION_CHILD = re.compile(r"(test_\w*|popen-gw)\d+\Z")
+# Files the TinyAssets suite writes at a basetemp root. Accepted only beside a
+# pytest session child — an exact app filename, not an extension.
+PYTEST_ROOT_FILES = frozenset({".tinyassets.db", ".tinyassets.db-wal", ".tinyassets.db-shm"})
 
 MAIN_BRANCHES = frozenset({"main", "master", "production"})
 
@@ -151,6 +167,11 @@ DISPOSABLE_IGNORED = (
     "dist/",
     "build/",
     ".egg-info/",
+    # Next.js build output for the site previews (WebSite/site-react/.gitignore).
+    # Only `next build`/`next dev` write these; 1.5 GB was held by three preview
+    # lanes on 2026-09-28.
+    ".next/",
+    ".next-build/",
     # Per-session hook telemetry for loop detection: events.jsonl plus one
     # keep-working-<session-uuid>.json per session. Regenerated on demand, scoped
     # to a session that has ended, and never a work product — verified by reading
@@ -164,7 +185,10 @@ DISPOSABLE_IGNORED = (
 # only preserves the root copy, so a nested one would be accepted as disposable
 # and then never archived (Codex round 1, P0).
 DISPOSABLE_IGNORED_FILES_ROOT = ("_PURPOSE.md", "junit.xml")
-DISPOSABLE_IGNORED_BASENAMES = (".DS_Store", "Thumbs.db")
+DISPOSABLE_IGNORED_BASENAMES = (".DS_Store", "Thumbs.db", "next-env.d.ts")
+# Root-anchored ignored DIRECTORIES. `out/` is Next's static export, but the bare
+# name is too generic to accept anywhere, so only the site's own copy qualifies.
+DISPOSABLE_IGNORED_DIRS_ROOT = ("WebSite/site-react/out",)
 # Compiled artifacts only. `*.db`/`*.db-wal`/`*.db-shm` were here and are NOT:
 # this repo ignores `*.db` for the SQLite mirror of the YAML catalog, but the same
 # pattern covers a user's own local database, and Codex round 1 reproduced a
@@ -216,6 +240,7 @@ EXPECTED_KEEPS = frozenset(
         "not_inventoried",
         "deferred_to_next_pass",
         "acl_locked_needs_elevation",  # summarized on its own line, with the fix
+        "tool_not_installed",
     }
 )
 
@@ -253,6 +278,7 @@ class Item:
     # it back out of ``detail``: a human string is not a machine contract.
     branch: str = ""  # worktree class: the local branch to delete
     prune_flag: str = ""  # docker class: the keep-budget flag this CLI has
+    tool: str = ""  # toolcache class: the tool whose own command clears it
 
     @property
     def removable(self) -> bool:
@@ -487,12 +513,40 @@ def _is_pytest_artifact(entry: os.DirEntry) -> bool:
     return name.endswith("-current")
 
 
+def is_pytest_session_dir(path: Path) -> bool:
+    """Whether an UNPREFIXED directory is provably one pytest session's basetemp.
+
+    Stricter than ``classify_temp_dir`` because there is no name hint at all:
+    every child directory must be a pytest session child (``test_<name>N`` or
+    ``popen-gwN``) — a bare ``chapter1/`` does not qualify — at least one must
+    exist, and every file must be a pytest artifact or one of
+    ``PYTEST_ROOT_FILES``. Unreadable means no.
+    """
+    found = False
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                name = entry.name
+                if entry.is_dir(follow_symlinks=False):
+                    if not _PYTEST_SESSION_CHILD.match(name):
+                        return False
+                    found = True
+                    continue
+                if name in PYTEST_ROOT_FILES or name in {".lock", "pytest-current"}:
+                    continue
+                return False
+    except OSError:
+        return False
+    return found
+
+
 def collect_basetemps(
     temp_root: Path,
     *,
     min_age_hours: float,
     now: float,
     prefixes: tuple[str, ...] = BASETEMP_PREFIXES,
+    unprefixed_sessions: bool = False,
 ) -> list[Item]:
     """Inventory one temp root. ``prefixes`` is narrower for a drive root.
 
@@ -500,6 +554,9 @@ def collect_basetemps(
     set; a **drive root** like ``C:\\`` takes ``ta-`` only, because lanes put short
     basetemps there to dodge MAX_PATH and a drive root also holds system
     directories that must never be candidates.
+
+    ``unprefixed_sessions`` (OS temp root only) also admits a directory of any
+    name that ``is_pytest_session_dir`` proves is a pytest session.
     """
     items: list[Item] = []
     here = Path.cwd().resolve()
@@ -510,8 +567,13 @@ def collect_basetemps(
 
     for child in children:
         name = child.name
+        session = False
         if not any(name.startswith(p) for p in prefixes):
-            continue
+            if not unprefixed_sessions or child.is_symlink() or not child.is_dir():
+                continue
+            if (child / ".git").exists() or not is_pytest_session_dir(child):
+                continue
+            session = True
         # A checkout is never basetemp, whatever it is called. The shape gate below
         # would refuse it anyway, but saying so by name keeps a repo at a drive root
         # out of this class entirely — it belongs to the worktree class, which
@@ -534,7 +596,7 @@ def collect_basetemps(
         except OSError:
             continue
         resolved = child.resolve()
-        shape = classify_temp_dir(child)
+        shape = "pytest" if session else classify_temp_dir(child)
         if shape == "acl_locked":
             items.append(keep_for("basetemp", child, AclLocked("cannot list it")))
             continue
@@ -673,6 +735,8 @@ def is_disposable_ignored(rel: str) -> bool:
             return True
 
     if trimmed in DISPOSABLE_IGNORED_FILES_ROOT:  # root-anchored, exact
+        return True
+    if any(trimmed == d or trimmed.startswith(d + "/") for d in DISPOSABLE_IGNORED_DIRS_ROOT):
         return True
     if parts[-1] in DISPOSABLE_IGNORED_BASENAMES:  # exact final component
         return True
@@ -863,6 +927,18 @@ def commits_after_push(worktree: Path, branch: str, head: str) -> list[str]:
     return [line for line in (proc.stdout or "").splitlines() if line.strip()]
 
 
+def remote_refs_containing(worktree: Path, head: str) -> list[str]:
+    """Remote-tracking refs whose history contains ``head``. Raises Undecidable."""
+    if not head:
+        raise Undecidable("no HEAD recorded for the worktree")
+    out = git_ok(
+        ["for-each-ref", "--contains", head, "--format=%(refname)", "refs/remotes/"],
+        worktree,
+        timeout=60,
+    )
+    return [ln.strip() for ln in out.splitlines() if ln.strip() and not ln.endswith("/HEAD")]
+
+
 def open_pr_branches(repo: Path) -> set[str] | None:
     """Head branch names with an OPEN PR, or ``None`` when gh cannot say.
 
@@ -915,8 +991,12 @@ def _judge_worktree(
         return keep("in_use_by_this_process")
     if wt.branch in MAIN_BRANCHES:
         return keep("protected_branch")
-    if wt.detached or not wt.branch:
-        return keep("detached_head", "no branch to prove merged; resolve by hand")
+    if not wt.detached and not wt.branch:
+        return keep("no_branch", "neither a branch nor a detached HEAD; resolve by hand")
+    if wt.detached and (path / "_PURPOSE.md").exists():
+        # wt.py archives a purpose file against a branch; a detached lane has none,
+        # so its draft would have no preservation path.
+        return keep("detached_head", "detached lane holds a _PURPOSE.md; resolve by hand")
     if wt.branch in open_branches:
         return keep("open_pr", f"{label}: a PR is open on this branch")
 
@@ -947,6 +1027,26 @@ def _judge_worktree(
     if ignored:
         return keep(
             "ignored_content_exists_nowhere_else", f"{label}: {', '.join(ignored[:3])}", size
+        )
+
+    if wt.detached:
+        # Review and base-oracle checkouts: `git worktree add --detach <sha>`. With
+        # no branch, "merged" has no meaning; the proof is that the exact commit is
+        # on a remote-tracking ref, so the checkout can be recreated from it. 38
+        # of these, ~100 MB each, were all this class could not see on 2026-09-28.
+        try:
+            remotes = remote_refs_containing(path, wt.head)
+        except Undecidable as exc:
+            return keep("remote_scan_undecidable", str(exc), size)
+        if not remotes:
+            return keep("detached_head", f"{label}: HEAD is on no remote-tracking ref", size)
+        return Item(
+            "worktree",
+            str(path),
+            size,
+            "REMOVE",
+            "detached_on_remote",
+            f"{label}: HEAD is on {remotes[0]}",
         )
 
     merged = is_merged_into(lambda a: run(list(a), cwd=path), wt.head, base_ref)
@@ -1146,6 +1246,74 @@ def collect_repo_scratch(repo: Path, *, min_age_days: float, now: float) -> list
 
 
 # --------------------------------------------------------------------------- #
+# (e) package-manager caches
+# --------------------------------------------------------------------------- #
+
+# (tool, args that print its cache dir, args that clear it, subdir the clear owns).
+# The tool is asked where its cache is and the tool clears it: this script never
+# chooses a directory. npm's `config get cache` names a root that also holds
+# `_npx/`, where running MCP servers live, so only `_cacache/` is measured and
+# `npm cache clean` only touches that. 5.1 GB across the three on 2026-09-28.
+TOOL_CACHES: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...] = (
+    ("uv", ("cache", "dir"), ("cache", "clean"), ""),
+    ("pip", ("cache", "dir"), ("cache", "purge"), ""),
+    ("npm", ("config", "get", "cache"), ("cache", "clean", "--force"), "_cacache"),
+)
+# A download cache is not a safety question, so an oversized one is still cleared;
+# the budget only bounds how long the pass spends measuring it.
+TOOL_CACHE_MAX_ENTRIES = 1_000_000
+
+
+def collect_tool_caches(*, which=None) -> list[Item]:
+    which = which or shutil.which
+    items: list[Item] = []
+    for tool, dir_args, clean_args, sub in TOOL_CACHES:
+        exe = which(tool)
+        if not exe:
+            items.append(Item("toolcache", tool, 0, "KEEP", "tool_not_installed"))
+            continue
+        proc = run([exe, *dir_args], timeout=60)
+        lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        if proc.returncode != 0 or not lines:
+            detail = f"{tool} {' '.join(dir_args)} rc={proc.returncode}"
+            items.append(Item("toolcache", tool, 0, "KEEP", "cache_dir_unknown", detail))
+            continue
+        target = Path(lines[-1]) / sub if sub else Path(lines[-1])
+        if not target.is_dir():
+            items.append(Item("toolcache", str(target), 0, "KEEP", "nothing_reclaimable"))
+            continue
+        detail = f"{tool} {' '.join(clean_args)}"
+        try:
+            size, _ = tree_stats(target, budget=TOOL_CACHE_MAX_ENTRIES)
+        except AclLocked as exc:
+            items.append(keep_for("toolcache", target, exc))
+            continue
+        except Undecidable:
+            size, detail = 0, detail + " (size unmeasured: over the entry budget)"
+        if size == 0 and "unmeasured" not in detail:
+            items.append(Item("toolcache", str(target), 0, "KEEP", "nothing_reclaimable"))
+            continue
+        items.append(
+            Item("toolcache", str(target), size, "REMOVE", "tool_owned_cache", detail, tool=tool)
+        )
+    return items
+
+
+def clean_tool_cache(item: Item, *, which=None) -> tuple[bool, str]:
+    which = which or shutil.which
+    spec = next((t for t in TOOL_CACHES if t[0] == item.tool), None)
+    if spec is None:
+        return False, f"unknown tool {item.tool!r}; refusing to clean"
+    exe = which(spec[0])
+    if not exe:
+        return False, f"{spec[0]} is no longer on PATH"
+    proc = run([exe, *spec[2]], timeout=900)
+    if proc.returncode != 0:
+        return False, f"{spec[0]} {' '.join(spec[2])} failed: {proc.stderr.strip()[:300]}"
+    return True, f"{spec[0]} {' '.join(spec[2])}"
+
+
+# --------------------------------------------------------------------------- #
 # removal
 # --------------------------------------------------------------------------- #
 
@@ -1210,7 +1378,8 @@ def remove_worktree(repo: Path, item: Item) -> tuple[bool, str]:
     """
     path = Path(item.path)
     branch = item.branch
-    if not branch:
+    detached = item.reason == "detached_on_remote"
+    if not branch and not detached:
         return False, "no branch recorded on the candidate; refusing to remove"
 
     # Re-verify at the boundary. Inventory and removal are minutes apart on a full
@@ -1228,6 +1397,23 @@ def remove_worktree(repo: Path, item: Item) -> tuple[bool, str]:
             False,
             f"changed since inventory: ignored content now present ({', '.join(stale[:3])})",
         )
+
+    if detached:
+        # Same boundary re-check for the detached proof: HEAD can move between
+        # inventory and removal, and a purpose file has nowhere to be archived.
+        if (path / "_PURPOSE.md").exists():
+            return False, "changed since inventory: a _PURPOSE.md appeared"
+        try:
+            head = git_ok(["rev-parse", "HEAD"], path).strip()
+            on_remote = remote_refs_containing(path, head)
+        except Undecidable as exc:
+            return False, f"could not re-verify before removal: {exc}"
+        if not on_remote:
+            return False, "changed since inventory: HEAD is no longer on a remote ref"
+        proc = run(["git", "worktree", "remove", str(path)], cwd=repo, timeout=120)
+        if proc.returncode != 0:
+            return False, f"git worktree remove refused: {proc.stderr.strip()[:300]}"
+        return True, f"detached worktree removed; {head[:10]} stays on {on_remote[0]}"
 
     try:
         import wt  # noqa: PLC0415  (sibling script; only needed on the apply path)
@@ -1311,6 +1497,8 @@ def apply_removals(
             ok, detail = remove_worktree(repo, item)
         elif item.kind == "docker":
             ok, detail = prune_docker(item, keep_gb=keep_gb)
+        elif item.kind == "toolcache":
+            ok, detail = clean_tool_cache(item)
         else:
             ok, detail = remove_path(Path(item.path))
         if ok:
@@ -1440,7 +1628,9 @@ def inventory(
 ) -> list[Item]:
     items: list[Item] = []
     if "basetemp" in classes:
-        items += collect_basetemps(temp_root, min_age_hours=min_age_hours, now=now)
+        items += collect_basetemps(
+            temp_root, min_age_hours=min_age_hours, now=now, unprefixed_sessions=True
+        )
         for root in extra_temp_roots:
             items += collect_basetemps(
                 root, min_age_hours=min_age_hours, now=now, prefixes=DRIVE_ROOT_PREFIXES
@@ -1451,6 +1641,8 @@ def inventory(
         items += collect_worktrees(repo, now=now, idle_hours=idle_hours, deadline=deadline)
     if "docker" in classes:
         items += collect_docker_cache(keep_gb=docker_keep_gb)
+    if "toolcache" in classes:
+        items += collect_tool_caches()
     return items
 
 

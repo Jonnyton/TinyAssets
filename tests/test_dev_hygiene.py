@@ -167,6 +167,63 @@ def test_stale_pytest_basetemp_is_removed(tmp_path: Path) -> None:
     assert item.size_bytes >= 1024
 
 
+def make_session(root: Path, name: str, *, hours: float, children=("test_a_thing0",)) -> Path:
+    base = root / name
+    for child in children:
+        (base / child).mkdir(parents=True)
+        (base / child / "data.bin").write_bytes(b"x" * 64)
+    (base / ".tinyassets.db").write_bytes(b"db")
+    age(base, hours)
+    return base
+
+
+def test_unprefixed_pytest_session_is_removed_from_the_temp_root(tmp_path: Path) -> None:
+    """Lanes pick bare basetemp names (``orunb``, ``ct_x1``); 3.8 GB on 2026-09-28."""
+    root = tmp_path / "t"
+    root.mkdir()
+    session = make_session(root, "orunb", hours=10, children=("test_a_thing0", "test_b1"))
+    xdist = make_session(root, "ct_x1", hours=10, children=("popen-gw0", "popen-gw1"))
+    items = dh.collect_basetemps(root, min_age_hours=6, now=NOW, unprefixed_sessions=True)
+    for path in (session, xdist):
+        item = by_path(items, path)
+        assert (item.verdict, item.reason) == ("REMOVE", "stale_pytest_basetemp"), path
+
+
+def test_unprefixed_dir_needs_every_child_to_be_a_session_child(tmp_path: Path) -> None:
+    """No name hint, so one plain sibling makes it not a candidate at all."""
+    root = tmp_path / "t"
+    root.mkdir()
+    chapter = make_session(root, "novel", hours=500, children=("test_a0", "chapter1"))
+    notes = make_session(root, "research", hours=500)
+    (notes / "manuscript.md").write_text("unique\n", encoding="utf-8")
+    age(notes, 500)
+    empty = root / "emptyish"
+    empty.mkdir()
+    (empty / ".tinyassets.db").write_bytes(b"db")
+    age(empty, 500)
+    items = dh.collect_basetemps(root, min_age_hours=6, now=NOW, unprefixed_sessions=True)
+    listed = {str(Path(i.path).resolve()).lower() for i in items}
+    for path in (chapter, notes, empty):
+        assert str(path.resolve()).lower() not in listed, path
+
+
+def test_unprefixed_sessions_are_off_unless_asked(tmp_path: Path) -> None:
+    """A drive root never admits unprefixed names."""
+    root = tmp_path / "t"
+    root.mkdir()
+    make_session(root, "orunb", hours=10)
+    assert dh.collect_basetemps(root, min_age_hours=6, now=NOW, prefixes=("ta-",)) == []
+
+
+def test_recent_unprefixed_session_is_kept(tmp_path: Path) -> None:
+    root = tmp_path / "t"
+    root.mkdir()
+    live = make_session(root, "orlive", hours=1)
+    items = dh.collect_basetemps(root, min_age_hours=6, now=NOW, unprefixed_sessions=True)
+    item = by_path(items, live)
+    assert (item.verdict, item.reason) == ("KEEP", "in_use_or_recent")
+
+
 def test_recent_basetemp_is_kept(tmp_path: Path) -> None:
     """A basetemp a live pytest session may still own is never removed."""
     root = tmp_path / "t"
@@ -807,12 +864,59 @@ def test_a_write_deep_in_the_tree_counts_as_activity(repo: Path) -> None:
     assert item.reason == "recently_active"
 
 
-def test_detached_head_worktree_is_kept(repo: Path) -> None:
+def test_detached_head_on_no_remote_is_kept(repo: Path) -> None:
+    """A detached commit that exists only here is unique work."""
     lane = add_lane(repo, "landed", merged=True)
     git(lane, "checkout", "-q", "--detach")
+    (lane / "local.txt").write_text("only here\n", encoding="utf-8")
+    git(lane, "add", "-A")
+    git(lane, "commit", "-q", "-m", "local only")
     item = by_path(worktree_items(repo), lane)
     assert item.verdict == "KEEP"
     assert item.reason == "detached_head"
+
+
+def test_detached_head_on_a_remote_ref_is_removable(repo: Path) -> None:
+    """Review and base-oracle checkouts: the exact commit is on origin."""
+    lane = add_lane(repo, "landed", merged=True)
+    git(lane, "checkout", "-q", "--detach")
+    item = by_path(worktree_items(repo), lane)
+    assert (item.verdict, item.reason) == ("REMOVE", "detached_on_remote")
+
+
+def test_detached_head_with_a_purpose_file_is_kept(repo: Path) -> None:
+    """wt.py archives a purpose against a branch; a detached lane has none."""
+    lane = add_lane(repo, "landed", merged=True)
+    git(lane, "checkout", "-q", "--detach")
+    (lane / "_PURPOSE.md").write_text("draft\n", encoding="utf-8")
+    item = by_path(worktree_items(repo), lane)
+    assert (item.verdict, item.reason) == ("KEEP", "detached_head")
+
+
+def test_detached_head_dirty_is_kept(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    git(lane, "checkout", "-q", "--detach")
+    (lane / "a.txt").write_text("edited\n", encoding="utf-8")
+    item = by_path(worktree_items(repo), lane)
+    assert (item.verdict, item.reason) == ("KEEP", "dirty")
+
+
+def test_apply_removes_a_detached_worktree_and_rechecks_head(repo: Path) -> None:
+    """The removal re-proves HEAD is on a remote: a commit made after inventory
+    stops it."""
+    gone = add_lane(repo, "landed", merged=True)
+    git(gone, "checkout", "-q", "--detach")
+    moved = add_lane(repo, "other", merged=True)
+    git(moved, "checkout", "-q", "--detach")
+    report = dh.Report(items=worktree_items(repo))
+    assert by_path(report.items, moved).verdict == "REMOVE"
+    (moved / "late.txt").write_text("late\n", encoding="utf-8")
+    git(moved, "add", "-A")
+    git(moved, "commit", "-q", "-m", "after inventory")
+    dh.apply_removals(report, repo, keep_gb=8.0, log_path=None)
+    assert not gone.exists(), "a clean detached checkout of a pushed commit should be gone"
+    assert moved.exists(), "a commit made after inventory must survive"
+    assert by_path(report.items, moved).reason == "remove_failed"
 
 
 def test_undecidable_git_status_keeps(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -949,6 +1053,19 @@ def test_is_disposable_ignored_matches_by_path_component() -> None:
         assert not dh.is_disposable_ignored(unique), unique
 
 
+def test_next_build_output_is_disposable_but_a_bare_out_is_not() -> None:
+    for disposable in (
+        "WebSite/site-react/.next/",
+        "WebSite/site-react/.next-build/",
+        "WebSite/site-react/out/",
+        "WebSite/site-react/out/index.html",
+        "WebSite/site-react/next-env.d.ts",
+    ):
+        assert dh.is_disposable_ignored(disposable), disposable
+    for unique in ("out/", "output/", "docs/out/", "WebSite/site-react/outline.md"):
+        assert not dh.is_disposable_ignored(unique), unique
+
+
 def test_is_disposable_ignored_classification() -> None:
     for disposable in (
         ".venv/",
@@ -980,6 +1097,74 @@ def test_is_disposable_ignored_classification() -> None:
         "notes.md",
     ):
         assert not dh.is_disposable_ignored(unique), unique
+
+
+# --------------------------------------------------------------------------- #
+# (e) package-manager caches
+# --------------------------------------------------------------------------- #
+
+
+def _fake_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seen: list[list[str]]):
+    """uv/pip/npm answer with a cache dir under tmp_path; every call is recorded."""
+    dirs = {"uv": tmp_path / "uvc", "pip": tmp_path / "pipc", "npm": tmp_path / "npmc"}
+    for name, d in dirs.items():
+        target = d / "_cacache" if name == "npm" else d
+        target.mkdir(parents=True)
+        (target / "blob").write_bytes(b"x" * 100)
+    (dirs["npm"] / "_npx").mkdir()
+    (dirs["npm"] / "_npx" / "server.js").write_bytes(b"x" * 5000)
+
+    def fake(args, **_kwargs):
+        seen.append(list(args))
+        return subprocess.CompletedProcess(args, 0, f"{dirs[Path(args[0]).name]}\n", "")
+
+    monkeypatch.setattr(dh, "run", fake)
+    return dirs
+
+
+def test_tool_caches_are_located_by_asking_the_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[str]] = []
+    dirs = _fake_tools(tmp_path, monkeypatch, seen)
+    items = dh.collect_tool_caches(which=lambda t: t)
+    assert {i.tool for i in items if i.removable} == {"uv", "pip", "npm"}
+    npm = next(i for i in items if i.tool == "npm")
+    # npm's root also holds _npx (live MCP servers); only _cacache is claimed.
+    assert Path(npm.path) == dirs["npm"] / "_cacache"
+    assert npm.size_bytes == 100
+
+
+def test_tool_cache_is_cleared_by_the_tool_never_by_rmtree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[str]] = []
+    dirs = _fake_tools(tmp_path, monkeypatch, seen)
+    report = dh.Report(items=dh.collect_tool_caches(which=lambda t: t))
+    seen.clear()
+    monkeypatch.setattr(dh.shutil, "which", lambda t: t)
+    dh.apply_removals(report, tmp_path, keep_gb=8.0, log_path=None)
+    assert sorted(seen) == sorted(
+        [["uv", "cache", "clean"], ["pip", "cache", "purge"], ["npm", "cache", "clean", "--force"]]
+    )
+    assert (dirs["npm"] / "_npx" / "server.js").exists()
+    assert all(d.exists() for d in dirs.values()), "the script itself deletes nothing"
+
+
+def test_missing_tool_is_kept_and_unknown_tool_refuses() -> None:
+    items = dh.collect_tool_caches(which=lambda _t: None)
+    assert {(i.verdict, i.reason) for i in items} == {("KEEP", "tool_not_installed")}
+    item = dh.Item("toolcache", "x", 1, "REMOVE", "tool_owned_cache", tool="rm")
+    ok, detail = dh.clean_tool_cache(item, which=lambda t: t)
+    assert not ok and "unknown tool" in detail
+
+
+def test_failed_cache_dir_query_keeps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        dh, "run", lambda args, **_k: subprocess.CompletedProcess(args, 1, "", "boom")
+    )
+    items = dh.collect_tool_caches(which=lambda t: t)
+    assert {(i.verdict, i.reason) for i in items} == {("KEEP", "cache_dir_unknown")}
 
 
 # --------------------------------------------------------------------------- #
