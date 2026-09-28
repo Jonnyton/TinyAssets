@@ -146,9 +146,21 @@ def _engine_run_admit(
     return admission if want_ticket else (admission.ticket is not None)
 
 
-def _engine_refusal(prefix: str, refused_by) -> str:
-    """The refusal every engine surface returns, naming the cap that refused."""
+def _engine_refusal(prefix: str, refused_by, universe_id: str = "") -> str:
+    """The refusal every engine surface returns, naming the cap that refused.
+
+    With ``universe_id``, a cap refusal also carries the owner-visible notice
+    (``engine_admissions.usage_notice``): which cap, and when capacity returns.
+    """
     import json as _json
+
+    if universe_id and refused_by in ("write", "total", "day"):
+        notice = engine_admissions.usage_notice(universe_id)
+        if notice is not None:
+            return _json.dumps({
+                "error": f"{prefix} refused: {notice['message']}",
+                "usage_notice": notice,
+            })
 
     if refused_by == "ledger":
         # Not a quota: the admission ledger is unusable or tampered and this
@@ -812,7 +824,7 @@ def run_graph(
     # OS sandbox already bounds WHAT a code node can touch; this bounds HOW OFTEN.
     ticket, refused_by = _admission_parts(_engine_run_admit(want_ticket=True))
     if ticket is None:
-        return _engine_refusal("run_graph", refused_by)
+        return _engine_refusal("run_graph", refused_by, universe_id=_GRAPH_ID)
 
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import run_graph as _impl

@@ -3142,10 +3142,14 @@ def _charge_child_run(node: NodeDefinition, ctx: "BranchExecutionContext") -> An
         day_max=ea.RUN_DAY_LIMIT,
     )
     if admission.ticket is None:
+        notice = ea.usage_notice(universe_id) if admission.refused_by != "ledger" else None
+        when = (
+            notice["message"] if notice is not None
+            else "it frees up as older runs age out."
+        )
         raise CompilerError(
             f"Node '{node.node_id}': sub-branch run refused by this universe's "
-            f"usage limit ({admission.refused_by}); it frees up as older runs "
-            f"age out."
+            f"usage limit ({admission.refused_by}). {when}"
         )
     return admission.ticket
 

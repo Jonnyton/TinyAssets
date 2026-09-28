@@ -1039,8 +1039,13 @@ class Scheduler:
             logger.exception("scheduler: run_fn failed for schedule %s", schedule_id)
             # The claim stands: the attempt happened, and re-firing immediately
             # would spin against whatever rejected it. The refusal names the cause.
+            # A usage refusal names its cap and when capacity returns; the
+            # owner reads it verbatim, never as a bare exception type.
+            text = str(exc)
             self._record_refusal(
-                schedule_id, universe_id, f"enqueue_error:{type(exc).__name__}"
+                schedule_id, universe_id,
+                text if text.startswith("run_usage_limited")
+                else f"enqueue_error:{type(exc).__name__}",
             )
             return
         logger.info(

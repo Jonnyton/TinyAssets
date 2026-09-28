@@ -62,17 +62,21 @@ from typing import NamedTuple
 
 LEDGER_NAME = ".engine_run_admissions.db"
 # Shared by enforcement and read-only status; one source for the deployed policy.
-RUN_WRITE_LIMIT = 300
-RUN_TOTAL_LIMIT = 900
+#
+# These are cross-user FAIRNESS bounds on shared compute, not product limits
+# (plan item 6, 2026-09-28). The reference workload that must fit with room to
+# spare is a user's 10-agent squad on 2-minute heartbeats: 10 x 30 = 300 runs an
+# hour, ~7,200 a day, every one charged as a write until it settles. The old
+# hourly write cap of 300 was exactly that squad, so both hourly caps are 4x.
+RUN_WRITE_LIMIT = 1200
+RUN_TOTAL_LIMIT = 3600
 RUN_WINDOW_SECONDS = 3600
-# Runs (write and read, not engine edits) per universe per rolling day. The
-# hourly caps pace work; this one bounds a day's spend, which is what a
-# self-launching chain paced just under the hourly caps would otherwise never
-# meet (a served run_graph that launches itself). It replaces the
-# structural caps -- invoke_branch depth, automation and schedule counts,
-# cadence floors -- as the usage limit (plan item 6). Sized far above light
-# use: a heavy owner with three 5-minute agents runs ~860 a day.
-RUN_DAY_LIMIT = 2000
+# THE daily knob. Runs (write and read, not engine edits) per universe per
+# rolling 24h. The hourly caps pace work; this one bounds a day's spend, which
+# a self-launching chain paced under the hourly caps would otherwise never
+# meet. It replaced the structural caps -- invoke_branch depth, automation
+# and schedule counts, cadence floors (plan item 6). ~2.8x the squad's day.
+RUN_DAY_LIMIT = 20_000
 RUN_DAY_SECONDS = 86400
 
 
@@ -278,6 +282,71 @@ def admit_detail(
             conn.close()
     except sqlite3.Error:
         return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
+
+
+def usage_notice(
+    universe_id: str,
+    *,
+    db: Path | None = None,
+    now: float | None = None,
+) -> dict[str, object] | None:
+    """What an owner is told when a cap is reached, or None if none is.
+
+    Names the cap, its size and window, and WHEN capacity returns: the moment
+    enough of the counted rows age out of the window for one more run. Read-
+    only; computed from the same rows and caps admission uses, so a refusal is
+    never silent and never a guess.
+    """
+    db = db or ledger_path()
+    if not db.is_file():
+        return None
+    moment = time.time() if now is None else now
+    hour_from = moment - RUN_WINDOW_SECONDS
+    day_from = moment - RUN_DAY_SECONDS
+    checks = (
+        ("writes_per_hour", RUN_WRITE_LIMIT, RUN_WINDOW_SECONDS,
+         "ts >= ? AND kind = ?", (hour_from, KIND_WRITE)),
+        ("runs_and_edits_per_hour", RUN_TOTAL_LIMIT, RUN_WINDOW_SECONDS,
+         "ts >= ?", (hour_from,)),
+        ("runs_per_day", RUN_DAY_LIMIT, RUN_DAY_SECONDS,
+         "ts >= ? AND kind IN (?, ?)", (day_from, KIND_WRITE, KIND_READ)),
+    )
+    try:
+        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=10)
+        try:
+            for name, cap, window, where, params in checks:
+                stamps = [
+                    float(row[0]) for row in conn.execute(
+                        f"SELECT ts FROM admissions WHERE universe_id = ? AND {where} "
+                        "ORDER BY ts ASC",
+                        (universe_id, *params),
+                    )
+                ]
+                if len(stamps) < cap:
+                    continue
+                returns = stamps[len(stamps) - cap] + window
+                from datetime import datetime, timezone
+
+                at = datetime.fromtimestamp(returns, timezone.utc).replace(
+                    microsecond=0
+                ).isoformat()
+                return {
+                    "limit": name,
+                    "cap": cap,
+                    "window_seconds": window,
+                    "capacity_returns_at": at,
+                    "message": (
+                        f"This universe reached its usage limit of {cap} "
+                        f"{name.replace('_', ' ')}. It is shared-compute "
+                        f"fairness, not a limit on what you build; capacity "
+                        f"returns at {at}."
+                    ),
+                }
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return None
 
 
 def admit(

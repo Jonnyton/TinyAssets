@@ -14,6 +14,14 @@ blocking invoke by definition. Invokes that run on the shared sub-branch pool
 (async, or by version) SHALL nest no deeper than that pool has threads. The
 ledger SHALL keep a day of rows whichever caller admits.
 
+#### Scenario: A 10-agent squad on 2-minute heartbeats runs all day
+- **WHEN** ten automations fire every two minutes for 24 hours in one universe
+- **THEN** none of the ~7,200 runs is refused by any cap
+
+#### Scenario: A refusal tells the owner when capacity returns
+- **WHEN** a run, schedule fire, automation or sub-branch run is refused by a cap
+- **THEN** the owner can read which cap and the time capacity returns
+
 #### Scenario: A chain paced under the hourly caps meets the day's
 - **WHEN** a universe's runs are spread across hours so that no hourly cap refuses them
 - **THEN** a run is refused once the day's count reaches the limit, and one frees up a day after the oldest

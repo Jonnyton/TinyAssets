@@ -17,9 +17,15 @@ caps, ran indefinitely (concern 2026-09-28, deleted by this change).
 
 ## What Changes
 
+- **The meter is cross-user fairness, not a product limit.** Its reference
+  workload is a 10-agent squad on 2-minute heartbeats: 300 runs an hour,
+  ~7,200 a day, and that must fit with room to spare. The hourly caps rise 4x,
+  to 1200 writes and 3600 total (the old 300-write cap was exactly the
+  squad's hour).
 - **A rolling-day run meter.** Every run admission (`_engine_run_admit`, and
   therefore run_graph, automations and triggered runs) also counts the
-  universe's runs over the last 24h against `RUN_DAY_LIMIT` (2000). Write and
+  universe's runs over the last 24h against `RUN_DAY_LIMIT` (20,000, the one
+  daily knob). Write and
   read rows both count; engine edits do not. The ledger keeps a day of rows,
   indexed by universe and time. The refusal names the day limit.
 - **invoke_branch has no depth cap.** Each child run is charged to the
@@ -59,5 +65,13 @@ caps, ran indefinitely (concern 2026-09-28, deleted by this change).
   `runs.py`, `automations.py`, `api/automations.py`, `api/runs.py`,
   `api/runtime_ops.py`, `scheduler.py`, `custom_agents.py`, `agent_runtime.py`.
 - Storage: one new index on the admissions ledger. No migrations.
-- Surface: refusal reasons `usage_limited`, `run_usage_limited:<cap>`, and the
-  day refusal text. Cadences and depths that were refused are now accepted.
+- Surface: hitting a cap is an owner-visible notice, never a silent drop.
+  `engine_admissions.usage_notice` names the cap and when capacity returns. It
+  appears in a refused run_graph or schedule_branch
+  (`usage_notice`), on a rate-limited automation's projection, in a refused
+  sub-branch run's error, and verbatim on a schedule's recent reason
+  (`run_usage_limited:<cap>:until=<iso>`). Cadences and depths that were
+  refused are now accepted.
+- Known remaining caps: `MAX_LINEAGE_DEPTH` (50, a CHECK of the stored lineage
+  table), and the shared sub-branch pool (6 threads) for async and version
+  invokes, which is named in its refusal.

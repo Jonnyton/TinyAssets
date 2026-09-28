@@ -484,7 +484,7 @@ def _action_schedule_branch(kwargs: dict[str, Any]) -> str:
         )
     )
     if _ticket is None:
-        return _engine_refusal("schedule_branch", refused_by)
+        return _engine_refusal("schedule_branch", refused_by, universe_id=universe_id)
 
     base = _base_path()
     # D4 — fail loud at registration. A row stored while the tick loop is down is
