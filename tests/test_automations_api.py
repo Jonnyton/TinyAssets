@@ -656,7 +656,7 @@ def test_an_unreadable_refusal_ledger_does_not_break_the_list(
 
 
 def test_legacy_control_rows_are_listed_and_flagged(tmp_path: Path, env) -> None:
-    from tests.test_cloud_automation_api import _definition
+    from tests.cloud_automation_fixtures import _definition
     from tinyassets.storage.cloud_automation_control import (
         CloudAutomationControlStore,
     )
