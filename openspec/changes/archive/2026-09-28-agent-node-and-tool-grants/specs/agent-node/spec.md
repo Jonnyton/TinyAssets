@@ -1,10 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: An agent node runs the conversation turn as a workflow step
-A prompt node whose `tools_allowed` holds the `agent` marker (legacy spelling `universe_self`)
-SHALL run the same agent loop, persona assembly and pinned engine tools as
+A prompt node whose `tools_allowed` holds the `agent` marker SHALL run the same
+agent loop, persona assembly and pinned engine tools as
 `converse`, in foreground and background runs, with its rendered prompt as the
-turn's direction and its final answer written to its output key. A branch MAY
+turn's direction and its final answer written to its output key; `universe_self`
+is the legacy spelling of the marker. A branch MAY
 hold any number of agent nodes alongside ordinary prompt and code nodes. Only an
 agent node's own calls SHALL become agent turns. The run session SHALL resolve
 the calling node from its own admitted immutable snapshot, never from call
