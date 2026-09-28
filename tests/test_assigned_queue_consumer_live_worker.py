@@ -340,3 +340,43 @@ def test_error_reason_sanitises_paths_and_long_tokens():
     assert _error_reason("prepare_error", PermissionError()) == (
         "prepare_error:PermissionError"
     )
+
+
+def test_start_stops_every_fleet_control_with_a_recorded_reason(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Plan C1: the legacy pump is gone, so an `active` fleet control would
+    promise work nothing produces. Consumer start stops each one and records an
+    owner-visible reason -- a disposition, never a silent drop -- and a second
+    start leaves them alone."""
+    from tests.cloud_automation_fixtures import _definition
+    from tinyassets.cloud_automation_control import CloudAutomationDesiredState
+    from tinyassets.runtime.assigned_queue_consumer import (
+        RETIRED_FLEET_CONTROL_REASON,
+    )
+    from tinyassets.storage.cloud_automation_control import (
+        CloudAutomationControlStore,
+    )
+
+    definition = _definition()
+    store = CloudAutomationControlStore(tmp_path)
+    store.create_control(definition, automation_id="automation_fleet_a", cadence_seconds=300)
+    store.create_control(definition, automation_id="automation_fleet_b", cadence_seconds=600)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    monkeypatch.setattr(
+        "tinyassets.provider_serving_binding.list_serving_universes", lambda _b: [],
+    )
+    for _boot in range(2):
+        consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+        consumer.start()
+        consumer.stop()
+
+    controls = store.list_controls(universe_id=definition.universe_id, limit=10)
+    assert {c.automation_id: c.desired_state for c in controls} == {
+        "automation_fleet_a": CloudAutomationDesiredState.STOPPED,
+        "automation_fleet_b": CloudAutomationDesiredState.STOPPED,
+    }
+    for automation_id in ("automation_fleet_a", "automation_fleet_b"):
+        assert _refusal_reason(tmp_path, f"automation:{automation_id}") == (
+            RETIRED_FLEET_CONTROL_REASON
+        )
