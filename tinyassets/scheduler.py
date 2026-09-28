@@ -213,20 +213,18 @@ def min_cron_interval_seconds(expr: str) -> float:
     return min(gaps) * 60.0
 
 
-# ─── Rate limits ──────────────────────────────────────────────────────────────
+# ─── Usage, not shape ─────────────────────────────────────────────────────────
 
-MAX_SCHEDULES_PER_OWNER = 20
-MAX_SUBSCRIPTIONS_PER_OWNER = 20
-
-#: Floor on how often a schedule may fire, in seconds (5 minutes).
+#: The shortest cadence a schedule can have: the tick loop's own period
+#: (``TICK_INTERVAL_S``). A shorter one could not fire more often anyway.
 #:
-#: A scheduled run spends the OWNER's own subscription (design D7 — there is no
-#: separate background budget), so a one-second cadence is a way to drain the
-#: person who registered it. Registration refuses below the floor instead of
-#: storing a row that bills them forever. Enforced on the request surface
-#: (``_action_schedule_branch``); the library entry point stays unfloored so
-#: internal callers and tests can drive the tick loop deterministically.
-MIN_SCHEDULE_INTERVAL_S = 300.0
+#: There is no policy floor and no per-owner count (plan item 6, founder
+#: 2026-08-30 "limit USAGE, not shape"). A scheduled run spends the owner's own
+#: subscription, and every fire is charged to the universe's run admission, per
+#: hour and per day (``tinyassets.engine_admissions``), through
+#: ``enqueue_universe_branch_run``. Registration itself is charged as an engine
+#: edit (``_action_schedule_branch``).
+MIN_SCHEDULE_INTERVAL_S = 10.0
 
 #: Refusal-ledger key prefix for a schedule. The assigned-queue refusal store is
 #: keyed by an opaque task id; namespacing keeps schedule refusals from colliding
@@ -358,8 +356,8 @@ def register_schedule(
 ) -> str:
     """Register a schedule. Returns schedule_id.
 
-    One of cron_expr or interval_seconds must be set.
-    Rate-limited to MAX_SCHEDULES_PER_OWNER active schedules per owner.
+    One of cron_expr or interval_seconds must be set. Not counted per owner:
+    usage is metered where it is spent (see ``MIN_SCHEDULE_INTERVAL_S``).
 
     ``universe_id`` is the universe whose serving assignment executes the branch
     and ``owner_principal_id`` the authenticated principal that authorised it;
@@ -375,15 +373,6 @@ def register_schedule(
 
     db = _runs_db(base_path)
     with _connect(db) as conn:
-        active_count = conn.execute(
-            "SELECT COUNT(*) FROM branch_schedules WHERE owner_actor=? AND active=1",
-            (owner_actor,),
-        ).fetchone()[0]
-        if active_count >= MAX_SCHEDULES_PER_OWNER:
-            raise ValueError(
-                f"rate limit: {owner_actor!r} already has {active_count} active schedules "
-                f"(max {MAX_SCHEDULES_PER_OWNER})"
-            )
         schedule_id = str(uuid.uuid4())
         conn.execute(
             """
@@ -710,15 +699,7 @@ def register_subscription(
         )
     db = _runs_db(base_path)
     with _connect(db) as conn:
-        active_count = conn.execute(
-            "SELECT COUNT(*) FROM branch_subscriptions WHERE owner_actor=? AND active=1",
-            (owner_actor,),
-        ).fetchone()[0]
-        if active_count >= MAX_SUBSCRIPTIONS_PER_OWNER:
-            raise ValueError(
-                f"rate limit: {owner_actor!r} already has {active_count} active subscriptions "
-                f"(max {MAX_SUBSCRIPTIONS_PER_OWNER})"
-            )
+        # Not counted per owner: each fire is charged as a run (plan item 6).
         sub_id = str(uuid.uuid4())
         conn.execute(
             """
@@ -1460,8 +1441,6 @@ __all__ = [
     "SchedulerEvent",
     "SCHEDULER_SCHEMA",
     "VALID_EVENT_TYPES",
-    "MAX_SCHEDULES_PER_OWNER",
-    "MAX_SUBSCRIPTIONS_PER_OWNER",
     "MIN_SCHEDULE_INTERVAL_S",
     "REFUSAL_KEY_PREFIX",
     "emit_event",

@@ -97,9 +97,8 @@ _UNAVAILABLE_DETAIL = {
         "your own branch first, then automate the remix."
     ),
     "trigger_invalid": (
-        "Give exactly one trigger: interval_seconds of at least 300, a "
-        "cron_expr that never fires more often than every 300 seconds, or an "
-        "event_type -- not two, and not none."
+        "Give exactly one trigger: a positive interval_seconds, a valid "
+        "cron_expr, or an event_type -- not two, and not none."
     ),
     "event_type_unknown": (
         "That event is not one the engine emits, so the automation would never "
@@ -110,9 +109,9 @@ _UNAVAILABLE_DETAIL = {
         "own fields: run_completed takes branch_def_id (required), outcome and "
         "run_id; pending_request_answered takes request_id, kind and status."
     ),
-    "too_many_automations": (
-        "This universe is already at its automation limit. Delete one before "
-        "creating another."
+    "usage_limited": (
+        "This universe has reached its usage limit for engine edits in the "
+        "last hour, so nothing was stored. It frees up as older edits age out."
     ),
     "not_owner_or_admin": (
         "This automation belongs to someone else. Only its owner or an admin "

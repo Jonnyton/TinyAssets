@@ -135,6 +135,9 @@ def _engine_run_admit(
         window_s=_RUN_GRAPH_RATE_WINDOW_S,
         fail_closed=fail_closed,
         kind=kind,
+        # Every run is also metered per day (plan item 6): the usage limit
+        # that replaced depth, count and cadence caps.
+        day_max=_adm.RUN_DAY_LIMIT,
     )
     # ``want_ticket``: the caller will start a RUN and needs the admission's
     # identity to bind it (Admission.ticket = ledger row id; ADMITTED_UNRECORDED
@@ -154,6 +157,14 @@ def _engine_refusal(prefix: str, refused_by) -> str:
             "error": (
                 f"{prefix} refused: the engine admission ledger is unavailable "
                 "or not trusted, so this write is not admitted; try again shortly."
+            ),
+        })
+    if refused_by == "day":
+        return _json.dumps({
+            "error": (
+                f"{prefix} refused: this universe has started "
+                f"{engine_admissions.RUN_DAY_LIMIT} runs in the last 24 hours, its daily "
+                "usage limit. Runs resume as the oldest ones age out."
             ),
         })
     if refused_by == "total":
@@ -2332,9 +2343,10 @@ def write_graph(
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds or cron_expr. Runs never overlap:
-    interval_seconds=300 (the minimum) reruns as each run ends, at most every
-    5 min. Or give event_type instead: ``run_completed`` (event_filter
+    exactly one of interval_seconds or cron_expr. Runs never overlap: a short
+    interval_seconds reruns as each run ends. Every run counts toward the
+    universe's hourly and daily usage limits. Or give event_type instead:
+    ``run_completed`` (event_filter
     ``{"branch_def_id"}``) or ``pending_request_answered`` wakes the branch
     with ``inputs.event``.
     To control an existing trigger, first read ``read_graph target="automation"``

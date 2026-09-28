@@ -65,6 +65,15 @@ LEDGER_NAME = ".engine_run_admissions.db"
 RUN_WRITE_LIMIT = 300
 RUN_TOTAL_LIMIT = 900
 RUN_WINDOW_SECONDS = 3600
+# Runs (write and read, not engine edits) per universe per rolling day. The
+# hourly caps pace work; this one bounds a day's spend, which is what a
+# self-launching chain paced just under the hourly caps would otherwise never
+# meet (a served run_graph that launches itself). It replaces the
+# structural caps -- invoke_branch depth, automation and schedule counts,
+# cadence floors -- as the usage limit (plan item 6). Sized far above light
+# use: a heavy owner with three 5-minute agents runs ~860 a day.
+RUN_DAY_LIMIT = 2000
+RUN_DAY_SECONDS = 86400
 
 
 KIND_WRITE = "write"
@@ -82,6 +91,7 @@ READ_VERBS = frozenset({"GET", "HEAD"})
 ADMITTED_UNRECORDED = -1
 REFUSED_BY_WRITE = "write"
 REFUSED_BY_TOTAL = "total"
+REFUSED_BY_DAY = "day"
 REFUSED_BY_LEDGER = "ledger"
 # A settlement row outlives the run it belongs to by this much; pruned on
 # every settle and every admission, so a browser run that never binds leaves
@@ -155,6 +165,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS dispatch_budget_universe_ts "
         "ON dispatch_budget(universe_id, ts)"
     )
+    # A day of rows is now kept, so the per-universe counts need an index.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS admissions_universe_ts "
+        "ON admissions(universe_id, ts)"
+    )
 
 
 def _is_ticket(ticket: object) -> bool:
@@ -170,6 +185,7 @@ def admit_detail(
     fail_closed: bool = False,
     db: Path | None = None,
     kind: str = KIND_WRITE,
+    day_max: int | None = None,
 ) -> Admission:
     """Atomically admit one engine-triggered run/write under the rolling caps.
 
@@ -179,6 +195,10 @@ def admit_detail(
     once rows of any kind reach ``total_max``. ``reclassify_read`` may later
     downgrade a ``write`` row once its run proves it wrote nothing. Rows
     older than the window are pruned on each admission.
+
+    ``day_max`` additionally refuses a ``write`` (a run) once the universe's
+    runs -- write and read rows, not engine edits -- in the last
+    ``RUN_DAY_SECONDS`` have reached it. Rows are then kept for a day.
     """
     if kind not in (KIND_WRITE, KIND_ENGINE):
         raise ValueError(f"admission kind must be write or engine, not {kind!r}")
@@ -196,6 +216,8 @@ def admit_detail(
         return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
     now = time.time()
     cutoff = now - window_s
+    day_cutoff = now - RUN_DAY_SECONDS
+    keep_from = min(cutoff, day_cutoff) if day_max is not None else cutoff
     try:
         conn = sqlite3.connect(str(db), timeout=10)
         try:
@@ -218,6 +240,14 @@ def admit_detail(
                 refused_by = REFUSED_BY_WRITE
             elif int(total) >= total_max:
                 refused_by = REFUSED_BY_TOTAL
+            elif kind == KIND_WRITE and day_max is not None:
+                day_runs = conn.execute(
+                    "SELECT COUNT(*) FROM admissions WHERE universe_id = ? "
+                    "AND ts >= ? AND kind IN (?, ?)",
+                    (universe_id, day_cutoff, KIND_WRITE, KIND_READ),
+                ).fetchone()[0]
+                if int(day_runs) >= day_max:
+                    refused_by = REFUSED_BY_DAY
             if refused_by:
                 # Refused - but the migration that may have just run must
                 # stay: a rollback here would undo it and redo it on every
@@ -229,9 +259,10 @@ def admit_detail(
                 (universe_id, now, kind),
             )
             ticket = int(cur.lastrowid or 0)
-            # Rows outside the window count for nothing: prune them now, not a
-            # window later (Codex on engine rows).
-            conn.execute("DELETE FROM admissions WHERE ts < ?", (cutoff,))
+            # Rows outside every window count for nothing: prune them now,
+            # not a window later (Codex on engine rows). A day-metered call
+            # keeps a day of rows.
+            conn.execute("DELETE FROM admissions WHERE ts < ?", (keep_from,))
             conn.execute("DELETE FROM settlements WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.commit()
             return Admission(ticket if ticket > 0 else ADMITTED_UNRECORDED, None)

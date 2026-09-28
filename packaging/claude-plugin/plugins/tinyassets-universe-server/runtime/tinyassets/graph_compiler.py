@@ -1825,33 +1825,8 @@ class NodeEnqueueContext:
     origin_branch_task_id: str = ""
 
 
-class NodeEnqueueBudget:
-    """Per-run enqueue counter. Still threaded through the compiler, no longer
-    consulted: wakes are limited by per-universe usage, not per-run fan-out."""
-
-    def __init__(self) -> None:
-        self._count = 0
-        self._lock = threading.Lock()
-
-    def reserve(self, limit: int) -> tuple[bool, int]:
-        """Reserve one slot, returning ``(reserved, prior_count)``."""
-        with self._lock:
-            prior = self._count
-            if prior >= limit:
-                return False, prior
-            self._count += 1
-            return True, prior
-
-    def release(self) -> None:
-        """Return a reservation after the queue append fails."""
-        with self._lock:
-            self._count -= 1
-
-
 def _node_enqueue_branch_run(
     node: "NodeDefinition",
-    invocation_depth: int,
-    enqueue_budget: "NodeEnqueueBudget",
     kwargs: dict[str, Any],
     *,
     base_path: str | Path | None = None,
@@ -1866,10 +1841,9 @@ def _node_enqueue_branch_run(
     graph wants (a loop, a backoff, a reminder) is this plus the graph's own
     logic (founder, 2026-09-27: "really any wake behavior").
 
-    Limited by usage, not shape: the universe's pending-automation count at
-    enqueue, and its run admission when the wake fires. There is no spawn-depth,
-    fan-out or lineage cap -- a branch that re-wakes itself holds one pending
-    row. ``invocation_depth`` and ``enqueue_budget`` are accepted and unused.
+    Limited by usage, not shape: each wake is charged to the universe's
+    engine admissions when it is stored, and to its run admission when it
+    fires. There is no spawn-depth, fan-out, lineage or pending-count cap.
 
     The cross-user floor:
       * the universe is the run's trusted one, never a branch-named one;
@@ -1879,7 +1853,6 @@ def _node_enqueue_branch_run(
       * the branch must be one that owner authored.
     Returns a JSON string so the caller's standard parse step applies.
     """
-    del invocation_depth, enqueue_budget  # usage-limited, not shape-limited
     from datetime import datetime, timezone
 
     ctx = context or NodeEnqueueContext()
@@ -2063,7 +2036,6 @@ def _build_node_mcp_invoker(
     invocation_depth: int = 0,
     base_path: str | Path | None = None,
     enqueue_context: "NodeEnqueueContext | None" = None,
-    enqueue_budget: "NodeEnqueueBudget | None" = None,
     delivery_source: Any = None,
     file_source: Any = None,
     file_inputs: dict[str, Any] | None = None,
@@ -2071,7 +2043,6 @@ def _build_node_mcp_invoker(
     execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[..., dict[str, Any]]:
     allowed = set(node.tools_allowed or [])
-    shared_enqueue_budget = enqueue_budget or NodeEnqueueBudget()
 
     def _invoke_mcp_action(action_name: str, **kwargs: Any) -> dict[str, Any]:
         requested = str(action_name or "").strip()
@@ -2160,7 +2131,7 @@ def _build_node_mcp_invoker(
             raw = wiki(action=action, **kwargs)
         elif tool_name == "dispatch":
             raw = _node_enqueue_branch_run(
-                node, invocation_depth, shared_enqueue_budget, kwargs,
+                node, kwargs,
                 base_path=base_path, context=enqueue_context,
             )
         else:  # pragma: no cover - mapping owns the dispatch domains.
@@ -2208,7 +2179,6 @@ def _build_source_code_node(
     invocation_depth: int = 0,
     base_path: str | Path | None = None,
     enqueue_context: "NodeEnqueueContext | None" = None,
-    enqueue_budget: "NodeEnqueueBudget | None" = None,
     effect_chain: Any = None,
     state_schema: list[dict[str, Any]] | None = None,
     ancestors: set[str] | None = None,
@@ -2315,7 +2285,7 @@ def _build_source_code_node(
             invoke_mcp_action = _build_node_mcp_invoker(
                 node, event_sink=event_sink, invocation_depth=invocation_depth,
                 base_path=base_path, enqueue_context=enqueue_context,
-                enqueue_budget=enqueue_budget, delivery_source=delivery_source,
+                delivery_source=delivery_source,
                 file_source=file_source, file_inputs=file_inputs,
                 should_cancel=should_cancel, execution_context=execution_context,
             )
@@ -2980,11 +2950,7 @@ def _build_invoke_branch_node(
     The callable spawns a child branch run (blocking or async) and writes
     declared output_mapping fields back into the parent state.
     """
-    from tinyassets.runs import (
-        _runtime_max_invocation_depth,
-        execute_branch,
-        execute_branch_async,
-    )
+    from tinyassets.runs import execute_branch, execute_branch_async
 
     spec = node.invoke_branch_spec or {}
     child_branch_def_id: str = spec.get("branch_def_id", "")
@@ -3006,12 +2972,9 @@ def _build_invoke_branch_node(
             f"Node '{node.node_id}': invoke_branch_spec wait_mode must be "
             f"'blocking' or 'async', got '{wait_mode}'."
         )
-    _depth_cap = _runtime_max_invocation_depth()
-    if depth >= _depth_cap:
-        raise CompilerError(
-            f"Node '{node.node_id}': invoke_branch recursion depth cap "
-            f"({_depth_cap}) reached. Circular sub-branch chain?"
-        )
+    # No depth cap (plan item 6): every child run is charged to the universe's
+    # usage meter below, and a blocking child runs in this thread, so it holds
+    # no shared pool slot however deep the chain goes.
 
     _base = Path(base_path)
     _ctx = execution_context or BranchExecutionContext()
@@ -3057,16 +3020,25 @@ def _build_invoke_branch_node(
             attempt = 0
             while True:
                 attempt += 1
-                outcome = execute_branch(
-                    _base, branch=child_branch, inputs=child_inputs,
-                    actor=actor_arg,
-                    owner_user_id=_ctx.owner_user_id or None,
-                    _workspace_parent=_workspace_invocation_parent(_ctx),
-                    _enqueue_universe_id=_ctx.universe_id,
-                    provider_call=provider_call,
-                    on_node_status=on_node_status,
-                    _invocation_depth=depth + 1,
-                )
+                if _stack_nearly_exhausted():
+                    raise CompilerError(f"Node '{node.node_id}': {_STACK_EXHAUSTED}.")
+                ticket = _charge_child_run(node, _ctx)
+                try:
+                    outcome = execute_branch(
+                        _base, branch=child_branch, inputs=child_inputs,
+                        actor=actor_arg,
+                        owner_user_id=_ctx.owner_user_id or None,
+                        _workspace_parent=_workspace_invocation_parent(_ctx),
+                        _enqueue_universe_id=_ctx.universe_id,
+                        provider_call=provider_call,
+                        on_node_status=on_node_status,
+                        _invocation_depth=depth + 1,
+                    )
+                except RecursionError:
+                    raise CompilerError(
+                        f"Node '{node.node_id}': {_STACK_EXHAUSTED}."
+                    ) from None
+                _bind_child_ticket(ticket, str(outcome.run_id or ""))
                 if outcome.status == "completed":
                     try:
                         _emit_invoke_design_used(
@@ -3109,6 +3081,7 @@ def _build_invoke_branch_node(
                 # for retry-exhausted); only "default" path returns here.
                 return updates
         else:
+            ticket = _charge_child_run(node, _ctx)
             outcome = execute_branch_async(
                 _base, branch=child_branch, inputs=child_inputs,
                 actor=actor_arg,
@@ -3119,6 +3092,7 @@ def _build_invoke_branch_node(
                 on_node_status=on_node_status,
                 _invocation_depth=depth + 1,
             )
+            _bind_child_ticket(ticket, str(outcome.run_id or ""))
             # async: write the child run_id into the first output_mapping target.
             # design_used emit deferred to await_branch_run on success
             # (#56 §8 Q6 — async failures surface at the await site).
@@ -3129,6 +3103,77 @@ def _build_invoke_branch_node(
             return updates
 
     return _node_fn
+
+
+def _charge_child_run(node: NodeDefinition, ctx: "BranchExecutionContext") -> Any:
+    """Meter one sub-branch run against its universe's usage; return the ticket.
+
+    A child run is a run. It is charged to the same per-universe admission a
+    run_graph or an automation pays, per hour and per day
+    (``tinyassets.engine_admissions``). That -- not a depth cap -- is what
+    bounds a chain that invokes itself (plan item 6). A run with no universe
+    (the local single-tenant daemon) has no universe to meter. Fails closed:
+    an unreadable meter must not admit unmetered work.
+    """
+    from tinyassets import engine_admissions as ea
+
+    universe_id = (getattr(ctx, "universe_id", "") or "").strip()
+    if not universe_id:
+        return None
+    admission = ea.admit_detail(
+        universe_id,
+        write_max=ea.RUN_WRITE_LIMIT,
+        total_max=ea.RUN_TOTAL_LIMIT,
+        window_s=ea.RUN_WINDOW_SECONDS,
+        fail_closed=True,
+        day_max=ea.RUN_DAY_LIMIT,
+    )
+    if admission.ticket is None:
+        raise CompilerError(
+            f"Node '{node.node_id}': sub-branch run refused by this universe's "
+            f"usage limit ({admission.refused_by}); it frees up as older runs "
+            f"age out."
+        )
+    return admission.ticket
+
+
+def _bind_child_ticket(ticket: Any, run_id: str) -> None:
+    """Bind a child's admission to its run, so a read-only child settles off
+    the write budget like any other run."""
+    if ticket is None or not run_id:
+        return
+    from tinyassets.engine_admissions import attach_run
+
+    try:
+        attach_run(ticket, run_id)
+    except Exception:  # noqa: BLE001 - the admission is already counted
+        logger.warning("child admission bind failed run=%s", run_id, exc_info=True)
+
+
+#: Why a blocking invoke of a live definition can still fail on depth: it runs
+#: in its parent's thread, so an unbounded self-invoking chain eventually
+#: exhausts the interpreter's stack. That is a physical limit, reported by name.
+_STACK_EXHAUSTED = (
+    "the sub-branch chain is so deeply nested that it exhausted the "
+    "interpreter's stack; use wait_mode async or enqueue_branch_run to go deeper"
+)
+
+#: Refuse the next blocking child while this share of the interpreter's
+#: recursion limit is still free. A RecursionError raised deeper down is caught
+#: by whichever layer it lands in and reported as that layer's failure, so the
+#: chain must stop BEFORE the stack runs out to say why it stopped.
+_STACK_HEADROOM = 0.25
+
+
+def _stack_nearly_exhausted() -> bool:
+    import sys
+
+    depth = 0
+    frame = sys._getframe()
+    while frame is not None:
+        depth += 1
+        frame = frame.f_back
+    return depth > sys.getrecursionlimit() * (1 - _STACK_HEADROOM)
 
 
 def _build_invoke_branch_version_node(
@@ -3156,7 +3201,7 @@ def _build_invoke_branch_version_node(
     failures surface as ``None`` values in the mapping (matches existing
     invoke_branch behavior; structured propagation lands in 76b).
     """
-    from tinyassets.runs import _runtime_max_invocation_depth
+    from tinyassets.runs import _max_child_workers
 
     spec = node.invoke_branch_version_spec or {}
     child_branch_version_id: str = spec.get("branch_version_id", "")
@@ -3178,11 +3223,20 @@ def _build_invoke_branch_version_node(
             f"Node '{node.node_id}': invoke_branch_version_spec wait_mode "
             f"must be 'blocking' or 'async', got '{wait_mode}'."
         )
-    _depth_cap = _runtime_max_invocation_depth()
-    if depth >= _depth_cap:
+    # Not a shape cap: a BLOCKING version invoke runs its child on the child
+    # pool every universe shares, and waits on it while holding a thread of
+    # that pool itself (once below the root). Nested deeper than the pool has
+    # threads, the chain deadlocks every user's sub-branch runs until its
+    # timeouts cascade. That pool size -- not a policy number -- is the bound,
+    # and it is the only depth bound left (plan item 6). Async version invokes
+    # and invokes by definition have none.
+    pool_threads = _max_child_workers()
+    if wait_mode == "blocking" and depth + 1 > pool_threads:
         raise CompilerError(
-            f"Node '{node.node_id}': invoke_branch recursion depth cap "
-            f"({_depth_cap}) reached. Circular sub-branch chain?"
+            f"Node '{node.node_id}': a blocking invoke_branch_version waits on "
+            f"the shared sub-branch pool ({pool_threads} threads), so it cannot "
+            f"nest {depth + 1} deep; use wait_mode async, or invoke the branch "
+            f"by definition, which runs in this thread."
         )
 
     _base = Path(base_path)
@@ -3261,6 +3315,7 @@ def _build_invoke_branch_version_node(
                 attempt += 1
                 # Async helper handles the snapshot-load + reconstruction +
                 # SnapshotSchemaDrift + KeyError contract per Task #65b.
+                ticket = _charge_child_run(node, _ctx)
                 outcome = execute_branch_version_async(
                     _base,
                     branch_version_id=child_branch_version_id,
@@ -3273,6 +3328,7 @@ def _build_invoke_branch_version_node(
                     on_node_status=on_node_status,
                     _invocation_depth=depth + 1,
                 )
+                _bind_child_ticket(ticket, str(outcome.run_id or ""))
                 # Block until the child terminates; harvest its output dict.
                 record = poll_child_run_status(_base, outcome.run_id)
                 child_status = record.get("status", "")
@@ -3322,6 +3378,7 @@ def _build_invoke_branch_version_node(
         else:
             # Async: spawn and write child run_id; failure handling deferred
             # to the await_branch_run node per #56 §8 Q6.
+            ticket = _charge_child_run(node, _ctx)
             outcome = execute_branch_version_async(
                 _base,
                 branch_version_id=child_branch_version_id,
@@ -3334,6 +3391,7 @@ def _build_invoke_branch_version_node(
                 on_node_status=on_node_status,
                 _invocation_depth=depth + 1,
             )
+            _bind_child_ticket(ticket, str(outcome.run_id or ""))
             # design_used emit deferred to await on success (mirrors
             # invoke_branch async path).
             updates = {}
@@ -3601,7 +3659,6 @@ def _build_node(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
-    enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
     branch_def_id: str = "",
@@ -3643,7 +3700,6 @@ def _build_node(
         parent_run_id=parent_run_id,
         invocation_depth=invocation_depth,
         enqueue_context=enqueue_context,
-        enqueue_budget=enqueue_budget,
         universe_context=universe_context,
         execution_context=execution_context,
         branch_def_id=branch_def_id,
@@ -3696,7 +3752,6 @@ def _build_node_inner(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
-    enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
     branch_def_id: str = "",
@@ -3734,7 +3789,6 @@ def _build_node_inner(
             node, event_sink=event_sink, concurrency_tracker=concurrency_tracker,
             invocation_depth=invocation_depth,
             base_path=base_path, enqueue_context=enqueue_context,
-            enqueue_budget=enqueue_budget,
             effect_chain=effect_chain, state_schema=state_schema,
             ancestors=ancestors, execution_context=execution_context,
             delivery_source=delivery_source,
@@ -4003,10 +4057,6 @@ def compile_branch(
     concurrency_tracker: ConcurrencyTracker | None = (
         ConcurrencyTracker(effective_budget) if effective_budget is not None else None
     )
-    # Production compiles once per run. Every source-node invoker built below
-    # shares this lock-protected successful-enqueue budget.
-    enqueue_budget = NodeEnqueueBudget()
-
     node_by_id: dict[str, NodeDefinition] = {
         n.node_id: n for n in branch.node_defs
     }
@@ -4069,7 +4119,6 @@ def compile_branch(
             parent_run_id=parent_run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
-            enqueue_budget=enqueue_budget,
             universe_context=universe_context,
             execution_context=execution_context,
             branch_def_id=branch.branch_def_id,

@@ -418,6 +418,8 @@ def test_a_wake_admits_fail_closed_and_a_cadence_does_not(
     asked: list[bool] = []
 
     def admit(**kwargs):
+        if kwargs.get("kind") == "engine":
+            return True  # storing the wake is metered too; admit it here
         asked.append(kwargs.get("fail_closed", False))
         return False
 
@@ -473,7 +475,9 @@ def test_a_cadence_does_not_count_its_attempt_history(home: Path) -> None:
 def test_retries_that_never_reach_a_run_are_bounded(home: Path, monkeypatch) -> None:
     import tinyassets.engine_mcp_server as engine
 
-    monkeypatch.setattr(engine, "_engine_run_admit", lambda **_k: False)
+    # Runs are refused; storing the wake (an engine edit) is admitted.
+    monkeypatch.setattr(engine, "_engine_run_admit",
+                        lambda **k: k.get("kind") == "engine")
     monkeypatch.setattr(automations_module, "_execute", _Graph())
     _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
     [wake] = _wakes(home)
@@ -494,28 +498,30 @@ def test_retries_that_never_reach_a_run_are_bounded(home: Path, monkeypatch) -> 
     assert spent.retired_at and spent.pause_reason == "gave_up"
 
 
-def test_pending_wakes_are_limited_by_usage_and_free_up_as_they_fire(
+def test_wakes_are_limited_by_the_universes_usage_meter(
     home: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(automations_module, "MAX_ACTIVE_PER_UNIVERSE", 2)
-    monkeypatch.setattr(automations_module, "_execute", _Graph())
+    """Plan item 6: no pending-count ceiling. Storing a wake is an engine edit
+    charged to the universe's admission window (here shrunk to 2)."""
+    import tinyassets.engine_mcp_server as ems
+
+    monkeypatch.setattr(ems, "_RUN_GRAPH_TOTAL_MAX", 2)
     _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
     _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}, delay_seconds=3600")
     with pytest.raises(CompilerError) as refused:
         _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
-    assert "too_many_automations" in str(refused.value)
-
-    _poll(home)  # the due one fires and retires, freeing its slot
-    _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
+    assert "usage_limited" in str(refused.value)
     assert len(_wakes(home)) == 2
 
 
-def test_the_pending_count_is_checked_atomically_with_the_insert(
+def test_the_usage_meter_is_charged_atomically(
     home: Path, monkeypatch
 ) -> None:
     import threading
 
-    monkeypatch.setattr(automations_module, "MAX_ACTIVE_PER_UNIVERSE", 3)
+    import tinyassets.engine_mcp_server as ems
+
+    monkeypatch.setattr(ems, "_RUN_GRAPH_TOTAL_MAX", 3)
     # An existing database, as in production: eight first-ever connections race
     # the WAL switch itself, which is not the property under test.
     AutomationStore(home)._connect(create=True).close()
@@ -542,7 +548,7 @@ def test_the_pending_count_is_checked_atomically_with_the_insert(
         thread.start()
     for thread in threads:
         thread.join()
-    assert sorted(outcomes) == ["ok"] * 3 + ["too_many_automations"] * 5
+    assert sorted(outcomes) == ["ok"] * 3 + ["usage_limited"] * 5
     assert len(_wakes(home)) == 3
 
 
