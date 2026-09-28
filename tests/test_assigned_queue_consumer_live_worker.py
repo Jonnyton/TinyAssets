@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.cloud_automation_fixtures import _seed_setup_authority
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_background_budget_finalization_e2e import (
     _seed_claimable_background_path,
     _seed_serving_assignment,
 )
-from tests.test_cloud_automation_api import _seed_setup_authority
 from tinyassets.api.universe import (
     _classify_epoch2_workers,
     _epoch2_operational_snapshot,
