@@ -87,6 +87,13 @@ _CLASS_WORDS = {
         "the connected model replied in a format this universe could not read; "
         "try again, or choose another model"
     ),
+    "provider_refused": (
+        "your model provider refused to serve this model to this universe, "
+        "before it produced anything; that is an access decision on the "
+        "provider's side, not a reply we failed to read. Its own words are below. "
+        "Choose another model, or check that model's access and privacy settings "
+        "in your account with that provider"
+    ),
     "context_window_exceeded": (
         "the conversation plus what its tools read back grew larger than the "
         "selected model's context window, so the request was refused before it "
@@ -118,6 +125,7 @@ STAGE_OF_CLASS = {
     "provider_idle_timeout": "model_reply",
     "interactive_deadline": "model_reply",
     "provider_protocol_error": "model_reply",
+    "provider_refused": "model_request",
     "platform_fault": "platform",
 }
 
