@@ -224,9 +224,13 @@ class _ForegroundRunProviderSession:
         # Retained so a SIBLING run inherits the SAME captured policy version
         # rather than re-reading the store mid-run. See `constructor_inputs`.
         self._model_preference_data = model_preference_data
-        # Set on a SIBLING session (async sub-branch): its parent already
-        # refreshed for this run, and a renewal now would move the assignment
-        # the parent's retained receipt names.
+        # Once per session. A sibling (async sub-branch) session refreshes for
+        # itself: it may run before its parent has made any call, and a flag
+        # copied from the parent launched the child on a stale sign-in (Codex
+        # round 2 on #4082). A later session's refresh is a no-op while the
+        # document is fresh; a renewal that does land between sessions is the
+        # cross-run case in docs/concerns/2026-09-28-a-renewal-voids-other-
+        # running-receipts.md.
         self._sign_ins_refreshed = False
 
     def _capture_choices(self) -> None:
@@ -1452,7 +1456,6 @@ def prepare_foreground_run_provider(
     bound = session.bound_run_id
     if bound and bound != run_id.strip():
         child = _ForegroundRunProviderSession(**session.constructor_inputs())
-        child._sign_ins_refreshed = True
         child.prepare(
             run_id=run_id,
             branch=branch,

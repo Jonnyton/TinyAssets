@@ -262,11 +262,15 @@ def test_another_users_public_branch_never_refreshes_the_requesters_sign_in(
     assert _stored_refresh_token(tmp_path) == "r-1"
 
 
-def test_an_async_sub_branch_session_does_not_refresh_under_its_parent(
+def test_an_async_sub_branch_that_runs_first_refreshes_for_itself(
     tmp_path, monkeypatch, authenticate_request,
 ):
-    """A sibling session's renewal would move the assignment its parent's
-    retained receipt names; the parent already refreshed for this run."""
+    """A child session may launch before its parent has made any provider call.
+
+    A flag copied from the parent (which had refreshed nothing yet) launched the
+    child on the stale sign-in (Codex round 2 on #4082). The child is minted by
+    the real sibling path from a parent session that has not been admitted.
+    """
     from tinyassets.daemon_server import save_branch_definition
     from tinyassets.foreground_run_provider import (
         _session_from_provider_call,
@@ -281,12 +285,17 @@ def test_an_async_sub_branch_session_does_not_refresh_under_its_parent(
         _redeposit_stale(base_path)
 
     monkeypatch.setattr(foreground, "_seed_serving_assignment", seed_then_age)
-    _rotating_spend(monkeypatch)
+    spent = _rotating_spend(monkeypatch)
     calls = _counting_refresh(monkeypatch)
     _, _, captured = foreground._run_branch(
         tmp_path, monkeypatch, authenticate_request, foreground._branch(node_count=1),
     )
-    assert calls == [OWNER]
+    parent = _session_from_provider_call(captured["provider_call"])
+    # The parent as a child would find it: bound to its run, nothing refreshed.
+    parent._sign_ins_refreshed = False
+    calls.clear()
+    spent.clear()
+    _redeposit_stale(tmp_path)
 
     child_branch = foreground._branch(node_count=1)
     save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
@@ -299,5 +308,10 @@ def test_an_async_sub_branch_session_does_not_refresh_under_its_parent(
         captured["provider_call"], run_id=child_run_id, branch=child_branch,
         branch_version_id=None, allowed_statuses={"running", "queued"},
     ))
+    assert child is not parent
     child._refresh_sign_ins()
+
     assert calls == [OWNER]
+    assert spent == ["r-1"]
+    assert _stored_refresh_token(tmp_path) == "r-2"
+    assert _custody_matches_the_vault(tmp_path)
