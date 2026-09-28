@@ -747,6 +747,7 @@ def _action_list_schedules(kwargs: dict[str, Any]) -> str:
 
 
 def _action_subscribe_branch(kwargs: dict[str, Any]) -> str:
+    from tinyassets.automations import EVENT_TYPES
     from tinyassets.runs import initialize_runs_db
     from tinyassets.scheduler import VALID_EVENT_TYPES, register_subscription
 
@@ -757,9 +758,17 @@ def _action_subscribe_branch(kwargs: dict[str, Any]) -> str:
     if not event_type:
         return json.dumps({"error": "event_type is required."})
     if event_type not in VALID_EVENT_TYPES:
+        # Every type this action offered had no emitter, so its rows never
+        # fired. Engine events wake an owner's automation instead, where the
+        # owner is the signed-in caller rather than a named kwarg.
         return json.dumps({
-            "error": f"Unknown event_type '{event_type}'.",
-            "valid": sorted(VALID_EVENT_TYPES),
+            "error": "event_type_not_subscribable",
+            "detail": (
+                f"'{event_type}' cannot be subscribed here. Create an automation "
+                "with write_graph target=automation operation=create and an "
+                "event_type instead."
+            ),
+            "valid": sorted(EVENT_TYPES),
         })
     # A subscription is an authority row: the run it fires acts for its owner.
     # Defaulting to the literal string wrote one owned by nobody and later

@@ -21,7 +21,6 @@ import pytest
 
 from tinyassets.runs import initialize_runs_db
 from tinyassets.scheduler import (
-    VALID_EVENT_TYPES,
     CronParseError,
     CronSchedule,
     Scheduler,
@@ -192,7 +191,7 @@ class TestSchedulerPersistence:
 class TestEventRegistryEdgeCases:
     def test_subscribe_same_event_type_twice_creates_two_rows(self, tmp_path):
         initialize_runs_db(tmp_path)
-        event_type = next(iter(VALID_EVENT_TYPES))
+        event_type = "source:s1"
         sid1 = register_subscription(
             tmp_path,
             branch_def_id="b1",
@@ -218,7 +217,7 @@ class TestEventRegistryEdgeCases:
 
     def test_unsubscribe_other_owners_sub_raises(self, tmp_path):
         initialize_runs_db(tmp_path)
-        event_type = next(iter(VALID_EVENT_TYPES))
+        event_type = "source:s1"
         sid = register_subscription(
             tmp_path,
             branch_def_id="b1",
@@ -232,7 +231,7 @@ class TestEventRegistryEdgeCases:
 
     def test_admin_can_unsubscribe_any_owner(self, tmp_path):
         initialize_runs_db(tmp_path)
-        event_type = next(iter(VALID_EVENT_TYPES))
+        event_type = "source:s1"
         sid = register_subscription(
             tmp_path,
             branch_def_id="b1",

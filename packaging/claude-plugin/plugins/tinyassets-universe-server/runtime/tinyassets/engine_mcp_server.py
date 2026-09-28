@@ -2334,7 +2334,9 @@ def write_graph(
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
     exactly one of interval_seconds or cron_expr. Runs never overlap:
     interval_seconds=300 (the minimum) reruns as each run ends, at most every
-    5 min.
+    5 min. Or give event_type instead: ``run_completed`` (event_filter
+    ``{"branch_def_id"}``) or ``pending_request_answered`` wakes the branch
+    with ``inputs.event``.
     To control an existing trigger, first read ``read_graph target="automation"``
     (or ``target="automations"``), then pass its automation_id and current
     expected_revision. Pause stops future triggers; resume reactivates the existing

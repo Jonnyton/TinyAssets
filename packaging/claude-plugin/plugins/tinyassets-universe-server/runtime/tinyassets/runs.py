@@ -2264,6 +2264,7 @@ def update_run_status(
     params.append(run_id)
     workspace_terminal_base: Path | None = None
     owed = 0
+    completed_row: Any = None
     from tinyassets.workspace_family import status_transaction
 
     with status_transaction(base_path, run_id, status, expected=_workspace_member,
@@ -2275,6 +2276,17 @@ def update_run_status(
         )
         if prior is not None and cursor.rowcount != 1:
             raise RunExecutionAuthorityLost("Run status changed before its conditional write.")
+        if (
+            status in _TERMINAL_STATUSES
+            and prior is not None
+            and prior[0] not in _TERMINAL_STATUSES
+        ):
+            # The transition, not every terminal write: a later write that
+            # only re-persists output must not announce the run twice.
+            completed_row = conn.execute(
+                "SELECT branch_def_id, actor, queue_universe_id FROM runs "
+                "WHERE run_id = ?", (run_id,),
+            ).fetchone()
         if status in _TERMINAL_STATUSES:
             # A lease in this database is owed THROUGH the outbox in the same
             # transaction (workspace-node D0): never a direct delete.  A
@@ -2347,6 +2359,22 @@ def update_run_status(
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_terminal_base, local_owed=owed
         )
+    if completed_row is not None:
+        _emit_run_completed(base_path, run_id, status, completed_row)
+
+
+def _emit_run_completed(base_path: str | Path, run_id: str, status: str, row: Any) -> None:
+    """Wake the owner's ``run_completed`` subscriptions. Never raises."""
+    from tinyassets.automation_events import emit_run_completed
+
+    emit_run_completed(
+        base_path,
+        run_id=run_id,
+        branch_def_id=str(row["branch_def_id"] or ""),
+        outcome=str(status),
+        actor=str(row["actor"] or ""),
+        queue_universe_id=str(row["queue_universe_id"] or ""),
+    )
 
 
 def terminalize_unstarted_run(
@@ -6617,7 +6645,8 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
         conn.execute("BEGIN IMMEDIATE")
         prepared_exclusion = _prepared_run_recovery_exclusion(conn)
         candidates = conn.execute(
-            "SELECT run_id, status, queue_universe_id FROM runs WHERE status IN (?, ?) "
+            "SELECT run_id, status, queue_universe_id, branch_def_id, actor "
+            "FROM runs WHERE status IN (?, ?) "
             "AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL "
             "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion,
             (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
@@ -6627,8 +6656,10 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
         waiting = _never_started_waiters(base_path, candidates)
         in_flight = [row["run_id"] for row in candidates if row["run_id"] not in waiting]
         count = 0
+        by_id = {row["run_id"]: row for row in candidates}
+        interrupted_rows: list[Any] = []
         for run_id in in_flight:
-            count += conn.execute(
+            moved = conn.execute(
                 "UPDATE runs SET status = ?, error = ?, finished_at = ? "
                 "WHERE run_id = ? AND status IN (?, ?)",
                 (
@@ -6639,6 +6670,9 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
                     RUN_STATUS_QUEUED, RUN_STATUS_RUNNING,
                 ),
             ).rowcount
+            count += moved
+            if moved:
+                interrupted_rows.append(by_id[run_id])
         for run_id in in_flight:
             # Same-database work is atomic with the rewrite.  A separate
             # universe WAL is finished after this transaction commits.
@@ -6650,6 +6684,9 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_base, local_owed=owed
         )
+    # A deploy killed these; an owner's graph that follows them can resume.
+    for row in interrupted_rows:
+        _emit_run_completed(base_path, row["run_id"], RUN_STATUS_INTERRUPTED, row)
     for universe_base in sorted(set(waiting.values())):
         _kick_workspace_waiters(universe_base)
     if waiting:

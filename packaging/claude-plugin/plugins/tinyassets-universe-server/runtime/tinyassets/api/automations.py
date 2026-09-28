@@ -97,9 +97,18 @@ _UNAVAILABLE_DETAIL = {
         "your own branch first, then automate the remix."
     ),
     "trigger_invalid": (
-        "Give exactly one trigger: interval_seconds of at least 300, or a "
-        "cron_expr that never fires more often than every 300 seconds -- not "
-        "both, and not neither."
+        "Give exactly one trigger: interval_seconds of at least 300, a "
+        "cron_expr that never fires more often than every 300 seconds, or an "
+        "event_type -- not two, and not none."
+    ),
+    "event_type_unknown": (
+        "That event is not one the engine emits, so the automation would never "
+        "fire. Subscribe to run_completed or pending_request_answered."
+    ),
+    "event_filter_invalid": (
+        "event_filter must be an object of non-empty strings over the event's "
+        "own fields: run_completed takes branch_def_id (required), outcome and "
+        "run_id; pending_request_answered takes request_id, kind and status."
     ),
     "too_many_automations": (
         "This universe is already at its automation limit. Delete one before "
@@ -200,6 +209,9 @@ def _projection(
             "cron_expr": automation.cron_expr,
             # A one-shot wake's instant (kind "once"); '' for a cadence.
             "not_before": automation.not_before,
+            # A subscription's event and filter (kind "event").
+            "event_type": automation.event_type,
+            "event_filter": dict(automation.event_filter or {}),
         },
         "inputs": dict(automation.inputs),
         "desired_state": automation.desired_state,
@@ -314,6 +326,8 @@ def _create(
     inputs = document.get("inputs", {})
     cron_expr = document.get("cron_expr", "")
     raw_interval = document.get("interval_seconds", 0)
+    event_type = document.get("event_type", "")
+    event_filter = document.get("event_filter", {})
 
     if not isinstance(name, str) or not name.strip():
         return _payload_invalid("name must be a non-empty string")
@@ -323,6 +337,10 @@ def _create(
         return _payload_invalid("inputs must be a JSON object")
     if not isinstance(cron_expr, str):
         return _payload_invalid("cron_expr must be a string")
+    if not isinstance(event_type, str):
+        return _payload_invalid("event_type must be a string")
+    if not isinstance(event_filter, dict):
+        return _payload_invalid("event_filter must be a JSON object")
     # A bool is an int in Python; interval_seconds=true is a malformed payload,
     # not a zero-second interval.
     if isinstance(raw_interval, bool) or not isinstance(raw_interval, (int, str)):
@@ -341,6 +359,8 @@ def _create(
             branch_def_id=branch_def_id.strip(),
             interval_seconds=interval_seconds,
             cron_expr=cron_expr.strip(),
+            event_type=event_type.strip(),
+            event_filter=event_filter,
             inputs=inputs,
         )
     except AutomationUnavailable as exc:
