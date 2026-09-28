@@ -33,6 +33,13 @@ from tinyassets.storage.agent_turn_records import load_result
 _LOG = logging.getLogger(__name__)
 
 
+def _at_least(interaction, tokens):
+    """The interaction with its minimum context raised to ``tokens``, never lowered."""
+    if interaction.min_context is not None and interaction.min_context >= tokens:
+        return interaction
+    return replace(interaction, min_context=tokens)
+
+
 def turn_effects(turn):
     """What a turn's own ledger proves ran: ``(effects, stage, ref)``.
 
@@ -69,6 +76,10 @@ def turn_effects(turn):
 class AgentTurnCoordinator:
     """One in-process turn; no crash resurrection or automatic effect replay."""
 
+    #: (failed selection, boundary) of a source whose cooldown the capacity path
+    #: withheld to try a sibling on it; cooled when the turn leaves it.
+    _hot_capacity = None
+
     def __init__(self, *, adapter, router, prompt, system, universe_context, config):
         self.adapter = adapter
         self.router = router
@@ -91,7 +102,6 @@ class AgentTurnCoordinator:
         # rounds they replaced -- a turn that tried four models must not report
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
         self.free_sibling_retries = 0
-        self.refused_advances = 0
         self.spent_attempts = []
 
     def _check_scope(self):
@@ -573,12 +583,6 @@ class AgentTurnCoordinator:
         # start here either.
         return self._advance_past(exc, "auth_invalid", "account")
 
-    #: How many models one turn may step past because the source refused them.
-    #: A refusal can be the whole key's (a revoked key answers 403 for every
-    #: model), and then each step is one more refused request; three bounds that
-    #: without giving up on a free order whose first few models moved on.
-    MAX_REFUSED_ADVANCES = 3
-
     def _next_after_refusal(self, exc):
         """Advance to the owner's next model when the source refused THIS one.
 
@@ -591,13 +595,13 @@ class AgentTurnCoordinator:
         round refused, none may have acted, only candidates already in the
         owner's accepted order) with a MODEL-scoped exclusion: the refusal names
         the model, and its siblings on the same connection stay eligible.
+
+        Bounded by the owner's list, not a count: each accepted model is tried
+        at most once per turn (``visited`` plus the exclusion), so a pool with
+        several dead models in a row is walked to the end, and a key refused for
+        every model costs one request per accepted model, once.
         """
-        if self.refused_advances >= self.MAX_REFUSED_ADVANCES:
-            return False
-        if not self._advance_past(exc, "provider_refused", "model"):
-            return False
-        self.refused_advances += 1
-        return True
+        return self._advance_past(exc, "provider_refused", "model")
 
     def _next_after_overflow(self, exc):
         """Move to an accepted model whose window fits, when this one's does not.
@@ -626,14 +630,23 @@ class AgentTurnCoordinator:
         failed = self.context.model_selection
         self.visited.add(failed)
         self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
-        interaction = self.plan.interaction
-        if interaction.min_context is None or interaction.min_context < needed:
-            self.plan = replace(
-                self.plan, interaction=replace(interaction, min_context=needed),
-            )
+        # Every interaction the order reads: a per-source policy REPLACES the
+        # plan's own for that source's models, and production plans carry one
+        # per source -- raising only the plan's left them admitting a model too
+        # small (Codex, 2026-09-28).
+        self.plan = replace(
+            self.plan,
+            interaction=_at_least(self.plan.interaction, needed),
+            source_policies=tuple(
+                replace(item, interaction=_at_least(item.interaction, needed))
+                for item in self.plan.source_policies
+            ),
+        )
         candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
+            self._leave_hot_source(None)
             return False
+        self._leave_hot_source(candidate)
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
@@ -670,12 +683,31 @@ class AgentTurnCoordinator:
         self.exhaustion = self.exhaustion + (Exhaustion(scope, failed),)
         candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
+            self._leave_hot_source(None)
             return False
+        self._leave_hot_source(candidate)
         if self.execution_kind == "engine_inference":
             self.spent_attempts += list(attempts)
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
+
+    def _leave_hot_source(self, candidate):
+        """Cool the source a capacity sibling retry left hot, once the turn leaves it.
+
+        The capacity path withholds a source's cooldown only while the next try
+        is a sibling on that same source. A refusal or sign-in step that then
+        moves to ANOTHER source would otherwise leave it hot: 429 -> sibling ->
+        403 -> another source, and the capped source is asked again next turn
+        (Codex, 2026-09-28). ``None`` means the turn is ending: leave it too.
+        """
+        hot = self._hot_capacity
+        if hot is None or (
+            candidate is not None and candidate.connection_id == hot[0].connection_id
+        ):
+            return
+        self._hot_capacity = None
+        self._cool_abandoned_source(*hot)
 
     def _next_after_capacity(self, exc):
         if (
@@ -718,6 +750,11 @@ class AgentTurnCoordinator:
             # Moving to another source: this one is done for the turn, so the
             # cooldown the router withheld for it now applies.
             self._cool_abandoned_source(failed, boundary)
+            self._leave_hot_source(candidate)
+        elif self._free_source_refusal(boundary, window=False):
+            # Staying on it for a sibling: its cooldown stays withheld until the
+            # turn leaves the source by any path.
+            self._hot_capacity = (failed, boundary)
         # Only engine-inference rounds. A native round's diagnostics are paired
         # positionally with its own ``native_evidence``, and carrying them onto
         # a later exception would leave the two lists mismatched, which

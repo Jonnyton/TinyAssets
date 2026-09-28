@@ -49,7 +49,12 @@ def _order(agent, monkeypatch, models, *, contexts=None):
     from tinyassets.providers import discovery_snapshot
     from tinyassets.providers.agent_model_plan import AgentModelPlan
     from tinyassets.providers.discovery_protocols import discovery_protocol
-    from tinyassets.providers.model_policy import Catalog, ModelPolicy, ModelRef
+    from tinyassets.providers.model_policy import (
+        Catalog,
+        ModelPolicy,
+        ModelRef,
+        SourceModelPolicy,
+    )
 
     contexts = contexts or {}
     original = discovery_snapshot.read_http_discovery_document
@@ -70,16 +75,20 @@ def _order(agent, monkeypatch, models, *, contexts=None):
     monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", added)
     snapshot = integration.authority_tests.snapshot_tests._refresh(agent.served.rig)
     selected = agent.served.context.model_selection
+    interaction = replace(
+        discovery_protocol(snapshot.models.provider_scope).text_interaction, needs_tools=True,
+    )
     agent.served.context = replace(agent.served.context, agent_model_plan=AgentModelPlan(
         Catalog("owner", agent.served.context.universe_dir.name, (snapshot.models,)),
         ModelPolicy(
             generation=7, mode="explicit", saved_default=selected,
             fallbacks=tuple(ModelRef(selected.connection_id, name) for name in models),
         ),
-        replace(
-            discovery_protocol(snapshot.models.provider_scope).text_interaction, needs_tools=True,
-        ),
+        interaction,
         policy_source="saved",
+        # As production builds it (served_model_plan): one policy per source,
+        # whose interaction REPLACES the plan's for that source's models.
+        source_policies=(SourceModelPolicy(selected.connection_id, interaction),),
     ))
 
 
@@ -187,18 +196,34 @@ def test_the_live_sequence_rate_limit_then_refusal_then_an_answer(agent, monkeyp
     assert len(set(models)) == 3
 
 
-def test_refusal_steps_are_bounded_and_every_attempt_is_recorded(agent, monkeypatch):
-    """A key refused for EVERY model must not sweep the whole order."""
+def test_refusals_walk_the_whole_accepted_list_trying_each_model_once(agent, monkeypatch):
+    """Several dead free models in a row must not end the turn early.
+
+    Live 2026-09-28 the pool had three in a row (429, withdrawn, 403). The bound
+    is the owner's list: every accepted model is tried exactly once, then the
+    turn reports, with every attempt in its evidence.
+    """
     siblings = [f"lab/model-{index}:free" for index in range(6)]
     _order(agent, monkeypatch, siblings)
     agent.requested_rounds = 0
-    agent.capacity_failures.update({index: 403 for index in range(1, 10)})
+    agent.capacity_failures.update({index: 403 for index in range(1, 20)})
     with pytest.raises(AllProvidersExhaustedError) as error:
         integration.run(agent)
-    assert len(agent.wires) == 4
-    assert [a.failure_class for a in error.value.attempts] == ["provider_refused"] * 4
+    models = [wire[1]["body"]["model"] for wire in agent.wires]
+    assert len(models) == 7 and len(set(models)) == 7
+    assert set(models[1:]) == set(siblings)
+    assert [a.failure_class for a in error.value.attempts] == ["provider_refused"] * 7
     record, _ = _record(error.value)
     assert record.code == "provider_refused"
+
+
+def test_the_first_answering_model_after_many_refusals_answers(agent, monkeypatch):
+    _order(agent, monkeypatch, [f"lab/model-{index}:free" for index in range(5)])
+    agent.requested_rounds = 0
+    agent.capacity_failures.update({index: 403 for index in range(1, 6)})
+    assert integration.run(agent) == "finished exact answer"
+    assert agent.wires[-1][1]["body"]["model"] == "lab/model-4:free"
+    assert len(agent.wires) == 6
 
 
 def test_an_empty_accepted_order_stays_empty_on_a_refusal(agent, monkeypatch):
@@ -216,7 +241,6 @@ def test_a_refusal_mixed_with_capacity_is_left_to_the_capacity_path(agent, monke
     from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
 
     turn = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
-    turn.refused_advances = 0
     turn.plan = SimpleNamespace()
     turn.adapter = SimpleNamespace()
     turn.turn = SimpleNamespace(state="held_transport")
@@ -225,6 +249,66 @@ def test_a_refusal_mixed_with_capacity_is_left_to_the_capacity_path(agent, monke
         SimpleNamespace(failure_class="provider_rate_limited", side_effect_state="none"),
     ])
     assert turn._next_after_refusal(mixed) is False
+
+
+def test_a_source_left_hot_for_a_sibling_is_cooled_when_the_turn_ends_on_refusals(
+    agent, monkeypatch,
+):
+    """429 -> sibling on the same source -> 403s to the end of the list.
+
+    The capacity path withheld the source's cooldown to try a sibling; the turn
+    then left the source through the refusal path, which used to leave it hot, so
+    the next turn asked the capped source again (Codex, 2026-09-28).
+    """
+    _order(agent, monkeypatch, ["lab/refusing-a:free", "lab/refusing-b:free"])
+    agent.requested_rounds = 0
+    agent.capacity_failures.update({1: 429, 2: 403, 3: 403})
+    with pytest.raises(AllProvidersExhaustedError):
+        integration.run(agent)
+    assert len(agent.wires) == 3
+    provider = agent.served.context.model_selection.connection_id
+    assert agent.served.router._quota.cooldown_remaining(provider) > 0
+
+
+@pytest.mark.parametrize("next_source,cooled", [("source-b", True), ("source-a", False)])
+def test_a_hot_source_is_cooled_only_when_a_refusal_leaves_it(
+    next_source, cooled, monkeypatch,
+):
+    import dataclasses
+    from types import SimpleNamespace
+
+    import tinyassets.agent_turn_coordinator as module
+    from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
+    from tinyassets.providers.model_policy import ModelRef
+
+    failed = ModelRef("source-a", "capped:free")
+    refused = ModelRef("source-a", "refused:free")
+    turn = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
+    turn.plan = SimpleNamespace()
+    turn.adapter = SimpleNamespace()
+    turn.turn = SimpleNamespace(state="held_transport")
+    turn.context = SimpleNamespace(model_selection=refused)
+    turn.visited, turn.exhaustion, turn.spent_attempts = set(), (), []
+    turn.execution_kind = "engine_inference"
+    boundary = SimpleNamespace()
+    turn._hot_capacity = (failed, boundary)
+    left = []
+    turn._cool_abandoned_source = lambda *args: left.append(args)
+    turn._next_candidate = lambda: ModelRef(next_source, "next:free")
+    real_replace = dataclasses.replace
+
+    def fake_replace(obj, **changes):
+        # The coordinator's context is a frozen dataclass in production.
+        if isinstance(obj, SimpleNamespace):
+            return SimpleNamespace(**{**vars(obj), **changes})
+        return real_replace(obj, **changes)
+
+    monkeypatch.setattr(module, "replace", fake_replace)
+    exc = AllProvidersExhaustedError("x", attempts=[
+        SimpleNamespace(failure_class="provider_refused", side_effect_state="none"),
+    ])
+    assert turn._next_after_refusal(exc) is True
+    assert left == ([(failed, boundary)] if cooled else [])
 
 
 # --------------------------------------------------------------------------

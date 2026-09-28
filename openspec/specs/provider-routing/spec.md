@@ -884,7 +884,8 @@ existing conversation read paths.
   its access settings with that provider, never that a reply was unreadable
 - **AND** the connection is not cooled, and when every attempt of the round was
   such a refusal the turn moves to the next model in the owner's accepted order
-  with only the refused MODEL excluded, at most three times per turn
+  with only the refused MODEL excluded; each accepted model is tried at most
+  once per turn, until the owner's accepted list is exhausted
 
 #### Scenario: A turn too large for the selected model moves to one that fits
 
