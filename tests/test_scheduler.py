@@ -193,7 +193,7 @@ class TestRegisterSubscription:
             base_path,
             branch_def_id="b1",
             owner_actor="alice",
-            event_type="canon_change",
+            event_type="source:s1",
         )
         assert sub_id
 
@@ -212,25 +212,27 @@ class TestRegisterSubscription:
                 base_path,
                 branch_def_id=f"b{i}",
                 owner_actor="alice",
-                event_type="canon_change",
+                event_type="source:s1",
             )
         with pytest.raises(ValueError, match="rate limit"):
             register_subscription(
                 base_path,
                 branch_def_id="bX",
                 owner_actor="alice",
-                event_type="canon_change",
+                event_type="source:s1",
             )
 
-    def test_all_valid_event_types_accepted(self, base_path):
-        for i, etype in enumerate(sorted(VALID_EVENT_TYPES)):
-            sub_id = register_subscription(
-                base_path,
-                branch_def_id=f"b{i}",
-                owner_actor=f"actor{i}",
-                event_type=etype,
+    @pytest.mark.parametrize(
+        "etype", ["canon_change", "branch_run_completed", "canon_upload", "pr_open"],
+    )
+    def test_types_nothing_emits_are_refused(self, base_path, etype):
+        """A subscription to an event with no emitter would be stored and never
+        fire. Engine events are automation triggers (``automation_events``)."""
+        assert not VALID_EVENT_TYPES
+        with pytest.raises(ValueError, match="unknown event_type"):
+            register_subscription(
+                base_path, branch_def_id="b1", owner_actor="alice", event_type=etype,
             )
-            assert sub_id
 
 
 # ─── unregister_subscription ─────────────────────────────────────────────────
@@ -238,21 +240,21 @@ class TestRegisterSubscription:
 class TestUnregisterSubscription:
     def test_owner_can_unregister(self, base_path):
         sub_id = register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         result = unregister_subscription(base_path, sub_id, requesting_actor="alice")
         assert result is True
 
     def test_non_owner_rejected(self, base_path):
         sub_id = register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         with pytest.raises(PermissionError):
             unregister_subscription(base_path, sub_id, requesting_actor="bob")
 
     def test_admin_can_unregister(self, base_path):
         sub_id = register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         result = unregister_subscription(base_path, sub_id, requesting_actor="admin", admin=True)
         assert result is True
@@ -415,10 +417,10 @@ class TestSchedulerEventDispatch:
             base_path,
             branch_def_id="b1",
             owner_actor="alice",
-            event_type="canon_change",
+            event_type="source:s1",
         )
         s = self._make_scheduler(base_path, run_calls)
-        event = SchedulerEvent(event_type="canon_change", payload={"file": "world.md"})
+        event = SchedulerEvent(event_type="source:s1", payload={"file": "world.md"})
         s._dispatch_event(event)
         assert len(run_calls) == 1
         assert run_calls[0][0] == "b1"
@@ -427,20 +429,20 @@ class TestSchedulerEventDispatch:
     def test_event_does_not_fire_wrong_type(self, base_path):
         run_calls: list = []
         register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         s = self._make_scheduler(base_path, run_calls)
-        event = SchedulerEvent(event_type="pr_open", payload={})
+        event = SchedulerEvent(event_type="source:s2", payload={})
         s._dispatch_event(event)
         assert len(run_calls) == 0
 
     def test_idempotency_no_double_fire(self, base_path):
         run_calls: list = []
         register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         s = self._make_scheduler(base_path, run_calls)
-        event = SchedulerEvent(event_type="canon_change", event_id="fixed-id")
+        event = SchedulerEvent(event_type="source:s1", event_id="fixed-id")
         s._dispatch_event(event)
         s._dispatch_event(event)  # same event_id — should not double-fire
         assert len(run_calls) == 1
@@ -451,19 +453,19 @@ class TestSchedulerEventDispatch:
             base_path,
             branch_def_id="b1",
             owner_actor="alice",
-            event_type="branch_run_completed",
+            event_type="source:s3",
             filter_json={"branch_def_id": "target-branch"},
         )
         s = self._make_scheduler(base_path, run_calls)
         # Matching event
         s._dispatch_event(SchedulerEvent(
-            event_type="branch_run_completed",
+            event_type="source:s3",
             event_id="e1",
             payload={"branch_def_id": "target-branch"},
         ))
         # Non-matching event
         s._dispatch_event(SchedulerEvent(
-            event_type="branch_run_completed",
+            event_type="source:s3",
             event_id="e2",
             payload={"branch_def_id": "other-branch"},
         ))
@@ -475,12 +477,12 @@ class TestSchedulerEventDispatch:
             base_path,
             branch_def_id="b1",
             owner_actor="alice",
-            event_type="canon_change",
+            event_type="source:s1",
             inputs_mapping={"target_file": "file"},
         )
         s = self._make_scheduler(base_path, run_calls)
         s._dispatch_event(SchedulerEvent(
-            event_type="canon_change",
+            event_type="source:s1",
             payload={"file": "world.md"},
         ))
         assert run_calls[0][2] == {"target_file": "world.md"}
@@ -488,11 +490,11 @@ class TestSchedulerEventDispatch:
     def test_unregistered_subscription_not_fired(self, base_path):
         run_calls: list = []
         sub_id = register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         unregister_subscription(base_path, sub_id, requesting_actor="alice")
         s = self._make_scheduler(base_path, run_calls)
-        s._dispatch_event(SchedulerEvent(event_type="canon_change"))
+        s._dispatch_event(SchedulerEvent(event_type="source:s1"))
         assert len(run_calls) == 0
 
 

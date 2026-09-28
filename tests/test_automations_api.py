@@ -111,6 +111,8 @@ def test_owner_creates_and_lists_their_own_automation(tmp_path: Path, env) -> No
         "interval_seconds": 3600,
         "cron_expr": "",
         "not_before": "",
+        "event_type": "",
+        "event_filter": {},
     }
     assert row["inputs"] == {"topic": "spec drift"}
     assert row["desired_state"] == "active"
