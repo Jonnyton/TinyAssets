@@ -2332,9 +2332,10 @@ def write_graph(
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds or cron_expr. Runs never overlap:
+    exactly one of interval_seconds or cron_expr. Runs of one branch never overlap:
     interval_seconds=300 (the minimum) reruns as each run ends, at most every
-    5 min.
+    5 min; overlap ``skip`` drops a run due while one is going, and
+    ``cancel_previous`` stops the running one. Different branches run side by side.
     To control an existing trigger, first read ``read_graph target="automation"``
     (or ``target="automations"``), then pass its automation_id and current
     expected_revision. Pause stops future triggers; resume reactivates the existing

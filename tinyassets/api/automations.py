@@ -101,6 +101,10 @@ _UNAVAILABLE_DETAIL = {
         "cron_expr that never fires more often than every 300 seconds -- not "
         "both, and not neither."
     ),
+    "overlap_invalid": (
+        "overlap must be queue (wait for the running one, the default), skip "
+        "(drop this run) or cancel_previous (stop the running one first)."
+    ),
     "too_many_automations": (
         "This universe is already at its automation limit. Delete one before "
         "creating another."
@@ -202,6 +206,8 @@ def _projection(
             "not_before": automation.not_before,
         },
         "inputs": dict(automation.inputs),
+        # What a due run does while this agent (its branch) is still running.
+        "overlap": automation.overlap,
         "desired_state": automation.desired_state,
         "pause_reason": automation.pause_reason,
         "revision": automation.revision,
@@ -314,6 +320,7 @@ def _create(
     inputs = document.get("inputs", {})
     cron_expr = document.get("cron_expr", "")
     raw_interval = document.get("interval_seconds", 0)
+    overlap = document.get("overlap", "")
 
     if not isinstance(name, str) or not name.strip():
         return _payload_invalid("name must be a non-empty string")
@@ -323,6 +330,8 @@ def _create(
         return _payload_invalid("inputs must be a JSON object")
     if not isinstance(cron_expr, str):
         return _payload_invalid("cron_expr must be a string")
+    if not isinstance(overlap, str):
+        return _payload_invalid("overlap must be a string")
     # A bool is an int in Python; interval_seconds=true is a malformed payload,
     # not a zero-second interval.
     if isinstance(raw_interval, bool) or not isinstance(raw_interval, (int, str)):
@@ -341,6 +350,7 @@ def _create(
             branch_def_id=branch_def_id.strip(),
             interval_seconds=interval_seconds,
             cron_expr=cron_expr.strip(),
+            overlap=overlap.strip(),
             inputs=inputs,
         )
     except AutomationUnavailable as exc:
