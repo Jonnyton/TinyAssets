@@ -870,9 +870,13 @@ class TestRunReadVisibility:
         runs._action_query_runs({})
         f = captured["f"]
         assert f is not None
-        assert f({"actor": "universe:pub"}) is True
-        assert f({"actor": "universe:priv"}) is False
-        assert f({"actor": "host"}) is True
+        # Real rows always carry queue_universe_id (query_runs selects it): an
+        # owner-actor background run is gated by the universe it ran in.
+        assert f({"actor": "universe:pub", "queue_universe_id": None}) is True
+        assert f({"actor": "universe:priv", "queue_universe_id": None}) is False
+        assert f({"actor": "host", "queue_universe_id": None}) is True
+        assert f({"actor": "acct_owner", "queue_universe_id": "priv"}) is False
+        assert f({"actor": "acct_owner", "queue_universe_id": "pub"}) is True
 
     def test_get_status_of_private_universe_denied(self, universe_base):
         from tinyassets.api.status import get_status
