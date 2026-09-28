@@ -84,19 +84,19 @@ def test_auto_ship_health_summarizes_recent_open_and_regressed_attempts(tmp_path
         if idx == 8:
             kwargs = {
                 "ship_status": "opened",
-                "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/308",
+                "pr_url": "https://github.com/TinyAssets/TinyAssets/pull/308",
             }
         elif idx == 9:
             kwargs = {
                 "ship_status": "opened",
-                "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/309",
+                "pr_url": "https://github.com/TinyAssets/TinyAssets/pull/309",
                 "observation_status": "regressed",
                 "rollback_handle": "revert:commit-09",
             }
         elif idx == 10:
             kwargs = {
                 "ship_status": "merged",
-                "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/310",
+                "pr_url": "https://github.com/TinyAssets/TinyAssets/pull/310",
                 "observation_status": "regressed",
                 "rollback_handle": "revert:commit-10",
             }

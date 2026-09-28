@@ -148,7 +148,7 @@ Then bootstrap:
 
 ```bash
 ssh -i ~/.ssh/workflow_deploy root@<DROPLET_IP> \
-    'curl -fsSL https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/deploy/hetzner-bootstrap.sh | sudo bash'
+    'curl -fsSL https://raw.githubusercontent.com/TinyAssets/TinyAssets/main/deploy/hetzner-bootstrap.sh | sudo bash'
 # Expected trailing line: "[bootstrap] bootstrap complete."
 ```
 
@@ -161,7 +161,7 @@ Once all MUST items arrive I compose `/etc/tinyassets/env`:
 ```bash
 ssh -i ~/.ssh/workflow_deploy root@<DROPLET_IP> \
     'sudo tee /etc/tinyassets/env > /dev/null' <<'EOF'
-TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon:latest
+TINYASSETS_IMAGE=ghcr.io/tinyassets/tinyassets-daemon:latest
 CLOUDFLARE_TUNNEL_TOKEN=<your paste>
 TINYASSETS_MCP_CANARY_URL=https://tinyassets.io/mcp
 SUPABASE_DB_URL=<your paste>

@@ -1803,79 +1803,14 @@ _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
 }
 
 
-def _node_enqueue_enabled() -> bool:
-    """Fail-closed capability gate for the live in-node enqueue verb.
-
-    The first side-effecting in-node verb. Production enables it explicitly
-    after the hardening review; every other environment remains off by
-    default.
-    """
-    return os.environ.get(
-        "TINYASSETS_NODE_ENQUEUE_ENABLED", ""
-    ).strip().lower() in {"on", "1", "true", "yes"}
-
-
-def _node_enqueue_max_depth() -> int:
-    """Spawn-depth cap for queue enqueues — bounds chain LENGTH.
-
-    Default 2 (a driver at depth 0 enqueues leaf runs at depth 1; one extra
-    level of headroom), tighter than the in-graph invoke-branch cap because
-    each queue level is a full independent run. Host-tunable.
-    """
-    raw = os.environ.get("TINYASSETS_NODE_ENQUEUE_MAX_DEPTH", "").strip()
-    try:
-        val = int(raw) if raw else 2
-    except ValueError:
-        val = 2
-    return val if val >= 1 else 2
-
-
-def _node_enqueue_budget() -> int:
-    """Per-run enqueue budget — bounds branching FACTOR (default 50)."""
-    raw = os.environ.get("TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN", "").strip()
-    try:
-        val = int(raw) if raw else 50
-    except ValueError:
-        val = 50
-    return val if val > 0 else 50
-
-
-def _node_enqueue_max_queue() -> int:
-    """Global active-queue cap — bounds TOTAL queue growth (default 500).
-
-    Depth + per-run budget bound a single run's shape, but not the total pile
-    across a whole spawn tree (worst case depth*budget). This is the absolute
-    ceiling on pending+running tasks one enqueue may grow the queue to.
-    """
-    raw = os.environ.get("TINYASSETS_NODE_ENQUEUE_MAX_QUEUE", "").strip()
-    try:
-        val = int(raw) if raw else 500
-    except ValueError:
-        val = 500
-    return val if val > 0 else 500
-
-
-def _node_enqueue_max_lineage() -> int:
-    """Per-origin spawn-lineage cap — bounds one origin run's total descendants
-    across all depths (default 200). Stops a single driver chain from consuming
-    the whole global queue and starving other work.
-    """
-    raw = os.environ.get("TINYASSETS_NODE_ENQUEUE_MAX_LINEAGE", "").strip()
-    try:
-        val = int(raw) if raw else 200
-    except ValueError:
-        val = 200
-    return val if val > 0 else 200
-
-
 @dataclass(frozen=True)
 class NodeEnqueueContext:
     """Trusted, server-set execution context for the in-node enqueue verb.
 
-    Carries the *current run's* universe and spawn lineage from the dispatcher
-    down to the enqueue helper. None of it is branch-authored. ``actor`` is
-    retained for context compatibility but is not request-scoped authority;
-    epoch-1 enqueue therefore accepts public target branches only.
+    Carries the *current run's* universe from the dispatcher down to the
+    enqueue helper; none of it is branch-authored. ``actor`` and the lineage
+    fields are retained for context compatibility but are not authority: the
+    wake's owner is the principal bound for the run (``owner_run_identity``).
     """
 
     universe_id: str = ""
@@ -1885,7 +1820,8 @@ class NodeEnqueueContext:
 
 
 class NodeEnqueueBudget:
-    """One atomic successful-enqueue budget shared by a compiled run."""
+    """Per-run enqueue counter. Still threaded through the compiler, no longer
+    consulted: wakes are limited by per-universe usage, not per-run fan-out."""
 
     def __init__(self) -> None:
         self._count = 0
@@ -1915,35 +1851,32 @@ def _node_enqueue_branch_run(
     base_path: str | Path | None = None,
     context: "NodeEnqueueContext | None" = None,
 ) -> str:
-    """Append ONE paced run-request to this run's universe dispatcher queue.
+    """Wake one of the owner's branches in this universe, now or not before a time.
 
-    Not a synchronous spawn — the daemon's concurrency cap + cooldown pace
-    execution. Containment (Codex enqueue review, 2026-05-30):
-      * fail-closed capability flag (explicitly enabled by production deploy);
-      * spawn-depth cap (chain length) + per-run budget (branching factor);
-      * trusted current-universe targeting — never a branch-named universe
-        (Fix 1);
-      * global active-queue cap + per-origin spawn-lineage cap (Fix 2);
-      * target branch must exist and be public; private authority waits for a
-        request-scoped epoch-2 receipt.
+    Stores a one-shot automation (``tinyassets.automations``, kind ``once``)
+    that the automation pump fires once ``not_before`` has passed -- durable
+    across deploys, retried if its process dies before the run starts, and
+    re-checked for the owner's authority when it fires. Any wake behaviour a
+    graph wants (a loop, a backoff, a reminder) is this plus the graph's own
+    logic (founder, 2026-09-27: "really any wake behavior").
+
+    Limited by usage, not shape: the universe's pending-automation count at
+    enqueue, and its run admission when the wake fires. There is no spawn-depth,
+    fan-out or lineage cap -- a branch that re-wakes itself holds one pending
+    row. ``invocation_depth`` and ``enqueue_budget`` are accepted and unused.
+
+    The cross-user floor:
+      * the universe is the run's trusted one, never a branch-named one;
+      * the owner is the principal bound for this run -- the request actor, or
+        the owner ``owner_run_identity`` binds for a background run -- and
+        ``register_automation`` requires them to be an admin whose home this is;
+      * the branch must be one that owner authored.
     Returns a JSON string so the caller's standard parse step applies.
     """
-    ctx = context or NodeEnqueueContext()
-    if not _node_enqueue_enabled():
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: the in-node enqueue verb "
-            f"is disabled. Set TINYASSETS_NODE_ENQUEUE_ENABLED to enable."
-        )
+    del invocation_depth, enqueue_budget  # usage-limited, not shape-limited
+    from datetime import datetime, timezone
 
-    # Guard 1 — spawn-depth cap bounds chain length (self-enqueue can't recurse
-    # forever). A task at depth D enqueues children at D+1.
-    cap = _node_enqueue_max_depth()
-    next_depth = int(invocation_depth) + 1
-    if next_depth > cap:
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: spawn depth {next_depth} "
-            f"exceeds cap {cap} (TINYASSETS_NODE_ENQUEUE_MAX_DEPTH)."
-        )
+    ctx = context or NodeEnqueueContext()
 
     target = str(kwargs.get("branch_def_id", "")).strip()
     if not target:
@@ -1957,16 +1890,13 @@ def _node_enqueue_branch_run(
             f"{type(run_inputs).__name__}."
         )
 
-    # Fix 1 — universe targeting. A queue write is side-effecting, so it goes
-    # ONLY to the run's own trusted universe (set server-side from the claimed
-    # task), never a branch-named one. A caller-supplied universe_id may only
-    # echo the trusted one; anything else is refused. Absent trusted context
-    # we fail closed — in-node enqueue is for dispatched runs.
+    # Universe targeting: ONLY the run's own trusted universe (set server-side),
+    # never a branch-named one. A caller-supplied universe_id may only echo it.
     trusted_uid = str(ctx.universe_id or "").strip()
     if not trusted_uid:
         raise CompilerError(
             f"Node '{node.node_id}' enqueue refused: no trusted universe "
-            f"context. In-node enqueue is available only for dispatched runs."
+            f"context. In-node enqueue is available only for universe runs."
         )
     requested_uid = str(kwargs.get("universe_id", "")).strip()
     if requested_uid and requested_uid != trusted_uid:
@@ -1974,104 +1904,45 @@ def _node_enqueue_branch_run(
             f"Node '{node.node_id}' enqueue refused: cannot target universe "
             f"'{requested_uid}'; this run executes in '{trusted_uid}'."
         )
-    uid = trusted_uid
-
-    from tinyassets.api.helpers import _universe_dir
-    from tinyassets.branch_tasks import (
-        BranchTask,
-        QueueCapExceeded,
-        append_task_capped,
-        new_task_id,
-    )
-
-    # Target branch authority. Epoch-1 queue rows carry no request-scoped
-    # authenticated actor receipt, so process identity cannot safely authorize
-    # private targets. Public branches only until epoch-2 carries authority.
-    # Existence is validated BEFORE append so unknown IDs cannot land.
     if base_path is None:
         raise CompilerError(
             f"Node '{node.node_id}' enqueue refused: no run context available "
-            f"to validate the target branch."
+            f"to register the wake."
         )
-    from tinyassets.daemon_server import get_branch_definition
 
+    now = datetime.now(timezone.utc)
+    not_before = _enqueue_not_before(node, kwargs, now)
+
+    from tinyassets.api.permissions import current_request_actor_id
+    from tinyassets.automations import AutomationUnavailable, register_automation
+
+    owner = current_request_actor_id()
+    if not owner:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: no owner is bound to this "
+            f"run, so there is no one to run the wake as."
+        )
     try:
-        target_meta = get_branch_definition(base_path, branch_def_id=target)
-    except KeyError:
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: target branch '{target}' "
-            f"does not exist."
-        ) from None
-    visibility = str(target_meta.get("visibility", "public") or "public").strip().lower()
-    if visibility != "public":
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: target branch '{target}' "
-            f"is private; epoch-1 enqueue has no request-scoped actor "
-            f"authority and may target public branches only."
+        wake = register_automation(
+            base_path,
+            universe_id=trusted_uid,
+            owner_principal_id=owner,
+            name=f"wake:{target}"[:120],
+            branch_def_id=target,
+            not_before=not_before,
+            inputs=dict(run_inputs),
+            now=now,
         )
-
-    # Fix 2 — lineage. parent = the current run's task; origin = the root of
-    # the spawn chain (propagated, or this task when it starts a new chain).
-    # Sourced from trusted context, never inputs.
-    new_id = new_task_id()
-    parent = str(ctx.parent_branch_task_id or "").strip()
-    origin = (
-        str(ctx.origin_branch_task_id or "").strip()
-        or parent
-        or new_id
-    )
-    task = BranchTask(
-        branch_task_id=new_id,
-        branch_def_id=target,
-        universe_id=uid,
-        inputs=dict(run_inputs),
-        trigger_source="owner_queued",
-        # request_type is FORCED to "branch_run" — never from kwargs. It is not
-        # mere metadata: the dispatcher filters claims on it and the daemon
-        # treats classes like "bug_investigation" as direct-execution with
-        # special input shaping + post-run side effects. Letting a source node
-        # name it would let an enqueue_branch_run verb steer scheduler class /
-        # privileged downstream behavior (Codex round-2 review, 2026-06-03).
-        request_type="branch_run",
-        depth=next_depth,
-        parent_branch_task_id=parent,
-        origin_branch_task_id=origin,
-    )
-    # Guard 2 — one atomic successful-enqueue budget is shared across every
-    # source node in this compiled run. Reserve immediately before append and
-    # release on failure so refused writes do not consume budget.
-    budget = _node_enqueue_budget()
-    reserved, prior_count = enqueue_budget.reserve(budget)
-    if not reserved:
+    except AutomationUnavailable as exc:
         raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: this run already enqueued "
-            f"{prior_count} task(s) (budget {budget})."
-        )
-
-    # Fix 2 — global active-queue cap + per-origin lineage cap, enforced
-    # atomically under one lock (no read-then-append race).
-    try:
-        append_task_capped(
-            _universe_dir(uid),
-            task,
-            max_active=_node_enqueue_max_queue(),
-            max_lineage=_node_enqueue_max_lineage(),
-        )
-    except QueueCapExceeded as exc:
-        enqueue_budget.release()
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: {exc}."
+            f"Node '{node.node_id}' enqueue refused: {exc.reason}."
         ) from exc
-    except BaseException:
-        enqueue_budget.release()
-        raise
     return json.dumps({
         "status": "enqueued",
-        "branch_task_id": new_id,
-        "branch_def_id": target,
-        "universe_id": uid,
-        "depth": next_depth,
-        "origin_branch_task_id": origin,
+        "automation_id": wake.automation_id,
+        "branch_def_id": wake.branch_def_id,
+        "universe_id": wake.universe_id,
+        "not_before": wake.not_before,
     })
 
 
@@ -2138,6 +2009,45 @@ def _node_served_tool_call(
     except (json.JSONDecodeError, TypeError, ValueError):
         data = None
     return {"is_error": bool(getattr(result, "isError", False)), "text": text, "data": data}
+
+
+def _enqueue_not_before(
+    node: "NodeDefinition", kwargs: dict[str, Any], now: Any,
+) -> str:
+    """``not_before`` (ISO) or ``delay_seconds`` (a number), at most one."""
+    from datetime import timedelta
+
+    raw_at = kwargs.get("not_before")
+    raw_delay = kwargs.get("delay_seconds")
+    if raw_at not in (None, "") and raw_delay not in (None, ""):
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue takes not_before OR delay_seconds, "
+            f"not both."
+        )
+    if raw_delay not in (None, ""):
+        if isinstance(raw_delay, bool):
+            raise CompilerError(
+                f"Node '{node.node_id}' enqueue delay_seconds must be a number."
+            )
+        try:
+            delay = float(raw_delay)
+        except (TypeError, ValueError):
+            raise CompilerError(
+                f"Node '{node.node_id}' enqueue delay_seconds must be a number."
+            ) from None
+        if delay != delay or delay < 0:  # NaN or negative
+            raise CompilerError(
+                f"Node '{node.node_id}' enqueue delay_seconds must be >= 0."
+            )
+        try:
+            return (now + timedelta(seconds=delay)).isoformat()
+        except OverflowError:
+            raise CompilerError(
+                f"Node '{node.node_id}' enqueue delay_seconds is too large."
+            ) from None
+    if raw_at not in (None, ""):
+        return str(raw_at)
+    return now.isoformat()
 
 
 def _build_node_mcp_invoker(

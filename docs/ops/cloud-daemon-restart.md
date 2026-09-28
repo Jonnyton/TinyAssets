@@ -100,7 +100,7 @@ Key variables to check:
 | Variable | Source |
 |---|---|
 | `CLOUDFLARE_TUNNEL_TOKEN` | Cloudflare dashboard → Zero Trust → Networks → Tunnels → (tunnel) → Connectors |
-| `TINYASSETS_IMAGE` | GHCR image tag; fall back to `ghcr.io/jonnyton/tinyassets-daemon:latest` if pinned tag missing |
+| `TINYASSETS_IMAGE` | GHCR image tag; fall back to `ghcr.io/tinyassets/tinyassets-daemon:latest` if pinned tag missing |
 
 After editing, check permissions:
 ```bash

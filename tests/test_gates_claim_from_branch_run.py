@@ -391,7 +391,7 @@ def test_branch_supplied_evidence_url_used(us_env):
         output={
             "recommended_rung_claim": "draft_ready",
             "recommended_rung_claim_evidence_url":
-                "https://github.com/Jonnyton/TinyAssets/pull/970",
+                "https://github.com/TinyAssets/TinyAssets/pull/970",
             "recommended_rung_claim_evidence_note":
                 "PR #970 from branch v1.2",
         },
@@ -405,7 +405,7 @@ def test_branch_supplied_evidence_url_used(us_env):
     assert claim["goal_id"] == gid
     assert claim["branch_def_id"] == bid
     assert claim["evidence_url"] == (
-        "https://github.com/Jonnyton/TinyAssets/pull/970"
+        "https://github.com/TinyAssets/TinyAssets/pull/970"
     )
     assert claim["evidence_note"] == "PR #970 from branch v1.2"
     assert result["run_id"] == run_id
@@ -429,12 +429,12 @@ def test_caller_evidence_url_overrides_branch_supplied(us_env):
     result = _call(
         us, "gates", "claim_from_branch_run",
         run_id=run_id,
-        evidence_url="https://github.com/Jonnyton/TinyAssets/pull/970",
+        evidence_url="https://github.com/TinyAssets/TinyAssets/pull/970",
         evidence_note="caller-supplied override",
     )
     assert result["status"] == "claimed"
     assert result["claim"]["evidence_url"] == (
-        "https://github.com/Jonnyton/TinyAssets/pull/970"
+        "https://github.com/TinyAssets/TinyAssets/pull/970"
     )
     assert result["claim"]["evidence_note"] == "caller-supplied override"
 
@@ -449,7 +449,7 @@ def test_default_evidence_note_traces_back_to_run(us_env):
         output={
             "recommended_rung_claim": "draft_ready",
             "recommended_rung_claim_evidence_url":
-                "https://github.com/Jonnyton/TinyAssets/pull/970",
+                "https://github.com/TinyAssets/TinyAssets/pull/970",
         },
     )
     result = _call(
@@ -476,7 +476,7 @@ def test_happy_path_claim_lands_via_existing_gates_claim(us_env):
         output={
             "recommended_rung_claim": "review_passed",
             "recommended_rung_claim_evidence_url":
-                "https://github.com/Jonnyton/TinyAssets/pull/970",
+                "https://github.com/TinyAssets/TinyAssets/pull/970",
             "recommended_rung_claim_evidence_note":
                 "Codex round-2 approved",
         },

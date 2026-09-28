@@ -97,6 +97,14 @@ idle. A message queued behind an in-flight turn SHALL render in the order the
 agent will read it -- after that turn's reply -- and SHALL be marked as queued
 until its own turn starts.
 
+A progressing row is only activity while a process is executing it. The daemon
+SHALL NOT report as working a turn the CURRENT daemon boot is not running, and at
+startup SHALL settle every such row into the terminal state the journal already
+has for the step that died -- preserving what ran and what is merely uncertain,
+never claiming a killed turn completed. A boot owns a turn it created and has not
+finished, or one created after the boot began; ownership is process state and
+SHALL NOT be inferred from age alone.
+
 #### Scenario: A turn this page did not start
 - **WHEN** a turn is running for the universe and this page sent nothing
 - **THEN** the working indicator is shown, with how long, and that it started elsewhere
@@ -115,3 +123,16 @@ until its own turn starts.
 - **WHEN** the user answers a request and the earlier turn's reply arrives afterwards
 - **THEN** the reply renders above the queued answer, which stays marked queued
 - **AND** the queued mark is removed when that answer's own turn starts
+
+#### Scenario: A deploy recreated the daemon mid-turn
+- **WHEN** the daemon starts and a turn row is still in a progressing state that no
+  process in this boot is running
+- **THEN** it is settled to the terminal state its own last committed step implies,
+  with the uncertainty of that step preserved
+- **AND** it is not reported as working, so no indicator is painted for it
+
+#### Scenario: A turn the current boot is running, older than this boot's start
+- **WHEN** startup reconciliation runs while a turn created by this boot is still
+  progressing
+- **THEN** that turn is left untouched and continues to be reported as working
+- **AND** age alone never makes a live turn eligible for settlement

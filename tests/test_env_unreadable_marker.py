@@ -127,7 +127,7 @@ def test_entrypoint_passes_through_when_one_sentinel_set():
     """At least one sentinel non-empty -> entrypoint proceeds past the check."""
     result = _run_entrypoint_via_stdin(
         exec_replacement='echo "[harness] would-exec: $@"',
-        extra_env={"TINYASSETS_IMAGE": "ghcr.io/jonnyton/tinyassets-daemon:abc123"},
+        extra_env={"TINYASSETS_IMAGE": "ghcr.io/tinyassets/tinyassets-daemon:abc123"},
     )
     assert result.returncode == 0, (
         f"expected happy-path exit 0; got {result.returncode}. "
@@ -145,7 +145,7 @@ def test_entrypoint_fails_loud_when_required_data_file_missing(tmp_path: Path):
     result = _run_entrypoint_via_stdin(
         exec_replacement='echo "[harness] would-exec: $@"',
         extra_env={
-            "TINYASSETS_IMAGE": "ghcr.io/jonnyton/tinyassets-daemon:abc123",
+            "TINYASSETS_IMAGE": "ghcr.io/tinyassets/tinyassets-daemon:abc123",
             "TINYASSETS_PACKAGE_ROOT": str(tmp_path),
         },
     )
@@ -181,7 +181,7 @@ def test_entrypoint_data_file_probe_accepts_git_bash_windows_package_root(
     result = _run_entrypoint_via_stdin(
         exec_replacement='echo "[harness] would-exec: $@"',
         extra_env={
-            "TINYASSETS_IMAGE": "ghcr.io/jonnyton/tinyassets-daemon:abc123",
+            "TINYASSETS_IMAGE": "ghcr.io/tinyassets/tinyassets-daemon:abc123",
             "TINYASSETS_PACKAGE_ROOT": r"C:\Users\Jonathan\Projects\wf-review-108",
             "TINYASSETS_FAKE_POSIX_ROOT": _bash_readable_path(package_root),
         },

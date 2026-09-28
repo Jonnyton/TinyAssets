@@ -45,7 +45,7 @@ Review implications:
   `security@tinyassets.io`
 - Privacy: `https://tinyassets.io/legal#privacy`
 - Docs: `https://tinyassets.io/connect`, `https://tinyassets.io/proof`
-- Source: `https://github.com/Jonnyton/TinyAssets`
+- Source: `https://github.com/TinyAssets/TinyAssets`
 
 Use `/mcp-directory` for reviewed host listings unless Anthropic specifically
 asks to validate the full custom connector surface. The directory endpoint has

@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -70,6 +71,18 @@ MAX_ACTIVE_PER_UNIVERSE = 200
 
 TRIGGER_INTERVAL = "interval"
 TRIGGER_CRON = "cron"
+#: A one-shot run, due at ``not_before``. What a node's ``enqueue_branch_run``
+#: stores: "wake this branch now, or not before then" -- any wake behaviour a
+#: graph wants is built from this plus its own logic.
+TRIGGER_ONCE = "once"
+
+#: A ``once`` row whose attempt never reached a run is retried this much later
+#: per attempt made, and retires after ``MAX_ONCE_ATTEMPTS``.
+ONCE_RETRY_SECONDS = 60
+MAX_ONCE_ATTEMPTS = 5
+
+#: How far ahead a ``once`` row may be parked.
+MAX_NOT_BEFORE = timedelta(days=366)
 STATE_ACTIVE = "active"
 STATE_PAUSED = "paused"
 
@@ -102,14 +115,17 @@ LEASE_REFRESH_SECONDS = 60
 #: foreground `run_graph` budget of 20 (Codex ADAPT 2026-08-29 §7).
 MIN_CRON_GAP_SECONDS = 300
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS automations (
+#: The automations table, parameterised on its name so the CHECK rebuild in
+#: ``_rebuild_trigger_check`` creates its successor from the same text.
+_AUTOMATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS __TABLE__ (
     automation_id      TEXT PRIMARY KEY,
     universe_id        TEXT NOT NULL,
     owner_principal_id TEXT NOT NULL,
     name               TEXT NOT NULL,
     branch_def_id      TEXT NOT NULL,
-    trigger_kind       TEXT NOT NULL CHECK(trigger_kind IN ('interval','cron')),
+    trigger_kind       TEXT NOT NULL
+                       CHECK(trigger_kind IN ('interval','cron','once')),
     interval_seconds   INTEGER NOT NULL DEFAULT 0,
     cron_expr          TEXT NOT NULL DEFAULT '',
     inputs_json        TEXT NOT NULL DEFAULT '{}',
@@ -124,7 +140,9 @@ CREATE TABLE IF NOT EXISTS automations (
     last_reason        TEXT NOT NULL DEFAULT '',
     last_finished_at   TEXT NOT NULL DEFAULT ''
 );
+"""
 
+_SCHEMA = _AUTOMATIONS_TABLE.replace("__TABLE__", "automations") + """
 CREATE INDEX IF NOT EXISTS idx_automations_universe
     ON automations(universe_id, retired_at, created_at);
 
@@ -156,7 +174,74 @@ CREATE TABLE IF NOT EXISTS automation_attempts (
 #: connect so a database written by the previous build keeps working.
 _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("automations", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0"),
+    ("automations", "not_before", "TEXT NOT NULL DEFAULT ''"),
 )
+
+#: A row read with how many attempts it has had -- the ``once`` due key.
+#: Only for ``once`` rows: a recurring automation's attempt history grows
+#: forever, and counting it on every poll made the scan cost grow with it
+#: (Codex refute 2026-09-27, P2).
+_SELECT_ROWS = (
+    "SELECT automations.*, "
+    "CASE WHEN trigger_kind = 'once' THEN (SELECT COUNT(*) FROM automation_attempts a "
+    "WHERE a.automation_id = automations.automation_id) ELSE 0 END AS attempt_count, "
+    "CASE WHEN trigger_kind = 'once' THEN (SELECT MAX(claimed_at) FROM "
+    "automation_attempts a WHERE a.automation_id = automations.automation_id) "
+    "ELSE '' END AS last_claimed_at "
+    "FROM automations"
+)
+
+
+def _rebuild_trigger_check(conn: sqlite3.Connection) -> None:
+    """Widen a stored ``trigger_kind`` CHECK that predates ``once``.
+
+    SQLite cannot alter a CHECK, so a database written by an earlier build is
+    rebuilt: successor table, copy every shared column, drop, rename, re-index.
+    One ``BEGIN IMMEDIATE`` with a re-read inside it, so two processes
+    connecting at once rebuild at most once and never lose a row.
+    """
+
+    def stale() -> bool:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'automations'"
+        ).fetchone()
+        return row is not None and "'once'" not in str(row[0] or "")
+
+    if not stale():
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not stale():
+            conn.execute("ROLLBACK")
+            return
+        conn.execute("DROP TABLE IF EXISTS automations__rebuild")
+        conn.execute(_AUTOMATIONS_TABLE.replace("__TABLE__", "automations__rebuild"))
+        for table, column, decl in _MIGRATIONS:
+            if table == "automations":
+                conn.execute(
+                    f"ALTER TABLE automations__rebuild ADD COLUMN {column} {decl}"
+                )
+        old = [str(r[1]) for r in conn.execute("PRAGMA table_info(automations)")]
+        new = {
+            str(r[1])
+            for r in conn.execute("PRAGMA table_info(automations__rebuild)")
+        }
+        shared = ", ".join(column for column in old if column in new)
+        conn.execute(
+            f"INSERT INTO automations__rebuild ({shared}) "
+            f"SELECT {shared} FROM automations"
+        )
+        conn.execute("DROP TABLE automations")
+        conn.execute("ALTER TABLE automations__rebuild RENAME TO automations")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_automations_universe "
+            "ON automations(universe_id, retired_at, created_at)"
+        )
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def run_timeout_seconds() -> float:
@@ -280,6 +365,11 @@ class Automation:
     last_reason: str
     last_finished_at: str
     consecutive_failures: int = 0
+    not_before: str = ""
+    #: ``once`` rows only, read from ``automation_attempts``: how many attempts
+    #: were claimed, and when the latest was.
+    attempt_count: int = 0
+    last_claimed_at: str = ""
 
 
 # -- Time helpers -------------------------------------------------------------
@@ -310,6 +400,82 @@ def _parse(stamp: str) -> datetime | None:
     except ValueError:
         return None
     return _as_utc(parsed)
+
+
+# -- Holder liveness ----------------------------------------------------------
+
+#: Directory under the data root where every running consumer holds an OS lock
+#: on a file named for its lease holder id, for the whole process lifetime.
+LIVENESS_DIR = ".consumer_liveness"
+
+_HOLDER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def holder_liveness_path(base_path: str | Path, holder: str) -> Path | None:
+    """The lock file that proves ``holder``'s process is alive, or None.
+
+    None for a holder id that is not a plain token: such an id can never be
+    proven dead, so its lease is honoured until it expires.
+    """
+    if not _HOLDER_RE.match(holder or ""):
+        return None
+    return Path(base_path) / LIVENESS_DIR / f"{holder}.lock"
+
+
+def hold_process_liveness(base_path: str | Path, holder: str) -> Any:
+    """Take this process's liveness lock. Keep the result for the process life.
+
+    The kernel drops the lock when the process dies, however it dies -- a
+    deploy's SIGKILL included. That makes "the holder is dead" a fact another
+    process can check, rather than a guess from a refresh that stopped.
+    """
+    from tinyassets.singleton_lock import acquire_singleton_lock
+
+    path = holder_liveness_path(base_path, holder)
+    if path is None:
+        raise ValueError(f"lease holder {holder!r} is not a plain token")
+    return acquire_singleton_lock(path)
+
+
+def _probe_holder(base_path: str | Path, holder: str) -> str:
+    """``"dead"``, ``"alive"`` or ``"unknown"`` -- read-only, never deletes.
+
+    The file is the proof, and a holder can hold leases in several universes,
+    so a probe that deleted it after reclaiming ONE lease left every other
+    lease of that dead holder unprovable (Codex round 2, 2026-09-27).
+    """
+    from tinyassets.singleton_lock import _lock_fd, _unlock_fd
+
+    path = holder_liveness_path(base_path, holder)
+    if path is None or not path.is_file():
+        return "unknown"
+    try:
+        fd = os.open(str(path), os.O_RDWR)
+    except OSError:
+        return "unknown"
+    try:
+        if not _lock_fd(fd):
+            return "alive"
+        _unlock_fd(fd)
+        return "dead"
+    finally:
+        os.close(fd)
+
+
+def holder_is_provably_dead(base_path: str | Path, holder: str) -> bool:
+    """True only when ``holder``'s process is gone. Never a guess.
+
+    The holder's liveness file exists and nobody holds its lock, so the
+    process that took it has exited. A missing file (a holder from a build
+    before this, or one that never started a consumer) is NOT evidence of
+    death: its lease stands until it expires. So does any probe error.
+    """
+    return _probe_holder(base_path, holder) == "dead"
+
+
+def holder_is_provably_alive(base_path: str | Path, holder: str) -> bool:
+    """True when ``holder``'s process still holds its liveness lock."""
+    return _probe_holder(base_path, holder) == "alive"
 
 
 # -- Store --------------------------------------------------------------------
@@ -345,6 +511,13 @@ def _from_row(row: sqlite3.Row) -> Automation:
         last_reason=str(row["last_reason"] or ""),
         last_finished_at=str(row["last_finished_at"] or ""),
         consecutive_failures=int(row["consecutive_failures"] or 0),
+        not_before=str(row["not_before"] or ""),
+        attempt_count=int(
+            (row["attempt_count"] if "attempt_count" in row.keys() else 0) or 0
+        ),
+        last_claimed_at=str(
+            (row["last_claimed_at"] if "last_claimed_at" in row.keys() else "") or ""
+        ),
     )
 
 
@@ -374,6 +547,7 @@ class AutomationStore:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.executescript(_SCHEMA)
+        _rebuild_trigger_check(conn)
         for table, column, decl in _MIGRATIONS:
             existing = {
                 str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
@@ -388,7 +562,7 @@ class AutomationStore:
             return None
         try:
             row = conn.execute(
-                "SELECT * FROM automations WHERE automation_id = ?",
+                f"{_SELECT_ROWS} WHERE automation_id = ?",
                 (automation_id,),
             ).fetchone()
         finally:
@@ -404,7 +578,7 @@ class AutomationStore:
         conn = self._connect(create=False)
         if conn is None:
             return []
-        query = "SELECT * FROM automations WHERE universe_id = ?"
+        query = f"{_SELECT_ROWS} WHERE universe_id = ?"
         if not include_retired:
             query += " AND retired_at = ''"
         query += " ORDER BY created_at ASC, automation_id ASC"
@@ -436,11 +610,29 @@ class AutomationStore:
             conn.close()
         return [_from_row(row) for row in rows]
 
-    def insert(self, automation: Automation) -> Automation:
+    def insert(
+        self, automation: Automation, *, max_active: int | None = None,
+    ) -> Automation:
+        """Store a row; with ``max_active``, only under the universe's ceiling.
+
+        The count and the insert share one ``BEGIN IMMEDIATE``: a node fanning
+        out wakes from parallel branches must not all read "room for one more"
+        and all insert past the ceiling.
+        """
         conn = self._connect(create=True)
         if conn is None:  # pragma: no cover - create=True always connects
             raise RuntimeError("automation store connection is unavailable")
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            if max_active is not None:
+                (live,) = conn.execute(
+                    "SELECT COUNT(*) FROM automations "
+                    "WHERE universe_id = ? AND retired_at = ''",
+                    (automation.universe_id,),
+                ).fetchone()
+                if int(live) >= max_active:
+                    conn.execute("ROLLBACK")
+                    raise AutomationUnavailable("too_many_automations")
             conn.execute(
                 """
                 INSERT INTO automations (
@@ -448,8 +640,8 @@ class AutomationStore:
                     branch_def_id, trigger_kind, interval_seconds, cron_expr,
                     inputs_json, desired_state, pause_reason, revision,
                     created_at, updated_at, retired_at, last_due_at,
-                    last_run_id, last_reason, last_finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_run_id, last_reason, last_finished_at, not_before
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     automation.automation_id,
@@ -471,8 +663,16 @@ class AutomationStore:
                     automation.last_run_id,
                     automation.last_reason,
                     automation.last_finished_at,
+                    automation.not_before,
                 ),
             )
+            conn.execute("COMMIT")
+        except AutomationUnavailable:
+            raise
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
         finally:
             conn.close()
         return automation
@@ -597,8 +797,12 @@ class AutomationStore:
         lease is shared state, so both processes see it.
 
         An EXPIRED lease is stealable -- a process that died mid-run must not
-        wedge its universe forever. TTL is the run timeout, and the holder
-        re-stamps it while it works, so expiry means "nobody is refreshing".
+        wedge its universe forever. So is one whose holder is PROVABLY dead
+        (``holder_is_provably_dead``): a deploy kills the process mid-run, and
+        waiting out a TTL as long as the run timeout froze every automation in
+        the universe for hours. A holder merely late to refresh is not dead.
+        TTL is the run timeout, and the holder re-stamps it while it works, so
+        expiry means "nobody is refreshing".
         """
         deadline = _iso(now + timedelta(seconds=ttl_seconds))
         moment = _as_utc(now)
@@ -614,8 +818,20 @@ class AutomationStore:
                     (universe_id,),
                 ).fetchone()
                 if row is not None and str(row["holder"]) != holder:
+                    current = str(row["holder"])
                     expires = _parse(str(row["expires_at"]))
-                    if expires is not None and expires > moment:
+                    unexpired = expires is not None and expires > moment
+                    # Unexpired: yield unless the holder is proven dead.
+                    # Expired: take it unless the holder is proven ALIVE -- a
+                    # live holder that missed its refreshes may still be
+                    # calling a provider (Codex round 2, sequence 1 after TTL).
+                    if (
+                        unexpired
+                        and not holder_is_provably_dead(self.base_path, current)
+                    ) or (
+                        not unexpired
+                        and holder_is_provably_alive(self.base_path, current)
+                    ):
                         conn.execute("ROLLBACK")
                         return False
                 conn.execute(
@@ -665,6 +881,19 @@ class AutomationStore:
                 "DELETE FROM universe_leases WHERE universe_id = ? AND holder = ?",
                 (universe_id, holder),
             )
+        finally:
+            conn.close()
+
+    def lease_holders(self) -> set[str]:
+        """Every holder named by any lease row, expired or not."""
+        conn = self._connect(create=False)
+        if conn is None:
+            return set()
+        try:
+            return {
+                str(row[0])
+                for row in conn.execute("SELECT DISTINCT holder FROM universe_leases")
+            }
         finally:
             conn.close()
 
@@ -721,6 +950,23 @@ class AutomationStore:
             now=now,
             desired_state=STATE_PAUSED,
             pause_reason="retired",
+            retire=True,
+        )
+
+    def retire_for_reason(
+        self,
+        automation_id: str,
+        *,
+        reason: str,
+        now: datetime,
+    ) -> Automation:
+        """Revision-agnostic retire for the run path: a spent ``once`` row."""
+        return self._write_state(
+            automation_id,
+            expected_revision=None,
+            now=now,
+            desired_state=STATE_PAUSED,
+            pause_reason=reason,
             retire=True,
         )
 
@@ -808,6 +1054,17 @@ class AutomationStore:
 # -- Registration -------------------------------------------------------------
 
 
+def _validated_not_before(not_before: Any, now: datetime) -> str:
+    """A stored ``once`` instant: a past time means now; a far one is refused."""
+    moment = _as_utc(now)
+    parsed = _parse(str(not_before or ""))
+    if parsed is None:
+        raise AutomationUnavailable("trigger_invalid")
+    if parsed > moment + MAX_NOT_BEFORE:
+        raise AutomationUnavailable("trigger_invalid")
+    return _iso(max(parsed, moment))
+
+
 def _validated_trigger(interval_seconds: Any, cron_expr: Any) -> tuple[str, int, str]:
     from tinyassets.scheduler import CronParseError, CronSchedule
 
@@ -849,6 +1106,7 @@ def register_automation(
     branch_def_id: str,
     interval_seconds: int = 0,
     cron_expr: str = "",
+    not_before: str = "",
     inputs: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> Automation:
@@ -898,13 +1156,22 @@ def register_automation(
     # failure loop. Refuse it where the owner can read the reason.
     if str(resolved[1].get("author") or "").strip() != owner:
         raise AutomationUnavailable("branch_not_owned")
-    trigger_kind, seconds, expr = _validated_trigger(interval_seconds, cron_expr)
+    moment = _as_utc(now or datetime.now(timezone.utc))
+    if str(not_before or "").strip():
+        # A one-shot. Exactly one trigger still: a wake has no cadence.
+        if int(interval_seconds or 0) or str(cron_expr or "").strip():
+            raise AutomationUnavailable("trigger_invalid")
+        trigger_kind, seconds, expr = TRIGGER_ONCE, 0, ""
+        once_at = _validated_not_before(not_before, moment)
+    else:
+        trigger_kind, seconds, expr = _validated_trigger(interval_seconds, cron_expr)
+        once_at = ""
 
     store = AutomationStore(base)
-    if len(store.list(universe_id=uid)) >= MAX_ACTIVE_PER_UNIVERSE:
-        raise AutomationUnavailable("too_many_automations")
-
-    stamp = _iso(now or datetime.now(timezone.utc))
+    # Usage, not shape: outstanding work per universe, counted atomically with
+    # the insert. A one-shot retires once it has run, so a branch that re-wakes
+    # itself holds a single row.
+    stamp = _iso(moment)
     return store.insert(
         Automation(
             automation_id=uuid.uuid4().hex,
@@ -926,11 +1193,36 @@ def register_automation(
             last_run_id="",
             last_reason="",
             last_finished_at="",
-        )
+            not_before=once_at,
+        ),
+        max_active=MAX_ACTIVE_PER_UNIVERSE,
     )
 
 
 # -- Due selection ------------------------------------------------------------
+
+
+def _once_due(automation: Automation) -> datetime | None:
+    """``not_before``; after an attempt, one retry step past its claim.
+
+    An attempt that never reached a run -- a refused admission, or a process
+    killed before the run started -- is retried under a NEW
+    ``(automation_id, due_at)`` fence key. The key is strictly later than every
+    earlier one (each earlier key was claimed at or after it came due), and it
+    is measured from the latest CLAIM, not from ``not_before``, so a wake
+    resumed late does not find all its retries already due at once (Codex
+    refute 2026-09-27, P2). Past ``MAX_ONCE_ATTEMPTS`` it stays due so the run
+    path can retire it rather than leave it pending forever.
+    """
+    base = _parse(automation.not_before)
+    if base is None:
+        return None
+    if automation.attempt_count <= 0:
+        return base
+    last = _parse(automation.last_claimed_at)
+    if last is None:
+        return None
+    return max(base, last) + timedelta(seconds=ONCE_RETRY_SECONDS)
 
 
 def _due_instant(automation: Automation, now: datetime) -> str:
@@ -963,6 +1255,11 @@ def _due_instant(automation: Automation, now: datetime) -> str:
         if not _cron_matches(automation.cron_expr, time.localtime(moment.timestamp())):
             return ""
         return _iso(bucket)
+    if automation.trigger_kind == TRIGGER_ONCE:
+        due = _once_due(automation)
+        if due is None or due > moment:
+            return ""
+        return _iso(due)
     return ""
 
 
@@ -990,6 +1287,9 @@ def next_due_at(automation: Automation, now: datetime) -> str:
         if anchor is None or automation.interval_seconds <= 0:
             return ""
         return _iso(anchor + timedelta(seconds=automation.interval_seconds))
+    if automation.trigger_kind == TRIGGER_ONCE:
+        due = _once_due(automation)
+        return "" if due is None else _iso(due)
     if automation.trigger_kind == TRIGGER_CRON:
         from tinyassets.scheduler import CronParseError, CronSchedule
 
@@ -1205,6 +1505,7 @@ def _execute(
     """
     from dataclasses import replace as _replace
 
+    from tinyassets.api.permissions import owner_run_identity
     from tinyassets.runs import (
         RUN_STATUS_FAILED,
         execute_branch_async,
@@ -1213,16 +1514,23 @@ def _execute(
         wait_for,
     )
 
-    outcome = execute_branch_async(
-        base_path,
-        branch=branch,
-        inputs=inputs,
-        run_name=f"automation:{automation.automation_id[:8]}",
-        actor=f"universe:{automation.universe_id}",
-        provider_call=provider_call,
-        on_node_status=_authority_guard(base_path, automation),
-        _enqueue_universe_id=automation.universe_id,
-    )
+    # The run is the owner's own work on a thread no request bound. Its worker
+    # copies THIS context, so bind the owner here: its nodes read the owner's
+    # private universe as the owner, and a node that wakes another branch
+    # registers it as the owner (#4060's `owner_run_identity`).
+    with owner_run_identity(
+        base_path, automation.universe_id, automation.owner_principal_id
+    ):
+        outcome = execute_branch_async(
+            base_path,
+            branch=branch,
+            inputs=inputs,
+            run_name=f"automation:{automation.automation_id[:8]}",
+            actor=f"universe:{automation.universe_id}",
+            provider_call=provider_call,
+            on_node_status=_authority_guard(base_path, automation),
+            _enqueue_universe_id=automation.universe_id,
+        )
     run_id = str(getattr(outcome, "run_id", "") or "")
     # Publish the run id BEFORE blocking on it. Announcing it after `wait_for`
     # returned meant `stop()` could never see an active run -- the only moment
@@ -1348,6 +1656,16 @@ def run_due_automation(
     moment = _as_utc(now or datetime.now(timezone.utc))
     store = AutomationStore(base)
 
+    if (
+        automation.trigger_kind == TRIGGER_ONCE
+        and automation.attempt_count >= MAX_ONCE_ATTEMPTS
+    ):
+        # Out of attempts, however they ended -- including five processes killed
+        # before their runs started, which never reach `_retire_once`.
+        _retire_once(store, automation, ran=False, now=moment)
+        _record_refusal(base, automation, "gave_up", moment, consumer_id)
+        return "gave_up"
+
     # The claim is INSIDE the guarded region: a SQLite failure here used to
     # escape with no attempt row and no refusal, so the owner saw nothing at all.
     try:
@@ -1366,6 +1684,23 @@ def run_due_automation(
         # already owns. Rare, and previously invisible -- record it.
         _record_refusal(base, automation, "attempt_exists", moment, consumer_id)
         return "attempt_exists"
+
+    # The due scan's row is a snapshot: another process may have retired or
+    # paused it since -- a spent wake, or an owner's pause. Re-read under the
+    # claim and run only what is still active (Codex refute 2026-09-27, P1).
+    try:
+        live = store.get(automation.automation_id)
+    except Exception:  # noqa: BLE001 - unreadable is not active
+        logger.exception("automation re-read failed automation=%s",
+                         automation.automation_id)
+        live = None
+    if live is None or live.retired_at or live.desired_state != STATE_ACTIVE:
+        _close_attempt_quietly(
+            store, automation, due_at, status="skipped", reason="not_active",
+            now=moment, succeeded=None,
+        )
+        _record_refusal(base, automation, "not_active", moment, consumer_id)
+        return "not_active"
 
     try:
         blocked = _runtime_authority_reason(base, automation)
@@ -1405,6 +1740,7 @@ def run_due_automation(
             )
             _record_refusal(base, automation, reason, moment, consumer_id)
             _pause_if_hopeless(base, store, automation, str(exc), moment, consumer_id)
+            _retire_once(store, automation, ran=False, now=moment)
             return reason
 
         # The same rolling write/total admission bounds a foreground `run_graph` pays
@@ -1414,7 +1750,15 @@ def run_due_automation(
         from tinyassets.engine_mcp_server import _admission_parts, _engine_run_admit
 
         ticket, _refused_by = _admission_parts(
-            _engine_run_admit(universe_id=automation.universe_id, want_ticket=True)
+            _engine_run_admit(
+                universe_id=automation.universe_id,
+                want_ticket=True,
+                # A wake can re-wake itself, so its budget must be real: an
+                # unreadable ledger refuses rather than admitting with no
+                # count (Codex refute 2026-09-27, P1). Cadences keep their
+                # existing behaviour.
+                fail_closed=automation.trigger_kind == TRIGGER_ONCE,
+            )
         )
         if ticket is None:
             store.finish_attempt(
@@ -1426,6 +1770,7 @@ def run_due_automation(
                 now=moment,
             )
             _record_refusal(base, automation, "run_rate_limited", moment, consumer_id)
+            _retire_once(store, automation, ran=False, now=moment)
             return "run_rate_limited"
 
         branch = _load_branch(base, automation)
@@ -1439,6 +1784,11 @@ def run_due_automation(
             from tinyassets.engine_admissions import attach_run
 
             attach_run(ticket, str(run_id or ""))
+            if run_id:
+                # A wake is delivered when its run exists, not when the run
+                # returns: a process killed mid-run must not re-run the work
+                # after its lease frees (Codex refute 2026-09-27, P1).
+                _retire_once(store, automation, ran=True, now=moment)
             if callable(on_run_started):
                 on_run_started(run_id)
 
@@ -1480,6 +1830,7 @@ def run_due_automation(
                 moment,
                 consumer_id,
             )
+        _retire_once(store, automation, ran=bool(run_id), now=moment)
         return reason
     except AutomationRunTimeout as exc:
         # The fence row STAYS: this instant was attempted and must not be
@@ -1498,6 +1849,7 @@ def run_due_automation(
         )
         _record_refusal(base, automation, reason, moment, consumer_id)
         _pause_if_hopeless(base, store, automation, "", moment, consumer_id)
+        _retire_once(store, automation, ran=True, now=moment)
         return reason
     except Exception as exc:  # noqa: BLE001 - the pump continues; the row says why
         reason = _error_reason("automation_error", exc)
@@ -1511,7 +1863,38 @@ def run_due_automation(
         )
         _record_refusal(base, automation, reason, moment, consumer_id)
         _pause_if_hopeless(base, store, automation, str(exc), moment, consumer_id)
+        _retire_once(store, automation, ran=False, now=moment)
         return reason
+
+
+def _retire_once(
+    store: AutomationStore,
+    automation: Automation,
+    *,
+    ran: bool,
+    now: datetime,
+) -> None:
+    """Spend a ``once`` row: after its run started, or out of attempts.
+
+    A run that started is the wake delivered -- whatever the graph then did is
+    its own outcome, and the graph can wake itself again. An attempt that never
+    reached a run leaves the row for the next attempt key (``_once_due``).
+    """
+    if automation.trigger_kind != TRIGGER_ONCE:
+        return
+    try:
+        current = store.get(automation.automation_id)
+        if current is None or current.retired_at:
+            return
+        if not ran and current.attempt_count < MAX_ONCE_ATTEMPTS:
+            return
+        store.retire_for_reason(
+            automation.automation_id, reason="ran" if ran else "gave_up", now=now,
+        )
+    except Exception:  # noqa: BLE001 - the attempt outcome is already recorded
+        logger.exception(
+            "once automation retire failed automation=%s", automation.automation_id
+        )
 
 
 def _close_attempt_quietly(
@@ -1522,6 +1905,7 @@ def _close_attempt_quietly(
     status: str,
     reason: str,
     now: datetime,
+    succeeded: bool | None = False,
 ) -> None:
     try:
         store.finish_attempt(
@@ -1531,7 +1915,7 @@ def _close_attempt_quietly(
             status=status,
             reason=reason,
             now=now,
-            succeeded=False,
+            succeeded=succeeded,
         )
     except Exception:  # noqa: BLE001 - the refusal record is still owed
         logger.exception(
@@ -1581,10 +1965,14 @@ def _pause_if_hopeless(
 __all__ = [
     "DEFAULT_RUN_TIMEOUT_SECONDS",
     "LEASE_REFRESH_SECONDS",
+    "LIVENESS_DIR",
     "MAX_ACTIVE_PER_UNIVERSE",
     "MAX_CONSECUTIVE_FAILURES",
     "MIN_CRON_GAP_SECONDS",
+    "MAX_ONCE_ATTEMPTS",
     "MIN_INTERVAL_SECONDS",
+    "ONCE_RETRY_SECONDS",
+    "TRIGGER_ONCE",
     "REFUSAL_KEY_PREFIX",
     "Automation",
     "AutomationRunTimeout",
@@ -1595,6 +1983,10 @@ __all__ = [
     "cancel_grace_seconds",
     "cron_min_gap_seconds",
     "due_automations",
+    "hold_process_liveness",
+    "holder_is_provably_alive",
+    "holder_is_provably_dead",
+    "holder_liveness_path",
     "register_automation",
     "run_due_automation",
     "run_timeout_seconds",

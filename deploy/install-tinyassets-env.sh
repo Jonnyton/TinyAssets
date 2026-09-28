@@ -24,7 +24,7 @@
 # Usage (from a CI workflow over SSH)
 # -----------------------------------
 #   # Set/replace a key — value comes from stdin (multi-line OK):
-#   echo "ghcr.io/jonnyton/tinyassets-daemon:abc123" \
+#   echo "ghcr.io/tinyassets/tinyassets-daemon:abc123" \
 #     | ssh "$DROPLET" 'sudo bash -s -- set TINYASSETS_IMAGE' \
 #     < deploy/install-tinyassets-env.sh
 #

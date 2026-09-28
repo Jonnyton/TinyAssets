@@ -301,7 +301,7 @@ Use this when the original Droplet is gone or unrecoverable.
 2. Copy `/etc/tinyassets/env` from the vault (or re-populate from the succession runbook).
 3. Pull the daemon image:
    ```bash
-   docker pull ghcr.io/jonnyton/tinyassets-daemon:latest
+   docker pull ghcr.io/tinyassets/tinyassets-daemon:latest
    ```
 4. Run the restore:
    ```bash

@@ -56,7 +56,7 @@ export default function LegalPage() {
           <ul>
             <li>
               <strong>Platform code</strong> (engine, MCP gateway, tray, connectors):{" "}
-              <a href="https://github.com/Jonnyton/TinyAssets/blob/main/LICENSE" target="_blank" rel="noreferrer">
+              <a href="https://github.com/TinyAssets/TinyAssets/blob/main/LICENSE" target="_blank" rel="noreferrer">
                 MIT
               </a>
               . Fork it, run it, sell services on it. Attribution required.
@@ -152,7 +152,7 @@ export default function LegalPage() {
               </article>
             ))}
           </div>
-          <p className="chain__foot">Canonical surfaces only: the site is <code>tinyassets.io</code>, the MCP URL is <code>tinyassets.io/mcp</code>, the repo is <code>github.com/Jonnyton/TinyAssets</code>. Anything else is not us.</p>
+          <p className="chain__foot">Canonical surfaces only: the site is <code>tinyassets.io</code>, the MCP URL is <code>tinyassets.io/mcp</code>, the repo is <code>github.com/TinyAssets/TinyAssets</code>. Anything else is not us.</p>
           <h3>What tiny is not</h3>
           <ul>
             <li>Not a security, not an investment contract, not equity, not a debt instrument.</li>
@@ -176,7 +176,7 @@ export default function LegalPage() {
             <li><strong>Network risk.</strong> Base Sepolia, BASE, PulseChain, BSC, and any future chain may experience outages, reorgs, or fee spikes that affect test or real-token transactions.</li>
             <li><strong>Protocol-evolution risk.</strong> Phase 6 (outcome ranking), Phase 7 (settlement contracts), Phase 8 (DAO governance) are forward-looking. Plans may change. Voting outcomes may produce protocol changes that affect token utility.</li>
             <li><strong>Counterparty risk.</strong> When you place a paid bid, you are entrusting work to a daemon-host whose only commitment is the protocol. Refunds and disputes are mediated by the protocol&apos;s gate-window mechanism, not by us.</li>
-            <li><strong>Phishing / impersonation.</strong> The canonical site is <code>tinyassets.io</code>, the canonical MCP URL is <code>tinyassets.io/mcp</code>, the canonical repo is <code>github.com/Jonnyton/TinyAssets</code>. Anything else is not us.</li>
+            <li><strong>Phishing / impersonation.</strong> The canonical site is <code>tinyassets.io</code>, the canonical MCP URL is <code>tinyassets.io/mcp</code>, the canonical repo is <code>github.com/TinyAssets/TinyAssets</code>. Anything else is not us.</li>
           </ul>
 
           <h2 id="dmca">DMCA</h2>
@@ -199,7 +199,7 @@ export default function LegalPage() {
             Legal: <a href={`mailto:${legal.contact.legal}`}>{legal.contact.legal}</a><br />
             DMCA agent: <a href={`mailto:${legal.contact.dmca_agent}`}>{legal.contact.dmca_agent}</a>
           </p>
-          <p>Response SLA per <a href="https://github.com/Jonnyton/TinyAssets/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">CONTRIBUTING.md</a> — 48h first response, 5 calendar days for full review.</p>
+          <p>Response SLA per <a href="https://github.com/TinyAssets/TinyAssets/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">CONTRIBUTING.md</a> — 48h first response, 5 calendar days for full review.</p>
 
           <hr />
           <p className="footer-note">

@@ -1,7 +1,7 @@
 # Full channel access
 
 **Founder, 2026-09-02, in the app thread**, after their universe raised a
-second GitHub ask minutes after they had approved "full jonnyton/tinyassets
+second GitHub ask minutes after they had approved "full tinyassets/tinyassets
 repo patching": *"it shouldn't have needed to ask that, the other request was
 already for full repo access"* and *"a more agnostic term it should have
 asked for should have been full channel access."*

@@ -9,7 +9,7 @@ from scripts.sanitize_startup_diagnostics import (
 )
 
 _REVISION = "a" * 40
-_IMAGE = f"ghcr.io/jonnyton/tinyassets-daemon@sha256:{'b' * 64}"
+_IMAGE = f"ghcr.io/tinyassets/tinyassets-daemon@sha256:{'b' * 64}"
 
 
 def test_sanitizer_emits_only_allowlisted_traceback_signals():
@@ -170,7 +170,7 @@ def test_candidate_state_rejects_each_identity_mismatch_without_raw_disclosure()
     image_mismatch = sanitize_candidate_state(
         valid_raw,
         target_revision=_REVISION,
-        target_image_ref=f"ghcr.io/jonnyton/tinyassets-daemon@sha256:{'d' * 64}",
+        target_image_ref=f"ghcr.io/tinyassets/tinyassets-daemon@sha256:{'d' * 64}",
     )
     malformed = sanitize_candidate_state(
         STATE_SEPARATOR.join((token, token)).encode(),

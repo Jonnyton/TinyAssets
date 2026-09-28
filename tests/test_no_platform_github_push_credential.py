@@ -53,10 +53,10 @@ def test_a_push_map_in_the_environment_vends_nothing(monkeypatch):
     from tinyassets.auth.provider import vend_github_destination_secret
 
     for name in PUSH_CREDENTIAL_ENV:
-        monkeypatch.setenv(name, '{"Jonnyton/TinyAssets": "platform-token"}')
+        monkeypatch.setenv(name, '{"TinyAssets/TinyAssets": "platform-token"}')
 
     vended = vend_github_destination_secret(
-        destination="Jonnyton/TinyAssets", capability="push",
+        destination="TinyAssets/TinyAssets", capability="push",
     )
 
     assert vended["token"] == ""

@@ -101,7 +101,7 @@ def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
             {
                 "credential_type": "vcs",
                 "service": "github",
-                "destination": "Jonnyton/TinyAssets",
+                "destination": "TinyAssets/TinyAssets",
                 "purpose": "write",
                 "token": "ghs_secret",
             },
@@ -139,7 +139,7 @@ def test_single_record_write_updates_only_matching_credential(tmp_path):
     github_credential = {
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purpose": "write",
         "token": "ghs-existing",
     }
@@ -222,7 +222,7 @@ def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
     write_credential_vault(tmp_path, [{
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purposes": ["write"],
         "token": "old-token",
     }])
@@ -230,7 +230,7 @@ def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
     write_credential_vault(tmp_path, [{
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purpose": "write",
         "token": "new-token",
     }])
@@ -238,7 +238,7 @@ def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
     assert load_credential_vault(tmp_path) == [{
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purpose": "write",
         "token": "new-token",
     }]
@@ -248,7 +248,7 @@ def test_single_record_write_rotates_matching_multi_purpose_vcs_token(tmp_path):
     write_credential_vault(tmp_path, [{
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purposes": ["write", "read"],
         "token": "ghs-OLD",
     }])
@@ -256,13 +256,13 @@ def test_single_record_write_rotates_matching_multi_purpose_vcs_token(tmp_path):
     summary = write_credential_vault(tmp_path, [{
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purpose": "write",
         "token": "ghs-NEW-ROTATED",
     }])
 
     assert _vcs_slot(
-        tmp_path, "Jonnyton/TinyAssets", purpose="write"
+        tmp_path, "TinyAssets/TinyAssets", purpose="write"
     ) == "ghs-NEW-ROTATED"
     assert summary["credential_count"] == 1
     assert "ghs-OLD" not in str(load_credential_vault(tmp_path))
@@ -272,7 +272,7 @@ def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
     write_credential_vault(tmp_path, [{
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purposes": ["write", "read"],
         "token": "ghs-BOTH",
     }])
@@ -280,7 +280,7 @@ def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
     summary = write_credential_vault(tmp_path, [{
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purpose": "read",
         "token": "ghs-READONLY",
     }])
@@ -289,16 +289,16 @@ def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
     assert summary["dropped_credential_slots"] == [{
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purposes": ["write"],
     }]
     assert "ghs-BOTH" not in str(summary)
     assert "ghs-READONLY" not in str(summary)
     assert _vcs_slot(
-        tmp_path, "Jonnyton/TinyAssets", purpose="read"
+        tmp_path, "TinyAssets/TinyAssets", purpose="read"
     ) == "ghs-READONLY"
     assert _vcs_slot(
-        tmp_path, "Jonnyton/TinyAssets", purpose="write"
+        tmp_path, "TinyAssets/TinyAssets", purpose="write"
     ) == ""
 
 
@@ -356,7 +356,7 @@ def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
     github_credential = {
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purpose": "write",
         "token": "ghs-existing",
     }
@@ -411,7 +411,7 @@ def test_two_record_write_replaces_existing_vault_exactly(tmp_path):
         {
             "credential_type": "vcs",
             "service": "github",
-            "destination": "Jonnyton/TinyAssets",
+            "destination": "TinyAssets/TinyAssets",
             "purpose": "write",
             "token": "ghs-replacement",
         },
