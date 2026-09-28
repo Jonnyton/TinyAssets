@@ -269,3 +269,48 @@ def test_a_foreground_run_survives_a_rotation_between_its_nodes(
     assert spent == ["r-1"], "the other session's rotation did not happen"
     assert response["terminal_status"] == "completed", response["terminal_error"]
     assert len(provider.calls) == 2
+
+
+def test_a_background_attempt_survives_a_rotation_between_its_nodes(tmp_path, monkeypatch):
+    """The founder's always-on agent: its attempt's one receipt spans a rotation
+    another session makes between two nodes, and the attempt still succeeds."""
+    from tests import test_background_budget_finalization_e2e as background
+    from tinyassets import subscription_refresh
+    from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+
+    def serving():
+        background._seed_serving_assignment(tmp_path)
+        _redeposit_stale_alice(tmp_path)
+
+    spent = _spend_as(monkeypatch)
+    real_stale = subscription_refresh.document_is_stale
+    armed = {"now": False}
+    monkeypatch.setattr(
+        subscription_refresh, "document_is_stale",
+        lambda document, now: armed["now"] and real_stale(document, now),
+    )
+    real_complete = background._CountingProvider.complete
+    launches = {"n": 0}
+
+    async def complete(self, *args, **kwargs):
+        response = await real_complete(self, *args, **kwargs)
+        launches["n"] += 1
+        if launches["n"] == 1:
+            armed["now"] = True
+            subscription_refresh.refresh_deposited_subscriptions(
+                base_path=tmp_path, universe_dir=tmp_path / "universe_alice",
+                owner_user_id="acct_alice", universe_id="universe_alice",
+            )
+            armed["now"] = False
+        return response
+
+    monkeypatch.setattr(background._CountingProvider, "complete", complete)
+
+    task_id, _audience, _consumer, _fake, _states = background._run_consumer_once(
+        tmp_path, monkeypatch, setup_serving=serving, policy=[None, None],
+    )
+
+    task = Epoch2BranchTaskAdapter(tmp_path).get(task_id)
+    assert spent == ["r-1"], "the other session's rotation did not happen"
+    assert task is not None and task.status == "succeeded", task and task.error
+    assert launches["n"] == 2
