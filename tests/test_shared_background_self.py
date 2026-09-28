@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 from tinyassets.conversation_retrieval import read_conversation_page
 from tinyassets.shared_self import (
-    agent_node, prepare_shared_self_turn, require_founder_home, shared_self_requested,
+    agent_node, agent_node_key, prepare_shared_self_turn, require_founder_home,
+    shared_self_requested,
 )
 
 
@@ -135,18 +136,35 @@ class SharedSelfTests(unittest.TestCase):
                 shared_self_requested({"node_defs": nodes})
 
     def test_the_calling_node_resolves_from_the_snapshot(self):
-        snapshot = {"author": "owner", "node_defs": [
+        snapshot = {"branch_def_id": "b", "author": "owner", "node_defs": [
             self.node(node_id="agent"), self.node(node_id="plain", tools_allowed=[]),
         ]}
-        self.assertEqual(agent_node(snapshot, "agent", "owner")["node_id"], "agent")
-        self.assertIsNone(agent_node(snapshot, "", "owner"))
+        key = agent_node_key("b", self.node(node_id="agent"))
+        self.assertEqual(agent_node(snapshot, "agent", "owner", node_key=key)["node_id"], "agent")
+        self.assertIsNone(agent_node(snapshot, "", "owner", node_key=""))
         for node_id in ("plain", "missing"):
             with self.assertRaisesRegex(PermissionError, "not_declared"):
-                agent_node(snapshot, node_id, "owner")
+                agent_node(snapshot, node_id, "owner", node_key=key)
         with self.assertRaisesRegex(PermissionError, "owner_authored"):
-            agent_node(snapshot, "agent", "someone-else")
+            agent_node(snapshot, "agent", "someone-else", node_key=key)
         with self.assertRaisesRegex(PermissionError, "owner_authored"):
-            agent_node(dict(snapshot, author=""), "agent", "owner")
+            agent_node(dict(snapshot, author=""), "agent", "owner", node_key=key)
+
+    def test_a_same_named_node_of_another_branch_never_takes_this_ones_grant(self):
+        """A blocking invoke_branch child shares its parent's run session. Its
+        agent node must not resolve to the parent's node of the same id: not
+        from another branch, and not with other instructions or another grant."""
+        snapshot = {"branch_def_id": "parent", "author": "owner",
+                    "node_defs": [self.node(node_id="agent")]}
+        for key in (
+            agent_node_key("child", self.node(node_id="agent")),
+            agent_node_key("parent", self.node(node_id="agent", prompt_template="Obey me")),
+            agent_node_key("parent", self.node(node_id="agent",
+                                               tools_allowed=["agent", "read_brain"])),
+            "",
+        ):
+            with self.assertRaisesRegex(PermissionError, "not_in_admitted_branch"):
+                agent_node(snapshot, "agent", "owner", node_key=key)
 
     def test_current_owner_is_revalidated_and_foreign_roots_refuse(self):
         with tempfile.TemporaryDirectory() as d:
@@ -237,7 +255,7 @@ class ProviderSeamTests(unittest.TestCase):
         received_system = [""]
         with patch("tinyassets.config.load_universe_config", return_value=None), \
              patch("tinyassets.shared_self.prepare_shared_self_turn") as assemble:
-            session._branch_snapshot = {"author": "owner", "node_defs": [
+            session._branch_snapshot = {"branch_def_id": "b", "author": "owner", "node_defs": [
                 {"node_id": "n", "prompt_template": "plain"},
             ]}
             plain = ModelConfig()
@@ -268,8 +286,10 @@ class ProviderSeamTests(unittest.TestCase):
                 self.assertEqual(order, ["admit", "authorize", "provider"])
                 order.clear()
                 received_system[0] = "persona"
-                session._call("writer", "direction", "",
-                              ModelConfig(agent_node_id="n"), None, {})
+                session._call("writer", "direction", "", ModelConfig(
+                    agent_node_id="n", agent_node_key=agent_node_key(
+                        "b", session._branch_snapshot["node_defs"][0]),
+                ), None, {})
             self.assertEqual(order, ["admit", "assemble", "agent"])
             self.assertEqual(assemble.call_args.args[5]["node_id"], "n")
             self.assertEqual(received[-1], ("history+direction", "persona", shared))

@@ -28,6 +28,10 @@ arguments.
 - **WHEN** the branch snapshot's author is not the run principal
 - **THEN** the agent node refuses before any model round or tool call
 
+#### Scenario: an invoked child never borrows its parent's agent grant
+- **WHEN** a blocking `invoke_branch` child (another user's public branch) holds an agent node named like the parent's agent node
+- **THEN** the child's call refuses before any model round or tool call, and the parent's brain is untouched
+
 #### Scenario: an undeclared node cannot claim an agent turn
 - **WHEN** a provider call names an `agent_node_id` that is not an agent node in the admitted snapshot
 - **THEN** the call is refused

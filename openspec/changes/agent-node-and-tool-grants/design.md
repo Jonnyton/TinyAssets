@@ -115,10 +115,19 @@ configurations.
 - **Runaway cost.** Each round admits against the run's existing receipt, so a
   loop ends when the receipt's invocation and token allowance is spent.
   Nested `run_graph` calls admit on their own.
-- **Grant escalation within the owner's universe.** A node granted both
-  `write_graph` and `run_graph` can build and run a node with any grant, so the
-  pair is equivalent to the full grant. It is documented, not enforced: it is
-  owner-to-owner, and the floor is cross-user only (lead ruling 2026-09-27).
+- **Grant escalation within the owner's universe.** A node granted
+  `write_graph` can build a node with any grant and schedule it as an
+  automation (`target="automation"`), so `write_graph` alone is equivalent to
+  the full grant; `run_graph` is not needed. It is documented, not enforced: it
+  is owner-to-owner, and the floor is cross-user only (lead ruling 2026-09-27).
+- **Invoked children.** A blocking `invoke_branch` child runs on its parent's
+  run session. The compiler stamps each agent call with
+  `shared_self.agent_node_key` (branch id, node id, instructions, grant), and
+  the session refuses a call whose key is not its admitted snapshot's node, so
+  a child (maybe another user's) never takes a same-named parent node's grant.
+- **Served recursion (open).** A branch can `run_graph` itself; each run gets
+  fresh bounds and only the rolling served-run limiter paces the chain. It stays
+  in the owner's universe; a lifetime bound belongs to plan item 6 (usage limits).
 - **Prompt injection.** A turn can read untrusted text (commons, channels, run
   outputs). The grant is how the owner narrows what an injected instruction
   could reach. Foreign content stays wrapped as untrusted.

@@ -1530,8 +1530,8 @@ _WRITE_GRAPH_CODE_NODES_CHAPTER = """\
     full turn as me for its step (my persona, brain and every served tool, pinned
     to this universe) and writes its final answer to its output key; naming tools
     beside it, e.g. ``["agent", "read_brain", "write_graph"]``, grants only those;
-    a node granted both ``write_graph`` and ``run_graph`` can build and run a node
-    with any grant, so leave one out when the narrowing must hold.
+    ``write_graph`` alone can build and schedule a node with any grant, so leave
+    it out when the narrowing must hold.
 
 """
 

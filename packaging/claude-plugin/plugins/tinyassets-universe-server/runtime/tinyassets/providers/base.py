@@ -275,12 +275,16 @@ class ModelConfig:
     """The served engine tools this turn may call. ``None`` = the whole served
     set (``served_tools.SERVED_ENGINE_MCP_TOOLS``). Set from an agent node's own
     ``tools_allowed`` grant, resolved from the admitted snapshot; every surface
-    (HTTP loop, codex, claude) reads it through ``served_tools.granted_tools``."""
+    (the HTTP loop and each native turn) reads it through ``served_tools.granted_tools``."""
 
     agent_node_id: str = ""
     """The graph compiler's name for the agent node making this call. It selects
     which node, never whether: the run session resolves it against its own
     admitted immutable snapshot and refuses an id that is not an agent node."""
+
+    agent_node_key: str = ""
+    """``shared_self.agent_node_key`` of the compiled node and its branch. The run
+    session refuses unless its admitted snapshot's node has the same key."""
 
     credential_snapshot_dir: Path | None = field(
         default=None,

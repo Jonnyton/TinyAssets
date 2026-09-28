@@ -1249,6 +1249,7 @@ def _build_prompt_template_node(
     llm_policy: dict[str, Any] | None = None,
     concurrency_tracker: ConcurrencyTracker | None = None,
     universe_context: "UniverseContext | None" = None,
+    branch_def_id: str = "",
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that fills the prompt template and calls an
     LLM. Output is stored under the node's first ``output_keys`` entry
@@ -1271,8 +1272,12 @@ def _build_prompt_template_node(
     agent_node_id = (
         node.node_id if AGENT_NODE_MARKERS.intersection(node.tools_allowed or []) else ""
     )
+    agent_node_key = ""
     if agent_node_id:
         from tinyassets.served_tools import node_tool_grant
+        from tinyassets.shared_self import agent_node_key as _agent_node_key
+
+        agent_node_key = _agent_node_key(branch_def_id, node)
 
         try:
             node_tool_grant(node.tools_allowed)
@@ -1313,6 +1318,7 @@ def _build_prompt_template_node(
             absolute_cap_s=timeout_s,
             reasoning_effort=_node_reasoning_effort,
             agent_node_id=agent_node_id,
+            agent_node_key=agent_node_key,
         )
     except Exception:  # pragma: no cover - defensive; provider import is optional
         _node_cfg = None
@@ -3598,6 +3604,7 @@ def _build_node(
     enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
+    branch_def_id: str = "",
     on_node_status: Callable[[str, str], None] | None = None,
     effect_chain: Any = None,
     ancestors: set[str] | None = None,
@@ -3639,6 +3646,7 @@ def _build_node(
         enqueue_budget=enqueue_budget,
         universe_context=universe_context,
         execution_context=execution_context,
+        branch_def_id=branch_def_id,
         delivery_source=delivery_source,
         file_source=file_source,
         on_node_status=on_node_status,
@@ -3691,6 +3699,7 @@ def _build_node_inner(
     enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
+    branch_def_id: str = "",
     delivery_source: Any = None,
     file_source: Any = None,
     on_node_status: Callable[[str, str], None] | None = None,
@@ -3738,7 +3747,7 @@ def _build_node_inner(
             node, provider_call=provider_call, event_sink=event_sink,
             state_schema=state_schema, llm_policy=llm_policy,
             concurrency_tracker=concurrency_tracker,
-            universe_context=universe_context,
+            universe_context=universe_context, branch_def_id=branch_def_id,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if domain_id:
@@ -4063,6 +4072,7 @@ def compile_branch(
             enqueue_budget=enqueue_budget,
             universe_context=universe_context,
             execution_context=execution_context,
+            branch_def_id=branch.branch_def_id,
             on_node_status=on_node_status,
             effect_chain=effect_chain,
             ancestors=ancestors_by_gid.get(gn.id, set()) if effect_chain is not None else None,

@@ -5,6 +5,8 @@ run inputs. Provider admission and cancellation remain owned by the run session.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -40,18 +42,39 @@ def shared_self_requested(snapshot: dict | None) -> bool:
     return bool(_agent_nodes(snapshot))
 
 
-def agent_node(snapshot: dict | None, node_id: str, principal_id: str) -> dict | None:
+def agent_node_key(branch_def_id: str, node) -> str:
+    """Which branch's node, with which instructions and grant, an agent call is.
+
+    The compiler stamps it on the call; the run session recomputes it from the
+    node it resolved in its admitted snapshot. A blocking ``invoke_branch`` child
+    shares its parent's session, so an id alone would hand a child's node (maybe
+    another user's) the parent's same-named node's grant.
+    """
+    def field(name):
+        return node.get(name) if isinstance(node, dict) else getattr(node, name, None)
+
+    return hashlib.sha256(json.dumps([
+        str(branch_def_id or ""), str(field("node_id") or ""),
+        str(field("prompt_template") or ""), list(field("tools_allowed") or []),
+    ]).encode("utf-8")).hexdigest()
+
+
+def agent_node(snapshot: dict | None, node_id: str, principal_id: str, *,
+               node_key: str) -> dict | None:
     """The agent node making this call, resolved from the ADMITTED snapshot.
 
     ``node_id`` comes from the compiler and only selects; an id that is not an
-    agent node here refuses. A branch another user authored never drives the
-    owner's tools, whichever run admitted it.
+    agent node here refuses, and so does a node that is not this snapshot's own
+    (``node_key``). A branch another user authored never drives the owner's
+    tools, whichever run admitted it.
     """
     if not node_id:
         return None
     node = _agent_nodes(snapshot).get(node_id)
     if node is None:
         raise PermissionError("agent_node_not_declared")
+    if node_key != agent_node_key((snapshot or {}).get("branch_def_id"), node):
+        raise PermissionError("agent_node_not_in_admitted_branch")
     if str((snapshot or {}).get("author") or "").strip() != principal_id:
         raise PermissionError("agent_node_requires_owner_authored_branch")
     return node

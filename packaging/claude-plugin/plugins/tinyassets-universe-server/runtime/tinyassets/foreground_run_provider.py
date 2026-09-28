@@ -1069,6 +1069,7 @@ class _ForegroundRunProviderSession:
 
         node = agent_node(
             self._branch_snapshot, getattr(config, "agent_node_id", ""), self._principal_id,
+            node_key=getattr(config, "agent_node_key", ""),
         )
         if node is not None:
             prompt, system, config = prepare_shared_self_turn(

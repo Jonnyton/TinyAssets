@@ -17,5 +17,7 @@
 
 ## Land
 
-- [ ] 3.1 Cross-family refute round (gpt-6-astra) folded; PR(s) opened with auto-merge off.
+- [x] 3.1 Cross-family refute round (gpt-6-astra, ADAPT) folded: invoked children are bound to their own
+  node by `agent_node_key`; `write_graph` alone is documented as the full grant; served recursion
+  lifetime is left to plan item 6. PR opened with auto-merge off.
 - [x] 3.2 Sync delta into `openspec/specs/agent-node/`. (`shared-background-self` keeps its own open live-proof tasks; archive this change after it lands.)

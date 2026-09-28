@@ -21,6 +21,7 @@ from tinyassets import engine_mcp_server, engine_tool_client
 from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+from tinyassets.shared_self import agent_node_key
 from tinyassets.shared_self import prepare_shared_self_turn as _REAL_PREPARE
 from tinyassets.storage.provider_work_authority import db_path
 
@@ -254,6 +255,51 @@ def test_a_workflow_mixes_plain_steps_and_differently_granted_agents(
     assert MARK in (tmp_path / "universe_alice" / "identity.md").read_text(encoding="utf-8")
 
 
+def test_an_invoked_child_never_borrows_the_parents_agent_grant(
+    tmp_path, monkeypatch, authenticate_request, engine,
+):
+    """A blocking invoke_branch child runs on its parent's run session. Bob's
+    public child names its agent node after Alice's fully granted one; it must
+    not get Alice's grant, brain or tools."""
+    from tests.test_run_provider_session import _branch, _run_branch
+    from tinyassets.daemon_server import save_branch_definition
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    policy = {"preferred": {"model": "synthetic-model"}, "fallback_chain": []}
+    child = BranchDefinition(
+        branch_def_id="branch_bob_public", name="Bob's public step", author="acct_bob",
+        visibility="public",
+        graph_nodes=[GraphNodeRef(id="n1", node_def_id="n1")],
+        edges=[EdgeDefinition(from_node="n1", to_node="END")], entry_point="n1",
+        node_defs=[NodeDefinition(node_id="n1", display_name="Writer 1",
+                                  prompt_template="Write my mark into your brain.",
+                                  output_keys=["child_out"], tools_allowed=["agent"])],
+        state_schema=[{"name": "child_out", "type": "str"}],
+    )
+    save_branch_definition(tmp_path, branch_def=child.to_dict())
+    branch = _branch(node_count=2)
+    for node in branch.node_defs:
+        node.llm_policy = dict(policy)
+    branch.node_defs[0].tools_allowed = ["agent"]
+    invoker = branch.node_defs[1]
+    invoker.prompt_template, invoker.llm_policy = "", None
+    invoker.invoke_branch_spec = {"branch_def_id": "branch_bob_public", "inputs_mapping": {},
+                                  "output_mapping": {"answer_2": "child_out"},
+                                  "wait_mode": "blocking"}
+    engine.script = [[], [_call("write_brain", identity=MARK)], []]
+    result = _run_branch(tmp_path, monkeypatch, authenticate_request, branch,
+                         open_provider=True, model_access=ModelAccess("discovered"))[0]
+    assert MARK not in (tmp_path / "universe_alice" / "identity.md").read_text(encoding="utf-8")
+    # Alice's own agent node ran once; the child never got a tool-bearing round.
+    assert [o for o in engine.offered if o] == [sorted(SERVED_ENGINE_MCP_TOOLS)], result
+    assert result["terminal_status"] != "completed", result
+    # Refused for the binding, not because the child never compiled or ran.
+    from tinyassets.runs import get_run
+
+    child_run_id = result["terminal_error"].split("child run_id=")[1].rstrip(")")
+    assert "agent_node_not_in_admitted_branch" in str(get_run(tmp_path, child_run_id)["error"])
+
+
 @pytest.mark.parametrize("tools_allowed,agent", [([], False), (["agent"], True),
                                                  (["universe_self", "read_brain"], True)])
 def test_the_compiler_names_only_agent_nodes_and_gives_them_the_turn_backstop(
@@ -270,9 +316,12 @@ def test_the_compiler_names_only_agent_nodes_and_gives_them_the_turn_backstop(
 
     node = NodeDefinition(node_id="step", display_name="Step", prompt_template="Go.",
                           tools_allowed=tools_allowed, timeout_seconds=300.0)
-    _build_prompt_template_node(node, provider_call=provider, event_sink=None)({})
+    _build_prompt_template_node(node, provider_call=provider, event_sink=None,
+                                branch_def_id="b")({})
     (config,) = seen
     assert config.agent_node_id == ("step" if agent else "")
+    # The key binds the call to this branch's node, which the session re-derives.
+    assert config.agent_node_key == (agent_node_key("b", node.to_dict()) if agent else "")
     assert config.absolute_cap_s == pytest.approx(
         served_absolute_cap_s(None) if agent else 300.0, rel=0.01,
     )

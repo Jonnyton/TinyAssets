@@ -831,6 +831,7 @@ class _BackgroundAssignedProviderSession:
                 node = agent_node(
                     _branch_snapshot(self._base_path, self._task),
                     getattr(config, "agent_node_id", ""), self._task.actor_id,
+                    node_key=getattr(config, "agent_node_key", ""),
                 )
             except Exception as exc:
                 # Preserve the existing typed hold when the earlier opt-in read
