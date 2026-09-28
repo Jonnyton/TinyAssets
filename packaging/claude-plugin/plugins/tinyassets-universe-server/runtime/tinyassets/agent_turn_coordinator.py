@@ -200,6 +200,56 @@ class AgentTurnCoordinator:
             terminal=terminal,
         ))
 
+    def _learn_verified_model(self, response):
+        """Record a model id that just answered, for every universe on this KIND.
+
+        Only reached from a committed success. It records the id on THIS OWNER's own
+        list and nowhere else -- there is no shared store any more, so nothing here can
+        reach another user. See ``tinyassets/storage/learned_models.py``; sharing is a
+        reviewed file per source kind (``models/``), merged by a person.
+
+        The id recorded is the one THIS UNIVERSE ASKED FOR and that then succeeded
+        -- its own ``model_selection.model_id`` -- and never a string the source
+        chose.
+
+        The first version preferred ``response.reported_model``, and Codex refuted
+        it on #4028: that field is source-controlled, so a source could publish
+        anything to every other user of its kind (it reproduced
+        ``owner-alice@example.com-private-9``), and ``codex_provider`` deliberately
+        reports the literal ``provider-default`` when it cannot resolve a model,
+        which would then have been published as a verified model id. What this
+        universe REQUESTED is the only id worth sharing: it is a name its owner
+        already held, it is exactly what another owner would need to grant, and a
+        source cannot inject it.
+
+        An empty requested id is the provider default -- a position, not a model --
+        so there is nothing to teach anyone and it is skipped.
+
+        Recording is not publishing, and here there is no publishing at all: a typed
+        id is PERSONAL forever (founder, 2026-09-26). That is what keeps a private
+        account-bearing selector on its own owner's list and nowhere else. Ids reach
+        everyone by a different route entirely -- a reviewed file in the repo.
+        """
+        from tinyassets.storage.learned_models import (
+            LEARNED_SOURCE_KIND,
+            record_verified_model,
+        )
+
+        selection = getattr(self.context, "model_selection", None)
+        model_id = (getattr(selection, "model_id", "") or "").strip()
+        if not model_id:
+            return
+        # The OWNER, not the universe: the founder's threshold counts distinct
+        # owners, so one person's two universes must not promote an id between
+        # them. `self.owner` is the capability principal this turn ran under, which
+        # is the same identity the journal scopes its rows by.
+        record_verified_model(
+            self.context.universe_dir.parent,
+            source_kind=LEARNED_SOURCE_KIND,
+            model_id=model_id,
+            owner_user_id=self.owner,
+        )
+
     def effects_evidence(self):
         """This running turn's own ledger evidence; see :func:`turn_effects`."""
         return turn_effects(self.turn)
@@ -330,6 +380,12 @@ class AgentTurnCoordinator:
                             if self.turn.state == "native_started":
                                 self._finish_native_failure(exc)
                             raise
+                        # The call SUCCEEDED and the journal has committed it, so
+                        # this model id provably works on this kind of source.
+                        # Learn it for every universe with that kind. After the
+                        # commit and outside the try, so a catalog write can
+                        # neither be mistaken for a turn failure nor rewrite one.
+                        self._learn_verified_model(response)
                         return response
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")

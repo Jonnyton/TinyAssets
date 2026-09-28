@@ -315,7 +315,13 @@ def test_source_revocation_does_not_hide_independent_source(catalogue, reader, m
     monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", revoked)
     result = read()
     assert result["order"] == [{"provider_ref": "codex", "model_id": ""}]
-    assert [row["reference"] for row in result["options"]] == result["order"]
+    # The ADMITTED options are exactly the routing order. Not every option: a
+    # subscription source also offers the reviewed public list and the owner's own
+    # verified ids, which are candidates to GRANT and deliberately absent from the
+    # order -- an unusable id in the fallback chain is a turn that fails for no reason
+    # the user can see.
+    assert [row["reference"] for row in result["options"]
+            if row["in_candidate_catalog"]] == result["order"]
     assert result["unavailable"] == []
     assert any("source_revoked" in row["reasons"] for row in result["sources"])
 
