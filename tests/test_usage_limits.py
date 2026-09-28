@@ -292,3 +292,75 @@ def test_a_childs_charge_is_bound_to_the_child_run(tmp_path) -> None:
     with sqlite3.connect(tmp_path / ea.LEDGER_NAME) as conn:
         bound = conn.execute("SELECT run_id FROM admissions").fetchall()
     assert bound == [(child_run,)]
+
+
+# -- Folded from the gpt-6-astra refute round (2026-09-28) -----------------------
+
+
+def test_a_caller_without_the_day_window_keeps_everyones_day(
+    tmp_path, monkeypatch,
+) -> None:
+    """The prune is global: a caller metering only the hour used to delete
+    every universe's day history (refute P1, receiver deliveries)."""
+    clock = {"now": 4_000_000.0}
+    monkeypatch.setattr(ea.time, "time", lambda: clock["now"])
+    db = tmp_path / ea.LEDGER_NAME
+    for _ in range(3):
+        assert _admit(db).ticket is not None
+    assert _admit(db).refused_by == ea.REFUSED_BY_DAY
+    clock["now"] += 2 * ea.RUN_WINDOW_SECONDS
+    # Another universe, admitted by an hour-only caller.
+    assert _admit(db, universe="universe_b", day_max=None).ticket is not None
+    assert _admit(db).refused_by == ea.REFUSED_BY_DAY
+
+
+def test_a_refused_cadence_instant_leaves_no_row(tmp_path, monkeypatch) -> None:
+    """A one-second cadence on a full meter used to add a durable attempt row
+    every poll, outside the meter (refute P1). The instant is skipped with
+    no row, and a refusal by the meter is not a failure of the work."""
+    from datetime import datetime, timedelta, timezone
+
+    import tinyassets.engine_mcp_server as ems
+    from tests.test_automations import (
+        _registration_kwargs,
+        _seed_branch,
+        _seed_owner,
+    )
+    from tests.test_background_budget_finalization_e2e import (
+        _seed_serving_assignment,
+    )
+    from tinyassets.automations import (
+        AutomationStore,
+        due_automations,
+        register_automation,
+        run_due_automation,
+    )
+
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_branch(tmp_path)
+    start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    automation = register_automation(
+        tmp_path, **_registration_kwargs(interval_seconds=1, now=start),
+    )
+    monkeypatch.setattr(ems, "_RUN_GRAPH_RATE_MAX", 0)
+    from tests.test_automations import UNIVERSE as AUTO_UNIVERSE
+
+    moment = start
+    for _poll in range(3):
+        moment += timedelta(seconds=5)
+        [(row, due_at)] = due_automations(
+            tmp_path, universe_id=AUTO_UNIVERSE, now=moment,
+        )
+        assert run_due_automation(tmp_path, row, due_at, now=moment) == (
+            "run_rate_limited"
+        )
+    with sqlite3.connect(AutomationStore(tmp_path).db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM automation_attempts WHERE automation_id = ?",
+            (automation.automation_id,),
+        ).fetchone()[0] == 0
+    stored = AutomationStore(tmp_path).get(automation.automation_id)
+    assert stored.last_due_at and stored.consecutive_failures == 0
+    assert stored.desired_state == "active"

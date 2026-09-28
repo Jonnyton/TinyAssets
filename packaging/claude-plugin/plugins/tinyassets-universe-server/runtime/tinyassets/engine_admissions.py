@@ -217,7 +217,10 @@ def admit_detail(
     now = time.time()
     cutoff = now - window_s
     day_cutoff = now - RUN_DAY_SECONDS
-    keep_from = min(cutoff, day_cutoff) if day_max is not None else cutoff
+    # A day of rows is kept whatever THIS caller meters: the prune is global,
+    # so a caller without the day window pruning at one hour deleted every
+    # other universe's day history (Codex refute 2026-09-28, P1).
+    keep_from = min(cutoff, day_cutoff)
     try:
         conn = sqlite3.connect(str(db), timeout=10)
         try:
@@ -260,9 +263,14 @@ def admit_detail(
             )
             ticket = int(cur.lastrowid or 0)
             # Rows outside every window count for nothing: prune them now,
-            # not a window later (Codex on engine rows). A day-metered call
-            # keeps a day of rows.
+            # not a window later (Codex on engine rows). Run rows count toward
+            # the day, so they are kept a day; engine edits never do, so they
+            # go at the hour.
             conn.execute("DELETE FROM admissions WHERE ts < ?", (keep_from,))
+            conn.execute(
+                "DELETE FROM admissions WHERE ts < ? AND kind = ?",
+                (cutoff, KIND_ENGINE),
+            )
             conn.execute("DELETE FROM settlements WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.commit()
             return Admission(ticket if ticket > 0 else ADMITTED_UNRECORDED, None)

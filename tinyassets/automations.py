@@ -765,6 +765,40 @@ class AutomationStore:
         finally:
             conn.close()
 
+    def skip_refused_instant(
+        self, automation_id: str, due_at: str, *, reason: str, now: datetime,
+    ) -> None:
+        """Advance a cadence past an instant that never ran, keeping no row.
+
+        The claim's attempt row is deleted and ``last_due_at`` moves on, in one
+        transaction, so the instant is neither re-run nor retained. The
+        consecutive-failure count is untouched: a refusal by the meter is not
+        a failure of the work.
+        """
+        stamp = _iso(now)
+        conn = self._connect(create=True)
+        if conn is None:  # pragma: no cover - create=True always connects
+            raise RuntimeError("automation store connection is unavailable")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "DELETE FROM automation_attempts "
+                    "WHERE automation_id = ? AND due_at = ?",
+                    (automation_id, due_at),
+                )
+                conn.execute(
+                    "UPDATE automations SET last_due_at = ?, last_reason = ?, "
+                    "updated_at = ? WHERE automation_id = ?",
+                    (due_at, reason, stamp, automation_id),
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
+
     def finish_attempt(
         self,
         automation_id: str,
@@ -1999,22 +2033,33 @@ def run_due_automation(
             _engine_run_admit(
                 universe_id=automation.universe_id,
                 want_ticket=True,
-                # A wake can re-wake itself, so its budget must be real: an
-                # unreadable ledger refuses rather than admitting with no
-                # count (Codex refute 2026-09-27, P1). Cadences keep their
-                # existing behaviour.
-                fail_closed=automation.trigger_kind == TRIGGER_ONCE,
+                # Usage is the only bound on background work now (plan item
+                # 6), so an unreadable ledger refuses rather than admitting
+                # with no count -- for wakes (Codex refute 2026-09-27, P1) and
+                # cadences alike (Codex refute 2026-09-28, P1).
+                fail_closed=True,
             )
         )
         if ticket is None:
-            store.finish_attempt(
-                automation.automation_id,
-                due_at,
-                run_id="",
-                status="refused",
-                reason="run_rate_limited",
-                now=moment,
-            )
+            if automation.trigger_kind == TRIGGER_ONCE:
+                # A wake's attempts are its bounded retry count; keep them.
+                store.finish_attempt(
+                    automation.automation_id,
+                    due_at,
+                    run_id="",
+                    status="refused",
+                    reason="run_rate_limited",
+                    now=moment,
+                )
+            else:
+                # A cadence moves on to its next instant, and a refused one
+                # leaves no attempt row: a one-second cadence on a full meter
+                # would otherwise add a durable row every poll, outside the
+                # meter (Codex refute 2026-09-28, P1).
+                store.skip_refused_instant(
+                    automation.automation_id, due_at,
+                    reason="run_rate_limited", now=moment,
+                )
             _record_refusal(base, automation, "run_rate_limited", moment, consumer_id)
             _retire_once(store, automation, ran=False, now=moment)
             return "run_rate_limited"

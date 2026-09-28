@@ -2972,9 +2972,22 @@ def _build_invoke_branch_node(
             f"Node '{node.node_id}': invoke_branch_spec wait_mode must be "
             f"'blocking' or 'async', got '{wait_mode}'."
         )
-    # No depth cap (plan item 6): every child run is charged to the universe's
-    # usage meter below, and a blocking child runs in this thread, so it holds
-    # no shared pool slot however deep the chain goes.
+    # No depth cap on a BLOCKING invoke (plan item 6): its child runs in this
+    # thread, holds no shared pool slot, and is charged to the universe's
+    # usage meter below. An ASYNC child runs on the child pool every universe
+    # shares, and a parent that awaits it holds a pool thread while it waits,
+    # so async nesting is bounded by that pool's size (Codex refute
+    # 2026-09-28, P1: seven async+await levels starved every user's children).
+    from tinyassets.runs import _max_child_workers
+
+    pool_threads = _max_child_workers()
+    if wait_mode == "async" and depth + 1 > pool_threads:
+        raise CompilerError(
+            f"Node '{node.node_id}': an async invoke_branch runs on the shared "
+            f"sub-branch pool ({pool_threads} threads), so it cannot nest "
+            f"{depth + 1} deep; use wait_mode blocking, which runs in this "
+            f"thread, or enqueue_branch_run."
+        )
 
     _base = Path(base_path)
     _ctx = execution_context or BranchExecutionContext()
@@ -3223,20 +3236,20 @@ def _build_invoke_branch_version_node(
             f"Node '{node.node_id}': invoke_branch_version_spec wait_mode "
             f"must be 'blocking' or 'async', got '{wait_mode}'."
         )
-    # Not a shape cap: a BLOCKING version invoke runs its child on the child
-    # pool every universe shares, and waits on it while holding a thread of
-    # that pool itself (once below the root). Nested deeper than the pool has
-    # threads, the chain deadlocks every user's sub-branch runs until its
-    # timeouts cascade. That pool size -- not a policy number -- is the bound,
-    # and it is the only depth bound left (plan item 6). Async version invokes
-    # and invokes by definition have none.
+    # Not a shape cap: a version invoke runs its child on the child pool every
+    # universe shares, and a blocking one (or an await of an async one) waits
+    # on it while holding a thread of that pool itself. Nested deeper than the
+    # pool has threads, the chain starves every user's sub-branch runs until
+    # its timeouts cascade. That pool size -- not a policy number -- is the
+    # bound (plan item 6). Only a blocking invoke by definition, which runs in
+    # its parent's thread, has none.
     pool_threads = _max_child_workers()
-    if wait_mode == "blocking" and depth + 1 > pool_threads:
+    if depth + 1 > pool_threads:
         raise CompilerError(
-            f"Node '{node.node_id}': a blocking invoke_branch_version waits on "
-            f"the shared sub-branch pool ({pool_threads} threads), so it cannot "
-            f"nest {depth + 1} deep; use wait_mode async, or invoke the branch "
-            f"by definition, which runs in this thread."
+            f"Node '{node.node_id}': an invoke_branch_version runs on the shared "
+            f"sub-branch pool ({pool_threads} threads), so it cannot nest "
+            f"{depth + 1} deep; invoke the branch by definition with wait_mode "
+            f"blocking, which runs in this thread."
         )
 
     _base = Path(base_path)

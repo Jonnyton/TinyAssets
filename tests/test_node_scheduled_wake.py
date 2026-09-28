@@ -409,10 +409,12 @@ def test_a_stale_snapshot_of_a_spent_or_paused_row_does_not_run(
     assert graph.calls == []
 
 
-def test_a_wake_admits_fail_closed_and_a_cadence_does_not(
+def test_a_wake_and_a_cadence_both_admit_fail_closed(
     home: Path, monkeypatch
 ) -> None:
-    """Refute P1 #7: a self-replenishing wake must not run on an unread budget."""
+    """Refute P1 #7: a self-replenishing wake must not run on an unread budget.
+    Since plan item 6 usage is the only bound, so a cadence must not either
+    (Codex refute 2026-09-28, P1)."""
     import tinyassets.engine_mcp_server as engine
 
     asked: list[bool] = []
@@ -430,7 +432,7 @@ def test_a_wake_admits_fail_closed_and_a_cadence_does_not(
     _register_cadence(home, now - timedelta(hours=1))
     for automation, key in due_automations(home, universe_id=UNIVERSE, now=now):
         run_due_automation(home, automation, key, now=now)
-    assert sorted(asked) == [False, True]
+    assert sorted(asked) == [True, True]
 
 
 def test_five_killed_claims_retire_the_wake(home: Path) -> None:

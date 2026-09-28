@@ -334,14 +334,14 @@ class TestAwaitBranchRunNode:
 # ─── no recursion depth cap (plan item 6) ──────────────────────────────────────
 
 class TestNoRecursionDepthCap:
-    @pytest.mark.parametrize("wait_mode", ["blocking", "async"])
-    def test_depth_past_the_old_cap_compiles(self, tmp_path, wait_mode):
-        """Depth is not a shape limit: every child run is metered instead."""
+    def test_a_blocking_invoke_past_the_old_cap_compiles(self, tmp_path):
+        """Depth is not a shape limit: a blocking child runs in its parent's
+        thread and every child run is metered instead."""
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
             invoke_branch_spec={
                 "branch_def_id": "child",
-                "wait_mode": wait_mode,
+                "wait_mode": "blocking",
                 "inputs_mapping": {},
                 "output_mapping": {},
             },
@@ -350,6 +350,29 @@ class TestNoRecursionDepthCap:
             nd, base_path=tmp_path, event_sink=None,
             depth=MAX_INVOKE_BRANCH_DEPTH * 10, execution_context=_DEFAULT_TEST_CTX)
         assert callable(fn)
+
+    def test_an_async_invoke_nests_only_as_deep_as_the_shared_pool(self, tmp_path):
+        """An async child runs on the pool every universe shares, and a parent
+        that awaits it holds a pool thread, so the pool's size bounds it."""
+        from tinyassets.runs import _max_child_workers
+
+        nd = NodeDefinition(
+            node_id="n1", display_name="N1",
+            invoke_branch_spec={
+                "branch_def_id": "child",
+                "wait_mode": "async",
+                "inputs_mapping": {},
+                "output_mapping": {"child_run": "run_id"},
+            },
+        )
+        pool = _max_child_workers()
+        _build_invoke_branch_node(
+            nd, base_path=tmp_path, event_sink=None,
+            depth=pool - 1, execution_context=_DEFAULT_TEST_CTX)
+        with pytest.raises(CompilerError, match="shared sub-branch pool"):
+            _build_invoke_branch_node(
+                nd, base_path=tmp_path, event_sink=None,
+                depth=pool, execution_context=_DEFAULT_TEST_CTX)
 
     def test_depth_below_cap_is_ok(self, tmp_path):
         nd = NodeDefinition(
@@ -749,9 +772,9 @@ class TestCompileInvokeBranchVersionNode:
     def test_a_blocking_version_invoke_nests_only_as_deep_as_the_shared_pool(
         self, tmp_path,
     ):
-        """A blocking version invoke waits on the child pool every universe
-        shares while holding one of its threads, so the pool's size -- not a
-        policy number -- bounds how deep it nests. Async is unbounded."""
+        """A version invoke runs on the child pool every universe shares, and
+        a blocking one (or an await) holds one of its threads while it waits,
+        so the pool's size -- not a policy number -- bounds how deep it nests."""
         from tinyassets.graph_compiler import _build_invoke_branch_version_node
 
         nd = NodeDefinition(
@@ -778,9 +801,10 @@ class TestCompileInvokeBranchVersionNode:
                 "wait_mode": "async",
             },
         )
-        _build_invoke_branch_version_node(
-            async_nd, base_path=tmp_path, event_sink=None,
-            depth=pool * 10, execution_context=_DEFAULT_TEST_CTX)
+        with pytest.raises(CompilerError, match="shared sub-branch pool"):
+            _build_invoke_branch_version_node(
+                async_nd, base_path=tmp_path, event_sink=None,
+                depth=pool, execution_context=_DEFAULT_TEST_CTX)
 
 
 # ─── Phase A item 5 (Task #76b) — on_child_fail policy + retry + ChildFailure ─

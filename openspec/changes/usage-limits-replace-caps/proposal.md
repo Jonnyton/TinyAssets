@@ -30,10 +30,17 @@ caps, ran indefinitely (concern 2026-09-28, deleted by this change).
   interpreter's recursion limit is still free, and stops by name if not
   (about 70 levels deep in practice). A RecursionError deeper down would be
   caught and reported by whichever layer it hit. The one depth bound left is
-  physical: a BLOCKING version invoke waits on the child pool every universe
-  shares while holding one of its threads, so it may nest only as deep as that
-  pool has threads. `MAX_INVOKE_BRANCH_DEPTH` now only sizes the pool, and
+  physical. Async invokes and version invokes run on the child pool that
+  every universe shares, and a parent that waits on them holds a thread of
+  it, so they may nest only as deep as that pool has threads (6).
+  `MAX_INVOKE_BRANCH_DEPTH` now only sizes the pool, and
   `TINYASSETS_INVOCATION_MAX_DEPTH` is retired.
+- **The meter is the bound, so it is solid.** The ledger always keeps a day of
+  rows, whoever admits. Before this, an hour-only caller's global prune erased
+  every universe's day. Receiver deliveries are day-metered. Cadence
+  automations admit fail-closed, as wakes already did. A cadence instant
+  refused by the meter is skipped without leaving an attempt row, so a
+  one-second cadence on a full meter writes nothing per poll.
 - **Automations:** no 200-row ceiling, and no 300s interval or cron floor.
   Registering one (including a node's wake and an event wake) is charged as an
   engine edit. Every fire is charged as a run.

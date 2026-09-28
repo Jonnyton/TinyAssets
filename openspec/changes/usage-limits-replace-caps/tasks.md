@@ -11,7 +11,7 @@
 ## 2. Prove
 - [x] 2.1 Tests through the real ledger, compiled graph and triggered-run path (`tests/test_usage_limits.py`); cap tests rewritten to the usage contract.
 - [x] 2.2 Mutation-check each meter site.
-- [ ] 2.3 gpt-6-astra refute round: cross-user reach and runaway cost.
+- [x] 2.3 gpt-6-astra refute round: cross-user reach and runaway cost (ADAPT; four P1s folded, foreground fail-open kept with reason).
 - [ ] 2.4 Deploy; `python scripts/deployed_sha.py --assert-contains <sha>`.
 
 ## 3. Land
