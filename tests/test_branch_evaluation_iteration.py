@@ -555,7 +555,6 @@ def test_run_branch_resume_from_cross_actor_returns_error(p4_env):
     # env-actor model no longer distinguishes callers (current_actor_id has no env
     # fallback), so cross-actor isolation is exercised via two universes.
     us, base = p4_env
-    bid = _build_trivial_branch(us)
 
     from tinyassets.auth.middleware import auth_middleware, set_provider
     from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
@@ -576,6 +575,10 @@ def test_run_branch_resume_from_cross_actor_returns_error(p4_env):
     )))
     auth_middleware("ok")
     try:
+        # Built by the founder who runs it: Branches are private by default, so a
+        # Branch another subject built is "not found" to the founder, and the
+        # refusal under test (resume across universes) is never reached.
+        bid = _build_trivial_branch(us)
         for uid in ("uni-a", "uni-b"):
             grant_universe_access(
                 base, universe_id=uid, actor_id="founder",
