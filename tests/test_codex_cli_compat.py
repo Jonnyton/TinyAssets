@@ -158,3 +158,75 @@ async def test_served_model_selection_is_native_unless_explicit(monkeypatch, tmp
     for name in ("shell_tool", "apps", "plugins", "remote_plugin"):
         assert ("--disable", name) in zip(inner, inner[1:])
     assert launch.call_count == 1
+
+
+#: The shape `codex exec --json` emitted at codex-cli 0.153.3 (captured
+#: 2026-09-28 against a real subscription; ids replaced, text shortened). No
+#: event names the model that answered: thread.started carries a thread id,
+#: turn.completed only usage.
+_RECORDED_0_153_STREAM = (
+    _event("thread.started", thread_id="00000000-0000-0000-0000-000000000000")
+    + _event("turn.started")
+    + _event("item.completed", item={"id": "item_0", "type": "agent_message", "text": "ok"})
+    + _event("turn.completed", usage={
+        "input_tokens": 17071, "cached_input_tokens": 7168,
+        "cache_write_input_tokens": 0, "output_tokens": 5, "reasoning_output_tokens": 0,
+    })
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", ["owner-picked-model", None])
+async def test_recorded_stream_carries_the_request_never_a_reported_model(
+    monkeypatch, tmp_path, requested,
+):
+    """The web app showed "Model not reported" beside an owner-picked model.
+
+    The stream cannot say what answered, so the receipt must stay `unknown` --
+    but the id this call passed to -m travels as a REQUEST the app can name.
+    """
+    from tinyassets.providers import codex_provider as provider
+    from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+
+    monkeypatch.delenv("TINYASSETS_CODEX_MODEL", raising=False)
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir()
+    proc = AsyncMock()
+    proc.returncode = 0
+    launch = install_fake_owned_spawn(monkeypatch, provider.__name__, return_value=proc)
+    monkeypatch.setattr(provider, "_resolve_codex_cmd", lambda: (["codex"], False))
+    monkeypatch.setattr(provider, "get_sandbox_status", lambda: {
+        "bwrap_available": True, "bwrap_path": "fake-bwrap",
+    })
+    monkeypatch.setattr(provider, "subprocess_env_for_provider", lambda *a, **kw: {
+        "CODEX_HOME": str(auth_dir),
+    })
+    monkeypatch.setattr(provider, "_codex_sandbox_mounts", lambda command: [])
+    monkeypatch.setattr(provider, "_codex_home_file_mounts", lambda path: [])
+    monkeypatch.setattr(provider, "_stream_codex_exec", AsyncMock(
+        return_value=(_RECORDED_0_153_STREAM, b""),
+    ))
+    result = await provider.CodexProvider().complete(
+        "prompt", "system",
+        ModelConfig(sandbox_workspace=True, native_model_id=requested),
+        universe_dir=tmp_path,
+    )
+    assert result.text == "ok" and result.input_tokens == 17071
+    assert result.reported_model == ""
+    receipt = WriterExecutionReceipt()
+    receipt.observe(result)
+    inner = launch.call_args.args
+    if requested:
+        assert inner[inner.index("-m") + 1] == requested
+        assert result.requested_model == requested
+        assert receipt.projection() == {
+            "provider": "codex", "model": "", "model_status": "unknown",
+            "requested_model": requested,
+        }
+    else:
+        # The source's own default is a position, not a model: nothing to name.
+        assert "-m" not in inner
+        assert result.requested_model == ""
+        assert receipt.projection() == {
+            "provider": "codex", "model": "", "model_status": "unknown",
+        }
