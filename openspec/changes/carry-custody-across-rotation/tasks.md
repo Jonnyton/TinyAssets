@@ -1,0 +1,10 @@
+- [x] v2 reference for subscription custody; reads and snapshots accept v1 or v2 by exact match and return the stored reference
+- [x] launch snapshot compares the copied bytes' digest with the pin directly
+- [x] adoption writes v2 (subscriptions only; connection grants unchanged)
+- [x] carry transition inside the refresh's exclusive vault hold, fenced on the reference, generation, pin, v2 formula and depositor
+- [x] a successful carry bypasses renewal; everything else (v1, fence miss, account change, disk adoption, deposit) renews
+- [x] tests: a rotation leaves every downstream pin untouched and an in-flight foreground receipt still launches
+- [ ] tests: the same through a background attempt spanning a rotation (unchanged code path, not yet driven)
+- [x] tests: account change and a v1 row renew; unpinned bytes and a bad launch copy refuse
+- [ ] tests: disk adoption and owner deposit renew (both go through the unchanged renewal path; not yet driven)
+- [ ] sync the credential-vault spec and archive (on land)
