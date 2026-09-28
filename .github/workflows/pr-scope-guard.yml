@@ -307,7 +307,14 @@ jobs:
           # part of what escaped and the regex still omitted it. router.py validates
           # carriers and classifies receipt settlement; storage/ persists and mints
           # receipts, claims and invocation reservations. Both now covered.
-          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|providers/router\.py$|storage/provider_work_authority\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
+          # WIDENED 2026-09-28, because PR #4073 changed custody path validation
+          # in conversation_custody.py and nothing asked for a receipt. Any
+          # module whose NAME says authority or custody now matches, so the next
+          # one is covered when it is created, plus the named grant, principal,
+          # owner-binding, credential and consent modules. Measured against the
+          # 60 most recently merged PRs: 8 needed a receipt before, 9 after, and
+          # the one added is #4073 itself.
+          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|providers/router\.py$|storage/provider_work_authority\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$|([a-z_]+/)*[a-z_]*(authority|custody)[a-z_]*\.py$|providers/owner_binding\.py$|agent_runtime_(grants|principal)\.py$|principals\.py$|credential_refresh\.py$|connection_oauth/tokens\.py$|desktop/credentials\.py$|storage/effector_consents\.py$)'
           AUTHORITY_HITS="$(classify "$AUTHORITY_RE" "-i")" || exit 1
 
           # GROUNDED, not regex-only. A path match says WHERE an edit landed,
