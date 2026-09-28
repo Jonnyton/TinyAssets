@@ -285,7 +285,9 @@ def test_a_universe_with_no_model_is_told_to_connect_one_and_nothing_ran():
         "setup_required", "before_send", "none",
     )
     notice = failure_notice(record)
-    assert "no model connected" in notice and "connect one" in notice
+    assert "no model it can use" in notice and "connect a model" in notice
+    # Nothing is named when nothing accepted is held: the plain connect refusal.
+    assert record.provider_detail == ""
     assert "may already have occurred" not in notice.lower()
 
 

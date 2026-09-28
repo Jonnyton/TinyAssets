@@ -79,8 +79,9 @@ _CLASS_WORDS = {
         "confirmed that was the only cause"
     ),
     "setup_required": (
-        "this universe has no model connected yet; connect one from the request "
-        "under “Waiting on you”, then send your request again"
+        "this universe has no model it can use right now; connect a model, or "
+        "reconnect one that stopped working, from the request under “Waiting on "
+        "you”, then send your request again"
     ),
     "provider_protocol_error": (
         "the connected model replied in a format this universe could not read; "
