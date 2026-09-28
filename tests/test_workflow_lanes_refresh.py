@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import json
+import sqlite3
 
 from tests import test_background_budget_finalization_e2e as background
 from tests import test_run_provider_session as foreground
@@ -28,6 +29,7 @@ from tests.test_subscription_credential_refresh import (
     _endpoint_from_the_credential,
 )
 from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+from tinyassets.storage.provider_work_authority import db_path as authority_db_path
 
 work_agent = http_agent.work_agent
 http_wire = http_agent.http_wire
@@ -165,7 +167,9 @@ def test_a_background_agent_node_on_native_codex_refreshes_and_completes(
     launched: list[str] = []
 
     async def native(self, prompt, system, config, *, universe_dir=None):
-        launched.append(_stored_refresh_token(tmp_path))
+        # The launch ARTEFACT: the sealed copy the CLI actually reads.
+        document = json.loads((config.credential_snapshot_dir / "auth.json").read_bytes())
+        launched.append(document["tokens"]["refresh_token"])
         return ProviderResponse(
             text="background native work completed", provider="codex", model="native-default",
             family="codex", latency_ms=1, input_tokens=3, output_tokens=4, cost_microunits=0,
@@ -183,3 +187,117 @@ def test_a_background_agent_node_on_native_codex_refreshes_and_completes(
     # The launch ran on the ROTATED sign-in, not the stale one.
     assert launched == ["r-2"]
     assert _custody_matches_the_vault(tmp_path)
+
+
+def _counting_refresh(monkeypatch) -> list[str]:
+    """Count calls to the REAL refresh; a spend count cannot see a no-op call."""
+    from tinyassets import subscription_refresh
+
+    real = subscription_refresh.refresh_deposited_subscriptions
+    calls: list[str] = []
+
+    def counted(**kwargs):
+        calls.append(kwargs["owner_user_id"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(subscription_refresh, "refresh_deposited_subscriptions", counted)
+    return calls
+
+
+def test_a_multi_node_background_attempt_refreshes_once_and_keeps_its_receipt(
+    tmp_path, monkeypatch,
+):
+    """The attempt's work receipt is replayed by every node; a renewal at node 2
+    voided node 1's (Codex refute-review on #4082: two spends, one call, pending)."""
+    from tinyassets import subscription_refresh
+
+    def serving():
+        background._seed_serving_assignment(tmp_path)
+        _redeposit_stale(tmp_path)
+
+    spent = _rotating_spend(monkeypatch)
+    # Stale again the moment it is rotated: the worst case, a document entering
+    # its window between the two nodes.
+    monkeypatch.setattr(subscription_refresh, "document_is_stale", lambda *_a: True)
+    calls = _counting_refresh(monkeypatch)
+
+    task_id, _audience, _consumer, fake, _states = background._run_consumer_once(
+        tmp_path, monkeypatch, setup_serving=serving, policy=[None, None],
+    )
+
+    task = Epoch2BranchTaskAdapter(tmp_path).get(task_id)
+    assert task is not None and task.status == "succeeded", task and task.error
+    assert calls == [OWNER]
+    assert spent == ["r-1"]
+    assert len(fake.calls) == 2
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        receipts = conn.execute("SELECT COUNT(*) FROM provider_work_receipts").fetchone()[0]
+    assert receipts == 1
+
+
+def test_another_users_public_branch_never_refreshes_the_requesters_sign_in(
+    tmp_path, monkeypatch, authenticate_request,
+):
+    """Refused by admission as not the principal's Branch -- and refused before any
+    spend or renewal of the requester's credential."""
+    seed = foreground._seed_serving_assignment
+
+    def seed_then_age(base_path, **kwargs):
+        seed(base_path, **kwargs)
+        _redeposit_stale(base_path)
+
+    monkeypatch.setattr(foreground, "_seed_serving_assignment", seed_then_age)
+    spent = _rotating_spend(monkeypatch)
+    calls = _counting_refresh(monkeypatch)
+    branch = foreground._branch(node_count=1, author="acct_bob")
+    branch.visibility = "public"
+
+    response, provider, _ = foreground._run_branch(
+        tmp_path, monkeypatch, authenticate_request, branch,
+    )
+
+    assert response["terminal_status"] == "failed"
+    assert provider.calls == []
+    assert calls == [] and spent == []
+    assert _stored_refresh_token(tmp_path) == "r-1"
+
+
+def test_an_async_sub_branch_session_does_not_refresh_under_its_parent(
+    tmp_path, monkeypatch, authenticate_request,
+):
+    """A sibling session's renewal would move the assignment its parent's
+    retained receipt names; the parent already refreshed for this run."""
+    from tinyassets.daemon_server import save_branch_definition
+    from tinyassets.foreground_run_provider import (
+        _session_from_provider_call,
+        prepare_foreground_run_provider,
+    )
+    from tinyassets.runs import create_run, update_run_status
+
+    seed = foreground._seed_serving_assignment
+
+    def seed_then_age(base_path, **kwargs):
+        seed(base_path, **kwargs)
+        _redeposit_stale(base_path)
+
+    monkeypatch.setattr(foreground, "_seed_serving_assignment", seed_then_age)
+    _rotating_spend(monkeypatch)
+    calls = _counting_refresh(monkeypatch)
+    _, _, captured = foreground._run_branch(
+        tmp_path, monkeypatch, authenticate_request, foreground._branch(node_count=1),
+    )
+    assert calls == [OWNER]
+
+    child_branch = foreground._branch(node_count=1)
+    save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
+    child_run_id = create_run(
+        tmp_path, branch_def_id=child_branch.branch_def_id, thread_id="thread-child",
+        inputs={}, actor=f"universe:{UID}",
+    )
+    update_run_status(tmp_path, child_run_id, status="running")
+    child = _session_from_provider_call(prepare_foreground_run_provider(
+        captured["provider_call"], run_id=child_run_id, branch=child_branch,
+        branch_version_id=None, allowed_statuses={"running", "queued"},
+    ))
+    child._refresh_sign_ins()
+    assert calls == [OWNER]

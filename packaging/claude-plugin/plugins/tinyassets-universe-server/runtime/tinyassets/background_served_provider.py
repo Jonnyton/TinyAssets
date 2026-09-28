@@ -740,6 +740,7 @@ class _BackgroundAssignedProviderSession:
         self._base_path = base_path
         self._task = task
         self._universe_dir = base_path / task.universe_id
+        self._sign_ins_refreshed = False
         self._consumer_lease = consumer_lease
         self._provider_call = provider_call
         self._call_index = 0
@@ -901,15 +902,20 @@ class _BackgroundAssignedProviderSession:
                 return result, provider
 
     def _refresh_sign_ins(self) -> None:
-        """Bring the owner's stored sign-ins current at the node's entry.
+        """Bring the owner's stored sign-ins current before the attempt pins them.
 
-        Before anything this node call pins: an agent node's rounds share its
-        work receipt, and a refresh renews the accepted source, which moves the
-        assignment that receipt names. So it runs here, once per node call,
-        never inside `_authorize_launch`. The owner is the task's actor, proven
-        to be the background binding's authorizing principal; a task that proves
-        nothing refreshes nothing and is refused by the launch with its own words.
+        Once per session, at its first node call: the work receipt is the whole
+        ATTEMPT's, replayed by every later node and agent round, and a refresh
+        renews the accepted source, which moves the assignment that receipt
+        names. Refreshing at each node let a second node's renewal void the
+        first node's receipt (Codex refute-review on #4082, reproduced: two
+        spends, one call, task back to pending). The owner is the task's actor,
+        proven to be the background binding's authorizing principal; a task
+        that proves nothing refreshes nothing and is refused by the launch.
         """
+        if self._sign_ins_refreshed:
+            return
+        self._sign_ins_refreshed = True
         try:
             load_background_executor_identity(self._base_path, self._task, self._consumer_lease)
         except (BackgroundExecutorIdentityError, PermissionError):
@@ -1145,7 +1151,7 @@ class _BackgroundAssignedProviderSession:
         # foreground twin of this lane.
         #
         # The refresh belongs where nothing is pinned yet: for this lane that is
-        # `_refresh_sign_ins`, at the node call's entry. A finished
+        # `_refresh_sign_ins`, once, at the attempt's first node call. A finished
         # sign-in still surfaces from the launch itself, now typed as a sign-in
         # failure rather than an outage
         # (providers/codex_provider._terminal_auth_failure).

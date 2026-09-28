@@ -224,6 +224,10 @@ class _ForegroundRunProviderSession:
         # Retained so a SIBLING run inherits the SAME captured policy version
         # rather than re-reading the store mid-run. See `constructor_inputs`.
         self._model_preference_data = model_preference_data
+        # Set on a SIBLING session (async sub-branch): its parent already
+        # refreshed for this run, and a renewal now would move the assignment
+        # the parent's retained receipt names.
+        self._sign_ins_refreshed = False
 
     def _capture_choices(self) -> None:
         """Build this run's advisory order at ADMISSION, not construction.
@@ -673,11 +677,21 @@ class _ForegroundRunProviderSession:
         The receipt `_admit` mints pins the assignment generation and credential
         digest for the whole run, and a refresh renews the accepted source,
         which moves both. So this runs once, before that mint, and never after
-        it. Only for the principal's own home universe; anything else is
-        refused by `_admit` with its own words, and refreshes nothing on the way.
+        it. Only for a run `_admit` would accept on these grounds -- the
+        principal's own home, a Branch they authored, a run still running;
+        anything else is refused by `_admit` with its own words and refreshes
+        nothing on the way (Codex refute-review on #4082: another user's public
+        Branch refreshed the requester's sign-in and then failed).
         """
+        if self._sign_ins_refreshed:
+            return
+        self._sign_ins_refreshed = True
         try:
             self._validate_founder_home()
+            author = str((self._branch_snapshot or {}).get("author") or "").strip()
+            if author != self._principal_id:
+                return
+            self._validate_run(allowed_statuses={"running"})
         except PermissionError:
             return
         from tinyassets.subscription_refresh import refresh_deposited_subscriptions
@@ -1438,6 +1452,7 @@ def prepare_foreground_run_provider(
     bound = session.bound_run_id
     if bound and bound != run_id.strip():
         child = _ForegroundRunProviderSession(**session.constructor_inputs())
+        child._sign_ins_refreshed = True
         child.prepare(
             run_id=run_id,
             branch=branch,
