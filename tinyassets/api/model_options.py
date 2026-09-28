@@ -61,6 +61,23 @@ def _scope(conn, base, owner, uid):
         raise PermissionError("model catalogue scope unavailable")
 
 
+def _granted_only(connection):
+    """The connection with LEARNED candidates removed.
+
+    `_native_models` returns everything a client may SEE, which now includes ids
+    the platform verified on another universe of the same source kind. Those are
+    offers to grant; an admitted plan must contain only what this owner granted.
+    """
+    from dataclasses import replace as _replace
+
+    from tinyassets.providers.served_model_plan import _CANDIDATE_ONLY_BASES
+
+    return _replace(connection, models=tuple(
+        model for model in connection.models
+        if model.availability_basis not in _CANDIDATE_ONLY_BASES
+    ))
+
+
 def _native_inventory(conn, universe, owner):
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master "
@@ -195,7 +212,22 @@ def _collect(base, owner, uid):
             if legacy is not None and legacy[0].provider == provider and (
                 preferences.policy is None or preferences.policy.mode == "automatic"
             ):
-                plan = replace(plan, catalog=Catalog(owner, uid, (model,)))
+                # The LEGACY plan gets only what the owner actually granted. A
+                # learned id is a candidate to grant, never an admitted one, and
+                # Codex found this second caller still admitting them after the
+                # served_model_plan branch was fixed (#4028 round 2) -- one reader
+                # of _native_models was corrected and this one was not.
+                admitted = _granted_only(model)
+                plan = replace(plan, catalog=Catalog(owner, uid, (admitted,)))
+                # Withheld is not enough: each excluded row needs the REASON, or the
+                # picker cannot file it under "needs access" and the owner sees an
+                # unexplained inert row. Codex on #4028 found this path filtering
+                # correctly and reporting nothing (`reasons: []`).
+                for excluded in model.models:
+                    if excluded.model_id not in {m.model_id for m in admitted.models}:
+                        rejected.append(Ineligible(
+                            ModelRef(provider, excluded.model_id),
+                            "model_access_optin_required"))
             else:
                 rejected.append(Ineligible(ModelRef(provider, ""),
                                           "source_not_accepted" if provider not in accepted

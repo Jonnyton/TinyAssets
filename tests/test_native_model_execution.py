@@ -96,9 +96,14 @@ def test_native_catalogue_exposes_declared_ids_with_honest_basis(tmp_path, monke
             provider="codex", access=ModelAccess("explicit", ("", "new-id", "future-id")),
         ),
     )
-    # ModelAccess canonicalizes accepted membership; this is not fallback order.
-    assert [m.model_id for m in models.models] == ["", "future-id", "new-id"]
-    assert [m.availability_basis for m in models.models] == [
+    # THIS SOURCE's own models. Filtered by basis because a subscription source now
+    # also carries the reviewed public list (models/subscription.json) and the owner's
+    # own verified ids -- both candidates to grant, with their own bases, asserted in
+    # tests/test_public_model_lists.py. ModelAccess canonicalizes accepted membership;
+    # this is not fallback order.
+    own = [m for m in models.models if m.availability_basis in ("executor_default", "owner_declared", "executor_enumerated")]
+    assert [m.model_id for m in own] == ["", "future-id", "new-id"]
+    assert [m.availability_basis for m in own] == [
         "executor_default", "owner_declared", "owner_declared",
     ]
     assert models.default_model_id == ""
