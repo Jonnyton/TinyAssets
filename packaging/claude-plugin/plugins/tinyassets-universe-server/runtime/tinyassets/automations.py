@@ -1129,6 +1129,10 @@ def _validated_event(event_type: Any, event_filter: Any) -> tuple[str, dict[str,
         cleaned[key] = value.strip()
     if not EVENT_REQUIRED_FILTER_KEYS[kind] <= set(cleaned):
         raise AutomationUnavailable("event_filter_invalid")
+    # A cancelled run announces nothing (``automation_events``): a filter for
+    # it would be stored and never fire.
+    if kind == EVENT_RUN_COMPLETED and cleaned.get("outcome") == "cancelled":
+        raise AutomationUnavailable("event_filter_invalid")
     return kind, cleaned
 
 

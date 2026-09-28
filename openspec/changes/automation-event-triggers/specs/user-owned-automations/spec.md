@@ -12,9 +12,10 @@ row SHALL never be due on a clock. Each emitted event that matches an active
 subscription SHALL store a one-shot wake for the subscribed branch, with the
 payload under `inputs.event`, and the automation pump SHALL fire it with every
 run-time check an automation already has. An event SHALL be stamped with the
-principal that caused it, and SHALL wake only subscriptions that principal owns
-in that principal's own home universe. An event with no principal SHALL wake
-only the subscriptions of the universe's owner.
+principal that caused it, recorded when the run was created, and SHALL wake
+only subscriptions that principal owns in that principal's own home universe.
+An event with no principal SHALL wake nothing. A cancelled run SHALL announce
+nothing.
 
 #### Scenario: A run finishing wakes the branch that follows it
 - **GIVEN** an owner's `run_completed` subscription filtered on branch A
@@ -26,7 +27,7 @@ only the subscriptions of the universe's owner.
 - **THEN** one wake is stored with the request id, kind and status
 
 #### Scenario: Another user's activity wakes nothing
-- **WHEN** a different user's run finishes in the owner's universe, a visitor-driven run of the universe finishes, or someone else answers a request
+- **WHEN** a different user's run finishes in the owner's universe, a visitor-driven run of the universe finishes, someone else cancels the owner's run, or someone else answers a request
 - **THEN** no wake is stored for the owner's subscription
 
 #### Scenario: A subscription that could not fire is refused

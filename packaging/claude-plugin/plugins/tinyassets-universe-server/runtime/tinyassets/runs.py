@@ -1393,6 +1393,11 @@ def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
             # every public projection; read only via
             # tinyassets.run_admission_envelope after an ownership gate.
             ("admission_envelope_json", "TEXT"),
+            # Who caused this run, recorded when it is created: the actor, or
+            # for a `universe:<id>` run the principal bound for it. An engine
+            # event about the run is stamped with this, never with whatever
+            # identity happens to be ambient when the run ends.
+            ("cause_principal", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in existing_runs:
                 _alter(col, ddl)
@@ -2048,6 +2053,10 @@ def _insert_run_in_transaction(
                 ("" if managed_root else None),
             ),
         )
+        conn.execute(
+            "UPDATE runs SET cause_principal = ? WHERE run_id = ?",
+            (_cause_principal(actor), run_id),
+        )
     except sqlite3.IntegrityError as exc:
         if branch_task_id and "runs.branch_task_id" in str(exc):
             raise BranchTaskRunReservationConflict(
@@ -2061,6 +2070,16 @@ def _insert_run_in_transaction(
         if not _workspace_authenticated or type(_workspace_fence) is not FamilyFence:
             raise FamilyRefused("child insertion requires held family fence and identity")
         assign_in_transaction(conn, _workspace_fence, run_id, parent=_workspace_parent)
+
+
+def _cause_principal(actor: str) -> str:
+    """The principal a new run acts for: its actor, or the one bound for a
+    universe's own run. '' when a universe run has nobody bound."""
+    if not actor.startswith("universe:"):
+        return actor
+    from tinyassets.api.permissions import current_request_actor_id
+
+    return current_request_actor_id()
 
 
 def _guard_status_write(function):
@@ -2284,8 +2303,8 @@ def update_run_status(
             # The transition, not every terminal write: a later write that
             # only re-persists output must not announce the run twice.
             completed_row = conn.execute(
-                "SELECT branch_def_id, actor, queue_universe_id FROM runs "
-                "WHERE run_id = ?", (run_id,),
+                "SELECT branch_def_id, actor, queue_universe_id, cause_principal "
+                "FROM runs WHERE run_id = ?", (run_id,),
             ).fetchone()
         if status in _TERMINAL_STATUSES:
             # A lease in this database is owed THROUGH the outbox in the same
@@ -2374,6 +2393,7 @@ def _emit_run_completed(base_path: str | Path, run_id: str, status: str, row: An
         outcome=str(status),
         actor=str(row["actor"] or ""),
         queue_universe_id=str(row["queue_universe_id"] or ""),
+        cause_principal=str(row["cause_principal"] or ""),
     )
 
 
@@ -6645,8 +6665,8 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
         conn.execute("BEGIN IMMEDIATE")
         prepared_exclusion = _prepared_run_recovery_exclusion(conn)
         candidates = conn.execute(
-            "SELECT run_id, status, queue_universe_id, branch_def_id, actor "
-            "FROM runs WHERE status IN (?, ?) "
+            "SELECT run_id, status, queue_universe_id, branch_def_id, actor, "
+            "cause_principal FROM runs WHERE status IN (?, ?) "
             "AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL "
             "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion,
             (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),

@@ -31,9 +31,12 @@ cannot follow another graph, or wait for its owner's answer, without polling:
 - **A match stores a `once` wake**, with `inputs.event` holding the payload.
   The existing pump fires it with every run-time check an automation has.
 - **Stamped with the causing principal.** An event wakes only subscriptions
-  that principal owns, in that principal's home universe. An event with no
-  principal (the universe's own background work, a platform dismissal) wakes
-  only the subscriptions of the universe's owner.
+  that principal owns, in that principal's home universe. A run's principal is
+  recorded on the run when it is created (`runs.cause_principal`: the actor,
+  or the principal bound for a `universe:<id>` run), not read from whatever
+  identity is ambient when it ends. An event with no principal wakes nothing.
+- **A cancelled run announces nothing.** Whoever cancelled it caused that end,
+  and a collaborator's cancel must not start the owner's follow-up work.
 - **The four un-emitted scheduler types are retired.** `subscribe_branch`
   refuses and points at automation events. `source:<id>` subscriptions are
   unchanged.
@@ -47,7 +50,9 @@ cannot follow another graph, or wait for its owner's answer, without polling:
   `tinyassets/storage/pending_requests.py`, `tinyassets/scheduler.py`,
   `tinyassets/api/runtime_ops.py`.
 - Storage: the `trigger_kind` CHECK widens to `event`, and the `event_type` and
-  `event_filter_json` columns are added. Both are applied on connect.
+  `event_filter_json` columns are added. `runs` gains `cause_principal`. All
+  are applied on connect; a run created before this carries none and announces
+  nothing.
 - Public surface: new `create` payload fields, and new projection fields under
   `trigger`.
 - Resolves concern `2026-09-02-non-source-event-subscriptions-never-fire.md`.

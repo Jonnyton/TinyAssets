@@ -112,15 +112,28 @@ def _wakes(base: Path, universe: str = UNIVERSE) -> list[Automation]:
     ]
 
 
+def _start(base: Path, *, actor: str, queue_universe_id: str | None = None,
+           bound: str | None = None, branch_def_id: str = FOLLOWED) -> str:
+    """A running run, created with `bound` as the request identity."""
+    with _as(bound):
+        run_id = create_run(
+            base, branch_def_id=branch_def_id, thread_id="t", inputs={},
+            actor=actor, queue_universe_id=queue_universe_id,
+        )
+    update_run_status(base, run_id, status=RUN_STATUS_RUNNING)
+    return run_id
+
+
 def _finish(base: Path, *, actor: str, status: str = RUN_STATUS_COMPLETED,
             queue_universe_id: str | None = None, bound: str | None = None,
-            branch_def_id: str = FOLLOWED) -> str:
-    run_id = create_run(
-        base, branch_def_id=branch_def_id, thread_id="t", inputs={}, actor=actor,
-        queue_universe_id=queue_universe_id,
-    )
-    update_run_status(base, run_id, status=RUN_STATUS_RUNNING)
-    with _as(bound):
+            branch_def_id: str = FOLLOWED, ended_by: str | None = "acct_stranger",
+            ) -> str:
+    """Create a run as `bound`, then end it with a DIFFERENT ambient identity:
+    the event is stamped from the run's creation, never from who is ambient
+    when it ends."""
+    run_id = _start(base, actor=actor, queue_universe_id=queue_universe_id,
+                    bound=bound, branch_def_id=branch_def_id)
+    with _as(ended_by):
         update_run_status(base, run_id, status=status, finished_at=1.0)
     return run_id
 
@@ -177,12 +190,16 @@ def test_a_finished_run_wakes_the_branch_that_follows_it_through_the_pump(
     assert _wakes(home) == []
 
 
-def test_the_universes_own_background_run_wakes_its_owner(home: Path) -> None:
-    """An automation run's actor is `universe:<id>`; the owner is bound for it."""
+def test_the_universes_own_background_run_wakes_the_owner_bound_for_it(
+    home: Path,
+) -> None:
+    """An automation run's actor is `universe:<id>`; the owner is bound for it.
+    A universe run nobody was bound for wakes nothing: no principal is not a
+    broadcast (Codex refute 2026-09-28, P1)."""
     _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
-    _finish(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
-    _finish(home, actor=f"universe:{UNIVERSE}", bound=None)
-    assert len(_wakes(home)) == 2
+    _finish(home, actor=f"universe:{UNIVERSE}", bound=OWNER, ended_by=None)
+    _finish(home, actor=f"universe:{UNIVERSE}", bound=None, ended_by=OWNER)
+    assert len(_wakes(home)) == 1
 
 
 def test_only_the_transition_announces_a_run(home: Path) -> None:
@@ -207,9 +224,7 @@ def test_the_filter_selects_branch_and_outcome(home: Path) -> None:
 def test_a_deploy_killed_run_is_announced_as_interrupted(home: Path) -> None:
     _subscribe(home, "run_completed",
                {"branch_def_id": FOLLOWED, "outcome": "interrupted"})
-    run_id = create_run(home, branch_def_id=FOLLOWED, thread_id="t", inputs={},
-                        actor=f"universe:{UNIVERSE}")
-    update_run_status(home, run_id, status=RUN_STATUS_RUNNING)
+    run_id = _start(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
     with _as(None):  # boot: no request is bound
         assert recover_in_flight_runs(home) == 1
     [wake] = _wakes(home)
@@ -260,6 +275,37 @@ def test_a_co_admin_sharing_the_home_wakes_only_their_own_subscriptions(
     assert wake.owner_principal_id == carol
 
 
+def test_a_recovered_run_wakes_only_its_own_owner_not_a_co_admin(
+    home: Path,
+) -> None:
+    """Codex refute 2026-09-28, P1: Alice and Carol share a home, each following
+    A. Alice's background run is recovered at boot with nobody bound; only
+    Alice's subscription wakes."""
+    carol = "acct_carol"
+    _seed_owner(home, owner=carol)
+    _seed_branch(home, branch_def_id="branch_carols", author=carol,
+                 visibility="private")
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED}, owner=carol,
+               branch_def_id="branch_carols")
+    _start(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
+    with _as(None):
+        assert recover_in_flight_runs(home) == 1
+    assert [wake.owner_principal_id for wake in _wakes(home)] == [OWNER]
+
+
+def test_a_cancelled_run_announces_nothing(home: Path) -> None:
+    """Codex refute 2026-09-28, P1: a collaborator's cancel of the owner's run
+    must not start the owner's follow-up work. Whoever cancels caused the end."""
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    _finish(home, actor=OWNER, bound=OWNER, status="cancelled", ended_by=BOB)
+    assert _wakes(home) == []
+    with pytest.raises(AutomationUnavailable) as caught:
+        _subscribe(home, "run_completed",
+                   {"branch_def_id": FOLLOWED, "outcome": "cancelled"})
+    assert caught.value.reason == "event_filter_invalid"
+
+
 def test_the_owners_run_in_another_universe_wakes_nothing(home: Path) -> None:
     _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
     _finish(home, actor=OWNER, queue_universe_id=BOB_UNIVERSE)
@@ -275,7 +321,7 @@ def test_a_subscription_whose_owner_lost_admin_records_why_and_stores_nothing(
     sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
     grant_universe_access(home, universe_id=UNIVERSE, actor_id=OWNER,
                           permission="write", granted_by=OWNER)
-    _finish(home, actor=f"universe:{UNIVERSE}")
+    _finish(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
     assert _wakes(home) == []
     from tinyassets.storage.assigned_queue_refusals import AssignedQueueRefusalStore
 
@@ -296,13 +342,13 @@ def _owner_request():
     ))
 
 
-def _ask(base: Path) -> str:
+def _ask(base: Path, title: str = "Which city?") -> str:
     """The agent raises a question in Alice's universe, as the connector does."""
     from tinyassets.api.pending_requests import request_from_user
 
     with _owner_request():
         out = request_from_user(universe_id=UNIVERSE, payload=json.dumps({
-            "kind": "question", "title": "Which city?", "body": "Pick one.",
+            "kind": "question", "title": title, "body": "Pick one.",
             "action": {"type": "answer"},
             "fields": [{"name": "city", "type": "text", "label": "City"}],
         }))
@@ -335,13 +381,18 @@ def test_answering_through_the_connector_wakes_the_subscribed_branch(
     assert [branch for branch, _inputs in graph.calls] == [FOLLOWER]
 
 
-def test_a_dismissal_by_the_platform_wakes_only_the_owner(home: Path) -> None:
+def test_a_dismissal_by_the_owner_wakes_and_one_with_nobody_bound_does_not(
+    home: Path,
+) -> None:
     from tinyassets.storage.pending_requests import resolve_request
 
     _subscribe(home, "pending_request_answered", {"status": "dismissed"})
-    request_id = _ask(home)
-    with _as(None):  # the platform acts with no request bound
-        assert resolve_request(home / UNIVERSE, request_id, status="dismissed")
+    first, second = _ask(home), _ask(home, title="Which country?")
+    with _as(None):
+        assert resolve_request(home / UNIVERSE, first, status="dismissed")
+    assert _wakes(home) == []
+    with _as(OWNER):
+        assert resolve_request(home / UNIVERSE, second, status="dismissed")
     [wake] = _wakes(home)
     assert wake.owner_principal_id == OWNER
 

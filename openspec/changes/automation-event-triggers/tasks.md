@@ -10,7 +10,7 @@
 ## 2. Prove
 - [x] 2.1 Tests through the real emitters and the real pump (`tests/test_automation_events.py`).
 - [x] 2.2 Mutation-check the floor, the filter, the transition guard and the rebuild.
-- [ ] 2.3 gpt-6-astra refute round: cross-user reach and runaway cost.
+- [x] 2.3 gpt-6-astra refute round: cross-user reach and runaway cost (ADAPT; two P1s folded, one declined with reason).
 - [ ] 2.4 Deploy; `python scripts/deployed_sha.py --assert-contains <sha>`.
 
 ## 3. Land

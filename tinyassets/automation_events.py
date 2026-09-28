@@ -14,13 +14,19 @@ Two events are emitted, each from the one place its state changes:
   when a pending request is answered or dismissed from any surface. Payload:
   ``request_id``, ``kind``, ``status``.
 
-The cross-user floor: an event is stamped with the principal that caused it
-(the run's actor or bound owner; the answering request's actor). It wakes only
-subscriptions that principal owns, in that principal's own home universe. An
-event with no principal -- the universe's own background work, a platform
-dismissal, an OAuth callback -- wakes only the subscriptions of the universe's
-owner, who is re-checked as admin-with-this-home when the wake is stored. A
-visitor or collaborator acting in someone else's universe wakes nothing there.
+The cross-user floor: an event is stamped with the principal that caused it,
+and wakes only subscriptions that principal owns, in that principal's own home
+universe. A run's principal is recorded on the run row when it is CREATED
+(``runs.cause_principal``: the actor, or the principal bound for a
+``universe:<id>`` run), never read from whatever identity is ambient when it
+ends. An answer's principal is the answering request's actor. An event with no
+principal wakes nothing: it is not a broadcast to every admin who shares the
+home (Codex refute 2026-09-28, P1). A visitor or collaborator acting in someone
+else's universe wakes nothing there.
+
+A ``cancelled`` run announces nothing. Whoever cancelled it caused that end,
+and a collaborator's cancel must not start the owner's follow-up work (Codex
+refute 2026-09-28, P1).
 
 Emission is best effort and after the fact: it never fails the status write or
 the answer that caused it. A process killed between the two loses the event.
@@ -83,7 +89,7 @@ def emit(
     """Store a wake for each subscription this event matches; return their ids.
 
     ``principal_id`` is who caused the event, or '' for the universe's own
-    work. Never raises.
+    work, which wakes nothing. Never raises.
     """
     try:
         return _emit(
@@ -115,25 +121,21 @@ def _emit(
     # nothing to wake, so the common case costs one stat, not a founder lookup.
     if not automations_db_path(base).is_file():
         return []
-    if principal_id.startswith(_UNIVERSE_ACTOR_PREFIX):
-        principal_id = ""
-    uid = universe_id
-    if principal_id:
-        home = get_founder_home(base, principal_id)
-        # A principal's event wakes only their own home, and only when the
-        # event happened there (or names no universe, e.g. a plain run_graph).
-        if not home or (uid and uid != home):
-            return []
-        uid = home
-    if not uid:
+    if not principal_id or principal_id.startswith(_UNIVERSE_ACTOR_PREFIX):
         return []
+    home = get_founder_home(base, principal_id)
+    # A principal's event wakes only their own home, and only when the event
+    # happened there (or names no universe, e.g. a plain run_graph).
+    if not home or (universe_id and universe_id != home):
+        return []
+    uid = home
     subs = [
         sub
         for sub in AutomationStore(base).list(universe_id=uid)
         if sub.trigger_kind == TRIGGER_EVENT
         and sub.event_type == event_type
         and sub.desired_state == STATE_ACTIVE
-        and (not principal_id or sub.owner_principal_id == principal_id)
+        and sub.owner_principal_id == principal_id
         and _matches(payload, sub.event_filter)
     ]
     if not subs:
@@ -179,18 +181,17 @@ def emit_run_completed(
     outcome: str,
     actor: str,
     queue_universe_id: str,
+    cause_principal: str,
 ) -> list[str]:
     """A run reached a terminal status. Called once, on the transition."""
-    from tinyassets.api.permissions import current_request_actor_id
-
+    if outcome == "cancelled":
+        return []
     actor = str(actor or "").strip()
     if actor.startswith(_UNIVERSE_ACTOR_PREFIX):
         universe_id = actor[len(_UNIVERSE_ACTOR_PREFIX):]
-        # The universe's own run: the owner bound for it, if any, caused it.
-        principal = current_request_actor_id()
     else:
         universe_id = str(queue_universe_id or "").strip()
-        principal = actor
+    principal = str(cause_principal or "").strip()
     return emit(
         base_path,
         event_type=EVENT_RUN_COMPLETED,
