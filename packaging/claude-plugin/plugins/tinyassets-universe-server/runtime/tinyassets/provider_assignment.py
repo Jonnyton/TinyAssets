@@ -1378,10 +1378,16 @@ async def authorize_served_provider_call_async(
     # before launch snapshot".
     #
     # `launching` is the source this call actually selected, so another deposited
-    # source's dead credential cannot fail this one. No owner is asserted: the
-    # authenticated principal is only resolved inside the admission below, and a
-    # refresh replaces bytes for a credential the owner already deposited -- it must
-    # not touch, claim or transfer its ownership row.
+    # source's dead credential cannot fail this one.
+    #
+    # The owner is the request's principal, proved by the same check the launch
+    # makes, under the shared admission (released again before the refresh takes
+    # the exclusive one). It is what carries the accepted binding onto a rotated
+    # document. Passing no owner rotated the founder's sign-in and then could not
+    # renew the binding, so custody pinned the old digest and every turn after it
+    # was refused "connect your provider" (live 2026-09-28). A request that proves
+    # no owner refreshes nothing: it is refused below, and it must not spend the
+    # owner's single-use refresh token on its way there.
     #
     # A selection that is not a `ModelRef` is refused below, by the checks that
     # already exist for it, and NOTHING is refreshed for it. Reading a field off an
@@ -1393,13 +1399,21 @@ async def authorize_served_provider_call_async(
     from tinyassets.providers.model_policy import ModelRef
 
     if isinstance(model_selection, ModelRef):
-        refresh_deposited_subscriptions(
-            base_path=base_path,
-            universe_dir=universe,
-            owner_user_id=None,
-            universe_id=universe.name,
-            launching=_SERVED_PROVIDER_SERVICE.get(model_selection.connection_id, ""),
-        )
+        try:
+            with provider_assignment_admission().shared(universe):
+                owner = _served_request_agent(
+                    base_path, universe, request_carrier, role, operation
+                )[0].principal_id
+        except Exception:  # noqa: BLE001 - refused with its own words below
+            owner = ""
+        if owner:
+            refresh_deposited_subscriptions(
+                base_path=base_path,
+                universe_dir=universe,
+                owner_user_id=owner,
+                universe_id=universe.name,
+                launching=_SERVED_PROVIDER_SERVICE.get(model_selection.connection_id, ""),
+            )
     try:
         with provider_assignment_admission().shared(universe):
             capability, agent = _served_request_agent(
