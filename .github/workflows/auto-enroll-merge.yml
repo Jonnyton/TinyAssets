@@ -100,6 +100,9 @@ jobs:
           # With the queue on, autoMergeRequest reads null once GitHub has
           # queued the PR, so the queue entry's enqueuer is checked too.
           who_enrolled() {
+            # The $owner/$name/$number GraphQL variables are for GitHub to
+            # bind, not the shell to expand, so the query stays single-quoted.
+            # shellcheck disable=SC2016
             gh api graphql \
               -F owner="${REPO%/*}" -F name="${REPO#*/}" -F number="$PR" \
               -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state mergedBy{__typename login} autoMergeRequest{enabledBy{__typename login}} mergeQueueEntry{enqueuer{__typename login}}}}}' \
