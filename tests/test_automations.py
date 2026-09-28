@@ -28,6 +28,7 @@ from tinyassets.automations import (
     Automation,
     AutomationStore,
     AutomationUnavailable,
+    automation_lease_key,
     cancel_grace_seconds,
     cron_min_gap_seconds,
     due_automations,
@@ -1629,13 +1630,14 @@ def test_a_run_that_ignores_cancellation_keeps_the_universe_leased(
     # The universe is NOT handed back while a provider call may still be live,
     # and the row is still there carrying its full TTL rather than deleted.
     store = AutomationStore(tmp_path)
+    key = automation_lease_key(registered)
     assert store.universe_lease_holder(
-        UNIVERSE, now=datetime.now(timezone.utc)
+        key, now=datetime.now(timezone.utc)
     ) == consumer.consumer_id
     with sqlite3.connect(store.db_path) as conn:
         row = conn.execute(
             "SELECT holder, expires_at FROM universe_leases WHERE universe_id = ?",
-            (UNIVERSE,),
+            (key,),
         ).fetchone()
     assert row is not None, "the lease row was deleted, not retained"
     assert str(row[0]) == consumer.consumer_id
