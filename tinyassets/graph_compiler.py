@@ -1249,6 +1249,7 @@ def _build_prompt_template_node(
     llm_policy: dict[str, Any] | None = None,
     concurrency_tracker: ConcurrencyTracker | None = None,
     universe_context: "UniverseContext | None" = None,
+    branch_def_id: str = "",
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that fills the prompt template and calls an
     LLM. Output is stored under the node's first ``output_keys`` entry
@@ -1266,6 +1267,27 @@ def _build_prompt_template_node(
     role = (node.model_hint or "writer").strip().lower() or "writer"
     template = node.prompt_template or ""
     timeout_s = float(node.timeout_seconds or 300.0)
+    from tinyassets.served_tools import AGENT_NODE_MARKERS
+
+    agent_node_id = (
+        node.node_id if AGENT_NODE_MARKERS.intersection(node.tools_allowed or []) else ""
+    )
+    agent_node_key = ""
+    if agent_node_id:
+        from tinyassets.served_tools import node_tool_grant
+        from tinyassets.shared_self import agent_node_key as _agent_node_key
+
+        agent_node_key = _agent_node_key(branch_def_id, node)
+
+        try:
+            node_tool_grant(node.tools_allowed)
+        except ValueError as exc:
+            raise CompilerError(f"Node '{node.node_id}': {exc}") from exc
+        # An agent node is the converse turn, which runs until it finishes: its
+        # slot is that turn's own runaway backstop, not a node timeout.
+        from tinyassets.universe_intelligence import served_absolute_cap_s
+
+        timeout_s = served_absolute_cap_s(getattr(universe_context, "config", None))
     strict_isolation = bool(getattr(node, "strict_input_isolation", True))
     declared_inputs = list(node.input_keys)
     # BUG-085 (Codex checker finding 1): state_schema fields carrying a
@@ -1295,6 +1317,8 @@ def _build_prompt_template_node(
             # Streaming providers use this cap, not the legacy timeout scalar.
             absolute_cap_s=timeout_s,
             reasoning_effort=_node_reasoning_effort,
+            agent_node_id=agent_node_id,
+            agent_node_key=agent_node_key,
         )
     except Exception:  # pragma: no cover - defensive; provider import is optional
         _node_cfg = None
@@ -1928,6 +1952,71 @@ def _node_enqueue_branch_run(
     })
 
 
+def _node_served_tool_call(
+    node: NodeDefinition,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    allowed: set[str],
+    execution_context: "BranchExecutionContext | None",
+    should_cancel: Callable[[], bool] | None,
+) -> dict[str, Any]:
+    """One served tool, called as the run's owner and pinned to its universe.
+
+    The grant is the node's ``tools_allowed``: naming no served tool grants all
+    of them (what the owner's chat has), naming some grants exactly those. Owner
+    and universe come from the run's immutable execution context, never from the
+    node. Foreign code is refused before its sandbox starts; this rechecks it.
+    """
+    import asyncio
+
+    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+
+    granted = allowed & set(SERVED_ENGINE_MCP_TOOLS)
+    if granted and name not in granted:
+        raise CompilerError(
+            f"Node '{node.node_id}' is not granted the served tool '{name}'; "
+            f"its grant is {sorted(granted)}."
+        )
+    ctx = execution_context
+    owner = (getattr(ctx, "owner_user_id", "") or "").strip()
+    universe = (getattr(ctx, "universe_id", "") or "").strip()
+    if (not owner or not universe
+            or getattr(ctx, "caller_provenance", "") != "own"
+            or (getattr(ctx, "definition_author", "") or "").strip() != owner):
+        raise CompilerError(
+            f"Node '{node.node_id}' may call served tools only in its owner's own "
+            "run of a branch that owner authored."
+        )
+    # Current serving-owner authority is checked by the route read itself.
+    if should_cancel is not None and should_cancel():
+        raise CompilerError(f"Node '{node.node_id}': run cancelled before '{name}'")
+
+    async def _call():
+        from tinyassets.engine_tool_client import open_engine_tools
+
+        async with open_engine_tools(actor_id=owner, graph_id=universe,
+                                     enabled_tools=(name,)) as tools:
+            return await tools.call(name, arguments)
+
+    try:
+        result = asyncio.run(_call())
+    except Exception as exc:
+        if _is_cancel_exception(exc):
+            raise
+        raise CompilerError(
+            f"Node '{node.node_id}' served tool '{name}' failed: {exc}"
+        ) from exc
+    text = "".join(
+        getattr(part, "text", "") for part in (getattr(result, "content", None) or ())
+    )
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        data = None
+    return {"is_error": bool(getattr(result, "isError", False)), "text": text, "data": data}
+
+
 def _enqueue_not_before(
     node: "NodeDefinition", kwargs: dict[str, Any], now: Any,
 ) -> str:
@@ -1979,6 +2068,7 @@ def _build_node_mcp_invoker(
     file_source: Any = None,
     file_inputs: dict[str, Any] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[..., dict[str, Any]]:
     allowed = set(node.tools_allowed or [])
     shared_enqueue_budget = enqueue_budget or NodeEnqueueBudget()
@@ -1988,6 +2078,13 @@ def _build_node_mcp_invoker(
         if not requested:
             raise CompilerError(
                 f"Node '{node.node_id}' invoke_mcp_action requires action_name."
+            )
+        from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+
+        if requested in SERVED_ENGINE_MCP_TOOLS:
+            return _node_served_tool_call(
+                node, requested, kwargs, allowed=allowed,
+                execution_context=execution_context, should_cancel=should_cancel,
             )
         resolved = _NODE_MCP_ACTION_ALIASES.get(requested)
         if resolved is None:
@@ -2220,7 +2317,7 @@ def _build_source_code_node(
                 base_path=base_path, enqueue_context=enqueue_context,
                 enqueue_budget=enqueue_budget, delivery_source=delivery_source,
                 file_source=file_source, file_inputs=file_inputs,
-                should_cancel=should_cancel,
+                should_cancel=should_cancel, execution_context=execution_context,
             )
             # The sandbox answers RPCs from a drain THREAD, which carries no
             # ContextVars: without this, an RPC resolved the daemon's env
@@ -3507,6 +3604,7 @@ def _build_node(
     enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
+    branch_def_id: str = "",
     on_node_status: Callable[[str, str], None] | None = None,
     effect_chain: Any = None,
     ancestors: set[str] | None = None,
@@ -3548,6 +3646,7 @@ def _build_node(
         enqueue_budget=enqueue_budget,
         universe_context=universe_context,
         execution_context=execution_context,
+        branch_def_id=branch_def_id,
         delivery_source=delivery_source,
         file_source=file_source,
         on_node_status=on_node_status,
@@ -3600,6 +3699,7 @@ def _build_node_inner(
     enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
+    branch_def_id: str = "",
     delivery_source: Any = None,
     file_source: Any = None,
     on_node_status: Callable[[str, str], None] | None = None,
@@ -3647,7 +3747,7 @@ def _build_node_inner(
             node, provider_call=provider_call, event_sink=event_sink,
             state_schema=state_schema, llm_policy=llm_policy,
             concurrency_tracker=concurrency_tracker,
-            universe_context=universe_context,
+            universe_context=universe_context, branch_def_id=branch_def_id,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if domain_id:
@@ -3972,6 +4072,7 @@ def compile_branch(
             enqueue_budget=enqueue_budget,
             universe_context=universe_context,
             execution_context=execution_context,
+            branch_def_id=branch.branch_def_id,
             on_node_status=on_node_status,
             effect_chain=effect_chain,
             ancestors=ancestors_by_gid.get(gn.id, set()) if effect_chain is not None else None,

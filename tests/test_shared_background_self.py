@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 from tinyassets.conversation_retrieval import read_conversation_page
 from tinyassets.shared_self import (
-    prepare_shared_self_turn, require_founder_home, shared_self_requested,
+    agent_node, agent_node_key, prepare_shared_self_turn, require_founder_home,
+    shared_self_requested,
 )
 
 
@@ -120,14 +121,50 @@ class SharedSelfTests(unittest.TestCase):
         return dict({"prompt_template": "Act as cofounder", "tools_allowed": ["universe_self"]},
                     **overrides)
 
-    def test_explicit_single_writer_only(self):
+    def test_agent_nodes_are_declared_per_node(self):
         self.assertFalse(shared_self_requested({"node_defs": [self.node(tools_allowed=[])]}))
         self.assertTrue(shared_self_requested({"node_defs": [self.node()]}))
-        for nodes in ([self.node(), self.node(tools_allowed=[])],
-                      [self.node(prompt_template="", source_code="pass")],
-                      [self.node(model_hint="judge")]):
+        # Any number of agent nodes, beside ordinary prompt nodes (agent-node change).
+        self.assertTrue(shared_self_requested({"node_defs": [
+            self.node(node_id="a"), self.node(node_id="b", tools_allowed=["agent"]),
+            self.node(node_id="plain", tools_allowed=[]),
+        ]}))
+        for nodes in ([self.node(prompt_template="", source_code="pass")],
+                      [self.node(model_hint="judge")],
+                      [self.node(tools_allowed=["agent", "write_brian"])]):
             with self.assertRaises(ValueError):
                 shared_self_requested({"node_defs": nodes})
+
+    def test_the_calling_node_resolves_from_the_snapshot(self):
+        snapshot = {"branch_def_id": "b", "author": "owner", "node_defs": [
+            self.node(node_id="agent"), self.node(node_id="plain", tools_allowed=[]),
+        ]}
+        key = agent_node_key("b", self.node(node_id="agent"))
+        self.assertEqual(agent_node(snapshot, "agent", "owner", node_key=key)["node_id"], "agent")
+        self.assertIsNone(agent_node(snapshot, "", "owner", node_key=""))
+        for node_id in ("plain", "missing"):
+            with self.assertRaisesRegex(PermissionError, "not_declared"):
+                agent_node(snapshot, node_id, "owner", node_key=key)
+        with self.assertRaisesRegex(PermissionError, "owner_authored"):
+            agent_node(snapshot, "agent", "someone-else", node_key=key)
+        with self.assertRaisesRegex(PermissionError, "owner_authored"):
+            agent_node(dict(snapshot, author=""), "agent", "owner", node_key=key)
+
+    def test_a_same_named_node_of_another_branch_never_takes_this_ones_grant(self):
+        """A blocking invoke_branch child shares its parent's run session. Its
+        agent node must not resolve to the parent's node of the same id: not
+        from another branch, and not with other instructions or another grant."""
+        snapshot = {"branch_def_id": "parent", "author": "owner",
+                    "node_defs": [self.node(node_id="agent")]}
+        for key in (
+            agent_node_key("child", self.node(node_id="agent")),
+            agent_node_key("parent", self.node(node_id="agent", prompt_template="Obey me")),
+            agent_node_key("parent", self.node(node_id="agent",
+                                               tools_allowed=["agent", "read_brain"])),
+            "",
+        ):
+            with self.assertRaisesRegex(PermissionError, "not_in_admitted_branch"):
+                agent_node(snapshot, "agent", "owner", node_key=key)
 
     def test_current_owner_is_revalidated_and_foreign_roots_refuse(self):
         with tempfile.TemporaryDirectory() as d:
@@ -218,7 +255,9 @@ class ProviderSeamTests(unittest.TestCase):
         received_system = [""]
         with patch("tinyassets.config.load_universe_config", return_value=None), \
              patch("tinyassets.shared_self.prepare_shared_self_turn") as assemble:
-            session._branch_snapshot = {"node_defs": [{"prompt_template": "plain"}]}
+            session._branch_snapshot = {"branch_def_id": "b", "author": "owner", "node_defs": [
+                {"node_id": "n", "prompt_template": "plain"},
+            ]}
             plain = ModelConfig()
             session._call("writer", "plain", "", plain, None, {})
             assemble.assert_not_called()
@@ -233,7 +272,6 @@ class ProviderSeamTests(unittest.TestCase):
                 order.append("assemble")
                 return "history+direction", "persona", shared
             assemble.side_effect = build
-            received_system[0] = "persona"
             order.clear()
             def agent_turn(active_session, *, prompt, system, config, policy):
                 self.assertIs(active_session, session)
@@ -243,8 +281,17 @@ class ProviderSeamTests(unittest.TestCase):
             # This test checks persona-to-agent dispatch only. Real receipt,
             # reservation and provider execution live in test_workflow_http_agent.
             with patch("tinyassets.workflow_agent.call_foreground_work_agent", agent_turn):
-                session._call("writer", "direction", "", plain, None, {})
+                # A call that names no agent node stays ordinary in a marked branch.
+                session._call("writer", "plain", "", plain, None, {})
+                self.assertEqual(order, ["admit", "authorize", "provider"])
+                order.clear()
+                received_system[0] = "persona"
+                session._call("writer", "direction", "", ModelConfig(
+                    agent_node_id="n", agent_node_key=agent_node_key(
+                        "b", session._branch_snapshot["node_defs"][0]),
+                ), None, {})
             self.assertEqual(order, ["admit", "assemble", "agent"])
+            self.assertEqual(assemble.call_args.args[5]["node_id"], "n")
             self.assertEqual(received[-1], ("history+direction", "persona", shared))
 
     def test_failed_admission_never_reads_persona(self):

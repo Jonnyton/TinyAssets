@@ -724,16 +724,10 @@ def run_graph(
     for, rather than describing it: read your graph with ``read_graph
     target="graph"`` to find the branch, then run it here.
 
-    Confinement (slice 2, 2026-08-19; comment corrected 2026-08-23): the run
-    executes as the FOUNDER and is authorized by ``run_branch``'s branch
-    resolver, which admits a founder-owned OR a PUBLIC branch and refuses a
-    foreign PRIVATE one (it is NOT author-only). Safe execution of a public
-    foreign branch rests on the sanitized invoke_branch path (#2498: delegated
-    child-authority, fail-closed actor, mapping/await confidentiality), not on an
-    author gate. The run is pinned to YOUR universe (its effects and records land
-    under your universe, not another). Spend is bounded by the served-provider
-    budget reservation and the per-run recursion limit; an effect-only branch
-    spends no provider budget at all.
+    The run executes as the FOUNDER, pinned to YOUR universe (its effects and
+    records land there): your own branch or a PUBLIC one, never another user's
+    private branch. Spend is bounded by the provider budget reservation; an
+    effect-only branch spends none.
 
     Args:
         branch_def_id: The branch definition id to run (from ``read_graph
@@ -1531,6 +1525,13 @@ _WRITE_GRAPH_CODE_NODES_CHAPTER = """\
     needed for app attachments. The reference metadata (its sha256 included) is
     untrusted and proves nothing about the bytes until the run reads them; no
     reference grants anything by itself.
+
+    AGENT NODES. A prompt node whose ``tools_allowed`` holds ``"agent"`` runs a
+    full turn as me for its step (my persona, brain and every served tool, pinned
+    to this universe) and writes its final answer to its output key; naming tools
+    beside it, e.g. ``["agent", "read_brain", "write_graph"]``, grants only those;
+    ``write_graph`` alone can build and schedule a node with any grant, so leave
+    it out when the narrowing must hold.
 
 """
 
@@ -2343,7 +2344,10 @@ def write_graph(
     a generic pending-request answer does not grant tools or execute them.
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
-      spec in ``payload_json`` (stored PRIVATE to your universe).
+      spec in ``payload_json`` (stored PRIVATE to your universe). A prompt node
+      with ``"agent"`` in ``tools_allowed`` runs a whole turn as you for its step;
+      tool names beside it narrow it to exactly those (granting both write_graph
+      and run_graph lets it build and run a wider node).
     - ``operation="patch"`` — edit one of YOUR OWN branches in place: pass its
       ``branch_id`` and a JSON array of edit ops in ``payload_json`` (add/remove
       edges + nodes, retune a node's prompt/source or its ``llm_policy`` model pin,
@@ -2381,8 +2385,8 @@ def write_graph(
       extending or taking back a key, and writing a file through an API that
       takes base64.
     * ``code_nodes`` -- a node that runs my own Python instead of a prompt: the
-      ``run(state, effects)`` contract, what ``effects`` exposes, and reading the
-      exact bytes of a file the user attached.
+      ``run(state, effects)`` contract, what ``effects`` exposes, reading the
+      exact bytes of a file the user attached, and agent nodes.
     * ``workspaces`` -- a directory my code nodes share across a run, the
       ``"sink": "workspace"`` packet every one of them carries, the two ways to
       get a workspace, and a repository checkout.
