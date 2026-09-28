@@ -694,10 +694,10 @@ def validate_private_universe_location(
             continue
         try:
             metadata = _lstat_no_alias(candidate, expect_directory=False)
-        except ConversationCustodyAuthorizationError:
+        except ConversationCustodyAuthorizationError as exc:
             # Another connection's last close removes the WAL sidecars. One
             # that vanished after lexists is as absent as one never seen.
-            if candidate != database and not os.path.lexists(candidate):
+            if candidate != database and isinstance(exc.__cause__, FileNotFoundError):
                 continue
             raise
         if candidate == database:

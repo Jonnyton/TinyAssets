@@ -80,6 +80,10 @@ def _key(value: int) -> str:
     return f"ik_{encoded}"
 
 
+def _process_refuse(code: str) -> None:
+    raise _custody().ConversationCustodyAuthorizationError(code, "refused in a worker")
+
+
 def _process_create_thread(args: tuple[str, str, str]) -> str:
     root_raw, universe_raw, key = args
     custody = _custody()
@@ -615,6 +619,31 @@ def test_database_removed_between_exists_and_lstat_is_refused(
     assert seen and blocked.value.code == "storage_location_invalid"
 
 
+def test_unreadable_sidecar_is_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = _evidence(custody, root, universe)
+    (universe / ".tinyassets.db").write_bytes(b"first")
+    sidecar = universe / ".tinyassets.db-wal"
+    sidecar.write_bytes(b"transient")
+    real_lstat = Path.lstat
+
+    def lstat(self):
+        # Only a sidecar that is gone may be skipped; any other failure refuses.
+        if self == sidecar:
+            raise PermissionError("denied")
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
+        custody.validate_private_universe_location(evidence)
+    assert blocked.value.code == "storage_location_invalid"
+
+
 def test_authorization_error_crosses_a_process_boundary() -> None:
     custody = _custody()
     error = custody.ConversationCustodyAuthorizationError(
@@ -623,6 +652,13 @@ def test_authorization_error_crosses_a_process_boundary() -> None:
     restored = pickle.loads(pickle.dumps(error))
     assert type(restored) is custody.ConversationCustodyAuthorizationError
     assert (restored.code, str(restored)) == (error.code, str(error))
+
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=1, mp_context=context) as executor:
+        future = executor.submit(_process_refuse, "grant_consumed")
+        with pytest.raises(custody.ConversationCustodyAuthorizationError) as raised:
+            future.result(timeout=60)
+    assert raised.value.code == "grant_consumed"
 
 
 def test_canonical_json_has_exact_bytes_and_preserves_unknown_members() -> None:
