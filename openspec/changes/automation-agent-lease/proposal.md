@@ -31,10 +31,16 @@ run is still going.
 - **Legacy queue work still owns its whole universe.** A legacy task's
   universe lease and any agent lease in that universe exclude each other. The
   check runs in the acquiring transaction.
-- **Fair slots.** Free slots go to one agent per universe per pass, so one
-  owner's many agents cannot take every slot ahead of another owner's first.
-  Only one row per agent is started per poll. A second due row is judged on
-  the next poll, under its own policy.
+- **Fair slots.** Free slots go first to the universe running the fewest
+  agents, one agent per universe per pass, with a rotation to break ties. One
+  owner's long-running agents therefore cannot keep reclaiming every slot that
+  frees while another owner waits. A run that ignored cancellation still holds
+  its slot. Only one row per agent is started per poll. A second due row is
+  judged on the next poll, under its own policy. Policies are applied even
+  when every slot is full.
+- **Unambiguous keys.** An agent key is `agent:<len>:<universe>:<branch>`, so
+  no key and no universe prefix can reach another universe whatever the ids
+  contain.
 
 ## Impact
 
@@ -45,5 +51,5 @@ run is still going.
   guidance).
 - Storage: `automations.overlap` (default `queue`) and `universe_leases.run_id`,
   both added on connect. The lease table keeps its name, and its key column
-  now holds `<universe>::<branch>` for agents.
+  now holds `agent:<len>:<universe>:<branch>` for agents.
 - Public surface: an `overlap` create field and projection field.

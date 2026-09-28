@@ -38,6 +38,7 @@ from tinyassets.automations import (
     Automation,
     AutomationStore,
     AutomationUnavailable,
+    agent_lease_prefix,
     automation_lease_key,
     register_automation,
 )
@@ -93,15 +94,20 @@ class _Blocking:
     def __init__(self) -> None:
         self.release = threading.Event()
         self.entered: list[str] = []
+        self._started = 0
         self._lock = threading.Lock()
 
     def __call__(self, base_path, automation, provider_call, branch, inputs,
                  on_run_started=None):
         with self._lock:
-            run_id = f"run_{automation.branch_def_id}_{len(self.entered)}"
-            self.entered.append(automation.automation_id)
+            run_id = f"run_{automation.branch_def_id}_{self._started}"
+            self._started += 1
+        # Publish the run (and its lease run id) BEFORE counting it as entered,
+        # so a test that waits for entry sees the run fully started.
         if callable(on_run_started):
             on_run_started(run_id)
+        with self._lock:
+            self.entered.append(automation.automation_id)
         assert self.release.wait(20), "the test never released the run"
         return _FakeOutcome(run_id=run_id, status="completed")
 
@@ -189,8 +195,7 @@ def test_slots_go_one_agent_per_universe_before_a_second(
 def test_two_rows_due_for_one_agent_start_one_run(home: Path, monkeypatch) -> None:
     """With free workers, a second submission for the same agent would start at
     once and re-take the lease its own consumer holds."""
-    first = _wake(home, WRITER)
-    _wake(home, WRITER)
+    wakes = {_wake(home, WRITER).automation_id, _wake(home, WRITER).automation_id}
     graph = _Blocking()
     monkeypatch.setattr(automations_module, "_execute", graph)
     consumer = _threaded_consumer(home)
@@ -198,7 +203,8 @@ def test_two_rows_due_for_one_agent_start_one_run(home: Path, monkeypatch) -> No
         assert consumer.poll_once() == 1
         graph.wait_for(1)
         time.sleep(0.3)  # a second run, if one was started, has entered by now
-        assert graph.entered == [first.automation_id]
+        # Created in the same second, so which one runs first is a tie.
+        assert len(graph.entered) == 1 and set(graph.entered) <= wakes
     finally:
         graph.release.set()
         consumer.stop(timeout=10)
@@ -213,7 +219,7 @@ def test_a_running_agent_keeps_legacy_queue_work_out_of_its_universe(
 
     store = AutomationStore(home)
     assert store.acquire_universe_lease(
-        f"{UNIVERSE}::{WRITER}", holder="worker_assigned_agent_process",
+        f"{agent_lease_prefix(UNIVERSE)}{WRITER}", holder="worker_assigned_agent_process",
         now=datetime.now(timezone.utc), ttl_seconds=3600,
     )
     monkeypatch.setattr(automations_module, "due_automations",
@@ -315,7 +321,7 @@ def test_cancel_previous_never_reaches_another_universes_run(
     """The run id is read from THIS agent's lease key, which names the universe."""
     store = AutomationStore(home)
     now = datetime.now(timezone.utc)
-    bob_key = f"{BOB_UNIVERSE}::{WRITER}"
+    bob_key = f"{agent_lease_prefix(BOB_UNIVERSE)}{WRITER}"
     assert store.acquire_universe_lease(
         bob_key, holder="worker_assigned_bob", now=now, ttl_seconds=3600,
     )
@@ -419,3 +425,113 @@ def test_skip_applies_when_another_process_is_running_the_agent(
         child.wait(timeout=30)
     assert ran == []
     assert _attempt_statuses(home, wake.automation_id) == ["skipped"]
+
+
+# -- Folded from the gpt-6-astra refute round (2026-09-28) -----------------------
+
+
+def test_cancel_previous_never_cancels_its_own_running_occurrence(
+    home: Path, monkeypatch,
+) -> None:
+    """A cadence stays due while it runs (last_due_at moves on finish); a poll in
+    between must not read its own run as a previous one (refute P1)."""
+    cancelled: list[str] = []
+    monkeypatch.setattr("tinyassets.runs.request_cancel",
+                        lambda base, run_id: cancelled.append(run_id))
+    _automate(home, WRITER, overlap="cancel_previous")
+    graph = _Blocking()
+    monkeypatch.setattr(automations_module, "_execute", graph)
+    consumer = _threaded_consumer(home)
+    try:
+        assert consumer.poll_once() == 1
+        graph.wait_for(1)
+        assert consumer.poll_once() == 0
+        assert cancelled == []
+    finally:
+        graph.release.set()
+        consumer.stop(timeout=10)
+
+
+def test_a_freed_slot_goes_to_the_owner_running_fewer_agents(
+    home: Path, monkeypatch,
+) -> None:
+    """Across polls, not only within one: Alice already runs an agent, so the
+    one free slot goes to Bob's waiting agent, not Alice's second (refute P1)."""
+    from tests.test_automations import _copy_assignment_to
+
+    _seed_owner(home, universe_id=BOB_UNIVERSE, owner=BOB)
+    _seed_branch(home, branch_def_id=BOB_AGENT, author=BOB)
+    _copy_assignment_to(home, universe_id=BOB_UNIVERSE, owner=BOB)
+    monkeypatch.setattr(
+        "tinyassets.provider_serving_binding.list_serving_universes",
+        lambda _base: [UNIVERSE, BOB_UNIVERSE],
+    )
+    _automate(home, WRITER, name="alice-first")
+    graph = _Blocking()
+    monkeypatch.setattr(automations_module, "_execute", graph)
+    consumer = _threaded_consumer(home, concurrency=2)
+    try:
+        # Only Alice is due: her first agent takes a slot.
+        assert consumer.poll_once() == 1
+        graph.wait_for(1)
+        _automate(home, READER, name="alice-second")
+        bobs = _automate(home, BOB_AGENT, universe=BOB_UNIVERSE, owner=BOB)
+        assert consumer.poll_once() == 1
+        graph.wait_for(2)
+        assert graph.entered[1] == bobs.automation_id
+    finally:
+        graph.release.set()
+        consumer.stop(timeout=10)
+
+
+def test_an_unstopped_run_still_holds_its_slot(home: Path, monkeypatch) -> None:
+    """A timed-out run whose worker ignored cancellation is still running, so
+    it counts against concurrency (refute P1)."""
+    from concurrent.futures import Future
+
+    worker: Future = Future()
+    monkeypatch.setattr("tinyassets.runs.get_future",
+                        lambda rid: worker if rid == "run_stuck" else None)
+    consumer = _threaded_consumer(home, concurrency=2)
+    try:
+        consumer._unstopped[f"{agent_lease_prefix(UNIVERSE)}{WRITER}"] = {"run_stuck"}
+        free, busy = consumer._reap_finished()
+        assert free == 1
+        assert busy == {f"{agent_lease_prefix(UNIVERSE)}{WRITER}"}
+    finally:
+        worker.set_result(None)
+        consumer.stop(timeout=10)
+
+
+def test_skip_applies_even_when_every_slot_is_full(home: Path, monkeypatch) -> None:
+    """With no free slot the scan still runs, so the policy is not deferred
+    until a slot frees and the wake then runs anyway (refute P2)."""
+    _automate(home, WRITER, name="first")
+    graph = _Blocking()
+    monkeypatch.setattr(automations_module, "_execute", graph)
+    consumer = _threaded_consumer(home, concurrency=1)
+    try:
+        assert consumer.poll_once() == 1
+        graph.wait_for(1)
+        wake = _wake(home, WRITER, overlap="skip")
+        assert consumer.poll_once() == 0
+        assert _attempt_statuses(home, wake.automation_id) == ["skipped"]
+    finally:
+        graph.release.set()
+        consumer.stop(timeout=10)
+
+
+def test_lease_keys_cannot_collide_across_universes() -> None:
+    """(U, B::C) and (U::B, C) are different agents, and one universe's prefix
+    reaches none of another's keys (refute P2)."""
+    from tinyassets.automations import lease_key_universe
+
+    def key(universe: str, branch: str) -> str:
+        return f"{agent_lease_prefix(universe)}{branch}"
+
+    assert key("U", "B::C") != key("U::B", "C")
+    assert not key("U::B", "C").startswith(agent_lease_prefix("U"))
+    assert not key("U:1:x", "C").startswith(agent_lease_prefix("U"))
+    assert lease_key_universe(key("U::B", "C")) == "U::B"
+    assert lease_key_universe(key("u_1", "b")) == "u_1"
+    assert lease_key_universe("universe_bare") == "universe_bare"

@@ -102,9 +102,11 @@ OVERLAP_SKIP = "skip"
 OVERLAP_CANCEL_PREVIOUS = "cancel_previous"
 OVERLAP_POLICIES = frozenset({OVERLAP_QUEUE, OVERLAP_SKIP, OVERLAP_CANCEL_PREVIOUS})
 
-#: Separates a universe from a branch in an automation lease key. A universe
-#: id is a directory name and cannot contain it.
-LEASE_KEY_SEPARATOR = "::"
+#: An agent's lease key is ``agent:<len(universe)>:<universe>:<branch>``. The
+#: length prefix makes it unambiguous whatever the ids contain, so no key and
+#: no universe prefix can reach into another universe (Codex refute
+#: 2026-09-28, P2: `(U, B::C)` and `(U::B, C)` collided under a bare `::`).
+LEASE_KEY_PREFIX = "agent:"
 
 #: Refusal-ledger key convention. Shared with the consumer and the owner's
 #: surface, which read the reason back out of ``assigned_queue_refusals``.
@@ -927,6 +929,20 @@ class AutomationStore:
         finally:
             conn.close()
 
+    def attempt_claimed(self, automation_id: str, due_at: str) -> bool:
+        """Whether ``(automation_id, due_at)`` has already been claimed."""
+        conn = self._connect(create=False)
+        if conn is None:
+            return False
+        try:
+            return conn.execute(
+                "SELECT 1 FROM automation_attempts "
+                "WHERE automation_id = ? AND due_at = ?",
+                (automation_id, due_at),
+            ).fetchone() is not None
+        finally:
+            conn.close()
+
     def lease_run_id(self, key: str, *, now: datetime) -> str:
         """The run the live lease on ``key`` is working, or ''."""
         conn = self._connect(create=False)
@@ -1452,7 +1468,24 @@ def automation_lease_key(automation: Automation) -> str:
     beside its own previous run. Keyed by branch, it never overlaps itself,
     and two different agents in one universe run side by side.
     """
-    return f"{automation.universe_id}{LEASE_KEY_SEPARATOR}{automation.branch_def_id}"
+    return f"{agent_lease_prefix(automation.universe_id)}{automation.branch_def_id}"
+
+
+def agent_lease_prefix(universe_id: str) -> str:
+    """The prefix every agent lease key of one universe starts with, and only
+    that universe's: the length field pins where the universe id ends."""
+    return f"{LEASE_KEY_PREFIX}{len(universe_id)}:{universe_id}:"
+
+
+def lease_key_universe(key: str) -> str:
+    """The universe a lease key belongs to (a bare key is a universe id)."""
+    if not key.startswith(LEASE_KEY_PREFIX):
+        return key
+    length, _, rest = key[len(LEASE_KEY_PREFIX):].partition(":")
+    try:
+        return rest[: int(length)]
+    except ValueError:
+        return key
 
 
 def skip_overlapping(
@@ -2133,7 +2166,9 @@ __all__ = [
     "AutomationRunUnstopped",
     "AutomationStore",
     "AutomationUnavailable",
+    "agent_lease_prefix",
     "automation_lease_key",
+    "lease_key_universe",
     "automations_db_path",
     "cancel_grace_seconds",
     "cron_min_gap_seconds",

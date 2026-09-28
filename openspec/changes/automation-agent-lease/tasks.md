@@ -8,7 +8,7 @@
 ## 2. Prove
 - [x] 2.1 Tests through the real consumer (`tests/test_automation_agent_lease.py`); existing lease and dead-holder suites moved to agent keys.
 - [x] 2.2 Mutation-check the key, the legacy exclusion both ways, each policy, fairness, and the dead-holder proof.
-- [ ] 2.3 gpt-6-astra refute round: cross-user reach and runaway cost.
+- [x] 2.3 gpt-6-astra refute round: cross-user reach and runaway cost (ADAPT; three P1s and both P2s folded, one P1 declined with evidence).
 - [ ] 2.4 Deploy; `python scripts/deployed_sha.py --assert-contains <sha>`.
 
 ## 3. Land

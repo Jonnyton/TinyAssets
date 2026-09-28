@@ -557,7 +557,7 @@ class AssignedQueueConsumer:
         """
         from datetime import datetime as _dt
 
-        from tinyassets.automations import LEASE_KEY_SEPARATOR, AutomationStore
+        from tinyassets.automations import AutomationStore, agent_lease_prefix
         from tinyassets.storage.assigned_queue_refusals import (
             AssignedQueueRefusalStore,
         )
@@ -571,7 +571,7 @@ class AssignedQueueConsumer:
                 now=now,
                 # A legacy task still owns its whole universe: no agent of it
                 # may be running beside it (Codex round 2 §3a).
-                excluded_by_prefix=f"{universe_id}{LEASE_KEY_SEPARATOR}",
+                excluded_by_prefix=agent_lease_prefix(universe_id),
                 # The Epoch2 claim envelope, NOT the automation run timeout. A
                 # crashed legacy process makes its task recoverable after 30
                 # minutes; holding the universe for the 3-hour automation
@@ -650,13 +650,16 @@ class AssignedQueueConsumer:
                     future.result()
                 except Exception:  # noqa: BLE001 - already contained, retain diagnostics
                     logger.exception("assigned queue task future failed")
-            free = self.max_concurrency - len(self._active)
             active = set(self._active)
         # AFTER reaping, not before: a batch records its unstopped run before its
         # future completes, so a future seen done here has already published it.
         # Reading `_unstopped` first raced a batch finishing in between, which
         # returned its universe as free (Codex round 2, 2026-09-27).
-        return free, active | self._reap_unstopped()
+        busy = active | self._reap_unstopped()
+        # An unstopped run's worker is still running, so it still holds a slot:
+        # counting only `_active` let timed-out agents pile up past the
+        # concurrency limit (Codex refute 2026-09-28, P1).
+        return self.max_concurrency - len(busy), busy
 
     def _reap_unstopped(self) -> set[str]:
         """Lease keys whose timed-out run is still going; release the rest.
@@ -725,12 +728,17 @@ class AssignedQueueConsumer:
         current assignment on the executor thread (D1/D3). A universe whose scan
         raises gets a named refusal and the loop continues to the next owner.
         """
-        from tinyassets.automations import automation_lease_key, due_automations
+        from tinyassets.automations import (
+            automation_lease_key,
+            due_automations,
+            lease_key_universe,
+        )
 
+        # Scanned even with no free slot: a due row whose agent is running must
+        # still get its policy -- a `skip` retired, a `cancel_previous` sent --
+        # rather than wait for a slot and then run (Codex refute 2026-09-28, P2).
         capacity, busy = self._reap_finished()
         started: set[str] = set()
-        if capacity <= 0:
-            return 0, started
         now = datetime.now(timezone.utc)
         ready_by_universe: list[tuple[str, list[tuple[str, tuple[Any, str]]]]] = []
         for universe_id in serving_universes:
@@ -774,6 +782,22 @@ class AssignedQueueConsumer:
             if ready:
                 ready_by_universe.append((universe_id, ready))
 
+        # Fair share across polls, not only within one: the universe running
+        # the fewest agents goes first, so a slot that frees under one owner's
+        # long runs does not go straight back to that owner while another
+        # waits (Codex refute 2026-09-28, P1). The rotation breaks ties.
+        running: dict[str, int] = {}
+        for key in busy:
+            owner_universe = lease_key_universe(key)
+            running[owner_universe] = running.get(owner_universe, 0) + 1
+        self._fair_turn = (getattr(self, "_fair_turn", 0) + 1) % max(
+            1, len(ready_by_universe)
+        )
+        order = {
+            uid: (index - self._fair_turn) % max(1, len(ready_by_universe))
+            for index, (uid, _ready) in enumerate(ready_by_universe)
+        }
+        ready_by_universe.sort(key=lambda item: (running.get(item[0], 0), order[item[0]]))
         submitted = 0
         depth = 0
         while submitted < capacity and any(
@@ -821,7 +845,13 @@ class AssignedQueueConsumer:
         now: datetime,
         refusal_store: Any,
     ) -> None:
-        """A due row whose agent is running: queue, skip, or cancel the runner."""
+        """A due row whose agent is running: queue, skip, or cancel the runner.
+
+        A row whose instant is already claimed IS the running occurrence -- a
+        cadence's `last_due_at` moves only when its run finishes, so it stays
+        due while it runs. It has no policy to apply: `cancel_previous` would
+        cancel itself (Codex refute 2026-09-28, P1).
+        """
         from tinyassets.automations import (
             OVERLAP_CANCEL_PREVIOUS,
             OVERLAP_SKIP,
@@ -832,6 +862,15 @@ class AssignedQueueConsumer:
 
         policy = getattr(automation, "overlap", "")
         universe_id = automation.universe_id
+        try:
+            if AutomationStore(self.base_path).attempt_claimed(
+                automation.automation_id, due_at
+            ):
+                return
+        except Exception:  # noqa: BLE001 - unknown means do nothing this poll
+            logger.exception("attempt read failed automation=%s",
+                             automation.automation_id)
+            return
         if policy == OVERLAP_SKIP:
             skip_overlapping(
                 self.base_path, automation, due_at, now=now,
