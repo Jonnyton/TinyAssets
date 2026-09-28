@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sqlite3
 from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
@@ -8,10 +7,8 @@ from pathlib import Path
 
 import pytest
 
-import tinyassets.providers.call as provider_call_module
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_background_budget_finalization_e2e import (
-    _CountingProvider,
     _seed_claimable_background_path,
     _seed_serving_assignment,
 )
@@ -22,7 +19,6 @@ from tinyassets.api.universe import (
 )
 from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
 from tinyassets.cloud_automation_setup import prepare_cloud_automation
-from tinyassets.providers.router import ProviderRouter
 from tinyassets.runtime.assigned_queue_consumer import (
     AssignedQueueConsumer,
     supervisor_heartbeat_filename,
@@ -104,34 +100,31 @@ def test_flag_off_poll_leaves_no_beat_refusal_or_activation_side_effect(
     assert refusal_table is None
 
 
-def test_flag_on_poll_publishes_trusted_consumer_heartbeat(
+def test_flag_on_poll_publishes_the_beat_but_registers_no_fleet_worker(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    """The beat is what the watchdog reads, so it always goes out. The fleet-era
+    runtime row and queue descriptor retired with the legacy pump (plan C1):
+    the consumer no longer advertises itself as a fleet worker."""
     definition, _setup = _prepare_live_automation(tmp_path)
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
 
     try:
         consumer.poll_once()
-        workers, evidence = _classify_epoch2_workers(
+        workers, _evidence = _classify_epoch2_workers(
             tmp_path / definition.universe_id
         )
     finally:
         consumer.stop()
 
-    assert [worker["worker_id"] for worker in workers] == [consumer.consumer_id]
-    assert evidence["rejected"] == {}
+    assert workers == []
     assert (
         tmp_path
         / definition.universe_id
         / supervisor_heartbeat_filename(consumer.consumer_id)
     ).is_file()
-    summary = _epoch2_operational_snapshot(tmp_path / definition.universe_id)
-    assert summary["compatible_worker_count"] == 1
-    assert summary["operational_reason_counts"]["awaiting_compatible_capacity"].get(
-        "no_live_compatible_worker", 0
-    ) == 0
 
 
 def test_named_refusal_is_read_only_then_visible_without_mutating_pending_task(
@@ -195,59 +188,6 @@ def test_named_refusal_is_read_only_then_visible_without_mutating_pending_task(
     )
     assert stale_diagnostic["operational_state"] == "awaiting_compatible_capacity"
     assert stale_diagnostic["reason"] == "no_live_compatible_worker"
-
-
-def test_consumer_activates_then_claims_and_executes_without_env_identity(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    definition, setup = _prepare_live_automation(tmp_path)
-    identity_names = (
-        "TINYASSETS_AUTOMATION_OWNER_USER_ID",
-        "TINYASSETS_RUNTIME_INSTANCE_ID",
-        "TINYASSETS_WORKER_ID",
-    )
-    identity_before = {name: os.environ.get(name) for name in identity_names}
-    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
-    fake = _CountingProvider()
-    previous_router = provider_call_module.get_provider_router()
-    previous_force_mock = provider_call_module.is_force_mock()
-    provider_call_module.set_provider_router(ProviderRouter({"codex": fake}))
-    provider_call_module.set_force_mock(False)
-    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
-    deferred = _DeferredExecutor()
-    consumer._executor.shutdown(wait=False, cancel_futures=True)
-    consumer._executor = deferred
-
-    try:
-        assert consumer.poll_once() == 0
-        active = AutomationActivationStore(tmp_path).get(
-            definition.universe_id,
-            setup.control.automation_id,
-        )
-        assert active is not None and active.state.value == "active"
-        candidates = Epoch2BranchTaskAdapter(tmp_path).list_candidates(
-            universe_id=definition.universe_id,
-            limit=20,
-        )
-        assert len(candidates) == 1
-        assert candidates[0].status == "pending"
-
-        assert consumer.poll_once() == 1
-        running = Epoch2BranchTaskAdapter(tmp_path).get(candidates[0].branch_task_id)
-        assert running is not None and running.status == "running"
-        deferred.run()
-        assert deferred.future is not None
-        deferred.future.result(timeout=10)
-    finally:
-        consumer.stop()
-        provider_call_module.set_provider_router(previous_router)
-        provider_call_module.set_force_mock(previous_force_mock)
-
-    terminal = Epoch2BranchTaskAdapter(tmp_path).get(candidates[0].branch_task_id)
-    assert terminal is not None and terminal.status == "succeeded", terminal.error
-    assert len(fake.calls) == 1
-    assert {name: os.environ.get(name) for name in identity_names} == identity_before
 
 
 def _refusal_reason(base: Path, branch_task_id: str) -> str | None:
@@ -381,199 +321,6 @@ def test_unclaimable_candidate_does_not_starve_the_next(
     )
     claimed = adapter.get(branch_task_id)
     assert claimed is not None and claimed.status == "running"
-
-
-def test_orphan_pending_task_does_not_block_activation(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """Live 2026-08-25 (prod 796076a0): the founder resumed an automation through the
-    chatbot and nothing was produced - the pump was gated on 'no pending task at
-    all', and a legacy owner-queued task the consumer can never claim was pending."""
-    from dataclasses import replace
-
-    definition, setup = _prepare_live_automation(tmp_path)
-    template_id, _audience = _seed_claimable_background_path(tmp_path / "template")
-    template = Epoch2BranchTaskAdapter(tmp_path / "template").get(template_id)
-    assert template is not None
-    orphan = replace(
-        template,
-        branch_task_id="bt2_" + "0" * 32,
-        universe_id=definition.universe_id,
-        automation_id="",
-        automation_executor_class="",
-        automation_branch_version="",
-    )
-    real_list = Epoch2BranchTaskAdapter.list_candidates
-    monkeypatch.setattr(
-        Epoch2BranchTaskAdapter,
-        "list_candidates",
-        lambda self, **kwargs: [orphan] + real_list(self, **kwargs),
-    )
-    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
-    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
-    deferred = _DeferredExecutor()
-    consumer._executor.shutdown(wait=False, cancel_futures=True)
-    consumer._executor = deferred
-    try:
-        assert consumer.poll_once() == 0
-        active = AutomationActivationStore(tmp_path).get(
-            definition.universe_id,
-            setup.control.automation_id,
-        )
-        assert active is not None and active.state.value == "active"
-        # Next poll: the orphan is passed over WITH a reason and the produced
-        # slice behind it is claimed - nothing starves, nothing is silent.
-        assert consumer.poll_once() == 1
-    finally:
-        consumer.stop()
-    assert (
-        _refusal_reason(tmp_path, orphan.branch_task_id)
-        == "consumer_not_applicable:assigned_cloud_automation"
-    )
-
-
-def _reason_for_key(base: Path, key: str) -> str | None:
-    return _refusal_reason(base, key)
-
-
-def test_pump_records_provider_mismatch_instead_of_silently_skipping(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """Live 2026-08-25 (prod c5c36eb2): the founder resumed an automation, nothing was
-    produced, and nothing said why - its provider binding was claude-code while the
-    universe served codex, and the production fence skips silently."""
-    import tinyassets.provider_assignment as assignment_module
-
-    definition, setup = _prepare_live_automation(tmp_path)
-    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
-    # Prod shape: the automation is idle with a due slice (claimable). The store
-    # excludes an automation while its slice is still running, so model it.
-    from tinyassets.storage.cloud_automation_control import (
-        CloudAutomationControlStore,
-    )
-
-    monkeypatch.setattr(
-        CloudAutomationControlStore,
-        "list_claimable_automation_ids",
-        lambda self, **kwargs: [setup.control.automation_id],
-    )
-    fake = _CountingProvider()
-    previous_router = provider_call_module.get_provider_router()
-    previous_force_mock = provider_call_module.is_force_mock()
-    provider_call_module.set_provider_router(ProviderRouter({"codex": fake}))
-    provider_call_module.set_force_mock(False)
-    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=2)
-    deferred = _DeferredExecutor()
-    consumer._executor.shutdown(wait=False, cancel_futures=True)
-    consumer._executor = deferred
-    try:
-        # Activation still converges (it is provider-agnostic) ...
-        assert consumer.poll_once() == 0
-        active = AutomationActivationStore(tmp_path).get(
-            definition.universe_id,
-            setup.control.automation_id,
-        )
-        assert active is not None and active.state.value == "active"
-        # ... its first slice is claimed and completes ...
-        assert consumer.poll_once() == 1
-        deferred.run()
-        assert deferred.future is not None
-        deferred.future.result(timeout=10)
-        # The owner switches what the universe serves (prod: automations bound to
-        # claude-code, universe serving codex). A REAL runtime for the new
-        # provider is registered; production's exact fence then refuses.
-        from dataclasses import replace
-
-        real_load = assignment_module.load_provider_assignment
-
-        def _switched(base, *, universe_id):
-            found = real_load(base, universe_id=universe_id)
-            return None if found is None else replace(found, provider="claude-code")
-
-        monkeypatch.setattr(assignment_module, "load_provider_assignment", _switched)
-        assert consumer.poll_once() == 0
-    finally:
-        consumer.stop()
-        provider_call_module.set_provider_router(previous_router)
-        provider_call_module.set_force_mock(previous_force_mock)
-    key = f"automation:{setup.control.automation_id}"
-    reason = _reason_for_key(tmp_path, key)
-    assert reason == "provider_mismatch:automation=codex,serving=claude-code", reason
-    summary = _epoch2_operational_snapshot(tmp_path / definition.universe_id)
-    entry = next(item for item in summary["consumer_pump"] if item["key"] == key)
-    assert entry["reason"] == reason
-    # The remedy travels with the reason: this is the text the agent relays.
-    assert "rebind" in entry["next_action"].lower()
-    from tinyassets.api.cloud_automations import _consumer_reason
-
-    assert _consumer_reason(tmp_path, setup.control) == reason
-
-
-def test_pump_exception_is_recorded_per_principal(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    import tinyassets.cloud_automation_runtime as runtime_module
-
-    definition, _setup = _prepare_live_automation(tmp_path)
-    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
-
-    def _boom(*_args, **_kwargs):
-        raise RuntimeError("simulated activation failure")
-
-    monkeypatch.setattr(
-        runtime_module, "activate_one_requested_cloud_automation", _boom
-    )
-    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
-    try:
-        assert consumer.poll_once() == 0
-    finally:
-        consumer.stop()
-    summary = _epoch2_operational_snapshot(tmp_path / definition.universe_id)
-    reasons = {item["key"]: item["reason"] for item in summary["consumer_pump"]}
-    principal_keys = [k for k in reasons if k.startswith(f"universe:{definition.universe_id}:")]
-    assert principal_keys, reasons
-    assert all(
-        reasons[k].startswith("activate_error:RuntimeError:") for k in principal_keys
-    )
-
-
-def test_active_automation_that_produces_nothing_still_gets_a_reason(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """Live 2026-08-25 (prod 878d533b): consumer_pump came back EMPTY for a resumed
-    automation - activation and production both returned None and every precondition
-    passed, so nothing was recorded. An ACTIVE automation doing nothing must say why."""
-    definition, setup = _prepare_live_automation(tmp_path)
-    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
-    fake = _CountingProvider()
-    previous_router = provider_call_module.get_provider_router()
-    previous_force_mock = provider_call_module.is_force_mock()
-    provider_call_module.set_provider_router(ProviderRouter({"codex": fake}))
-    provider_call_module.set_force_mock(False)
-    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=2)
-    deferred = _DeferredExecutor()
-    consumer._executor.shutdown(wait=False, cancel_futures=True)
-    consumer._executor = deferred
-    try:
-        assert consumer.poll_once() == 0
-        assert consumer.poll_once() == 1
-        deferred.run()
-        assert deferred.future is not None
-        deferred.future.result(timeout=10)
-        # Idle: activation and production both decline, every precondition passes.
-        assert consumer.poll_once() == 0
-    finally:
-        consumer.stop()
-        provider_call_module.set_provider_router(previous_router)
-        provider_call_module.set_force_mock(previous_force_mock)
-    reason = _refusal_reason(tmp_path, f"automation:{setup.control.automation_id}")
-    assert reason in {"no_due_trigger", "production_declined"}, reason
-    summary = _epoch2_operational_snapshot(tmp_path / definition.universe_id)
-    assert [item for item in summary["consumer_pump"] if item["reason"] == reason]
 
 
 def test_error_reason_sanitises_paths_and_long_tokens():

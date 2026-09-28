@@ -1096,80 +1096,6 @@ def test_one_universes_scan_failure_does_not_stop_the_poll(
     )
 
 
-def test_a_universe_running_an_automation_skips_the_legacy_pump_that_poll(
-    tmp_path: Path,
-    registered: Automation,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        "tinyassets.provider_serving_binding.list_serving_universes",
-        lambda _base: [UNIVERSE],
-    )
-    monkeypatch.setattr(
-        automations_module,
-        "run_due_automation",
-        lambda *_args, **_kwargs: "ok:ran:run_1",
-    )
-    # The legacy pump only runs behind a live audience and an empty pending list.
-    # Without this the assertion below would be green no matter what the code did.
-    monkeypatch.setattr(
-        AssignedQueueConsumer,
-        "_publish_heartbeat",
-        lambda self, universe_id: object(),
-    )
-    pumped: list[str] = []
-    monkeypatch.setattr(
-        AssignedQueueConsumer,
-        "_pump_automation",
-        lambda self, universe_id, audience: pumped.append(universe_id) or False,
-    )
-    consumer, _inline = _consumer_with_inline_executor(tmp_path)
-
-    try:
-        consumer.poll_once()
-    finally:
-        consumer.stop()
-
-    assert pumped == []
-
-
-def test_the_legacy_pump_still_runs_for_a_universe_with_no_due_automation(
-    tmp_path: Path,
-    registered: Automation,
-    monkeypatch,
-) -> None:
-    """The positive control for the test above: the skip is conditional, not a
-    blanket disable of the fleet-era pump task 3.3 has not deleted yet."""
-    monkeypatch.setattr(
-        "tinyassets.provider_serving_binding.list_serving_universes",
-        lambda _base: [UNIVERSE],
-    )
-    monkeypatch.setattr(
-        automations_module,
-        "due_automations",
-        lambda base, *, universe_id, now: [],
-    )
-    monkeypatch.setattr(
-        AssignedQueueConsumer,
-        "_publish_heartbeat",
-        lambda self, universe_id: object(),
-    )
-    pumped: list[str] = []
-    monkeypatch.setattr(
-        AssignedQueueConsumer,
-        "_pump_automation",
-        lambda self, universe_id, audience: pumped.append(universe_id) or False,
-    )
-    consumer, _inline = _consumer_with_inline_executor(tmp_path)
-
-    try:
-        consumer.poll_once()
-    finally:
-        consumer.stop()
-
-    assert pumped == [UNIVERSE]
-
-
 def test_a_dark_consumer_scans_no_automations_at_all(
     tmp_path: Path,
     registered: Automation,
@@ -2627,9 +2553,6 @@ def test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all(
         lambda _base: [UNIVERSE],
     )
     monkeypatch.setattr(
-        AssignedQueueConsumer, "_serving_runtime", lambda self, *a, **k: None
-    )
-    monkeypatch.setattr(
         automations_module,
         "run_due_automation",
         lambda *_args, **_kwargs: "ok:ran:run_1",
@@ -2665,12 +2588,11 @@ def test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all(
     assert stamped <= datetime.now(timezone.utc) + timedelta(seconds=5)
     # No runtime means no audience and no invented executor identity...
     assert beat["runtime_instance_id"] == ""
-    # ...and the caller still says why it did no executor-bound work -- and
-    # says it honestly: this universe HAS a ready serving assignment, so the
-    # reason is the retired background executor, never "no serving provider
-    # selected" (which sent the founder's universe hunting for a selection
-    # surface that does not exist, app thread 2026-09-02).
-    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == "legacy_control_tasks_parked"
+    # ...and it says so honestly: this universe HAS a ready serving assignment,
+    # so it is never told "no serving provider selected" (which sent the
+    # founder's universe hunting for a selection surface that does not exist,
+    # app thread 2026-09-02). The `ok:` row is filtered out of status.
+    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == "ok:serving"
 
 
 def test_a_paused_universe_still_beats(
@@ -2687,9 +2609,6 @@ def test_a_paused_universe_still_beats(
     monkeypatch.setattr(
         "tinyassets.provider_serving_binding.list_serving_universes",
         lambda _base: [UNIVERSE],
-    )
-    monkeypatch.setattr(
-        AssignedQueueConsumer, "_serving_runtime", lambda self, *a, **k: None
     )
     (tmp_path / UNIVERSE / ".pause").write_text("owner paused", encoding="utf-8")
     consumer, _inline = _consumer_with_inline_executor(tmp_path)
