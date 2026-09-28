@@ -818,9 +818,14 @@ def _accepted_custody_is_stale(
     with SQLiteProviderWorkAuthorityStore(base_path).connection() as conn:
         conn.execute("BEGIN")
         try:
-            assignment = load_provider_assignment_in_transaction(
-                conn, universe_id=universe_id,
-            )
+            try:
+                assignment = load_provider_assignment_in_transaction(
+                    conn, universe_id=universe_id,
+                )
+            except (ValueError, PermissionError):
+                # An unreadable assignment is the launch's own refusal to make,
+                # in its own words; it is never a reason to renew anything.
+                return False
             if (
                 assignment is None or assignment.state != "ready"
                 or assignment.owner_user_id != owner

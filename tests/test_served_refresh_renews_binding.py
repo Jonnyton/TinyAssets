@@ -369,3 +369,36 @@ def test_a_source_no_longer_accepted_is_not_renewed_back_in(agent, monkeypatch):
     )
     assert renewed == []
     assert load_provider_assignment(base, universe_id="u-models") == before
+
+
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_an_unreadable_assignment_renews_nothing_and_leaves_the_refusal_to_the_launch(
+    agent, monkeypatch,
+):
+    """The self-heal check must not replace the launch's own refusal with its error."""
+    from tinyassets import provider_assignment, subscription_refresh
+
+    _redeposit_stale(agent)
+    monkeypatch.setattr(
+        subscription_refresh, "_spend",
+        lambda *_a, **_k: pytest.fail("nothing is stale; nothing may be spent"),
+    )
+    def unreadable(*_a, **_k):
+        raise ValueError("provider assignment digest is invalid")
+
+    monkeypatch.setattr(
+        provider_assignment, "load_provider_assignment_in_transaction", unreadable,
+    )
+    renewed: list[str] = []
+    monkeypatch.setattr(
+        subscription_refresh, "renew_accepted_source",
+        lambda **kwargs: renewed.append(kwargs["service"]) or {"status": "serving"},
+    )
+    # Nothing is stale, so only the self-heal check runs.
+    monkeypatch.setattr(subscription_refresh, "document_is_stale", lambda *_a: False)
+
+    subscription_refresh.refresh_deposited_subscriptions(
+        base_path=agent.served.rig.base, universe_dir=agent.served.context.universe_dir,
+        owner_user_id="owner", universe_id="u-models",
+    )
+    assert renewed == []
