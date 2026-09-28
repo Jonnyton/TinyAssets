@@ -873,6 +873,27 @@ existing conversation read paths.
   the notice has already said
 - **AND** no vendor error envelope is parsed to obtain them
 
+#### Scenario: A source refusing the model is a refusal, and the turn moves on
+
+- **WHEN** an HTTP source answers a selected model's inference request with 403,
+  404 or 410
+- **THEN** the attempt is `failure_class=provider_refused` with `effects=none`,
+  its `detail` carries the source's own status and scrubbed body, the record is
+  `code=provider_refused`, `stage=model_request`, and the notice says the
+  provider refused to serve the model and to choose another model or check
+  its access settings with that provider, never that a reply was unreadable
+- **AND** the connection is not cooled, and when every attempt of the round was
+  such a refusal the turn moves to the next model in the owner's accepted order
+  with only the refused MODEL excluded, at most three times per turn
+
+#### Scenario: A turn too large for the selected model moves to one that fits
+
+- **WHEN** our own pre-send measurement finds the served turn does not fit the
+  selected model's published context window
+- **THEN** nothing is sent, and the turn re-asks the owner's accepted order with
+  the measured size as its minimum context, excluding the model that did not
+  fit; only when no accepted model fits is the record `context_window_exceeded`
+
 #### Scenario: A universe with no model connected is told to connect one
 
 - **WHEN** the router refuses the turn because no provider is connected

@@ -17,6 +17,7 @@ from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ProviderAuthorityHeldError,
     ProviderProtocolError,
+    SelectedModelContextError,
 )
 from tinyassets.providers import agent_chat_codec as codec
 from tinyassets.providers.agent_capacity_boundary import capacity_boundary
@@ -90,6 +91,7 @@ class AgentTurnCoordinator:
         # rounds they replaced -- a turn that tried four models must not report
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
         self.free_sibling_retries = 0
+        self.refused_advances = 0
         self.spent_attempts = []
 
     def _check_scope(self):
@@ -356,7 +358,12 @@ class AgentTurnCoordinator:
                                     reply=None,
                                 )
                             )
-                        if self._next_after_capacity(exc) or self._next_after_signin(exc):
+                        if (
+                            self._next_after_capacity(exc)
+                            or self._next_after_signin(exc)
+                            or self._next_after_refusal(exc)
+                            or self._next_after_overflow(exc)
+                        ):
                             continue
                         raise
                     if self.execution_kind == "native_agent":
@@ -559,6 +566,87 @@ class AgentTurnCoordinator:
         narrowing -- and never when a native attempt may have committed a side
         effect, which is the state ``_next_after_capacity`` fences too.
         """
+        # The source is excluded for the REST OF THIS TURN by the same mechanism
+        # capacity uses -- an ``account``-scoped exclusion, because a finished
+        # sign-in is the whole connection's, never one model's. It is separately
+        # marked for reconnect by the router, so the owner's next turn does not
+        # start here either.
+        return self._advance_past(exc, "auth_invalid", "account")
+
+    #: How many models one turn may step past because the source refused them.
+    #: A refusal can be the whole key's (a revoked key answers 403 for every
+    #: model), and then each step is one more refused request; three bounds that
+    #: without giving up on a free order whose first few models moved on.
+    MAX_REFUSED_ADVANCES = 3
+
+    def _next_after_refusal(self, exc):
+        """Advance to the owner's next model when the source refused THIS one.
+
+        HTTP 403/404/410 on an inference request (``provider_refused``): access
+        to this model was refused, or the source no longer serves it. Live
+        2026-09-28 on the free-only account: its first free model was rate
+        limited, the second had been withdrawn from the catalog, and the third
+        answered 403 -- and the turn died there with free models still in the
+        owner's order. Same fences as a finished sign-in (every attempt of the
+        round refused, none may have acted, only candidates already in the
+        owner's accepted order) with a MODEL-scoped exclusion: the refusal names
+        the model, and its siblings on the same connection stay eligible.
+        """
+        if self.refused_advances >= self.MAX_REFUSED_ADVANCES:
+            return False
+        if not self._advance_past(exc, "provider_refused", "model"):
+            return False
+        self.refused_advances += 1
+        return True
+
+    def _next_after_overflow(self, exc):
+        """Move to an accepted model whose window fits, when this one's does not.
+
+        Our own pre-send measurement (``SelectedModelContextError``), so nothing
+        was sent, spent or run, and no round was opened. Live 2026-09-26 a large
+        tool result overflowed a 262k-token model while the owner's order held a
+        1M-token free model. The order is re-asked with the measured size as its
+        minimum context, so every model too small is skipped in one step rather
+        than tried one by one; the failed model is excluded too.
+
+        Served chat only (``self.plan``): a workflow run's candidates come from
+        its adapter, whose launch carrier this path has no business re-arming.
+        """
+        if (
+            self.plan is None
+            or not isinstance(exc, SelectedModelContextError)
+            or self.turn.state not in {"ready", "held_transport"}
+        ):
+            return False
+        needed = exc.required_tokens
+        if type(needed) is not int or needed < 1:
+            return False
+        from tinyassets.providers.model_policy import Exhaustion
+
+        failed = self.context.model_selection
+        self.visited.add(failed)
+        self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
+        interaction = self.plan.interaction
+        if interaction.min_context is None or interaction.min_context < needed:
+            self.plan = replace(
+                self.plan, interaction=replace(interaction, min_context=needed),
+            )
+        candidate = self._next_candidate()
+        if candidate is None or candidate in self.visited:
+            return False
+        self.context = replace(self.context, model_selection=candidate)
+        self.retrying_capacity = self.turn.state != "ready"
+        return True
+
+    def _advance_past(self, exc, failure_class, scope):
+        """Exclude the failed selection at ``scope`` and take the next candidate.
+
+        Advances only when EVERY attempt of the round carried ``failure_class``
+        -- a round that also hit capacity is the capacity path's to reason about
+        -- and never when an attempt may have committed a side effect. Only
+        candidates already in the owner's accepted order are reachable
+        (``_next_candidate``), so this never widens authority.
+        """
         if (
             not self._has_candidate_order()
             or not isinstance(exc, AllProvidersExhaustedError)
@@ -566,7 +654,7 @@ class AgentTurnCoordinator:
         ):
             return False
         attempts = tuple(exc.attempts or ())
-        if not attempts or any(a.failure_class != "auth_invalid" for a in attempts):
+        if not attempts or any(a.failure_class != failure_class for a in attempts):
             return False
         if any(
             getattr(a, "side_effect_state", "none") not in ("", "none")
@@ -577,14 +665,9 @@ class AgentTurnCoordinator:
             return False
         failed = self.context.model_selection
         self.visited.add(failed)
-        # The source is excluded for the REST OF THIS TURN by the same mechanism
-        # capacity uses -- an ``account``-scoped exclusion, because a finished
-        # sign-in is the whole connection's, never one model's. It is separately
-        # marked for reconnect by the router, so the owner's next turn does not
-        # start here either.
         from tinyassets.providers.model_policy import Exhaustion
 
-        self.exhaustion = self.exhaustion + (Exhaustion("account", failed),)
+        self.exhaustion = self.exhaustion + (Exhaustion(scope, failed),)
         candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
             return False
