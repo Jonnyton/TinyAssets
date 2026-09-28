@@ -7,6 +7,7 @@ import importlib
 import inspect
 import multiprocessing
 import os
+import pickle
 import secrets
 import sqlite3
 import threading
@@ -557,6 +558,71 @@ def test_existing_database_identity_is_stable_while_sidecars_may_transition(
             expected_primary_identity=initial.primary_identity,
         )
     assert blocked.value.code == "storage_location_invalid"
+
+
+@pytest.mark.parametrize("vanishing", [".tinyassets.db-wal", ".tinyassets.db-shm"])
+def test_sidecar_removed_between_exists_and_lstat_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vanishing: str,
+) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = _evidence(custody, root, universe)
+    (universe / ".tinyassets.db").write_bytes(b"first")
+    initial = custody.validate_private_universe_location(evidence)
+    sidecar = universe / vanishing
+    real_lexists = os.path.lexists
+    seen = []
+
+    def lexists(path):
+        # Report the sidecar once, as a concurrent close is about to unlink it.
+        if Path(path) == sidecar and not seen:
+            seen.append(path)
+            return True
+        return real_lexists(path)
+
+    monkeypatch.setattr(custody.os.path, "lexists", lexists)
+    location = custody.validate_private_universe_location(
+        evidence,
+        expected_primary_identity=initial.primary_identity,
+    )
+    assert seen and location.primary_identity == initial.primary_identity
+
+
+def test_database_removed_between_exists_and_lstat_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = _evidence(custody, root, universe)
+    database = universe / ".tinyassets.db"
+    real_lexists = os.path.lexists
+    seen = []
+
+    def lexists(path):
+        # The primary file vanishing mid-check is a real change, not a close.
+        if Path(path) == database and not seen:
+            seen.append(path)
+            return True
+        return real_lexists(path)
+
+    monkeypatch.setattr(custody.os.path, "lexists", lexists)
+    with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
+        custody.validate_private_universe_location(evidence)
+    assert seen and blocked.value.code == "storage_location_invalid"
+
+
+def test_authorization_error_crosses_a_process_boundary() -> None:
+    custody = _custody()
+    error = custody.ConversationCustodyAuthorizationError(
+        "storage_location_invalid", "registered custody path is unavailable"
+    )
+    restored = pickle.loads(pickle.dumps(error))
+    assert type(restored) is custody.ConversationCustodyAuthorizationError
+    assert (restored.code, str(restored)) == (error.code, str(error))
 
 
 def test_canonical_json_has_exact_bytes_and_preserves_unknown_members() -> None:
