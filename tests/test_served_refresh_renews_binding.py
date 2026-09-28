@@ -137,8 +137,8 @@ def test_an_unproven_request_spends_no_refresh_token(agent, monkeypatch):
     _redeposit_stale(agent)
     _endpoint_from_the_credential(monkeypatch)
     monkeypatch.setattr(
-        subscription_refresh, "_spend",
-        lambda *_a, **_k: pytest.fail("an unproven request spent the refresh token"),
+        subscription_refresh, "refresh_deposited_subscriptions",
+        lambda **_k: pytest.fail("an unproven request reached the refresh"),
     )
     # Not a request carrier the auth middleware issued.
     stranger = object()
@@ -293,3 +293,79 @@ def test_a_deposit_the_owner_never_accepted_is_not_renewed_by_a_turn(agent, monk
 
     assert _converse(agent, monkeypatch) == "finished exact answer"
     assert renewed == []
+
+
+def test_another_principals_deposit_is_never_spent_on_this_owners_turn(agent, monkeypatch):
+    """Proving the serving binding is not proving every credential in the vault."""
+    from tinyassets import subscription_refresh
+    from tinyassets.credential_vault import write_credential_vault
+
+    write_credential_vault(
+        agent.served.context.universe_dir, [{
+            "credential_type": "llm_subscription", "service": "codex",
+            "auth_json_b64": _stale_document("r-other"),
+        }], owner_user_id="other-owner", universe_id="u-models",
+    )
+    _endpoint_from_the_credential(monkeypatch)
+    monkeypatch.setattr(
+        subscription_refresh, "_spend",
+        lambda *_a, **_k: pytest.fail("spent another principal's refresh token"),
+    )
+    renewed: list[str] = []
+    monkeypatch.setattr(
+        subscription_refresh, "renew_accepted_source",
+        lambda **kwargs: renewed.append(kwargs["service"]) or {"status": "serving"},
+    )
+
+    assert _converse(agent, monkeypatch) == "finished exact answer"
+    assert renewed == []
+
+
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_a_source_no_longer_accepted_is_not_renewed_back_in(agent, monkeypatch):
+    """A custody row from an earlier acceptance is history, not consent."""
+    from tinyassets import subscription_refresh
+    from tinyassets.api.custom_agents import custom_agents
+    from tinyassets.custom_agents import get_binding
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    _redeposit_stale(agent)
+    base = agent.served.rig.base
+    current = get_binding(
+        base, universe_id="u-models", binding_id=agent.served.agent["agent_binding_id"],
+    )
+    # The owner narrows the accepted setup to the HTTP source alone.
+    narrowed = custom_agents(
+        action="bind_serving_provider", universe_id="u-models",
+        binding_id=current["agent_binding_id"], expected_revision=current["revision"],
+        payload={"provider": agent.served.rig.definition.id, "model_access": {
+            agent.served.rig.definition.id: ModelAccess("discovered").document(),
+        }},
+    )
+    assert narrowed["status"] == "ready", narrowed
+    before = load_provider_assignment(base, universe_id="u-models")
+    assert "codex" not in {m.provider for m in before.candidates}
+
+    _endpoint_from_the_credential(monkeypatch)
+    monkeypatch.setattr(
+        subscription_refresh, "_spend",
+        lambda document, **_: subscription_refresh._rebuild(
+            document, access_token="a-2", refresh_token="r-2", id_token=""),
+    )
+    # Fresh bytes behind the old codex custody row, with no renewal.
+    assert subscription_refresh.refresh_before_launch(
+        universe_dir=agent.served.context.universe_dir, service="codex",
+        owner_user_id=None, universe_id="u-models",
+    )
+    renewed: list[str] = []
+    monkeypatch.setattr(
+        subscription_refresh, "renew_accepted_source",
+        lambda **kwargs: renewed.append(kwargs["service"]) or {"status": "serving"},
+    )
+    subscription_refresh.refresh_deposited_subscriptions(
+        base_path=base, universe_dir=agent.served.context.universe_dir,
+        owner_user_id="owner", universe_id="u-models",
+    )
+    assert renewed == []
+    assert load_provider_assignment(base, universe_id="u-models") == before

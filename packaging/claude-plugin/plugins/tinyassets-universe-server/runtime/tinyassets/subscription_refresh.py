@@ -709,7 +709,10 @@ def refresh_deposited_subscriptions(
         # own words; it is not this seam's business to pre-empt it.
         return
     for service in services:
-        if not service:
+        if not service or not _deposited_by(base_path, universe_id, service, owner):
+            # Another principal's deposit is never spent or adopted on this
+            # owner's turn: proving the serving binding is not proving every
+            # credential in the vault (Codex refute-review on #4076, P1).
             continue
         # Adopt first: a document the CLI already rotated in a writable home is
         # newer than the vault's, and refreshing the vault's copy would spend a
@@ -775,29 +778,61 @@ def refresh_deposited_subscriptions(
                 )
 
 
-def _accepted_custody_is_stale(
-    base_path: str | Path, universe: Path, owner: str, universe_id: str, service: str,
-) -> bool:
-    """Whether the owner accepted this source and its stored bytes have since moved.
+def _deposited_by(base_path: str | Path, universe_id: str, service: str, owner: str) -> bool:
+    """Whether ``owner`` is the recorded depositor of this universe's ``service``.
 
-    Only an ACCEPTED source (one with a custody row) is ever renewed, so a deposit
-    the owner never accepted is not bound by a launch.
+    A later deposit by anyone else is refused by the vault writer ("ownership
+    transfer requires a dedicated flow"), so this row cannot change under us.
     """
-    from tinyassets.credential_vault import current_llm_subscription_custody
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
     with SQLiteProviderWorkAuthorityStore(base_path).connection() as conn:
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'llm_credential_deposit_owners'",
+        ).fetchone() is None:
+            return False
+        row = conn.execute(
+            "SELECT owner_user_id FROM llm_credential_deposit_owners "
+            "WHERE universe_id = ? AND service = ?",
+            (universe_id, service),
+        ).fetchone()
+    return row is not None and str(row[0]) == owner
+
+
+def _accepted_custody_is_stale(
+    base_path: str | Path, universe: Path, owner: str, universe_id: str, service: str,
+) -> bool:
+    """Whether the owner CURRENTLY accepts this source and its bytes have moved.
+
+    Only a source in the current accepted assignment is renewed: a custody row
+    left from an earlier acceptance is history, not consent, and renewing it
+    would re-point the assignment (Codex refute-review on #4076, P1).
+    """
+    from tinyassets.credential_vault import current_llm_subscription_custody
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    providers = {p for p, s in _PROVIDER_SERVICE.items() if s == service}
+    with SQLiteProviderWorkAuthorityStore(base_path).connection() as conn:
         conn.execute("BEGIN")
         try:
-            accepted = conn.execute(
-                "SELECT 1 FROM sqlite_master "
-                "WHERE type = 'table' AND name = 'llm_credential_custody'",
-            ).fetchone() is not None and conn.execute(
-                "SELECT 1 FROM llm_credential_custody "
-                "WHERE owner_user_id = ? AND universe_id = ? AND service = ?",
-                (owner, universe_id, service),
-            ).fetchone() is not None
-            return accepted and current_llm_subscription_custody(
+            assignment = load_provider_assignment_in_transaction(
+                conn, universe_id=universe_id,
+            )
+            if (
+                assignment is None or assignment.state != "ready"
+                or assignment.owner_user_id != owner
+            ):
+                return False
+            members = (
+                {m.provider for m in assignment.candidates}
+                if assignment.manifest_digest else {assignment.provider}
+            )
+            if not providers & members:
+                return False
+            return current_llm_subscription_custody(
                 conn, universe_dir=universe, owner_user_id=owner,
                 universe_id=universe_id, service=service,
             ) is None
