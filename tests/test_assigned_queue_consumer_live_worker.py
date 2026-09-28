@@ -349,7 +349,11 @@ def test_start_stops_every_fleet_control_with_a_recorded_reason(
     promise work nothing produces. Consumer start stops each one and records an
     owner-visible reason -- a disposition, never a silent drop -- and a second
     start leaves them alone."""
-    from tests.cloud_automation_fixtures import _definition
+    # One activated control, then PAUSED: not desired-active, and it must be
+    # retired too (Codex refute C1, P2). One plain active control beside it.
+    from datetime import datetime, timezone
+
+    from tests.test_cloud_automation_control import _active
     from tinyassets.cloud_automation_control import CloudAutomationDesiredState
     from tinyassets.runtime.assigned_queue_consumer import (
         RETIRED_FLEET_CONTROL_REASON,
@@ -358,9 +362,18 @@ def test_start_stops_every_fleet_control_with_a_recorded_reason(
         CloudAutomationControlStore,
     )
 
-    definition = _definition()
+    definition, _activations, active = _active(tmp_path)
     store = CloudAutomationControlStore(tmp_path)
-    store.create_control(definition, automation_id="automation_fleet_a", cadence_seconds=300)
+    store.schedule_initial(
+        definition, automation_id="automation_spec_drain", activation=active,
+        cadence_seconds=300, due_at=datetime.now(timezone.utc),
+    )
+    store.set_desired_state(
+        expected=store.get_control(
+            universe_id=definition.universe_id, automation_id="automation_spec_drain",
+        ),
+        desired_state=CloudAutomationDesiredState.PAUSED,
+    )
     store.create_control(definition, automation_id="automation_fleet_b", cadence_seconds=600)
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     monkeypatch.setattr(
@@ -373,10 +386,10 @@ def test_start_stops_every_fleet_control_with_a_recorded_reason(
 
     controls = store.list_controls(universe_id=definition.universe_id, limit=10)
     assert {c.automation_id: c.desired_state for c in controls} == {
-        "automation_fleet_a": CloudAutomationDesiredState.STOPPED,
+        "automation_spec_drain": CloudAutomationDesiredState.STOPPED,
         "automation_fleet_b": CloudAutomationDesiredState.STOPPED,
     }
-    for automation_id in ("automation_fleet_a", "automation_fleet_b"):
+    for automation_id in ("automation_spec_drain", "automation_fleet_b"):
         assert _refusal_reason(tmp_path, f"automation:{automation_id}") == (
             RETIRED_FLEET_CONTROL_REASON
         )

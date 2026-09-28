@@ -24,6 +24,7 @@ from tinyassets.branch_tasks_v2 import (
     Epoch2BranchTask,
     Epoch2BranchTaskAdapter,
 )
+from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
 from tinyassets.platform_runtime_provenance import (
     require_process_cloud_admission,
 )
@@ -42,14 +43,6 @@ _STARTED_CONSUMERS: weakref.WeakSet[AssignedQueueConsumer] = weakref.WeakSet()
 # remaining writer of these beats, and `deploy/daemon-watchdog.sh` restarts
 # the daemon when the freshest one goes stale.
 SUPERVISOR_HEARTBEAT_FILENAME = ".worker_supervisor.json"
-
-
-#: The recorded disposition of a fleet-era cloud-automation control when its
-#: pump was retired (plan C1, 2026-09-28).
-RETIRED_FLEET_CONTROL_REASON = (
-    "retired_fleet_era: this automation ran on the retired cloud-automation "
-    "layer and has been stopped; recreate it with write_graph target=automation"
-)
 
 
 def _safe_worker_id(worker_id: str) -> str:
@@ -1223,32 +1216,47 @@ class AssignedQueueConsumer:
             return
         try:
             store = CloudAutomationControlStore(self.base_path)
-            universes = store.list_universe_ids_with_desired_active(limit=1000)
+            # Every control not yet stopped -- paused ones too, which a
+            # desired-active listing misses -- and no page limit a pile of
+            # stopped rows could hide later ones behind (Codex refute C1, P2).
+            with store.connection() as conn:
+                pending = conn.execute(
+                    "SELECT universe_id, automation_id FROM cloud_automation_controls "
+                    "WHERE desired_state != ? ORDER BY universe_id, automation_id",
+                    (CloudAutomationDesiredState.STOPPED.value,),
+                ).fetchall()
         except Exception:  # noqa: BLE001 - no table, no controls to retire
             return
         refusals = AssignedQueueRefusalStore(self.base_path)
-        for universe_id in universes:
+        for universe_id, automation_id in pending:
             try:
-                for control in store.list_controls(universe_id=universe_id, limit=1000):
-                    if control.desired_state is CloudAutomationDesiredState.STOPPED:
-                        continue
-                    store.set_desired_state(
-                        expected=control,
-                        desired_state=CloudAutomationDesiredState.STOPPED,
-                    )
-                    refusals.record(
-                        branch_task_id=f"automation:{control.automation_id}",
-                        universe_id=universe_id,
-                        reason=RETIRED_FLEET_CONTROL_REASON,
-                        observed_at=datetime.now(timezone.utc).isoformat(),
-                        consumer_id=self.consumer_id,
-                    )
-                    logger.warning(
-                        "retired fleet-era cloud automation %s in %s",
-                        control.automation_id, universe_id,
-                    )
-            except Exception:  # noqa: BLE001 - one universe cannot stop the rest
-                logger.exception("fleet control retirement failed universe=%s", universe_id)
+                control = store.get_control(
+                    universe_id=universe_id, automation_id=automation_id,
+                )
+                if control is None or (
+                    control.desired_state is CloudAutomationDesiredState.STOPPED
+                ):
+                    continue
+                store.set_desired_state(
+                    expected=control,
+                    desired_state=CloudAutomationDesiredState.STOPPED,
+                )
+                refusals.record(
+                    branch_task_id=f"automation:{control.automation_id}",
+                    universe_id=universe_id,
+                    reason=RETIRED_FLEET_CONTROL_REASON,
+                    observed_at=datetime.now(timezone.utc).isoformat(),
+                    consumer_id=self.consumer_id,
+                )
+                logger.warning(
+                    "retired fleet-era cloud automation %s in %s",
+                    control.automation_id, universe_id,
+                )
+            except Exception:  # noqa: BLE001 - one control cannot stop the rest
+                logger.exception(
+                    "fleet control retirement failed universe=%s automation=%s",
+                    universe_id, automation_id,
+                )
 
     def _execute(
         self,

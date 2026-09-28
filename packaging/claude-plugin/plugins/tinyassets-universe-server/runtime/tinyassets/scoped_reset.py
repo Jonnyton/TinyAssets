@@ -110,8 +110,9 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     "background_branch_bindings": "preserve",
     "background_branch_attempts": "preserve",
     "background_branch_authority_owners": "preserve",
-    # Created alongside the background-branch store and by the fleet-era
-    # activation layer; same standing.
+    # Created alongside the background-branch store. Still read by the agent
+    # runtime until that retires (plan B2/B3); preserved like the fleet history,
+    # since a scoped reset never needed to rewrite it.
     "automation_activations": "preserve",
 })
 
