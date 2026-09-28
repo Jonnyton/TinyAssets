@@ -664,7 +664,30 @@ class _ForegroundRunProviderSession:
             return
         with self._lock:
             if self._receipt is None:
+                self._refresh_sign_ins()
                 self._admit()
+
+    def _refresh_sign_ins(self) -> None:
+        """Bring the owner's stored sign-ins current before the receipt pins them.
+
+        The receipt `_admit` mints pins the assignment generation and credential
+        digest for the whole run, and a refresh renews the accepted source,
+        which moves both. So this runs once, before that mint, and never after
+        it. Only for the principal's own home universe; anything else is
+        refused by `_admit` with its own words, and refreshes nothing on the way.
+        """
+        try:
+            self._validate_founder_home()
+        except PermissionError:
+            return
+        from tinyassets.subscription_refresh import refresh_deposited_subscriptions
+
+        refresh_deposited_subscriptions(
+            base_path=self._base_path,
+            universe_dir=self._universe_dir,
+            owner_user_id=self._principal_id,
+            universe_id=self._universe_id,
+        )
 
     def _validate_receipt_parent(self, parent_binding: Any, assignment: Any) -> None:
         receipt = self._receipt
@@ -861,11 +884,8 @@ class _ForegroundRunProviderSession:
             # was swallowed into ProviderAuthorityHeldError at :985, which cannot
             # fall back either. Codex refute-review P1 #3 reproduced both halves.
             #
-            # The refresh belongs where nothing is pinned yet, which is the served
-            # entry (`provider_assignment.authorize_served_provider_call_async`).
-            # Covering this lane means moving the seam ahead of the receipt mint,
-            # and that is its own change: docs/concerns/
-            # 2026-09-26-pr4032-refresh-launch-integration.md.
+            # The refresh belongs where nothing is pinned yet: for this lane that
+            # is `_refresh_sign_ins`, run once before the receipt mint.
             with self._lock:
                 self._call_index += 1
                 invocation_index = self._call_index

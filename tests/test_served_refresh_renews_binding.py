@@ -384,7 +384,8 @@ def test_an_unreadable_assignment_renews_nothing_and_leaves_the_refusal_to_the_l
         lambda *_a, **_k: pytest.fail("nothing is stale; nothing may be spent"),
     )
     def unreadable(*_a, **_k):
-        raise ValueError("provider assignment digest is invalid")
+        # The loader's own words for a tampered row (provider_assignment.py).
+        raise RuntimeError("provider assignment digest is invalid")
 
     monkeypatch.setattr(
         provider_assignment, "load_provider_assignment_in_transaction", unreadable,

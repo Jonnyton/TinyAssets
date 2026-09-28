@@ -822,7 +822,7 @@ def _accepted_custody_is_stale(
                 assignment = load_provider_assignment_in_transaction(
                     conn, universe_id=universe_id,
                 )
-            except (ValueError, PermissionError):
+            except (ValueError, RuntimeError, PermissionError):
                 # An unreadable assignment is the launch's own refusal to make,
                 # in its own words; it is never a reason to renew anything.
                 return False
