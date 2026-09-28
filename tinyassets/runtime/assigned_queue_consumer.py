@@ -557,7 +557,7 @@ class AssignedQueueConsumer:
         """
         from datetime import datetime as _dt
 
-        from tinyassets.automations import AutomationStore
+        from tinyassets.automations import AutomationStore, agent_lease_prefix
         from tinyassets.storage.assigned_queue_refusals import (
             AssignedQueueRefusalStore,
         )
@@ -569,6 +569,9 @@ class AssignedQueueConsumer:
                 universe_id,
                 holder=self.consumer_id,
                 now=now,
+                # A legacy task still owns its whole universe: no agent of it
+                # may be running beside it (Codex round 2 §3a).
+                excluded_by_prefix=agent_lease_prefix(universe_id),
                 # The Epoch2 claim envelope, NOT the automation run timeout. A
                 # crashed legacy process makes its task recoverable after 30
                 # minutes; holding the universe for the 3-hour automation
@@ -578,7 +581,7 @@ class AssignedQueueConsumer:
                 ttl_seconds=EPOCH2_TASK_LEASE_SECONDS,
             ):
                 return True
-            holder = store.universe_lease_holder(universe_id, now=now)
+            holder = store.universe_lease_holder(universe_id, now=now) or "agent"
         except Exception as exc:  # noqa: BLE001 - a lease blip cannot claim blind
             logger.exception("universe lease acquire failed universe=%s", universe_id)
             self._record_reason(
@@ -647,16 +650,19 @@ class AssignedQueueConsumer:
                     future.result()
                 except Exception:  # noqa: BLE001 - already contained, retain diagnostics
                     logger.exception("assigned queue task future failed")
-            free = self.max_concurrency - len(self._active)
             active = set(self._active)
         # AFTER reaping, not before: a batch records its unstopped run before its
         # future completes, so a future seen done here has already published it.
         # Reading `_unstopped` first raced a batch finishing in between, which
         # returned its universe as free (Codex round 2, 2026-09-27).
-        return free, active | self._reap_unstopped()
+        busy = active | self._reap_unstopped()
+        # An unstopped run's worker is still running, so it still holds a slot:
+        # counting only `_active` let timed-out agents pile up past the
+        # concurrency limit (Codex refute 2026-09-28, P1).
+        return self.max_concurrency - len(busy), busy
 
     def _reap_unstopped(self) -> set[str]:
-        """Universes whose timed-out run is still going; release the rest.
+        """Lease keys whose timed-out run is still going; release the rest.
 
         "Still going" is the worker's own future, not the run row: a status
         can be orphan-marked while the worker runs on, and a run id with no row
@@ -705,27 +711,37 @@ class AssignedQueueConsumer:
         serving_universes: list[str],
         refusal_store: Any,
     ) -> tuple[int, set[str]]:
-        """Submit each free universe's due user-owned automations.
+        """Submit each free agent's due user-owned automation.
 
-        Returns how many universes were submitted and which ones, so the legacy
-        pump and the claim loop can leave those universes alone this poll.
+        The fence is per agent (``automation_lease_key``: one branch in one
+        universe), so two agents of one universe run side by side. An agent
+        that is already running gets its due rows' ``overlap`` policy instead.
+        Slots are handed out one agent per universe per pass, so one owner's
+        many agents cannot take every slot ahead of another owner's first.
+
+        Returns how many runs were submitted and in which universes, so the
+        legacy pump and the claim loop can leave those universes alone this
+        poll.
 
         Nothing here decides authority: `due_automations` reads owner-declared
         rows, and `run_due_automation` re-derives the owner's admin, home and
         current assignment on the executor thread (D1/D3). A universe whose scan
         raises gets a named refusal and the loop continues to the next owner.
         """
-        from tinyassets.automations import due_automations
+        from tinyassets.automations import (
+            automation_lease_key,
+            due_automations,
+            lease_key_universe,
+        )
 
+        # Scanned even with no free slot: a due row whose agent is running must
+        # still get its policy -- a `skip` retired, a `cancel_previous` sent --
+        # rather than wait for a slot and then run (Codex refute 2026-09-28, P2).
         capacity, busy = self._reap_finished()
         started: set[str] = set()
-        if capacity <= 0:
-            return 0, started
-        submitted = 0
         now = datetime.now(timezone.utc)
+        ready_by_universe: list[tuple[str, list[tuple[str, tuple[Any, str]]]]] = []
         for universe_id in serving_universes:
-            if submitted >= capacity or universe_id in busy:
-                continue
             # `.pause` halts new background work for a universe; an automation is
             # exactly that (same sentinel the claim loop and the legacy pump honour).
             if self._paused(universe_id):
@@ -749,34 +765,160 @@ class AssignedQueueConsumer:
                 continue
             if not due:
                 continue
-            future = self._executor.submit(self._run_automations, universe_id, due)
-            with self._lock:
-                if universe_id in self._active:
-                    future.cancel()
+            ready: list[tuple[str, tuple[Any, str]]] = []
+            seen: set[str] = set()
+            for automation, due_at in due:
+                key = automation_lease_key(automation)
+                if key in busy or self._agent_running_elsewhere(key, now):
+                    self._apply_overlap(key, automation, due_at, now, refusal_store)
                     continue
-                self._active[universe_id] = future
-            started.add(universe_id)
-            submitted += 1
+                # One row per agent per poll. A second row due for the same
+                # agent is judged NEXT poll, while this one runs, so its own
+                # policy applies instead of it silently queueing in a batch.
+                if key in seen:
+                    continue
+                seen.add(key)
+                ready.append((key, (automation, due_at)))
+            if ready:
+                ready_by_universe.append((universe_id, ready))
+
+        # Fair share across polls, not only within one: the universe running
+        # the fewest agents goes first, so a slot that frees under one owner's
+        # long runs does not go straight back to that owner while another
+        # waits (Codex refute 2026-09-28, P1). The rotation breaks ties.
+        running: dict[str, int] = {}
+        for key in busy:
+            owner_universe = lease_key_universe(key)
+            running[owner_universe] = running.get(owner_universe, 0) + 1
+        self._fair_turn = (getattr(self, "_fair_turn", 0) + 1) % max(
+            1, len(ready_by_universe)
+        )
+        order = {
+            uid: (index - self._fair_turn) % max(1, len(ready_by_universe))
+            for index, (uid, _ready) in enumerate(ready_by_universe)
+        }
+        ready_by_universe.sort(key=lambda item: (running.get(item[0], 0), order[item[0]]))
+        submitted = 0
+        depth = 0
+        while submitted < capacity and any(
+            depth < len(ready) for _uid, ready in ready_by_universe
+        ):
+            for universe_id, ready in ready_by_universe:
+                if submitted >= capacity or depth >= len(ready):
+                    continue
+                key, row = ready[depth]
+                # Checked BEFORE submitting: cancelling a future a free worker
+                # has already started does nothing, and that second run would
+                # re-take its own lease beside the first. Only this coordinator
+                # thread submits, so nothing can claim the key in between.
+                with self._lock:
+                    if key in self._active:
+                        continue
+                future = self._executor.submit(
+                    self._run_automations, universe_id, [row]
+                )
+                with self._lock:
+                    self._active[key] = future
+                started.add(universe_id)
+                submitted += 1
+            depth += 1
         return submitted, started
+
+    def _agent_running_elsewhere(self, key: str, now: datetime) -> bool:
+        """Whether a LIVE lease on this agent is held by another process."""
+        from tinyassets.automations import AutomationStore, holder_is_provably_dead
+
+        try:
+            holder = AutomationStore(self.base_path).universe_lease_holder(key, now=now)
+        except Exception:  # noqa: BLE001 - unknown is not "running"; acquire decides
+            logger.exception("agent lease read failed key=%s", key)
+            return False
+        return bool(holder) and holder != self.consumer_id and not (
+            holder_is_provably_dead(self.base_path, holder)
+        )
+
+    def _apply_overlap(
+        self,
+        key: str,
+        automation: Any,
+        due_at: str,
+        now: datetime,
+        refusal_store: Any,
+    ) -> None:
+        """A due row whose agent is running: queue, skip, or cancel the runner.
+
+        A row whose instant is already claimed IS the running occurrence -- a
+        cadence's `last_due_at` moves only when its run finishes, so it stays
+        due while it runs. It has no policy to apply: `cancel_previous` would
+        cancel itself (Codex refute 2026-09-28, P1).
+        """
+        from tinyassets.automations import (
+            OVERLAP_CANCEL_PREVIOUS,
+            OVERLAP_SKIP,
+            REFUSAL_KEY_PREFIX,
+            AutomationStore,
+            skip_overlapping,
+        )
+
+        policy = getattr(automation, "overlap", "")
+        universe_id = automation.universe_id
+        try:
+            if AutomationStore(self.base_path).attempt_claimed(
+                automation.automation_id, due_at
+            ):
+                return
+        except Exception:  # noqa: BLE001 - unknown means do nothing this poll
+            logger.exception("attempt read failed automation=%s",
+                             automation.automation_id)
+            return
+        if policy == OVERLAP_SKIP:
+            skip_overlapping(
+                self.base_path, automation, due_at, now=now,
+                consumer_id=self.consumer_id,
+            )
+            return
+        reason = "waiting_for_previous_run"
+        if policy == OVERLAP_CANCEL_PREVIOUS:
+            from tinyassets.runs import request_cancel
+
+            try:
+                run_id = AutomationStore(self.base_path).lease_run_id(key, now=now)
+                if run_id:
+                    # The lease key names this universe and this branch, and
+                    # only a consumer writes its run id: the cancel can only
+                    # reach this owner's own running agent.
+                    request_cancel(self.base_path, run_id)
+                    reason = f"cancelling_previous:{run_id}"
+            except Exception as exc:  # noqa: BLE001 - it retries next poll
+                logger.exception("cancel_previous failed key=%s", key)
+                reason = _error_reason("cancel_previous_error", exc)
+        self._record_reason(
+            refusal_store,
+            f"{REFUSAL_KEY_PREFIX}{automation.automation_id}",
+            universe_id,
+            reason,
+        )
 
     def _run_automations(
         self,
         universe_id: str,
         due: list[tuple[Any, str]],
     ) -> None:
-        """Run one universe's due automations sequentially on the executor thread.
+        """Run one agent's due automations sequentially on the executor thread.
 
-        Fenced by a DATABASE lease, not by `self._active`. That map is
-        process-local: a restarted daemon starts with an empty one and would
-        launch an automation for a universe the previous process is still
-        working (Codex ADAPT 2026-08-29 §8). The lease is shared state, so both
+        Fenced by a DATABASE lease on the agent's key, not by `self._active`.
+        That map is process-local: a restarted daemon starts with an empty one
+        and would launch an automation the previous process is still running
+        (Codex ADAPT 2026-08-29 §8). The lease is shared state, so both
         processes see it, and it is refreshed while the run is in flight so a
-        dead holder's lease expires instead of wedging the universe forever.
+        dead holder's lease expires instead of wedging the agent forever. The
+        universe's legacy lease, if held, keeps every agent out.
         """
         from datetime import datetime as _dt
 
         from tinyassets.automations import (
             AutomationStore,
+            automation_lease_key,
             run_due_automation,
             run_timeout_seconds,
         )
@@ -784,30 +926,37 @@ class AssignedQueueConsumer:
             AssignedQueueRefusalStore,
         )
 
+        if not due:
+            return
+        key = automation_lease_key(due[0][0])
         store = AutomationStore(self.base_path)
         refusal_store = AssignedQueueRefusalStore(self.base_path)
         ttl = run_timeout_seconds()
         if not store.acquire_universe_lease(
-            universe_id,
+            key,
             holder=self.consumer_id,
             now=_dt.now(timezone.utc),
             ttl_seconds=ttl,
+            excluded_by=universe_id,
         ):
-            holder = store.universe_lease_holder(
-                universe_id, now=_dt.now(timezone.utc)
+            now = _dt.now(timezone.utc)
+            legacy = store.universe_lease_holder(universe_id, now=now)
+            reason = (
+                f"universe_busy:{legacy}" if legacy
+                else f"agent_busy:{store.universe_lease_holder(key, now=now) or 'unknown'}"
             )
             self._record_reason(
                 refusal_store,
                 f"universe:{universe_id}:automations",
                 universe_id,
-                f"universe_busy:{holder or 'unknown'}",
+                reason,
             )
             return
         stop_refresh = threading.Event()
         refresher = threading.Thread(
             target=self._refresh_lease,
-            args=(store, universe_id, ttl, stop_refresh),
-            name=f"automation-lease-{universe_id}",
+            args=(store, key, ttl, stop_refresh),
+            name=f"automation-lease-{key}",
             daemon=True,
         )
         refresher.start()
@@ -817,6 +966,11 @@ class AssignedQueueConsumer:
         def _started(run_id: str) -> None:
             batch_runs.add(run_id)
             self._note_automation_run(run_id)
+            if run_id:
+                try:
+                    store.set_lease_run(key, holder=self.consumer_id, run_id=run_id)
+                except Exception:  # noqa: BLE001 - only cancel_previous reads it
+                    logger.exception("lease run record failed key=%s", key)
 
         try:
             for automation, due_at in due:
@@ -847,32 +1001,28 @@ class AssignedQueueConsumer:
                     continue
                 if reason == "run_timeout_unreleased":
                     # The run ignored cancellation and is STILL calling the
-                    # provider. Handing the universe to another process now
-                    # would double-spend the owner's subscription, so keep the
-                    # lease and stop the batch. `_reap_unstopped` keeps the
-                    # universe busy -- even for us -- until the run is terminal.
+                    # provider. Handing the agent to another process now would
+                    # double-spend the owner's subscription, so keep the lease
+                    # and stop the batch. `_reap_unstopped` keeps the agent
+                    # busy -- even for us -- until the run is terminal.
                     unreleased = True
                     with self._lock:
-                        self._unstopped[universe_id] = set(batch_runs)
+                        self._unstopped[key] = set(batch_runs)
                     break
         finally:
             stop_refresh.set()
             refresher.join(timeout=5.0)
             if unreleased:
                 logger.warning(
-                    "universe %s stays leased: a timed-out automation run has "
+                    "agent %s stays leased: a timed-out automation run has "
                     "not stopped",
-                    universe_id,
+                    key,
                 )
             else:
                 try:
-                    store.release_universe_lease(
-                        universe_id, holder=self.consumer_id
-                    )
+                    store.release_universe_lease(key, holder=self.consumer_id)
                 except Exception:  # noqa: BLE001 - the lease expires on its own
-                    logger.exception(
-                        "automation lease release failed universe=%s", universe_id
-                    )
+                    logger.exception("automation lease release failed key=%s", key)
 
     def _refresh_lease(
         self,

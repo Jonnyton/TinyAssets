@@ -156,6 +156,9 @@ def _emit(
                     name=f"event:{event_type}:{sub.name}"[:120],
                     branch_def_id=sub.branch_def_id,
                     not_before=now.isoformat(),
+                    # The wake is the subscription's agent acting: it keeps the
+                    # subscription's declared overlap policy.
+                    overlap=sub.overlap,
                     inputs={
                         **sub.inputs,
                         "event": {

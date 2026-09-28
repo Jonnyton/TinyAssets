@@ -109,6 +109,10 @@ _UNAVAILABLE_DETAIL = {
         "own fields: run_completed takes branch_def_id (required), outcome and "
         "run_id; pending_request_answered takes request_id, kind and status."
     ),
+    "overlap_invalid": (
+        "overlap must be queue (wait for the running one, the default), skip "
+        "(drop this run) or cancel_previous (stop the running one first)."
+    ),
     "usage_limited": (
         "This universe has reached its usage limit for engine edits in the "
         "last hour, so nothing was stored. It frees up as older edits age out."
@@ -213,6 +217,8 @@ def _projection(
             "event_filter": dict(automation.event_filter or {}),
         },
         "inputs": dict(automation.inputs),
+        # What a due run does while this agent (its branch) is still running.
+        "overlap": automation.overlap,
         "desired_state": automation.desired_state,
         "pause_reason": automation.pause_reason,
         "revision": automation.revision,
@@ -327,6 +333,7 @@ def _create(
     raw_interval = document.get("interval_seconds", 0)
     event_type = document.get("event_type", "")
     event_filter = document.get("event_filter", {})
+    overlap = document.get("overlap", "")
 
     if not isinstance(name, str) or not name.strip():
         return _payload_invalid("name must be a non-empty string")
@@ -340,6 +347,8 @@ def _create(
         return _payload_invalid("event_type must be a string")
     if not isinstance(event_filter, dict):
         return _payload_invalid("event_filter must be a JSON object")
+    if not isinstance(overlap, str):
+        return _payload_invalid("overlap must be a string")
     # A bool is an int in Python; interval_seconds=true is a malformed payload,
     # not a zero-second interval.
     if isinstance(raw_interval, bool) or not isinstance(raw_interval, (int, str)):
@@ -360,6 +369,7 @@ def _create(
             cron_expr=cron_expr.strip(),
             event_type=event_type.strip(),
             event_filter=event_filter,
+            overlap=overlap.strip(),
             inputs=inputs,
         )
     except AutomationUnavailable as exc:

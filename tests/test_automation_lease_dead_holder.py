@@ -37,6 +37,7 @@ from tinyassets.automations import (
     Automation,
     AutomationRunUnstopped,
     AutomationStore,
+    automation_lease_key,
     holder_is_provably_dead,
     holder_liveness_path,
 )
@@ -288,7 +289,8 @@ def test_an_unstopped_run_keeps_its_universe_busy_for_its_own_consumer(
         lambda _b: [UNIVERSE],
     )
     consumer = _leave_an_unstopped_run(tmp_path, registered, monkeypatch)
-    assert consumer._unstopped == {UNIVERSE: {"run_stuck"}}
+    key = automation_lease_key(registered)
+    assert consumer._unstopped == {key: {"run_stuck"}}
     later: list[str] = []
     monkeypatch.setattr(
         automations_module, "run_due_automation",
@@ -299,9 +301,9 @@ def test_an_unstopped_run_keeps_its_universe_busy_for_its_own_consumer(
         consumer.poll_once()  # the automation is due, but its last run still runs
         assert later == []
         assert store.universe_lease_holder(
-            UNIVERSE, now=datetime.now(timezone.utc)
+            key, now=datetime.now(timezone.utc)
         ) == consumer.consumer_id
-        assert consumer._reap_finished()[1] == {UNIVERSE}
+        assert consumer._reap_finished()[1] == {key}
 
         worker.set_result(None)  # the worker itself has ended
         consumer.poll_once()  # released, and the universe is free again
@@ -321,7 +323,7 @@ def test_a_run_row_marked_terminal_does_not_free_a_running_worker(
     )
     consumer = _leave_an_unstopped_run(tmp_path, registered, monkeypatch)
     try:
-        assert consumer._reap_finished()[1] == {UNIVERSE}
+        assert consumer._reap_finished()[1] == {automation_lease_key(registered)}
     finally:
         consumer.stop()
 
