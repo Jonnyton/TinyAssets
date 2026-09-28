@@ -389,6 +389,13 @@ class ProviderResponse:
     proof of the model that answered and must not be substituted here.
     """
 
+    requested_model: str = ""
+    """The model id this call explicitly asked the source for; empty for its default.
+
+    A request, never answering evidence: a renderer may show it only labelled as
+    requested, beside an unknown ``reported_model`` -- never in its place.
+    """
+
     provider_display: str = ""
     """The owner's own name for the connection that answered, for display only.
 

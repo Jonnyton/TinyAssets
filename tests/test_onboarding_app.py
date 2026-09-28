@@ -1898,6 +1898,16 @@ def test_answer_model_receipt_is_visible_on_typed_and_spoken_reply(tmp_path, kin
     ({"provider": "codex", "model": "assumed"}, "Answered by codex · Model not reported"),
     ({"provider": "codex", "model": 42, "model_status": "reported"},
      "Answered by codex · Model not reported"),
+    # A source that reports no model: the call's own request is named AS a
+    # request, and never promoted to what answered.
+    ({"provider": "codex", "model": "", "model_status": "unknown",
+      "requested_model": "owner-picked-model"},
+     "Answered by codex · Requested owner-picked-model · answering model not reported"),
+    ({"provider": "source", "model": "actual/model", "model_status": "reported",
+      "requested_model": "owner-picked-model"},
+     "Answered by source · actual/model"),
+    ({"provider": "codex", "model": "", "model_status": "unknown",
+      "requested_model": "bad\nlabel"},"Answered by codex · Model not reported"),
     ({"provider": " my-source ", "model": " 模型/🪐 ", "model_status": "reported"},
      "Answered by my-source · 模型/🪐"),
     ({"provider": "<script>example</script>", "model": "<img src=x>", "model_status": "reported"},

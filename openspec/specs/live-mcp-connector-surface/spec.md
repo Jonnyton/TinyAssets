@@ -508,6 +508,17 @@ another universe's connection, and SHALL NOT substitute for `provider`,
 names the model beside the label. Records stored before the field existed
 SHALL keep normalizing unchanged.
 
+The receipt MAY additionally carry `requested_model`, the model id that reply's
+own call explicitly asked its source for. It SHALL be absent rather than empty
+when the call asked for the source's default, SHALL NOT change `model` or
+`model_status`, and a renderer SHALL name it only as a request, and only when
+no answering model was reported.
+
+#### Scenario: The source reports no answering model
+- **WHEN** a reply's source stream names no model and its call explicitly requested one
+- **THEN** the receipt keeps `model_status` `unknown` with an empty `model` and carries the request as `requested_model`
+- **AND** the app shows the id labelled as requested beside "answering model not reported", never as the answering model
+
 #### Scenario: A reply is followed by learning or another conversation
 - **WHEN** a writer completes and subsequent inference uses another provider
 - **THEN** the successful reply retains only its own request-local receipt

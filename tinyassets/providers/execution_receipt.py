@@ -11,10 +11,11 @@ def _label(value: object, maximum: int) -> str:
     return value.strip()
 
 
-#: The three fields every receipt has carried. ``provider_display`` is optional
-#: and ABSENT when nothing resolved, so a row stored before it existed still
-#: normalizes and an unresolved source renders no blank label.
+#: The three fields every receipt has carried. ``provider_display`` and
+#: ``requested_model`` are optional and ABSENT when nothing resolved, so a row
+#: stored before they existed still normalizes and renders no blank label.
 _REQUIRED_FIELDS = {"provider", "model", "model_status"}
+_OPTIONAL_FIELDS = ("provider_display", "requested_model")
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,7 @@ class ExecutionReceipt:
     model: str
     model_status: str
     provider_display: str = ""
+    requested_model: str = ""
 
 
 def normalize_execution_receipt(value: object) -> dict[str, str] | None:
@@ -32,11 +34,11 @@ def normalize_execution_receipt(value: object) -> dict[str, str] | None:
     if isinstance(value, ExecutionReceipt):
         value = {"provider": value.provider, "model": value.model,
                  "model_status": value.model_status,
-                 **({"provider_display": value.provider_display}
-                    if value.provider_display else {})}
+                 **{name: getattr(value, name) for name in _OPTIONAL_FIELDS
+                    if getattr(value, name)}}
     if not isinstance(value, dict) or not _REQUIRED_FIELDS <= set(value):
         return None
-    if set(value) - _REQUIRED_FIELDS - {"provider_display"}:
+    if set(value) - _REQUIRED_FIELDS - set(_OPTIONAL_FIELDS):
         return None
     provider, model, status = value["provider"], value["model"], value["model_status"]
     if not isinstance(provider, str) or not provider or _label(provider, 400) != provider:
@@ -46,14 +48,16 @@ def normalize_execution_receipt(value: object) -> dict[str, str] | None:
     if status != ("reported" if model else "unknown"):
         return None
     out = {"provider": provider, "model": model, "model_status": status}
-    if "provider_display" in value:
-        display = value["provider_display"]
+    for name in _OPTIONAL_FIELDS:
+        if name not in value:
+            continue
+        label = value[name]
         # An empty or malformed label is a REFUSAL, not a blank: the caller is
-        # claiming a display name it does not have, and the renderer must fall
-        # back to `provider` rather than print nothing beside "Answered by".
-        if not isinstance(display, str) or not display or _label(display, 200) != display:
+        # claiming a display name (or a request) it does not have, and the
+        # renderer must fall back rather than print nothing beside its words.
+        if not isinstance(label, str) or not label or _label(label, 200) != label:
             return None
-        out["provider_display"] = display
+        out[name] = label
     return out
 
 
@@ -66,7 +70,7 @@ class WriterExecutionReceipt:
     prompts, response text, credentials, tool output or mutable provider objects.
     """
 
-    _receipt: tuple[str, str, str] | None = field(default=None, init=False)
+    _receipt: tuple[str, str, str, str] | None = field(default=None, init=False)
 
     def observe(self, response: ProviderResponse) -> None:
         if self._receipt is not None or not isinstance(response, ProviderResponse):
@@ -79,15 +83,20 @@ class WriterExecutionReceipt:
             _label(response.reported_model, 200),
             # The owner's own name for the source, when the router resolved one.
             _label(getattr(response, "provider_display", ""), 200),
+            # What the call asked for. Kept apart from `model`: a request is not
+            # evidence of what answered, so it never turns `unknown` into
+            # `reported` (a source that reports nothing still says so).
+            _label(getattr(response, "requested_model", ""), 200),
         )
 
     def projection(self) -> dict[str, str] | None:
         if self._receipt is None:
             return None
-        provider, model, display = self._receipt
+        provider, model, display, requested = self._receipt
         return {
             "provider": provider,
             "model": model,
             "model_status": "reported" if model else "unknown",
             **({"provider_display": display} if display else {}),
+            **({"requested_model": requested} if requested else {}),
         }

@@ -1085,9 +1085,13 @@ class CodexProvider(BaseProvider):
             return ProviderResponse(
                 text=text,
                 provider=self.name,
-                # JSONL does not report the resolved model. Do not invent an exact
-                # model name or scrape unstructured stderr to fill this field.
+                # JSONL does not report the resolved model (checked against the
+                # CLI's `exec --json` stream at 0.153.3: thread.started carries only
+                # a thread id, turn.completed only usage). Do not invent an exact
+                # model name or scrape unstructured stderr to fill this field; the
+                # id passed to -m is carried as a REQUEST, never as reported.
                 model=model or "provider-default",
+                requested_model=model,
                 family=self.family,
                 latency_ms=elapsed_ms,
                 input_tokens=input_tokens,
