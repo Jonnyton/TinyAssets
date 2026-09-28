@@ -76,6 +76,32 @@ TRIGGER_CRON = "cron"
 #: graph wants is built from this plus its own logic.
 TRIGGER_ONCE = "once"
 
+#: A subscription: never due on a clock. ``tinyassets.automation_events``
+#: stores a ``once`` wake for it each time its event is emitted, so the fired
+#: run takes the same pump, fence, admission and authority checks as any other.
+TRIGGER_EVENT = "event"
+
+#: The events the engine emits (``automation_events.EVENT_FILTER_KEYS``). A
+#: subscription to anything else would be stored and never fire, so it is
+#: refused at registration.
+EVENT_RUN_COMPLETED = "run_completed"
+EVENT_PENDING_REQUEST_ANSWERED = "pending_request_answered"
+EVENT_TYPES = frozenset({EVENT_RUN_COMPLETED, EVENT_PENDING_REQUEST_ANSWERED})
+
+#: Payload keys each event carries, which are also the keys a subscription may
+#: filter on (equality). ``run_completed`` must name the branch it follows: an
+#: unfiltered "any run finished" pair of subscriptions wakes each other forever
+#: without either owner having asked for a loop. A loop stays expressible -- it
+#: just has to be named.
+EVENT_FILTER_KEYS: dict[str, frozenset[str]] = {
+    EVENT_RUN_COMPLETED: frozenset({"branch_def_id", "outcome", "run_id"}),
+    EVENT_PENDING_REQUEST_ANSWERED: frozenset({"request_id", "kind", "status"}),
+}
+EVENT_REQUIRED_FILTER_KEYS: dict[str, frozenset[str]] = {
+    EVENT_RUN_COMPLETED: frozenset({"branch_def_id"}),
+    EVENT_PENDING_REQUEST_ANSWERED: frozenset(),
+}
+
 #: A ``once`` row whose attempt never reached a run is retried this much later
 #: per attempt made, and retires after ``MAX_ONCE_ATTEMPTS``.
 ONCE_RETRY_SECONDS = 60
@@ -147,7 +173,7 @@ CREATE TABLE IF NOT EXISTS __TABLE__ (
     name               TEXT NOT NULL,
     branch_def_id      TEXT NOT NULL,
     trigger_kind       TEXT NOT NULL
-                       CHECK(trigger_kind IN ('interval','cron','once')),
+                       CHECK(trigger_kind IN ('interval','cron','once','event')),
     interval_seconds   INTEGER NOT NULL DEFAULT 0,
     cron_expr          TEXT NOT NULL DEFAULT '',
     inputs_json        TEXT NOT NULL DEFAULT '{}',
@@ -197,6 +223,8 @@ CREATE TABLE IF NOT EXISTS automation_attempts (
 _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("automations", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0"),
     ("automations", "not_before", "TEXT NOT NULL DEFAULT ''"),
+    ("automations", "event_type", "TEXT NOT NULL DEFAULT ''"),
+    ("automations", "event_filter_json", "TEXT NOT NULL DEFAULT '{}'"),
     ("automations", "overlap", "TEXT NOT NULL DEFAULT 'queue'"),
     ("universe_leases", "run_id", "TEXT NOT NULL DEFAULT ''"),
 )
@@ -217,7 +245,7 @@ _SELECT_ROWS = (
 
 
 def _rebuild_trigger_check(conn: sqlite3.Connection) -> None:
-    """Widen a stored ``trigger_kind`` CHECK that predates ``once``.
+    """Widen a stored ``trigger_kind`` CHECK that predates ``once`` or ``event``.
 
     SQLite cannot alter a CHECK, so a database written by an earlier build is
     rebuilt: successor table, copy every shared column, drop, rename, re-index.
@@ -230,7 +258,8 @@ def _rebuild_trigger_check(conn: sqlite3.Connection) -> None:
             "SELECT sql FROM sqlite_master WHERE type = 'table' "
             "AND name = 'automations'"
         ).fetchone()
-        return row is not None and "'once'" not in str(row[0] or "")
+        text = str(row[0] or "") if row is not None else ""
+        return row is not None and not ("'once'" in text and "'event'" in text)
 
     if not stale():
         return
@@ -390,6 +419,10 @@ class Automation:
     last_finished_at: str
     consecutive_failures: int = 0
     not_before: str = ""
+    #: ``event`` rows only: what they subscribe to, and the equality filter
+    #: an emitted payload must match.
+    event_type: str = ""
+    event_filter: dict[str, Any] | None = None
     overlap: str = "queue"
     #: ``once`` rows only, read from ``automation_attempts``: how many attempts
     #: were claimed, and when the latest was.
@@ -510,6 +543,14 @@ def automations_db_path(base_path: str | Path) -> Path:
     return Path(base_path) / DB_FILENAME
 
 
+def _decoded_filter(raw: Any) -> dict[str, Any]:
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _from_row(row: sqlite3.Row) -> Automation:
     try:
         inputs = json.loads(row["inputs_json"] or "{}")
@@ -537,6 +578,8 @@ def _from_row(row: sqlite3.Row) -> Automation:
         last_finished_at=str(row["last_finished_at"] or ""),
         consecutive_failures=int(row["consecutive_failures"] or 0),
         not_before=str(row["not_before"] or ""),
+        event_type=str(row["event_type"] or ""),
+        event_filter=_decoded_filter(row["event_filter_json"]),
         overlap=str(row["overlap"] or OVERLAP_QUEUE),
         attempt_count=int(
             (row["attempt_count"] if "attempt_count" in row.keys() else 0) or 0
@@ -667,9 +710,9 @@ class AutomationStore:
                     inputs_json, desired_state, pause_reason, revision,
                     created_at, updated_at, retired_at, last_due_at,
                     last_run_id, last_reason, last_finished_at, not_before,
-                    overlap
+                    event_type, event_filter_json, overlap
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          ?)
+                          ?, ?, ?)
                 """,
                 (
                     automation.automation_id,
@@ -692,6 +735,8 @@ class AutomationStore:
                     automation.last_reason,
                     automation.last_finished_at,
                     automation.not_before,
+                    automation.event_type,
+                    json.dumps(automation.event_filter or {}, sort_keys=True),
                     automation.overlap,
                 ),
             )
@@ -1180,6 +1225,30 @@ def _validated_not_before(not_before: Any, now: datetime) -> str:
     return _iso(max(parsed, moment))
 
 
+def _validated_event(event_type: Any, event_filter: Any) -> tuple[str, dict[str, Any]]:
+    """An emitted event type and a flat equality filter over its payload keys."""
+    kind = str(event_type or "").strip()
+    if kind not in EVENT_TYPES:
+        raise AutomationUnavailable("event_type_unknown")
+    if event_filter is None:
+        event_filter = {}
+    if not isinstance(event_filter, dict):
+        raise AutomationUnavailable("event_filter_invalid")
+    allowed = EVENT_FILTER_KEYS[kind]
+    cleaned: dict[str, Any] = {}
+    for key, value in event_filter.items():
+        if key not in allowed or not isinstance(value, str) or not value.strip():
+            raise AutomationUnavailable("event_filter_invalid")
+        cleaned[key] = value.strip()
+    if not EVENT_REQUIRED_FILTER_KEYS[kind] <= set(cleaned):
+        raise AutomationUnavailable("event_filter_invalid")
+    # A cancelled run announces nothing (``automation_events``): a filter for
+    # it would be stored and never fire.
+    if kind == EVENT_RUN_COMPLETED and cleaned.get("outcome") == "cancelled":
+        raise AutomationUnavailable("event_filter_invalid")
+    return kind, cleaned
+
+
 def _validated_trigger(interval_seconds: Any, cron_expr: Any) -> tuple[str, int, str]:
     from tinyassets.scheduler import CronParseError, CronSchedule
 
@@ -1222,6 +1291,8 @@ def register_automation(
     interval_seconds: int = 0,
     cron_expr: str = "",
     not_before: str = "",
+    event_type: str = "",
+    event_filter: dict[str, Any] | None = None,
     overlap: str = "",
     inputs: dict[str, Any] | None = None,
     now: datetime | None = None,
@@ -1276,7 +1347,18 @@ def register_automation(
     if policy not in OVERLAP_POLICIES:
         raise AutomationUnavailable("overlap_invalid")
     moment = _as_utc(now or datetime.now(timezone.utc))
-    if str(not_before or "").strip():
+    kind_event, event_match = "", {}
+    if str(event_type or "").strip() or event_filter:
+        # A subscription. Exactly one trigger still: an event has no clock.
+        if (
+            int(interval_seconds or 0)
+            or str(cron_expr or "").strip()
+            or str(not_before or "").strip()
+        ):
+            raise AutomationUnavailable("trigger_invalid")
+        kind_event, event_match = _validated_event(event_type, event_filter)
+        trigger_kind, seconds, expr, once_at = TRIGGER_EVENT, 0, "", ""
+    elif str(not_before or "").strip():
         # A one-shot. Exactly one trigger still: a wake has no cadence.
         if int(interval_seconds or 0) or str(cron_expr or "").strip():
             raise AutomationUnavailable("trigger_invalid")
@@ -1313,6 +1395,8 @@ def register_automation(
             last_reason="",
             last_finished_at="",
             not_before=once_at,
+            event_type=kind_event,
+            event_filter=event_match,
             overlap=policy,
         ),
         max_active=MAX_ACTIVE_PER_UNIVERSE,
@@ -2159,6 +2243,11 @@ __all__ = [
     "OVERLAP_QUEUE",
     "OVERLAP_SKIP",
     "ONCE_RETRY_SECONDS",
+    "EVENT_FILTER_KEYS",
+    "EVENT_PENDING_REQUEST_ANSWERED",
+    "EVENT_RUN_COMPLETED",
+    "EVENT_TYPES",
+    "TRIGGER_EVENT",
     "TRIGGER_ONCE",
     "REFUSAL_KEY_PREFIX",
     "Automation",

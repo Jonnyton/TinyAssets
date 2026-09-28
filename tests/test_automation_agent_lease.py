@@ -535,3 +535,24 @@ def test_lease_keys_cannot_collide_across_universes() -> None:
     assert lease_key_universe(key("U::B", "C")) == "U::B"
     assert lease_key_universe(key("u_1", "b")) == "u_1"
     assert lease_key_universe("universe_bare") == "universe_bare"
+
+
+def test_an_event_wake_keeps_its_subscriptions_overlap(home: Path) -> None:
+    """A subscription's wakes are its agent acting, so they carry its policy."""
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.runs import RUN_STATUS_RUNNING, create_run, update_run_status
+
+    with identity_context(Identity(user_id=OWNER, username=OWNER)):
+        register_automation(
+            home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="follow",
+            branch_def_id=READER, event_type="run_completed",
+            event_filter={"branch_def_id": WRITER}, overlap="skip",
+        )
+        run_id = create_run(home, branch_def_id=WRITER, thread_id="t", inputs={},
+                            actor=OWNER)
+    update_run_status(home, run_id, status=RUN_STATUS_RUNNING)
+    update_run_status(home, run_id, status="completed", finished_at=1.0)
+    [wake] = [a for a in AutomationStore(home).list(universe_id=UNIVERSE)
+              if a.trigger_kind == "once"]
+    assert (wake.branch_def_id, wake.overlap) == (READER, "skip")

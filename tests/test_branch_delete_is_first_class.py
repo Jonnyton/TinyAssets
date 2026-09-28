@@ -281,7 +281,7 @@ def test_an_ACTIVE_schedule_and_subscription_are_named(universe_surface, tmp_pat
         owner_principal_id="alice", interval_seconds=3600,
     )
     sub = scheduler.register_subscription(
-        tmp_path, branch_def_id=bid, owner_actor="universe:u-1", event_type="canon_change",
+        tmp_path, branch_def_id=bid, owner_actor="universe:u-1", event_type="source:s1",
     )
 
     out = _delete(us, bid)

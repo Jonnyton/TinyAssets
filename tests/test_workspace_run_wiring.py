@@ -299,7 +299,10 @@ def _always_orphan(conn, *, run_id, status, started_at, now=None):
     return True
 
 
-def test_startup_recovery_enqueues_every_in_flight_run(tmp_path):
+def test_startup_recovery_enqueues_every_in_flight_run(tmp_path, monkeypatch):
+    # The kick is a background sweep that consumes the outbox row this test
+    # reads; left live, the assertion races it.
+    monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda _p: None)
     base = tmp_path / "data"
     _seed_run(base, "r4", status="queued")
     _seed_run(base, "r5", status="completed")

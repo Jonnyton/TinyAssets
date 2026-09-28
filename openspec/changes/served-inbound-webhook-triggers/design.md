@@ -44,9 +44,9 @@ POST /mcp/hooks/<token> ─▶ handle_hook ─▶ enqueue_universe_branch_run(U,
 ## Out of scope (tracked, not fixed here)
 
 - Non-Source event types (`canon_change`, `branch_run_completed`, `canon_upload`,
-  `pr_open`) have no emitter anywhere in `tinyassets/`. A subscription to one is
-  stored but never fires. See the updated concern
-  `2026-09-02-non-source-event-subscriptions-never-fire.md`.
+  `pr_open`) had no emitter anywhere in `tinyassets/`. Change
+  `automation-event-triggers` retired them; engine events are automation
+  triggers now.
 - A refused delivery (unknown or revoked token) answers with a uniform 404 and
   is visible only in the server log. The owner cannot see refused deliveries.
 - Webhook signature verification (HMAC) belongs to C26.
