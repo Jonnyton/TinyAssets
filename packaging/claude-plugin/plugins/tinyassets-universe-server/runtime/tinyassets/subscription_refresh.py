@@ -322,7 +322,7 @@ def refresh_before_launch(
     *,
     universe_dir: str | Path,
     service: str,
-    owner_user_id: str,
+    owner_user_id: str | None,
     universe_id: str,
     token_url: str = "",
     client_id: str = "",
@@ -650,6 +650,16 @@ def refresh_deposited_subscriptions(
 ) -> None:
     """The launch-path seam: make every refreshable stored document current.
 
+    ``owner_user_id`` is the owner the CALLER has proved (the served request's
+    principal), and it is used for one thing: carrying the accepted binding onto a
+    rotated document (:func:`renew_accepted_source`). Required and non-empty,
+    because a rotation that cannot be renewed is worse than no rotation: the
+    binding still pins the old record digest, so serving refuses with "connect
+    your provider" -- and keeps refusing, since the next launch finds a fresh
+    document and renews nothing (live 2026-09-28, the founder's universe). The
+    vault writes themselves stay ownership-neutral: a refresh replaces bytes for a
+    credential the owner already deposited and never touches its ownership row.
+
     Called BEFORE custody is resolved, outside any transaction (it makes a
     network call, and holds the vault while it does). Iterates the universe's
     subscription records rather than being told a provider: a record is
@@ -680,7 +690,11 @@ def refresh_deposited_subscriptions(
         load_credential_vault,
         record_refresh_rejected,
     )
+    from tinyassets.principals import named_principal
 
+    owner = named_principal(owner_user_id)
+    if not owner:
+        raise ValueError("a launch refresh needs the proven owner to renew the binding")
     universe = Path(universe_dir)
     launched = launching.strip().lower()
     try:
@@ -695,7 +709,10 @@ def refresh_deposited_subscriptions(
         # own words; it is not this seam's business to pre-empt it.
         return
     for service in services:
-        if not service:
+        if not service or not _deposited_by(base_path, universe_id, service, owner):
+            # Another principal's deposit is never spent or adopted on this
+            # owner's turn: proving the serving binding is not proving every
+            # credential in the vault (Codex refute-review on #4076, P1).
             continue
         # Adopt first: a document the CLI already rotated in a writable home is
         # newer than the vault's, and refreshing the vault's copy would spend a
@@ -703,14 +720,14 @@ def refresh_deposited_subscriptions(
         adopted = adopt_newer_on_disk_document(
             universe_dir=universe,
             service=service,
-            owner_user_id=owner_user_id,
+            owner_user_id=None,
             universe_id=universe_id,
         )
         try:
             rotated = refresh_before_launch(
                 universe_dir=universe,
                 service=service,
-                owner_user_id=owner_user_id,
+                owner_user_id=None,
                 universe_id=universe_id,
             )
         except RefreshRejected as exc:
@@ -738,13 +755,89 @@ def refresh_deposited_subscriptions(
             # doing anything, and a card for a connection that works is worse than
             # no card.
             clear_refresh_rejected(base_path, universe_id=universe_id, service=service)
-            renew_accepted_source(
+        if rotated or adopted or _accepted_custody_is_stale(
+            base_path, universe, owner, universe_id, service,
+        ):
+            # Also when nothing rotated HERE: a rotation whose renewal did not land
+            # (a crash between the vault write and the renewal, or the pre-fix
+            # renewal that named no owner) leaves fresh bytes behind a binding that
+            # pins the old ones, and nothing else would ever renew it.
+            renewed = renew_accepted_source(
                 base_path=base_path,
                 universe_dir=universe,
                 service=service,
-                owner_user_id=owner_user_id,
+                owner_user_id=owner,
                 universe_id=universe_id,
             )
+            if renewed.get("status") != "serving":
+                # Not raised: the launch's own custody check refuses with its own
+                # words. Logged, because this is the one place that knows WHY.
+                logger.warning(
+                    "a renewed %s sign-in was not carried onto the binding: %s",
+                    service, renewed.get("reason") or renewed.get("status"),
+                )
+
+
+def _deposited_by(base_path: str | Path, universe_id: str, service: str, owner: str) -> bool:
+    """Whether ``owner`` is the recorded depositor of this universe's ``service``.
+
+    A later deposit by anyone else is refused by the vault writer ("ownership
+    transfer requires a dedicated flow"), so this row cannot change under us.
+    """
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    with SQLiteProviderWorkAuthorityStore(base_path).connection() as conn:
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'llm_credential_deposit_owners'",
+        ).fetchone() is None:
+            return False
+        row = conn.execute(
+            "SELECT owner_user_id FROM llm_credential_deposit_owners "
+            "WHERE universe_id = ? AND service = ?",
+            (universe_id, service),
+        ).fetchone()
+    return row is not None and str(row[0]) == owner
+
+
+def _accepted_custody_is_stale(
+    base_path: str | Path, universe: Path, owner: str, universe_id: str, service: str,
+) -> bool:
+    """Whether the owner CURRENTLY accepts this source and its bytes have moved.
+
+    Only a source in the current accepted assignment is renewed: a custody row
+    left from an earlier acceptance is history, not consent, and renewing it
+    would re-point the assignment (Codex refute-review on #4076, P1).
+    """
+    from tinyassets.credential_vault import current_llm_subscription_custody
+    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    providers = {p for p, s in _PROVIDER_SERVICE.items() if s == service}
+    with SQLiteProviderWorkAuthorityStore(base_path).connection() as conn:
+        conn.execute("BEGIN")
+        try:
+            assignment = load_provider_assignment_in_transaction(
+                conn, universe_id=universe_id,
+            )
+            if (
+                assignment is None or assignment.state != "ready"
+                or assignment.owner_user_id != owner
+            ):
+                return False
+            members = (
+                {m.provider for m in assignment.candidates}
+                if assignment.manifest_digest else {assignment.provider}
+            )
+            if not providers & members:
+                return False
+            return current_llm_subscription_custody(
+                conn, universe_dir=universe, owner_user_id=owner,
+                universe_id=universe_id, service=service,
+            ) is None
+        finally:
+            conn.rollback()
 
 
 def renew_accepted_source(
