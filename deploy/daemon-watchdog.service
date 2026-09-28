@@ -1,6 +1,6 @@
 [Unit]
 Description=TinyAssets daemon container and heartbeat watchdog
-Documentation=https://github.com/Jonnyton/TinyAssets/blob/main/pages/plans/daemon-uptime-auto-recovery-2026-06-19.md
+Documentation=https://github.com/TinyAssets/TinyAssets/blob/main/pages/plans/daemon-uptime-auto-recovery-2026-06-19.md
 Requires=docker.service
 After=docker.service tinyassets-daemon.service
 
