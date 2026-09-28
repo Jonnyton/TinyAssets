@@ -32,6 +32,22 @@ _FOUNDER_CAPS = [
 _OK_INTERVAL = 600.0
 
 
+def _base():
+    import os
+    from pathlib import Path
+
+    return Path(os.environ["TINYASSETS_DATA_DIR"])
+
+
+def _subscribe(branch_def_id: str, event_type: str, owner: str) -> str:
+    """A stored subscription, as a Source registers one (the only live path)."""
+    from tinyassets.scheduler import register_subscription
+
+    return register_subscription(
+        _base(), branch_def_id=branch_def_id, owner_actor=owner, event_type=event_type,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _set_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -263,42 +279,33 @@ class TestListSchedules:
 # ── subscribe_branch ──────────────────────────────────────────────────────────
 
 class TestSubscribeBranch:
-    def test_subscribe_valid_event_type(self):
+    """``subscribe_branch`` offered only event types nothing emits, and believed a
+    caller-named ``owner_actor``. Engine events are now automation triggers, so
+    it refuses and says where to go instead of storing a row that never fires."""
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["canon_change", "branch_run_completed", "canon_upload", "pr_open",
+         "source:s1", "made_up_event"],
+    )
+    def test_subscribe_refuses_and_points_at_automation_events(self, event_type):
+        from tinyassets.scheduler import list_scheduler_subscriptions
+
         result = json.loads(extensions(
             action="subscribe_branch",
             branch_def_id="b1",
-            event_type="canon_change",
+            event_type=event_type,
             owner_actor="alice",
         ))
-        assert result["status"] == "subscribed"
-        assert "subscription_id" in result
-        assert len(result["subscription_id"]) > 0
-
-    def test_subscribe_all_valid_event_types(self):
-        valid_types = ["canon_change", "branch_run_completed", "canon_upload", "pr_open"]
-        for et in valid_types:
-            result = json.loads(extensions(
-                action="subscribe_branch",
-                branch_def_id="b1",
-                event_type=et,
-                owner_actor="alice",
-            ))
-            assert result["status"] == "subscribed", f"Failed for event_type={et}"
-
-    def test_subscribe_invalid_event_type_error(self):
-        result = json.loads(extensions(
-            action="subscribe_branch",
-            branch_def_id="b1",
-            event_type="made_up_event",
-            owner_actor="alice",
-        ))
-        assert "error" in result
-        assert "valid" in result
+        assert result["error"] == "event_type_not_subscribable", result
+        assert "target=automation" in result["detail"]
+        assert result["valid"] == ["pending_request_answered", "run_completed"]
+        assert list_scheduler_subscriptions(_base()) == []
 
     def test_subscribe_missing_branch_def_id_error(self):
         result = json.loads(extensions(
             action="subscribe_branch",
-            event_type="canon_change",
+            event_type="run_completed",
             owner_actor="alice",
         ))
         assert "error" in result
@@ -311,32 +318,12 @@ class TestSubscribeBranch:
         ))
         assert "error" in result
 
-    def test_subscribe_returns_unique_ids(self):
-        r1 = json.loads(extensions(
-            action="subscribe_branch",
-            branch_def_id="b1",
-            event_type="canon_change",
-            owner_actor="alice",
-        ))
-        r2 = json.loads(extensions(
-            action="subscribe_branch",
-            branch_def_id="b1",
-            event_type="canon_change",
-            owner_actor="alice",
-        ))
-        assert r1["subscription_id"] != r2["subscription_id"]
-
 
 # ── unsubscribe_branch ────────────────────────────────────────────────────────
 
 class TestUnsubscribeBranch:
     def test_unsubscribe_existing(self):
-        create = json.loads(extensions(
-            action="subscribe_branch",
-            branch_def_id="b1",
-            event_type="canon_change",
-            owner_actor="alice",
-        ))
+        create = {"subscription_id": _subscribe("b1", "source:s1", "alice")}
         result = json.loads(extensions(
             action="unsubscribe_branch",
             subscription_id=create["subscription_id"],
@@ -360,12 +347,7 @@ class TestUnsubscribeBranch:
         assert "error" in result
 
     def test_unsubscribe_wrong_owner_rejected(self):
-        create = json.loads(extensions(
-            action="subscribe_branch",
-            branch_def_id="b1",
-            event_type="canon_change",
-            owner_actor="alice",
-        ))
+        create = {"subscription_id": _subscribe("b1", "source:s1", "alice")}
         result = json.loads(extensions(
             action="unsubscribe_branch",
             subscription_id=create["subscription_id"],
@@ -494,41 +476,21 @@ class TestUnpauseSchedule:
 
 class TestListSchedulerSubscriptions:
     def test_list_all_subscriptions(self):
-        extensions(
-            action="subscribe_branch",
-            branch_def_id="b1",
-            event_type="canon_change",
-            owner_actor="alice",
-        )
-        extensions(
-            action="subscribe_branch",
-            branch_def_id="b2",
-            event_type="pr_open",
-            owner_actor="bob",
-        )
+        _subscribe("b1", "source:s1", "alice")
+        _subscribe("b2", "source:s2", "bob")
         result = json.loads(extensions(action="list_scheduler_subscriptions"))
         assert result["count"] == 2
         assert "subscriptions" in result
 
     def test_list_filtered_by_event_type(self):
-        extensions(
-            action="subscribe_branch",
-            branch_def_id="b1",
-            event_type="canon_change",
-            owner_actor="alice",
-        )
-        extensions(
-            action="subscribe_branch",
-            branch_def_id="b2",
-            event_type="pr_open",
-            owner_actor="alice",
-        )
+        _subscribe("b1", "source:s1", "alice")
+        _subscribe("b2", "source:s2", "alice")
         result = json.loads(extensions(
             action="list_scheduler_subscriptions",
-            event_type="canon_change",
+            event_type="source:s1",
         ))
         assert result["count"] == 1
-        assert result["subscriptions"][0]["event_type"] == "canon_change"
+        assert result["subscriptions"][0]["event_type"] == "source:s1"
 
     def test_list_empty_returns_zero(self):
         result = json.loads(extensions(action="list_scheduler_subscriptions"))
@@ -536,18 +498,8 @@ class TestListSchedulerSubscriptions:
         assert result["subscriptions"] == []
 
     def test_list_filtered_by_owner(self):
-        extensions(
-            action="subscribe_branch",
-            branch_def_id="b1",
-            event_type="canon_change",
-            owner_actor="alice",
-        )
-        extensions(
-            action="subscribe_branch",
-            branch_def_id="b2",
-            event_type="canon_change",
-            owner_actor="bob",
-        )
+        _subscribe("b1", "source:s1", "alice")
+        _subscribe("b2", "source:s1", "bob")
         result = json.loads(extensions(
             action="list_scheduler_subscriptions",
             owner_actor="alice",
@@ -558,11 +510,6 @@ class TestListSchedulerSubscriptions:
     def test_list_no_filter_is_regression(self):
         """Unfiltered list returns all subscriptions — regression guard."""
         for i in range(3):
-            extensions(
-                action="subscribe_branch",
-                branch_def_id=f"b{i}",
-                event_type="canon_change",
-                owner_actor="alice",
-            )
+            _subscribe(f"b{i}", "source:s1", "alice")
         result = json.loads(extensions(action="list_scheduler_subscriptions"))
         assert result["count"] == 3

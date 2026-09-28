@@ -106,7 +106,11 @@ def test_normal_run_record_matches_pre_extraction_behavior(tmp_path, monkeypatch
                 dict(conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone())
             )
     # Authentication does not activate resource lifecycle. With no managed
-    # startup publisher every field matches the original executable contract.
+    # startup publisher every field matches the original executable contract,
+    # plus the one column added since: who caused the run, which for a
+    # principal actor is that actor.
+    assert records[1].pop("cause_principal") == kwargs["actor"]
+    assert records[0].pop("cause_principal") == ""
     assert records[0] == records[1]
 
 

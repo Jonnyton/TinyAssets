@@ -269,13 +269,11 @@ def _refusal_rewrite_seconds() -> float:
     """
     return max(1.0, refusal_visibility_seconds() / 2)
 
-# Supported event types
-VALID_EVENT_TYPES = frozenset({
-    "canon_change",
-    "branch_run_completed",
-    "canon_upload",
-    "pr_open",
-})
+#: Closed event types a subscription may name besides ``source:<id>``. Empty:
+#: the four once listed here (canon_change, branch_run_completed, canon_upload,
+#: pr_open) had no emitter, so a subscription to one was stored and never
+#: fired. Engine events are automation triggers (``tinyassets.automation_events``).
+VALID_EVENT_TYPES: frozenset[str] = frozenset()
 
 #: A Source node emits a namespaced ``source:<source_id>`` event. These are open-ended
 #: (one per user-created Source), so they are admitted by PREFIX past the closed
@@ -707,8 +705,8 @@ def register_subscription(
     """Register an event subscription. Returns subscription_id."""
     if not _is_valid_event_type(event_type):
         raise ValueError(
-            f"unknown event_type {event_type!r}; valid: {sorted(VALID_EVENT_TYPES)} "
-            f"or a '{_SOURCE_EVENT_PREFIX}<id>' source event"
+            f"unknown event_type {event_type!r}; only a "
+            f"'{_SOURCE_EVENT_PREFIX}<id>' source event is subscribable here"
         )
     db = _runs_db(base_path)
     with _connect(db) as conn:
