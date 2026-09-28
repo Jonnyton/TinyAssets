@@ -159,7 +159,9 @@ async def test_cancel_startup_wait_never_connects(fake, supervisor, monkeypatch)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", [{"actor_id": "foreign"}, {"version": 7}, {"secret": "bad"}])
-async def test_invalid_route_never_probes_or_connects(fake, route, supervisor, change):
+async def test_invalid_route_never_probes_or_connects(
+    fake, route, supervisor, change, startup_clock,
+):
     path = route[0] / routes.ROUTES_FILENAME
     document = json.loads(path.read_text())
     document["u-a"].update(change)

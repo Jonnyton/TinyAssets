@@ -132,8 +132,8 @@ def test_a_legacy_non_universe_owner_keeps_the_subscriber_prefix(base_path):
     # The universe-actor passthrough must not change the existing (dormant) event types.
     calls: list = []
     register_subscription(
-        base_path, branch_def_id="b-1", owner_actor="alice", event_type="canon_change",
+        base_path, branch_def_id="b-1", owner_actor="alice", event_type="source:s1",
     )
     s = _scheduler(base_path, calls)
-    s._dispatch_event(SchedulerEvent(event_type="canon_change", payload={}))
+    s._dispatch_event(SchedulerEvent(event_type="source:s1", payload={}))
     assert calls[0]["actor"] == "subscriber:alice"

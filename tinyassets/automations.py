@@ -76,6 +76,32 @@ TRIGGER_CRON = "cron"
 #: graph wants is built from this plus its own logic.
 TRIGGER_ONCE = "once"
 
+#: A subscription: never due on a clock. ``tinyassets.automation_events``
+#: stores a ``once`` wake for it each time its event is emitted, so the fired
+#: run takes the same pump, fence, admission and authority checks as any other.
+TRIGGER_EVENT = "event"
+
+#: The events the engine emits (``automation_events.EVENT_FILTER_KEYS``). A
+#: subscription to anything else would be stored and never fire, so it is
+#: refused at registration.
+EVENT_RUN_COMPLETED = "run_completed"
+EVENT_PENDING_REQUEST_ANSWERED = "pending_request_answered"
+EVENT_TYPES = frozenset({EVENT_RUN_COMPLETED, EVENT_PENDING_REQUEST_ANSWERED})
+
+#: Payload keys each event carries, which are also the keys a subscription may
+#: filter on (equality). ``run_completed`` must name the branch it follows: an
+#: unfiltered "any run finished" pair of subscriptions wakes each other forever
+#: without either owner having asked for a loop. A loop stays expressible -- it
+#: just has to be named.
+EVENT_FILTER_KEYS: dict[str, frozenset[str]] = {
+    EVENT_RUN_COMPLETED: frozenset({"branch_def_id", "outcome", "run_id"}),
+    EVENT_PENDING_REQUEST_ANSWERED: frozenset({"request_id", "kind", "status"}),
+}
+EVENT_REQUIRED_FILTER_KEYS: dict[str, frozenset[str]] = {
+    EVENT_RUN_COMPLETED: frozenset({"branch_def_id"}),
+    EVENT_PENDING_REQUEST_ANSWERED: frozenset(),
+}
+
 #: A ``once`` row whose attempt never reached a run is retried this much later
 #: per attempt made, and retires after ``MAX_ONCE_ATTEMPTS``.
 ONCE_RETRY_SECONDS = 60
@@ -85,6 +111,28 @@ MAX_ONCE_ATTEMPTS = 5
 MAX_NOT_BEFORE = timedelta(days=366)
 STATE_ACTIVE = "active"
 STATE_PAUSED = "paused"
+
+#: What a due run does when its agent -- the same branch in the same universe --
+#: is already running. Runs of one agent never overlap; different agents in
+#: one universe run side by side.
+#:
+#: * ``queue`` (default): wait, and start when the running one ends. Instants a
+#:   cadence passes meanwhile collapse into that one owed run. This is the
+#:   behaviour every automation had under the per-universe lease.
+#: * ``skip``: drop this due run. A cadence moves on to its next instant; a
+#:   one-shot wake retires as ``skipped_overlap``.
+#: * ``cancel_previous``: ask the running one to cancel, then start once it
+#:   has stopped.
+OVERLAP_QUEUE = "queue"
+OVERLAP_SKIP = "skip"
+OVERLAP_CANCEL_PREVIOUS = "cancel_previous"
+OVERLAP_POLICIES = frozenset({OVERLAP_QUEUE, OVERLAP_SKIP, OVERLAP_CANCEL_PREVIOUS})
+
+#: An agent's lease key is ``agent:<len(universe)>:<universe>:<branch>``. The
+#: length prefix makes it unambiguous whatever the ids contain, so no key and
+#: no universe prefix can reach into another universe (Codex refute
+#: 2026-09-28, P2: `(U, B::C)` and `(U::B, C)` collided under a bare `::`).
+LEASE_KEY_PREFIX = "agent:"
 
 #: Refusal-ledger key convention. Shared with the consumer and the owner's
 #: surface, which read the reason back out of ``assigned_queue_refusals``.
@@ -125,7 +173,7 @@ CREATE TABLE IF NOT EXISTS __TABLE__ (
     name               TEXT NOT NULL,
     branch_def_id      TEXT NOT NULL,
     trigger_kind       TEXT NOT NULL
-                       CHECK(trigger_kind IN ('interval','cron','once')),
+                       CHECK(trigger_kind IN ('interval','cron','once','event')),
     interval_seconds   INTEGER NOT NULL DEFAULT 0,
     cron_expr          TEXT NOT NULL DEFAULT '',
     inputs_json        TEXT NOT NULL DEFAULT '{}',
@@ -146,12 +194,12 @@ _SCHEMA = _AUTOMATIONS_TABLE.replace("__TABLE__", "automations") + """
 CREATE INDEX IF NOT EXISTS idx_automations_universe
     ON automations(universe_id, retired_at, created_at);
 
--- One row per universe with an automation in flight. The consumer's `_active`
--- map is process-local, so a restarted process (empty map) could launch an
--- automation for a universe an OLD process is still working (Codex ADAPT
+-- One row per lease key with work in flight: `<universe>::<branch>` for an
+-- automation (`automation_lease_key`), the bare universe id for legacy queue
+-- work. The consumer's `_active` map is process-local, so a restarted process
+-- (empty map) could launch work an OLD process is still doing (Codex ADAPT
 -- 2026-08-29 §8). This lease is the shared fence: it lives in the database
--- both processes read, and it fences ALL automation work for the universe,
--- not just one `(automation_id, due_at)` pair.
+-- both processes read. The table keeps its first name; the column holds a key.
 CREATE TABLE IF NOT EXISTS universe_leases (
     universe_id TEXT PRIMARY KEY,
     holder      TEXT NOT NULL,
@@ -175,6 +223,10 @@ CREATE TABLE IF NOT EXISTS automation_attempts (
 _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("automations", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0"),
     ("automations", "not_before", "TEXT NOT NULL DEFAULT ''"),
+    ("automations", "event_type", "TEXT NOT NULL DEFAULT ''"),
+    ("automations", "event_filter_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("automations", "overlap", "TEXT NOT NULL DEFAULT 'queue'"),
+    ("universe_leases", "run_id", "TEXT NOT NULL DEFAULT ''"),
 )
 
 #: A row read with how many attempts it has had -- the ``once`` due key.
@@ -193,7 +245,7 @@ _SELECT_ROWS = (
 
 
 def _rebuild_trigger_check(conn: sqlite3.Connection) -> None:
-    """Widen a stored ``trigger_kind`` CHECK that predates ``once``.
+    """Widen a stored ``trigger_kind`` CHECK that predates ``once`` or ``event``.
 
     SQLite cannot alter a CHECK, so a database written by an earlier build is
     rebuilt: successor table, copy every shared column, drop, rename, re-index.
@@ -206,7 +258,8 @@ def _rebuild_trigger_check(conn: sqlite3.Connection) -> None:
             "SELECT sql FROM sqlite_master WHERE type = 'table' "
             "AND name = 'automations'"
         ).fetchone()
-        return row is not None and "'once'" not in str(row[0] or "")
+        text = str(row[0] or "") if row is not None else ""
+        return row is not None and not ("'once'" in text and "'event'" in text)
 
     if not stale():
         return
@@ -366,6 +419,11 @@ class Automation:
     last_finished_at: str
     consecutive_failures: int = 0
     not_before: str = ""
+    #: ``event`` rows only: what they subscribe to, and the equality filter
+    #: an emitted payload must match.
+    event_type: str = ""
+    event_filter: dict[str, Any] | None = None
+    overlap: str = "queue"
     #: ``once`` rows only, read from ``automation_attempts``: how many attempts
     #: were claimed, and when the latest was.
     attempt_count: int = 0
@@ -485,6 +543,14 @@ def automations_db_path(base_path: str | Path) -> Path:
     return Path(base_path) / DB_FILENAME
 
 
+def _decoded_filter(raw: Any) -> dict[str, Any]:
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _from_row(row: sqlite3.Row) -> Automation:
     try:
         inputs = json.loads(row["inputs_json"] or "{}")
@@ -512,6 +578,9 @@ def _from_row(row: sqlite3.Row) -> Automation:
         last_finished_at=str(row["last_finished_at"] or ""),
         consecutive_failures=int(row["consecutive_failures"] or 0),
         not_before=str(row["not_before"] or ""),
+        event_type=str(row["event_type"] or ""),
+        event_filter=_decoded_filter(row["event_filter_json"]),
+        overlap=str(row["overlap"] or OVERLAP_QUEUE),
         attempt_count=int(
             (row["attempt_count"] if "attempt_count" in row.keys() else 0) or 0
         ),
@@ -640,8 +709,10 @@ class AutomationStore:
                     branch_def_id, trigger_kind, interval_seconds, cron_expr,
                     inputs_json, desired_state, pause_reason, revision,
                     created_at, updated_at, retired_at, last_due_at,
-                    last_run_id, last_reason, last_finished_at, not_before
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_run_id, last_reason, last_finished_at, not_before,
+                    event_type, event_filter_json, overlap
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?)
                 """,
                 (
                     automation.automation_id,
@@ -664,6 +735,9 @@ class AutomationStore:
                     automation.last_reason,
                     automation.last_finished_at,
                     automation.not_before,
+                    automation.event_type,
+                    json.dumps(automation.event_filter or {}, sort_keys=True),
+                    automation.overlap,
                 ),
             )
             conn.execute("COMMIT")
@@ -781,6 +855,25 @@ class AutomationStore:
 
     # -- Cross-process per-universe lease ----------------------------------
 
+    def _lease_blocks(self, row: sqlite3.Row, holder: str, moment: datetime,
+                      *, same_key: bool) -> bool:
+        """Whether this lease row keeps ``holder`` out.
+
+        Unexpired: it blocks unless its holder is proven dead. Expired: it
+        blocks only while its holder is proven ALIVE -- a live holder that
+        missed its refreshes may still be calling a provider (Codex round 2,
+        sequence 1 after TTL). On the SAME key a holder never blocks itself; a
+        sibling key it holds does, because that is other work in flight.
+        """
+        current = str(row["holder"])
+        if same_key and current == holder:
+            return False
+        expires = _parse(str(row["expires_at"]))
+        unexpired = expires is not None and expires > moment
+        if unexpired:
+            return not holder_is_provably_dead(self.base_path, current)
+        return holder_is_provably_alive(self.base_path, current)
+
     def acquire_universe_lease(
         self,
         universe_id: str,
@@ -788,21 +881,28 @@ class AutomationStore:
         holder: str,
         now: datetime,
         ttl_seconds: float,
+        excluded_by: str = "",
+        excluded_by_prefix: str = "",
     ) -> bool:
-        """Take the universe's automation lease, or report who already holds it.
+        """Take the lease on key ``universe_id``, or return False if it is held.
 
-        `_active[universe_id]` in the consumer is process-local: a restarted
-        process starts with an EMPTY map and would happily launch an automation
-        for a universe the old process is still working (Codex ADAPT §8). This
-        lease is shared state, so both processes see it.
+        `_active` in the consumer is process-local: a restarted process starts
+        with an EMPTY map and would happily launch work the old process is
+        still doing (Codex ADAPT §8). This lease is shared state, so both
+        processes see it.
 
         An EXPIRED lease is stealable -- a process that died mid-run must not
-        wedge its universe forever. So is one whose holder is PROVABLY dead
+        wedge its work forever. So is one whose holder is PROVABLY dead
         (``holder_is_provably_dead``): a deploy kills the process mid-run, and
-        waiting out a TTL as long as the run timeout froze every automation in
-        the universe for hours. A holder merely late to refresh is not dead.
-        TTL is the run timeout, and the holder re-stamps it while it works, so
-        expiry means "nobody is refreshing".
+        waiting out a TTL as long as the run timeout froze automations for
+        hours. A holder merely late to refresh is not dead. TTL is the run
+        timeout, and the holder re-stamps it while it works, so expiry means
+        "nobody is refreshing".
+
+        ``excluded_by`` / ``excluded_by_prefix`` name OTHER keys whose live
+        lease also keeps this one out, checked in the same transaction: an
+        agent's key and its universe's legacy key exclude each other (Codex
+        round 2 §3a), while two agents' keys do not.
         """
         deadline = _iso(now + timedelta(seconds=ttl_seconds))
         moment = _as_utc(now)
@@ -817,27 +917,39 @@ class AutomationStore:
                     "WHERE universe_id = ?",
                     (universe_id,),
                 ).fetchone()
-                if row is not None and str(row["holder"]) != holder:
-                    current = str(row["holder"])
-                    expires = _parse(str(row["expires_at"]))
-                    unexpired = expires is not None and expires > moment
-                    # Unexpired: yield unless the holder is proven dead.
-                    # Expired: take it unless the holder is proven ALIVE -- a
-                    # live holder that missed its refreshes may still be
-                    # calling a provider (Codex round 2, sequence 1 after TTL).
-                    if (
-                        unexpired
-                        and not holder_is_provably_dead(self.base_path, current)
-                    ) or (
-                        not unexpired
-                        and holder_is_provably_alive(self.base_path, current)
-                    ):
-                        conn.execute("ROLLBACK")
-                        return False
+                if row is not None and self._lease_blocks(
+                    row, holder, moment, same_key=True
+                ):
+                    conn.execute("ROLLBACK")
+                    return False
+                others: list[sqlite3.Row] = []
+                if excluded_by:
+                    others += conn.execute(
+                        "SELECT holder, expires_at FROM universe_leases "
+                        "WHERE universe_id = ?",
+                        (excluded_by,),
+                    ).fetchall()
+                if excluded_by_prefix:
+                    # substr, not LIKE: `_` is a LIKE wildcard and universe ids
+                    # are full of it.
+                    others += conn.execute(
+                        "SELECT holder, expires_at FROM universe_leases "
+                        "WHERE substr(universe_id, 1, ?) = ?",
+                        (len(excluded_by_prefix), excluded_by_prefix),
+                    ).fetchall()
+                if any(
+                    self._lease_blocks(other, holder, moment, same_key=False)
+                    for other in others
+                ):
+                    conn.execute("ROLLBACK")
+                    return False
                 conn.execute(
-                    "INSERT INTO universe_leases (universe_id, holder, expires_at) "
-                    "VALUES (?, ?, ?) ON CONFLICT(universe_id) DO UPDATE SET "
-                    "holder = excluded.holder, expires_at = excluded.expires_at",
+                    "INSERT INTO universe_leases "
+                    "(universe_id, holder, expires_at, run_id) "
+                    "VALUES (?, ?, ?, '') ON CONFLICT(universe_id) DO UPDATE SET "
+                    "holder = excluded.holder, expires_at = excluded.expires_at, "
+                    "run_id = CASE WHEN universe_leases.holder = excluded.holder "
+                    "THEN universe_leases.run_id ELSE '' END",
                     (universe_id, holder, deadline),
                 )
                 conn.execute("COMMIT")
@@ -847,6 +959,54 @@ class AutomationStore:
                 raise
         finally:
             conn.close()
+
+    def set_lease_run(self, key: str, *, holder: str, run_id: str) -> None:
+        """Record the run a held lease is working, for ``cancel_previous``."""
+        conn = self._connect(create=True)
+        if conn is None:  # pragma: no cover - create=True always connects
+            raise RuntimeError("automation store connection is unavailable")
+        try:
+            conn.execute(
+                "UPDATE universe_leases SET run_id = ? "
+                "WHERE universe_id = ? AND holder = ?",
+                (run_id, key, holder),
+            )
+        finally:
+            conn.close()
+
+    def attempt_claimed(self, automation_id: str, due_at: str) -> bool:
+        """Whether ``(automation_id, due_at)`` has already been claimed."""
+        conn = self._connect(create=False)
+        if conn is None:
+            return False
+        try:
+            return conn.execute(
+                "SELECT 1 FROM automation_attempts "
+                "WHERE automation_id = ? AND due_at = ?",
+                (automation_id, due_at),
+            ).fetchone() is not None
+        finally:
+            conn.close()
+
+    def lease_run_id(self, key: str, *, now: datetime) -> str:
+        """The run the live lease on ``key`` is working, or ''."""
+        conn = self._connect(create=False)
+        if conn is None:
+            return ""
+        try:
+            row = conn.execute(
+                "SELECT expires_at, run_id FROM universe_leases "
+                "WHERE universe_id = ?",
+                (key,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return ""
+        expires = _parse(str(row["expires_at"]))
+        if expires is None or expires <= _as_utc(now):
+            return ""
+        return str(row["run_id"] or "")
 
     def refresh_universe_lease(
         self,
@@ -1065,6 +1225,30 @@ def _validated_not_before(not_before: Any, now: datetime) -> str:
     return _iso(max(parsed, moment))
 
 
+def _validated_event(event_type: Any, event_filter: Any) -> tuple[str, dict[str, Any]]:
+    """An emitted event type and a flat equality filter over its payload keys."""
+    kind = str(event_type or "").strip()
+    if kind not in EVENT_TYPES:
+        raise AutomationUnavailable("event_type_unknown")
+    if event_filter is None:
+        event_filter = {}
+    if not isinstance(event_filter, dict):
+        raise AutomationUnavailable("event_filter_invalid")
+    allowed = EVENT_FILTER_KEYS[kind]
+    cleaned: dict[str, Any] = {}
+    for key, value in event_filter.items():
+        if key not in allowed or not isinstance(value, str) or not value.strip():
+            raise AutomationUnavailable("event_filter_invalid")
+        cleaned[key] = value.strip()
+    if not EVENT_REQUIRED_FILTER_KEYS[kind] <= set(cleaned):
+        raise AutomationUnavailable("event_filter_invalid")
+    # A cancelled run announces nothing (``automation_events``): a filter for
+    # it would be stored and never fire.
+    if kind == EVENT_RUN_COMPLETED and cleaned.get("outcome") == "cancelled":
+        raise AutomationUnavailable("event_filter_invalid")
+    return kind, cleaned
+
+
 def _validated_trigger(interval_seconds: Any, cron_expr: Any) -> tuple[str, int, str]:
     from tinyassets.scheduler import CronParseError, CronSchedule
 
@@ -1107,6 +1291,9 @@ def register_automation(
     interval_seconds: int = 0,
     cron_expr: str = "",
     not_before: str = "",
+    event_type: str = "",
+    event_filter: dict[str, Any] | None = None,
+    overlap: str = "",
     inputs: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> Automation:
@@ -1156,8 +1343,22 @@ def register_automation(
     # failure loop. Refuse it where the owner can read the reason.
     if str(resolved[1].get("author") or "").strip() != owner:
         raise AutomationUnavailable("branch_not_owned")
+    policy = str(overlap or "").strip() or OVERLAP_QUEUE
+    if policy not in OVERLAP_POLICIES:
+        raise AutomationUnavailable("overlap_invalid")
     moment = _as_utc(now or datetime.now(timezone.utc))
-    if str(not_before or "").strip():
+    kind_event, event_match = "", {}
+    if str(event_type or "").strip() or event_filter:
+        # A subscription. Exactly one trigger still: an event has no clock.
+        if (
+            int(interval_seconds or 0)
+            or str(cron_expr or "").strip()
+            or str(not_before or "").strip()
+        ):
+            raise AutomationUnavailable("trigger_invalid")
+        kind_event, event_match = _validated_event(event_type, event_filter)
+        trigger_kind, seconds, expr, once_at = TRIGGER_EVENT, 0, "", ""
+    elif str(not_before or "").strip():
         # A one-shot. Exactly one trigger still: a wake has no cadence.
         if int(interval_seconds or 0) or str(cron_expr or "").strip():
             raise AutomationUnavailable("trigger_invalid")
@@ -1194,6 +1395,9 @@ def register_automation(
             last_reason="",
             last_finished_at="",
             not_before=once_at,
+            event_type=kind_event,
+            event_filter=event_match,
+            overlap=policy,
         ),
         max_active=MAX_ACTIVE_PER_UNIVERSE,
     )
@@ -1337,6 +1541,69 @@ def due_automations(
         if due_at:
             due.append((automation, due_at))
     return due
+
+
+def automation_lease_key(automation: Automation) -> str:
+    """The lease an automation's run holds: its agent, not its row.
+
+    One agent is one branch in one universe. A cadence, the one-shot wakes a
+    run enqueues for itself, and the wakes an event stores are separate rows of
+    the same agent; keyed by row, a branch that re-wakes itself would run
+    beside its own previous run. Keyed by branch, it never overlaps itself,
+    and two different agents in one universe run side by side.
+    """
+    return f"{agent_lease_prefix(automation.universe_id)}{automation.branch_def_id}"
+
+
+def agent_lease_prefix(universe_id: str) -> str:
+    """The prefix every agent lease key of one universe starts with, and only
+    that universe's: the length field pins where the universe id ends."""
+    return f"{LEASE_KEY_PREFIX}{len(universe_id)}:{universe_id}:"
+
+
+def lease_key_universe(key: str) -> str:
+    """The universe a lease key belongs to (a bare key is a universe id)."""
+    if not key.startswith(LEASE_KEY_PREFIX):
+        return key
+    length, _, rest = key[len(LEASE_KEY_PREFIX):].partition(":")
+    try:
+        return rest[: int(length)]
+    except ValueError:
+        return key
+
+
+def skip_overlapping(
+    base_path: str | Path,
+    automation: Automation,
+    due_at: str,
+    *,
+    now: datetime,
+    consumer_id: str = "",
+) -> str:
+    """Spend a due run whose agent is busy, under the ``skip`` policy.
+
+    The instant is claimed and closed as skipped, so a cadence moves on to its
+    next instant rather than owing this one; a one-shot wake retires. Never
+    raises.
+    """
+    base = Path(base_path)
+    moment = _as_utc(now)
+    store = AutomationStore(base)
+    reason = "skipped_overlap"
+    try:
+        if not store.claim_attempt(automation.automation_id, due_at, now=moment):
+            return "attempt_exists"
+        store.finish_attempt(
+            automation.automation_id, due_at, run_id="", status="skipped",
+            reason=reason, now=moment, succeeded=None,
+        )
+        if automation.trigger_kind == TRIGGER_ONCE:
+            store.retire_for_reason(automation.automation_id, reason=reason, now=moment)
+    except Exception:  # noqa: BLE001 - one owner's row cannot stop the pump
+        logger.exception("overlap skip failed automation=%s", automation.automation_id)
+        return "skip_error"
+    _record_refusal(base, automation, reason, moment, consumer_id)
+    return reason
 
 
 # -- Run path -----------------------------------------------------------------
@@ -1971,7 +2238,16 @@ __all__ = [
     "MIN_CRON_GAP_SECONDS",
     "MAX_ONCE_ATTEMPTS",
     "MIN_INTERVAL_SECONDS",
+    "OVERLAP_CANCEL_PREVIOUS",
+    "OVERLAP_POLICIES",
+    "OVERLAP_QUEUE",
+    "OVERLAP_SKIP",
     "ONCE_RETRY_SECONDS",
+    "EVENT_FILTER_KEYS",
+    "EVENT_PENDING_REQUEST_ANSWERED",
+    "EVENT_RUN_COMPLETED",
+    "EVENT_TYPES",
+    "TRIGGER_EVENT",
     "TRIGGER_ONCE",
     "REFUSAL_KEY_PREFIX",
     "Automation",
@@ -1979,6 +2255,9 @@ __all__ = [
     "AutomationRunUnstopped",
     "AutomationStore",
     "AutomationUnavailable",
+    "agent_lease_prefix",
+    "automation_lease_key",
+    "lease_key_universe",
     "automations_db_path",
     "cancel_grace_seconds",
     "cron_min_gap_seconds",
@@ -1990,4 +2269,5 @@ __all__ = [
     "register_automation",
     "run_due_automation",
     "run_timeout_seconds",
+    "skip_overlapping",
 ]

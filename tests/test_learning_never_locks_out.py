@@ -392,7 +392,7 @@ def test_the_app_prefers_the_display_name_over_the_routing_identity():
     assert "const display=executionLabel(receipt&&receipt.provider_display,200);" in text
     # The label is preferred, the routing identity is the fallback, and the model
     # is still named beside it.
-    assert '"Answered by "+(display||provider)+" · "+(model||"Model not reported")' in text
+    assert '"Answered by "+(display||provider)+" · "+(model||' in text
 
 
 # --------------------------------------------------------------------------

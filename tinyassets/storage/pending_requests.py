@@ -332,12 +332,12 @@ def resolve_request(
             )
             if cur.rowcount <= 0:
                 return False
+            row = conn.execute(
+                "SELECT kind, title, dedupe_key FROM pending_requests "
+                "WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
             if dont_ask_again:
-                row = conn.execute(
-                    "SELECT kind, title, dedupe_key FROM pending_requests "
-                    "WHERE request_id = ?",
-                    (request_id,),
-                ).fetchone()
                 if row:
                     conn.execute(
                         "INSERT OR REPLACE INTO request_suppressions "
@@ -351,10 +351,18 @@ def resolve_request(
                             time.time(),
                         ),
                     )
-            return True
     except Exception:  # noqa: BLE001
         logger.warning("pending_requests: resolve failed", exc_info=True)
         return False
+    # Every surface answers through here, so one emit wakes a subscribed
+    # branch whichever surface the owner used. Never raises.
+    from tinyassets.automation_events import emit_pending_request_answered
+
+    emit_pending_request_answered(
+        universe_dir, request_id=request_id,
+        kind=str(row[0]) if row else "", status=status,
+    )
+    return True
 
 
 def withdraw_request(

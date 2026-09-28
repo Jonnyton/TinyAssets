@@ -40,6 +40,29 @@ def test_alias_never_substitutes_for_reported_model():
     assert ProviderResponse("a", "p", "legacy-model", "f", 1).reported_model == ""
 
 
+def test_request_rides_beside_unknown_model_and_survives_storage():
+    """A request is named apart from `model`; it never makes the status reported."""
+    from tinyassets.providers.execution_receipt import (
+        ExecutionReceipt,
+        normalize_execution_receipt,
+    )
+
+    receipt = WriterExecutionReceipt()
+    receipt.observe(replace(response(reported=""), requested_model="picked"))
+    projected = receipt.projection()
+    assert projected == {"provider": "owned", "model": "", "model_status": "unknown",
+                         "requested_model": "picked"}
+    # The stored row round-trips through the conversation store's dataclass.
+    assert normalize_execution_receipt(projected) == projected
+    assert normalize_execution_receipt(ExecutionReceipt(**projected)) == projected
+    # Legacy rows without the key still normalize; a blank or malformed request
+    # is a refusal, never a rendered blank.
+    legacy = {"provider": "owned", "model": "", "model_status": "unknown"}
+    assert normalize_execution_receipt(legacy) == legacy
+    for bad in ("", "bad\nlabel", "a" * 201, 42):
+        assert normalize_execution_receipt({**legacy, "requested_model": bad}) is None
+
+
 @pytest.mark.parametrize("bad", [None, True, 123, "", " ", "bad\nlabel", "a" * 201])
 def test_unusable_model_evidence_stays_unknown(bad):
     receipt = WriterExecutionReceipt()
