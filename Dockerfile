@@ -292,5 +292,7 @@ EXPOSE 8001
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker-entrypoint.sh"]
 
 # Default command — the FastMCP streamable-http server on 0.0.0.0:8001.
-# Matches `if __name__ == "__main__": main()` in tinyassets/universe_server.py.
-CMD ["python", "-m", "tinyassets.universe_server"]
+# Through a launcher whose import is empty: every broker/workspace child is a
+# multiprocessing spawn child, which re-imports __main__ by name first, and the
+# server as __main__ cost each child ~5 s (tinyassets/serve.py).
+CMD ["python", "-m", "tinyassets.serve"]

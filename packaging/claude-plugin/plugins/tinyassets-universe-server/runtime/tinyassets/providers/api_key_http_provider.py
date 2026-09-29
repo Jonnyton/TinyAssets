@@ -41,6 +41,7 @@ from typing import Any
 
 from tinyassets.exceptions import (
     ProviderAuthenticationError,
+    ProviderModelRefusedError,
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
@@ -52,6 +53,10 @@ from tinyassets.providers.protocol_encoders import ENCODERS, ProtocolDecodeError
 from tinyassets.providers.wire_dialects import same_dialect
 
 _LOG = logging.getLogger(__name__)
+
+#: HTTP's own words for "not this model, not for you": forbidden, not found,
+#: gone. Standard status semantics, not a vendor's error envelope.
+_MODEL_REFUSAL_STATUSES = frozenset({403, 404, 410})
 
 
 def _single_host(view: Any) -> str:
@@ -363,8 +368,15 @@ class ApiKeyHttpProvider(BaseProvider):
             raise ProviderRateLimitedError("compute provider rate limited (429)")
         if 500 <= status < 600:
             raise ProviderOverloadedError(f"compute provider error (HTTP {status})")
+        if status in _MODEL_REFUSAL_STATUSES:
+            # Access refused, or no such model to serve: nothing was generated,
+            # so this is neither a reply we failed to read nor a sick source.
+            raise ProviderModelRefusedError(self._capacity_detail(status, result))
         if not (200 <= status < 300):
-            raise ProviderProtocolError(f"compute provider returned HTTP {status}")
+            raise ProviderProtocolError(
+                self._capacity_detail(status, result)
+                or f"compute provider returned HTTP {status}"
+            )
 
         body_str = result.get("body")
         if not isinstance(body_str, str) or not body_str:
