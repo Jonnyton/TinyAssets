@@ -3,8 +3,8 @@
 The founder's always-on background agent wakes about once a minute, and a
 renewal republished the agent revision, the assignment, every member binding
 and the custody reference -- voiding every receipt in flight at each 12-hour
-rotation (docs/concerns/2026-09-28-a-renewal-voids-other-running-receipts.md).
-openspec/changes/carry-custody-across-rotation. Real stores, real refresh core;
+rotation.
+openspec/changes/archive/2026-09-28-carry-custody-across-rotation. Real stores, real refresh core;
 only the token spend and issuer metadata are synthetic.
 """
 

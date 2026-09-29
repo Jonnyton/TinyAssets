@@ -612,7 +612,7 @@ def terminalize_background_queue_authority(
 
 def _normalize_content_digest(value: str) -> str:
     """Both forms occur: branch_versions.content_hash is bare hex, but a task's
-    automation_subject_digest is `sha256:<hex>` (api/cloud_automations.py). Normalize
+    automation_subject_digest is `sha256:<hex>`. Normalize
     to the prefixed form so the authority compare doesn't fail every real version
     (Codex #2, PR #2516). Empty stays empty so a missing digest never matches."""
     text = (value or "").strip()

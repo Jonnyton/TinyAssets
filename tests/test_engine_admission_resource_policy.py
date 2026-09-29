@@ -36,21 +36,26 @@ def _admit(db, kind, uid="u-policy"):
     )
 
 
+#: The deployed caps, sized so a 10-agent squad on 2-minute heartbeats (300
+#: runs an hour) sits well inside them (plan item 6, 2026-09-28).
+E, W = adm.RUN_TOTAL_LIMIT, adm.RUN_WRITE_LIMIT
+
+
 @pytest.mark.parametrize("engines,writes,reads,kind,reason", [
-    (600, 0, 0, adm.KIND_ENGINE, None),
-    (899, 0, 0, adm.KIND_ENGINE, None),
-    (899, 0, 0, adm.KIND_WRITE, None),
-    (599, 300, 0, adm.KIND_ENGINE, None),
-    (0, 300, 0, adm.KIND_WRITE, adm.REFUSED_BY_WRITE),
-    (601, 299, 0, adm.KIND_ENGINE, adm.REFUSED_BY_TOTAL),
-    (601, 299, 0, adm.KIND_WRITE, adm.REFUSED_BY_TOTAL),
-    (600, 0, 300, adm.KIND_ENGINE, adm.REFUSED_BY_TOTAL),
-    (0, 0, 900, adm.KIND_WRITE, adm.REFUSED_BY_TOTAL),
+    (E - W, 0, 0, adm.KIND_ENGINE, None),
+    (E - 1, 0, 0, adm.KIND_ENGINE, None),
+    (E - 1, 0, 0, adm.KIND_WRITE, None),
+    (E - W - 1, W, 0, adm.KIND_ENGINE, None),
+    (0, W, 0, adm.KIND_WRITE, adm.REFUSED_BY_WRITE),
+    (E - W + 1, W - 1, 0, adm.KIND_ENGINE, adm.REFUSED_BY_TOTAL),
+    (E - W + 1, W - 1, 0, adm.KIND_WRITE, adm.REFUSED_BY_TOTAL),
+    (E - W, 0, W, adm.KIND_ENGINE, adm.REFUSED_BY_TOTAL),
+    (0, 0, E, adm.KIND_WRITE, adm.REFUSED_BY_TOTAL),
 ])
 def test_category_mix_preserves_total_and_write_limits(
     tmp_path, engines, writes, reads, kind, reason,
 ):
-    assert (adm.RUN_TOTAL_LIMIT, adm.RUN_WRITE_LIMIT, adm.RUN_WINDOW_SECONDS) == (900, 300, 3600)
+    assert (adm.RUN_TOTAL_LIMIT, adm.RUN_WRITE_LIMIT, adm.RUN_WINDOW_SECONDS) == (3600, 1200, 3600)
     db = tmp_path / adm.LEDGER_NAME
     _seed(db, engines=engines, writes=writes, reads=reads)
     result = _admit(db, kind)
@@ -65,7 +70,7 @@ def test_category_mix_preserves_total_and_write_limits(
 
 def test_mixed_kinds_race_for_one_total_slot(tmp_path):
     db = tmp_path / adm.LEDGER_NAME
-    _seed(db, engines=800, reads=99)
+    _seed(db, engines=E - 100, reads=99)
     gate = threading.Barrier(12)
 
     def attempt(i):
@@ -77,14 +82,14 @@ def test_mixed_kinds_race_for_one_total_slot(tmp_path):
     assert sum(adm._is_ticket(result.ticket) for result in results) == 1
     assert results.count(adm.Admission(None, adm.REFUSED_BY_TOTAL)) == 11
     with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM admissions").fetchone()[0] == 900
+        assert conn.execute("SELECT COUNT(*) FROM admissions").fetchone()[0] == E
 
 
 def test_full_engine_window_expires_without_reinterpreting_rows(tmp_path, monkeypatch):
     stamp = 2_000_000_000.0
     monkeypatch.setattr(adm.time, "time", lambda: stamp)
     db = tmp_path / adm.LEDGER_NAME
-    _seed(db, engines=900)
+    _seed(db, engines=E)
     assert _admit(db, adm.KIND_ENGINE) == adm.Admission(None, adm.REFUSED_BY_TOTAL)
     stamp += adm.RUN_WINDOW_SECONDS + 1
     result = _admit(db, adm.KIND_ENGINE)
@@ -101,19 +106,19 @@ def test_engine_wrapper_uses_total_not_a_reserved_category(tmp_path, monkeypatch
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     db = tmp_path / adm.LEDGER_NAME
-    _seed(db, engines=600)
+    _seed(db, engines=E - W)
     admitted = server._engine_run_admit(
         universe_id="u-policy", fail_closed=True, kind=adm.KIND_ENGINE, want_ticket=True,
     )
     assert adm._is_ticket(admitted.ticket)
-    _seed(db, engines=299)
+    _seed(db, engines=W - 1)
     refused = server._engine_run_admit(
         universe_id="u-policy", fail_closed=True, kind=adm.KIND_ENGINE, want_ticket=True,
     )
     assert refused == adm.Admission(None, adm.REFUSED_BY_TOTAL)
     message = server._engine_refusal("write_graph", refused.refused_by)
-    assert "900 admissions" in message
-    assert "600" not in message
+    assert f"{E} admissions" in message
+    assert str(E - W) not in message
 
 
 def test_engine_wrapper_still_fails_closed_on_unusable_ledger(tmp_path, monkeypatch):
