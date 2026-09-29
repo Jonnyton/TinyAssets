@@ -137,3 +137,26 @@ def test_an_unusable_identity_records_nothing(tmp_path, bad):
         failure_class="provider_refused", detail="",
     ) is False
     assert active_refused_models(tmp_path, owner_user_id=bad) == ()
+
+
+def test_a_workflow_keeps_the_owners_explicit_order_despite_a_mark(agent, monkeypatch):
+    """An explicit workflow order is checked position by position; demoting a
+    marked model there refused the whole run. The run keeps the owner's order."""
+    from tinyassets.providers.served_model_plan import prepare_owned_model_plan
+    from tinyassets.providers.work_candidate_data import WorkCandidateData
+    from tinyassets.storage.refused_models import record_refused_model
+
+    _with_second_model(monkeypatch)
+    first, second = _saved_first_then_second(agent)
+    record_refused_model(
+        agent.served.rig.base, owner_user_id="owner", connection_id=first.connection_id,
+        model_id=first.model_id, failure_class="provider_refused", detail="HTTP 403: no",
+    )
+    prepared = prepare_owned_model_plan(
+        base=agent.served.rig.base, universe=agent.served.context.universe_dir,
+        owner="owner", agent=agent.served.agent,
+    )
+    # The served order demotes it...
+    assert prepared.plan.next_candidate("owner", "u-models") == second
+    # ...the workflow order keeps the owner's explicit order and admits.
+    assert WorkCandidateData(prepared.plan).order == (first, second)
