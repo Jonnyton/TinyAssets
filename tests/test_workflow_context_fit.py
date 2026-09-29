@@ -123,3 +123,35 @@ def test_a_node_too_large_for_every_accepted_model_still_fails_on_context(
     assert result["terminal_status"] == "failed"
     assert work_agent.wires == []
     assert "cannot fit" in (result["terminal_error"] or "")
+
+
+def test_a_later_smaller_node_still_uses_the_model_an_earlier_node_outgrew(
+    tmp_path, monkeypatch, authenticate_request, work_agent,
+):
+    """The fit is the NODE's, not the run's (gpt-6-astra on #4093): a run's
+    exhaustion is shared by its nodes, so recording the outgrown model there
+    made a short second node skip a primary that fits it."""
+    from tinyassets.providers.router import ProviderRouter
+
+    _three_models(monkeypatch, {SMALL: 12_000, ALSO_SMALL: 12_500, LARGE: 1_048_576})
+    routed = []
+    real_call = ProviderRouter.call
+
+    async def call(router, *args, **kwargs):
+        routed.append(kwargs["universe_context"].model_selection)
+        return await real_call(router, *args, **kwargs)
+
+    monkeypatch.setattr(ProviderRouter, "call", call)
+    branch = _branch(node_count=2)
+    for node in branch.node_defs:
+        node.tools_allowed = ["universe_self"]
+    branch.node_defs[0].prompt_template = "Summarize: " + "long context " * 5_000
+    result, _, _ = _run_branch(tmp_path, monkeypatch, authenticate_request, branch,
+                               open_provider=True, model_access=ModelAccess("discovered"))
+
+    assert result["terminal_status"] == "completed", (result, work_agent.errors)
+    sent = [wire["body"]["model"] for wire in work_agent.wires]
+    # Node 1 outgrew both small models and answered on the large one; node 2,
+    # short, answered on the owner's primary again.
+    assert sent[0] == LARGE, sent
+    assert sent[-1] == SMALL, sent

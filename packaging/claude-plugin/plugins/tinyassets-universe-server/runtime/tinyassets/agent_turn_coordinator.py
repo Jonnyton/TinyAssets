@@ -666,11 +666,16 @@ class AgentTurnCoordinator:
 
         failed = self.context.model_selection
         self.visited.add(failed)
-        self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
         if self.plan is None:
-            # The work adapter raises every interaction its order reads.
+            # The work adapter raises every interaction its order reads, for
+            # THIS turn. No Exhaustion: a work run's exhaustion is shared by all
+            # its nodes, and a model too small for this node's context is not
+            # exhausted for a later, smaller one (gpt-6-astra on #4093). The
+            # measured minimum already rules the failed model out here -- its
+            # window is exactly what the measurement exceeded.
             self.adapter.require_context(needed)
         else:
+            self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
             # Every interaction the order reads: a per-source policy REPLACES the
             # plan's own for that source's models, and production plans carry one
             # per source -- raising only the plan's left them admitting a model too
