@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from tinyassets.exceptions import (
+    ProviderModelRefusedError,
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
@@ -261,7 +262,10 @@ def test_missing_universe_dir_refused(base: Path) -> None:
         (503, ProviderOverloadedError),
         (500, ProviderOverloadedError),
         (400, ProviderProtocolError),
-        (404, ProviderProtocolError),
+        # A refusal of the model is not an unreadable reply (live 2026-09-28).
+        (403, ProviderModelRefusedError),
+        (404, ProviderModelRefusedError),
+        (410, ProviderModelRefusedError),
     ],
 )
 def test_http_status_maps_to_provider_error(base: Path, status: int, exc: type) -> None:

@@ -1884,9 +1884,13 @@ def _inbound_event_run_fn(
         )
         if reservation_id:
             webhook_hooks.link_dispatch(base, reservation_id=reservation_id, run_id=str(run_id))
-    except Exception:  # noqa: BLE001 - a single failed event must not kill the loop
+    except Exception as exc:  # noqa: BLE001 - a single failed event must not kill the loop
         logger.exception("event bus: failed to fire branch %s for %s", branch_def_id, actor)
         _release()
+        if str(exc).startswith("run_usage_limited"):
+            # Owner-visible: the scheduler records it on the schedule's row
+            # (plan item 6: a limit is never a silent drop).
+            raise
 
 
 def start_scheduler_for_serving() -> bool:
@@ -2837,6 +2841,17 @@ def _provider_detail(exc: BaseException) -> str:
     return redacted_failure_detail(_FS_PATH.sub("<path>", detail))
 
 
+def _held_sources_detail(exc: BaseException) -> str:
+    """Which accepted sources cannot run and why, when the plan said so; else ""."""
+    from tinyassets.providers.diagnostics import redacted_failure_detail
+    from tinyassets.providers.served_model_plan import HELD_SOURCES, NO_ELIGIBLE_MODEL
+
+    text = str(exc)
+    if not text.startswith(NO_ELIGIBLE_MODEL) or HELD_SOURCES not in text:
+        return ""
+    return redacted_failure_detail(text.split(HELD_SOURCES, 1)[1])
+
+
 def _served_failure_record(exc: BaseException, *, held: bool = False):
     """Every field of a failed served turn, derived from what was observed.
 
@@ -2863,7 +2878,10 @@ def _served_failure_record(exc: BaseException, *, held: bool = False):
             stage = "before_send"
         return turn_failure(
             code, stage=stage, effects=effects,
-            provider_detail="" if code == "setup_required" else _provider_detail(exc),
+            provider_detail=(
+                _held_sources_detail(exc) if code == "setup_required"
+                else _provider_detail(exc)
+            ),
             ref=ref if isinstance(ref, str) and ref else uuid.uuid4().hex[:16],
             # Only for a class whose answer actually IS waiting. A wait beside
             # "reconnect your provider" would send the owner away for two

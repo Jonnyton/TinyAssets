@@ -1,9 +1,22 @@
 ---
-severity: P1
-title: Refresh is not wired into the workflow launch lanes
+severity: P2
+title: Refresh launch integration -- items left after the lanes were wired
 filed: '2026-09-26'
-summary: the pre-launch subscription refresh runs only on the served entry, because both workflow lanes pin `assignment_generation` before their seam and a refresh renews the accepted source, which advances it. Covering them means moving the seam ahead of the receipt mint
+summary: every launch lane now refreshes before it pins authority (#4076 served, the lane PR foreground and background); what remains is the per-source launching hint on the workflow lanes and native no-effect auth evidence for fallback, both unverified
 ---
+
+## Status 2026-09-28
+
+Closed by #4076 and the workflow-lanes PR:
+- The served turn refreshes before the carrier and model plan pin the binding, and it renews as the proven owner.
+- The foreground run refreshes once, before its receipt (`_ForegroundRunProviderSession._refresh_sign_ins`).
+- The background lane refreshes at each node call's entry, before an agent node's rounds share a receipt (`_BackgroundAssignedProviderSession._refresh_sign_ins`).
+- Recoverable renewal: an accepted source whose custody no longer matches its bytes is renewed on the next launch.
+
+Still open, not re-verified in this pass:
+- The workflow lanes pass no `launching` source. A finished sign-in therefore only records its card there, and the turn fails at the CLI launch, typed as a sign-in failure. It is not converted into a fallback.
+- Native no-effect authentication evidence that would permit a safe fallback (last bullet below).
+- The two-stale-members wall: `2026-09-28-two-stale-accepted-members-cannot-renew.md`.
 
 # PR 4032 refresh does not preserve the launch authority lifecycle
 
