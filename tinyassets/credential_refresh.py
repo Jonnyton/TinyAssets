@@ -33,12 +33,15 @@ responsible for scrubbing the token endpoint's own words before they reach a
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import threading
 import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
+
+logger = logging.getLogger(__name__)
 
 #: How long a caller waits for another holder's refresh before failing loudly.
 LOCK_WAIT_SECONDS = 45.0
@@ -177,6 +180,7 @@ def refresh_credential(
     records: Callable[[T], list[dict[str, Any]]],
     subject: str = "credential",
     wait_seconds: float = LOCK_WAIT_SECONDS,
+    after_write: Callable[[T], None] | None = None,
 ) -> T:
     """Replace one stored credential's secret, exactly once across the host.
 
@@ -189,6 +193,11 @@ def refresh_credential(
     Returns the value whose secret to use now -- the rotated one, or the one
     another holder had already written. Raises :class:`RefreshError`; a caller
     that needs its own exception type catches and re-raises.
+
+    ``after_write`` runs once the rotated value is saved, STILL inside the
+    exclusive vault hold, so whatever it records about the new bytes lands in
+    the same critical section as the bytes. It must not raise: the rotation is
+    already saved and is never undone for it.
     """
     universe = Path(universe_dir)
     key = f"{universe.resolve()}::{lock_id}"
@@ -208,6 +217,7 @@ def refresh_credential(
                     records=records,
                     subject=subject,
                     deadline=deadline,
+                    after_write=after_write,
                 )
         except TimeoutError:
             if locked:
@@ -231,6 +241,7 @@ def _refresh_locked(
     records: Callable[[T], list[dict[str, Any]]],
     subject: str,
     deadline: float,
+    after_write: Callable[[T], None] | None = None,
 ) -> T:
     stack, write = _hold_vault(universe, deadline, subject)
     with stack:
@@ -247,7 +258,6 @@ def _refresh_locked(
         while True:
             try:
                 write(row, owner_user_id=owner_user_id, universe_id=universe_id)
-                return fresh
             except Exception:  # noqa: BLE001 - an unsaved rotation loses the credential
                 if time.monotonic() >= deadline:
                     # TERMINAL, not transient. The refresh token HAS been spent:
@@ -262,3 +272,10 @@ def _refresh_locked(
                         "stored one is no longer usable; sign in again"
                     ) from None
                 time.sleep(0.05)
+                continue
+            if after_write is not None:
+                try:
+                    after_write(fresh)
+                except Exception:  # noqa: BLE001 - the saved rotation stands regardless
+                    logger.warning("post-rotation bookkeeping failed for this %s", subject)
+            return fresh

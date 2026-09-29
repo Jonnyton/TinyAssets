@@ -79,12 +79,20 @@ _CLASS_WORDS = {
         "confirmed that was the only cause"
     ),
     "setup_required": (
-        "this universe has no model connected yet; connect one from the request "
-        "under “Waiting on you”, then send your request again"
+        "this universe has no model it can use right now; connect a model, or "
+        "reconnect one that stopped working, from the request under “Waiting on "
+        "you”, then send your request again"
     ),
     "provider_protocol_error": (
         "the connected model replied in a format this universe could not read; "
         "try again, or choose another model"
+    ),
+    "provider_refused": (
+        "your model provider refused to serve this model to this universe, "
+        "before it produced anything; that is an access decision on the "
+        "provider's side, not a reply we failed to read. Its own words are below. "
+        "Choose another model, or check that model's access and privacy settings "
+        "in your account with that provider"
     ),
     "context_window_exceeded": (
         "the conversation plus what its tools read back grew larger than the "
@@ -117,6 +125,7 @@ STAGE_OF_CLASS = {
     "provider_idle_timeout": "model_reply",
     "interactive_deadline": "model_reply",
     "provider_protocol_error": "model_reply",
+    "provider_refused": "model_request",
     "platform_fault": "platform",
 }
 
