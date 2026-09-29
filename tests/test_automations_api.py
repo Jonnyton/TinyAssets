@@ -659,6 +659,7 @@ def test_legacy_control_rows_are_listed_and_flagged(tmp_path: Path, env) -> None
     """The layer's code is deleted (plan C3c); production still holds its rows,
     in the schema the captured fixture reproduces."""
     import sqlite3
+    from contextlib import closing
 
     from tinyassets.storage import db_path
 
@@ -666,7 +667,7 @@ def test_legacy_control_rows_are_listed_and_flagged(tmp_path: Path, env) -> None
     ddl = (Path(__file__).parent / "fixtures" / "retired_fleet_tables.sql").read_text(
         encoding="utf-8"
     )
-    with sqlite3.connect(db_path(tmp_path)) as conn:
+    with closing(sqlite3.connect(db_path(tmp_path))) as conn, conn:
         conn.executescript(ddl)
         conn.execute(
             "INSERT INTO cloud_automation_controls (universe_id, automation_id, "
@@ -693,6 +694,27 @@ def test_legacy_control_rows_are_listed_and_flagged(tmp_path: Path, env) -> None
 
     assert legacy["detail"] == RETIRED_FLEET_CONTROL_REASON
     assert listed["count"] == 2
+
+    # The read closes its own handle; a connection's context manager alone
+    # would leave it open until garbage collection (Codex refute C3c).
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(target, *args, **kwargs):
+        conn = real_connect(target, *args, **kwargs)
+        if "mode=ro" in str(target):
+            opened.append(conn)
+        return conn
+
+    from tinyassets.api.automations import _legacy_rows
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sqlite3, "connect", tracking_connect)
+        assert _legacy_rows(tmp_path, UNIVERSE)
+    assert len(opened) == 1
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
 
 
 # -- 8. The pinned handles reach the new surface ------------------------------
