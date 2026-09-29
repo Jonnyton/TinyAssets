@@ -48,8 +48,9 @@ once, with every run-time check an automation has.
   `request_field_retired:<field>`. At their defaults they are accepted, so a
   client that always sends them still works.
 - **The pending 2026-08-05 row gets a recorded disposition**, not a silent
-  drop. A migration marks every pending request-admission task `refused` with
-  the reason `request_retired_to_wake`. The owner can re-send the request.
+  drop. At startup the daemon cancels every pending request-admission task
+  through the ordinary cancel path, whose event records the reason
+  `request_retired_to_wake`. The owner can re-send the request.
 - The chatbot guidance in `tinyassets/api/prompts.py` changes to match: a
   request asks your own universe to run its loop now.
 

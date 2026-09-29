@@ -1684,6 +1684,38 @@ class RequestAdmissionStore:
                 conn.rollback()
                 raise
 
+    def retire_pending_request_tasks(self) -> list[str]:
+        """Cancel every pending request task, with the recorded reason.
+
+        ``write_graph target=request`` now registers a one-shot wake
+        (request-registers-a-once-wake). Nothing in the cloud ever ran a
+        request task, so a pending one would wait forever. Each is cancelled
+        through the ordinary cancel path, which records an event carrying
+        ``REQUEST_RETIRED_REASON``: a recorded disposition, never a silent
+        drop, and the row is kept. Automation slices (``automation_id`` set) are
+        not requests and are left alone. Idempotent.
+        """
+        with self.connection() as conn:
+            if not _table_exists(conn, "branch_tasks_v2"):
+                return []
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM branch_tasks_v2 WHERE status = 'pending' "
+                    "AND automation_id IS NULL ORDER BY queued_at, branch_task_id"
+                ).fetchall()
+                retired = []
+                for row in rows:
+                    self._request_v2_cancel_locked(
+                        conn, row, detail={"reason": REQUEST_RETIRED_REASON},
+                    )
+                    retired.append(str(row["branch_task_id"]))
+                conn.commit()
+                return retired
+            except Exception:
+                conn.rollback()
+                raise
+
     def _request_v2_cancel_locked(
         self,
         conn: sqlite3.Connection,
@@ -2513,6 +2545,14 @@ class RequestAdmissionStore:
                 _json(dict(detail)),
             ),
         )
+
+
+#: The recorded disposition of a request task left pending when requests
+#: became one-shot wakes (2026-09-29).
+REQUEST_RETIRED_REASON = (
+    "request_retired_to_wake: requests now run as a one-shot wake of your "
+    "universe's loop; send it again with write_graph target=request"
+)
 
 
 def migrate_request_admission_schema(conn: sqlite3.Connection) -> None:

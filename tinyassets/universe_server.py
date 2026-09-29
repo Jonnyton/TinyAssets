@@ -4510,6 +4510,17 @@ def create_streamable_http_app() -> Starlette:
             else:
                 if orphans:
                     logger.warning("settled %d orphaned agent turn(s)", len(orphans))
+            # Requests are one-shot wakes now; a request task the retired queue
+            # left pending gets its recorded reason instead of waiting forever.
+            from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+            try:
+                retired = RequestAdmissionStore(data_dir()).retire_pending_request_tasks()
+            except Exception:  # noqa: BLE001 - serving must not wait on cleanup
+                logger.exception("pending request task retirement failed")
+            else:
+                if retired:
+                    logger.warning("retired %d pending request task(s)", len(retired))
             # The scheduler starts whenever the daemon serves — schedules are a user's
             # own automations and do not belong to the inbound channel surface
             # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates

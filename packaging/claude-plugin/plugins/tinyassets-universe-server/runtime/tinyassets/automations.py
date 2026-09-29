@@ -42,6 +42,7 @@ is also what the cron branch does with its minute bucket.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -1305,8 +1306,16 @@ def register_automation(
     overlap: str = "",
     inputs: dict[str, Any] | None = None,
     now: datetime | None = None,
+    automation_id: str = "",
 ) -> Automation:
     """Store one automation, or refuse with a named reason (D4).
+
+    ``automation_id`` is for a caller that derives one to make its request
+    idempotent (``write_graph target=request``). If a row with that id exists,
+    it is returned unchanged when it is the same automation -- same owner,
+    universe, branch, trigger and canonical inputs -- and refused with
+    ``idempotency_key_body_conflict`` otherwise. Nothing is charged for a
+    replay. An empty id means a fresh random one, as before.
 
     Every precondition a due run needs is checked HERE, in the owner's own
     request, where a refusal is a message they can act on. Storing a row that
@@ -1377,6 +1386,15 @@ def register_automation(
         trigger_kind, seconds, expr = _validated_trigger(interval_seconds, cron_expr)
         once_at = ""
 
+    store = AutomationStore(base)
+    derived_id = str(automation_id or "").strip()
+    if derived_id:
+        existing = store.get(derived_id)
+        if existing is not None:
+            return _replayed(existing, owner=owner, universe_id=uid,
+                             branch_def_id=resolved[0], trigger_kind=trigger_kind,
+                             inputs=inputs)
+
     # Usage, not shape: a registration is an engine write against this
     # universe's admission window, like any other durable edit it makes. A node
     # that enqueues in a loop, or an owner who registers hundreds, is refused
@@ -1385,35 +1403,72 @@ def register_automation(
 
     if not _engine_run_admit(universe_id=uid, fail_closed=True, kind="engine"):
         raise AutomationUnavailable("usage_limited")
-    store = AutomationStore(base)
     stamp = _iso(moment)
-    return store.insert(
-        Automation(
-            automation_id=uuid.uuid4().hex,
-            universe_id=uid,
-            owner_principal_id=owner,
-            name=str(name or "").strip(),
-            branch_def_id=resolved[0],
-            trigger_kind=trigger_kind,
-            interval_seconds=seconds,
-            cron_expr=expr,
-            inputs=dict(inputs or {}),
-            desired_state=STATE_ACTIVE,
-            pause_reason="",
-            revision=1,
-            created_at=stamp,
-            updated_at=stamp,
-            retired_at="",
-            last_due_at="",
-            last_run_id="",
-            last_reason="",
-            last_finished_at="",
-            not_before=once_at,
-            event_type=kind_event,
-            event_filter=event_match,
-            overlap=policy,
-        ),
+    candidate = Automation(
+        automation_id=derived_id or uuid.uuid4().hex,
+        universe_id=uid,
+        owner_principal_id=owner,
+        name=str(name or "").strip(),
+        branch_def_id=resolved[0],
+        trigger_kind=trigger_kind,
+        interval_seconds=seconds,
+        cron_expr=expr,
+        inputs=dict(inputs or {}),
+        desired_state=STATE_ACTIVE,
+        pause_reason="",
+        revision=1,
+        created_at=stamp,
+        updated_at=stamp,
+        retired_at="",
+        last_due_at="",
+        last_run_id="",
+        last_reason="",
+        last_finished_at="",
+        not_before=once_at,
+        event_type=kind_event,
+        event_filter=event_match,
+        overlap=policy,
     )
+    try:
+        return store.insert(candidate)
+    except sqlite3.IntegrityError:
+        # Two identical requests raced past the lookup; the loser replays.
+        existing = store.get(candidate.automation_id) if derived_id else None
+        if existing is None:
+            raise
+        return _replayed(existing, owner=owner, universe_id=uid,
+                         branch_def_id=resolved[0], trigger_kind=trigger_kind,
+                         inputs=inputs)
+
+
+def canonical_inputs_digest(inputs: dict[str, Any] | None) -> str:
+    """The digest two requests' inputs are compared by: key order and
+    whitespace never make the same inputs differ."""
+    body = json.dumps(dict(inputs or {}), sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _replayed(
+    existing: Automation,
+    *,
+    owner: str,
+    universe_id: str,
+    branch_def_id: str,
+    trigger_kind: str,
+    inputs: dict[str, Any] | None,
+) -> Automation:
+    """The row a derived id already names, if it is this same automation."""
+    same = (
+        existing.owner_principal_id == owner
+        and existing.universe_id == universe_id
+        and existing.branch_def_id == branch_def_id
+        and existing.trigger_kind == trigger_kind
+        and canonical_inputs_digest(existing.inputs) == canonical_inputs_digest(inputs)
+    )
+    if not same:
+        raise AutomationUnavailable("idempotency_key_body_conflict")
+    return existing
 
 
 # -- Due selection ------------------------------------------------------------

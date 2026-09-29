@@ -12,8 +12,12 @@ pump SHALL fire it with every run-time check an automation already has. One
 first result. A request from any other principal SHALL be refused with
 `request_owner_only` and SHALL store nothing. A retired queue field set to a
 non-default value SHALL be refused with `request_field_retired:<field>` and
-SHALL store nothing. Request-admission tasks still pending when this ships SHALL
-be marked `refused` with the reason `request_retired_to_wake`, never deleted.
+SHALL store nothing. The wake id SHALL derive from the owner, the universe and
+the key under a domain separator, with each field length-prefixed, so no key
+reaches another owner's or universe's wake. The same key with a different
+canonical body SHALL be refused with `idempotency_key_body_conflict`.
+Request-admission tasks still pending when this ships SHALL be cancelled with
+an event recording the reason `request_retired_to_wake`, and never deleted.
 
 #### Scenario: The owner's request runs the loop once
 - **WHEN** the owner sends `write_graph target="request" text="summarise today" idempotency_key=k1`
@@ -32,5 +36,5 @@ be marked `refused` with the reason `request_retired_to_wake`, never deleted.
 - **THEN** it is refused with `request_field_retired:directed_daemon_id`
 
 #### Scenario: A request left pending by the old queue gets a reason
-- **WHEN** the migration runs over a request-admission task still pending
-- **THEN** the task is `refused` with `request_retired_to_wake`, and its row is kept
+- **WHEN** the daemon starts with a request-admission task still pending
+- **THEN** the task is `cancelled`, its event records `request_retired_to_wake`, and its row is kept

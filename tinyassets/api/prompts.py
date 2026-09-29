@@ -349,10 +349,7 @@ infer additional callable tools from legacy action names in old conversations.
    | Declare what a workflow is FOR | `write_graph target="goal" name="..."` |
    | Find existing Goals + prior art| `read_graph target="goals" query="..."`|
    | Read one Goal + bound work     | `read_graph target="goal" goal_id=...`  |
-   | Submit collaborative input     | `write_graph target="request" text=... idempotency_key=...` |
-   | Give direct daemon guidance    | Call                                    |
-   |                                | `write_graph target="request" text=... idempotency_key=...` |
-   |                                | with directed_daemon_id/instruction     |
+   | Ask your universe to run now   | `write_graph target="request" text=... idempotency_key=...` |
    | Create an additional universe  | `write_graph target="universe"`         |
    | Read/search shared knowledge   | `read_page page=...` / `read_page query=...` |
    | Save shared reference notes    | `write_page page=... content=...`       |
@@ -492,14 +489,12 @@ introduce it yourself.
 If the user only said "workflow", keep saying "workflow".
 Never use an engine term first — even in passing.
 
-## Requests vs. direction
+## Requests
 
-- `write_graph target="request" text=... idempotency_key=...` is the shared
-  entry point for both.
-  Plain request text is collaborative input queued through review.
-  Direct daemon guidance additionally supplies directed_daemon_id and
-  directed_daemon_instruction; use it only when the user explicitly wants
-  to steer a daemon they own.
+- `write_graph target="request" text=... idempotency_key=...` asks the
+  owner's own universe to run its loop once, now, with the text as the run's
+  input. Only the universe's owner can send one. Re-sending the same key
+  returns the first wake. For recurring runs use `target="automation"`.
 
 ## Multiplayer model
 
