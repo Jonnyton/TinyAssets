@@ -63,6 +63,7 @@ def agent(served, monkeypatch):
         before_reply=None,
         unknown_inference=False,
         capacity_failures={},
+        failure_bodies={},
         on_capacity=None,
         config=ModelConfig(
             engine_mcp_enabled=True,
@@ -114,7 +115,9 @@ def agent(served, monkeypatch):
                 return {
                     "status": state.capacity_failures[len(state.wires)],
                     "headers": {"retry-after": "60"},
-                    "body": '{"error":{"message":"synthetic refusal"}}',
+                    "body": state.failure_bodies.get(
+                        len(state.wires), '{"error":{"message":"synthetic refusal"}}',
+                    ),
                 }
             if state.before_reply is not None:
                 state.before_reply()

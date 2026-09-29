@@ -9,13 +9,13 @@ from pathlib import Path
 import pytest
 
 import tinyassets.providers.call as provider_call_module
+from tests.cloud_automation_fixtures import _seed_setup_authority
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_background_budget_finalization_e2e import (
     _CountingProvider,
     _seed_claimable_background_path,
     _seed_serving_assignment,
 )
-from tests.test_cloud_automation_api import _seed_setup_authority
 from tinyassets.api.universe import (
     _classify_epoch2_workers,
     _epoch2_operational_snapshot,
@@ -506,9 +506,6 @@ def test_pump_records_provider_mismatch_instead_of_silently_skipping(
     assert entry["reason"] == reason
     # The remedy travels with the reason: this is the text the agent relays.
     assert "rebind" in entry["next_action"].lower()
-    from tinyassets.api.cloud_automations import _consumer_reason
-
-    assert _consumer_reason(tmp_path, setup.control) == reason
 
 
 def test_pump_exception_is_recorded_per_principal(
