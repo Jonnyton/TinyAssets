@@ -1315,7 +1315,6 @@ def register_automation(
     from tinyassets.api.branches import _resolve_readable_branch
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.provider_serving_binding import _is_open_provider
     from tinyassets.runtime.assigned_queue_consumer import (
         assigned_queue_consumer_enabled,
     )
@@ -1335,12 +1334,10 @@ def register_automation(
     assignment = load_provider_assignment(base, universe_id=uid)
     if assignment is None or assignment.state != "ready":
         raise AutomationUnavailable("no_serving_assignment")
-    # A "ready" OPEN (api_key_http) assignment is still unusable here: foreground
-    # admission refuses open providers outright (foreground_run_provider.py:247).
-    # Registration must refuse exactly what admission refuses, or the row is
-    # stored and fails every period forever (Codex ADAPT §6).
-    if _is_open_provider(str(assignment.provider or "")):
-        raise AutomationUnavailable("no_serving_assignment")
+    # An OPEN (api_key_http) assignment is the owner's own source like any
+    # other: foreground admission stopped refusing open providers on 2026-09-03
+    # (0f96c04d), and the runtime check (_runtime_authority_reason) never did.
+    # Refusing it here left free accounts with no automation at all.
     resolved = _resolve_readable_branch(str(branch_def_id or "").strip(), str(base))
     if resolved is None:
         raise AutomationUnavailable("branch_not_readable")
