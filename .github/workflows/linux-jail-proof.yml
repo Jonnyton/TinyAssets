@@ -73,11 +73,9 @@ on:
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
-      # The codex coding-turn jail proof, the provider whose argv it runs, and
-      # the governed agent-invocation path that launches that provider.
+      # The codex coding-turn jail proof and the provider whose argv it runs.
       - "tests/test_native_refresh_jail.py"
       - "tinyassets/providers/codex_provider.py"
-      - "tinyassets/agent_runtime_provider_execution.py"
       # The provider universe jail, the shared spawn point that applies it, the
       # router that binds the owning universe, the adapters it launches and the
       # environment builder whose paths must resolve inside it.
