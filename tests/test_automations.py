@@ -15,7 +15,6 @@ from contextlib import contextmanager
 from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -1571,161 +1570,6 @@ def test_a_run_that_ignores_cancellation_keeps_the_universe_leased(
     assert expires > datetime.now(timezone.utc)
 
 
-def test_a_failure_before_the_worker_owns_the_lease_releases_it(
-    tmp_path: Path,
-    registered: Automation,
-    monkeypatch,
-) -> None:
-    """Codex round 3 §b: the lease was taken before `list_candidates`, but only
-    the submitted worker released it. A raise in between stranded the universe."""
-    monkeypatch.setattr(
-        "tinyassets.provider_serving_binding.list_serving_universes",
-        lambda _base: [UNIVERSE],
-    )
-    monkeypatch.setattr(
-        automations_module, "due_automations", lambda base, **_k: []
-    )
-    monkeypatch.setattr(
-        AssignedQueueConsumer, "_publish_heartbeat", lambda self, universe_id: None
-    )
-
-    def exploding(self, *, universe_id, limit=20):
-        raise RuntimeError("candidate listing blew up")
-
-    monkeypatch.setattr(
-        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.list_candidates",
-        exploding,
-    )
-    consumer, _inline = _consumer_with_inline_executor(tmp_path)
-
-    try:
-        with pytest.raises(RuntimeError):
-            consumer.poll_once()
-    finally:
-        consumer.stop()
-
-    holder = AutomationStore(tmp_path).universe_lease_holder(
-        UNIVERSE, now=datetime.now(timezone.utc)
-    )
-    assert holder == "", "the universe was stranded by a pre-handover failure"
-
-
-def test_a_real_legacy_claim_holds_refreshes_and_releases_the_lease(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """The whole legacy lifecycle, driven through poll_once with one candidate.
-
-    The earlier legacy test inserted lease rows by hand and used an empty
-    candidate list, so it could not see an unheld or unreleased legacy path
-    (Codex round 3 §d).
-    """
-    from tinyassets.branch_tasks_v2 import Epoch2BranchTask
-
-    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
-    _seed_owner(tmp_path)
-    monkeypatch.setattr(
-        "tinyassets.provider_serving_binding.list_serving_universes",
-        lambda _base: [UNIVERSE],
-    )
-    monkeypatch.setattr(
-        automations_module, "due_automations", lambda base, **_k: []
-    )
-    monkeypatch.setattr(
-        AssignedQueueConsumer, "_publish_heartbeat", lambda self, universe_id: None
-    )
-    candidate = Epoch2BranchTask(
-        branch_task_id="bt2_" + "c" * 32,
-        branch_def_id="branch-legacy",
-        universe_id=UNIVERSE,
-        automation_id="automation-legacy",
-        automation_executor_class="cloud",
-        automation_branch_version="version-legacy",
-    )
-    monkeypatch.setattr(
-        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.list_candidates",
-        lambda self, *, universe_id, limit=20: [candidate],
-    )
-    monkeypatch.setattr(
-        AssignedQueueConsumer,
-        "_try_claim",
-        lambda self, adapter, store, cand, lease: cand,
-    )
-    consumer, _inline = _consumer_with_inline_executor(tmp_path)
-    store = AutomationStore(tmp_path)
-    observed: dict[str, object] = {}
-
-    # Drive the REAL `_execute`, so the REAL heartbeat closure runs. Replacing
-    # `_execute` wholesale (the first version of this test) meant the beat that
-    # refreshes the universe was never exercised -- the mutation that deletes it
-    # stayed green (Codex round 3 §d, caught by mutation P4).
-    monkeypatch.setattr(
-        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.heartbeat",
-        lambda self, task_id, *, worker_id, lease_seconds: SimpleNamespace(
-            status="running"
-        ),
-    )
-    monkeypatch.setattr(
-        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.finish",
-        lambda self, task_id, *, worker_id, status, detail=None: None,
-    )
-    monkeypatch.setattr(
-        "tinyassets.background_served_provider.start_background_queue_authority",
-        lambda *_a, **_k: None,
-    )
-    monkeypatch.setattr(
-        "tinyassets.background_served_provider.terminalize_background_queue_authority",
-        lambda *_a, **_k: None,
-    )
-
-    def capture_identity(base_path, claimed_task, lease, *, heartbeat=None):
-        from tinyassets.background_served_provider import (
-            BackgroundExecutorIdentityError,
-        )
-
-        observed["held"] = store.universe_lease_holder(
-            UNIVERSE, now=datetime.now(timezone.utc)
-        )
-        observed["ttl_at_hold"] = _lease_ttl_seconds(store, UNIVERSE)
-        # Age the lease to just inside its envelope, then let the TASK BEAT
-        # re-stamp it -- the beat is the only thing keeping the universe alive
-        # while a long legacy task runs.
-        store.acquire_universe_lease(
-            UNIVERSE,
-            holder=lease.consumer_id,
-            now=datetime.now(timezone.utc) - timedelta(
-                seconds=EPOCH2_TASK_LEASE_SECONDS - 30
-            ),
-            ttl_seconds=EPOCH2_TASK_LEASE_SECONDS,
-        )
-        observed["ttl_before_beat"] = _lease_ttl_seconds(store, UNIVERSE)
-        heartbeat()
-        observed["ttl_after_beat"] = _lease_ttl_seconds(store, UNIVERSE)
-        raise BackgroundExecutorIdentityError("test_stops_here")
-
-    monkeypatch.setattr(
-        "tinyassets.background_served_provider.load_background_executor_identity",
-        capture_identity,
-    )
-
-    try:
-        assert consumer.poll_once() == 1
-    finally:
-        consumer.stop()
-
-    assert observed["held"] == consumer.consumer_id
-    # The legacy hold uses the EPOCH2 claim envelope, not the 3-hour automation
-    # run timeout: a crashed process must free the universe when its task
-    # becomes claimable again.
-    assert 0 < float(observed["ttl_at_hold"]) <= EPOCH2_TASK_LEASE_SECONDS + 5
-    # The beat really re-stamped it: nearly expired before, full envelope after.
-    assert float(observed["ttl_before_beat"]) < 60
-    assert float(observed["ttl_after_beat"]) > EPOCH2_TASK_LEASE_SECONDS - 60
-    assert store.universe_lease_holder(
-        UNIVERSE, now=datetime.now(timezone.utc)
-    ) == "", "the worker did not give the universe back"
-
-
 def test_a_stale_legacy_lease_frees_the_universe_after_the_claim_envelope(
     tmp_path: Path,
     registered: Automation,
@@ -1755,12 +1599,14 @@ def test_a_stale_legacy_lease_frees_the_universe_after_the_claim_envelope(
     ) is True
 
 
-def test_a_legacy_task_and_an_automation_cannot_hold_one_universe(
+def test_a_universe_lease_left_by_an_older_process_keeps_agents_out(
     tmp_path: Path,
     registered: Automation,
     monkeypatch,
 ) -> None:
-    """Codex round 2 §3a: one universe, one lease, whoever the worker is."""
+    """Codex round 2 §3a, one direction kept: a whole-universe lease held by a
+    live older process (the retired epoch-2 claim pass took one) still keeps
+    every agent out. The claim pass itself is gone (plan C2)."""
     ran: list[str] = []
     monkeypatch.setattr(
         automations_module,
@@ -1768,8 +1614,6 @@ def test_a_legacy_task_and_an_automation_cannot_hold_one_universe(
         lambda *_a, **_k: ran.append("automation") or "ok:ran:run_1",
     )
     store = AutomationStore(tmp_path)
-
-    # Direction 1: a legacy worker in another process holds the universe.
     assert store.acquire_universe_lease(
         UNIVERSE,
         holder="worker_assigned_legacy_process",
@@ -1779,48 +1623,11 @@ def test_a_legacy_task_and_an_automation_cannot_hold_one_universe(
     consumer, _inline = _consumer_with_inline_executor(tmp_path)
     try:
         consumer._run_automations(UNIVERSE, [(registered, "2026-08-29T12:10:00+00:00")])
-        assert ran == []
-        assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:automations"] == (
-            "universe_busy:worker_assigned_legacy_process"
-        )
-
-        # Direction 2: the automation holds it, and the legacy claim path is
-        # refused by the SAME row BEFORE it ever tries to claim a task. Driven
-        # through poll_once, not by calling the gate directly -- a direct call
-        # stays green even if the claim loop never consults it.
-        store.release_universe_lease(
-            UNIVERSE, holder="worker_assigned_legacy_process"
-        )
-        assert store.acquire_universe_lease(
-            UNIVERSE,
-            holder="worker_assigned_automation_process",
-            now=datetime.now(timezone.utc),
-            ttl_seconds=3600,
-        ) is True
-        monkeypatch.setattr(
-            "tinyassets.provider_serving_binding.list_serving_universes",
-            lambda _base: [UNIVERSE],
-        )
-        monkeypatch.setattr(
-            automations_module,
-            "due_automations",
-            lambda base, *, universe_id, now: [],
-        )
-        listed: list[str] = []
-        monkeypatch.setattr(
-            "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.list_candidates",
-            lambda self, *, universe_id, limit=20: listed.append(universe_id) or [],
-        )
-        consumer.poll_once()
     finally:
         consumer.stop()
-
-    # The claim loop never even looked for candidates: the lease stopped it.
-    # (The heartbeat pass lists candidates once; the CLAIM pass must not add
-    # a second listing for a leased universe.)
-    assert listed.count(UNIVERSE) <= 1
-    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == (
-        "universe_busy:worker_assigned_automation_process"
+    assert ran == []
+    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:automations"] == (
+        "universe_busy:worker_assigned_legacy_process"
     )
 
 

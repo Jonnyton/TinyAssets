@@ -5,22 +5,12 @@ pump it seeds still runs. They go with that pump (plan Tier C1).
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tinyassets.evaluation.scenario_runner import AcceptanceScenario
-from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
-from tinyassets.provider_work_authority import ProviderWorkBindingSeed
-from tinyassets.storage.automation_activations import (
-    AutomationActivationExecutor,
-    AutomationActivationStore,
-)
-from tinyassets.storage.cloud_automation_control import CloudAutomationControlStore
-from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
-from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 from tinyassets.user_owned_cloud_automation import RepositorySpecWorkDefinition
 
 #: Anchored to the real clock, deliberately NOT a fixed literal.
@@ -109,132 +99,3 @@ def _definition() -> RepositorySpecWorkDefinition:
             "max_cost_microunits": 5_000_000,
         }
     )
-
-
-def _seed(tmp_path) -> None:
-    definition = _definition()
-    activations = AutomationActivationStore(tmp_path, clock=lambda: NOW)
-    stopped = activations.create_stopped(
-        universe_id=definition.universe_id,
-        automation_id="automation_spec_drain",
-    )
-    active = activations.activate(
-        expected=stopped,
-        executor_class=AutomationActivationExecutor.CLOUD,
-        subject=ExecutionSubject(
-            kind=ExecutionSubjectKind.BRANCH_VERSION,
-            ref=definition.branch_version_id,
-            digest=definition.branch_content_digest,
-        ),
-        lease_id="lease_cloud_spec_drain",
-    )
-    assert active is not None
-    CloudAutomationControlStore(tmp_path, clock=lambda: NOW).schedule_initial(
-        definition,
-        automation_id="automation_spec_drain",
-        activation=active,
-        cadence_seconds=300,
-        due_at=NOW,
-    )
-
-
-def _seed_setup_authority(
-    tmp_path,
-    *,
-    stage_spec: bool = True,
-) -> RepositorySpecWorkDefinition:
-    from tinyassets.branch_versions import publish_branch_version
-    from tinyassets.branches import (
-        BranchDefinition,
-        EdgeDefinition,
-        GraphNodeRef,
-        NodeDefinition,
-    )
-    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
-    from tinyassets.storage.cloud_automation_inputs import stage_accepted_spec
-
-    node = NodeDefinition(
-        node_id="n1",
-        display_name="Repository spec worker",
-        prompt_template="Apply the next accepted spec slice.",
-    )
-    branch = BranchDefinition(
-        branch_def_id="branch_repo_spec_loop",
-        name="Repository spec loop",
-        author="acct_alice",
-        visibility="private",
-        graph_nodes=[GraphNodeRef(id="n1", node_def_id="n1")],
-        edges=[EdgeDefinition(from_node="n1", to_node="END")],
-        entry_point="n1",
-        node_defs=[node],
-        state_schema=[],
-    )
-    initialize_author_server(tmp_path)
-    save_branch_definition(tmp_path, branch_def=branch.to_dict())
-    version = publish_branch_version(
-        tmp_path,
-        branch.to_dict(),
-        publisher="acct_alice",
-    )
-    installed = SQLiteProviderWorkAuthorityStore(
-        tmp_path,
-        clock=lambda: NOW,
-        allow_test_fixtures=True,
-    ).install_test_binding(
-        ProviderWorkBindingSeed(
-            owner_user_id="acct_alice",
-            universe_id="universe_alice",
-            provider="codex",
-            credential_reference_digest=f"sha256:{'9' * 64}",
-            allowed_operations=("repository_spec_delivery",),
-            allowed_roles=("writer",),
-            assignment_generation=1,
-            assignment_digest=f"sha256:{'8' * 64}",
-            max_invocations=4,
-            max_tokens=100_000,
-            max_cost_microunits=5_000_000,
-            expires_at=GRANT_EXPIRES_AT,
-        )
-    )
-    assert installed.record is not None
-    raw = _definition().to_dict()
-    raw["accepted_spec_digest"] = (
-        f"sha256:{hashlib.sha256(ACCEPTED_SPEC_CONTENT.encode('utf-8')).hexdigest()}"
-    )
-    raw["provider_binding_id"] = installed.record.binding_id
-    raw["branch_version_id"] = version.branch_version_id
-    raw["branch_content_digest"] = f"sha256:{version.content_hash}"
-    raw["input_artifact_digests"] = [
-        raw["accepted_spec_digest"],
-        raw["branch_content_digest"],
-    ]
-    definition = RepositorySpecWorkDefinition.from_dict(raw)
-    if stage_spec:
-        stage_accepted_spec(
-            tmp_path,
-            accepted_spec_ref=definition.accepted_spec_ref,
-            content=ACCEPTED_SPEC_CONTENT,
-            expected_digest=definition.accepted_spec_digest,
-        )
-    ledger = ConnectionLedger(
-        tmp_path / "outbound.db",
-        verify_authenticated_principal=lambda: "acct_alice",
-    )
-    ledger.create_connection(
-        connection_id="conn_tinyassets",
-        owner_user_id="acct_alice",
-        connection_class="pull-request-writer",
-        scopes=("pull_requests:write", "pull_requests:read_for_commit"),
-        provider="github",
-        destination="github.com/example/project",
-        credential_ref="vault://github/example-project",
-    )
-    ledger.grant_connection(
-        grant_id=definition.destination_grant_id,
-        connection_id="conn_tinyassets",
-        owner_user_id="acct_alice",
-        universe_id="universe_alice",
-        granted_at=1.0,
-        unprompted_action_cap=ActionCap("one_pull_request", 1, "pull_requests"),
-    )
-    return definition

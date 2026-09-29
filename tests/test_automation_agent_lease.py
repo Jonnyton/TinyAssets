@@ -210,34 +210,6 @@ def test_two_rows_due_for_one_agent_start_one_run(home: Path, monkeypatch) -> No
         consumer.stop(timeout=10)
 
 
-def test_a_running_agent_keeps_legacy_queue_work_out_of_its_universe(
-    home: Path, monkeypatch,
-) -> None:
-    """Codex round 2 §3a still holds per agent: a legacy task owns its whole
-    universe, so no agent may run beside it, and none may start beside one."""
-    from tests.test_automations import _refusal_rows
-
-    store = AutomationStore(home)
-    assert store.acquire_universe_lease(
-        f"{agent_lease_prefix(UNIVERSE)}{WRITER}", holder="worker_assigned_agent_process",
-        now=datetime.now(timezone.utc), ttl_seconds=3600,
-    )
-    monkeypatch.setattr(automations_module, "due_automations",
-                        lambda base, *, universe_id, now: [])
-    listed: list[str] = []
-    monkeypatch.setattr(
-        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.list_candidates",
-        lambda self, *, universe_id, limit=20: listed.append(universe_id) or [],
-    )
-    consumer, _inline = _consumer_with_inline_executor(home)
-    try:
-        consumer.poll_once()
-    finally:
-        consumer.stop()
-    assert listed.count(UNIVERSE) <= 1  # the claim pass never listed it
-    assert _refusal_rows(home)[f"universe:{UNIVERSE}:-"] == "universe_busy:agent"
-
-
 def test_queue_waits_for_the_running_agent_then_runs(home: Path, monkeypatch) -> None:
     first = _automate(home, WRITER, name="first")
     graph = _Blocking()

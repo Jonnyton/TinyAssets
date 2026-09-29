@@ -723,45 +723,23 @@ def test_epoch2_execution_uses_immutable_version_and_trusted_runtime_identity(
     assert captured["_queue_branch_task_id"] == task.branch_task_id
 
 
-def test_cloud_automation_execution_uses_requester_owned_provider_session(
+def test_a_leftover_cloud_automation_slice_is_refused_by_name(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from tinyassets import cloud_automation_continuation, runs
+    """The fleet-era cloud-automation layer is retired (plan C1/C2): its
+    controls are stopped and nothing produces slices. A leftover slice task
+    fails with the reason instead of running on a provider bridge that is gone."""
+    from tinyassets import runs
 
     universe = tmp_path / "universe-a"
     universe.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    captured: dict = {}
-    authorized_provider = object()
-
-    def prepare_provider(base_path, **kwargs):
-        captured["provider_base_path"] = base_path
-        captured["provider_task"] = kwargs["claimed_task"]
-        captured["provider_daemon_id"] = kwargs["daemon_id"]
-        captured["raw_provider_call"] = kwargs["provider_call"]
-        return authorized_provider
-
-    def execute_version(_base_path, **kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(
-            run_id="run-cloud-authorized",
-            status=runs.RUN_STATUS_COMPLETED,
-            output={},
-            error="",
-        )
-
-    monkeypatch.setattr(
-        cloud_automation_continuation,
-        "prepare_claimed_cloud_provider_call",
-        prepare_provider,
-    )
+    executed: list = []
     monkeypatch.setattr(runs, "get_run_by_branch_task_id", lambda *_a, **_k: None)
-    monkeypatch.setattr(runs, "execute_branch_version", execute_version)
+    monkeypatch.setattr(runs, "execute_branch_version", lambda *a, **k: executed.append(k))
     task = SimpleNamespace(
         branch_task_id="bt2_" + ("7" * 32),
-        admission_id="adm_" + ("6" * 32),
-        request_id="req_" + ("5" * 32),
         branch_def_id="ordinary-user-branch",
         universe_id="universe-a",
         inputs={},
@@ -777,19 +755,13 @@ def test_cloud_automation_execution_uses_requester_owned_provider_session(
         actor_id="actor-a",
     )
 
-    success, error, _metadata = daemon_main._try_execute_claimed_branch_task(
-        universe,
-        task,
-        "daemon-a",
+    success, error, metadata = daemon_main._try_execute_claimed_branch_task(
+        universe, task, "daemon-a",
     )
 
-    assert success is True
-    assert error == ""
-    assert captured["provider_base_path"] == tmp_path
-    assert captured["provider_task"] is task
-    assert captured["provider_daemon_id"] == "daemon-a"
-    assert callable(captured["raw_provider_call"])
-    assert captured["provider_call"] is authorized_provider
+    assert (success, error) == (False, "cloud_automation_retired")
+    assert metadata["automation_id"] == "automation-user-workflow"
+    assert executed == []
 
 
 def test_epoch2_matching_public_run_name_cannot_spoof_queue_reservation(
@@ -1106,6 +1078,12 @@ def test_epoch2_mid_run_cancel_cannot_finalize_completed_provider_as_success(
         daemon["daemon_id"],
     )
     assert claimed is not None
+    # The subject is mid-run cancellation, not the retired cloud-automation
+    # bridge: execute it as a plain epoch-2 task (a leftover cloud slice is
+    # refused before it runs, see test_a_leftover_cloud_automation_slice_...).
+    from dataclasses import replace as _replace
+
+    claimed = _replace(claimed, automation_id="")
     monkeypatch.setattr(
         daemon_main,
         "_branch_task_heartbeat_interval_seconds",
@@ -1242,53 +1220,6 @@ def test_epoch2_terminalization_failure_propagates(
             success=True,
             error="",
         )
-
-
-def test_epoch2_settlement_records_cloud_trigger_terminal(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    observed = {}
-
-    def record(base_path, **kwargs):
-        observed.update(base_path=base_path, **kwargs)
-        return SimpleNamespace(
-            completed_trigger=SimpleNamespace(trigger_id="cloud_trigger_1"),
-            receipt=SimpleNamespace(receipt_id="cloud_terminal_1"),
-            next_trigger=SimpleNamespace(trigger_id="cloud_trigger_2"),
-        )
-
-    monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        "tinyassets.cloud_automation_runtime.record_cloud_automation_terminal",
-        record,
-    )
-    claimed = SimpleNamespace(
-        queue_epoch=2,
-        automation_id="automation_spec_loop",
-        branch_task_id="bt2_cloud_slice_1",
-    )
-
-    assert (
-        daemon_main._record_cloud_automation_terminal_after_settlement(
-            claimed,
-            success=True,
-            error="",
-            metadata={
-                "run_id": "run_cloud_slice_1",
-                "pull_request_url": "https://github.com/example/project/pull/1",
-            },
-        )
-        is True
-    )
-    assert observed == {
-        "base_path": tmp_path,
-        "branch_task_id": "bt2_cloud_slice_1",
-        "success": True,
-        "error": "",
-        "run_id": "run_cloud_slice_1",
-        "evidence_handles": ("https://github.com/example/project/pull/1",),
-    }
 
 
 def test_execute_branch_version_threads_identity_and_queue_lineage(

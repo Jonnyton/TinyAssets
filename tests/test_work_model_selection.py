@@ -201,41 +201,6 @@ def test_http_work_refuses_changed_or_unavailable_selection(
         ).fetchone() == (0,)
 
 
-def test_background_http_work_sends_selected_model_and_settles_once(
-    tmp_path, monkeypatch, http_wire,
-):
-    from tests.test_background_budget_finalization_e2e import _run_consumer_once
-    from tests.test_run_provider_session import _seed_open_serving_assignment
-    from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
-    from tinyassets.daemon_server import set_founder_home
-    from tinyassets.runs import get_run_by_branch_task_id
-
-    access = ModelAccess("discovered")
-    set_founder_home(
-        tmp_path, founder_sub="acct_alice", universe_id="universe_alice", platform_generated=True,
-    )
-    source = _seed_open_serving_assignment(tmp_path, monkeypatch, model_access=access)
-    task_id, _, _, _, _ = _run_consumer_once(
-        tmp_path, monkeypatch, model_access=access,
-        policy={"preferred": {"provider": source, "model": "future-company/new-choice"},
-                "fallback_chain": []},
-        setup_serving=lambda: None,
-    )
-    task = Epoch2BranchTaskAdapter(tmp_path).get(task_id)
-    run = get_run_by_branch_task_id(tmp_path, branch_task_id=task_id)
-    assert task.status == "succeeded", (None if run is None else run.get("error"), http_wire[2])
-    assert len(http_wire[1]) == 1
-    assert http_wire[1][0][1]["body"]["model"] == "future-company/new-choice"
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        records = [json.loads(row[0]) for row in conn.execute(
-            "SELECT record_json FROM provider_invocation_reservations",
-        )]
-    assert len(records) == 1
-    assert records[0]["state"] == "succeeded"
-    assert records[0]["actual_total_tokens"] == 7
-    assert records[0]["selection"]["model_id"] == "future-company/new-choice"
-
-
 def test_work_model_output_is_bounded_before_launch():
     from dataclasses import replace
 
