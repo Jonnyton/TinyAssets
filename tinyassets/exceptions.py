@@ -68,6 +68,18 @@ class InteractiveDeadlineError(ProviderTimeoutError):
     failure_class = "interactive_deadline"
 
 
+class ProviderReplyTimeoutError(ProviderTimeoutError):
+    """The model did not finish answering inside the reply budget.
+
+    The request WAS sent and the model may have generated, so its usage is
+    unknown and nothing about the source's health follows from it: no cooldown.
+    Live 2026-09-29, turn b804819f: a free model writing an app ran past the
+    broker's old 30s total and the owner was told "we could not identify why".
+    """
+
+    failure_class = "provider_reply_timeout"
+
+
 class ProviderUnavailableError(ProviderError):
     """Provider returned a signal that it is temporarily unreachable
     (e.g. exit code 1 within <5 s, rate-limit header, auth failure).

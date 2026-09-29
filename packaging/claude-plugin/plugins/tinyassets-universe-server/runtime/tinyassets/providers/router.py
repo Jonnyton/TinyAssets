@@ -34,6 +34,7 @@ from tinyassets.exceptions import (
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
+    ProviderReplyTimeoutError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     SelectedModelCapacityError,
@@ -1403,7 +1404,9 @@ class ProviderRouter:
                     **_tool_wait_evidence(exc),
                 ))
                 continue
-            except (ProviderIdleTimeoutError, InteractiveDeadlineError) as exc:
+            except (
+                ProviderIdleTimeoutError, InteractiveDeadlineError, ProviderReplyTimeoutError,
+            ) as exc:
                 # A transient attempt timeout is NOT proof the credential is
                 # down. Do NOT cool the sole served writer — the next turn stays
                 # eligible. The process was already killed by the provider.
