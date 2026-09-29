@@ -1830,17 +1830,17 @@ def _inbound_event_run_fn(
     *,
     principal_id: str = "",
 ) -> None:
-    """Scheduler run_fn for inbound (Source-node) events AND due schedules. Fires the
+    """Scheduler run_fn for inbound (Source-node) events. Fires the
     bound branch as the universe carried by the row's owner_actor. FAILS CLOSED on a
     non-universe actor so a trigger can never run a branch under an ambient/host
     identity. Links the in-flight reservation (reserved atomically in handle_hook) to
     the run, so it is released on run completion; releases it if the run cannot be
     created (Codex round-2 #5).
 
-    ``principal_id`` is the owner the run acts for. A SCHEDULE passes its stored
-    owner; a Source EVENT passes the hook owner stamped on the event. Neither
-    thread has a request identity, and there is no synthetic one, so an empty
-    principal refuses (authenticated-owner boundary D2)."""
+    ``principal_id`` is the owner the run acts for: a Source EVENT passes the
+    hook owner stamped on the event. The event thread has no request identity,
+    and there is no synthetic one, so an empty principal refuses
+    (authenticated-owner boundary D2)."""
     from tinyassets.storage import data_dir, webhook_hooks
     from tinyassets.webhook_inbound import RESERVATION_INPUT_KEY
 
@@ -1884,9 +1884,13 @@ def _inbound_event_run_fn(
         )
         if reservation_id:
             webhook_hooks.link_dispatch(base, reservation_id=reservation_id, run_id=str(run_id))
-    except Exception:  # noqa: BLE001 - a single failed event must not kill the loop
+    except Exception as exc:  # noqa: BLE001 - a single failed event must not kill the loop
         logger.exception("event bus: failed to fire branch %s for %s", branch_def_id, actor)
         _release()
+        if str(exc).startswith("run_usage_limited"):
+            # Re-raised so the event loop logs it as a failed dispatch
+            # (plan item 6: a limit is never a silent drop).
+            raise
 
 
 def start_scheduler_for_serving() -> bool:
@@ -1894,10 +1898,7 @@ def start_scheduler_for_serving() -> bool:
 
     UNCONDITIONAL — it does not consult ``TINYASSETS_INBOUND_ENABLED``. That flag
     gates the inbound HTTP surface (the ``/hooks/*`` route and publishing Source
-    events onto the bus); it never had anything to say about whether a user's own
-    schedules tick. While the two were fused, the flag being off meant registration
-    stored rows that nothing ever read — the silent-storage failure user-owned-
-    automations 2.2 splits apart.
+    events onto the bus), not whether the event loop runs.
 
     Returns whether the scheduler is running afterwards. A scheduler fault must not
     block boot, so a failure is logged and reported, never raised.
@@ -1910,7 +1911,7 @@ def start_scheduler_for_serving() -> bool:
     except Exception:  # noqa: BLE001 - a scheduler fault must not block boot
         logger.exception("scheduler failed to start")
         return False
-    logger.info("scheduler started (schedule ticks + event bus)")
+    logger.info("scheduler started (event bus)")
     return True
 
 
@@ -2837,6 +2838,17 @@ def _provider_detail(exc: BaseException) -> str:
     return redacted_failure_detail(_FS_PATH.sub("<path>", detail))
 
 
+def _held_sources_detail(exc: BaseException) -> str:
+    """Which accepted sources cannot run and why, when the plan said so; else ""."""
+    from tinyassets.providers.diagnostics import redacted_failure_detail
+    from tinyassets.providers.served_model_plan import HELD_SOURCES, NO_ELIGIBLE_MODEL
+
+    text = str(exc)
+    if not text.startswith(NO_ELIGIBLE_MODEL) or HELD_SOURCES not in text:
+        return ""
+    return redacted_failure_detail(text.split(HELD_SOURCES, 1)[1])
+
+
 def _served_failure_record(exc: BaseException, *, held: bool = False):
     """Every field of a failed served turn, derived from what was observed.
 
@@ -2863,7 +2875,10 @@ def _served_failure_record(exc: BaseException, *, held: bool = False):
             stage = "before_send"
         return turn_failure(
             code, stage=stage, effects=effects,
-            provider_detail="" if code == "setup_required" else _provider_detail(exc),
+            provider_detail=(
+                _held_sources_detail(exc) if code == "setup_required"
+                else _provider_detail(exc)
+            ),
             ref=ref if isinstance(ref, str) and ref else uuid.uuid4().hex[:16],
             # Only for a class whose answer actually IS waiting. A wait beside
             # "reconnect your provider" would send the owner away for two
@@ -3560,10 +3575,8 @@ def extensions(
     - Branch versions: get_branch_version, list_branch_versions,
       publish_version.
     - Escrow: escrow_balance, escrow_fund, escrow_set_wallet, escrow_withdraw.
-    - Scheduling: list_scheduler_subscriptions, list_schedules,
-      schedule_branch, subscribe_branch, unschedule_branch,
-      unsubscribe_branch (cron expressions are evaluated in UTC, not the host's
-      local time, and may not fire more often than every 5 minutes).
+    - Event subscriptions: list_scheduler_subscriptions, subscribe_branch,
+      unsubscribe_branch
 
     Pass `action` plus the matching ids or JSON payload fields.
     Delivery receipts are scoped to sender or receiver; file-reference delivery

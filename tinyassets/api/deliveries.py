@@ -504,6 +504,7 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
                 receiver["universe_id"], write_max=engine_admissions.RUN_WRITE_LIMIT,
                 total_max=engine_admissions.RUN_TOTAL_LIMIT,
                 window_s=engine_admissions.RUN_WINDOW_SECONDS, fail_closed=True,
+                day_max=engine_admissions.RUN_DAY_LIMIT,
             )
             if admission.ticket is None:
                 raise ValueError("receiver_resource_admission_refused")
