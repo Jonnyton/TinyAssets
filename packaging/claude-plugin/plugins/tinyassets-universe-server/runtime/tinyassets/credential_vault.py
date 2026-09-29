@@ -1242,6 +1242,42 @@ def _custody_reference_digest(
     })
 
 
+def _subscription_reference_digest(
+    *, reference_id: str, owner_user_id: str, universe_id: str, service: str, generation: int,
+) -> str:
+    """Schema 2: the owner's CONSENT, not the bytes.
+
+    The record digest is left out on purpose. Every authority record downstream
+    (bindings, assignment, manifest, receipts) pins this reference, so a v1
+    reference -- which hashed the bytes in -- made a same-account token rotation
+    republish all of them and void every receipt in flight. The bytes stay pinned
+    by the custody row's ``record_digest``, checked on every read and snapshot.
+    """
+    return _canonical_digest({
+        "generation": generation,
+        "owner_user_id": owner_user_id,
+        "reference_id": reference_id,
+        "schema_version": 2,
+        "service": service,
+        "universe_id": universe_id,
+    })
+
+
+def _subscription_reference_matches(
+    *, reference_id: str, owner_user_id: str, universe_id: str, service: str,
+    generation: int, record_digest: str, reference_digest: str,
+) -> bool:
+    """The stored reference, recomputed under either formula, for this exact row."""
+    identity = dict(
+        reference_id=reference_id, owner_user_id=owner_user_id,
+        universe_id=universe_id, service=service, generation=generation,
+    )
+    return reference_digest in (
+        _subscription_reference_digest(**identity),
+        _custody_reference_digest(**identity, record_digest=record_digest),
+    )
+
+
 def _owned_subscription_record(
     conn: sqlite3.Connection, *, universe_dir: Path, owner: str, uid: str, service: str,
 ) -> dict[str, Any]:
@@ -1329,13 +1365,12 @@ def adopt_llm_subscription_custody(
                 _record_digest=record_digest,
             )
         generation = int(row[1]) + 1
-    reference_digest = _custody_reference_digest(
+    reference_digest = _subscription_reference_digest(
         reference_id=reference_id,
         owner_user_id=owner,
         universe_id=uid,
         service=canonical_service,
         generation=generation,
-        record_digest=record_digest,
     )
     conn.execute(
         """
@@ -1607,15 +1642,15 @@ def current_llm_subscription_custody(
     record_digest = _subscription_record_digest(
         Path(universe_dir), service.strip().lower(), record,
     )
-    expected = _custody_reference_digest(
+    if record_digest != str(row[2]) or not _subscription_reference_matches(
         reference_id=str(row[0]),
         owner_user_id=owner_user_id.strip(),
         universe_id=universe_id.strip(),
         service=service.strip().lower(),
         generation=int(row[1]),
         record_digest=record_digest,
-    )
-    if record_digest != str(row[2]) or expected != str(row[3]):
+        reference_digest=str(row[3]),
+    ):
         return None
     return LLMCredentialCustodyReference(
         reference_id=str(row[0]),
@@ -1626,6 +1661,83 @@ def current_llm_subscription_custody(
         reference_digest=str(row[3]),
         _record_digest=record_digest,
     )
+
+
+def carry_llm_subscription_custody(
+    conn: sqlite3.Connection,
+    *,
+    universe_dir: str | Path,
+    owner_user_id: str,
+    universe_id: str,
+    service: str,
+    expected_record_digest: str,
+) -> bool:
+    """Move a v2 custody row's byte pin onto the rotated record, nothing else.
+
+    The platform's own refresh of the exact pinned document, same account, new
+    tokens: the owner's consent is unchanged, so the reference, the generation
+    and every pin downstream stay as they are and no receipt in flight is voided.
+    The CALLER holds the exclusive vault admission across the byte write and this
+    call. Fenced on the depositor, on the row still pinning
+    ``expected_record_digest``, and on its reference being exactly the v2 formula
+    for its own identity -- a v1 row, or one renewed in between, returns False and
+    the caller renews instead. Returns True only when the pin moved.
+    """
+    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+        raise ValueError("custody carry requires an active SQLite transaction")
+    owner = owner_user_id.strip()
+    uid = universe_id.strip()
+    key = service.strip().lower()
+    _ensure_llm_deposit_owner_schema(conn)
+    depositor = conn.execute(
+        "SELECT owner_user_id FROM llm_credential_deposit_owners "
+        "WHERE universe_id = ? AND service = ?",
+        (uid, key),
+    ).fetchone()
+    if depositor is None or str(depositor[0]) != owner:
+        return False
+    _ensure_custody_schema(conn)
+    row = conn.execute(
+        """
+        SELECT reference_id, generation, record_digest, reference_digest
+          FROM llm_credential_custody
+         WHERE owner_user_id = ? AND universe_id = ? AND service = ?
+        """,
+        (owner, uid, key),
+    ).fetchone()
+    if row is None or str(row[2]) != expected_record_digest:
+        return False
+    if str(row[3]) != _subscription_reference_digest(
+        reference_id=str(row[0]), owner_user_id=owner, universe_id=uid,
+        service=key, generation=int(row[1]),
+    ):
+        return False
+    try:
+        record = _usable_subscription_record(Path(universe_dir), key)
+    except (PermissionError, ValueError, OSError):
+        return False
+    new_digest = _subscription_record_digest(Path(universe_dir), key, record)
+    moved = conn.execute(
+        """
+        UPDATE llm_credential_custody SET record_digest = ?
+         WHERE reference_id = ? AND owner_user_id = ? AND universe_id = ?
+           AND service = ? AND generation = ? AND reference_digest = ?
+           AND record_digest = ?
+        """,
+        (new_digest, str(row[0]), owner, uid, key, int(row[1]), str(row[3]),
+         expected_record_digest),
+    )
+    return moved.rowcount == 1
+
+
+def pinned_subscription_record_digest(universe_dir: str | Path, service: str) -> str | None:
+    """The digest of the stored record as custody would pin it, or None."""
+    key = service.strip().lower()
+    try:
+        record = _usable_subscription_record(Path(universe_dir), key)
+    except (PermissionError, ValueError, OSError):
+        return None
+    return _subscription_record_digest(Path(universe_dir), key, record)
 
 
 def _is_snapshot_reparse_point(file_stat: os.stat_result) -> bool:
@@ -1902,17 +2014,18 @@ def snapshot_llm_subscription_credential(
         "material_digest": material_digest,
         "record": record,
     })
-    snapshot_reference_digest = _custody_reference_digest(
-        reference_id=custody.reference_id,
-        owner_user_id=custody.owner_user_id,
-        universe_id=custody.universe_id,
-        service=custody.service,
-        generation=custody.generation,
-        record_digest=snapshot_record_digest,
-    )
+    snapshot_reference_digest = custody.reference_digest
     if (
         snapshot_record_digest != custody._record_digest
-        or snapshot_reference_digest != custody.reference_digest
+        or not _subscription_reference_matches(
+            reference_id=custody.reference_id,
+            owner_user_id=custody.owner_user_id,
+            universe_id=custody.universe_id,
+            service=custody.service,
+            generation=custody.generation,
+            record_digest=snapshot_record_digest,
+            reference_digest=custody.reference_digest,
+        )
     ):
         raise PermissionError("credential changed before launch snapshot")
 
@@ -1949,15 +2062,9 @@ def snapshot_llm_subscription_credential(
             ),
             "record": record,
         })
-        copied_reference_digest = _custody_reference_digest(
-            reference_id=custody.reference_id,
-            owner_user_id=custody.owner_user_id,
-            universe_id=custody.universe_id,
-            service=custody.service,
-            generation=custody.generation,
-            record_digest=copied_record_digest,
-        )
-        if copied_reference_digest != custody.reference_digest:
+        # The copied BYTES against the pin, directly: a v2 reference does not
+        # cover the bytes, so comparing references alone would pass a bad copy.
+        if copied_record_digest != custody._record_digest:
             raise PermissionError("credential snapshot custody digest disagrees")
         _chmod_best_effort(directory, 0o700)
         return snapshot

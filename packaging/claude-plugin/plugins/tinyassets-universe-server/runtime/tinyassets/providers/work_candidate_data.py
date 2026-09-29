@@ -2,6 +2,7 @@
 
 import json
 import threading
+from dataclasses import replace
 
 from tinyassets.exceptions import WorkModelExhaustedError
 from tinyassets.providers.model_policy import ModelPolicy, ModelRef, order_models
@@ -86,6 +87,12 @@ class WorkCandidateData:
     """
 
     def __init__(self, plan):
+        # A workflow's explicit order is "complete and ordered or the graph
+        # refuses", checked position by position below and against each node's
+        # pinned primary. Demoting a recently refused model would reorder it and
+        # refuse the run outright, so the run keeps the owner's order and its
+        # coordinator steps past a refusal within the run as it meets one.
+        plan = replace(plan, refused_models=())
         self.owner, self.universe = plan.catalog.owner_id, plan.catalog.universe_id
         self.catalog, self.interaction = plan.catalog, plan.interaction
         self.source_policies = plan.source_policies

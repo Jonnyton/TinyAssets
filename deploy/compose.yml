@@ -155,7 +155,7 @@ services:
       - no-new-privileges=true
     cap_drop:
       - ALL
-    # Image CMD already runs `python -m tinyassets.universe_server`.
+    # Image CMD already runs `python -m tinyassets.serve` (the universe server).
     # Expose loopback only; cloudflared reaches via Docker network.
     ports:
       - "127.0.0.1:8001:8001"

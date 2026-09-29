@@ -156,19 +156,19 @@ def test_an_unproven_request_spends_no_refresh_token(agent, monkeypatch):
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_a_rotation_at_launch_still_renews_the_binding_for_the_next_request(
+def test_a_rotation_at_launch_carries_custody_and_the_same_request_launches(
     agent, monkeypatch,
 ):
     """The launch-time refresh is the backstop for callers that mint their own
-    carrier. Its request already pinned the old revision, so that request is
-    refused -- but the binding must follow the bytes, or every later request is
-    refused too, which is the sticky half of the live failure."""
+    carrier. A same-account rotation carries custody forward, so the request
+    that already pinned the binding revision still launches, and so does the
+    next one (carry-custody-across-rotation). Before the carry, the rotating
+    request was refused and only the renewal saved the next one."""
     import asyncio
 
     from tinyassets import provider_assignment, subscription_refresh
     from tinyassets.auth import middleware as auth
     from tinyassets.custom_agents import get_binding
-    from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers.model_policy import ModelRef
 
     _redeposit_stale(agent)
@@ -210,10 +210,12 @@ def test_a_rotation_at_launch_still_renews_the_binding_for_the_next_request(
         finally:
             auth.revoke_provider_request(capability)
 
-    with pytest.raises(ProviderAuthorityHeldError):
-        authorize("rotating")
+    before = get_binding(base, universe_id="u-models", binding_id=binding_id)["revision"]
+    assert authorize("rotating") == "codex"
     assert spent == ["r-1"]
     assert _custody_matches_the_vault(agent)
+    # Nothing republished: the binding revision every carrier pins did not move.
+    assert get_binding(base, universe_id="u-models", binding_id=binding_id)["revision"] == before
     assert authorize("next") == "codex"
     assert spent == ["r-1"]
 
@@ -369,3 +371,37 @@ def test_a_source_no_longer_accepted_is_not_renewed_back_in(agent, monkeypatch):
     )
     assert renewed == []
     assert load_provider_assignment(base, universe_id="u-models") == before
+
+
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_an_unreadable_assignment_renews_nothing_and_leaves_the_refusal_to_the_launch(
+    agent, monkeypatch,
+):
+    """The self-heal check must not replace the launch's own refusal with its error."""
+    from tinyassets import provider_assignment, subscription_refresh
+
+    _redeposit_stale(agent)
+    monkeypatch.setattr(
+        subscription_refresh, "_spend",
+        lambda *_a, **_k: pytest.fail("nothing is stale; nothing may be spent"),
+    )
+    def unreadable(*_a, **_k):
+        # The loader's own words for a tampered row (provider_assignment.py).
+        raise RuntimeError("provider assignment digest is invalid")
+
+    monkeypatch.setattr(
+        provider_assignment, "load_provider_assignment_in_transaction", unreadable,
+    )
+    renewed: list[str] = []
+    monkeypatch.setattr(
+        subscription_refresh, "renew_accepted_source",
+        lambda **kwargs: renewed.append(kwargs["service"]) or {"status": "serving"},
+    )
+    # Nothing is stale, so only the self-heal check runs.
+    monkeypatch.setattr(subscription_refresh, "document_is_stale", lambda *_a: False)
+
+    subscription_refresh.refresh_deposited_subscriptions(
+        base_path=agent.served.rig.base, universe_dir=agent.served.context.universe_dir,
+        owner_user_id="owner", universe_id="u-models",
+    )
+    assert renewed == []

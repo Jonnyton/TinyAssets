@@ -113,8 +113,6 @@ tinyassets/providers/router.py:gemini:3
 tinyassets/providers/router.py:grok:2
 tinyassets/providers/router.py:groq:3
 tinyassets/providers/router.py:ollama:4
-tinyassets/runtime/assigned_queue_consumer.py:claude:5
-tinyassets/runtime/assigned_queue_consumer.py:codex:4
 tinyassets/storage/outbound_connections.py:codex:1
 tinyassets/storage/webhook_hooks.py:codex:1
 tinyassets/universe_bundle.py:github:2
