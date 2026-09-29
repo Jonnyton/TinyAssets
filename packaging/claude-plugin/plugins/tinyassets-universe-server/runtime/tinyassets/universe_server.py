@@ -2533,11 +2533,9 @@ def _attempt_class(exc: BaseException) -> str | None:
     """
     try:
         attempts = getattr(exc, "attempts", None) or []
-        tried = False
         for attempt in reversed(attempts):
             if getattr(attempt, "status", "") != "failed":
                 continue
-            tried = True
             streamed = getattr(attempt, "failure_class", None)
             if streamed:
                 return str(streamed)
@@ -2546,7 +2544,11 @@ def _attempt_class(exc: BaseException) -> str | None:
                 return coarse
             if coarse == "auth_invalid" and _auth_evidence(attempt):
                 return coarse
-        if tried:
+            # Only the LAST failed attempt is the turn's cause. Looking further
+            # back lets an earlier model's answer name a different failure: live
+            # 2026-09-29 (turn b804819f) a broker deadline on the third model
+            # rendered as the SECOND model's "refused to serve this model", beside
+            # a detail that was the third model's.
             return None
         for attempt in reversed(attempts):
             if getattr(attempt, "status", "") != "skipped":
