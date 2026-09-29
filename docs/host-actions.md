@@ -12,6 +12,33 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Decide, then run: drop the retired fleet tables (2026-09-29)
+
+**Why.** The dark-code deletion (plans B2 through C3d) deleted the code behind 15 tables: the
+fleet-era cloud automations, background-branch authority and agent runtime. Production still
+holds some of them, including 10 `background_branch_bindings` rows. That leftover data causes the
+account-deletion FOREIGN KEY failure in
+`docs/concerns/2026-09-28-reset-and-deletion-miss-live-tables.md` (section 2).
+Nothing reads the data: every remaining reference is a missing-table-safe raw read, or a
+scoped-reset classification.
+
+**Precondition.** Production must run plan C3d. Otherwise the next start recreates the tables
+empty. Check:
+`python scripts/deployed_sha.py --assert-contains <C3d merge sha>`.
+
+**Run.** A dry run first, then apply. The script backs up the whole DB next to itself, verifies
+the backup (integrity check plus row counts), and only then drops the tables in one transaction,
+children before parents. It is idempotent; a second run changes nothing.
+
+```
+docker exec -i tinyassets-daemon python - --db /data/.tinyassets.db < scripts/drop_retired_fleet_tables.py
+docker exec -i tinyassets-daemon python - --db /data/.tinyassets.db --apply < scripts/drop_retired_fleet_tables.py
+```
+
+Keep the printed `.bak` path until a week of clean running. After it runs: close section 2 of the
+concern, delete the tables' `preserve` rows in `scoped_reset.py`, and drop the raw reads in
+`branch_tasks_v2.py` and `api/automations.py`.
+
 ## Create the TinyAssets GitHub org (Free plan) and tell the lead (2026-09-27)
 
 You decided to move `Jonnyton/TinyAssets` into an org so the repo can use
