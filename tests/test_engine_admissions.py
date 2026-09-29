@@ -336,4 +336,18 @@ def test_rows_outside_the_window_are_pruned_on_the_next_admission(tmp_path):
     conn.commit()
     conn.close()
     assert _admit(db) is not None
+    # Out of the hourly window, so not counted; still inside the day, whose
+    # run count they belong to (plan item 6), so kept until then.
+    assert len(_rows(db)) == 6
+
+
+def test_run_rows_older_than_a_day_are_pruned_on_the_next_admission(tmp_path):
+    db = tmp_path / adm.LEDGER_NAME
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE admissions (universe_id TEXT NOT NULL, ts REAL NOT NULL)")
+    conn.executemany("INSERT INTO admissions VALUES (?,?)",
+                     [("u-tiny", time.time() - adm.RUN_DAY_SECONDS - 60)] * 5)
+    conn.commit()
+    conn.close()
+    assert _admit(db) is not None
     assert len(_rows(db)) == 1                                             # only the new row

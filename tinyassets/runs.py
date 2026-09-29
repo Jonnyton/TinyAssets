@@ -5600,30 +5600,16 @@ def _max_workers() -> int:
 def _max_child_workers() -> int:
     """Pool size for sub-branch (depth>=1) invocations.
 
-    Phase A item 5 / Task #76c. Default ``MAX_INVOKE_BRANCH_DEPTH + 1`` so
-    the deepest legal chain plus one buffer slot can run without blocking.
-    Env override: ``TINYASSETS_CHILD_POOL_SIZE``.
+    Phase A item 5 / Task #76c. Default ``MAX_INVOKE_BRANCH_DEPTH + 1``.
+    Env override: ``TINYASSETS_CHILD_POOL_SIZE``. A blocking version invoke
+    may nest at most this deep (``graph_compiler``); nothing else is bounded
+    by it.
     """
     raw = os.environ.get("TINYASSETS_CHILD_POOL_SIZE", "")
     try:
         val = int(raw) if raw else MAX_INVOKE_BRANCH_DEPTH + 1
     except ValueError:
         val = MAX_INVOKE_BRANCH_DEPTH + 1
-    return max(1, val)
-
-
-def _runtime_max_invocation_depth() -> int:
-    """Runtime cap on sub-branch invocation depth.
-
-    Phase A item 5 / Task #76c. Defaults to ``MAX_INVOKE_BRANCH_DEPTH``
-    (5) but is host-tunable via ``TINYASSETS_INVOCATION_MAX_DEPTH`` for
-    power-user research workflows that need deeper chains.
-    """
-    raw = os.environ.get("TINYASSETS_INVOCATION_MAX_DEPTH", "")
-    try:
-        val = int(raw) if raw else MAX_INVOKE_BRANCH_DEPTH
-    except ValueError:
-        val = MAX_INVOKE_BRANCH_DEPTH
     return max(1, val)
 
 
@@ -6930,8 +6916,10 @@ def query_runs(
 # Sub-branch invocation helpers
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-#: Maximum nesting depth for invoke_branch nodes. A child run increments
-#: the depth counter; reaching this cap raises CompilerError at runtime.
+#: Sizes the shared sub-branch pool (``_max_child_workers`` is this + 1). It
+#: is no longer a depth cap (plan item 6): sub-branch runs are metered per
+#: universe instead. Only a BLOCKING version invoke, which waits on this pool
+#: while holding one of its threads, is bounded -- by the pool's size.
 MAX_INVOKE_BRANCH_DEPTH = 5
 
 _TERMINAL_STATUSES = frozenset({

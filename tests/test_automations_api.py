@@ -293,9 +293,9 @@ def test_malformed_create_payloads_are_named(
 def test_both_triggers_or_neither_is_refused(tmp_path: Path, env) -> None:
     both = _create(interval_seconds=3600, cron_expr="0 7 * * *")
     neither = _create(interval_seconds=0, cron_expr="")
-    too_fast = _create(interval_seconds=60)
+    negative = _create(interval_seconds=-60)
 
-    for result in (both, neither, too_fast):
+    for result in (both, neither, negative):
         assert result["error"] == "automation_unavailable"
         assert result["reason"] == "trigger_invalid"
     assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
