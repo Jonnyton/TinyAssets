@@ -31,7 +31,7 @@ def test_unadmitted_recovery_keeps_pending_work_and_existing_registration_inert(
 ):
     _bind(monkeypatch, ADMITTED)
     _register_cloud_worker(tmp_path)
-    _adapter, candidate, _lease = _ready_cloud_assignment(tmp_path)
+    _adapter, candidate = _ready_cloud_assignment(tmp_path)
     _bind(monkeypatch, UNADMITTED)
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     touched = []

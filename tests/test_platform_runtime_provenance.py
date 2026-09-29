@@ -520,7 +520,6 @@ def test_admission_sites_consume_the_one_resolver() -> None:
         "branch_tasks_v2.py",
         "daemon_registry.py",
         "foreground_run_provider.py",
-        "background_served_provider.py",
         "universe_server.py",
         "origin_admission.py",
     ):

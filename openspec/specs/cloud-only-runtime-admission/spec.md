@@ -42,17 +42,6 @@ remain independent and live.
 - **WHEN** metadata later becomes reachable in the lifetime of a refused process
 - **THEN** the cached refusal does not silently upgrade.
 
-### Requirement: Assigned claims enforce admission within the mandatory transaction check
-Assigned-task claims SHALL resolve observation before opening their write
-transaction and read only cached admission within the mandatory claim predicate.
-Omitting the optional authority callback SHALL NOT bypass admission. No metadata
-request SHALL run under the claim write lock. Refused work SHALL remain pending
-and report the stable `platform_not_cloud` reason through existing diagnostics.
-
-#### Scenario: Direct assigned claim without an authority callback
-- **WHEN** an unadmitted process directly attempts an otherwise valid assigned claim
-- **THEN** no claim is acquired, even without an optional authority callback.
-
 ### Requirement: Legacy cloud activation claims and resumes enforce admission
 The Epoch2 adapter's cloud-activation claim and resume paths SHALL resolve
 observation before entering their store transaction and check only cached
@@ -94,28 +83,18 @@ worker checks; it SHALL NOT publish or renew execution capacity.
 Platform server startup and its serving lifespan SHALL require admission before
 starting platform services or serving traffic. The canonical server entrypoint
 SHALL exit nonzero on refusal, including stdio, without a degraded local mode.
-Foreground-run and served-background provider authority and launch boundaries
+Foreground-run provider authority and launch boundaries
 SHALL refuse before provider execution and derive their cloud executor class
 from admitted observation rather than an unconditional label. Existing
 user-bound permissions SHALL not be widened by cloud admission.
-
-The agent-runtime provider execution service SHALL also derive its executor
-class from cached admitted observation within its authority transaction. An
-unobserved or refused process SHALL mint no provider receipt, execution claim or
-invocation reservation, and SHALL invoke no provider. Reading an already-settled
-outcome SHALL NOT cause another provider invocation.
 
 #### Scenario: Unadmitted canonical server startup
 - **WHEN** the server is launched without admission
 - **THEN** it exits with code78 and sanitized `platform_not_cloud` refusal before serving.
 
-#### Scenario: Foreground or served-background provider call is unadmitted
-- **WHEN** an unadmitted process reaches either covered provider boundary
+#### Scenario: Foreground provider call is unadmitted
+- **WHEN** an unadmitted process reaches the foreground provider boundary
 - **THEN** it refuses before spawning the provider or using its execution authority.
-
-#### Scenario: Unadmitted direct agent-runtime provider execution
-- **WHEN** an otherwise-ready invocation reaches the execution service on an unadmitted process
-- **THEN** it refuses with `platform_not_cloud`, creates no provider-authority rows, and makes no provider call.
 
 ### Requirement: Origin admission is an outer cached-only backstop
 The outer origin wrapper SHALL refuse unadmitted HTTP with503, no-store and only

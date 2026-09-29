@@ -18,7 +18,6 @@ import tinyassets.platform_runtime_provenance as provenance
 from tests.test_cloud_only_admission_regressions import (
     ADMITTED,
     UNADMITTED,
-    _ready_cloud_assignment,
 )
 from tests.test_cloud_only_admission_regressions import (
     bind_provenance as _bind_provenance_fixture,
@@ -50,54 +49,6 @@ def test_cached_admission_read_never_resolves(monkeypatch) -> None:
 
     assert cached_process_is_cloud_admitted() is False
     assert calls == [], "the cached admission read resolved a verdict"
-
-
-def test_claim_resolves_once_before_the_transaction(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """Resolution happens outside the write transaction, and exactly once.
-
-    The observation starts **unobserved**, so a claim that succeeds proves
-    `claim_assigned` itself resolved: a peek-only CAS on an unobserved process
-    refuses. With the test above pinning the CAS read as peek-only, the resolve
-    cannot be inside the transaction — which is the ordering property. The
-    counting resolver additionally shows it happened exactly once.
-    """
-    calls: list[str] = []
-
-    def resolver():
-        calls.append("resolve")
-        return ADMITTED
-
-    monkeypatch.setattr(
-        provenance, "_PROCESS_OBSERVATION", ProcessProvenanceObservation(resolver=resolver)
-    )
-    adapter, candidate, lease = _ready_cloud_assignment(tmp_path)
-
-    claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
-
-    assert claimed is not None
-    assert calls == ["resolve"], f"resolver ran {len(calls)} time(s), expected once"
-
-
-def test_unadmitted_refusal_is_explained_with_the_stable_token(
-    tmp_path: Path, bind_provenance
-) -> None:
-    """The diagnostic reports the same token the CAS refused on.
-
-    `explain_assigned_refusal` reads the shared non-optional predicate, so a
-    refusal has one definition and one name. The token is sanitized by
-    construction: no instance id, no expected id, no address, no hostname.
-    """
-    bind_provenance(ADMITTED)
-    adapter, candidate, lease = _ready_cloud_assignment(tmp_path)
-
-    bind_provenance(UNADMITTED)
-    assert adapter.claim_assigned(candidate, consumer_lease=lease) is None
-    reason = adapter.explain_assigned_refusal(candidate, consumer_lease=lease)
-
-    assert reason == PLATFORM_NOT_CLOUD_REASON
-    assert reason is not None and not any(char.isdigit() for char in reason)
 
 
 def test_unadmitted_registration_refusal_leaks_no_identity(

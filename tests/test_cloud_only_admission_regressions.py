@@ -25,7 +25,7 @@ import pytest
 
 import tinyassets.platform_runtime_provenance as provenance
 from tests.test_branch_tasks_v2 import _activation_subject, _commit, _MutableClock
-from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTaskAdapter
+from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
 from tinyassets.daemon_registry import create_daemon, ensure_daemon_runtime
 from tinyassets.daemon_server import initialize_author_server, list_runtime_instances
 from tinyassets.platform_runtime_provenance import (
@@ -157,10 +157,11 @@ def maybe_copied_cloud_labels(copied_labels: bool, monkeypatch, data_root: Path)
 
 
 def _ready_cloud_assignment(tmp_path: Path):
-    """A valid, ready, pending `cloud` epoch-2 task plus a valid consumer lease.
+    """A valid, ready, pending `cloud` epoch-2 task.
 
-    Same shape as the baseline single-winner claim test in
-    `tests/test_branch_tasks_v2.py`, so the setup itself is known-claimable.
+    The assigned-consumer claim that used to take it is gone with the fleet-era
+    carrier (dark-code deletion plan C3a); recovery tests still need a pending
+    task to prove an unadmitted poll leaves untouched.
     """
     initialize_author_server(tmp_path)
     activations = AutomationActivationStore(tmp_path)
@@ -178,12 +179,7 @@ def _ready_cloud_assignment(tmp_path: Path):
     candidate = adapter.get(committed["branch_task_id"])
     assert candidate is not None
     assert candidate.automation_executor_class == "cloud"
-    lease = AssignedConsumerLease(
-        consumer_id="assigned-consumer:boot-a",
-        lease_id="lease-a",
-        expires_at="2026-07-24T08:02:00+00:00",
-    )
-    return adapter, candidate, lease
+    return adapter, candidate
 
 
 def _claimed_row(tmp_path: Path, branch_task_id: str) -> tuple[str, str]:
@@ -235,60 +231,6 @@ def _register_cloud_worker(tmp_path: Path, *, worker_id: str = "worker-cloud-1")
 # --- matrix 1: negative direct claim --------------------------------------
 
 
-def test_unadmitted_direct_claim_assigned_claims_nothing(
-    tmp_path: Path, bind_provenance
-) -> None:
-    """Matrix 1. No `authority_claim` callback is passed — that is the point.
-
-    `transaction_check` returns the non-optional predicate's result unchanged
-    when `authority_claim is None` (`branch_tasks_v2.py:489`), so a gate that
-    lives only in the optional callback is opt-out by construction and a test
-    that supplies one proves nothing. The setup is a valid ready assignment
-    with a valid unexpired consumer lease; the only thing wrong with this
-    process is that it is not admitted.
-    """
-    bind_provenance(UNADMITTED)
-    adapter, candidate, lease = _ready_cloud_assignment(tmp_path)
-
-    claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
-
-    status, claimed_by = _claimed_row(tmp_path, candidate.branch_task_id)
-    assert claimed is None, "unadmitted process claimed an assigned cloud task"
-    assert claimed_by == "", f"unadmitted process is recorded as claimer: {claimed_by}"
-    assert status == "pending", (
-        f"task left {status!r}, not pending, by an unadmitted claim"
-    )
-
-
-@pytest.mark.parametrize("copied_labels", COPIED_LABEL_VARIANTS)
-def test_admitted_direct_claim_assigned_still_succeeds(
-    copied_labels: bool, tmp_path: Path, bind_provenance, monkeypatch
-) -> None:
-    """Preserved behaviour, and the control for the negative above.
-
-    Identical fixture, identical call, only the injected verdict differs. If
-    this fails, the negative's red is setup breakage rather than a refusal.
-
-    The `copied_labels` leg is additionally the positive control for
-    `test_existing_registration_and_cloud_labels_do_not_authorize_claim`: the
-    same process dressing that must not authorize an unadmitted claim must
-    also not *block* an admitted one. A dressed process that could no longer
-    claim would make that negative unreadable — a refusal and a broken fixture
-    look identical from the persisted row.
-    """
-    bind_provenance(ADMITTED)
-    maybe_copied_cloud_labels(copied_labels, monkeypatch, tmp_path)
-    adapter, candidate, lease = _ready_cloud_assignment(tmp_path)
-
-    claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
-
-    assert claimed is not None
-    assert claimed.claimed_by == lease.consumer_id
-    status, claimed_by = _claimed_row(tmp_path, candidate.branch_task_id)
-    assert claimed_by == lease.consumer_id
-    assert status != "pending"
-
-
 # --- matrix 2: negative registration --------------------------------------
 
 
@@ -330,41 +272,6 @@ def test_admitted_ensure_daemon_runtime_registers_cloud_worker(
 
 
 # --- matrix 4/5 (bounded): a row and a cloud-looking host are not authority --
-
-
-def test_existing_registration_and_cloud_labels_do_not_authorize_claim(
-    tmp_path: Path, bind_provenance, monkeypatch
-) -> None:
-    """Matrix 4 + 5, bounded to what a local fixture can honestly show.
-
-    The registration row is written while admitted, then the same data root is
-    read by an unadmitted process wearing the full copied-container label set
-    (`apply_copied_cloud_labels`): every compose env var, the
-    `mcp.tinyassets.io` hostname and the service name. None of those is
-    evidence, and an existing row
-    is not permission — authority is re-resolved on read (`design.md`
-    § Enforcement sites (B)). No real production path is set and no live state
-    is touched: the data root is the pytest temp dir throughout.
-    """
-    bind_provenance(ADMITTED)
-    registered = _register_cloud_worker(tmp_path)
-    assert registered["metadata"]["runtime_registration"] == "cloud_worker"
-    adapter, candidate, lease = _ready_cloud_assignment(tmp_path)
-
-    # Now the same checkout, off cloud, dressed up.
-    bind_provenance(UNADMITTED)
-    apply_copied_cloud_labels(monkeypatch, tmp_path)
-
-    claimed = adapter.claim_assigned(candidate, consumer_lease=lease)
-
-    status, claimed_by = _claimed_row(tmp_path, candidate.branch_task_id)
-    assert claimed is None, (
-        "an existing registration plus cloud-looking labels authorized an "
-        "unadmitted claim"
-    )
-    assert claimed_by == ""
-    assert status == "pending"
-    assert _cloud_worker_rows(tmp_path), "fixture lost the pre-existing registration"
 
 
 def test_copied_cloud_labels_do_not_authorize_registration(

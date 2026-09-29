@@ -23,7 +23,6 @@ from typing import Any
 from tinyassets.branch_tasks import BranchTask
 from tinyassets.execution_subject import ExecutionSubject
 from tinyassets.platform_runtime_provenance import (
-    PLATFORM_NOT_CLOUD_REASON,
     cached_process_is_cloud_admitted,
     resolve_process_cloud_admission,
 )
@@ -85,21 +84,6 @@ class WorkerClaimContext:
 
     descriptor: WorkerClaimDescriptor
     daemon_id: str
-
-
-@dataclass(frozen=True)
-class AssignedConsumerLease:
-    """Boot-scoped daemon lease used only to fence queue ownership."""
-
-    consumer_id: str
-    lease_id: str
-    expires_at: str
-
-    def __post_init__(self) -> None:
-        if not self.consumer_id.strip() or not self.lease_id.strip():
-            raise ValueError("assigned consumer lease identity is required")
-        if _parse_timestamp(self.expires_at) is None:
-            raise ValueError("assigned consumer lease expiry is invalid")
 
 
 DescriptorReader = Callable[
@@ -414,7 +398,7 @@ class Epoch2BranchTaskAdapter:
         # (prepare_claimed_cloud_provider_call -> runtime_matches_worker_provider)
         # authorizes against. It is NOT a persisted task column: derive it on every
         # execution-task read from the claimant's persisted worker queue descriptor,
-        # so claim(), claim_assigned() AND a later get() all carry it. Before this
+        # so claim() AND a later get() both carry it. Before this
         # only a test set these two fields by hand, and every production claim
         # produced a task the cloud path rejected ("executor_worker_id must be a
         # non-empty string") — the concrete reason background execution never ran.
@@ -441,9 +425,9 @@ class Epoch2BranchTaskAdapter:
         if not _descriptor_shape_is_valid(descriptor):
             return None
 
-        # Resolve platform admission BEFORE the write transaction opens, the
-        # same ordering `claim_assigned` uses: the bounded metadata read must
-        # never run under the SQLite write lock. This call decides nothing --
+        # Resolve platform admission BEFORE the write transaction opens: the
+        # bounded metadata read must never run under the SQLite write lock.
+        # This call decides nothing --
         # the single gate is the non-optional cloud-activation predicate in
         # `_transaction_allows_epoch2_lifecycle`, which reads only the cached
         # result.
@@ -472,136 +456,6 @@ class Epoch2BranchTaskAdapter:
         )
         return self._as_execution_task(row) if row is not None else None
 
-    def claim_assigned(
-        self,
-        candidate: Epoch2BranchTask,
-        *,
-        consumer_lease: AssignedConsumerLease,
-        lease_seconds: int = EPOCH2_TASK_LEASE_SECONDS,
-        authority_claim: Callable[..., bool] | None = None,
-    ) -> Epoch2BranchTask | None:
-        """CAS one exact automation task to a boot-scoped daemon consumer."""
-
-        if not isinstance(candidate, Epoch2BranchTask) or not isinstance(
-            consumer_lease, AssignedConsumerLease
-        ):
-            return None
-
-        # Resolve platform admission BEFORE the write transaction opens, so the
-        # bounded metadata read can never run under the SQLite write lock. The
-        # CAS predicate below re-reads only the cached result. This call decides
-        # nothing — there is exactly one gate, in the non-optional predicate, so
-        # a refusal has a single definition and a single reason token.
-        resolve_process_cloud_admission()
-
-        def transaction_check(
-            conn: sqlite3.Connection,
-            task: Mapping[str, Any],
-            transaction_at: str,
-        ) -> bool:
-            allowed = _transaction_allows_assigned_consumer(
-                conn,
-                task,
-                transaction_at=transaction_at,
-                candidate=candidate,
-                consumer_lease=consumer_lease,
-            )
-            if not allowed or authority_claim is None:
-                return allowed
-            claimed_at = _parse_timestamp(transaction_at)
-            if claimed_at is None:
-                return False
-            return authority_claim(
-                conn,
-                candidate,
-                consumer_lease,
-                claimed_at=transaction_at,
-                lease_expires_at=(
-                    claimed_at + timedelta(seconds=lease_seconds)
-                ).isoformat(),
-            )
-
-        row = self._store.claim_v2_task(
-            candidate.branch_task_id,
-            worker_id=consumer_lease.consumer_id,
-            queue_protocol_version=QUEUE_PROTOCOL_VERSION,
-            capabilities=(OPERATOR_CAPABILITY,),
-            lease_seconds=lease_seconds,
-            claim_check=transaction_check,
-        )
-        return self._as_execution_task(row) if row is not None else None
-
-    def explain_assigned_refusal(
-        self,
-        candidate: Epoch2BranchTask,
-        *,
-        consumer_lease: AssignedConsumerLease,
-        lease_seconds: int = EPOCH2_TASK_LEASE_SECONDS,
-    ) -> str | None:
-        """Explain one still-pending refusal through a query-only snapshot."""
-
-        database = self.base_path / DB_FILENAME
-        if not database.is_file():
-            return None
-        uri = f"{database.resolve().as_uri()}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as conn:
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA query_only = ON")
-            conn.execute("BEGIN")
-            transaction_at = self._clock().astimezone(timezone.utc).isoformat()
-            row = self._store._v2_integrity_cursor(
-                conn,
-                pending_only=True,
-                branch_task_id=candidate.branch_task_id,
-                limit=1,
-            ).fetchone()
-            if row is None:
-                conn.rollback()
-                return None
-            reason = _assigned_consumer_refusal_reason(
-                conn,
-                dict(row),
-                transaction_at=transaction_at,
-                candidate=candidate,
-                consumer_lease=consumer_lease,
-            )
-            if reason is None:
-                from tinyassets.background_served_provider import (
-                    explain_background_queue_authority_in_transaction,
-                )
-
-                claimed_at = _parse_timestamp(transaction_at)
-                assert claimed_at is not None
-                reason = explain_background_queue_authority_in_transaction(
-                    conn,
-                    candidate,
-                    consumer_lease,
-                    claimed_at=transaction_at,
-                    lease_expires_at=(
-                        claimed_at + timedelta(seconds=lease_seconds)
-                    ).isoformat(),
-                )
-            conn.rollback()
-        return reason
-
-    def release_assigned(
-        self,
-        claimed_task: Epoch2BranchTask,
-        *,
-        consumer_lease: AssignedConsumerLease,
-        reason: str,
-    ) -> bool:
-        """Release only the exact live claim; never mint another attempt."""
-
-        if claimed_task.claimed_by != consumer_lease.consumer_id:
-            return False
-        return self._store.release_v2_task_claim(
-            claimed_task.branch_task_id,
-            worker_id=consumer_lease.consumer_id,
-            claimed_at=claimed_task.claimed_at,
-            reason=reason,
-        )
-
     def resume(
         self,
         branch_task_id: str,
@@ -613,9 +467,9 @@ class Epoch2BranchTaskAdapter:
         if not _descriptor_shape_is_valid(descriptor):
             return None
 
-        # Resolve platform admission BEFORE the write transaction opens, the
-        # same ordering `claim_assigned` uses: the bounded metadata read must
-        # never run under the SQLite write lock. This call decides nothing --
+        # Resolve platform admission BEFORE the write transaction opens: the
+        # bounded metadata read must never run under the SQLite write lock.
+        # This call decides nothing --
         # the single gate is the non-optional cloud-activation predicate in
         # `_transaction_allows_epoch2_lifecycle`, which reads only the cached
         # result.
@@ -1218,25 +1072,6 @@ def _transaction_allows_epoch2_lifecycle(
     )
 
 
-def _transaction_allows_assigned_consumer(
-    conn: sqlite3.Connection,
-    task: Mapping[str, Any],
-    *,
-    transaction_at: str,
-    candidate: Epoch2BranchTask,
-    consumer_lease: AssignedConsumerLease,
-) -> bool:
-    """Validate immutable task + activation facts inside the claim transaction."""
-
-    return _assigned_consumer_refusal_reason(
-        conn,
-        task,
-        transaction_at=transaction_at,
-        candidate=candidate,
-        consumer_lease=consumer_lease,
-    ) is None
-
-
 def _refusal_operational_state(reason: str) -> str:
     """Type a consumer-recorded refusal for the status view: only authority
     predicates mean 'awaiting_background_authority'; a task this consumer is not
@@ -1249,82 +1084,6 @@ def _refusal_operational_state(reason: str) -> str:
     if reason.startswith(("requires_executor_class:", "consumer_not_applicable:")):
         return "awaiting_compatible_executor"
     return "awaiting_background_authority"
-
-
-def _assigned_consumer_refusal_reason(
-    conn: sqlite3.Connection,
-    task: Mapping[str, Any],
-    *,
-    transaction_at: str,
-    candidate: Epoch2BranchTask,
-    consumer_lease: AssignedConsumerLease,
-) -> str | None:
-    """Return the first assigned-claim predicate that fails."""
-
-    # Platform admission, read from the already-resolved process-owned verdict.
-    # Cached-only on purpose: this runs inside the claim write transaction, so
-    # it must not open a socket (design.md § Enforcement sites (A)). The
-    # resolution itself happens in `claim_assigned` before the transaction is
-    # opened. An unobserved process peeks `None` and is refused — "we never
-    # looked" is not cloud. This predicate is the non-optional one, shared with
-    # `explain_assigned_refusal`, so the diagnostic reports the same token.
-    if not cached_process_is_cloud_admitted():
-        return PLATFORM_NOT_CLOUD_REASON
-
-    now = _parse_timestamp(transaction_at)
-    consumer_expiry = _parse_timestamp(consumer_lease.expires_at)
-    if now is None or consumer_expiry is None or consumer_expiry <= now:
-        return "consumer_lease_invalid"
-    if _classify_epoch2_row(task) is not None:
-        return "task_not_claimable"
-    exact_fields = {
-        "branch_task_id": candidate.branch_task_id,
-        "admission_id": candidate.admission_id,
-        "request_id": candidate.request_id,
-        "universe_id": candidate.universe_id,
-        "branch_def_id": candidate.branch_def_id,
-        "automation_id": candidate.automation_id,
-        "automation_activation_epoch": candidate.automation_activation_epoch,
-        "automation_executor_class": candidate.automation_executor_class,
-        "automation_subject_kind": candidate.automation_subject_kind,
-        "automation_subject_ref": candidate.automation_subject_ref,
-        "automation_subject_digest": candidate.automation_subject_digest,
-        "automation_branch_version": candidate.automation_branch_version,
-        "automation_lease_id": candidate.automation_lease_id,
-    }
-    if any(task.get(field) != value for field, value in exact_fields.items()):
-        return "candidate_mismatch"
-    if not candidate.automation_id or candidate.automation_executor_class != "cloud":
-        return "not_cloud_automation"
-    active = conn.execute(
-        """
-        SELECT 1 FROM branch_tasks_v2
-        WHERE universe_id = ? AND automation_id = ?
-          AND branch_task_id != ?
-          AND status IN ('running', 'cancel_requested') AND disabled = 0
-        LIMIT 1
-        """,
-        (candidate.universe_id, candidate.automation_id, candidate.branch_task_id),
-    ).fetchone()
-    if active is not None:
-        return "automation_already_active"
-    if not AutomationActivationStore.validate_claim_in_transaction(
-        conn,
-        universe_id=candidate.universe_id,
-        automation_id=candidate.automation_id,
-        epoch=candidate.automation_activation_epoch,
-        executor_class=AutomationActivationExecutor.CLOUD,
-        subject=ExecutionSubject.from_dict(
-            {
-                "kind": candidate.automation_subject_kind,
-                "ref": candidate.automation_subject_ref,
-                "digest": candidate.automation_subject_digest,
-            }
-        ),
-        lease_id=candidate.automation_lease_id,
-    ):
-        return "activation_claim_invalid"
-    return None
 
 
 def _descriptor_is_live(
@@ -1849,7 +1608,6 @@ def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:
 
 __all__ = [
     "Epoch2BranchTask",
-    "AssignedConsumerLease",
     "Epoch2BranchTaskAdapter",
     "Epoch2ClaimedRequest",
     "Epoch2OperationalRead",
