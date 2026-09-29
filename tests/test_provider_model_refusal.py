@@ -290,6 +290,9 @@ def test_a_hot_source_is_cooled_only_when_a_refusal_leaves_it(
     turn.context = SimpleNamespace(model_selection=refused)
     turn.visited, turn.exhaustion, turn.spent_attempts = set(), (), []
     turn.execution_kind = "engine_inference"
+    # No owner: a hand-built coordinator records no durable refusal
+    # (tests/test_refused_models_recorded.py drives that through a real turn).
+    turn.owner = None
     boundary = SimpleNamespace()
     turn._hot_capacity = (failed, boundary)
     left = []

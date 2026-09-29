@@ -6,6 +6,7 @@ from tinyassets.providers.model_policy import (
     Catalog,
     Interaction,
     ModelPolicy,
+    ModelRef,
     SourceModelPolicy,
     order_models,
 )
@@ -19,6 +20,10 @@ class AgentModelPlan:
     policy_source: str = "unknown"
     source_policies: tuple[SourceModelPolicy, ...] = ()
     reconnect_sources: tuple[str, ...] = ()
+    #: Models this owner's source recently refused (``storage.refused_models``).
+    #: Ordered LAST, not removed: a refusal is often temporary, and an order that
+    #: still ends in them beats a turn that finds no model at all.
+    refused_models: tuple[ModelRef, ...] = ()
 
     def __post_init__(self):
         if (
@@ -29,12 +34,31 @@ class AgentModelPlan:
             or type(self.source_policies) is not tuple
             or type(self.reconnect_sources) is not tuple
             or any(type(item) is not str for item in self.reconnect_sources)
+            or type(self.refused_models) is not tuple
+            or any(type(item) is not ModelRef for item in self.refused_models)
             or any(type(item) is not SourceModelPolicy or not item.interaction.needs_tools
                    for item in self.source_policies)
         ):
             raise ValueError("invalid interactive candidate plan")
 
     def order(self, owner, universe, exhaustion=()):
+        order = self._reconnect_order(owner, universe, exhaustion)
+        # The model the owner chose for THIS turn is theirs to retry; only the
+        # standing order (saved default, fallbacks, automatic) steps past a
+        # recent refusal instead of spending a request rediscovering it.
+        refused = set(self.refused_models) - {self.policy.current_selection}
+        if not refused:
+            return order
+        candidates = tuple(
+            replace(item, labels=item.labels + ("recently_refused",))
+            if item.ref in refused else item
+            for item in order.candidates
+        )
+        return replace(order, candidates=tuple(sorted(
+            candidates, key=lambda item: item.ref in refused,
+        )))
+
+    def _reconnect_order(self, owner, universe, exhaustion):
         order = order_models(
             self.catalog, self.policy, self.interaction,
             owner_id=owner, universe_id=universe, exhaustion=exhaustion,
