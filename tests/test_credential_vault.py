@@ -722,3 +722,34 @@ def test_snapshot_directory_and_files_are_owner_only(tmp_path):
         } == {".lock": 0o400, "auth.json": 0o400, "config.toml": 0o400}
     finally:
         cleanup_llm_credential_snapshot(snapshot)
+
+
+def test_scavenge_orphaned_launch_credentials(tmp_path: Path) -> None:
+    """Startup reclamation removes stale (crash-orphaned) codex-* credential dirs but
+    leaves in-flight (recent) ones and non-codex entries (Codex #4, #2516)."""
+    import os
+    import time as _t
+
+    from tinyassets.credential_vault import scavenge_orphaned_launch_credentials
+
+    root = tmp_path / ".runtime" / "provider-launch-credentials"
+    root.mkdir(parents=True)
+    old = root / "codex-staleaaaa"
+    old.mkdir()
+    (old / "cred.json").write_text("secret")
+    recent = root / "codex-freshbbbb"
+    recent.mkdir()
+    (recent / "cred.json").write_text("secret")
+    other = root / "notcodex"
+    other.mkdir()
+    aged = _t.time() - 7200
+    os.utime(old, (aged, aged))
+    # Aged too, so only its name keeps it: a sweep by age alone would take it.
+    os.utime(other, (aged, aged))
+    removed = scavenge_orphaned_launch_credentials(tmp_path, max_age_seconds=3600)
+    assert removed == 1
+    assert not old.exists()      # stale orphan reclaimed
+    assert recent.exists()       # too recent — could back an in-flight call
+    assert other.exists()        # not a codex- snapshot dir
+    # idempotent: a second sweep with nothing stale removes nothing.
+    assert scavenge_orphaned_launch_credentials(tmp_path, max_age_seconds=3600) == 0
