@@ -59,6 +59,12 @@ PUBLIC_LISTED_BASIS = "publicly_listed"
 _CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
 
 
+
+#: Prefix of the refusal when no accepted model can run. The served turn's
+#: notice reads the held sources after ``HELD_SOURCES`` (universe_server).
+NO_ELIGIBLE_MODEL = "no eligible model in the accepted assignment"
+HELD_SOURCES = "not usable now: "
+
 def _assert_plan_snapshot(snapshot):
     from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
     from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
@@ -339,6 +345,18 @@ def _reconnect_sources(base, owner, uid, chains):
     )
 
 
+def _refused_models(base, owner, chains):
+    """This owner's recently refused models on the sources in this plan."""
+    from tinyassets.storage.refused_models import active_refused_models
+
+    providers = {provider for provider, _chain in chains}
+    return tuple(
+        ModelRef(mark.connection_id, mark.model_id)
+        for mark in active_refused_models(base, owner_user_id=owner)
+        if mark.connection_id in providers
+    )
+
+
 def prepare_owned_model_plan(
     *, base, universe, owner, agent, current=None, config=None, allow_empty=False,
     preference_snapshot=None,
@@ -515,9 +533,19 @@ def prepare_owned_model_plan(
         Catalog(owner, universe.name, tuple(admitted)), policy, interaction, source,
         tuple(source_policies),
         _reconnect_sources(base, owner, universe.name, chains),
+        _refused_models(base, owner, chains),
     )
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
-        raise PermissionError("no eligible model in the accepted assignment")
+        # Name what is held and why: "no model connected" was wrong for an owner
+        # whose accepted sources exist but cannot run (live 2026-09-28).
+        held = [
+            f"{item.ref.connection_id.removeprefix('api_key_http:')} "
+            f"({item.reason.replace('_', ' ')})"
+            for item in rejected if item.scope == "source"
+        ]
+        raise PermissionError(
+            NO_ELIGIBLE_MODEL + (f"; {HELD_SOURCES}{', '.join(held)}" if held else "")
+        )
     result = PreparedPlan(
         plan, Catalog(owner, universe.name, tuple(all_models)), tuple(rejected),
         assignment, tuple(chains), agent, preferences, tuple(snapshots), display_only=allow_empty,

@@ -434,8 +434,10 @@ def test_runtime_response_payloads_claim_only_live_advertised_handles(
         lambda _base_path, _branch_version_id: selector_version,
     )
 
+    # An exact wiki path: a slashed page name must name the .md file under
+    # pages/ or drafts/ (`_resolve_page`, since #2121).
     truncated_page_response = universe_server.read_page(
-        page="notes/long-response-probe",
+        page="pages/notes/long-response-probe.md",
     )
     assert json.loads(truncated_page_response)["truncated"] is True
 
