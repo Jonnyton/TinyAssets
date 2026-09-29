@@ -17,6 +17,7 @@ from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ProviderAuthorityHeldError,
     ProviderProtocolError,
+    SelectedModelContextError,
 )
 from tinyassets.providers import agent_chat_codec as codec
 from tinyassets.providers.agent_capacity_boundary import capacity_boundary
@@ -30,6 +31,13 @@ from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnava
 from tinyassets.storage.agent_turn_records import load_result
 
 _LOG = logging.getLogger(__name__)
+
+
+def _at_least(interaction, tokens):
+    """The interaction with its minimum context raised to ``tokens``, never lowered."""
+    if interaction.min_context is not None and interaction.min_context >= tokens:
+        return interaction
+    return replace(interaction, min_context=tokens)
 
 
 def turn_effects(turn):
@@ -67,6 +75,10 @@ def turn_effects(turn):
 
 class AgentTurnCoordinator:
     """One in-process turn; no crash resurrection or automatic effect replay."""
+
+    #: (failed selection, boundary) of a source whose cooldown the capacity path
+    #: withheld to try a sibling on it; cooled when the turn leaves it.
+    _hot_capacity = None
 
     def __init__(self, *, adapter, router, prompt, system, universe_context, config):
         self.adapter = adapter
@@ -250,6 +262,39 @@ class AgentTurnCoordinator:
             owner_user_id=self.owner,
         )
 
+    def _remember_refusal(self, failed, attempts):
+        """Keep a source's refusal of THIS model past this turn.
+
+        The next turn's order puts it last instead of spending a request to be
+        refused again (``storage.refused_models``; live 2026-09-28, the free
+        account's 403 and withdrawn 404 models were rediscovered every turn).
+        Recorded whether or not this turn finds another model: a refusal is a
+        fact about the owner's key either way. Best-effort, never the turn's
+        failure.
+        """
+        if failed is None or self.owner is None:
+            return
+        from tinyassets.storage.refused_models import record_refused_model
+
+        record_refused_model(
+            self.context.universe_dir.parent, owner_user_id=self.owner,
+            connection_id=failed.connection_id, model_id=failed.model_id,
+            failure_class="provider_refused",
+            detail=str(getattr(attempts[-1], "detail", "") or "") if attempts else "",
+        )
+
+    def _forget_refusal(self):
+        """The selected model just answered, so any standing refusal is stale."""
+        selection = getattr(self.context, "model_selection", None)
+        if selection is None or self.owner is None:
+            return
+        from tinyassets.storage.refused_models import clear_refused_model
+
+        clear_refused_model(
+            self.context.universe_dir.parent, owner_user_id=self.owner,
+            connection_id=selection.connection_id, model_id=selection.model_id,
+        )
+
     def effects_evidence(self):
         """This running turn's own ledger evidence; see :func:`turn_effects`."""
         return turn_effects(self.turn)
@@ -356,7 +401,12 @@ class AgentTurnCoordinator:
                                     reply=None,
                                 )
                             )
-                        if self._next_after_capacity(exc) or self._next_after_signin(exc):
+                        if (
+                            self._next_after_capacity(exc)
+                            or self._next_after_signin(exc)
+                            or self._next_after_refusal(exc)
+                            or self._next_after_overflow(exc)
+                        ):
                             continue
                         raise
                     if self.execution_kind == "native_agent":
@@ -400,6 +450,8 @@ class AgentTurnCoordinator:
                             cost_microusd=response.cost_microunits,
                         )
                     )
+                    # The model answered: whatever refused it before does not now.
+                    self._forget_refusal()
                     if self.turn.state == "completed":
                         return response
                     if self.turn.state != "tools_pending":
@@ -559,6 +611,90 @@ class AgentTurnCoordinator:
         narrowing -- and never when a native attempt may have committed a side
         effect, which is the state ``_next_after_capacity`` fences too.
         """
+        # The source is excluded for the REST OF THIS TURN by the same mechanism
+        # capacity uses -- an ``account``-scoped exclusion, because a finished
+        # sign-in is the whole connection's, never one model's. It is separately
+        # marked for reconnect by the router, so the owner's next turn does not
+        # start here either.
+        return self._advance_past(exc, "auth_invalid", "account")
+
+    def _next_after_refusal(self, exc):
+        """Advance to the owner's next model when the source refused THIS one.
+
+        HTTP 403/404/410 on an inference request (``provider_refused``): access
+        to this model was refused, or the source no longer serves it. Live
+        2026-09-28 on the free-only account: its first free model was rate
+        limited, the second had been withdrawn from the catalog, and the third
+        answered 403 -- and the turn died there with free models still in the
+        owner's order. Same fences as a finished sign-in (every attempt of the
+        round refused, none may have acted, only candidates already in the
+        owner's accepted order) with a MODEL-scoped exclusion: the refusal names
+        the model, and its siblings on the same connection stay eligible.
+
+        Bounded by the owner's list, not a count: each accepted model is tried
+        at most once per turn (``visited`` plus the exclusion), so a pool with
+        several dead models in a row is walked to the end, and a key refused for
+        every model costs one request per accepted model, once.
+        """
+        return self._advance_past(exc, "provider_refused", "model")
+
+    def _next_after_overflow(self, exc):
+        """Move to an accepted model whose window fits, when this one's does not.
+
+        Our own pre-send measurement (``SelectedModelContextError``), so nothing
+        was sent, spent or run, and no round was opened. Live 2026-09-26 a large
+        tool result overflowed a 262k-token model while the owner's order held a
+        1M-token free model. The order is re-asked with the measured size as its
+        minimum context, so every model too small is skipped in one step rather
+        than tried one by one; the failed model is excluded too.
+
+        Served chat only (``self.plan``): a workflow run's candidates come from
+        its adapter, whose launch carrier this path has no business re-arming.
+        """
+        if (
+            self.plan is None
+            or not isinstance(exc, SelectedModelContextError)
+            or self.turn.state not in {"ready", "held_transport"}
+        ):
+            return False
+        needed = exc.required_tokens
+        if type(needed) is not int or needed < 1:
+            return False
+        from tinyassets.providers.model_policy import Exhaustion
+
+        failed = self.context.model_selection
+        self.visited.add(failed)
+        self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
+        # Every interaction the order reads: a per-source policy REPLACES the
+        # plan's own for that source's models, and production plans carry one
+        # per source -- raising only the plan's left them admitting a model too
+        # small (Codex, 2026-09-28).
+        self.plan = replace(
+            self.plan,
+            interaction=_at_least(self.plan.interaction, needed),
+            source_policies=tuple(
+                replace(item, interaction=_at_least(item.interaction, needed))
+                for item in self.plan.source_policies
+            ),
+        )
+        candidate = self._next_candidate()
+        if candidate is None or candidate in self.visited:
+            self._leave_hot_source(None)
+            return False
+        self._leave_hot_source(candidate)
+        self.context = replace(self.context, model_selection=candidate)
+        self.retrying_capacity = self.turn.state != "ready"
+        return True
+
+    def _advance_past(self, exc, failure_class, scope):
+        """Exclude the failed selection at ``scope`` and take the next candidate.
+
+        Advances only when EVERY attempt of the round carried ``failure_class``
+        -- a round that also hit capacity is the capacity path's to reason about
+        -- and never when an attempt may have committed a side effect. Only
+        candidates already in the owner's accepted order are reachable
+        (``_next_candidate``), so this never widens authority.
+        """
         if (
             not self._has_candidate_order()
             or not isinstance(exc, AllProvidersExhaustedError)
@@ -566,7 +702,7 @@ class AgentTurnCoordinator:
         ):
             return False
         attempts = tuple(exc.attempts or ())
-        if not attempts or any(a.failure_class != "auth_invalid" for a in attempts):
+        if not attempts or any(a.failure_class != failure_class for a in attempts):
             return False
         if any(
             getattr(a, "side_effect_state", "none") not in ("", "none")
@@ -577,22 +713,38 @@ class AgentTurnCoordinator:
             return False
         failed = self.context.model_selection
         self.visited.add(failed)
-        # The source is excluded for the REST OF THIS TURN by the same mechanism
-        # capacity uses -- an ``account``-scoped exclusion, because a finished
-        # sign-in is the whole connection's, never one model's. It is separately
-        # marked for reconnect by the router, so the owner's next turn does not
-        # start here either.
+        if failure_class == "provider_refused":
+            self._remember_refusal(failed, attempts)
         from tinyassets.providers.model_policy import Exhaustion
 
-        self.exhaustion = self.exhaustion + (Exhaustion("account", failed),)
+        self.exhaustion = self.exhaustion + (Exhaustion(scope, failed),)
         candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
+            self._leave_hot_source(None)
             return False
+        self._leave_hot_source(candidate)
         if self.execution_kind == "engine_inference":
             self.spent_attempts += list(attempts)
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
+
+    def _leave_hot_source(self, candidate):
+        """Cool the source a capacity sibling retry left hot, once the turn leaves it.
+
+        The capacity path withholds a source's cooldown only while the next try
+        is a sibling on that same source. A refusal or sign-in step that then
+        moves to ANOTHER source would otherwise leave it hot: 429 -> sibling ->
+        403 -> another source, and the capped source is asked again next turn
+        (Codex, 2026-09-28). ``None`` means the turn is ending: leave it too.
+        """
+        hot = self._hot_capacity
+        if hot is None or (
+            candidate is not None and candidate.connection_id == hot[0].connection_id
+        ):
+            return
+        self._hot_capacity = None
+        self._cool_abandoned_source(*hot)
 
     def _next_after_capacity(self, exc):
         if (
@@ -635,6 +787,11 @@ class AgentTurnCoordinator:
             # Moving to another source: this one is done for the turn, so the
             # cooldown the router withheld for it now applies.
             self._cool_abandoned_source(failed, boundary)
+            self._leave_hot_source(candidate)
+        elif self._free_source_refusal(boundary, window=False):
+            # Staying on it for a sibling: its cooldown stays withheld until the
+            # turn leaves the source by any path.
+            self._hot_capacity = (failed, boundary)
         # Only engine-inference rounds. A native round's diagnostics are paired
         # positionally with its own ``native_evidence``, and carrying them onto
         # a later exception would leave the two lists mismatched, which
