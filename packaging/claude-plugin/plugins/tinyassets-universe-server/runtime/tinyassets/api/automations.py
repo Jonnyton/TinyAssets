@@ -23,8 +23,9 @@ What this module owns, and why each piece is here rather than in the store:
   -- a new refusal must never render as an empty explanation.
 * **Fleet-era visibility.** ``list`` appends the old
   ``cloud_automation_controls`` rows flagged ``legacy``, so an owner who has
-  rows from the retired activation layer can see them. They are read-only:
-  no legacy action is reachable from here (task 3.3 deletes the rows).
+  rows from the retired activation layer can see them and why they stopped.
+  They are read-only; the layer's code is deleted (plan C3c) and the rows stay
+  until a host-action drops the table.
 
 Unsigned writes return ``authentication_required`` rather than the generic
 access-denied envelope: the spec names that token, and "you are not signed in"
@@ -279,21 +280,28 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
 
     Visible so an owner is not left wondering where an automation they made
     under the old activation layer went; not actionable, because that layer no
-    longer has an executor. Task 3.3 deletes the rows themselves.
+    longer has an executor or code. Read directly: the table is production data
+    its deleted store no longer creates, so a database without it has no rows.
     """
+    import sqlite3
+
     from tinyassets.storage import db_path
 
-    if not db_path(base).is_file():
+    database = db_path(base)
+    if not database.is_file():
         return []
     try:
-        from tinyassets.storage.cloud_automation_control import (
-            CloudAutomationControlStore,
-        )
-
-        controls = CloudAutomationControlStore(base).list_controls(
-            universe_id=universe_id,
-            limit=100,
-        )
+        with sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True) as conn:
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'cloud_automation_controls'"
+            ).fetchone() is None:
+                return []
+            controls = conn.execute(
+                "SELECT automation_id, desired_state FROM cloud_automation_controls "
+                "WHERE universe_id = ? ORDER BY automation_id LIMIT 100",
+                (universe_id,),
+            ).fetchall()
     except Exception:  # noqa: BLE001 - a dead layer must not break a live read
         logger.warning(
             "legacy automation control listing failed for universe %r",
@@ -303,17 +311,15 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
         return []
     return [
         {
-            "automation_id": control.automation_id,
+            "automation_id": str(automation_id),
             "legacy": True,
             "status": "retired_fleet_era",
             # The consumer stopped it with this reason (plan C1). Carried on
             # the row so it outlives the refusal ledger's freshness window.
             "detail": RETIRED_FLEET_CONTROL_REASON,
-            "desired_state": getattr(
-                control.desired_state, "value", control.desired_state
-            ),
+            "desired_state": str(desired_state),
         }
-        for control in controls
+        for automation_id, desired_state in controls
     ]
 
 

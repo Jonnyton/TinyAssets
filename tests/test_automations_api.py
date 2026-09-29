@@ -656,17 +656,26 @@ def test_an_unreadable_refusal_ledger_does_not_break_the_list(
 
 
 def test_legacy_control_rows_are_listed_and_flagged(tmp_path: Path, env) -> None:
-    from tests.cloud_automation_fixtures import _definition
-    from tinyassets.storage.cloud_automation_control import (
-        CloudAutomationControlStore,
-    )
+    """The layer's code is deleted (plan C3c); production still holds its rows,
+    in the schema the captured fixture reproduces."""
+    import sqlite3
+
+    from tinyassets.storage import db_path
 
     created = _create()["automation"]
-    CloudAutomationControlStore(tmp_path).create_control(
-        _definition(),
-        automation_id="automation_spec_drain",
-        cadence_seconds=300,
+    ddl = (Path(__file__).parent / "fixtures" / "retired_fleet_tables.sql").read_text(
+        encoding="utf-8"
     )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.executescript(ddl)
+        conn.execute(
+            "INSERT INTO cloud_automation_controls (universe_id, automation_id, "
+            "principal_id, definition_json, definition_digest, cadence_seconds, "
+            "revision, desired_state, updated_at, record_json) "
+            "VALUES (?, 'automation_spec_drain', 'acct_owner', '{}', 'sha256:x', "
+            "300, 1, 'active', '2026-08-05T00:00:00+00:00', '{}')",
+            (UNIVERSE,),
+        )
 
     listed = api.automations(action="list", universe_id=UNIVERSE)
 

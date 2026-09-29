@@ -121,7 +121,6 @@ tinyassets/universe_bundle.py:github:2
 tinyassets/universe_server.py:claude:1
 tinyassets/universe_server.py:codex:1
 tinyassets/universe_server.py:github:4
-tinyassets/user_owned_cloud_automation.py:github:3
 tinyassets/webhook_inbound.py:github:3
 tinyassets/webhook_inbound.py:gitlab:2
 tinyassets/webhook_inbound.py:shopify:2

@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.branch_tasks_v2 import DESCRIPTOR_VALIDITY_SECONDS
-from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
 from tinyassets.platform_runtime_provenance import (
     require_process_cloud_admission,
 )
@@ -196,7 +195,6 @@ class AssignedQueueConsumer:
         if self._thread is not None:
             return
         self._scavenge_orphaned_credentials()
-        self._retire_fleet_controls()
         self._hold_liveness()
         self._thread = threading.Thread(
             target=self._run,
@@ -967,70 +965,6 @@ class AssignedQueueConsumer:
         temporary = universe / f"{filename}.tmp"
         temporary.write_text(json.dumps(beat), encoding="utf-8")
         temporary.replace(target)
-
-    def _retire_fleet_controls(self) -> None:
-        """Stop every fleet-era cloud-automation control, with a recorded reason.
-
-        Their pump is retired, so a control left `active` would promise work
-        nothing will ever produce. Each one is set `stopped` and gets an owner-
-        visible reason -- a recorded disposition, never a silent drop. Runs at
-        start; idempotent (stopped controls are left alone). One universe's
-        failure does not stop the others.
-        """
-        from tinyassets.cloud_automation_control import CloudAutomationDesiredState
-        from tinyassets.storage import db_path
-        from tinyassets.storage.assigned_queue_refusals import (
-            AssignedQueueRefusalStore,
-        )
-        from tinyassets.storage.cloud_automation_control import (
-            CloudAutomationControlStore,
-        )
-
-        if not db_path(self.base_path).is_file():
-            return
-        try:
-            store = CloudAutomationControlStore(self.base_path)
-            # Every control not yet stopped -- paused ones too, which a
-            # desired-active listing misses -- and no page limit a pile of
-            # stopped rows could hide later ones behind (Codex refute C1, P2).
-            with store.connection() as conn:
-                pending = conn.execute(
-                    "SELECT universe_id, automation_id FROM cloud_automation_controls "
-                    "WHERE desired_state != ? ORDER BY universe_id, automation_id",
-                    (CloudAutomationDesiredState.STOPPED.value,),
-                ).fetchall()
-        except Exception:  # noqa: BLE001 - no table, no controls to retire
-            return
-        refusals = AssignedQueueRefusalStore(self.base_path)
-        for universe_id, automation_id in pending:
-            try:
-                control = store.get_control(
-                    universe_id=universe_id, automation_id=automation_id,
-                )
-                if control is None or (
-                    control.desired_state is CloudAutomationDesiredState.STOPPED
-                ):
-                    continue
-                store.set_desired_state(
-                    expected=control,
-                    desired_state=CloudAutomationDesiredState.STOPPED,
-                )
-                refusals.record(
-                    branch_task_id=f"automation:{control.automation_id}",
-                    universe_id=universe_id,
-                    reason=RETIRED_FLEET_CONTROL_REASON,
-                    observed_at=datetime.now(timezone.utc).isoformat(),
-                    consumer_id=self.consumer_id,
-                )
-                logger.warning(
-                    "retired fleet-era cloud automation %s in %s",
-                    control.automation_id, universe_id,
-                )
-            except Exception:  # noqa: BLE001 - one control cannot stop the rest
-                logger.exception(
-                    "fleet control retirement failed universe=%s automation=%s",
-                    universe_id, automation_id,
-                )
 
 
 __all__ = [

@@ -114,8 +114,8 @@ def test_unclassified_schema_growth_fails_loudly(seeded: Path) -> None:
 def test_the_retired_fleet_tables_do_not_block_a_scoped_reset(seeded: Path) -> None:
     """Production still holds the fleet-era cloud-automation and background-
     branch tables until a host-action drops them (plan C1, 2026-09-28). Their
-    stores are deleted, so the schema they wrote is a captured fixture; an
-    unclassified table would block every reset."""
+    stores are deleted (plan C3c), so the schema they wrote is a captured
+    fixture; an unclassified table would block every reset."""
     from tinyassets.scoped_reset import inspect_reset_scope
 
     ddl = (Path(__file__).parent / "fixtures" / "retired_fleet_tables.sql").read_text(

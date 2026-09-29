@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import Future
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -128,55 +127,3 @@ def test_error_reason_sanitises_paths_and_long_tokens():
     assert _error_reason("prepare_error", PermissionError()) == (
         "prepare_error:PermissionError"
     )
-
-
-def test_start_stops_every_fleet_control_with_a_recorded_reason(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    """Plan C1: the legacy pump is gone, so an `active` fleet control would
-    promise work nothing produces. Consumer start stops each one and records an
-    owner-visible reason -- a disposition, never a silent drop -- and a second
-    start leaves them alone."""
-    # One activated control, then PAUSED: not desired-active, and it must be
-    # retired too (Codex refute C1, P2). One plain active control beside it.
-
-    from tests.test_cloud_automation_control import _active
-    from tinyassets.cloud_automation_control import CloudAutomationDesiredState
-    from tinyassets.runtime.assigned_queue_consumer import (
-        RETIRED_FLEET_CONTROL_REASON,
-    )
-    from tinyassets.storage.cloud_automation_control import (
-        CloudAutomationControlStore,
-    )
-
-    definition, _activations, active = _active(tmp_path)
-    store = CloudAutomationControlStore(tmp_path)
-    store.schedule_initial(
-        definition, automation_id="automation_spec_drain", activation=active,
-        cadence_seconds=300, due_at=datetime.now(timezone.utc),
-    )
-    store.set_desired_state(
-        expected=store.get_control(
-            universe_id=definition.universe_id, automation_id="automation_spec_drain",
-        ),
-        desired_state=CloudAutomationDesiredState.PAUSED,
-    )
-    store.create_control(definition, automation_id="automation_fleet_b", cadence_seconds=600)
-    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
-    monkeypatch.setattr(
-        "tinyassets.provider_serving_binding.list_serving_universes", lambda _b: [],
-    )
-    for _boot in range(2):
-        consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
-        consumer.start()
-        consumer.stop()
-
-    controls = store.list_controls(universe_id=definition.universe_id, limit=10)
-    assert {c.automation_id: c.desired_state for c in controls} == {
-        "automation_spec_drain": CloudAutomationDesiredState.STOPPED,
-        "automation_fleet_b": CloudAutomationDesiredState.STOPPED,
-    }
-    for automation_id in ("automation_spec_drain", "automation_fleet_b"):
-        assert _refusal_reason(tmp_path, f"automation:{automation_id}") == (
-            RETIRED_FLEET_CONTROL_REASON
-        )
