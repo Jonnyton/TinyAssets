@@ -59,6 +59,21 @@ attempts exist. Codex reproduced this with `_seed_claimable_background_path()`
 followed by `_delete_root_rows()`. Production holds 10
 `background_branch_bindings` rows.
 
-**What would close it:** a host action that drops the fleet tables after plan
-C2 deletes their code. Until then, account deletion should delete a binding's
+**What would close it:** a host action that drops the fleet tables. Their code
+is deleted as of plan C3d. Until then, account deletion should delete a binding's
 attempts before the binding.
+
+## 3. A leftover held owner row can block a host-daemon claim
+
+`branch_tasks_v2._transaction_allows_epoch2_lifecycle` still reads
+`background_branch_authority_owners` raw. It refuses a task whose owner row is
+`target_authority_held`, and it checks neither the row's age nor the
+activation generation. Nothing writes that table any more (plan C3d deleted the
+store). A leftover production row matching a live tray activation's
+`branch_task_id` would therefore block that claim for good. Codex reproduced the
+flip (True -> False -> True) with real writers. No such production row has been
+established.
+
+**What would close it:** the same host action (drop the table). Or, before
+that, delete the read once a host read confirms no `target_authority_held`
+rows exist.
