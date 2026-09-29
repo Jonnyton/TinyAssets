@@ -262,6 +262,39 @@ class AgentTurnCoordinator:
             owner_user_id=self.owner,
         )
 
+    def _remember_refusal(self, failed, attempts):
+        """Keep a source's refusal of THIS model past this turn.
+
+        The next turn's order puts it last instead of spending a request to be
+        refused again (``storage.refused_models``; live 2026-09-28, the free
+        account's 403 and withdrawn 404 models were rediscovered every turn).
+        Recorded whether or not this turn finds another model: a refusal is a
+        fact about the owner's key either way. Best-effort, never the turn's
+        failure.
+        """
+        if failed is None or self.owner is None:
+            return
+        from tinyassets.storage.refused_models import record_refused_model
+
+        record_refused_model(
+            self.context.universe_dir.parent, owner_user_id=self.owner,
+            connection_id=failed.connection_id, model_id=failed.model_id,
+            failure_class="provider_refused",
+            detail=str(getattr(attempts[-1], "detail", "") or "") if attempts else "",
+        )
+
+    def _forget_refusal(self):
+        """The selected model just answered, so any standing refusal is stale."""
+        selection = getattr(self.context, "model_selection", None)
+        if selection is None or self.owner is None:
+            return
+        from tinyassets.storage.refused_models import clear_refused_model
+
+        clear_refused_model(
+            self.context.universe_dir.parent, owner_user_id=self.owner,
+            connection_id=selection.connection_id, model_id=selection.model_id,
+        )
+
     def effects_evidence(self):
         """This running turn's own ledger evidence; see :func:`turn_effects`."""
         return turn_effects(self.turn)
@@ -417,6 +450,8 @@ class AgentTurnCoordinator:
                             cost_microusd=response.cost_microunits,
                         )
                     )
+                    # The model answered: whatever refused it before does not now.
+                    self._forget_refusal()
                     if self.turn.state == "completed":
                         return response
                     if self.turn.state != "tools_pending":
@@ -678,6 +713,8 @@ class AgentTurnCoordinator:
             return False
         failed = self.context.model_selection
         self.visited.add(failed)
+        if failure_class == "provider_refused":
+            self._remember_refusal(failed, attempts)
         from tinyassets.providers.model_policy import Exhaustion
 
         self.exhaustion = self.exhaustion + (Exhaustion(scope, failed),)

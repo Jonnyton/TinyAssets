@@ -1061,3 +1061,18 @@ The runtime SHALL distinguish model-local capacity from proven shared account li
 #### Scenario: Ambiguous tool completion
 - **WHEN** an inference fails after a tool might have executed without a durable result
 - **THEN** fallback does not replay that action as a fresh turn
+
+### Requirement: A source's refusal of a model is remembered past the turn
+The system SHALL record a model that the owner's source refused during a served or workflow agent turn (the `provider_refused` class) as a time-limited mark scoped to that owner and connection, carrying the source's scrubbed reason, and a served turn's candidate order SHALL place an unexpired marked model after every unmarked one, except when the owner chose that model for this turn; a model that then answers SHALL lose its mark, and account deletion SHALL remove the owner's marks.
+
+#### Scenario: The next turn skips a recently refused model
+- **WHEN** a model was refused within the mark's lifetime and the owner's order has another accepted model
+- **THEN** the next served turn asks the other model first and does not ask the refused one unless the others fail
+
+#### Scenario: The owner chooses the refused model now
+- **WHEN** the owner selects the marked model for this turn
+- **THEN** it is asked first, and if it answers its mark is cleared
+
+#### Scenario: The mark expires
+- **WHEN** the mark's lifetime has passed
+- **THEN** the model is ordered as if it had never been refused
