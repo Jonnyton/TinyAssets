@@ -1236,11 +1236,12 @@ def write_graph(
             branch_def_id to patch.
         automation_id: The automation to control with target=automation
             operation=get/pause/resume/delete, as returned by create/list.
-        idempotency_key: Required 16-128 character request idempotency key.
-        pickup_incentive: Optional requester pickup incentive terms.
-        directed_daemon_id: Optional requester-owned daemon target.
-        directed_daemon_instruction: Optional direction for that daemon.
-        priority_weight: Requested numeric priority in inclusive range 0-100.
+        idempotency_key: Required 16-128 character request idempotency key;
+            re-sending it returns the first wake.
+        pickup_incentive: Retired; must be empty.
+        directed_daemon_id: Retired; must be empty.
+        directed_daemon_instruction: Retired; must be empty.
+        priority_weight: Retired; must be 0.
         changes_json: With target=branch, an ordered JSON list of patch ops
             (transactional — all ops land or none). The patch is author-gated:
             only the branch's author can edit it. This is NOT JSON Patch — each op is

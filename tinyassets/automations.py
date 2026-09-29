@@ -683,44 +683,7 @@ class AutomationStore:
             raise RuntimeError("automation store connection is unavailable")
         try:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                """
-                INSERT INTO automations (
-                    automation_id, universe_id, owner_principal_id, name,
-                    branch_def_id, trigger_kind, interval_seconds, cron_expr,
-                    inputs_json, desired_state, pause_reason, revision,
-                    created_at, updated_at, retired_at, last_due_at,
-                    last_run_id, last_reason, last_finished_at, not_before,
-                    event_type, event_filter_json, overlap
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          ?, ?, ?)
-                """,
-                (
-                    automation.automation_id,
-                    automation.universe_id,
-                    automation.owner_principal_id,
-                    automation.name,
-                    automation.branch_def_id,
-                    automation.trigger_kind,
-                    automation.interval_seconds,
-                    automation.cron_expr,
-                    json.dumps(automation.inputs, sort_keys=True),
-                    automation.desired_state,
-                    automation.pause_reason,
-                    automation.revision,
-                    automation.created_at,
-                    automation.updated_at,
-                    automation.retired_at,
-                    automation.last_due_at,
-                    automation.last_run_id,
-                    automation.last_reason,
-                    automation.last_finished_at,
-                    automation.not_before,
-                    automation.event_type,
-                    json.dumps(automation.event_filter or {}, sort_keys=True),
-                    automation.overlap,
-                ),
-            )
+            self._write_insert(conn, automation)
             conn.execute("COMMIT")
         except AutomationUnavailable:
             raise
@@ -731,6 +694,84 @@ class AutomationStore:
         finally:
             conn.close()
         return automation
+
+    @staticmethod
+    def _write_insert(conn: sqlite3.Connection, automation: Automation) -> None:
+        conn.execute(
+            """
+            INSERT INTO automations (
+                automation_id, universe_id, owner_principal_id, name,
+                branch_def_id, trigger_kind, interval_seconds, cron_expr,
+                inputs_json, desired_state, pause_reason, revision,
+                created_at, updated_at, retired_at, last_due_at,
+                last_run_id, last_reason, last_finished_at, not_before,
+                event_type, event_filter_json, overlap
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?)
+            """,
+            (
+                automation.automation_id,
+                automation.universe_id,
+                automation.owner_principal_id,
+                automation.name,
+                automation.branch_def_id,
+                automation.trigger_kind,
+                automation.interval_seconds,
+                automation.cron_expr,
+                json.dumps(automation.inputs, sort_keys=True),
+                automation.desired_state,
+                automation.pause_reason,
+                automation.revision,
+                automation.created_at,
+                automation.updated_at,
+                automation.retired_at,
+                automation.last_due_at,
+                automation.last_run_id,
+                automation.last_reason,
+                automation.last_finished_at,
+                automation.not_before,
+                automation.event_type,
+                json.dumps(automation.event_filter or {}, sort_keys=True),
+                automation.overlap,
+            ),
+        )
+
+    def insert_unless_present(
+        self,
+        automation: Automation,
+        *,
+        before_insert: Any = None,
+    ) -> tuple[Automation, bool]:
+        """``(row, True)`` after inserting, or ``(existing row, False)``.
+
+        The lookup, ``before_insert`` (a usage charge) and the insert run under
+        one ``BEGIN IMMEDIATE``, so of concurrent callers with one id exactly
+        one inserts and exactly one is charged. ``before_insert`` may raise to
+        refuse; nothing is written then.
+        """
+        conn = self._connect(create=True)
+        if conn is None:  # pragma: no cover - create=True always connects
+            raise RuntimeError("automation store connection is unavailable")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM automations WHERE automation_id = ?",
+                (automation.automation_id,),
+            ).fetchone()
+            if row is not None:
+                conn.execute("ROLLBACK")
+                return _from_row(row), False
+            if before_insert is not None:
+                before_insert()
+            self._write_insert(conn, automation)
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        return automation, True
 
     def claim_attempt(self, automation_id: str, due_at: str, *, now: datetime) -> bool:
         """Claim ``(automation_id, due_at)`` for exactly one caller (D2).
@@ -1291,7 +1332,13 @@ def _validated_trigger(interval_seconds: Any, cron_expr: Any) -> tuple[str, int,
     return TRIGGER_CRON, 0, expr
 
 
-def register_automation(
+def register_automation(base_path: str | Path, **kwargs: Any) -> Automation:
+    """Store one automation, or refuse with a named reason (D4). See
+    :func:`register_idempotent_automation` for the arguments."""
+    return register_idempotent_automation(base_path, **kwargs)[0]
+
+
+def register_idempotent_automation(
     base_path: str | Path,
     *,
     universe_id: str,
@@ -1307,15 +1354,21 @@ def register_automation(
     inputs: dict[str, Any] | None = None,
     now: datetime | None = None,
     automation_id: str = "",
-) -> Automation:
+) -> tuple[Automation, bool]:
     """Store one automation, or refuse with a named reason (D4).
 
+    Returns ``(automation, replayed)``. With a derived ``automation_id`` an
+    existing row is returned with ``replayed=True`` when it is the same
+    automation -- same owner, universe, branch, trigger and canonical inputs
+    -- and refused with ``idempotency_key_body_conflict`` otherwise. A replay
+    needs only current owner authority (admin, own home): it returns a receipt
+    and creates nothing, so it does not wait on a ready assignment or a
+    readable branch. It is never charged.
+
     ``automation_id`` is for a caller that derives one to make its request
-    idempotent (``write_graph target=request``). If a row with that id exists,
-    it is returned unchanged when it is the same automation -- same owner,
-    universe, branch, trigger and canonical inputs -- and refused with
-    ``idempotency_key_body_conflict`` otherwise. Nothing is charged for a
-    replay. An empty id means a fresh random one, as before.
+    idempotent (``write_graph target=request``); use
+    :func:`register_idempotent_automation` to learn whether it was a replay.
+    An empty id means a fresh random one, as before.
 
     Every precondition a due run needs is checked HERE, in the owner's own
     request, where a refusal is a message they can act on. Storing a row that
@@ -1341,6 +1394,14 @@ def register_automation(
         raise AutomationUnavailable("owner_not_admin")
     if get_founder_home(base, owner) != uid:
         raise AutomationUnavailable("not_owner_home")
+    store = AutomationStore(base)
+    derived_id = str(automation_id or "").strip()
+    if derived_id:
+        existing = store.get(derived_id)
+        if existing is not None:
+            return _replayed(existing, owner=owner, universe_id=uid,
+                             branch_def_id=str(branch_def_id or "").strip(),
+                             inputs=inputs), True
     assignment = load_provider_assignment(base, universe_id=uid)
     if assignment is None or assignment.state != "ready":
         raise AutomationUnavailable("no_serving_assignment")
@@ -1386,23 +1447,16 @@ def register_automation(
         trigger_kind, seconds, expr = _validated_trigger(interval_seconds, cron_expr)
         once_at = ""
 
-    store = AutomationStore(base)
-    derived_id = str(automation_id or "").strip()
-    if derived_id:
-        existing = store.get(derived_id)
-        if existing is not None:
-            return _replayed(existing, owner=owner, universe_id=uid,
-                             branch_def_id=resolved[0], trigger_kind=trigger_kind,
-                             inputs=inputs)
-
     # Usage, not shape: a registration is an engine write against this
     # universe's admission window, like any other durable edit it makes. A node
     # that enqueues in a loop, or an owner who registers hundreds, is refused
     # by the same meter -- not by a count of rows (plan item 6).
     from tinyassets.engine_mcp_server import _engine_run_admit
 
-    if not _engine_run_admit(universe_id=uid, fail_closed=True, kind="engine"):
-        raise AutomationUnavailable("usage_limited")
+    def charge() -> None:
+        if not _engine_run_admit(universe_id=uid, fail_closed=True, kind="engine"):
+            raise AutomationUnavailable("usage_limited")
+
     stamp = _iso(moment)
     candidate = Automation(
         automation_id=derived_id or uuid.uuid4().hex,
@@ -1429,16 +1483,16 @@ def register_automation(
         event_filter=event_match,
         overlap=policy,
     )
-    try:
-        return store.insert(candidate)
-    except sqlite3.IntegrityError:
-        # Two identical requests raced past the lookup; the loser replays.
-        existing = store.get(candidate.automation_id) if derived_id else None
-        if existing is None:
-            raise
-        return _replayed(existing, owner=owner, universe_id=uid,
-                         branch_def_id=resolved[0], trigger_kind=trigger_kind,
-                         inputs=inputs)
+    if not derived_id:
+        charge()
+        return store.insert(candidate), False
+    # Decided, charged and written under one write lock: of two identical
+    # requests racing past the lookup above, exactly one is charged and new.
+    stored, created = store.insert_unless_present(candidate, before_insert=charge)
+    if created:
+        return stored, False
+    return _replayed(stored, owner=owner, universe_id=uid,
+                     branch_def_id=resolved[0], inputs=inputs), True
 
 
 def canonical_inputs_digest(inputs: dict[str, Any] | None) -> str:
@@ -1455,15 +1509,18 @@ def _replayed(
     owner: str,
     universe_id: str,
     branch_def_id: str,
-    trigger_kind: str,
     inputs: dict[str, Any] | None,
 ) -> Automation:
-    """The row a derived id already names, if it is this same automation."""
+    """The row a derived id already names, if it is this same automation.
+
+    Only a one-shot wake is ever registered under a derived id, so the trigger
+    is not compared: a wake's ``not_before`` is the moment it was asked for.
+    """
     same = (
         existing.owner_principal_id == owner
         and existing.universe_id == universe_id
         and existing.branch_def_id == branch_def_id
-        and existing.trigger_kind == trigger_kind
+        and existing.trigger_kind == TRIGGER_ONCE
         and canonical_inputs_digest(existing.inputs) == canonical_inputs_digest(inputs)
     )
     if not same:

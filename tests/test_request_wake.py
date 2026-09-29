@@ -199,3 +199,89 @@ def test_a_request_task_left_pending_is_cancelled_with_its_reason(tmp_path: Path
         )]
     assert status == "cancelled"
     assert {"reason": REQUEST_RETIRED_REASON} in details
+
+
+def test_concurrent_identical_requests_charge_once_and_report_one_new(
+    home: Path, monkeypatch,
+) -> None:
+    """Of racing retries, exactly one is new and exactly one is charged."""
+    import threading
+
+    import tinyassets.engine_mcp_server as engine
+
+    charges: list[str] = []
+    real_admit = engine._engine_run_admit
+
+    def counting_admit(**kwargs):
+        charges.append(kwargs.get("universe_id", ""))
+        return real_admit(**kwargs)
+
+    monkeypatch.setattr(engine, "_engine_run_admit", counting_admit)
+    barrier = threading.Barrier(4)
+    results: list[dict] = []
+
+    def send() -> None:
+        barrier.wait(timeout=10)
+        results.append(_request(OWNER))
+
+    threads = [threading.Thread(target=send) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert len(results) == 4 and all(r.get("status") == "accepted" for r in results), results
+    assert len({r["automation_id"] for r in results}) == 1
+    assert sorted(r["idempotent_replay"] for r in results) == [False, True, True, True]
+    assert len(charges) == 1
+    assert len(_wakes(home)) == 1
+
+
+def test_a_replay_is_a_receipt_even_when_the_universe_cannot_run_now(home: Path) -> None:
+    """Retrieving the first wake needs owner authority, not a ready assignment."""
+    first = _request(OWNER)
+    import tinyassets.provider_assignment as assignment_module
+
+    real = assignment_module.load_provider_assignment
+    try:
+        assignment_module.load_provider_assignment = lambda *_a, **_k: None
+        replay = _request(OWNER)
+    finally:
+        assignment_module.load_provider_assignment = real
+
+    assert replay["automation_id"] == first["automation_id"]
+    assert replay["idempotent_replay"] is True
+
+
+def test_an_unencodable_field_is_a_validation_error(home: Path) -> None:
+    assert _request(OWNER, branch_id="\ud800") == {"error": "request_validation_error"}
+    assert _wakes(home) == []
+
+
+def test_the_mutation_ledger_names_the_wake() -> None:
+    target, _summary, meta = universe_api._extract_submit_request(
+        {"text": "hi", "request_type": "general"},
+        {"automation_id": "req_abc", "idempotent_replay": False},
+    )
+    assert target == "req_abc"
+    assert meta["idempotent_replay"] is False
+
+
+def test_a_retry_that_misses_the_early_lookup_is_neither_charged_nor_new(
+    home: Path, monkeypatch,
+) -> None:
+    """The race window, made deterministic: the retry's early lookup misses the
+    row, so only the locked insert can see it."""
+    import tinyassets.engine_mcp_server as engine
+
+    first = _request(OWNER)
+    charges: list[str] = []
+    monkeypatch.setattr(engine, "_engine_run_admit",
+                        lambda **kwargs: charges.append("charged") or True)
+    monkeypatch.setattr(AutomationStore, "get", lambda self, automation_id: None)
+
+    retry = _request(OWNER)
+
+    assert retry["automation_id"] == first["automation_id"]
+    assert retry["idempotent_replay"] is True
+    assert charges == []

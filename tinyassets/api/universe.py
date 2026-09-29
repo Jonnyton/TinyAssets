@@ -177,15 +177,12 @@ def _extract_submit_request(
 ) -> tuple[str, str, dict[str, Any]]:
     from tinyassets.api.engine_helpers import _truncate
     return (
-        str(result.get("request_id", "")),
+        str(result.get("automation_id") or result.get("request_id") or ""),
         _truncate(kwargs.get("text", "")),
         {
             "request_type": kwargs.get("request_type", "") or None,
             "branch_id": kwargs.get("branch_id", "") or None,
-            "pickup_incentive": kwargs.get("pickup_incentive", "") or None,
-            "directed_daemon_id": kwargs.get("directed_daemon_id", "") or None,
-            "request_classification": result.get("request_classification"),
-            "loop_dispatch": result.get("loop_dispatch"),
+            "idempotent_replay": result.get("idempotent_replay"),
         },
     )
 
@@ -2169,7 +2166,10 @@ def _action_admit_request_v2(
     subscription. Fields that only meant something to the retired request queue
     are refused when set, never silently ignored.
     """
-    from tinyassets.automations import AutomationUnavailable, register_automation
+    from tinyassets.automations import (
+        AutomationUnavailable,
+        register_idempotent_automation,
+    )
 
     string_fields = (
         idempotency_key,
@@ -2191,10 +2191,10 @@ def _action_admit_request_v2(
     ):
         return _request_validation_error()
     try:
-        encoded_text = text.encode("utf-8")
+        encoded_fields = tuple(value.encode("utf-8") for value in string_fields)
     except UnicodeEncodeError:
         return _request_validation_error()
-    if len(encoded_text) > _SUBMIT_REQUEST_MAX_BYTES:
+    if len(encoded_fields[2]) > _SUBMIT_REQUEST_MAX_BYTES:
         return _request_validation_error()
     for field, value in (
         ("priority_weight", priority_weight),
@@ -2221,11 +2221,8 @@ def _action_admit_request_v2(
         inputs["branch_id"] = branch_id
     wake_id = _request_wake_id(owner=owner, universe_id=uid,
                                idempotency_key=idempotency_key)
-    from tinyassets.automations import AutomationStore
-
-    already = AutomationStore(_base_path()).get(wake_id) is not None
     try:
-        wake = register_automation(
+        wake, replayed = register_idempotent_automation(
             _base_path(),
             universe_id=uid,
             owner_principal_id=owner,
@@ -2245,7 +2242,7 @@ def _action_admit_request_v2(
         "automation_id": wake.automation_id,
         "branch_def_id": wake.branch_def_id,
         "not_before": wake.not_before,
-        "idempotent_replay": already,
+        "idempotent_replay": replayed,
     })
 
 

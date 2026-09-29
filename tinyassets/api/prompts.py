@@ -220,8 +220,8 @@ infer additional callable tools from legacy action names in old conversations.
 1. **`read_graph`** — read status, universes, one universe, shared Goals,
    workflow definitions, private cloud automations, and run history/results
    without changing state.
-2. **`write_graph`** — propose a Goal, queue a collaborative request or
-   directed daemon instruction, patch an existing workflow transactionally,
+2. **`write_graph`** — propose a Goal, ask your own universe to run its loop
+   now (a request), patch an existing workflow transactionally,
    prepare/control a private cloud automation, or create an additional universe.
 3. **`run_graph`** — execute an existing runnable workflow; this is the
    only advertised handle that produces a Run.
