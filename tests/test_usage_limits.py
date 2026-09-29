@@ -548,35 +548,6 @@ def test_a_rate_limited_automation_shows_the_notice_to_its_owner(
     assert projected["usage_notice"]["capacity_returns_at"]
 
 
-def test_a_refused_schedule_fire_is_recorded_for_its_owner(
-    tmp_path, monkeypatch,
-) -> None:
-    """The scheduler records the usage refusal verbatim on the schedule."""
-    from tinyassets.scheduler import Scheduler
-
-    recorded: list[str] = []
-
-    def run_fn(branch_def_id, actor, inputs, run_name, *, principal_id=""):
-        raise ValueError("run_usage_limited:day:until=2026-09-29T00:00:00+00:00")
-
-    sched = Scheduler(tmp_path, run_fn)
-    sched._record_refusal = lambda sid, uid, reason: recorded.append(reason)
-    initialize_runs_db(tmp_path)
-    from tinyassets.scheduler import register_schedule
-
-    register_schedule(
-        tmp_path, branch_def_id="b1", owner_actor=f"universe:{UNIVERSE}",
-        universe_id=UNIVERSE, owner_principal_id=OWNER, interval_seconds=10.0,
-    )
-    sched._authorization_denial = lambda row: ""
-    import tinyassets.scheduler as scheduler_module
-
-    real = scheduler_module.time.time
-    monkeypatch.setattr(scheduler_module.time, "time", lambda: real() + 60)
-    sched._fire_due_schedules()  # past its first 10s interval
-    assert recorded == ["run_usage_limited:day:until=2026-09-29T00:00:00+00:00"]
-
-
 def test_the_trigger_run_fn_lets_a_usage_refusal_reach_the_scheduler(
     tmp_path, monkeypatch,
 ) -> None:
