@@ -6,5 +6,5 @@
 - [x] tests: a rotation leaves every downstream pin untouched and an in-flight foreground receipt still launches
 - [x] tests: the same through a background attempt spanning a rotation (red without the carry: the attempt is stranded)
 - [x] tests: account change and a v1 row renew; unpinned bytes and a bad launch copy refuse
-- [ ] tests: disk adoption and owner deposit renew (both go through the unchanged renewal path; not yet driven)
-- [ ] sync the credential-vault spec and archive (on land)
+- [ ] tests: disk adoption and owner deposit renew (both go through the unchanged renewal path; not driven -- archived as a declared gap, lead-approved 2026-09-28)
+- [x] sync the credential-vault spec and archive (on land)
