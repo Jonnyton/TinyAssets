@@ -294,6 +294,7 @@ HELD_ATTEMPT_RUN_CLASSES: dict[str, str] = {
     "provider_idle_timeout": "timeout",
     "interactive_deadline": "timeout",
     "provider_protocol_error": "provider_error",
+    "provider_refused": "provider_error",
     "auth_invalid": "auth_invalid",
     "provider_rate_limited": "quota_exhausted",
     "provider_credit_exhausted": "quota_exhausted",
