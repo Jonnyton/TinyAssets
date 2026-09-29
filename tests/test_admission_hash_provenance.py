@@ -12,7 +12,6 @@ checking each writer's actual output against the reader's actual contract.
 import pytest
 
 from tinyassets.api.universe import _request_idempotency_key_hash
-from tinyassets.cloud_automation_continuation import _content_digest
 from tinyassets.daemon_server import initialize_author_server
 from tinyassets.storage.request_admissions import (
     RequestAdmissionStore,
@@ -25,22 +24,6 @@ from tinyassets.storage.request_admissions import (
 def _accepts(value: str, *, server_derived: bool) -> bool:
     pattern = expected_idempotency_hash_re(server_derived=server_derived)
     return pattern.fullmatch(value) is not None
-
-
-def test_cloud_automation_writer_output_is_accepted_by_the_epoch2_reader():
-    """The exact call the cloud worker makes, judged by the exact reader."""
-
-    minted = _content_digest(
-        {
-            "domain": "cloud-continuation-admission-v1",
-            "schema_version": 1,
-            "continuation_id": "cont-a",
-            "continuation_generation": 2,
-            "activation_epoch": 3,
-            "activation_lease_id": "lease-a",
-        }
-    )
-    assert _accepts(minted, server_derived=True)
 
 
 def test_user_request_writer_output_is_accepted_by_the_epoch2_reader():

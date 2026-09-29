@@ -113,27 +113,16 @@ def test_unclassified_schema_growth_fails_loudly(seeded: Path) -> None:
 
 def test_the_retired_fleet_tables_do_not_block_a_scoped_reset(seeded: Path) -> None:
     """Production still holds the fleet-era cloud-automation and background-
-    branch tables until a host-action drops them (plan C1, 2026-09-28). Created
-    here by their real stores; an unclassified one would block every reset."""
+    branch tables until a host-action drops them (plan C1, 2026-09-28). Their
+    stores are deleted, so the schema they wrote is a captured fixture; an
+    unclassified table would block every reset."""
     from tinyassets.scoped_reset import inspect_reset_scope
-    from tinyassets.storage.background_branch_authority import (
-        SQLiteBackgroundBranchAuthorityStore,
-    )
-    from tinyassets.storage.cloud_automation_continuation import (
-        SQLiteCloudAutomationContinuationStore,
-    )
-    from tinyassets.storage.cloud_automation_control import (
-        CloudAutomationControlStore,
-    )
 
-    for store in (
-        CloudAutomationControlStore(seeded),
-        SQLiteCloudAutomationContinuationStore(seeded),
-    ):
-        with store.connection():
-            pass
-    with SQLiteBackgroundBranchAuthorityStore(seeded)._connection():
-        pass
+    ddl = (Path(__file__).parent / "fixtures" / "retired_fleet_tables.sql").read_text(
+        encoding="utf-8"
+    )
+    with _connect(seeded) as conn:
+        conn.executescript(ddl)
     with _connect(seeded) as conn:
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")

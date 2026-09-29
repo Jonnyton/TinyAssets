@@ -4690,7 +4690,6 @@ def _invoke_graph(
     effect_chain = EffectChain(
         run_id=run_id,
         base_path=_resolve_effector_base(base_path, run_id, _eff_universe_hint),
-        cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         invocation_depth=int(invocation_depth or 0),
         universe_id=_eff_universe_hint or run_universe,
     )
@@ -5097,21 +5096,6 @@ _EXTERNAL_WRITE_RESERVED_KEYS = (
 )
 
 
-def _claimed_cloud_effect_session(provider_call: Any) -> Any | None:
-    """Expose effect authority only from the exact service-issued call owner."""
-    try:
-        from tinyassets.cloud_automation_continuation import (
-            _ClaimedCloudProviderSession,
-        )
-    except ImportError:
-        return None
-    return (
-        provider_call
-        if type(provider_call) is _ClaimedCloudProviderSession
-        else None
-    )
-
-
 def _quarantine_branch_authored_external_write_keys(
     output: dict[str, Any],
 ) -> None:
@@ -5169,7 +5153,6 @@ def _run_external_write_effectors(
     *,
     base_path: str | Path | None = None,
     run_id: str = "",
-    cloud_effect_session: Any | None = None,
 ) -> dict[str, Any]:
     """Dispatch external-write effectors for ``branch`` against ``run_state``.
 
@@ -5193,7 +5176,6 @@ def _run_external_write_effectors(
             run_state=run_state,
             base_path=base_path,
             run_id=run_id,
-            cloud_effect_session=cloud_effect_session,
         )
     except Exception:  # pragma: no cover — effectors are no-raise
         logger.exception("external-write effector dispatch crashed")
@@ -6515,7 +6497,6 @@ def _invoke_graph_resume(
     effect_chain = EffectChain(
         run_id=run_id,
         base_path=_resolve_effector_base(base_path, run_id),
-        cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         universe_id=_resume_universe,
     )
     # What the interrupted segment already fired and spent, so "at most once
