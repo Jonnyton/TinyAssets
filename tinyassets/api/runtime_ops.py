@@ -470,6 +470,22 @@ def _action_schedule_branch(kwargs: dict[str, Any]) -> str:
     if error is not None:
         return error
 
+    # Usage, not a count of schedules: registering one is an engine edit of
+    # this universe, metered like any other (plan item 6).
+    from tinyassets.engine_mcp_server import (
+        _admission_parts,
+        _engine_refusal,
+        _engine_run_admit,
+    )
+
+    _ticket, refused_by = _admission_parts(
+        _engine_run_admit(
+            universe_id=universe_id, fail_closed=True, want_ticket=True, kind="engine",
+        )
+    )
+    if _ticket is None:
+        return _engine_refusal("schedule_branch", refused_by, universe_id=universe_id)
+
     base = _base_path()
     # D4 — fail loud at registration. A row stored while the tick loop is down is
     # a promise the daemon cannot keep; that silent storage is the defect this

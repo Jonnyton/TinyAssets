@@ -214,8 +214,8 @@ def _normalize_adapter(
 def _normalize_components(value: object) -> dict[str, dict[str, object]]:
     if not isinstance(value, Mapping) or not value:
         raise AgentRuntimeManifestValidationError("components must be a non-empty object")
-    if len(value) > 64:
-        raise AgentRuntimeManifestValidationError("components may contain at most 64 entries")
+    # No count of components: the manifest is bounded by its canonical bytes
+    # (MAX_AGENT_RUNTIME_MANIFEST_BYTES), not by how it is divided (plan item 6).
     normalized: dict[str, dict[str, object]] = {}
     for raw_key, raw_component in value.items():
         key = str(raw_key)

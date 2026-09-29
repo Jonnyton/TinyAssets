@@ -369,17 +369,45 @@ def test_scheduler_unavailable_refuses_and_stores_nothing(env):
     assert _schedule_rows(base) == []
 
 
-def test_a_cadence_below_the_floor_is_refused(env, live_scheduler):
-    """A one-second cadence drains the owner's own subscription."""
+def test_a_cadence_below_the_tick_is_refused(env, live_scheduler):
+    """The only floor left is the tick loop's own period: a shorter cadence
+    could not fire more often, so storing it would promise what cannot run."""
     base, authenticate = env
-    from tinyassets.scheduler import MIN_SCHEDULE_INTERVAL_S
+    from tinyassets.scheduler import MIN_SCHEDULE_INTERVAL_S, TICK_INTERVAL_S
 
+    assert MIN_SCHEDULE_INTERVAL_S == TICK_INTERVAL_S
     _create_universe("founder-a", authenticate)
     out = _ext("schedule_branch", branch_def_id="b1", interval_seconds=1.0)
     assert out["error"] == "trigger_invalid", out
     assert out["reason"] == "interval_below_floor"
     assert out["minimum_interval_seconds"] == MIN_SCHEDULE_INTERVAL_S
     assert _schedule_rows(base) == []
+
+
+def test_a_one_minute_cadence_is_accepted(env, live_scheduler):
+    """Plan item 6: the 300s floor is gone; each fire is charged as a run."""
+    base, authenticate = env
+    _create_universe("founder-a", authenticate)
+    out = _ext("schedule_branch", branch_def_id="b1", interval_seconds=60.0)
+    assert out.get("status") == "scheduled", out
+    assert len(_schedule_rows(base)) == 1
+
+
+def test_registering_a_schedule_is_charged_to_the_universe(
+    env, live_scheduler, monkeypatch,
+):
+    """No count of schedules: registration is an engine edit on the meter."""
+    import tinyassets.engine_mcp_server as ems
+
+    base, authenticate = env
+    monkeypatch.setattr(ems, "_RUN_GRAPH_TOTAL_MAX", 2)
+    _create_universe("founder-a", authenticate)
+    for _ in range(2):
+        assert _ext("schedule_branch", branch_def_id="b1",
+                    interval_seconds=60.0).get("status") == "scheduled"
+    out = _ext("schedule_branch", branch_def_id="b1", interval_seconds=60.0)
+    assert "rate limit reached" in str(out.get("error", "")), out
+    assert len(_schedule_rows(base)) == 2
 
 
 # ── Firing carries the universe actor and the owner principal ────────────────
@@ -1606,14 +1634,14 @@ def test_the_migration_is_safe_when_two_connections_race(tmp_path):
     "expr",
     ["* * * * *", "*/2 * * * *", "0,3 * * * *", "0,59 * * * *", "*/4 9-17 * * *"],
 )
-def test_a_cron_below_the_floor_is_refused(env, live_scheduler, expr):
-    """`* * * * *` used to be accepted: the floor only guarded interval_seconds."""
+def test_a_minute_cron_is_accepted(env, live_scheduler, expr):
+    """Plan item 6: a cron gap is no longer floored at 300s. Every cron is at
+    least a minute apart, above the tick, and each fire is charged as a run."""
     base, authenticate = env
     _create_universe("founder-a", authenticate)
     out = _ext("schedule_branch", branch_def_id="b1", cron_expr=expr)
-    assert out["error"] == "trigger_invalid", (expr, out)
-    assert out["reason"] == "cron_below_floor", (expr, out)
-    assert _schedule_rows(base) == []
+    assert out.get("status") == "scheduled", (expr, out)
+    assert len(_schedule_rows(base)) == 1
 
 
 @pytest.mark.parametrize(

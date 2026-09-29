@@ -13,8 +13,6 @@ import pytest
 
 from tinyassets.runs import initialize_runs_db
 from tinyassets.scheduler import (
-    MAX_SCHEDULES_PER_OWNER,
-    MAX_SUBSCRIPTIONS_PER_OWNER,
     VALID_EVENT_TYPES,
     CronParseError,
     CronSchedule,
@@ -123,35 +121,18 @@ class TestRegisterSchedule:
                 base_path, branch_def_id="b1", owner_actor="alice", cron_expr="bad"
             )
 
-    def test_rate_limit(self, base_path):
-        for i in range(MAX_SCHEDULES_PER_OWNER):
+    def test_no_count_of_schedules_per_owner(self, base_path):
+        """Plan item 6: the per-owner ceiling of 20 is gone. What bounds an
+        owner's schedules is usage -- each registration through the surface
+        is an engine edit, each fire a run (test_scheduler_owner)."""
+        for i in range(25):
             register_schedule(
                 base_path,
                 branch_def_id="b1",
                 owner_actor="alice",
                 interval_seconds=float(i + 1),
             )
-        with pytest.raises(ValueError, match="rate limit"):
-            register_schedule(
-                base_path,
-                branch_def_id="b1",
-                owner_actor="alice",
-                interval_seconds=9999.0,
-            )
-
-    def test_rate_limit_per_owner(self, base_path):
-        for i in range(MAX_SCHEDULES_PER_OWNER):
-            register_schedule(
-                base_path,
-                branch_def_id="b1",
-                owner_actor="alice",
-                interval_seconds=float(i + 1),
-            )
-        # bob is unaffected by alice's count
-        sid = register_schedule(
-            base_path, branch_def_id="b1", owner_actor="bob", interval_seconds=60.0
-        )
-        assert sid
+        assert len(list_schedules(base_path)) == 25
 
 
 # ─── unregister_schedule ─────────────────────────────────────────────────────
@@ -206,18 +187,12 @@ class TestRegisterSubscription:
                 event_type="not_a_real_event",
             )
 
-    def test_rate_limit(self, base_path):
-        for i in range(MAX_SUBSCRIPTIONS_PER_OWNER):
+    def test_no_count_of_subscriptions_per_owner(self, base_path):
+        """Plan item 6: each fire is charged as a run instead of a ceiling of 20."""
+        for i in range(25):
             register_subscription(
                 base_path,
                 branch_def_id=f"b{i}",
-                owner_actor="alice",
-                event_type="source:s1",
-            )
-        with pytest.raises(ValueError, match="rate limit"):
-            register_subscription(
-                base_path,
-                branch_def_id="bX",
                 owner_actor="alice",
                 event_type="source:s1",
             )

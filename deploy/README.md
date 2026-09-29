@@ -83,7 +83,7 @@ healthy end-to-end.
 - `pyproject.toml` — dep manifest (installed via `pip install -e .` in the builder stage).
 - Virtual env at `/opt/venv` (from builder stage).
 - Non-root user `tinyassets` (uid 1001).
-- `EXPOSE 8001`, `ENTRYPOINT` via `tini`, `CMD python -m tinyassets.universe_server`.
+- `EXPOSE 8001`, `ENTRYPOINT` via `tini`, `CMD python -m tinyassets.serve` (a launcher for `tinyassets.universe_server:main` whose import is empty, so spawn children stay cheap).
 
 ## What does NOT ship
 
