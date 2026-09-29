@@ -1017,7 +1017,9 @@ class CredentialBlindBroker:
         """
         if (
             type(requested) not in (int, float)
-            or not math.isfinite(requested)
+            # An int is finite by construction; math.isfinite would overflow on
+            # one too large for a float (Codex, 2026-09-29).
+            or (type(requested) is float and not math.isfinite(requested))
             or requested <= _SSRF_MAX_TOTAL_SECONDS
             or resource.connection_type != "http"
             or str(verb).upper() != "POST"
@@ -1032,7 +1034,8 @@ class CredentialBlindBroker:
         except Exception:
             # An unreadable capability is not evidence of one: ordinary budget.
             return None
-        return min(float(requested), INFERENCE_MAX_SECONDS) if eligible else None
+        # Clamp before converting: float() of an enormous int overflows.
+        return float(min(requested, INFERENCE_MAX_SECONDS)) if eligible else None
 
     def _send(
         self, resource: ConnectionResource, grant_id: str, verb: str, request: object,

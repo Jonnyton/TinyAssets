@@ -104,8 +104,9 @@ def test_a_model_source_gets_the_budget_it_asks_for(broker):
     assert "reply_budget_s" not in call["request"]
 
 
-def test_the_budget_never_exceeds_the_one_ceiling(broker):
-    assert _post(broker, "grant-model", 10**9)["reply_budget_s"] == INFERENCE_MAX_SECONDS
+@pytest.mark.parametrize("asked", [10**9, 10**1000, 1e300])
+def test_the_budget_never_exceeds_the_one_ceiling(broker, asked):
+    assert _post(broker, "grant-model", asked)["reply_budget_s"] == INFERENCE_MAX_SECONDS
 
 
 @pytest.mark.parametrize("grant,budget,verb", [
@@ -297,8 +298,9 @@ def test_the_live_sequence_asks_for_the_turns_budget_on_every_model(agent, monke
     _three(agent, monkeypatch)
     assert integration.run(agent) == "finished exact answer"
     # Every inference asks for the turn's own remaining cap as its budget.
-    budgets = {wire[1].get("reply_budget_s") for wire in agent.wires}
-    assert budgets == {float(agent.config.absolute_cap_s)}
+    budgets = [wire[1].get("reply_budget_s") for wire in agent.wires]
+    assert all(0 < budget <= agent.config.absolute_cap_s for budget in budgets)
+    assert budgets == sorted(budgets, reverse=True)
     assert agent.wires[-1][1]["body"]["model"] == "lab/slow-writer:free"
 
 
@@ -338,3 +340,14 @@ def test_the_live_sequence_says_the_model_took_too_long(agent, monkeypatch):
     # A slow answer says nothing about the source: it is not cooled.
     provider = agent.served.context.model_selection.connection_id
     assert agent.served.router._quota.cooldown_remaining(provider) == 0
+
+
+def test_a_later_round_asks_only_for_what_is_left_of_the_turn(agent):
+    """A late round must not get a fresh cap: the broker cannot be cancelled mid-request,
+    so a full cap from round N would hold the connection long after the turn ended."""
+    agent.requested_rounds = 1
+    agent.before_reply = lambda: time.sleep(0.3)
+    assert integration.run(agent) == "finished exact answer"
+    first, second = (wire[1]["reply_budget_s"] for wire in agent.wires)
+    assert first <= agent.config.absolute_cap_s
+    assert second <= first - 0.3
