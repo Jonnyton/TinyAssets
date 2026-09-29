@@ -63,17 +63,11 @@ followed by `_delete_root_rows()`. Production holds 10
 is deleted as of plan C3d. Until then, account deletion should delete a binding's
 attempts before the binding.
 
-## 3. A leftover held owner row can block a host-daemon claim
+## 3. (Closed) A leftover held owner row could block a host-daemon claim
 
 `branch_tasks_v2._transaction_allows_epoch2_lifecycle` still reads
-`background_branch_authority_owners` raw. It refuses a task whose owner row is
-`target_authority_held`, and it checks neither the row's age nor the
-activation generation. Nothing writes that table any more (plan C3d deleted the
-store). A leftover production row matching a live tray activation's
-`branch_task_id` would therefore block that claim for good. Codex reproduced the
-flip (True -> False -> True) with real writers. No such production row has been
-established.
-
-**What would close it:** the same host action (drop the table). Or, before
-that, delete the read once a host read confirms no `target_authority_held`
-rows exist.
+`background_branch_authority_owners` raw, and nothing writes that table any more.
+A `target_authority_held` row could therefore have blocked a tray claim
+indefinitely. Host read on 2026-09-29: the table is **empty**, with no rows in any
+state, so the hazard does not exist in production. With no writer left, it cannot
+come back. The read goes when the host action drops the table.
