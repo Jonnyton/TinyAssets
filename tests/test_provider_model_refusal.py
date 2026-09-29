@@ -363,3 +363,27 @@ def test_a_turn_too_large_for_every_accepted_model_still_says_so(agent, monkeypa
     assert not agent.wires
     record, _ = _record(error.value)
     assert record.code == "context_window_exceeded"
+
+
+def test_an_earlier_models_refusal_never_names_the_last_models_failure():
+    """Live 2026-09-29, turn b804819f: rounds on three models, the last one failing
+    for a reason we could not classify. The notice named the SECOND model's
+    refusal -- "refused to serve this model" -- beside the third model's detail.
+    Only the last failed attempt is the turn's cause."""
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    def failed(failure_class, skip_class, detail):
+        return ProviderAttemptDiagnostic(
+            provider="api_key_http:source", status="failed", skip_class=skip_class,
+            detail=detail, failure_class=failure_class,
+        )
+
+    exc = AllProvidersExhaustedError("exhausted", attempts=[
+        failed("provider_rate_limited", "quota_or_cooldown", "HTTP 429: busy"),
+        failed("provider_refused", "provider_error", "HTTP 403: gated"),
+        failed(None, "unknown", "ProxyRequestError: outbound request failed"),
+    ])
+    record, notice = _record(exc)
+    assert record.code == "unknown"
+    assert "refused" not in notice
+    assert "outbound request failed" in record.provider_detail
