@@ -248,12 +248,6 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "Scheduler._dispatch_event",
         "_run_fn",
     ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/scheduler.py",
-        "Scheduler._maybe_fire_schedule",
-        "_run_fn",
-    ),
     # `stream` is also Starlette's request-body API. These reviewed sites only
     # enforce bounded request bodies and grant no Branch execution authority.
     CallSite(
@@ -319,11 +313,6 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     CallSite(
         "tinyassets/scheduler.py",
         "Scheduler._dispatch_event",
-        "_run_fn",
-    ),
-    CallSite(
-        "tinyassets/scheduler.py",
-        "Scheduler._maybe_fire_schedule",
         "_run_fn",
     ),
 )

@@ -98,7 +98,7 @@ def test_extensions_tool_description_points_to_prompts_for_rules() -> None:
     for action in (
         "get_action_scope_status",
         "list_run_receipts",
-        "schedule_branch",
+        "subscribe_branch",
     ):
         assert action in text
     # The reconciled action catalog is 1,948 chars. This leaves about 33%
