@@ -670,11 +670,13 @@ class AgentTurnCoordinator:
         minimum context, so every model too small is skipped in one step rather
         than tried one by one; the failed model is excluded too.
 
-        Served chat only (``self.plan``): a workflow run's candidates come from
-        its adapter, whose launch carrier this path has no business re-arming.
+        A workflow agent node's candidates come from its adapter: the measured
+        need is handed to the adapter for this turn only, and the next model
+        launches through the adapter's own fresh authorization, exactly as the
+        capacity and refusal paths already move a workflow turn on.
         """
         if (
-            self.plan is None
+            not self._has_candidate_order()
             or not isinstance(exc, SelectedModelContextError)
             or self.turn.state not in {"ready", "held_transport"}
         ):
@@ -686,19 +688,28 @@ class AgentTurnCoordinator:
 
         failed = self.context.model_selection
         self.visited.add(failed)
-        self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
-        # Every interaction the order reads: a per-source policy REPLACES the
-        # plan's own for that source's models, and production plans carry one
-        # per source -- raising only the plan's left them admitting a model too
-        # small (Codex, 2026-09-28).
-        self.plan = replace(
-            self.plan,
-            interaction=_at_least(self.plan.interaction, needed),
-            source_policies=tuple(
-                replace(item, interaction=_at_least(item.interaction, needed))
-                for item in self.plan.source_policies
-            ),
-        )
+        if self.plan is None:
+            # The work adapter raises every interaction its order reads, for
+            # THIS turn. No Exhaustion: a work run's exhaustion is shared by all
+            # its nodes, and a model too small for this node's context is not
+            # exhausted for a later, smaller one (gpt-6-astra on #4093). The
+            # measured minimum already rules the failed model out here -- its
+            # window is exactly what the measurement exceeded.
+            self.adapter.require_context(needed)
+        else:
+            self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
+            # Every interaction the order reads: a per-source policy REPLACES the
+            # plan's own for that source's models, and production plans carry one
+            # per source -- raising only the plan's left them admitting a model too
+            # small (Codex, 2026-09-28).
+            self.plan = replace(
+                self.plan,
+                interaction=_at_least(self.plan.interaction, needed),
+                source_policies=tuple(
+                    replace(item, interaction=_at_least(item.interaction, needed))
+                    for item in self.plan.source_policies
+                ),
+            )
         candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
             self._leave_hot_source(None)
