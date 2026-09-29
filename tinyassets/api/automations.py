@@ -284,6 +284,7 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
     its deleted store no longer creates, so a database without it has no rows.
     """
     import sqlite3
+    from contextlib import closing
 
     from tinyassets.storage import db_path
 
@@ -291,7 +292,11 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
     if not database.is_file():
         return []
     try:
-        with sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True) as conn:
+        # closing(): a sqlite3 connection's own context manager ends the
+        # transaction but leaves the handle open until garbage collection.
+        with closing(
+            sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True)
+        ) as conn:
             if conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' "
                 "AND name = 'cloud_automation_controls'"
