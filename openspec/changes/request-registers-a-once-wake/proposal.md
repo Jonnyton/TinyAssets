@@ -31,9 +31,12 @@ once, with every run-time check an automation has.
   (`request`, `request_type`). The pump fires it with the checks it already
   applies: owner admin, own home, authored branch, current serving provider,
   per-universe run admission, and the lease fence.
-- **Idempotency is kept.** The request-admission ledger still records one row
-  per `idempotency_key`. The row now names the wake's `automation_id` instead
-  of creating a `branch_tasks_v2` task. A replay returns the first result.
+- **Idempotency is kept, in one database.** The wake's `automation_id` is
+  derived from the owner, the universe and the `idempotency_key`. A replay
+  finds the existing row and returns it; the same key with a different body
+  is `idempotency_key_body_conflict`. The request-admission ledger (a
+  separate database) is no longer written for new requests, so there is no
+  cross-database step a crash could half-finish into a double wake.
 - **A request from anyone but the universe's owner is refused**, with
   `request_owner_only`. A once wake runs on the owner's own subscription, and a
   non-owner spending it is a cross-user effect (the floor). Collaborative input
@@ -54,8 +57,10 @@ once, with every run-time check an automation has.
 
 Code:
 - `tinyassets/api/universe.py`: `_action_admit_request_v2`.
-- `tinyassets/storage/request_admissions.py`: the ledger names the wake, plus
-  the migration that records the disposition.
+- `tinyassets/automations.py`: `register_automation` accepts a derived
+  `automation_id` and returns the existing row on an identical replay.
+- `tinyassets/storage/request_admissions.py`: the migration that records the
+  disposition of pending rows.
 - `tinyassets/api/prompts.py`: the guidance rows.
 
 Surface: `write_graph target="request"` keeps its parameters. Its result gains

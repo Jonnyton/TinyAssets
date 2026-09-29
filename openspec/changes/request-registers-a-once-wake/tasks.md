@@ -2,7 +2,7 @@
 
 ## 1. Build
 - [ ] 1.1 `_action_admit_request_v2` registers a `once` wake of the loop branch for the owner; refuses a non-owner with `request_owner_only` and a set retired field with `request_field_retired:<field>` (`tinyassets/api/universe.py`).
-- [ ] 1.2 The admission ledger names the wake's `automation_id` and keeps replay (`tinyassets/storage/request_admissions.py`).
+- [ ] 1.2 A derived `automation_id` (owner, universe, idempotency_key) makes a replay return the first wake and a changed body a conflict (`tinyassets/automations.py`).
 - [ ] 1.3 Migration: every pending request-admission task becomes `refused` with `request_retired_to_wake`.
 - [ ] 1.4 Guidance rows in `tinyassets/api/prompts.py`.
 
