@@ -87,6 +87,12 @@ _CLASS_WORDS = {
         "the connected model replied in a format this universe could not read; "
         "try again, or choose another model"
     ),
+    "provider_reply_timeout": (
+        "your model took longer to answer than this universe waits for one "
+        "reply, so that request was ended and whatever the turn finished before "
+        "it stands. Asking it to continue, or to do the rest in smaller steps, "
+        "usually works; a faster model also helps"
+    ),
     "provider_refused": (
         "your model provider refused to serve this model to this universe, "
         "before it produced anything; that is an access decision on the "
@@ -126,6 +132,7 @@ STAGE_OF_CLASS = {
     "interactive_deadline": "model_reply",
     "provider_protocol_error": "model_reply",
     "provider_refused": "model_request",
+    "provider_reply_timeout": "model_request",
     "platform_fault": "platform",
 }
 

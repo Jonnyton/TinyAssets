@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import AsyncExitStack
 from dataclasses import replace
 
@@ -103,6 +104,15 @@ class AgentTurnCoordinator:
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
         self.free_sibling_retries = 0
         self.spent_attempts = []
+
+    def _remaining(self, turn_deadline):
+        """This turn's config with its absolute cap cut to what is left of the turn.
+
+        Never zero or negative: the profile would read that as "unset" and hand
+        back the full default cap, which is the bug this exists to prevent.
+        """
+        left = max(turn_deadline - time.monotonic(), 1.0)
+        return replace(self.config, absolute_cap_s=left)
 
     def _check_scope(self):
         owner = self.adapter.check(self.context, self.config)
@@ -353,6 +363,11 @@ class AgentTurnCoordinator:
             raise JournalUnavailable("agent turn cannot be replayed")
 
         timeout = self.config.stream_timeout_profile().absolute_cap_s
+        # Every round is told what is LEFT of the turn, not the whole cap again:
+        # a provider that cannot be cancelled mid-request (the HTTP broker) is
+        # then bounded by the turn's own end, not by a fresh cap from a late
+        # round (Codex, 2026-09-29).
+        turn_deadline = time.monotonic() + timeout
         async with asyncio.timeout(timeout):
             async with AsyncExitStack() as stack:
                 engine = None
@@ -369,16 +384,23 @@ class AgentTurnCoordinator:
                                 actor_id=actor_id, graph_id=graph_id,
                                 enabled_tools=granted_tools(self.config), timeout=timeout,
                             ))
-                        config = replace(self.config, agent_request=AgentInferenceRequest(
-                            tools=codec.tool_definitions(engine.tools), history=self._history(),
-                        ))
+                        config = replace(
+                            self._remaining(turn_deadline),
+                            agent_request=AgentInferenceRequest(
+                                tools=codec.tool_definitions(engine.tools),
+                                history=self._history(),
+                            ),
+                        )
                         prompt, system, observer = self.prompt, self.system, self._begin
                     else:
                         self.native_input = render_native_input(
                             self.prompt, self.system, self._history(),
                         )
                         prompt, system = self.native_input
-                        config = replace(self.config, agent_request=None, selected_model=None)
+                        config = replace(
+                            self._remaining(turn_deadline), agent_request=None,
+                            selected_model=None,
+                        )
                         observer = self._begin_native
                     try:
                         response = await self.adapter.infer(

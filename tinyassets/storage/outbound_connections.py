@@ -414,6 +414,16 @@ class SsrfValidationError(ProxyRequestError):
     """
 
 
+class OutboundDeadlineExceeded(SsrfValidationError):
+    """The destination did not finish answering inside the request's time budget.
+
+    Crosses the process boundary TYPED, with a fixed message, so the caller can
+    say "the model took too long" instead of "we could not identify why" (live
+    2026-09-29, turn b804819f: a free model writing an app ran past the old 30s
+    total and the owner was told the cause was unknown).
+    """
+
+
 class ConnectionAuthorizationError(ProxyRequestError):
     """The connection's authorization could not be made current.
 
@@ -450,6 +460,8 @@ def _adapter_safe_proxy_error(exc: BaseException) -> str:
         return "outbound connection grant unavailable"
     if isinstance(exc, PermissionError):
         return "outbound request not permitted"
+    if isinstance(exc, OutboundDeadlineExceeded):
+        return "outbound request exceeded its time budget"
     return "outbound request failed"
 
 
@@ -805,6 +817,8 @@ class _ProxyChannel:
             raise GrantResolutionError(message)
         if error_type == "AmbiguousProxyOutcome":
             raise AmbiguousProxyOutcome(message)
+        if error_type == "OutboundDeadlineExceeded":
+            raise OutboundDeadlineExceeded(message)
         if error_type == "ConnectionAuthorizationError":
             failure = response.get("failure")
             detail = failure.get("provider_detail", "") if isinstance(failure, dict) else ""
@@ -920,6 +934,13 @@ class CredentialBlindBroker:
         if not credential:
             self._record_error(resource, grant_id, verb, "credential unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
+        # The request may ASK for a longer budget; whether it gets one is read
+        # from the connection's own capabilities, never from the request.
+        requested_budget = None
+        if isinstance(request, dict) and _REPLY_BUDGET_FIELD in request:
+            request = dict(request)
+            requested_budget = request.pop(_REPLY_BUDGET_FIELD)
+        reply_budget_s = self._inference_budget_s(resource, verb, requested_budget)
         if resource.connection_type == "http":
             try:
                 headers = self._ledger.get_connection_capability(
@@ -946,7 +967,7 @@ class CredentialBlindBroker:
             wire_credential = bundle.access_token
             secrets_held = bundle.secret_values()
         response = self._send(resource, grant_id, verb, request, wire_credential,
-                              revalidate_authority)
+                              revalidate_authority, reply_budget_s)
         if oauth and isinstance(response, dict) and response.get("status") == 401:
             # The service rejected the token before doing anything: refresh
             # once (unless another holder already did) and send once more.
@@ -956,7 +977,7 @@ class CredentialBlindBroker:
                 wire_credential = bundle.access_token
                 secrets_held = tuple(dict.fromkeys((*secrets_held, *bundle.secret_values())))
                 response = self._send(resource, grant_id, verb, request, wire_credential,
-                                      revalidate_authority)
+                                      revalidate_authority, reply_budget_s)
         if any(_contains_secret(response, secret) for secret in secrets_held if secret):
             self._record_error(
                 resource,
@@ -983,9 +1004,42 @@ class CredentialBlindBroker:
             self._record_error(resource, grant_id, verb, "connection authorization failed")
             raise
 
+    def _inference_budget_s(
+        self, resource: ConnectionResource, verb: str, requested: object,
+    ) -> float | None:
+        """The longer reply budget, when THIS connection is a model source.
+
+        ``None`` keeps the driver's ordinary 30s. Eligible only for a POST on an
+        ``http`` connection that carries a model capability the owner declared;
+        the request's number is only an upper bound within
+        ``INFERENCE_MAX_SECONDS``, and a non-number, a bool or anything not above
+        the ordinary budget changes nothing.
+        """
+        if (
+            type(requested) not in (int, float)
+            # An int is finite by construction; math.isfinite would overflow on
+            # one too large for a float (Codex, 2026-09-29).
+            or (type(requested) is float and not math.isfinite(requested))
+            or requested <= _SSRF_MAX_TOTAL_SECONDS
+            or resource.connection_type != "http"
+            or str(verb).upper() != "POST"
+        ):
+            return None
+        try:
+            eligible = any(
+                self._ledger.get_connection_capability(resource.connection_id, kind)
+                is not None
+                for kind in _INFERENCE_CAPABILITIES
+            )
+        except Exception:
+            # An unreadable capability is not evidence of one: ordinary budget.
+            return None
+        # Clamp before converting: float() of an enormous int overflows.
+        return float(min(requested, INFERENCE_MAX_SECONDS)) if eligible else None
+
     def _send(
         self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
-        credential: str, revalidate_authority: Any,
+        credential: str, revalidate_authority: Any, reply_budget_s: float | None = None,
     ) -> Any:
         try:
             return self._network_request(
@@ -999,6 +1053,7 @@ class CredentialBlindBroker:
                 verb=verb,
                 request=request,
                 **({"revalidate_authority": revalidate_authority} if revalidate_authority else {}),
+                **({"reply_budget_s": reply_budget_s} if reply_budget_s is not None else {}),
             )
         except AmbiguousProxyOutcome:
             self._record_error(
@@ -1008,6 +1063,13 @@ class CredentialBlindBroker:
                 "destination outcome ambiguous",
             )
             raise AmbiguousProxyOutcome("destination outcome ambiguous") from None
+        except OutboundDeadlineExceeded:
+            # Typed and fixed-text, so the caller can tell a slow answer from a
+            # failed one; nothing of the destination's crosses with it.
+            self._record_error(resource, grant_id, verb, "destination exceeded time budget")
+            raise OutboundDeadlineExceeded(
+                "outbound request exceeded its time budget"
+            ) from None
         except Exception:
             self._record_error(
                 resource,
@@ -1270,6 +1332,23 @@ _SSRF_TIMEOUT_SECONDS = 30.0
 #: Codex-found). The body is read in bounded chunks, checking the deadline each
 #: iteration and tightening the socket timeout to the remaining budget.
 _SSRF_MAX_TOTAL_SECONDS = 30.0
+#: The ONE longer budget: the most a model-inference request may wait for its
+#: answer. A non-streaming model sends nothing until it has finished, so a turn
+#: that writes a whole app needs minutes, and the 30s above ended one mid-write
+#: (live 2026-09-29). Granted only to a POST on a connection that itself carries
+#: a model capability (``_inference_budget_s``), never because a request asks,
+#: and it replaces BOTH the per-operation and the total timeout for that one
+#: request. Every other bound -- pinning, allowlist, redirects, body and header
+#: caps, the slow-drip deadline itself -- is unchanged. Host-wide concurrency of
+#: such requests is bounded by provider admission
+#: (``TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS``). Equal to the served turn's own
+#: absolute cap (``providers.base.DEFAULT_ABSOLUTE_CAP_S``).
+INFERENCE_MAX_SECONDS = 600.0
+#: Capabilities that make a connection a model source, and so eligible.
+_INFERENCE_CAPABILITIES = ("model_use", "model_discovery")
+#: The request field an inference caller uses to ask for that budget. Removed
+#: by the broker before the request reaches the network driver.
+_REPLY_BUDGET_FIELD = "reply_budget_s"
 _SSRF_READ_CHUNK = 65536
 # RESIDUALS owed before this driver is ACTIVATED (it is dark; activation is
 # gated behind the endpoint-allowlist slice):
@@ -2464,6 +2543,11 @@ def _looks_like_deadline_breach(exc: BaseException, deadline: float) -> bool:
         reason = getattr(cur, "reason", None)
         if isinstance(reason, _TotalDeadlineExceeded):
             return True
+        # The per-operation timeout firing is the same answer -- the destination
+        # did not answer in time -- and it races the total when both are equal:
+        # a silent model at 30s/30s surfaced as a generic destination failure.
+        if isinstance(cur, TimeoutError) or isinstance(reason, TimeoutError):
+            return True
         cur = cur.__cause__ or cur.__context__
     return time.monotonic() >= deadline
 
@@ -2683,7 +2767,7 @@ class _HttpHopMetadata:
 def _remaining_redirect_seconds(deadline: float) -> float:
     remaining = deadline - time.monotonic()
     if not math.isfinite(remaining) or remaining <= 0:
-        raise SsrfValidationError("outbound request exceeded the total deadline")
+        raise OutboundDeadlineExceeded("outbound request exceeded the total deadline")
     return remaining
 
 
@@ -2823,7 +2907,7 @@ def _execute_pinned_https_request(
     if deadline_exceeded:
         # Raised OUTSIDE the except block: a fixed, secret-free message with a
         # clean __context__.
-        raise SsrfValidationError("outbound request exceeded the total deadline")
+        raise OutboundDeadlineExceeded("outbound request exceeded the total deadline")
     if response is None:
         # Raised OUTSIDE the except block on purpose: `raise ... from None` still
         # leaves ``__context__`` populated (readable via ``exc.__context__`` — the
@@ -2897,7 +2981,7 @@ def _execute_pinned_https_request(
             pass
 
     if read_deadline_exceeded:
-        raise SsrfValidationError("outbound request exceeded the total deadline")
+        raise OutboundDeadlineExceeded("outbound request exceeded the total deadline")
     if bound_violation is not None:
         raise SsrfValidationError(bound_violation)
     if sanitized is None:
@@ -3063,6 +3147,7 @@ class _SsrfHardenedHttpDriver:
         allowed_endpoints: tuple[OutboundEndpoint, ...] | None = None,
         access_mode: str = ACCESS_EXACT,
         revalidate_authority: Callable[[float], None] | None = None,
+        reply_budget_s: float | None = None,
     ) -> dict[str, Any]:
         if not isinstance(bundle, ConnectionSecretBundle):
             raise SsrfValidationError("a typed connection secret bundle is required")
@@ -3148,8 +3233,12 @@ class _SsrfHardenedHttpDriver:
             body=encoded_body,
             ssl_context=self._ssl_context,
             open_socket=self._open_socket,
-            timeout=self._timeout,
-            max_total_seconds=self._max_total_seconds,
+            # The broker decided ``reply_budget_s`` (and only for inference);
+            # the redirect chain above never takes it.
+            timeout=self._timeout if reply_budget_s is None else reply_budget_s,
+            max_total_seconds=(
+                self._max_total_seconds if reply_budget_s is None else reply_budget_s
+            ),
             max_body_bytes=self._max_body_bytes,
             max_header_count=self._max_header_count,
             max_header_bytes=self._max_header_bytes,
@@ -3361,6 +3450,7 @@ class _TrustedNetworkDriver:
         allowed_endpoints = kwargs.pop("allowed_endpoints", ()) or ()
         access_mode = kwargs.pop("access_mode", ACCESS_EXACT)
         revalidate_authority = kwargs.pop("revalidate_authority", None)
+        reply_budget_s = kwargs.pop("reply_budget_s", None)
         if connection_type == "http":
             return self._dispatch_http(
                 auth_scheme=auth_scheme,
@@ -3370,6 +3460,7 @@ class _TrustedNetworkDriver:
                 verb=str(kwargs.get("verb", "")),
                 request=kwargs.get("request"),
                 revalidate_authority=revalidate_authority,
+                reply_budget_s=reply_budget_s,
             )
         if connection_type == "":
             # Legacy untyped connections route ONLY to the gated test fixture —
@@ -3391,6 +3482,7 @@ class _TrustedNetworkDriver:
         request: object,
         access_mode: str = ACCESS_EXACT,
         revalidate_authority: Callable[[float], None] | None = None,
+        reply_budget_s: float | None = None,
     ) -> Any:
         if not self._allow_http:
             # Fail closed until a deployment enables the general http path.
@@ -3412,6 +3504,7 @@ class _TrustedNetworkDriver:
             allowed_endpoints=allowed_endpoints,
             access_mode=access_mode,
             **({"revalidate_authority": revalidate_authority} if revalidate_authority else {}),
+            **({"reply_budget_s": reply_budget_s} if reply_budget_s is not None else {}),
         )
 
 
