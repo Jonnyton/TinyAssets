@@ -768,25 +768,22 @@ def test_one_request_notifies_a_destination_once_whatever_happens_to_it(base):
 
 
 def test_a_new_request_does_notify_and_that_is_the_accepted_cost(base):
-    """Stated, not hidden: there is NO notification-specific bound, so an agent
-    that raises genuinely new requests in a loop does notify per request. That
-    is bounded where everything else is -- the run holds a concurrent seat
-    while it works, and MAX_PENDING caps the unanswered pile -- and adding a
-    second mechanism here would be a rate limiter, which account limits are
-    explicitly not (founder, 2026-09-30)."""
-    from tinyassets.storage.pending_requests import MAX_PENDING, list_pending
+    """Every new request notifies, even beyond the removed 50-request cap.
+
+    The run holds its owner's concurrent seat while it works; notifications
+    and unanswered requests have no additional account limit.
+    """
+    from tinyassets.storage.pending_requests import list_pending
 
     _home(base, A_UID, ALICE, A_NAME)
     _register(base, ALICE, "phone")
     recorder, transports = _fake()
 
-    for n in range(6):
+    for n in range(51):
         _raise_request(base, A_UID, ALICE, transports, title=f"Thing {n}")
 
-    assert len(recorder.calls) == 6
-    # And the pile itself is capped, so this cannot grow without limit.
-    assert len(list_pending(base / A_UID, limit=MAX_PENDING * 2)) == 6
-    assert MAX_PENDING == 50
+    assert len(recorder.calls) == 51
+    assert len(list_pending(base / A_UID, limit=100)) == 51
 
 
 # --- failure ------------------------------------------------------------------

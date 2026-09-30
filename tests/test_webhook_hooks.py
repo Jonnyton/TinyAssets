@@ -215,7 +215,7 @@ def test_claim_delivery_is_atomic_under_concurrency(tmp_path):
     assert sum(wins) == 1                              # exactly one claim across 16 racers
 
 
-# ── Atomic in-flight reservation: revoke serialization, no ceiling ─────────────────────────────────────
+# Atomic in-flight reservation: revoke serialization, no ceiling.
 
 def test_reserve_dispatch_has_no_cap_but_keeps_the_active_check(tmp_path):
     token = hooks.mint(
