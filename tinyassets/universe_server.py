@@ -69,10 +69,7 @@ from tinyassets.auth.wiki_canary import (
     set_wiki_canary_authority,
     wiki_canary_token_matches,
 )
-from tinyassets.engine_read_views import (
-    CONNECTOR_MORE_TARGET,
-    compact_model_options,
-)
+from tinyassets.engine_read_views import compact_model_options
 from tinyassets.mcp_schema_utils import describe_signature
 
 logger = logging.getLogger("universe_server")
@@ -179,12 +176,12 @@ def _faithful_text_content(value: object) -> str:
 #:   the product; clipping it is data loss the user reads, not a bound.
 #: * ``read_page`` / ``write_page`` carry content the user authored. Hard Rule 9:
 #:   user uploads are authoritative, preserved verbatim.
-#: * ``get_status`` is read by the app itself — `active_host` and
-#:   `supervisor_liveness` at ``tinyassets/onboarding/app.html:3800``, ``:3864``,
-#:   ``:3867`` drive the status dot — so bounding it breaks the app exactly the way
-#:   bounding ``model_options`` would break the model picker. It needs its own
-#:   split into a complete client read and a bounded model-facing one, which is a
-#:   different capability and a different change.
+#: * ``get_status`` carries the conversation peek, whose per-turn bound and
+#:   cursor are its own contract (``api.status``), and the universe's identity a
+#:   chatbot narrates. A marker would drop both.
+#:
+#: The owner's app is NOT a reason for anything here: it reads through the owner
+#: door (``tinyassets/owner_door``), which has no ceiling at all.
 #:
 #: Widening this set means proving, per handle, that a partial reply is still a
 #: true one. For the four above it is not.
@@ -194,45 +191,34 @@ _CEILING_TOOLS = frozenset({"read_graph"})
 def _connector_ceiling_exempt():
     """The ``(tool, target)`` reads this surface must never bound.
 
-    Four entries. Each names its reason, and not one of them is "it is big" —
-    being big is what the ceiling is FOR:
+    Three entries, each a CONTRACT a truncation marker would break. None is here
+    because it is big (being big is what the ceiling is for), and none is here
+    because the owner's app reads it: the app reads through the owner door, which
+    has no ceiling (``openspec/changes/owner-door-complete-reads``). Adding an
+    entry "so the app sees all of it" is the mistake that door exists to make
+    unnecessary. ``model_options`` left this set for exactly that reason: its only
+    claim was the app's picker, and on this surface it is now the compact
+    projection.
 
     * ``run_file`` — its contract is exact bytes (``EXACT_BYTE_READS``). Capping it
       destroys the base64 AND the ``next_offset`` cursor, so the caller cannot even
       page to recover.
-    * ``model_options`` — the owner's own model picker reads it
-      (``tinyassets/onboarding/app.html:1423``) and
-      ``openspec/specs/live-mcp-connector-surface/spec.md`` requires its complete
-      document ("Complete choices, not a first-page sample"). A model wanting a
-      bounded view reads ``target=model_options_summary``; that is the split.
     * ``conversation`` — a retained message chunk, already bounded by the caller's
-      own ``output_max_chars``, with a lossless chunk contract the app depends on.
-      Replacing it drops ``chunk``/``next_offset``/``available`` and the app shows
-      "Couldn't load the rest of this message" (``app.html:3776``). A default 8,192
-      character chunk of CJK text exceeds the ceiling on its own, so this is the
-      ordinary path for a non-English conversation, not an edge case.
+      own ``output_max_chars``, with a lossless chunk contract (``chunk`` /
+      ``next_offset`` / ``available``). The same class as ``run_file``: a
+      caller-bounded page with a cursor. A default 8,192-character chunk of CJK
+      text exceeds the ceiling on its own, so a marker here would break ordinary
+      non-English reads.
     * ``conversation_turn`` — the committed terminal reply of a custom
       conversation (``consumer_runtime.read_turn``). It is the SAME universe reply
-      ``converse`` returns, by a different route; the app polls it
-      (``app.html:3159``) and exits its loop when ``consumer_turn`` disappears.
-      Exempting ``converse`` alone left the product truncatable here.
+      ``converse`` returns, by a different route, and ``converse`` is outside the
+      ceiling because the reply is the product.
     """
     from tinyassets.engine_result_bounds import EXACT_BYTE_READS
 
     return EXACT_BYTE_READS | {
-        ("read_graph", "model_options"),
-        # Message text the user or their universe authored, with a chunk contract
-        # the client parses. Same class as read_page: Hard Rule 9 content, bounded
-        # already by the parameter the caller passed.
         ("read_graph", "conversation"),
         ("read_graph", "conversation_turn"),
-        # The owner's own queue, which the app's request rail renders whole.
-        # Unusable when partial: the marker carries no ``pending`` list, so the
-        # rail had nothing to draw and stayed hidden -- live 2026-09-30, the
-        # founder's seven requests measured 34 KB and the column vanished for
-        # that account while a lighter account kept it. Size must never decide
-        # what an account sees.
-        ("read_graph", "pending_requests"),
     }
 
 
@@ -707,14 +693,12 @@ def read_graph(
             universe_files / universe_file (the owner's own universe folder:
             query=<path under /u>; list a directory, or read a file in chunks
             with file_offset/file_max_bytes),
-            model_options (all owned model choices, including
-            unavailable ones — the COMPLETE catalogue, which a large source makes
-            very large; if you are reading this into a model's context use
-            model_options_summary instead), model_options_summary (the same
-            catalogue bounded: per source its model count, how many are
-            selectable, and the top few of the existing order, plus the current
-            choice and the totals; query=<text> filters by model id or provider,
-            and output_offset=<the next_offset a page returned> walks the rest),
+            model_options (your owned model choices, including unavailable
+            ones, bounded: per source its model count, how many are selectable,
+            and the top few of the existing order, plus the current choice and
+            the totals; query=<text> filters by model id or provider, and
+            output_offset=<the next_offset a page returned> walks the rest;
+            model_options_summary is the same read),
             conversation_turn (your keyed custom conversation's current run/projection),
             or conversation (page your OWN retained conversation: omit field_name
             for a bounded catalogue of turn ids, or pass field_name=<turn id> --
@@ -752,287 +736,44 @@ def read_graph(
         file_max_bytes: Byte chunk size, up to 1048576; bytes return exact base64.
             target=run_file_limits reports intake/read/retention technical limits.
     """
+    # THE MODEL DOOR. The read itself is the shared domain dispatch
+    # (``tinyassets.api.graph_reads``), which is complete; what this adds is only
+    # the projection a model's context needs. The owner's app never comes
+    # through here -- it reads the same dispatch through ``tinyassets/owner_door``
+    # -- so nothing below exists to serve a first-party client.
+    from tinyassets.api.graph_reads import read_graph as _domain_read_graph
+
     normalized = (target or "status").strip().lower()
-    if normalized == "conversation_turn":
-        from tinyassets.api.helpers import _base_path, _request_universe
-        from tinyassets.api.permissions import current_actor_id, is_authenticated_request
-        from tinyassets.consumer_runtime import read_turn
-
-        if not is_authenticated_request():
-            return json.dumps({"error": "not_found"})
-        return json.dumps(read_turn(_base_path(), owner=current_actor_id(),
-                                    universe=_request_universe(graph_id), request_key=request_key))
-    if normalized == "conversation":
-        # The lossless read of the caller's OWN retained thread -- the same
-        # reader and the same binding the engine route uses
-        # (engine_mcp_server.read_graph), exposed here because the app speaks
-        # only this surface. get_status's peek bounds each turn at 4000 chars
-        # and says so (`truncated` + `total_chars`); this is how a client gets
-        # the rest instead of drawing a preview as if it were the message.
-        #
-        # Both modes of the existing reader are exposed, unchanged: omit
-        # field_name for the bounded keyset catalogue, pass a turn id for exact
-        # Unicode-code-point chunks. One retrieval capability, identical across
-        # the engine and public surfaces -- a public-only sub-mode would be a
-        # second contract for the same read.
-        #
-        # Binding: the principal is the VERIFIED current caller, never a
-        # browser-supplied session, principal or store path. An explicit
-        # graph_id is VERIFIED rather than ignored -- require_founder_home
-        # refuses a universe that is not this caller's current home with admin,
-        # so a foreign id can never return this caller's bytes under its label.
-        from tinyassets.api.helpers import _base_path, _request_universe
-        from tinyassets.api.permissions import current_actor_id, is_authenticated_request
-        from tinyassets.conversation_retrieval import read_conversation_page
-        from tinyassets.shared_self import require_founder_home
-
-        if not is_authenticated_request():
-            return json.dumps({"error": "not_found"})
-        actor = current_actor_id()
-        try:
-            root = require_founder_home(_base_path(), _request_universe(graph_id), actor)
-            payload = read_conversation_page(
-                root, f"principal:{actor}", field_name=field_name,
-                offset=output_offset, max_chars=output_max_chars,
-            )
-        except PermissionError:
-            # Same envelope an absent thread gets: a refusal here must not
-            # confirm another account's home exists.
-            return json.dumps({"error": "not_found"})
-        except ValueError as exc:
-            return json.dumps({"error": str(exc)})   # the caller's own selector
-        except Exception:  # noqa: BLE001 - storage detail is never disclosed
-            return json.dumps({"error": "conversation_read_failed"})
-        # Retained transcript text is content to observe, never instructions --
-        # marked exactly as the get_status peek marks it.
-        return json.dumps(
-            dict(payload, content_is_untrusted=True,
-                 fence="BEGIN_UNTRUSTED_TRANSCRIPT", fence_end="END_UNTRUSTED_TRANSCRIPT"),
-            ensure_ascii=False,
-        )
-    if normalized in {"run_file", "run_file_limits"}:
-        from tinyassets.api.run_files import file_limits, read_file
-
-        if normalized == "run_file_limits":
-            return file_limits(universe_id=graph_id)
-        return read_file(universe_id=graph_id, run_id=run_id, file_id=file_id,
-                         offset=file_offset, count=file_max_bytes)
-    if normalized in {"receiver", "receivers", "output_links", "delivery"}:
-        action = {"receiver": "inspect_receiver", "receivers": "discover_receivers",
-                  "output_links": "list_output_links",
-                  "delivery": "get_delivery"}[normalized]
-        payload = ({"receiver_id": query} if normalized == "receiver"
-                   else {"delivery_id": query} if normalized == "delivery"
-                   else {"query": query, "limit": limit} if normalized == "receivers"
-                   else {})
-        return _extensions_impl(action=action, universe_id=graph_id,
-                                payload_json=json.dumps(payload))
-    if normalized == "status":
-        return _get_status_impl(universe_id=graph_id)
-    if normalized == "graphs":
-        return _universe_impl(action="list", limit=limit)
-    if normalized == "graph":
-        return _universe_impl(action="inspect", universe_id=graph_id)
-    if normalized == "branches":
-        # The universe's OWN workflows by name + branch_def_id (+ tags/goal). Until
-        # now a user had to already know a branch's internal id to read/edit/run
-        # it — Claude.ai hit "Global workflow enumeration is not exposed by the
-        # advertised handles" when asked to rename a workflow (2026-08-25). The
-        # extensions layer already hides branches bound to non-public goals.
-        # scope="mine": the caller's OWN workflows, published or not. The default
-        # scope ("published") hides every private branch a user just built — which
-        # is precisely the "I can't find the workflow you named" failure.
-        return _extensions_impl(action="list_branches", scope="mine", limit=limit)
-    if normalized == "goals":
-        if query:
-            return _goals_impl(action="search", query=query, limit=limit)
-        return _goals_impl(action="list", tags=tags, author=author, limit=limit)
-    if normalized == "goal":
-        return _goals_impl(action="get", goal_id=goal_id)
-    if normalized == "runs":
-        return _extensions_impl(action="list_runs", status=run_status, limit=limit,
-                                universe_id=graph_id)
-    if normalized == "run":
-        # PR-180 SEE half: a founder reads their own run's terminal result +
-        # structured failure reason (status, output/external_write_results,
-        # error, failure_class/suggested_action/actionable_by/error_detail).
-        return _extensions_impl(action="get_run", run_id=(run_id or graph_id),
-                                universe_id=graph_id if run_id else "")
-    if normalized == "run_output":
-        return _extensions_impl(
-            action="get_run_output", run_id=run_id, universe_id=graph_id,
-            field_name=field_name, bounded_output=True, output_offset=output_offset,
-            output_max_chars=output_max_chars,
-        )
-    if normalized == "branch":
-        # SEE-for-branches: a founder reads their branch's full graph + node
-        # configs (timeout_seconds, model_hint, prompt_template, edges, state
-        # schema) so an edit via write_graph target=branch is informed, not
-        # blind. Completes the read/edit symmetry with PR-180.
-        #
-        # Visibility model (commons-first, deliberate — Codex review of #1404):
-        # public BranchDefinitions are a GLOBAL remix commons, readable cross
-        # universe by anyone (you remix what you can read). The confidentiality
-        # boundary is private branches, which get_branch already author-gates
-        # with a "not found" envelope (branches.py:443) so a non-author cannot
-        # even confirm existence. get_branch was already callable here via the
-        # deprecated 'extensions' tool; this only makes it first-class.
-        return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
-    if normalized in {"automations", "automation"}:
-        # The owner's own recurring runs (user-owned-automations 3.1). The read
-        # path carries no payload, so `list` here always hides retired rows;
-        # an owner who wants the deleted ones asks through the write handle
-        # with payload_json {"include_retired": true}.
-        return json.dumps(
-            _automations_impl(
-                action=("list" if normalized == "automations" else "get"),
-                universe_id=graph_id,
-                automation_id=automation_id,
-                limit=limit,
-            )
-        )
-    if normalized == "connections":
-        return json.dumps(
-            _cloud_connections_impl(
-                action="list",
-                universe_id=graph_id,
-            )
-        )
-    if normalized == "pending_requests":
-        # The left-rail tabs: what the agent is waiting on the user for. Same
-        # read from every surface, which is what makes them addressable from the
-        # phone without a second mechanism. Carries no credential material.
-        from tinyassets.api.pending_requests import list_requests
-
-        return json.dumps(list_requests(universe_id=graph_id, limit=limit))
-    if normalized == "access":
-        # Everything the owner's agent holds in this universe, owner-only and
-        # secret-free (change agent-access-controls).
-        from tinyassets.api.agent_access import read_access
-
-        return json.dumps(read_access(universe_id=graph_id), default=str)
-    if normalized == "agents":
-        return json.dumps(
-            _custom_agents_impl(
-                action="list_agents",
-                query=query,
-                tags=tags,
-                author_id=author,
-                limit=limit,
-            )
-        )
-    if normalized == "agent":
-        return json.dumps(
-            _custom_agents_impl(
-                action=("get_import_stage" if agent_stage_id else "get_agent"),
-                definition_id=(agent_definition_id or graph_id),
-                stage_id=agent_stage_id,
-            )
-        )
-    if normalized == "agent_bindings":
-        return json.dumps(
-            _custom_agents_impl(
-                action="list_bindings",
-                universe_id=graph_id,
-                limit=limit,
-            )
-        )
-    if normalized == "agent_binding":
-        return json.dumps(
-            _custom_agents_impl(
-                action="get_binding",
-                universe_id=graph_id,
-                binding_id=agent_binding_id,
-            )
-        )
-    if normalized in {"universe_file", "universe_files"}:
-        # The OWNER's read of their universe folder (/u): the files their agents
-        # share. Admin-only, link-free, bounded; every refusal is not_found.
-        from tinyassets.api import universe_file_reads
-
-        if normalized == "universe_files":
-            return json.dumps(universe_file_reads.list_files(universe_id=graph_id, path=query))
-        return json.dumps(universe_file_reads.read_file(
-            universe_id=graph_id, path=query, offset=file_offset,
-            # This handle's file_max_bytes defaults to run_file's 512 KiB; a
-            # folder read pages at most MAX_READ_BYTES, so the default clamps.
-            count=min(file_max_bytes, universe_file_reads.MAX_READ_BYTES)
-            if isinstance(file_max_bytes, int) else file_max_bytes,
-        ))
-    if normalized == "app_ui":
-        # The caller's own UI library + choice; keyed by the authenticated caller.
-        from tinyassets.api.app_ui import read_app_ui
-
-        return json.dumps(read_app_ui(universe_id=graph_id))
-    if normalized == "compute":
-        # The read sibling of write_graph target=connection operation=connect_compute:
-        # list the compute providers registered for this universe (candidates). Owner-
-        # gated + no secret. Lets a user SEE what they registered from any surface.
-        from tinyassets.api.compute_connection import read_compute_providers
-
-        return json.dumps(read_compute_providers(universe_id=graph_id))
+    arguments = {
+        "target": target, "graph_id": graph_id, "goal_id": goal_id,
+        "run_id": run_id, "branch_id": branch_id, "automation_id": automation_id,
+        "agent_definition_id": agent_definition_id,
+        "agent_binding_id": agent_binding_id, "agent_stage_id": agent_stage_id,
+        "query": query, "tags": tags, "author": author, "run_status": run_status,
+        "limit": limit, "field_name": field_name, "output_offset": output_offset,
+        "output_max_chars": output_max_chars, "request_key": request_key,
+        "file_id": file_id, "file_offset": file_offset,
+        "file_max_bytes": file_max_bytes,
+    }
     if normalized in {"model_options", "model_options_summary"}:
-        from tinyassets.api.model_options import read_model_options
-
-        # Complete protocol-bounded catalogue: limit=30 must not hide new models.
-        # The owner's model picker reads this and needs every choice they own
-        # (openspec/specs/live-mcp-connector-surface, "Complete choices, not a
-        # first-page sample"), so it stays complete and stays exempt from the
-        # single-result ceiling.
-        document = read_model_options(universe_id=graph_id)
-        if normalized == "model_options":
-            return json.dumps(document)
-        # ... and the same catalogue bounded, for a caller reading it into a
-        # model's context. One collector, one document, two projections: the
-        # caller picks, because the server guessing which kind of caller this is
-        # would be wrong exactly when a model drives the founder's own session.
+        # One projection for both names, and the same one the engine serves:
+        # per source its counts and the head of the existing order, with
+        # query/output_offset paging that reaches every row exactly once. The
+        # complete catalogue is the owner door's.
+        document = json.loads(_domain_read_graph(**{**arguments, "target": "model_options"}))
         return json.dumps(
-            compact_model_options(
-                document, query=query, offset=output_offset,
-                # This surface's continuation is the summary itself: its
-                # `model_options` is the complete document and ignores these
-                # selectors, so the engine's default hint would send a caller
-                # straight back to the megabyte.
-                more_target=CONNECTOR_MORE_TARGET,
-            ),
+            compact_model_options(document, query=query, offset=output_offset),
             default=str,
         )
-    return _unknown_target(
-        "read_graph",
-        target,
-        (
-            "status",
-            "graphs",
-            "graph",
-            "goals",
-            "goal",
-            "runs",
-            "run",
-            "branch",
-            "automations",
-            "automation",
-            "connections",
-            "pending_requests",
-            "access",
-            "conversation",
-            "compute",
-            "model_options",
-            "model_options_summary",
-            "run_file",
-            "run_file_limits",
-            "agents",
-            "agent",
-            "agent_bindings",
-            "agent_binding",
-            "app_ui",
-            "universe_file",
-            "universe_files",
-            "receiver",
-            "receivers",
-            "output_links",
-            "delivery",
-        ),
-    )
+    raw = _domain_read_graph(**arguments)
+    if isinstance(raw, str) and raw.startswith('{"error": "unknown_target"'):
+        # The domain names its own targets; this door adds its one synonym.
+        refusal = json.loads(raw)
+        return _unknown_target(
+            "read_graph", target,
+            tuple(refusal.get("allowed_targets") or ()) + ("model_options_summary",),
+        )
+    return raw
 
 
 _mcp_read_graph = _register_structured_tool(

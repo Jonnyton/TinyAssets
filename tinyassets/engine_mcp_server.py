@@ -718,8 +718,13 @@ def read_graph(
             )
             if ticket is None:
                 return _engine_refusal("model_options", refused)
+            from tinyassets.api.graph_reads import read_graph as _domain_read
+
+            # The complete domain read, projected HERE: the connector's
+            # `model_options` is already a projection, and projecting a
+            # projection is not this door's view of the catalogue.
             return _untrusted("model_options", _projected(
-                _impl(target=normalized, graph_id=_GRAPH_ID),
+                _domain_read(target=normalized, graph_id=_GRAPH_ID),
                 lambda document: compact_model_options(
                     document, query=query, offset=output_offset,
                 ),

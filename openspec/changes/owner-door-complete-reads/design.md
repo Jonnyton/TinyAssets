@@ -39,8 +39,10 @@ list the owner's reads as exceptions.
     `conversation_before` and `conversation_limit`.
 
   Each handler checks the identity, runs the domain read in a worker thread under
-  the request identity, and returns the parsed document. An error document comes
-  back with a non-2xx status, so a caller can never mistake it for data.
+  the request identity, and returns the domain's document unchanged, refusals
+  included. A domain document can carry `error` as data (a failed run's reason),
+  so this door does not reinterpret it. Arguments the door cannot accept get a
+  4xx. A server failure is a 500, never an empty document.
 
 ## Why this is structural, not a rule
 
@@ -149,7 +151,9 @@ Found at `origin/main` fb7caf2f:
 | `withdraw_request` `limit=500` | `still_on_rail` wrong past 500 | fixed: complete |
 | `get_status` `recent_conversation` 30 turns | history cut with no signal | fixed: `has_more` + cursor |
 | `refreshRail` catch-all | rail vanishes silently | fixed: loud state |
-| `llm_deposit` `list_bindings(limit=30)` then filter by owner | owner's binding missed past 30 newer ones | fixed: filter in SQL, no page |
+| installed-UI library (`read_graph target=app_ui`) through the connector | "Could not read your installed UIs (unexpected app UI reply)" on the main account, 2026-09-30 | fixed: owner door |
+| every other app read (`agent_binding(s)`, `agent(s)`, `runs`, `run`, `run_output`, `automations`, `universe_file(s)`, `conversation`, `conversation_turn`, `model_options`, `get_status`) | same ceiling | fixed: owner door (`app.html`, `app_layout.js`, `app_ui.js`) |
+| `llm_deposit` `list_bindings(limit=30)` then filter by owner | owner's binding missed past 30 newer ones | fixed: reads every binding (`limit=None`) |
 | `api.universe_file_reads.MAX_LIST_ENTRIES=500` | folder listing cut, with `truncated: true` | finding: visible but no cursor; follow-up |
 | read list targets default `limit=30` (runs, automations, agents, goals, graphs) | model-door page defaults | finding: the owner door never defaults; `app_ui` passes explicit pages |
 | `list_resolved(limit=5)` "recently_answered" | a labelled recent window | keep: it is named as recent |

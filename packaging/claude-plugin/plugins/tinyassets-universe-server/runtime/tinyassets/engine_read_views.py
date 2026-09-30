@@ -17,21 +17,18 @@ what arrives unasked.
 Scope, per function — the module name says "engine" because that is where both
 started, and one of them has since outgrown it:
 
-* ``compact_model_options`` is SHARED. The engine's ``read_graph
-  target="model_options"`` answers with it by default, and the connector serves it
-  as its own target, ``model_options_summary``. One projection, so the two
-  surfaces cannot drift into disagreeing about what a compact catalogue is.
-* ``universe_status_view`` is ENGINE-ONLY, and must stay that way: the app reads
-  ``active_host`` and ``supervisor_liveness`` straight off the connector's
-  ``get_status`` (``tinyassets/onboarding/app.html:3800``, ``:3864``, ``:3867``),
-  so applying this projection there would break the status dot.
+* ``compact_model_options`` is SHARED by both model-door surfaces: the engine's
+  ``read_graph target="model_options"`` and the connector's (where
+  ``model_options_summary`` is a synonym). One projection, so the two surfaces
+  cannot drift into disagreeing about what a compact catalogue is.
+* ``universe_status_view`` is ENGINE-ONLY. The connector's ``get_status`` carries
+  the conversation peek's own page contract, which this view would drop.
 
 What neither function touches: ``read_model_options`` (the collector) and
-``model_options_document()`` (the row). Both still emit exactly what they emitted
-before, because the owner's own model picker is specified to receive the complete
-catalogue (``openspec/specs/live-mcp-connector-surface/spec.md``, "Complete
-choices, not a first-page sample"). The bounded reply is a separate target the
-caller asks for, never a narrowing of the picker's read.
+``model_options_document()`` (the row). The complete catalogue is the OWNER
+door's (``tinyassets/owner_door``, ``/app/api/read``): the owner's picker renders
+every choice there, and nothing in this module can reach it -- the owner door
+cannot import this module (``tests/test_owner_door_import_boundary.py``).
 """
 
 from __future__ import annotations
@@ -45,14 +42,12 @@ TOP_PER_SOURCE = 8
 #: more, still bounded.
 PAGE_ROWS = 25
 
-#: The target a caller should ask again for more rows, which DIFFERS BY SURFACE and
-#: is why this is a parameter rather than a constant. On the engine, ``model_options``
-#: IS this projection and honours the selectors. On the connector it is the complete,
-#: ceiling-exempt document that ignores them — so naming it there tells a caller to
-#: re-fetch the 1.27 MB catalogue the projection exists to avoid, which is the exact
-#: failure being fixed. The connector's continuation is ``model_options_summary``.
-ENGINE_MORE_TARGET = "model_options"
-CONNECTOR_MORE_TARGET = "model_options_summary"
+#: The target a caller asks again for more rows. On both model-door surfaces
+#: ``model_options`` IS this projection and honours the selectors, so one name
+#: serves both. (Until 2026-09-30 the connector's ``model_options`` was the
+#: complete document, for the app's picker, and needed a second name here; the
+#: app now reads the complete catalogue through the owner door.)
+MORE_TARGET = "model_options"
 
 
 def _more_hint(target: str) -> str:
@@ -163,7 +158,7 @@ def _matches(row: dict, needle: str) -> bool:
 
 def compact_model_options(
     document: object, *, query: str = "", offset: int = 0,
-    more_target: str = ENGINE_MORE_TARGET,
+    more_target: str = MORE_TARGET,
 ) -> object:
     """Project the full advisory catalogue into a default a small model can read.
 
@@ -181,11 +176,8 @@ def compact_model_options(
     Every shape carries totals and ``next_offset``, so "there are more" is never
     something the agent has to infer.
 
-    ``more_target`` names the target the caller asks again — the ENGINE default,
-    because on that surface ``model_options`` is this projection. The connector
-    MUST pass ``CONNECTOR_MORE_TARGET``: there, ``model_options`` is the complete
-    ceiling-exempt document that ignores these selectors, so pointing a caller at
-    it re-fetches the whole catalogue.
+    ``more_target`` names the target the caller asks again: ``model_options``,
+    which is this projection on every model-door surface.
     """
     if not isinstance(document, dict) or "options" not in document or document.get("error"):
         return document

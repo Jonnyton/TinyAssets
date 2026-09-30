@@ -1833,6 +1833,7 @@ def onboarding_routes() -> list[Any]:
         handle_service_worker,
     )
     from tinyassets.onboarding.ui_frame import handle_ui_frame
+    from tinyassets.owner_door import owner_door_routes
 
     return [
         Route("/app", _handle_app, methods=["GET", "HEAD"]),
@@ -1867,6 +1868,9 @@ def onboarding_routes() -> list[Any]:
         Route("/app/devices", handle_devices, methods=["GET", "POST"]),
         Route("/app/notify", handle_notify_settings, methods=["GET", "POST"]),
         Route("/app/sw.js", handle_service_worker, methods=["GET", "HEAD"]),
+        # The OWNER door: every read the app renders, complete. Identity-gated by
+        # `_is_app_path` like every route above; see `tinyassets/owner_door`.
+        *owner_door_routes(),
     ]
 
 

@@ -69,7 +69,9 @@ _FUNCS = (
     "copyModelChoice", "captureTurnOptions", "sendConversationRequest",
     "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
     "offerResend", "noteHeldQueue", "offerSavedConversationCheck",
-    "sendTurn", "loadHistory", "restoreInflight", "pollStatus",
+    "sendTurn", "loadHistory",
+    "drawHistoryTurns", "offerEarlier", "loadEarlier", "historyFailed",
+    "restoreInflight", "pollStatus",
     "messageBody", "expansionHandle", "offerFullMessage", "loadFullMessage",
     "setQueueScope", "setQueueOwner", "ownsSavedRow",
     "flushSendQueue", "queueTurn", "saveQueue", "readSavedQueue", "stillSaved",
@@ -162,6 +164,17 @@ function firstQueuedBubble(){ return null; }
 
 const converseCalls=[], statusPolls=[];
 const gates=[];
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={ _loginEpoch:0, invalidateSession(){},
   converse:async(m,inputMethod,modelChoice,consumerRequest)=>{
     converseCalls.push(m);

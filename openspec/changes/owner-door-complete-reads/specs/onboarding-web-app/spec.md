@@ -25,7 +25,7 @@ The phone app (Capacitor, `server.url` = the live `/app`) and the desktop app
 
 #### Scenario: Another account's data is refused exactly as on the connector
 - **WHEN** a signed-in account names a universe it does not own
-- **THEN** the owner door returns the connector's refusal with a non-2xx status and no data
+- **THEN** the owner door returns the same refusal the connector returns, and none of that universe's data
 
 #### Scenario: Account type is the only per-account difference
 - **WHEN** a free account and a subscription account with the same data read the rail, status and bindings

@@ -317,16 +317,15 @@ def test_the_rail_has_no_ceiling(base):
         assert "error" not in out, f"ask {i} was refused: {out}"
     from pathlib import Path
 
-    assert len(pr.list_pending(Path(base) / "u-1", limit=None)) == 60
+    assert len(pr.list_pending(Path(base) / "u-1")) == 60
     assert not hasattr(pr, "MAX_PENDING"), "the pending ceiling is gone"
 
 
 def test_listing_every_pending_row_is_not_silently_paged(base):
-    """``limit=None`` must mean all of them, not the old 50.
+    """The queue is read whole: there is no page, and no default page.
 
-    Reconciliation callers (a revoked connection, a model-access match) pass
-    None. Under the old code they passed MAX_PENDING, which would have become a
-    real cutoff the moment the ceiling stopped existing.
+    A default page of 10 (and the connector's 30 passed through it) cut the
+    owner's own queue; on 2026-09-30 that is how a waiting request went unseen.
     """
     from pathlib import Path
 
@@ -337,8 +336,23 @@ def test_listing_every_pending_row_is_not_silently_paged(base):
     for i in range(55):
         _ask("u-1", title="ask %d" % i)
     udir = Path(base) / "u-1"
-    assert len(list_pending(udir, limit=None)) == 55
-    assert len(list_pending(udir)) == 10, "the default page size is unchanged"
+    assert len(list_pending(udir)) == 55
+    assert len(_raw_rail("u-1")["pending"]) >= 55, "the rail is the whole queue"
+
+
+def test_an_unreadable_queue_raises_instead_of_reading_as_empty(base):
+    """``[]`` would draw "nothing is waiting on you" over a queue we cannot read."""
+    from pathlib import Path
+
+    from tinyassets.storage.pending_requests import _DB_NAME, list_pending
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _ask("u-1", title="one")
+    udir = Path(base) / "u-1"
+    (udir / _DB_NAME).write_bytes(b"this is not a sqlite database" * 64)
+    with pytest.raises(Exception):
+        list_pending(udir)
 
 
 @pytest.mark.parametrize("fn", ["ask", "rail", "answer"])
