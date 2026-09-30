@@ -386,6 +386,12 @@ class WireWorker:
                 "ref_name": "refs/heads/main",
             }
         if request["op"] == "push":
+            # Snapshot the bundle AS THE WORKER SAW IT: staging is removed when
+            # the push returns (it used to leak on every path), so a test that
+            # verifies the bundle afterwards verifies this copy.
+            snapshot = self.origin.path.parent / f"pushed-{len(self.requests)}.bundle"
+            shutil.copyfile(request["bundle_path"], snapshot)
+            self.requests[-1]["bundle_snapshot"] = str(snapshot)
             if self.push_refusal is not None:
                 return self.push_refusal
             return {
@@ -688,8 +694,10 @@ def test_a_node_commit_becomes_a_bundle_the_push_leg_can_verify(
     scratch.mkdir()
     home = tmp_path / "verify-home"
     home.mkdir()
+    # The staging copy is gone with its staging; nothing may linger there.
+    assert not Path(request["bundle_path"]).exists()
     refs = verify_bundle(
-        Path(request["bundle_path"]),
+        Path(request["bundle_snapshot"]),
         max_bytes=512 * 1024 * 1024,
         scratch_dir=scratch,
         home_dir=home,
@@ -699,7 +707,7 @@ def test_a_node_commit_becomes_a_bundle_the_push_leg_can_verify(
     text = " ".join(str(ref) for ref in refs)
     assert "refs/tiny/export" in text
     listed = subprocess.run(
-        [GIT, "bundle", "list-heads", str(request["bundle_path"])],
+        [GIT, "bundle", "list-heads", str(request["bundle_snapshot"])],
         capture_output=True,
         text=True,
         check=True,

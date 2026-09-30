@@ -240,79 +240,99 @@ def reconcile_push_intents(
 
         execute = execute_workspace_operation
 
-    root = (
-        Path(staging_root)
-        if staging_root is not None
-        else Path(base_path) / ".workspace-staging"
-    )
-    root.mkdir(parents=True, exist_ok=True)
+    from tinyassets import workspace_staging
+
     settled: list[tuple[str, str]] = []
     for intent in intents:
-        staging = root / f"reconcile-{intent.intent_id}"
-        staging.mkdir(parents=True, exist_ok=True)
-        # The AUTHORITY is revalidated before the host is contacted: a grant
-        # revoked since the push must not be used to ask about it.
-        if revalidate is not None:
-            try:
-                allowed = bool(revalidate(intent))
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "intent revalidation crashed for %s", intent.intent_id
-                )
-                allowed = False
-            if not allowed:
-                _defer(base_path, intent, reason="authority")
-                settled.append((intent.intent_id, "sent"))
-                continue
-
-        credential_ref = ""
-        if credential_ref_for is not None:
-            try:
-                credential_ref = credential_ref_for(intent.connection_id)
-            except Exception:
-                credential_ref = ""
-        if not credential_ref:
-            credential_ref = _credential_ref(base_path, intent.connection_id)
-
-        # The intent's OWN host, never a module default: defaulting to
-        # github.com would contact a host this push never used (round 3 P0 #1).
-        intent_host = intent.host or host
-        if not intent_host:
-            _defer(base_path, intent, reason="no host recorded")
-            settled.append((intent.intent_id, "sent"))
-            continue
-
-        answer: dict[str, Any]
-        try:
-            answer = execute(
-                {
-                    "op": "ls_remote",
-                    "universe_dir": str(base_path),
-                    "credential_ref": credential_ref,
-                    "host": intent_host,
-                    "owner_repo": intent.repo,
-                    "remote_ref": intent.remote_ref,
-                    "staging_dir": str(staging),
-                }
+        # Owned by this process's liveness token and removed after the probe,
+        # whatever it answered: it used to be left behind on every pass.
+        # ``staging_root`` names the directory whose ``.workspace-staging`` is used.
+        with workspace_staging.staging(
+            staging_root if staging_root is not None else base_path,
+            f"reconcile-{intent.intent_id}",
+        ) as staging:
+            _reconcile_one(
+                base_path, intent, staging, settled,
+                execute=execute, credential_ref_for=credential_ref_for,
+                revalidate=revalidate, host=host,
             )
-        except Exception:
-            answer = {"ok": False}
-
-        if not answer.get("ok"):
-            # A TRANSPORT failure answers nothing. Leaving it `sent` keeps it
-            # claimable by the next pass; marking it `unknown` here would
-            # retire an intent nobody ever asked about (round 3, P1 #5).
-            _defer(base_path, intent, reason="transport")
-            settled.append((intent.intent_id, "sent"))
-            continue
-
-        # A SUCCESSFUL ls-remote with no sha means the ref is absent, which is
-        # a real answer: the push did not land.
-        observed = str(answer.get("observed_sha") or "")
-        state = "done" if observed and observed == intent.sha else "failed"
-        settle_push_intent(base_path, intent.intent_id, state, observed_sha=observed or None)
-        settled.append((intent.intent_id, state))
     return settled
+
+
+def _reconcile_one(
+    base_path: str | Path,
+    intent: PushIntent,
+    staging: Path,
+    settled: list[tuple[str, str]],
+    *,
+    execute: Callable[[dict[str, Any]], dict[str, Any]],
+    credential_ref_for: Callable[[str], str] | None,
+    revalidate: Callable[[PushIntent], bool] | None,
+    host: str,
+) -> None:
+    """Settle one intent. Appends its (intent_id, state) to ``settled``."""
+    # The AUTHORITY is revalidated before the host is contacted: a grant
+    # revoked since the push must not be used to ask about it.
+    if revalidate is not None:
+        try:
+            allowed = bool(revalidate(intent))
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "intent revalidation crashed for %s", intent.intent_id
+            )
+            allowed = False
+        if not allowed:
+            _defer(base_path, intent, reason="authority")
+            settled.append((intent.intent_id, "sent"))
+            return
+
+    credential_ref = ""
+    if credential_ref_for is not None:
+        try:
+            credential_ref = credential_ref_for(intent.connection_id)
+        except Exception:
+            credential_ref = ""
+    if not credential_ref:
+        credential_ref = _credential_ref(base_path, intent.connection_id)
+
+    # The intent's OWN host, never a module default: defaulting to
+    # github.com would contact a host this push never used (round 3 P0 #1).
+    intent_host = intent.host or host
+    if not intent_host:
+        _defer(base_path, intent, reason="no host recorded")
+        settled.append((intent.intent_id, "sent"))
+        return
+
+    answer: dict[str, Any]
+    try:
+        answer = execute(
+            {
+                "op": "ls_remote",
+                "universe_dir": str(base_path),
+                "credential_ref": credential_ref,
+                "host": intent_host,
+                "owner_repo": intent.repo,
+                "remote_ref": intent.remote_ref,
+                "staging_dir": str(staging),
+            }
+        )
+    except Exception:
+        answer = {"ok": False}
+
+    if not answer.get("ok"):
+        # A TRANSPORT failure answers nothing. Leaving it `sent` keeps it
+        # claimable by the next pass; marking it `unknown` here would
+        # retire an intent nobody ever asked about (round 3, P1 #5).
+        _defer(base_path, intent, reason="transport")
+        settled.append((intent.intent_id, "sent"))
+        return
+
+    # A SUCCESSFUL ls-remote with no sha means the ref is absent, which is
+    # a real answer: the push did not land.
+    observed = str(answer.get("observed_sha") or "")
+    state = "done" if observed and observed == intent.sha else "failed"
+    settle_push_intent(base_path, intent.intent_id, state, observed_sha=observed or None)
+    settled.append((intent.intent_id, state))
 
 
 def _defer(base_path: str | Path, intent: PushIntent, *, reason: str) -> None:
