@@ -56,6 +56,7 @@ from tinyassets.storage.outbound_connections import (
     _SsrfHardenedHttpDriver,
     _substitute_url_secret,
     _TrustedNetworkDriver,
+    url_secret_sensitive_values,
     url_secret_token,
     validate_url_secret_binding,
     validate_url_secret_value,
@@ -435,6 +436,27 @@ def test_the_bundle_builder_refuses_a_corrupted_vault_record() -> None:
         _build_http_secret_bundle(_URL_SECRET_SCHEME, "../../admin")
     bundle = _build_http_secret_bundle(_URL_SECRET_SCHEME, HOOK_SECRET)
     assert bundle.secret_values() == (HOOK_SECRET,)
+    assert bundle.get("token") == HOOK_SECRET
+
+
+def test_every_segment_of_a_multi_segment_secret_is_a_bundle_member() -> None:
+    """astra refute round 1, FINDING 2.
+
+    The response scanners match SUBSTRINGS. Scanning only the `/`-joined form
+    let a destination echo ONE segment of a Slack-shaped `T…/B…/token` back;
+    that segment was returned to the caller, persisted by `bounded_evidence`
+    and quoted in the run's `external_write_errors` preview.
+
+    MUTATION CHECK: drop the `url_secret_segment_*` members and the driver test
+    below stops failing closed on a single-segment echo.
+    """
+    values = url_secret_sensitive_values(SLACK_SECRET)
+    assert values[0] == SLACK_SECRET
+    assert set(values[1:]) == set(SLACK_SECRET.split("/"))
+    bundle = _build_http_secret_bundle(_URL_SECRET_SCHEME, SLACK_SECRET)
+    assert set(bundle.secret_values()) == set(values)
+    # Still readable as the one value the substituter splices in.
+    assert bundle.get("token") == SLACK_SECRET
 
 
 def test_the_scheme_emits_no_auth_header() -> None:
@@ -459,12 +481,18 @@ def _canonical(path_qs: str) -> Any:
     )
 
 
+def _substitute(path_qs: str, endpoint: Any, **over: Any) -> Any:
+    kwargs: dict[str, Any] = {
+        "auth_scheme": _URL_SECRET_SCHEME,
+        "bundle": ConnectionSecretBundle(token=HOOK_SECRET),
+        "endpoint": endpoint,
+    }
+    kwargs.update(over)
+    return _substitute_url_secret(_canonical(path_qs), **kwargs)
+
+
 def test_substitution_replaces_the_placeholder_verbatim() -> None:
-    out = _substitute_url_secret(
-        _canonical(HOOK_TEMPLATE),
-        auth_scheme=_URL_SECRET_SCHEME,
-        bundle=ConnectionSecretBundle(token=HOOK_SECRET),
-    )
+    out = _substitute(HOOK_TEMPLATE, _parsed()[0])
     assert out.path_qs == f"/mcp/hooks/{HOOK_SECRET}"
     assert out.hostname == HOOK_HOST  # the host is never touched: the DNS pin holds
 
@@ -473,39 +501,87 @@ def test_substitution_leaves_the_query_string_alone() -> None:
     """The secret of a capability URL is in the PATH. A placeholder in the query
     was validated against `query_patterns`, and splicing a credential there
     would put it somewhere the owner's grant never described."""
-    out = _substitute_url_secret(
-        _canonical(f"{HOOK_TEMPLATE}?note=%7Bsecret%7D"),
-        auth_scheme=_URL_SECRET_SCHEME,
-        bundle=ConnectionSecretBundle(token=HOOK_SECRET),
-    )
-    assert out.path_qs == f"/mcp/hooks/{HOOK_SECRET}?note=%7Bsecret%7D"
+    out = _substitute(f"{HOOK_TEMPLATE}?note=1", _parsed()[0])
+    assert out.path_qs == f"/mcp/hooks/{HOOK_SECRET}?note=1"
 
 
 def test_substitution_refuses_a_url_secret_request_that_names_no_placeholder() -> None:
     with pytest.raises(SsrfValidationError):
-        _substitute_url_secret(
-            _canonical("/mcp/hooks/whatever"),
-            auth_scheme=_URL_SECRET_SCHEME,
-            bundle=ConnectionSecretBundle(token=HOOK_SECRET),
-        )
+        _substitute("/mcp/hooks/whatever", _parsed()[0])
 
 
 def test_substitution_refuses_a_placeholder_under_another_scheme() -> None:
     with pytest.raises(SsrfValidationError):
-        _substitute_url_secret(
-            _canonical(HOOK_TEMPLATE),
-            auth_scheme="bearer",
-            bundle=ConnectionSecretBundle(token=HOOK_SECRET),
-        )
+        _substitute(HOOK_TEMPLATE, _parsed()[0], auth_scheme="bearer")
 
 
-def test_substitution_refuses_a_repeated_placeholder() -> None:
+def test_substitution_refuses_a_request_no_endpoint_admitted() -> None:
+    """`None` is what the allowlist returns on a `full` connection, and what the
+    raw-transport path passes. Either way there is no reserved position."""
     with pytest.raises(SsrfValidationError):
-        _substitute_url_secret(
-            _canonical("/mcp/hooks/{secret}/{secret}"),
-            auth_scheme=_URL_SECRET_SCHEME,
-            bundle=ConnectionSecretBundle(token=HOOK_SECRET),
-        )
+        _substitute(HOOK_TEMPLATE, None)
+
+
+def test_substitution_refuses_full_access_at_the_last_moment() -> None:
+    """astra refute round 1, FINDING 4. Creation and `set_access_mode` refuse
+    the combination; this refuses a row that reached it some other way, one
+    line before the wire."""
+    from tinyassets.storage.outbound_connections import ACCESS_FULL
+
+    with pytest.raises(SsrfValidationError) as exc:
+        _substitute(HOOK_TEMPLATE, _parsed()[0], access_mode=ACCESS_FULL)
+    assert "full" in str(exc.value)
+
+
+def test_substitution_is_positioned_by_the_template_not_by_a_search() -> None:
+    """astra refute round 1, FINDING 3 — the sharpest one.
+
+    `/hooks/{secret}/{tail+}` with `tail: ".*"` ADMITS the concrete path
+    `/hooks/{secret}/echo/{secret+}`: the reserved segment is the literal token,
+    and the tail matches anything. A substituter that SEARCHED the path would
+    find `{secret+}` in the caller-controlled tail and put the credential
+    there — at a path the owner granted for arbitrary content.
+
+    Positioned by the template, the tail's reserved token is left alone, and the
+    closing invariant then refuses the request because something reserved
+    survived. MUTATION CHECK: restore the search and this passes a secret into
+    the tail.
+    """
+    endpoint = _parse_allowed_endpoints(
+        [
+            {
+                "host": HOOK_HOST,
+                "path_template": "/hooks/{secret}/{tail+}",
+                "methods": ["POST"],
+                "param_patterns": {"tail": ".*"},
+            }
+        ]
+    )[0]
+    with pytest.raises(SsrfValidationError) as exc:
+        _substitute("/hooks/{secret}/echo/{secret+}", endpoint)
+    assert "only where the endpoint declares it" in str(exc.value)
+    # The legitimate shape on that same endpoint still works, and the secret
+    # lands in the FIRST position, not the tail.
+    out = _substitute("/hooks/{secret}/echo/anything", endpoint)
+    assert out.path_qs == f"/hooks/{HOOK_SECRET}/echo/anything"
+
+
+def test_substitution_refuses_a_token_in_a_position_the_template_did_not_reserve(
+) -> None:
+    """The same hole through an ordinary `{param}`: the reserved token can ride
+    in a permissive placeholder, and only positioning keeps it out."""
+    endpoint = _parse_allowed_endpoints(
+        [
+            {
+                "host": HOOK_HOST,
+                "path_template": "/hooks/{room}/{secret}",
+                "methods": ["POST"],
+                "param_patterns": {"room": "[a-z{}+]{1,40}"},
+            }
+        ]
+    )[0]
+    with pytest.raises(SsrfValidationError):
+        _substitute("/hooks/{secret+}/{secret}", endpoint)
 
 
 def test_substitution_is_a_no_op_for_every_other_scheme() -> None:
@@ -712,6 +788,45 @@ def test_a_failing_far_side_that_echoes_the_url_fails_closed(
     assert HOOK_SECRET not in str(exc.value)
 
 
+def test_a_single_echoed_segment_of_a_multi_segment_secret_fails_closed(
+    stub_server: Any,
+) -> None:
+    """astra refute round 1, FINDING 2.
+
+    The receiver echoes ONE segment of the Slack-shaped secret, not the joined
+    form. Scanning only the joined credential let that through to the caller,
+    into `bounded_evidence` and into the run's `external_write_errors` preview.
+
+    MUTATION CHECK: drop the `url_secret_segment_*` bundle members and this
+    returns 500 with the segment in the body.
+    """
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+
+    driver, port = _local_driver(stub_server)
+    leaked = SLACK_SECRET.split("/")[-1]
+    stub_server.stub.update(status=500, body=json.dumps({"token": leaked}).encode())
+    endpoints = _parse_allowed_endpoints(
+        [
+            {
+                "host": "public.example",
+                "path_template": SLACK_TEMPLATE,
+                "methods": ["POST"],
+            }
+        ]
+    )
+
+    with pytest.raises(ProxyRequestError) as exc:
+        driver(
+            bundle=_build_http_secret_bundle(_URL_SECRET_SCHEME, SLACK_SECRET),
+            auth_scheme=_URL_SECRET_SCHEME,
+            method="POST",
+            url=f"https://public.example:{port}{SLACK_TEMPLATE}",
+            body={"text": "x"},
+            allowed_endpoints=endpoints,
+        )
+    assert leaked not in str(exc.value)
+
+
 def test_a_failing_far_side_that_does_not_echo_is_returned_as_is(
     stub_server: Any,
 ) -> None:
@@ -785,6 +900,49 @@ def test_a_mismatched_link_is_refused_without_echoing_it(pasted: str) -> None:
     # it would put the secret in the very error the owner reads aloud.
     assert HOOK_SECRET not in error
     assert HOOK_TEMPLATE in error or "8-512" in error or "1-8 path" in error
+
+
+def test_an_unparseable_link_does_not_leak_through_the_parser_exception() -> None:
+    """astra refute round 1, FINDING 5.
+
+    `urlsplit` QUOTES ITS INPUT: a netloc that changes under NFKC normalization
+    (full-width solidus, U+FF0F) raises
+    "netloc '<the whole link>' contains invalid characters" — and the whole link
+    is the secret. Uncaught, that propagated out of the public `connect_http`.
+
+    MUTATION CHECK: remove the try/except around `urlsplit` and this raises
+    instead of returning, with the secret in the message.
+    """
+    pasted = f"https://{HOOK_HOST}／mcp／hooks／{HOOK_SECRET}"
+    value, error = extract_url_secret(pasted, _parsed())
+    assert value == ""
+    assert HOOK_SECRET not in error
+
+
+def test_a_link_on_another_port_is_refused_not_silently_retargeted() -> None:
+    """astra refute round 1, FINDING 6.
+
+    Reading `parts.hostname` alone accepted `https://host:8443/...` against an
+    endpoint the transport dials on 443 — so the owner's secret for one origin
+    would be sent to a different origin on the same name. The endpoint grammar
+    carries no port, so there is nothing to match against: refuse.
+    """
+    value, error = extract_url_secret(
+        f"https://{HOOK_HOST}:8443/mcp/hooks/{HOOK_SECRET}", _parsed()
+    )
+    assert value == ""
+    assert "port" in error
+    assert HOOK_SECRET not in error
+
+
+def test_a_link_with_a_non_numeric_port_does_not_leak_either() -> None:
+    """`parts.port` is lazy and raises on a non-numeric port, so it is read
+    inside the same guard as the parse."""
+    value, error = extract_url_secret(
+        f"https://{HOOK_HOST}:notaport/mcp/hooks/{HOOK_SECRET}", _parsed()
+    )
+    assert value == ""
+    assert HOOK_SECRET not in error
 
 
 def test_an_ambiguous_link_is_refused_rather_than_guessed() -> None:
@@ -980,6 +1138,55 @@ def test_deposit_refuses_a_placeholder_under_a_header_scheme(base: Path) -> None
     assert result["error"] == "connection_setup_invalid"
     assert _URL_SECRET_SCHEME in result["detail"]
     assert not _http_records(udir)
+
+
+def test_deposit_refuses_an_unparseable_link(base: Path) -> None:
+    """astra FINDING 5, at the public door: the exception must not escape
+    `connect_http` carrying the pasted link."""
+    udir = _make_universe(base, "u-owner", admin="founder")
+    _login("founder")
+
+    result = _connect(
+        "u-owner",
+        secret=f"https://{HOOK_HOST}／mcp／hooks／{HOOK_SECRET}",
+    )
+
+    assert result["error"] == "connection_setup_invalid"
+    assert HOOK_SECRET not in json.dumps(result)
+    assert not _http_records(udir)
+
+
+def test_deposit_refuses_a_link_on_another_port(base: Path) -> None:
+    """astra FINDING 6, at the public door."""
+    udir = _make_universe(base, "u-owner", admin="founder")
+    _login("founder")
+
+    result = _connect(
+        "u-owner", secret=f"https://{HOOK_HOST}:8443/mcp/hooks/{HOOK_SECRET}"
+    )
+
+    assert result["error"] == "connection_setup_invalid"
+    assert not _http_records(udir)
+
+
+def test_dispatch_refuses_a_row_mutated_to_full_access() -> None:
+    """astra FINDING 4, at the dispatch boundary the broker re-reads."""
+    driver = _TrustedNetworkDriver(
+        {"allow_test_fixtures": False, "allow_http_connections": True}, Path(".")
+    )
+    with pytest.raises(SsrfValidationError) as exc:
+        driver(
+            connection_type="http",
+            auth_scheme=_URL_SECRET_SCHEME,
+            allowed_endpoints=_parsed(),
+            access_mode="full",
+            credential=HOOK_SECRET,
+            verb="POST",
+            provider="http",
+            destination="bug-reports",
+            request={"url": f"https://{HOOK_HOST}/unguarded/{HOOK_SECRET}"},
+        )
+    assert "full" in str(exc.value)
 
 
 def test_rotation_extracts_from_the_new_link(base: Path) -> None:

@@ -216,10 +216,45 @@ outbound/deposit files where the seam already has a home.
 
 ## D9. Review
 
-One `gpt-6-astra` refute round via `peer-agents` from the PR worktree, on
-credential leakage and cross-user reach. `AGREE` / `DISAGREE_EVIDENCE` /
-`DISAGREE_CONCERN`, three rounds maximum, verdict logged in the PR.
+### Round 1 — `gpt-6-astra`, 2026-09-29, head `d8dc1986`: `OVERALL: HOLES (6)`
 
-Live proof: mint a hook on the **founder's own** universe
-(`write_graph target="webhook"`), deposit its URL as a `url_secret` connection,
-and POST to it through the real effector. Never the free account's friend link.
+Dispatched via `peer-agents` from the PR worktree on the two axes above. Five
+findings were real and this change's; one was pre-existing. Every one is
+`DISAGREE_EVIDENCE` with a reproduction, which is the verdict class worth
+having — each names the exact input.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Redeposit race sends the new secret to the old endpoint | **Filed**, not fixed — pre-existing and scheme-independent (`docs/concerns/2026-09-29-redeposit-race-sends-new-secret-to-old-endpoint.md`) |
+| 2 | Individual `{secret+}` segments escape response scanning | **Fixed** — `url_secret_sensitive_values`; every segment is a bundle member and a broker `secrets_held` entry |
+| 3 | An alternate reserved token receives substitution in the wrong path position | **Fixed** — substitution is positioned by the matched endpoint's template (D2 revised below) |
+| 4 | Dispatch does not reject a capability connection mutated to `full` | **Fixed** — `access_mode` passes into `validate_url_secret_binding`, checked at dispatch and again in the substituter |
+| 5 | Malformed pasted links produce secret-bearing parser exceptions | **Fixed** — `urlsplit` (and the lazy `.port`) wrapped; fixed text, `__context__` dropped |
+| 6 | Deposit silently discards the pasted capability's port | **Fixed** — an explicit port is refused, not ignored |
+
+**Finding 3 changed D2**, so the design statement above is the revised one.
+The original searched the concrete path for the reserved token. astra's input:
+declare `/hooks/{secret}/{tail+}` with `tail: ".*"`, which legitimately admits
+`/hooks/{secret}/echo/{secret+}` — the reserved segment is the literal token and
+the tail matches anything. A search finds `{secret+}` **in the tail** and puts
+the credential at a path the owner granted for arbitrary content. So
+`_enforce_endpoint_allowlist` now RETURNS the endpoint that admitted the
+request, `_positioned_url_secret_path` replaces only the segment that
+endpoint's template reserves, and a closing invariant refuses any reserved
+token that survives substitution.
+
+**Finding 2 was the subtlest.** Making the credential multi-segment (for
+Slack) made the response scanners — which match substrings — miss an echo of
+ONE segment. That is the class the repo already names: a guard whose test drives
+the joined form never sees the segment form.
+
+Note for the next dispatch: `codex exec -m gpt-6-astra -s read-only` **wrote
+files** (six concern drafts). The `codex` on this host is a shim that injects a
+bypass flag, so `-s read-only` did not hold. Inventory `git status` after a
+dispatched review.
+
+### Live proof
+
+Mint a hook on the **founder's own** universe (`write_graph target="webhook"
+operation="mint"`), deposit its URL as a `url_secret` connection, and POST to it
+through the real effector. Never the free account's friend link.

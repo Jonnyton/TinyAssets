@@ -70,6 +70,14 @@ declared template instead.
 - **WHEN** the pasted URL's host is not the endpoint's host
 - **THEN** the deposit is refused, the error names the declared template, and the error contains no part of the pasted URL
 
+#### Scenario: a link on another port
+- **WHEN** the pasted URL carries an explicit port
+- **THEN** the deposit is refused rather than retargeted at the endpoint's own origin
+
+#### Scenario: a link the URL parser cannot read
+- **WHEN** the pasted URL's authority changes under NFKC normalization, or its port is not numeric
+- **THEN** the deposit is refused with fixed text, and neither the refusal nor any exception it carries contains the pasted value
+
 #### Scenario: a link for an undeclared path
 - **WHEN** the pasted URL's path does not match the declared template
 - **THEN** the deposit is refused and nothing is written
@@ -87,6 +95,12 @@ segment into the path only after the allowlist has admitted the request. DNS
 resolution and the globally-routable-address check SHALL run after
 substitution, unchanged, on the same host.
 
+The substitution position SHALL be derived from the **template of the endpoint
+that admitted the request**, never by searching the concrete path, and a
+reserved token surviving anywhere in the path after substitution SHALL refuse
+the request. A request that no declared endpoint admitted, or that was admitted
+on a host match alone (`full`), SHALL be refused rather than substituted.
+
 The stored segment SHALL be re-validated against the segment grammar
 immediately before substitution, and a segment that fails SHALL refuse the
 request.
@@ -98,6 +112,10 @@ request.
 #### Scenario: a node supplies its own value in the secret's position
 - **WHEN** a node emits a packet whose path is `/mcp/hooks/<anything-but-the-token>`
 - **THEN** the allowlist refuses the request and nothing is sent
+
+#### Scenario: a reserved token in a position the template did not reserve
+- **WHEN** an endpoint declares `/hooks/{secret}/{tail+}` with a permissive `tail` pattern and a node requests `/hooks/{secret}/echo/{secret+}`
+- **THEN** the request is refused, and the credential is never placed in the tail
 
 #### Scenario: a corrupted stored segment
 - **WHEN** the stored segment contains a `/`, a dot-segment, a control byte, or is shorter than 8 characters
@@ -112,9 +130,16 @@ projected connection view, the grant sentence and a remixed connector artifact
 SHALL all carry the placeholder form. A destination response that echoes the
 secret SHALL refuse the call rather than return it.
 
+A response echoing the secret SHALL be recognised whether it echoes the whole
+credential or any ONE of its path segments.
+
 #### Scenario: a failing call
 - **WHEN** a `url_secret` call returns HTTP 500 with the request URL in its body
 - **THEN** the run's `external_write_errors` row and the effect evidence contain no part of the secret
+
+#### Scenario: a response echoing one segment of a multi-segment secret
+- **WHEN** a `{secret+}` connection's destination returns a body containing only the last segment of the credential
+- **THEN** the call fails closed and that segment is not returned, persisted or quoted
 
 #### Scenario: the graph is read back
 - **WHEN** the owner reads the branch that posts to the webhook

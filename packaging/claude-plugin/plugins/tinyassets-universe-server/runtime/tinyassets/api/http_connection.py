@@ -243,20 +243,42 @@ def extract_url_secret(
             return validate_url_secret_value(text, carriers[0][1]), ""
         except SsrfValidationError as exc:
             return "", str(exc)
-    parts = urllib.parse.urlsplit(text)
+    try:
+        parts = urllib.parse.urlsplit(text)
+        # `parts.port` is lazy AND raises on a non-numeric port, so read it
+        # inside the same guard as the parse.
+        port = parts.port
+        hostname = parts.hostname
+    except ValueError:
+        # `urlsplit` QUOTES ITS INPUT: a netloc that changes under NFKC
+        # normalization (a full-width solidus, U+FF0F) raises
+        # "netloc '<the whole thing>' contains invalid characters", and the
+        # whole thing is the link with the secret in it. Swallowed to fixed
+        # text, with `from None` so no `__context__` carries it either
+        # (gpt-6-astra refute round 1, FINDING 5).
+        return "", (
+            "that link could not be read as a plain https URL -- paste it again "
+            f"exactly as you were given it (expected {expected})"
+        )
     if (
         parts.scheme != "https"
         or parts.username is not None
         or parts.password is not None
+        or port is not None
         or parts.query
         or parts.fragment
-        or not parts.hostname
+        or not hostname
     ):
+        # A PORT is refused, not ignored. Reading `hostname` alone accepted
+        # `https://host:8443/mcp/hooks/<secret>` against an endpoint that is
+        # dialed on 443 — so the owner's secret for one origin would be sent to
+        # a different one on the same name (astra round 1, FINDING 6). The
+        # endpoint grammar carries no port, so there is nothing to match against.
         return "", (
             "paste the plain https link you were given -- no sign-in prefix, no "
-            f"query string and no #fragment (expected {expected})"
+            f"port, no query string and no #fragment (expected {expected})"
         )
-    host = parts.hostname.strip().lower()
+    host = hostname.strip().lower()
     # Zapier and Make show a trailing slash in their own UI; the endpoint
     # template does not carry one, so tolerate exactly that.
     path = parts.path.rstrip("/") or "/"
