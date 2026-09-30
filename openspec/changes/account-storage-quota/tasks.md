@@ -14,7 +14,7 @@ Design approval gates task 2 onward. Task 1 is read-only and gates the numbers.
       `TINYASSETS_{FREE,PAID}_STORAGE_GIB`. Delete the MB variables,
       `_universe_quota_kwargs` and the pool's universe-quota predicate. Update
       `environment-variables.md`.
-- [ ] 2.2 `accounts.py`: add the `universe_owner` table, written in the creation
+- [x] 2.2 `universe_owner.py`: add the `universe_owner` table, written in the creation
       transaction(s), a backfill from stored bindings only (D2), `owner_of`,
       `tier_of` and `usage`. Coordinate with the seats-per-account lane so there
       is a single resolver.

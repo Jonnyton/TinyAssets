@@ -105,7 +105,7 @@ It starts from that review's measured constraints on `origin/main` fb39b118:
 - **Behaviour:** workspaces that fit now work on free. User writes past the quota
   are refused with a link. Nothing else is refused.
 - **Code:**
-  - New: `usage_policy.py`, `accounts.py`, `storage_accounting.py`.
+  - New: `usage_policy.py`, `universe_owner.py`, `storage_accounting.py`.
   - Modified: `effectors/workspace.py`, `workspace_pool.py`, `universe_tools.py`,
     `api/wiki.py`, `run_file_capture.py`, `daemon_server.py`,
     `branch_versions.py`, `memory/project.py`, `daemon_memory.py`,
@@ -115,4 +115,4 @@ It starts from that review's measured constraints on `origin/main` fb39b118:
   has **already** removed the project memory, daemon-wiki and UI-library caps.
   Their bytes have no bound on main until this change's gate lands, so task 3.2
   should land first among the enforcement tasks. The seats-per-account lane
-  consumes `accounts.owner_of` and doesn't define its own.
+  consumes `universe_owner.owner_of` and doesn't define its own.

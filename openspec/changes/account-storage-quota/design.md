@@ -35,13 +35,17 @@ something real). Those are the categories AGENTS.md says to specify first.
 
 ## D2. The account: a stored owner, never an inferred one
 
-- **`universe_owner(universe_id PK, account_id, bound_at)`** lives in the
-  author-server database, beside `universe_acl`. It is written in the same
-  transaction as the creator's admin grant in `_action_create_universe`, and by
-  `claim_founder_home` / `ensure_founder_home`. Those are the only two birth
-  paths. A shared universe's other admins are never charged.
-- **`accounts.owner_of(universe_id) -> account_id | None`** and
-  **`accounts.tier_of(account_id)`** are the one resolver pair. The tier is read
+- **`universe_owner(universe_id PK, owner_id, bound_at, source)`** lives in
+  the author-server database, beside `universe_acl`.
+  `daemon_server.grant_universe_ownership` writes it in the same transaction as
+  the creator's admin grant. That function is called from
+  `_action_create_universe`, the only birth path; first contact materializes
+  through it too. Ownership never moves: a different account raises
+  `OwnershipConflict`, and the grant rolls back with it. A shared universe's
+  other admins are never charged. Account deletion removes the person's owner
+  rows, and their non-home universes become unattributed.
+- **`universe_owner.owner_of(base, universe_id) -> account_id | None`** and
+  **`universe_owner.tier_of(base, account_id)`** are the one resolver pair. The tier is read
   from the account's home universe's `.subscription_state.db`, which is where
   Stripe checkout writes it today. `universe_server._universe_birth_refusal`
   already reads it that way. The seats-per-account lane must call these rather
@@ -140,7 +144,7 @@ counter(seq)                             -- monotone, bumped in every commit/mea
 - **When it runs.** A single-flight background sweep, one at a time and off the
   request path, re-measures rows that are marked dirty or older than 15 min for
   accounts active in the last day. Idle accounts cost nothing.
-- **The number the owner sees** comes from `accounts.usage(account)`: the total,
+- **The number the owner sees** comes from `storage_accounting.usage(account)`: the total,
   the quota, and a per-universe and per-store breakdown with `measured_at`. The
   status fields that display it belong to the seats lane (1.5) and
   limits-cleanup (3.1). This change supplies the function.
@@ -272,10 +276,10 @@ appended:
   ships. That makes 3.2 the first enforcement slice to land. It is a live gap,
   not a future ordering.
 - **`two-dimension-usage-limits` / seats-per-account** consume
-  `accounts.owner_of` / `tier_of`. Whichever change lands first creates
-  `accounts.py`, and the other rebases onto it.
+  `universe_owner.owner_of` / `tier_of`. Whichever change lands first creates
+  `universe_owner.py`, and the other rebases onto it.
 - **`observe-attributable-storage`** remains the admin observation surface.
-  `accounts.usage` becomes the owner-facing authority, and the observation
+  `storage_accounting.usage` becomes the owner-facing authority, and the observation
   helper keeps reporting its own partial, bounded view without claiming quota
   authority.
 
@@ -293,6 +297,6 @@ appended:
   MVP. Kernel quotas are deferred.
 
 **Build order.** PR 1 is the owner resolver alone (`universe_owner` written at
-creation, the `founder_home` backfill, `accounts.owner_of` / `tier_of`), because
+creation, the `founder_home` backfill, `universe_owner.owner_of` / `tier_of`), because
 the seats-per-account lane consumes it. The enforcement slices follow, with
 project memory, the wiki and the UI library (3.2) first.

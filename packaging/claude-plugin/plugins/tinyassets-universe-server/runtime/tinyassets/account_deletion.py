@@ -126,6 +126,10 @@ PERSON_KEYED_DESPITE_UNIVERSE = MappingProxyType({
     # binding to the same home is a blocker, but a binding is the person's own
     # row and should not depend on the universe sweep to disappear.
     "founder_home": "founder_sub",
+    # Being charged for a universe is this person's row wherever it points: a
+    # deleted account must not stay the owner of a non-home universe it made.
+    # That universe then becomes unattributed (counted, never refused).
+    "universe_owner": "owner_id",
     # A grant is this person's grant OF THEIR OWN connection, so it goes with
     # them wherever it points — and it must, because the grant references the
     # connection with no ON DELETE clause: leaving a grant on someone else's
