@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """LIVE PROOF: a capability-URL connection posts to a real ``/mcp/hooks`` receiver.
 
-Runs INSIDE the production container against ``/data``. It proves the one thing
-no unit test can: that the vault segment reaches the wire, and that nothing else
-does.
+Runs INSIDE the production container against ``/data``, as
+``/app/scripts/probes/capability_url_live_proof.py --universe <uid>``. It proves
+the one thing no unit test can: that the vault segment reaches the wire, and
+that nothing else does.
 
-    docker exec tinyassets-daemon python \\
-        /app/scripts/probes/capability_url_live_proof.py --universe <uid>
+No invocation is spelled out here on purpose. ``drop-first-exec`` refuses a
+repo-authored bare exec into the daemon container -- it asserts nothing about
+the identity or capability set it lands with -- and the closed ta-op mode table
+(``deploy/native/ta_op_modes.tsv``) has no mode for an arbitrary script, which
+is the correct answer for a wrapper whose whole value is that its argv is a
+compile-time constant. An operator reaches this the way that gate names as its
+stated limit: ad-hoc admin SSH holding the deploy key, which is outside the repo
+gate by construction.
 
 **The oracle is the receiver's own contract**, not this script's view of the
 secret. ``tinyassets/webhook_inbound.py`` answers a deliverable POST with

@@ -34,18 +34,19 @@ Shape per design.md.
   the stray-token invariant and the segment-echo cases.
 - [x] 11. `python packaging/claude-plugin/build_plugin.py` (mirror parity green
   on every commit).
-- [ ] 12. Land, then, in order:
+- [ ] 12. Land, then, in order: `python scripts/deployed_sha.py
+  --assert-contains <sha>`; run
+  `scripts/probes/capability_url_live_proof.py --universe <founder uid>` inside
+  the daemon container (the invocation is deliberately not written out — see
+  the probe's own docstring and `drop-first-exec`); then sync + archive this
+  change.
 
-      python scripts/deployed_sha.py --assert-contains <sha>
-      docker exec tinyassets-daemon python \
-        /app/scripts/probes/capability_url_live_proof.py --universe <founder uid>
-
-  and then sync + archive this change. The probe is committed, self-cleaning,
-  and refuses to run without an explicit `--universe` the named principal
-  administers. Rehearsed 2026-09-30 against a throwaway data dir
-  (`PROOF_BASE=...`): 10 of its 12 checks pass there, and the two that do not
-  are exactly the two that need the token to exist in **production's** hook DB
-  — check 6 (the receiver's 202) and check 11 (the run it enqueued).
+  The probe is committed, self-cleaning, and refuses to run without an explicit
+  `--universe` the named principal administers. Rehearsed 2026-09-30 against a
+  throwaway data dir (`PROOF_BASE=...`): 10 of its 12 checks pass there, and
+  the two that do not are exactly the two that need the token to exist in
+  **production's** hook DB — check 6 (the receiver's 202) and check 11 (the run
+  it enqueued).
 
 ## Review
 
