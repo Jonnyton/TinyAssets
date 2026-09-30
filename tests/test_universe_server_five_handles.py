@@ -190,12 +190,10 @@ def test_custom_agent_reads_route_through_graph_handle(monkeypatch) -> None:
         observed.append(kwargs)
         return {"routed": kwargs["action"]}
 
-    monkeypatch.setattr(
-        universe_server,
-        "_custom_agents_impl",
-        fake_custom_agents,
-        raising=False,
-    )
+    # Reads dispatch through the shared domain read (the connector delegates).
+    from tinyassets.api import graph_reads
+
+    monkeypatch.setattr(graph_reads, "_custom_agents_impl", fake_custom_agents)
 
     listed = json.loads(
         read_graph(target="agents", query="coding", tags="agent,coding", limit=5)
