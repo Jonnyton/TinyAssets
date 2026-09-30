@@ -13,12 +13,13 @@ Security posture:
   no run can be triggered, not merely un-tunneled (Codex #2).
 - Caller-facing response is UNIFORM across all non-deliverable states — unknown, revoked,
   malformed, disabled, un-runnable — all return 404 with an identical body (Codex #7); the
-  real reason is logged LOUDLY internally. Deliverable → 202. Load states: 429 (rate),
-  503 (saturated).
+  real reason is logged LOUDLY internally. Deliverable → 202; 429 only for the per-token
+  flood limit. There is no saturation refusal — a busy universe queues.
 - Replay is deduped SERVER-side on (token, exact body), never a caller header (Codex #4);
   a replay never consumes rate budget (Codex #5) and fires at most once.
-- Admission is durable + per-token AND per-universe (Codex #3); execution is back-pressured
-  per-universe (Codex #5) so a valid-token storm cannot build unbounded run backlog.
+- Admission is durable and per-token (Codex #3): anti-flood on an unauthenticated public
+  ingress, aimed at a stranger with the URL rather than at the account holder. A
+  deliverable request is always accepted and its run queues for an agent seat.
 - The run's actor is ``universe:<uid>`` from the binding, fail-closed (Codex #1); no
   header/body redirects it. Only an ALLOWLIST of safe headers reaches branch state; no
   credential header and no raw token is ever forwarded or stored (Codex #6).
@@ -39,19 +40,22 @@ logger = logging.getLogger(__name__)
 #: Refuse anything larger unread — a webhook payload is a small JSON body, not a megabyte.
 MAX_BODY_BYTES = 256 * 1024
 
-#: Per-token rate limit: a channel that fires a webhook storm cannot enqueue unbounded runs.
+#: Per-TOKEN anti-flood on an unauthenticated public ingress. This is the one load
+#: limit left here, and it is not an account limit: ``POST /hooks/<token>`` is
+#: reachable by anyone who has the URL, so the traffic it bounds comes from a
+#: stranger rather than from the account holder.
+#:
+#: What went with the other non-usage limits (founder, 2026-09-30 — an account's
+#: only limits are cloud bytes and concurrent agent seats):
+#:   * ``_UNIVERSE_RATE_MAX = 6000``, a per-universe aggregate over the same
+#:     window. It metered the OWNER's own hooks against each other.
+#:   * ``_MAX_INFLIGHT_PER_UNIVERSE = 20``, which answered 503 and DROPPED the
+#:     delivery past 20 concurrent inbound runs. An inbound-triggered run now
+#:     queues for a seat like any other run; over the seat count work waits, and
+#:     a webhook the sending channel will not retry must never be thrown away
+#:     because the universe was busy.
 _RATE_MAX = 600
 _RATE_WINDOW_S = 60.0
-
-#: Per-universe aggregate cap over the same window: many tokens minted by one universe
-#: cannot together exceed this (Codex #3 — minting had no aggregate quota). Set comfortably
-#: above the per-token cap so a single well-behaved token is never starved.
-_UNIVERSE_RATE_MAX = 6000
-
-#: Concurrency (not rate) back-pressure (Codex #5): the max number of in-flight (queued or
-#: running) inbound-triggered runs one universe may have at once. Beyond this the receiver
-#: fails closed (503) instead of accumulating unbounded executor backlog under slow runs.
-_MAX_INFLIGHT_PER_UNIVERSE = 20
 
 #: Replay dedupe window: a delivery repeated within this window fires the branch at most once.
 _DEDUPE_WINDOW_S = 600.0
@@ -156,9 +160,9 @@ def _handle_hook_inner(
     now: float | None,
 ) -> tuple[int, dict[str, Any]]:
     """The pipeline. Ordered ATOMIC gates that hold under concurrency (Codex round-2):
-    size → enabled → resolve → **dedupe (atomic, FIRST)** → rate → **reserve (atomic:
-    active-check + in-flight cap)** → dispatch → link. Every non-deliverable exit logs its
-    real reason and returns the uniform 404; load states return 429/503."""
+    size → enabled → resolve → **dedupe (atomic, FIRST)** → per-token rate → **reserve
+    (atomic active-check)** → dispatch → link. Every non-deliverable exit logs its real
+    reason and returns the uniform 404; the per-token flood limit returns 429."""
     if len(body) > MAX_BODY_BYTES:
         return 413, {"error": "too_large"}
 
@@ -205,29 +209,24 @@ def _handle_hook_inner(
 
     reservation_id: str | None = None
     try:
-        # ── Gate 2: durable atomic RATE admission (Codex #3).
+        # ── Gate 2: durable atomic per-TOKEN flood admission (Codex #3).
         if not webhook_hooks.admit(
             base, token=token, universe_id=universe_id,
-            token_max=_RATE_MAX, universe_max=_UNIVERSE_RATE_MAX,
-            window_s=_RATE_WINDOW_S, now=now,
+            token_max=_RATE_MAX, window_s=_RATE_WINDOW_S, now=now,
         ):
             webhook_hooks.release_delivery(base, dedupe_key=dedupe_key)
-            logger.info("webhook: rate-limited for universe %s", universe_id)
+            logger.info("webhook: token flood limit reached for universe %s", universe_id)
             return 429, {"error": "rate_limited"}
 
         # ── Gate 3: ONE atomic transaction — re-check the token is ACTIVE (serializes with a
-        # concurrent revoke) AND reserve an in-flight slot under the cap (Codex #3 + #5).
+        # concurrent revoke) and reserve. No in-flight ceiling: the run queues for a seat.
         terminal = terminal_run_ids_for_universe(base, universe_id)
-        reservation_id, reason = webhook_hooks.reserve_dispatch(
+        reservation_id, _reason = webhook_hooks.reserve_dispatch(
             base, token=token, universe_id=universe_id,
-            cap=_MAX_INFLIGHT_PER_UNIVERSE, ttl_s=_RESERVATION_TTL_S,
-            terminal_run_ids=terminal, now=now,
+            ttl_s=_RESERVATION_TTL_S, terminal_run_ids=terminal, now=now,
         )
         if reservation_id is None:
             webhook_hooks.release_delivery(base, dedupe_key=dedupe_key)
-            if reason == "busy":
-                logger.info("webhook: at in-flight cap for universe %s", universe_id)
-                return 503, {"error": "busy"}
             logger.info("webhook: token revoked at reserve for universe %s", universe_id)
             return _NOT_DELIVERABLE
 

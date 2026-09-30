@@ -126,10 +126,9 @@ def test_only_allowlisted_headers_are_forwarded(tmp_path):
     assert fwd == {"X-Hub-Signature-256": "sha=y", "X-GitHub-Event": "push"}
 
 
-def test_rate_limit_refuses_a_storm_then_recovers(tmp_path, monkeypatch):
-    # Isolate the RATE gate from the in-flight reservation cap (spied runs never terminate,
-    # so reservations would otherwise accumulate); the reservation cap has its own test.
-    monkeypatch.setattr(wh, "_MAX_INFLIGHT_PER_UNIVERSE", 100_000)
+def test_the_per_token_flood_limit_refuses_a_storm_then_recovers(tmp_path):
+    # The per-token flood limit is the only load gate left on this path; there is no
+    # in-flight ceiling to isolate it from any more.
     token = webhook_hooks.mint(
         tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-a",
     )

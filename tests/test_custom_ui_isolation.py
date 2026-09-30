@@ -208,12 +208,11 @@ def test_the_home_transition_funnel_revokes_the_bridge() -> None:
 def test_bundle_bounds_fit_the_real_library_cap() -> None:
     """The JS bounds are derived from the Python caps, not a coincidence.
 
-    The library's ONE bound is its canonical-JSON bytes -- there is no count of
-    UIs (no structural caps). The app's pre-write check must BE the server's
-    number, so raising either side without the other fails here instead of at a
-    user's write.
+    The library has NO bound -- not a count of UIs and not a byte total. What is
+    bounded is one bundle, on both sides, and those two numbers must agree so
+    raising either without the other fails here instead of at a user's write.
     """
-    from tinyassets.custom_agents import MAX_APP_UI_LIBRARY_BYTES
+    from tinyassets import custom_agents
 
     def constant(name: str) -> int:
         found = re.search(rf"\b{name}:(\d+)", APP_UI)
@@ -221,11 +220,12 @@ def test_bundle_bounds_fit_the_real_library_cap() -> None:
         return int(found.group(1))
 
     per_bundle = constant("MAX_BUNDLE_BYTES")
-    library_bytes = constant("MAX_LIBRARY_BYTES")
 
-    assert library_bytes == MAX_APP_UI_LIBRARY_BYTES
-    # And no count cap has crept back in on the client.
+    # No library-wide ceiling on either side, by bytes or by count.
+    assert not hasattr(custom_agents, "MAX_APP_UI_LIBRARY_BYTES")
+    assert "MAX_LIBRARY_BYTES" not in APP_UI
     assert "LIBRARY_LIMIT" not in APP_UI
+    assert "remove one first" not in APP_UI
 
     # Sizes are measured the way the server measures them. Counting UTF-16
     # units accepted multi-byte bundles that the byte cap then refused.
@@ -237,7 +237,3 @@ def test_bundle_bounds_fit_the_real_library_cap() -> None:
     assert constant("MAX_MARKUP") <= per_bundle
     assert constant("MAX_STYLE") <= per_bundle
     assert constant("MAX_SCRIPT") <= per_bundle
-
-    # A light user never meets the library bound: dozens of UIs, each at the
-    # per-UI maximum, still fit.
-    assert library_bytes // (per_bundle + 1) >= 50

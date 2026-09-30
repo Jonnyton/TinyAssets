@@ -133,7 +133,7 @@ def test_two_owners_can_expose_inspect_connect_without_private_graph_leak(env):
     }
     assert advertised["open_to_all"] is False
     assert advertised["discoverable"] is False
-    assert advertised["sender_rate_limit"] == store.DEFAULT_SENDER_RATE_LIMIT
+    assert advertised["sender_rate_limit"] == store.NO_SENDER_RATE_LIMIT
     assert advertised["contract"] == [
         {"name": "topic", "type": "str", "required": True, "description": "Incoming topic"},
     ]

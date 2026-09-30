@@ -140,3 +140,39 @@ def test_fingerprint_drift_is_held_not_silently_repaired(store):
         conn.execute("UPDATE agent_definitions SET content_fingerprint=?", ("b" * 64,))
     with pytest.raises(PermissionError, match="fingerprint"):
         selected(store)
+
+
+def test_a_hundred_unrelated_bindings_do_not_block_selection(store):
+    """The 100-row cutoff is gone: selection resolves at any list size.
+
+    ``resolve_selection_in_transaction`` used to fetch 101 rows and refuse with
+    ``consumer installation list is ambiguous`` at 100 -- BEFORE filtering to the
+    ``app_experience`` rows that actually select a consumer. So a hundred
+    unrelated bindings stopped the owner's conversation from resolving at all.
+    That is a functional cliff, not a limit (founder, 2026-09-30: no structural
+    caps on what users build).
+    """
+    import inspect
+
+    from tinyassets import consumer_selection
+
+    src = inspect.getsource(consumer_selection.resolve_selection_in_transaction)
+    assert "LIMIT 101" not in src
+    assert "list is ambiguous" not in src
+
+    binding, _definition = install(store)
+    # 150 further bindings with no consumer role at all, well past the old cutoff.
+    for _ in range(150):
+        install(store, selected=False)
+
+    chosen = selected(store)
+    assert chosen is not None, "the owner's one selection is still found"
+    assert chosen["binding_id"] == binding["agent_binding_id"]
+
+
+def test_two_active_selections_are_still_ambiguous(store):
+    """Mutation-check: removing the row cutoff must not remove the real check."""
+    install(store)
+    install(store)
+    with pytest.raises(PermissionError, match="ambiguous"):
+        selected(store)
