@@ -87,53 +87,27 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _digest(value: Any) -> str:
-    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-#: Fields of a branch row that publishing may change or that move on their own
-#: (run stats, edit bookkeeping). EVERYTHING ELSE becomes publicly readable, so
-#: everything else is pinned -- a denylist of volatile fields, never an allowlist
-#: of the ones someone remembered to include (Codex refute 2026-09-29: tags
-#: were outside the digest and published changed).
-_UNPINNED_BRANCH_FIELDS = frozenset({"visibility", "published", "updated_at", "version", "stats"})
-
-
-def branch_digest(branch: dict[str, Any]) -> str:
-    """Digest of every field of a branch row that becomes public on publish."""
-    from tinyassets.branches import BranchDefinition
-
-    normalized = BranchDefinition.from_dict(branch).to_dict()
-    return _digest({k: v for k, v in normalized.items() if k not in _UNPINNED_BRANCH_FIELDS})
-
-
-def _branch_facts(base: Path, actor: str, branch_def_id: str) -> dict[str, Any]:
-    """What the owner is shown and what is pinned, for one of THEIR branches."""
-    from tinyassets.branch_versions import _canonical_snapshot
-    from tinyassets.daemon_server import get_branch_definition
-
-    try:
-        raw = get_branch_definition(base, branch_def_id=branch_def_id)
-    except (KeyError, FileNotFoundError):
-        raise LookupError(f"no branch of yours is {branch_def_id}") from None
-    if (raw.get("author") or "").strip() != actor:
-        # Same words as absent: an ask cannot probe another author's ids.
-        raise LookupError(f"no branch of yours is {branch_def_id}")
-    return {
-        "branch_def_id": branch_def_id,
-        "name": str(raw.get("name") or branch_def_id),
-        "description": str(raw.get("description") or ""),
-        "nodes": len(_canonical_snapshot(raw).get("graph_nodes") or []),
-        "digest": branch_digest(raw),
-    }
-
+#: Fields of a branch row that publishing itself changes, or that move on their
+#: own (run stats, edit bookkeeping). Everything else in the STORED row -- every
+#: nested key included, known to the model or not -- is part of what becomes
+#: public, so it is part of the snapshot.
+_VOLATILE_BRANCH_FIELDS = frozenset({"visibility", "published", "updated_at", "version", "stats"})
 
 #: The portable fields of a UI component -- exactly what the app renders
 #: (``AppUI.FIELDS`` in onboarding/app_ui.js). A stored component may carry
-#: anything else; none of it is published (Codex refute 2026-09-29: an
-#: ``inputs`` field rode into the public definition).
+#: anything else; none of it is published.
 UI_PORTABLE_FIELDS = ("kind", "version", "ui_id", "name", "markup", "style", "script")
+
+_CHANGED = (
+    "something in this ask changed after you were shown it, so nothing was "
+    "published; ask again and the tab will show what is there now"
+)
+
+
+def _canonical(value: Any) -> str:
+    from tinyassets.custom_agents import _canonical_json
+
+    return _canonical_json(value)
 
 
 def export_ui_component(component: dict[str, Any]) -> dict[str, Any]:
@@ -144,18 +118,20 @@ def export_ui_component(component: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(exported))
 
 
-def _ui_facts(base: Path, actor: str, uid: str, ui_id: str) -> dict[str, Any]:
-    from tinyassets.custom_agents import get_app_ui
+def _public_branch_row(raw: dict[str, Any]) -> dict[str, Any]:
+    """The branch row exactly as it will read once public, minus volatile fields.
 
-    row = get_app_ui(base, owner_user_id=actor, universe_id=uid)
-    for component in row.get("ui_library") or []:
-        if isinstance(component, dict) and component.get("ui_id") == ui_id:
-            if component.get("kind") != UI_KIND:
-                break
-            exported = export_ui_component(component)
-            return {"ui_id": ui_id, "name": str(exported.get("name") or ui_id),
-                    "component": exported, "digest": _digest(exported)}
-    raise LookupError(f"no UI of yours is {ui_id}")
+    Taken from the STORED row, never through ``BranchDefinition``: normalizing
+    drops keys the model does not know, and a public row still carries them
+    (astra round 2, P1: ``node_defs[0].private_note`` added after consent was
+    outside the digest and published).
+    """
+    return json.loads(_canonical({k: v for k, v in raw.items()
+                                  if k not in _VOLATILE_BRANCH_FIELDS}))
+
+
+def _flipped(raw: dict[str, Any]) -> dict[str, Any]:
+    return {**raw, "visibility": "public", "published": True}
 
 
 def _trigger(automation: Any) -> dict[str, Any]:
@@ -166,58 +142,6 @@ def _trigger(automation: Any) -> dict[str, Any]:
         "event_type": automation.event_type,
         "event_filter": dict(automation.event_filter or {}),
     }
-
-
-def _automation_facts(
-    base: Path, actor: str, uid: str, automation_id: str, branch_ids: list[str],
-) -> dict[str, Any]:
-    from tinyassets.automations import AutomationStore
-
-    row = AutomationStore(base).get(automation_id)
-    if (
-        row is None or row.retired_at or row.universe_id != uid
-        or row.owner_principal_id != actor
-    ):
-        raise LookupError(f"no automation of yours is {automation_id}")
-    if row.branch_def_id not in branch_ids:
-        raise ValueError(
-            f"automation {automation_id} drives a workflow this ask does not "
-            "publish; add that workflow or leave the automation out"
-        )
-    trigger = _trigger(row)
-    return {"automation_id": automation_id, "name": row.name,
-            "branch_def_id": row.branch_def_id, "trigger": trigger,
-            "overlap": row.overlap,
-            "digest": _digest({"branch": row.branch_def_id, "trigger": trigger,
-                               "overlap": row.overlap, "name": row.name})}
-
-
-def _facts(uid: str, action: dict[str, Any]) -> dict[str, Any]:
-    from tinyassets.api import permissions
-    from tinyassets.api.helpers import _base_path
-    from tinyassets.principals import named_principal
-
-    actor = named_principal(permissions.current_actor_id())
-    if not actor:
-        raise PermissionError("an authenticated owner is required")
-    base = Path(_base_path())
-    return {
-        "branches": [_branch_facts(base, actor, b) for b in action["branch_ids"]],
-        "ui": _ui_facts(base, actor, uid, action["ui_id"]) if action["ui_id"] else None,
-        "automations": [
-            _automation_facts(base, actor, uid, a, action["branch_ids"])
-            for a in action["automation_ids"]
-        ],
-    }
-
-
-def _pins(facts: dict[str, Any]) -> dict[str, str]:
-    pins = {f"branch:{b['branch_def_id']}": b["digest"] for b in facts["branches"]}
-    if facts["ui"]:
-        pins[f"ui:{facts['ui']['ui_id']}"] = facts["ui"]["digest"]
-    for a in facts["automations"]:
-        pins[f"automation:{a['automation_id']}"] = a["digest"]
-    return pins
 
 
 def _shown(value: Any, limit: int = 80) -> str:
@@ -241,19 +165,6 @@ def _trigger_words(trigger: dict[str, Any]) -> str:
     return trigger["kind"]
 
 
-def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
-    """Check ownership, pin digests, and record what the tab must list."""
-    facts = _facts(uid, action)
-    shown = {
-        "workflows": [{"name": _shown(b["name"]), "nodes": b["nodes"]}
-                      for b in facts["branches"]],
-        "ui": _shown(facts["ui"]["name"]) if facts["ui"] else "",
-        "automations": [{"name": _shown(a["name"]), "when": _shown(_trigger_words(a["trigger"]))}
-                        for a in facts["automations"]],
-    }
-    return {**action, "digests": _pins(facts), "shown": shown}
-
-
 def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     """``(kind, title, body)`` for the tab, written from the pinned action only."""
     shown = action["shown"]
@@ -266,127 +177,220 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     if shown["ui"]:
         lines.append(f"- The screen \"{shown['ui']}\"")
     for a in shown["automations"]:
-        lines.append(f"- The trigger of \"{a['name']}\": runs {a['when']} (its inputs stay private)")
+        lines.append(
+            f"- The trigger of \"{a['name']}\": runs {a['when']} (its inputs stay private)")
     lines.append("")
     lines.append(PUBLIC_SENTENCE)
     return ("Publish", f"Publish \"{_shown(action['name'], 120)}\" for anyone to copy?",
             "\n".join(lines))
 
 
-def _make_public_if_unchanged(pins: dict[str, str]) -> dict[str, dict[str, Any]]:
-    """Compare-and-set: flip EVERY branch public only if each is what was approved.
+def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
+    """The WHOLE public payload, built from the live rows, as the caller.
 
-    One write transaction holds every check and every flip, so an edit cannot
-    land between them and the set goes public whole or not at all (Codex refute
-    2026-09-29: checking first and patching after let a concurrent edit publish
-    a description the owner never saw). Returns each row AS FLIPPED, which is
-    what its version is minted from -- never a second, unchecked read.
+    Returns the public branch rows, the exact definition payload, and ``digest``:
+    sha256 of the canonical serialization of both. The definition names each
+    workflow's version by the id its snapshot will mint, so nothing that becomes
+    public is outside the digest. Everything is scanned for credential-shaped
+    content with the scanner a definition gets -- every branch row as well as
+    the bundle. Raises ``LookupError`` for anything that is not the caller's and
+    ``ValueError`` for content that may not be public.
     """
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.automations import AutomationStore
+    from tinyassets.branch_versions import _canonical_snapshot, compute_content_hash
+    from tinyassets.custom_agents import (
+        AGENT_SCHEMA_VERSION,
+        AgentValidationError,
+        _check_secret_fields,
+        _normalize_definition_payload,
+        get_app_ui,
+    )
+    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
+        raise PermissionError("an authenticated owner is required")
+    base = Path(_base_path())
+
+    rows: dict[str, dict[str, Any]] = {}
+    for bid in action["branch_ids"]:
+        try:
+            raw = get_branch_definition(base, branch_def_id=bid)
+        except (KeyError, FileNotFoundError):
+            raise LookupError(f"no branch of yours is {bid}") from None
+        if (raw.get("author") or "").strip() != actor:
+            # Same words as absent: an ask cannot probe another author's ids.
+            raise LookupError(f"no branch of yours is {bid}")
+        rows[bid] = raw
+
+    components: dict[str, dict[str, Any]] = {}
+    shown: dict[str, Any] = {"workflows": [], "ui": "", "automations": []}
+    if action["ui_id"]:
+        library = get_app_ui(base, owner_user_id=actor, universe_id=uid).get("ui_library") or []
+        match = next((c for c in library if isinstance(c, dict)
+                      and c.get("ui_id") == action["ui_id"] and c.get("kind") == UI_KIND), None)
+        if match is None:
+            raise LookupError(f"no UI of yours is {action['ui_id']}")
+        components["ui"] = export_ui_component(match)
+        shown["ui"] = _shown(components["ui"]["name"])
+
+    keys: dict[str, str] = {}
+    for n, (bid, raw) in enumerate(rows.items(), start=1):
+        key = f"workflow-{n}"
+        keys[bid] = key
+        content_hash = compute_content_hash(_canonical_snapshot(_flipped(raw)))
+        name = str(raw.get("name") or bid)
+        components[key] = {"kind": BRANCH_REF_KIND, "name": name,
+                           "published_version_id": f"{bid}@{content_hash[:8]}"}
+        shown["workflows"].append({"name": _shown(name),
+                                   "nodes": len(raw.get("graph_nodes") or [])})
+
+    store = AutomationStore(base)
+    for n, automation_id in enumerate(action["automation_ids"], start=1):
+        row = store.get(automation_id)
+        if (row is None or row.retired_at or row.universe_id != uid
+                or row.owner_principal_id != actor):
+            raise LookupError(f"no automation of yours is {automation_id}")
+        if row.branch_def_id not in keys:
+            raise ValueError(
+                f"automation {automation_id} drives a workflow this ask does not "
+                "publish; add that workflow or leave the automation out"
+            )
+        trigger = _trigger(row)
+        followed = trigger["event_filter"].get("branch_def_id")
+        if followed:
+            # The author's branch id means nothing in a copy; name the workflow.
+            trigger["event_filter"]["branch_def_id"] = keys.get(followed, "")
+        components[f"automation-{n}"] = {
+            "kind": AUTOMATION_SPEC_KIND, "name": row.name,
+            "workflow": keys[row.branch_def_id], "trigger": trigger, "overlap": row.overlap}
+        shown["automations"].append({"name": _shown(row.name),
+                                     "when": _shown(_trigger_words(trigger))})
+
+    definition = {"schema_version": AGENT_SCHEMA_VERSION, "name": action["name"],
+                  "description": action["description"], "tags": ["tinyassets.system.v1"],
+                  "components": components}
+    branches = {bid: _public_branch_row(raw) for bid, raw in rows.items()}
+    try:
+        # One scanner for everything that becomes public (astra round 2, P1: a
+        # credential in a prompt_template reached a public version while the
+        # same value was refused in bundle text).
+        _check_secret_fields({"branches": branches, "definition": definition})
+        # The definition's own validation, run NOW, so an accept never makes
+        # branches public and then fails on the bundle.
+        _normalize_definition_payload(definition)
+    except AgentValidationError as exc:
+        raise ValueError(f"this cannot be made public: {exc}") from None
+    digest = hashlib.sha256(
+        _canonical({"branches": branches, "definition": definition}).encode("utf-8")
+    ).hexdigest()
+    return {"branches": branches, "rows": rows, "definition": definition,
+            "digest": digest, "shown": shown}
+
+
+def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot the public payload now; pin its digest and what the tab shows."""
+    snap = build_snapshot(uid, action)
+    return {**action, "snapshot_digest": snap["digest"], "shown": snap["shown"]}
+
+
+def _flip_if_unchanged(snap: dict[str, Any]) -> None:
+    """The commit point. One write transaction re-reads every branch, refuses
+    unless each still equals the snapshot, and flips them all public."""
     from tinyassets.api.helpers import _base_path
     from tinyassets.daemon_server import _branch_def_from_row, _connect
 
-    flipped: dict[str, dict[str, Any]] = {}
     with _connect(_base_path()) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        for branch_def_id, digest in pins.items():
+        for bid, public_row in snap["branches"].items():
             row = conn.execute(
-                "SELECT * FROM branch_definitions WHERE branch_def_id = ?", (branch_def_id,),
+                "SELECT * FROM branch_definitions WHERE branch_def_id = ?", (bid,),
             ).fetchone()
-            if row is None or branch_digest(_branch_def_from_row(row)) != digest:
+            if row is None or _public_branch_row(_branch_def_from_row(row)) != public_row:
                 # Raising inside the transaction rolls every flip back.
-                raise ValueError(
-                    "something in this ask changed after you were shown it, so "
-                    "nothing was published; ask again and the tab will show what "
-                    "is there now"
-                )
+                raise ValueError(_CHANGED)
             conn.execute(
                 "UPDATE branch_definitions SET visibility = 'public', published = 1 "
-                "WHERE branch_def_id = ?", (branch_def_id,),
+                "WHERE branch_def_id = ?", (bid,),
             )
-            flipped[branch_def_id] = _branch_def_from_row(conn.execute(
-                "SELECT * FROM branch_definitions WHERE branch_def_id = ?", (branch_def_id,),
-            ).fetchone())
-    return flipped
+
+
+def _unflip(snap: dict[str, Any]) -> None:
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import _connect
+
+    with _connect(_base_path()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for bid in snap["branches"]:
+            conn.execute(
+                "UPDATE branch_definitions SET visibility = 'private', published = 0 "
+                "WHERE branch_def_id = ?", (bid,),
+            )
 
 
 def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict[str, Any]:
-    """Publish exactly what was pinned, or nothing. Raises to leave the ask pending."""
+    """Publish exactly the approved snapshot, or nothing. Raises to leave the ask pending.
+
+    Order is what makes it all-or-nothing across three stores (branch rows,
+    versions and definitions are separate SQLite files, and a WAL transaction is
+    not atomic across attached files):
+
+    1. Rebuild the snapshot from the live rows; its canonical digest must equal
+       the approved one. Every content check, the definition's included, runs
+       here -- before anything is written.
+    2. Mint each version from its row AS IT WILL BE FLIPPED. A version of a
+       private branch is unreadable (readability follows the branch), so this
+       exposes nothing.
+    3. The commit point: one transaction re-checks every row against the
+       snapshot and flips them all public, or flips none.
+    4. Publish the pre-validated definition. The only failure left is storage;
+       it flips the branches back, so nothing is left public.
+    """
     from tinyassets.api import permissions
     from tinyassets.api.custom_agents import custom_agents
     from tinyassets.api.helpers import _base_path
     from tinyassets.branch_versions import publish_branch_version
-    from tinyassets.custom_agents import AGENT_SCHEMA_VERSION
     from tinyassets.principals import named_principal
 
     actor = named_principal(permissions.current_actor_id())
+    snap = build_snapshot(uid, action)
+    if snap["digest"] != action.get("snapshot_digest"):
+        raise ValueError(_CHANGED)
 
-    facts = _facts(uid, action)
-    if _pins(facts) != action.get("digests"):
-        raise ValueError(
-            "something in this ask changed after you were shown it, so nothing "
-            "was published; ask again and the tab will show what is there now"
-        )
-    approved_rows = _make_public_if_unchanged(
-        {b["branch_def_id"]: b["digest"] for b in facts["branches"]})
-    published_public = [b["name"] for b in facts["branches"]]
+    expected = {c["published_version_id"] for c in snap["definition"]["components"].values()
+                if c.get("kind") == BRANCH_REF_KIND}
     versions: dict[str, str] = {}
-    try:
-        for branch in facts["branches"]:
-            bid = branch["branch_def_id"]
-            approved = approved_rows[bid]
-            version = publish_branch_version(
-                _base_path(), approved, publisher=actor, notes=action["name"])
-            versions[bid] = version.branch_version_id
-    except (KeyError, ValueError) as exc:
-        # A public branch cannot be made unseen: someone may already have read
-        # it. Say exactly what is public so the owner and the agent know.
-        made = ", ".join(published_public) or "nothing"
-        raise ValueError(f"{exc}. Already public: {made}.") from exc
+    for bid, raw in snap["rows"].items():
+        version = publish_branch_version(
+            _base_path(), _flipped(raw), publisher=actor, notes=action["name"])
+        versions[bid] = version.branch_version_id
+    if set(versions.values()) != expected:
+        raise ValueError("a version did not mint as the snapshot named it; nothing was published")
 
-    components: dict[str, dict[str, Any]] = {}
-    keys: dict[str, str] = {}
-    if facts["ui"]:
-        components["ui"] = json.loads(json.dumps(facts["ui"]["component"]))
-    for n, branch in enumerate(facts["branches"], start=1):
-        key = f"workflow-{n}"
-        keys[branch["branch_def_id"]] = key
-        components[key] = {"kind": BRANCH_REF_KIND, "name": branch["name"],
-                           "published_version_id": versions[branch["branch_def_id"]]}
-    for n, auto in enumerate(facts["automations"], start=1):
-        trigger = json.loads(json.dumps(auto["trigger"]))
-        # A filter naming the author's own branch id would mean nothing in a
-        # copy; it names the workflow component instead.
-        followed = trigger["event_filter"].get("branch_def_id")
-        if followed:
-            trigger["event_filter"]["branch_def_id"] = keys.get(followed, "")
-        components[f"automation-{n}"] = {
-            "kind": AUTOMATION_SPEC_KIND, "name": auto["name"],
-            "workflow": keys[auto["branch_def_id"]], "trigger": trigger,
-            "overlap": auto["overlap"]}
-    result = custom_agents(
-        action="publish_agent",
-        payload=json.dumps({"schema_version": AGENT_SCHEMA_VERSION,
-                            "name": action["name"], "description": action["description"],
-                            "tags": ["tinyassets.system.v1"], "components": components}),
-        idempotency_key=f"publish-request:{request_id}",
-    )
-    agent = result.get("agent") if isinstance(result, dict) else None
-    if not agent or result.get("error"):
-        made = ", ".join(published_public) or "nothing"
-        raise ValueError(
-            f"the workflows were published but the bundle was not "
-            f"({result.get('detail') or result.get('error')}). Already public: {made}."
+    _flip_if_unchanged(snap)
+    try:
+        result = custom_agents(
+            action="publish_agent", payload=json.dumps(snap["definition"]),
+            idempotency_key=f"publish-request:{request_id}",
         )
-    return {
-        "published": True,
-        "agent_definition_id": agent["agent_definition_id"],
-        "branch_versions": versions,
-    }
+        agent = result.get("agent") if isinstance(result, dict) else None
+        if not agent or result.get("error"):
+            detail = result.get("detail") or result.get("error")
+            raise ValueError(f"the bundle was not published ({detail}); nothing was left public")
+    except BaseException:
+        _unflip(snap)
+        raise
+    return {"published": True, "agent_definition_id": agent["agent_definition_id"],
+            "branch_versions": versions}
 
 
 __all__ = [
     "AUTOMATION_SPEC_KIND",
     "BRANCH_REF_KIND",
+    "build_snapshot",
     "capture_action",
     "execute_action",
     "tab_text",

@@ -143,6 +143,63 @@ def test_a_link_in_the_folder_is_never_followed(home: Path) -> None:
     assert "stolen.md" not in names
 
 
+def _link_dir(link: Path, target: Path) -> None:
+    """A directory link the host can make without privilege: a junction on
+    Windows, a symlink elsewhere. Skips when neither can be made."""
+    import shutil
+    import subprocess
+
+    if link.exists() or link.is_symlink():
+        shutil.rmtree(link) if link.is_dir() and not link.is_symlink() else link.unlink()
+    if os.name == "nt":
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                              capture_output=True, text=True)
+        if made.returncode != 0:
+            pytest.skip("this host cannot create a junction")
+        return
+    os.symlink(target, link, target_is_directory=True)
+
+
+def test_a_universe_root_that_is_a_link_is_refused(home: Path) -> None:
+    """Astra round 2, P1: resolving the root path stripped a root link, so an
+    owned universe whose root pointed at Bob's folder served BOB ONLY."""
+    import shutil
+
+    root = home / UNIVERSE
+    shutil.rmtree(root)
+    _link_dir(root, home / BOB_UNIVERSE)
+    for target, query in (("universe_file", "secret.md"), ("universe_files", "")):
+        out = _read(target, query)
+        assert out == {"error": "not_found", "resource": "universe_file"}, (target, out)
+        assert "BOB ONLY" not in json.dumps(out)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the anchored listing is the POSIX path")
+def test_a_directory_swapped_for_a_link_after_listing_discloses_nothing(
+    home: Path, monkeypatch,
+) -> None:
+    """Astra round 2, P1: a path-based lstat after the listing followed a swap
+    into Bob's folder and disclosed a file size. Entries are now stat()ed
+    through the directory descriptor, which the swap cannot re-point."""
+    import shutil
+
+    notes = home / UNIVERSE / "notes"
+    (home / BOB_UNIVERSE / "board.md").write_text("B" * 777, encoding="utf-8")
+    real_listdir = os.listdir
+
+    def listdir_then_swap(target):
+        names = real_listdir(target)
+        shutil.move(str(notes), str(home / UNIVERSE / "notes-moved"))
+        _link_dir(notes, home / BOB_UNIVERSE)
+        return names
+
+    monkeypatch.setattr(os, "listdir", listdir_then_swap)
+    listing = _read("universe_files", "notes")
+    sizes = {e["name"]: e.get("size_bytes") for e in listing["entries"]}
+    assert sizes.get("board.md") != 777, listing
+    assert "secret.md" not in sizes
+
+
 @pytest.mark.skipif(os.name != "nt", reason="a directory junction is a Windows link")
 def test_a_directory_junction_is_never_followed(home: Path) -> None:
     """Symlinks need privilege on Windows; junctions do not, and a reader that
@@ -307,8 +364,8 @@ def test_the_tab_is_the_platforms_account_of_what_goes_public(home: Path) -> Non
         assert needle in body, needle
     # The agent's own framing of the consent never reaches the owner.
     assert "Harmless" not in json.dumps(out) and "Nothing will be shared" not in body
-    assert set(out["action"]["digests"]) == {
-        f"branch:{SCOUT}", f"branch:{SCRIBE}", "ui:village", f"automation:{beat.automation_id}"}
+    # ONE digest over the whole public payload, not a digest per remembered field.
+    assert len(out["action"]["snapshot_digest"]) == 64
 
 
 def test_an_echoed_name_cannot_speak_as_the_platform(home: Path) -> None:
@@ -360,7 +417,8 @@ def test_confirming_publishes_exactly_one_bundle_and_no_inputs(home: Path) -> No
     components = definition["components"]
     assert components["ui"]["ui_id"] == "village"
     refs = {k: v for k, v in components.items() if v["kind"] == "tinyassets.branch-ref.v1"}
-    assert {v["published_version_id"] for v in refs.values()} == set(done["branch_versions"].values())
+    minted = set(done["branch_versions"].values())
+    assert {v["published_version_id"] for v in refs.values()} == minted
     specs = [v for v in components.values() if v["kind"] == "tinyassets.automation-spec.v1"]
     assert len(specs) == 2
     assert "PRIVATE INPUT" not in json.dumps(definition)
@@ -415,32 +473,111 @@ def test_any_public_field_changed_after_the_tab_publishes_nothing(home: Path, ed
 
 
 def test_an_edit_racing_the_confirm_cannot_go_public(home: Path, monkeypatch) -> None:
-    """Codex refute 2026-09-29 P1: the edit lands AFTER the up-front check. The
-    flip is a compare-and-set, so it refuses the changed branch by itself."""
-    from tinyassets.api import publish_requests
+    """Codex refute 2026-09-29 P1: the edit lands AFTER the up-front check --
+    here, while the versions are being minted. The flip re-checks every row
+    against the snapshot in its own transaction, so it refuses by itself."""
+    from tinyassets import branch_versions
     from tinyassets.api.extensions import _extensions_impl
+    from tinyassets.custom_agents import list_definitions
 
     _library(home)
+    before = len(list_definitions(home, author_id=OWNER))
     ask = _ask_publish(home)
-    pinned = ask["action"]["digests"]
-    real_facts = publish_requests._facts
+    real_mint = branch_versions.publish_branch_version
+    edited = []
 
-    def facts_then_edit(uid, action):
-        facts = real_facts(uid, action)          # the up-front check sees the approved rows
-        with _as(OWNER):
-            _extensions_impl(action="patch_branch", branch_def_id=SCRIBE, changes_json=json.dumps(
-                [{"op": "set_description", "description": "PRIVATE DESCRIPTION"}]))
-        return facts
+    def mint_then_edit(*args, **kwargs):
+        version = real_mint(*args, **kwargs)
+        if not edited:
+            edited.append(True)
+            with _as(OWNER):
+                _extensions_impl(
+                    action="patch_branch", branch_def_id=SCRIBE, changes_json=json.dumps(
+                        [{"op": "set_description", "description": "PRIVATE DESCRIPTION"}]))
+        return version
 
-    monkeypatch.setattr(publish_requests, "_facts", facts_then_edit)
+    monkeypatch.setattr(branch_versions, "publish_branch_version", mint_then_edit)
     out = _answer(ask["request_id"])
+    assert edited, "the edit really landed inside the window"
     assert out.get("error") == "publish_refused", out
-    assert f"branch:{SCRIBE}" in pinned
+    assert len(list_definitions(home, author_id=OWNER)) == before, "no bundle was published"
     # The set goes public whole or not at all: the unchanged branch listed
     # before the changed one did not go public either.
     assert _visibility(home, SCRIBE) == "private", "the changed branch never went public"
     assert _visibility(home, SCOUT) == "private", "nor did the rest of the set"
     assert "Already public" not in out["detail"], out
+
+
+def _raw_edit(base: Path, branch: str, mutate) -> None:
+    """Rewrite ONE stored column, ``node_defs_json``, and nothing else.
+
+    The shapes a model-level patch never produces are exactly the ones a
+    remembered field list misses. A whole-row save would also re-derive other
+    columns (``graph``), and the test would then pass because of THAT change
+    rather than the one it names -- which is how the first version of this
+    helper passed against a mutant that dropped unknown keys.
+    """
+    import sqlite3
+
+    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.storage import db_path
+
+    raw = get_branch_definition(base, branch_def_id=branch)
+    before = {k: v for k, v in raw.items() if k != "node_defs"}
+    mutate(raw)
+    with sqlite3.connect(db_path(base)) as conn:
+        conn.execute("UPDATE branch_definitions SET node_defs_json = ? WHERE branch_def_id = ?",
+                     (json.dumps(raw["node_defs"]), branch))
+    after = get_branch_definition(base, branch_def_id=branch)
+    assert {k: v for k, v in after.items() if k != "node_defs"} == before, "only node_defs moved"
+
+
+def test_a_nested_field_added_after_the_tab_publishes_nothing(home: Path) -> None:
+    """Astra round 2, P1: normalizing the row dropped unknown nested keys, so
+    `node_defs[0].private_note` added after consent was outside the digest and
+    published. The snapshot is the stored row itself."""
+    from tinyassets.daemon_server import get_branch_definition
+
+    _library(home)
+    ask = _ask_publish(home)
+    _raw_edit(home, SCOUT,
+              lambda raw: raw["node_defs"][0].__setitem__("private_note", "BOB MUST NOT"))
+    assert get_branch_definition(home, branch_def_id=SCOUT)["node_defs"][0].get("private_note"), \
+        "the stored row really carries the nested field"
+    out = _answer(ask["request_id"])
+    assert out.get("error") == "publish_refused", out
+    assert _visibility(home, SCOUT) == "private"
+
+
+def test_a_credential_anywhere_in_a_workflow_is_refused(home: Path) -> None:
+    """Astra round 2, P1: a credential in a prompt_template reached a public
+    version while the same value was refused in bundle text. One scanner now
+    covers every branch row as well as the bundle."""
+    token = "sk-" + "live" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"
+    _library(home)
+    _raw_edit(home, SCRIBE, lambda raw: raw["node_defs"][0].__setitem__(
+        "prompt_template", f"Call the API with {token}"))
+    out = _ask_publish(home)
+    assert "request_id" not in out, out
+    assert "cannot be made public" in json.dumps(out), out
+    assert token not in json.dumps(out), "the refusal names the place, never the value"
+    assert _visibility(home, SCRIBE) == "private"
+
+
+def test_a_bundle_that_fails_to_publish_leaves_nothing_public(home: Path, monkeypatch) -> None:
+    """Astra round 2, P2: branches went public before the bundle was validated.
+    The bundle is now validated before any write, and a storage failure after
+    the flip flips the branches back."""
+    import tinyassets.api.custom_agents as api_custom_agents
+
+    _library(home)
+    ask = _ask_publish(home)
+    monkeypatch.setattr(api_custom_agents, "custom_agents",
+                        lambda **_kw: {"error": "agent_storage_unavailable"})
+    out = _answer(ask["request_id"])
+    assert out.get("error") == "publish_refused", out
+    assert "nothing was left public" in out["detail"], out
+    assert _visibility(home, SCOUT) == "private" and _visibility(home, SCRIBE) == "private"
 
 
 def test_only_the_portable_ui_fields_are_published(home: Path) -> None:
@@ -493,9 +630,10 @@ def test_a_second_user_installs_private_copies(home: Path) -> None:
         if component["kind"] != "tinyassets.branch-ref.v1":
             continue
         with _as(BOB):
-            made = json.loads(write_graph(target="branch", operation="remix", payload_json=json.dumps(
-                {"name": component["name"], "fork_from": component["published_version_id"],
-                 "visibility": "private"})))
+            made = json.loads(write_graph(
+                target="branch", operation="remix", payload_json=json.dumps(
+                    {"name": component["name"], "fork_from": component["published_version_id"],
+                     "visibility": "private"})))
         bid = made.get("branch_def_id") or (made.get("branch") or {}).get("branch_def_id")
         assert bid, made
         copies.append(get_branch_definition(home, branch_def_id=bid))
@@ -503,6 +641,7 @@ def test_a_second_user_installs_private_copies(home: Path) -> None:
     assert all(c["author"] == BOB and c["visibility"] == "private" for c in copies)
     save_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE, expected_revision=0,
                 changes={"ui_library": [definition["components"]["ui"]]})
-    assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_library"][0]["ui_id"] == "village"
+    bobs = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
+    assert bobs["ui_library"][0]["ui_id"] == "village"
     # Alice's own row is untouched by Bob's install.
     assert len(get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)["ui_library"]) == 1

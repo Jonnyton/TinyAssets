@@ -943,16 +943,15 @@ def read_graph(
     if normalized in {"universe_file", "universe_files"}:
         # The OWNER's read of their universe folder (/u): the files their agents
         # share. Admin-only, link-free, bounded; every refusal is not_found.
-        from tinyassets.api.universe_file_reads import MAX_READ_BYTES as MAX_UNIVERSE_FILE_READ_BYTES
-        from tinyassets.api.universe_file_reads import list_files, read_file
+        from tinyassets.api import universe_file_reads
 
         if normalized == "universe_files":
-            return json.dumps(list_files(universe_id=graph_id, path=query))
-        return json.dumps(read_file(
+            return json.dumps(universe_file_reads.list_files(universe_id=graph_id, path=query))
+        return json.dumps(universe_file_reads.read_file(
             universe_id=graph_id, path=query, offset=file_offset,
             # This handle's file_max_bytes defaults to run_file's 512 KiB; a
             # folder read pages at most MAX_READ_BYTES, so the default clamps.
-            count=min(file_max_bytes, MAX_UNIVERSE_FILE_READ_BYTES)
+            count=min(file_max_bytes, universe_file_reads.MAX_READ_BYTES)
             if isinstance(file_max_bytes, int) else file_max_bytes,
         ))
     if normalized == "app_ui":

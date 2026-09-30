@@ -18,9 +18,19 @@ yes to exactly that. Each part below is placed so that it cannot break this.
   face). Anyone else gets `not_found`, the same envelope an absent path gets,
   so the refusal does not reveal whether the universe exists.
 - **Paths:** each component is checked with `universe_files._check_component`.
-  Absolute paths, `..`, NUL bytes, and symlinks at any component are refused,
-  using the existing no-follow readers. Listing one directory returns at most
-  500 entries (name, `file`/`dir`, size), sorted, with `truncated`.
+  Absolute paths, `..` and NUL bytes are refused. Listing one directory returns
+  at most 500 entries (name, `file`/`dir`, size), sorted, with `truncated`.
+- **Traversal is anchored to descriptors, not paths.** Production is Linux.
+  The data directory is opened once, and the universe root is opened beneath
+  it with `O_NOFOLLOW`, so a root that is itself a link is refused (the path
+  is never resolved first; resolving strips the link). Every further
+  component is opened with `openat(O_NOFOLLOW)` from the descriptor above it.
+  A listing stats each entry through the directory's descriptor
+  (`dir_fd=`, `follow_symlinks=False`), so swapping a directory for a link
+  after it was opened changes nothing the read sees. Windows has no `openat`,
+  so there a reparse point anywhere on the path, root included, refuses the
+  read. Windows hosts are single-tenant trays, so the check-then-use race
+  left there crosses no user.
 - **Encoding:** UTF-8 text is returned as `text`. Anything else is returned as
   `base64`. `next_offset` / `eof` as `run_file`.
 - **Bridge:** `listFiles(dir)` and `readFile(path, offset)`. `graph_id` is
@@ -76,9 +86,17 @@ automation must be owned by the owner and must name a listed branch.
 
 The platform then:
 
-- pins `digests`: each branch's `compute_content_hash` of its canonical
-  snapshot, the UI component's sha256 over canonical JSON, and each
-  automation's trigger;
+- builds the SNAPSHOT: the exact public payload, meaning every branch row as it
+  is stored (every nested key, known to the model or not, apart from the
+  volatile `visibility`, `published`, `updated_at`, `version` and `stats`),
+  plus the exact definition payload. That definition holds the UI's seven
+  portable fields, a branch-ref per workflow naming the version id its
+  snapshot will mint, and an automation-spec per trigger. It runs the
+  definition scanner over ALL of it (branch rows included) and the
+  definition's own validation, then pins `snapshot_digest`, the sha256 of
+  the canonical serialization. The digest covers the published bytes
+  themselves, so no field list can miss a field (astra rounds 1 and 2 each
+  found one);
 - REPLACES `title`/`body` with text it generates from the action: the public
   name and description, each workflow's name and node count, the UI's name,
   each trigger in words, and one fixed sentence: *"Anyone will be able to read
@@ -92,36 +110,30 @@ tab.
 
 ### Answer (person's surface only: app rail, connector `answer_request`)
 
-1. Recompute every digest. A branch digest covers every field that becomes
-   public, apart from a short denylist of volatile ones (visibility,
-   published, updated_at, version, stats). The UI is exported as its seven
-   portable fields only. The flip to public is a compare-and-set for the
-   whole set, done in one write transaction: an edit racing the confirm
-   refuses everything, and each version is minted from the row as flipped.
-   If any digest differs, refuse with `request_pending: true`
-   and "this changed after you were shown it; ask again". Nothing is published.
-2. For each branch: patch `set_visibility public` + `set_published true`, then
-   `publish_version`. Collect `branch_version_id`s.
-3. Publish ONE agent definition (`publish_agent`, idempotency key =
-   `request_id`, so a retried confirm cannot publish twice) with components:
-   - `ui`: the pinned UI component, if any;
-   - `workflow-<n>`: `{"kind": "tinyassets.branch-ref.v1", "name",
-     "published_version_id"}`;
-   - `automation-<n>`: `{"kind": "tinyassets.automation-spec.v1", "name",
-     "workflow": "workflow-<k>", "trigger": {...}, "overlap"}`, trigger only,
-     never `inputs`.
-4. Resolve the request `answered`/`allowed` and return the definition id and
+1. Rebuild the snapshot from the live rows. Its digest must equal
+   `snapshot_digest`, or the ask is refused with `request_pending: true` and
+   "this changed after you were shown it; ask again". Every content check
+   and the definition's validation run here, before anything is written.
+2. Mint each version from its row as it will be flipped. A version of a
+   private branch is unreadable, because readability follows the branch, so
+   this exposes nothing.
+3. The commit point: ONE `BEGIN IMMEDIATE` re-reads every branch row, refuses
+   unless each still equals the snapshot, and flips them all public, or none.
+4. Publish the pre-validated definition (`publish_agent`, idempotency key
+   derived from `request_id`). The only failure left here is storage, and it
+   flips the branches back, so nothing is left public.
+5. Resolve the request `answered`/`allowed` and return the definition id and
    version ids.
+
+Why not one transaction across all of it: branch rows, versions and
+definitions live in three SQLite files in WAL mode, and a transaction over
+attached WAL databases is not atomic as a set. So the order does the work:
+invisible writes first, a single atomic commit point, then one pre-validated
+write that is compensated if storage fails.
 
 Deny, Clear and a served turn publish nothing. The served surface has no
 `answer_request`. That is the existing rule for every action-bearing ask: an
 agent that could answer its own ask could consent for its owner.
-
-A failure in step 2 or 3 after something was already made public cannot be
-rolled back invisibly: a version is immutable and someone may already have
-read it. The request stays pending, and the error names what was made public
-so the owner and the agent can see it. Step 1 checks everything up front, so
-this needs a store failure mid-sequence.
 
 ### What the owner's branch being public means
 

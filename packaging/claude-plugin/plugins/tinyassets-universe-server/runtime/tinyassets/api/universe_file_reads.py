@@ -60,7 +60,121 @@ def _owner_universe(universe_id: str) -> tuple[str, Path] | None:
         folder = _universe_dir(uid)
     except ValueError:
         return None
-    return (uid, folder) if folder.is_dir() else None
+    # NOT ``folder.is_dir()``: _universe_dir resolves the path, and resolving
+    # strips a link at the universe root itself (astra round 2, P1: an owned
+    # root junction to another universe served that universe's files). The
+    # anchored open below refuses the root when it is a link.
+    if folder.name != uid:
+        return None
+    return uid, Path(_base_path()) / uid
+
+
+# ---------------------------------------------------------------------------
+# Anchored traversal. Production is Linux: the data directory is opened once,
+# the universe root beneath it with O_NOFOLLOW, and every further component with
+# openat(O_NOFOLLOW) relative to the descriptor above it. Entries are stat()ed
+# through the directory descriptor, never by path, so a directory swapped for a
+# link after it was opened changes nothing this read sees (astra round 2, P1).
+# Windows has no openat: there, a reparse point anywhere on the path -- the
+# universe root included -- refuses the read. Windows hosts are single-tenant
+# trays, so the residual race there crosses no user.
+# ---------------------------------------------------------------------------
+
+
+def _open_universe_dir(base: Path, uid: str, rel: str) -> int:
+    """POSIX: a descriptor for ``base/uid/rel``, no component a link."""
+    from tinyassets import workspace_fs as fs
+
+    base_fd = os.open(str(base), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        current = fs.open_subdir_nofollow(base_fd, uid)
+    finally:
+        os.close(base_fd)
+    try:
+        for part in (rel.split("/") if rel else []):
+            child = fs.open_subdir_nofollow(current, part)
+            os.close(current)
+            current = child
+    except BaseException:
+        os.close(current)
+        raise
+    return current
+
+
+def _windows_path_is_clean(base: Path, uid: str, rel: str) -> Path:
+    """Windows: the path, after refusing a reparse point at ANY component."""
+    from tinyassets.universe_files import UniverseFileError
+
+    current = base
+    for part in [uid, *(rel.split("/") if rel else [])]:
+        current = current / part
+        info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+            raise UniverseFileError(f"{part!r} is a link; universe files are read link-free")
+    return current
+
+
+def _entry(name: str, info: os.stat_result) -> dict[str, Any] | None:
+    # A link is never followed and never listed; a Windows junction lstat()s as
+    # a directory and only its reparse tag says what it is.
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+        return None
+    if stat.S_ISREG(info.st_mode):
+        return {"name": name, "kind": "file", "size_bytes": info.st_size}
+    if stat.S_ISDIR(info.st_mode):
+        return {"name": name, "kind": "dir"}
+    return None
+
+
+def _list(base: Path, uid: str, rel: str) -> tuple[list[str], list[dict[str, Any]]]:
+    from tinyassets import workspace_fs as fs
+
+    entries: list[dict[str, Any]] = []
+    if fs._POSIX:
+        fd = _open_universe_dir(base, uid, rel)
+        try:
+            names = sorted(os.listdir(fd))
+            for name in names:
+                if len(entries) >= MAX_LIST_ENTRIES:
+                    break
+                try:
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                except OSError:
+                    continue
+                entry = _entry(name, info)
+                if entry is not None:
+                    entries.append(entry)
+        finally:
+            os.close(fd)
+        return names, entries
+    directory = _windows_path_is_clean(base, uid, rel)
+    names = sorted(entry.name for entry in os.scandir(directory))
+    for name in names:
+        if len(entries) >= MAX_LIST_ENTRIES:
+            break
+        try:
+            info = os.lstat(directory / name)
+        except OSError:
+            continue
+        entry = _entry(name, info)
+        if entry is not None:
+            entries.append(entry)
+    return names, entries
+
+
+def _read(base: Path, uid: str, rel: str) -> bytes:
+    from tinyassets import workspace_fs as fs
+    from tinyassets.universe_files import MAX_UNIVERSE_FILE_BYTES, read_universe_file
+
+    if fs._POSIX:
+        fd = _open_universe_dir(base, uid, "")
+        try:
+            return fs.read_regular_file_beneath(fd, rel, max_bytes=MAX_UNIVERSE_FILE_BYTES)
+        finally:
+            os.close(fd)
+    # The root is checked here; every component below it by the shared reader.
+    _windows_path_is_clean(base, uid, "")
+    return read_universe_file(base / uid, rel)
 
 
 def _relative(raw: str) -> str | None:
@@ -91,35 +205,15 @@ def _relative(raw: str) -> str | None:
 
 
 def list_files(*, universe_id: str = "", path: str = "") -> dict[str, Any]:
-    from tinyassets.universe_files import list_universe_dir
-
     owned = _owner_universe(universe_id)
     rel = _relative(path)
     if owned is None or rel is None:
         return dict(_NOT_FOUND)
     uid, folder = owned
     try:
-        names = list_universe_dir(folder, rel)
+        names, entries = _list(folder.parent, uid, rel)
     except OSError:
         return dict(_NOT_FOUND)
-    entries: list[dict[str, Any]] = []
-    base = folder / rel if rel else folder
-    for name in names:
-        if len(entries) >= MAX_LIST_ENTRIES:
-            break
-        try:
-            info = os.lstat(base / name)
-        except OSError:
-            continue
-        # A link is never followed and never listed: the reader would refuse it.
-        # A Windows junction lstat()s as a directory; its reparse tag says what
-        # it is (the same test universe_files applies on the read).
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
-            continue
-        if stat.S_ISREG(info.st_mode):
-            entries.append({"name": name, "kind": "file", "size_bytes": info.st_size})
-        elif stat.S_ISDIR(info.st_mode):
-            entries.append({"name": name, "kind": "dir"})
     return {
         "universe_id": uid,
         "path": rel,
@@ -131,8 +225,6 @@ def list_files(*, universe_id: str = "", path: str = "") -> dict[str, Any]:
 def read_file(
     *, universe_id: str = "", path: str = "", offset: int = 0, count: int = DEFAULT_READ_BYTES,
 ) -> dict[str, Any]:
-    from tinyassets.universe_files import read_universe_file
-
     owned = _owner_universe(universe_id)
     rel = _relative(path)
     if owned is None or not rel:
@@ -143,7 +235,7 @@ def read_file(
         return {"error": f"file_max_bytes must be between 1 and {MAX_READ_BYTES}"}
     uid, folder = owned
     try:
-        data = read_universe_file(folder, rel)
+        data = _read(folder.parent, uid, rel)
     except OSError:
         return dict(_NOT_FOUND)
     total = len(data)

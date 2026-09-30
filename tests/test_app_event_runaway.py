@@ -120,7 +120,7 @@ def _drain(base: Path, polls: int = 60) -> None:
 
 @pytest.mark.parametrize("meter", ["hourly", "daily"])
 def test_a_ping_pong_stops_at_the_meter_with_a_visible_refusal(
-    home: Path, monkeypatch, meter: str,
+    home: Path, monkeypatch, meter: str,  # noqa: F811 - the imported fixture
 ) -> None:
     from tinyassets import engine_admissions as ea
     from tinyassets import engine_mcp_server as ems
@@ -169,7 +169,7 @@ def test_a_ping_pong_stops_at_the_meter_with_a_visible_refusal(
     assert "usage limit" in refused[0]["usage_notice"]["message"]
 
 
-def test_a_screen_emitting_in_a_loop_stops_at_the_meter(home: Path, monkeypatch) -> None:
+def test_a_screen_emitting_in_a_loop_stops_at_the_meter(home: Path, monkeypatch) -> None:  # noqa: F811
     """The one place an emit loop CAN be written: UI code on the owner's own
     screen calling emit again and again. Each emit is metered before a wake
     exists; the refusal is structured and names the limit."""
@@ -188,7 +188,7 @@ def test_a_screen_emitting_in_a_loop_stops_at_the_meter(home: Path, monkeypatch)
     assert len(_wakes(home)) == len(admitted)
 
 
-def test_how_fast_the_real_meter_fills(home: Path, capsys) -> None:
+def test_how_fast_the_real_meter_fills(home: Path, capsys) -> None:  # noqa: F811
     """Measurement, not a gate: at the real limits, how long does a tight emit
     loop take to spend the hourly total? Printed for the lead's decision."""
     from tinyassets import engine_admissions as ea
