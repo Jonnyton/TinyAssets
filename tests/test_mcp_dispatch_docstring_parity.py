@@ -63,8 +63,8 @@ from tinyassets.api import wiki as wiki_mod
 #   docstring's `Action groups:` block during 2026-Q1. Tracked as a
 #   navigator-vetted backfill task: some of these (e.g. internal escrow,
 #   gate_event ops) may deserve permanent allowlist status as advanced
-#   internal verbs; others (e.g. messaging_*, project_memory_*,
-#   schedule_branch) belong in the user-facing docstring.
+#   internal verbs; others (e.g. messaging_*, project_memory_*) belong in
+#   the user-facing docstring.
 #
 # To shrink: when a docstring backfill lands, remove the corresponding
 # entries here. The over-broad-allowlist test (mode 4) will tell you if
@@ -90,9 +90,6 @@ KNOWN_DEBT: dict[str, frozenset[str]] = {
         "dry_inspect_node", "dry_inspect_patch",
         # Messaging surface — pre-launch, not yet chatbot-routed.
         "messaging_send", "messaging_receive", "messaging_ack",
-        # Scheduler pause/unpause — sub-actions of the documented
-        # scheduler family, not standalone surface.
-        "pause_schedule", "unpause_schedule",
     }),
 }
 

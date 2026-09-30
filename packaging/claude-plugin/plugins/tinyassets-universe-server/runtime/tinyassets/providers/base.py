@@ -92,6 +92,7 @@ FailureClass = Literal[
     "interactive_deadline",
     "provider_protocol_error",
     "provider_refused",
+    "provider_reply_timeout",
 ]
 
 # Idle-watchdog profile defaults (seconds) — a PROFILE, not one wall-clock.

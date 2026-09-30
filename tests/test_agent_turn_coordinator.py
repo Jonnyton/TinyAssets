@@ -68,12 +68,21 @@ def _exercise(path, implementation, scenario):
                     "SELECT state, actual_total_tokens, actual_cost_microunits "
                     "FROM served_provider_budget_reservations ORDER BY rowid"
                 )]
+            # The reply budget is measured from the clock: the shared coordinator
+            # asks for what is LEFT of the turn, the frozen oracle for the whole
+            # cap. Compared separately below rather than as an exact value.
+            wires = [
+                (verb, {key: value for key, value in document.items()
+                        if key != "reply_budget_s"})
+                for verb, document in agent.wires
+            ]
+            budgets = [document.get("reply_budget_s") for _, document in agent.wires]
             return {
                 "answer": answer, "error": error, "state": turn.state,
                 "generation": turn.generation, "rounds": rounds,
-                "wires": agent.wires, "tools": agent.tools, "spend": spend,
+                "wires": wires, "tools": agent.tools, "spend": spend,
                 "closed": agent.closed,
-            }
+            }, budgets
 
 
 @pytest.mark.parametrize("scenario", [
@@ -83,10 +92,15 @@ def _exercise(path, implementation, scenario):
 ])
 def test_shared_coordinator_preserves_legacy_chat_progress(tmp_path, scenario):
     current = interactive_http_agent.InteractiveHttpAgentTurn
-    expected = _exercise(tmp_path / "legacy", legacy.InteractiveHttpAgentTurn, scenario)
-    actual = _exercise(tmp_path / "shared", current, scenario)
+    expected, legacy_budgets = _exercise(
+        tmp_path / "legacy", legacy.InteractiveHttpAgentTurn, scenario,
+    )
+    actual, budgets = _exercise(tmp_path / "shared", current, scenario)
     assert actual == expected
     assert expected["wires"] or scenario == "intent_failure"
+    # Every round asks for a budget, never more than the whole turn had.
+    assert len(budgets) == len(legacy_budgets)
+    assert all(0 < mine <= theirs for mine, theirs in zip(budgets, legacy_budgets))
 
 
 def test_shared_progress_has_no_served_request_authority_import():

@@ -748,26 +748,12 @@ def _extensions_impl(
         }
         return auto_ship_handler(as_kwargs)
 
-    # ── Scheduler ──────────────────────────────────────────────────────────
+    # ── Event subscriptions ───────────────────────────────────────────────
     scheduler_handler = _SCHEDULER_ACTIONS.get(action)
     if scheduler_handler is not None:
         sched_kwargs: dict[str, Any] = {
             "branch_def_id": branch_def_id,
-            # The SCHEDULE actions derive their owner from the authenticated
-            # request and ignore ``owner_actor`` entirely — it was a self-issued
-            # authority claim. It is still forwarded for the event-SUBSCRIPTION
-            # actions, which have not been converted yet.
             "owner_actor": owner_actor,
-            # Scope, resolved by the shared MCP resolver like every sibling
-            # action: explicit id wins, omitted means the founder's own home.
-            # Whether the request MAY act on it is decided by the ACL and
-            # founder-home gates in runtime_ops, not by naming it here.
-            "universe_id": universe_id,
-            "cron_expr": cron_expr,
-            "interval_seconds": interval_seconds,
-            "inputs_template_json": inputs_template_json,
-            "skip_if_running": skip_if_running,
-            "schedule_id": schedule_id,
             "subscription_id": subscription_id,
             "event_type": event_type,
             "active_only": active_only,
@@ -948,9 +934,7 @@ def _extensions_impl(
             "escrow_fund", "escrow_balance", "escrow_set_wallet", "escrow_withdraw",
             "attest_gate_event", "verify_gate_event", "dispute_gate_event",
             "retract_gate_event", "get_gate_event", "list_gate_events",
-            "schedule_branch", "unschedule_branch", "list_schedules",
-            "subscribe_branch", "unsubscribe_branch",
-            "pause_schedule", "unpause_schedule", "list_scheduler_subscriptions",
+            "subscribe_branch", "unsubscribe_branch", "list_scheduler_subscriptions",
             "record_outcome", "list_outcomes", "get_outcome",
             "record_remix", "get_provenance",
             "quality_leaderboard", "recommended_parent_for_fork",

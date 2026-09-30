@@ -62,9 +62,22 @@ from typing import NamedTuple
 
 LEDGER_NAME = ".engine_run_admissions.db"
 # Shared by enforcement and read-only status; one source for the deployed policy.
-RUN_WRITE_LIMIT = 300
-RUN_TOTAL_LIMIT = 900
+#
+# These are cross-user FAIRNESS bounds on shared compute, not product limits
+# (plan item 6, 2026-09-28). The reference workload that must fit with room to
+# spare is a user's 10-agent squad on 2-minute heartbeats: 10 x 30 = 300 runs an
+# hour, ~7,200 a day, every one charged as a write until it settles. The old
+# hourly write cap of 300 was exactly that squad, so both hourly caps are 4x.
+RUN_WRITE_LIMIT = 1200
+RUN_TOTAL_LIMIT = 3600
 RUN_WINDOW_SECONDS = 3600
+# THE daily knob. Runs (write and read, not engine edits) per universe per
+# rolling 24h. The hourly caps pace work; this one bounds a day's spend, which
+# a self-launching chain paced under the hourly caps would otherwise never
+# meet. It replaced the structural caps -- invoke_branch depth, automation
+# and schedule counts, cadence floors (plan item 6). ~2.8x the squad's day.
+RUN_DAY_LIMIT = 20_000
+RUN_DAY_SECONDS = 86400
 
 
 KIND_WRITE = "write"
@@ -82,6 +95,7 @@ READ_VERBS = frozenset({"GET", "HEAD"})
 ADMITTED_UNRECORDED = -1
 REFUSED_BY_WRITE = "write"
 REFUSED_BY_TOTAL = "total"
+REFUSED_BY_DAY = "day"
 REFUSED_BY_LEDGER = "ledger"
 # A settlement row outlives the run it belongs to by this much; pruned on
 # every settle and every admission, so a browser run that never binds leaves
@@ -155,6 +169,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS dispatch_budget_universe_ts "
         "ON dispatch_budget(universe_id, ts)"
     )
+    # A day of rows is now kept, so the per-universe counts need an index.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS admissions_universe_ts "
+        "ON admissions(universe_id, ts)"
+    )
 
 
 def _is_ticket(ticket: object) -> bool:
@@ -170,6 +189,7 @@ def admit_detail(
     fail_closed: bool = False,
     db: Path | None = None,
     kind: str = KIND_WRITE,
+    day_max: int | None = None,
 ) -> Admission:
     """Atomically admit one engine-triggered run/write under the rolling caps.
 
@@ -179,6 +199,10 @@ def admit_detail(
     once rows of any kind reach ``total_max``. ``reclassify_read`` may later
     downgrade a ``write`` row once its run proves it wrote nothing. Rows
     older than the window are pruned on each admission.
+
+    ``day_max`` additionally refuses a ``write`` (a run) once the universe's
+    runs -- write and read rows, not engine edits -- in the last
+    ``RUN_DAY_SECONDS`` have reached it. Rows are then kept for a day.
     """
     if kind not in (KIND_WRITE, KIND_ENGINE):
         raise ValueError(f"admission kind must be write or engine, not {kind!r}")
@@ -196,6 +220,11 @@ def admit_detail(
         return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
     now = time.time()
     cutoff = now - window_s
+    day_cutoff = now - RUN_DAY_SECONDS
+    # A day of rows is kept whatever THIS caller meters: the prune is global,
+    # so a caller without the day window pruning at one hour deleted every
+    # other universe's day history (Codex refute 2026-09-28, P1).
+    keep_from = min(cutoff, day_cutoff)
     try:
         conn = sqlite3.connect(str(db), timeout=10)
         try:
@@ -218,6 +247,14 @@ def admit_detail(
                 refused_by = REFUSED_BY_WRITE
             elif int(total) >= total_max:
                 refused_by = REFUSED_BY_TOTAL
+            elif kind == KIND_WRITE and day_max is not None:
+                day_runs = conn.execute(
+                    "SELECT COUNT(*) FROM admissions WHERE universe_id = ? "
+                    "AND ts >= ? AND kind IN (?, ?)",
+                    (universe_id, day_cutoff, KIND_WRITE, KIND_READ),
+                ).fetchone()[0]
+                if int(day_runs) >= day_max:
+                    refused_by = REFUSED_BY_DAY
             if refused_by:
                 # Refused - but the migration that may have just run must
                 # stay: a rollback here would undo it and redo it on every
@@ -229,9 +266,15 @@ def admit_detail(
                 (universe_id, now, kind),
             )
             ticket = int(cur.lastrowid or 0)
-            # Rows outside the window count for nothing: prune them now, not a
-            # window later (Codex on engine rows).
-            conn.execute("DELETE FROM admissions WHERE ts < ?", (cutoff,))
+            # Rows outside every window count for nothing: prune them now,
+            # not a window later (Codex on engine rows). Run rows count toward
+            # the day, so they are kept a day; engine edits never do, so they
+            # go at the hour.
+            conn.execute("DELETE FROM admissions WHERE ts < ?", (keep_from,))
+            conn.execute(
+                "DELETE FROM admissions WHERE ts < ? AND kind = ?",
+                (cutoff, KIND_ENGINE),
+            )
             conn.execute("DELETE FROM settlements WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.commit()
             return Admission(ticket if ticket > 0 else ADMITTED_UNRECORDED, None)
@@ -239,6 +282,71 @@ def admit_detail(
             conn.close()
     except sqlite3.Error:
         return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
+
+
+def usage_notice(
+    universe_id: str,
+    *,
+    db: Path | None = None,
+    now: float | None = None,
+) -> dict[str, object] | None:
+    """What an owner is told when a cap is reached, or None if none is.
+
+    Names the cap, its size and window, and WHEN capacity returns: the moment
+    enough of the counted rows age out of the window for one more run. Read-
+    only; computed from the same rows and caps admission uses, so a refusal is
+    never silent and never a guess.
+    """
+    db = db or ledger_path()
+    if not db.is_file():
+        return None
+    moment = time.time() if now is None else now
+    hour_from = moment - RUN_WINDOW_SECONDS
+    day_from = moment - RUN_DAY_SECONDS
+    checks = (
+        ("writes_per_hour", RUN_WRITE_LIMIT, RUN_WINDOW_SECONDS,
+         "ts >= ? AND kind = ?", (hour_from, KIND_WRITE)),
+        ("runs_and_edits_per_hour", RUN_TOTAL_LIMIT, RUN_WINDOW_SECONDS,
+         "ts >= ?", (hour_from,)),
+        ("runs_per_day", RUN_DAY_LIMIT, RUN_DAY_SECONDS,
+         "ts >= ? AND kind IN (?, ?)", (day_from, KIND_WRITE, KIND_READ)),
+    )
+    try:
+        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=10)
+        try:
+            for name, cap, window, where, params in checks:
+                stamps = [
+                    float(row[0]) for row in conn.execute(
+                        f"SELECT ts FROM admissions WHERE universe_id = ? AND {where} "
+                        "ORDER BY ts ASC",
+                        (universe_id, *params),
+                    )
+                ]
+                if len(stamps) < cap:
+                    continue
+                returns = stamps[len(stamps) - cap] + window
+                from datetime import datetime, timezone
+
+                at = datetime.fromtimestamp(returns, timezone.utc).replace(
+                    microsecond=0
+                ).isoformat()
+                return {
+                    "limit": name,
+                    "cap": cap,
+                    "window_seconds": window,
+                    "capacity_returns_at": at,
+                    "message": (
+                        f"This universe reached its usage limit of {cap} "
+                        f"{name.replace('_', ' ')}. It is shared-compute "
+                        f"fairness, not a limit on what you build; capacity "
+                        f"returns at {at}."
+                    ),
+                }
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return None
 
 
 def admit(
