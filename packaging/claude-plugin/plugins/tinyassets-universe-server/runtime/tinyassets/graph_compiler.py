@@ -2867,6 +2867,10 @@ def _authorize_child_ref(
     is_public = visibility == "public"
     if ctx.caller_provenance == "own":
         authorized = is_public or (bool(author) and author == ctx.actor)
+        if not authorized and _is_the_runs_own_author(base, author, ctx):
+            # An owner's automation runs as ``universe:<id>`` with no
+            # owner_user_id on its row; its own private child is still its own.
+            authorized = True
         if (not authorized and author and author == ctx.owner_user_id
                 and ctx.definition_author == ctx.owner_user_id and parent_run_id):
             from tinyassets import runs
@@ -2903,19 +2907,18 @@ def _authorize_child_ref(
         raise CompilerError(_CHILD_UNAVAILABLE) from None
 
 
-def _unmarked_version_is_the_runs_own(
-    base: "Path", child: "Any", ctx: "BranchExecutionContext",
-) -> bool:
-    """May this run use an UNPUBLISHED version of ``child``?
+def _is_the_runs_own_author(base: "Path", author: str, ctx: "BranchExecutionContext") -> bool:
+    """Is ``author``'s private branch -- or unpublished version -- this run's own?
 
     Only when all three hold: the running definition is the run's own
-    (``caller_provenance == "own"``), it was written by the same author as the
-    child, and that author is the run's principal -- the run actor itself, or
-    an admin of the universe the run executes in (the ``_caller_provenance``
-    rule: an owner's automation runs as ``universe:<id>`` while the branch
-    author is the owner's user id). Fail closed on any lookup error.
+    (``caller_provenance == "own"``), it was written by that same author, and
+    the author is the run's principal -- the run actor itself, or an admin of
+    the universe the run executes in while the run executes AS that universe
+    (the ``_caller_provenance`` rule: an owner's automation runs as
+    ``universe:<id>`` while the branch author is the owner's user id). Fail
+    closed on any lookup error.
     """
-    author = str(getattr(child, "author", "") or "").strip()
+    author = str(author or "").strip()
     if not author or ctx.caller_provenance != "own" or ctx.definition_author != author:
         return False
     if author == ctx.actor:
@@ -2929,7 +2932,7 @@ def _unmarked_version_is_the_runs_own(
 
         return bool(ctx.universe_id) and universe_owner_actor(base, ctx.universe_id, author)
     except Exception:  # noqa: BLE001 - uniform refusal
-        logger.debug("unpublished version owner lookup failed", exc_info=True)
+        logger.debug("run-own author lookup failed", exc_info=True)
         return False
 
 
@@ -3334,7 +3337,7 @@ def _build_invoke_branch_version_node(
             # ``universe:<id>`` while the branch author is the owner's user id.
             # The parent definition must be the run's own AND by the same author,
             # so a foreign or co-admin definition cannot reach this history.
-            if not _unmarked_version_is_the_runs_own(_base, child, _ctx):
+            if not _is_the_runs_own_author(_base, getattr(child, "author", ""), _ctx):
                 raise CompilerError(_CHILD_UNAVAILABLE)
 
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:

@@ -170,6 +170,7 @@ def _seed_version_invoking_branch(
     child_id: str = "branch_child_version",
     author: str = OWNER,
     public: bool = True,
+    child_visibility: str = "public",
 ) -> str:
     """A root that invokes a PUBLISHED VERSION of a child, async.
 
@@ -185,7 +186,7 @@ def _seed_version_invoking_branch(
         branch_def_id=child_id,
         name="Versioned child",
         author=author,
-        visibility="public",
+        visibility=child_visibility,
         graph_nodes=[GraphNodeRef(id="v1", node_def_id="v1")],
         edges=[EdgeDefinition(from_node="v1", to_node="END")],
         entry_point="v1",
@@ -1430,13 +1431,18 @@ def test_an_async_version_pinned_child_is_guarded_too(
     assert "automation_owner_lost_admin" in str(child.get("error"))
 
 
+@pytest.mark.parametrize("child_visibility", ["public", "private"])
 def test_an_owners_automation_runs_its_own_unpublished_pinned_child(
     tmp_path: Path,
     monkeypatch,
+    child_visibility: str,
 ) -> None:
     """The publication mark gates OTHER people. An owner's own automation (run
     actor ``universe:<id>``, owner the user) pins a version of the owner's own
-    branch that was never published, and that child must run."""
+    branch that was never published -- on a public or a private branch -- and
+    that child must run (astra refute 2026-09-30: the private case was still
+    refused, because the owner path keyed on an owner_user_id automation runs
+    do not carry)."""
     from tests.test_background_budget_finalization_e2e import _CountingProvider
     from tinyassets.branch_versions import list_branch_versions
     from tinyassets.runs import get_run, wait_for
@@ -1444,7 +1450,7 @@ def test_an_owners_automation_runs_its_own_unpublished_pinned_child(
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     _seed_serving_assignment(tmp_path)
     _seed_owner(tmp_path)
-    _seed_version_invoking_branch(tmp_path, public=False)
+    _seed_version_invoking_branch(tmp_path, public=False, child_visibility=child_visibility)
     assert [v.public for v in list_branch_versions(tmp_path, "branch_child_version")] == [False]
     versioned = register_automation(
         tmp_path,
