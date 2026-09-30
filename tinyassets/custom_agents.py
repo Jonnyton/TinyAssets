@@ -1494,6 +1494,36 @@ def save_app_ui(
                if "ui_library" in changes else None)
     selection = (_canonical_json(changes["ui_selection"])
                  if "ui_selection" in changes else None)
+    from tinyassets import storage_accounting
+
+    # The library's bytes are the saver's account storage (account-storage-quota
+    # D7): at the quota this raises `StorageRefused` before anything is written.
+    account = owner if storage_accounting.is_account(base_path, owner) else None
+    reservation = storage_accounting.reserve(
+        base_path, account_id=account, scope_id=account or "", store="ui_library",
+        nbytes=sum(len(s.encode("utf-8")) for s in (library or "", selection or "")),
+    )
+    try:
+        saved = _save_app_ui_row(
+            base_path, owner=owner, uid=uid, expected_revision=expected_revision,
+            library=library, selection=selection,
+        )
+    except BaseException:
+        storage_accounting.release(reservation)
+        raise
+    storage_accounting.commit(reservation)
+    return saved
+
+
+def _save_app_ui_row(
+    base_path: str | Path,
+    *,
+    owner: str,
+    uid: str,
+    expected_revision: int,
+    library: str | None,
+    selection: str | None,
+) -> dict[str, Any]:
     now = time.time()
     with _agent_connect(base_path) as conn:
         if expected_revision == 0:

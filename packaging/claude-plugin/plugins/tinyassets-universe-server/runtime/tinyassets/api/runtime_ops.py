@@ -98,15 +98,22 @@ def _action_project_memory_set(kwargs: dict[str, Any]) -> str:
             expected_version = int(expected_version_raw)
         except (TypeError, ValueError):
             return json.dumps({"error": "expected_version must be an integer."})
+    from tinyassets.storage_accounting import StorageRefused
+
     actor = _current_actor()
-    result = project_memory_set(
-        _base_path(),
-        project_id=project_id,
-        key=key,
-        value=value,
-        actor=actor,
-        expected_version=expected_version,
-    )
+    try:
+        result = project_memory_set(
+            _base_path(),
+            project_id=project_id,
+            key=key,
+            value=value,
+            actor=actor,
+            expected_version=expected_version,
+        )
+    except StorageRefused as refused:
+        # The account is at its storage quota: the visible refusal, numbers and
+        # inline Upgrade link included. Nothing was written.
+        return json.dumps(refused.record)
     return json.dumps(result)
 
 

@@ -182,7 +182,7 @@ def tier_of(base_path: str | Path, owner_id: str) -> str:
     unreadable record all resolve to FREE -- never to the paid tier.
     """
     from tinyassets.daemon_server import get_founder_home
-    from tinyassets.storage.subscription_state import TIER_FREE, get_tier
+    from tinyassets.storage.subscription_state import TIER_FREE, read_tier
 
     owner = named_principal(owner_id)
     if not owner:
@@ -194,7 +194,7 @@ def tier_of(base_path: str | Path, owner_id: str) -> str:
         return TIER_FREE
     if not home or Path(home).name != home or home.startswith("."):
         return TIER_FREE
-    return get_tier(Path(base_path) / home)
+    return read_tier(Path(base_path) / home)
 
 
 __all__ = [

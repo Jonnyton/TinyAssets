@@ -14,7 +14,8 @@ Spec invariants:
 - No per-project size cap. The 1 MB one that used to be here was a second
   storage number beside the universe's tier storage, and storage is one of the
   two limits an account actually has (founder, 2026-09-30) -- it is measured and
-  enforced once, over the universe, not per primitive. These bytes count there.
+  enforced once, over the writer's ACCOUNT (`tinyassets.storage_accounting`,
+  store ``project_memory``), not per primitive.
 - ``version`` field supports optimistic concurrency: writes require matching
   ``expected_version`` or return a ``{"conflict": ...}`` error.
 - ``version`` increments monotonically per ``(project_id, key)`` pair.
@@ -93,17 +94,57 @@ def project_memory_set(
     - ``{"conflict": True, "current_version": N, "message": "..."}`` on
       optimistic-concurrency conflict.
 
-    There is no size refusal. These bytes are charged to the universe's tier
-    storage, which is where storage is measured; a per-project megabyte was a
-    second number for the same thing.
+    No per-project size cap: these bytes are charged to the WRITER's account
+    storage pool, and at that quota the write raises
+    `storage_accounting.StorageRefused` (its ``record`` is the visible refusal
+    with the Upgrade link). A per-project megabyte was a second number for the
+    same thing.
 
     *value* is JSON-serialised before storage so any JSON-serialisable type
     is accepted.
     """
+    from tinyassets import storage_accounting
+
     _init_db(base_path)
     serialised = json.dumps(value, default=str)
     now = _now()
 
+    # The account's one storage pool gates this write (account-storage-quota
+    # D7): refused with `StorageRefused` before anything is written. The row
+    # lands twice -- current value and history -- so both are reserved.
+    row_bytes = sum(len(s.encode("utf-8")) for s in (serialised, project_id, key))
+    reservation = storage_accounting.reserve(
+        base_path,
+        account_id=(account := storage_accounting.account_for_actor(base_path, actor)),
+        scope_id=account or "",
+        store="project_memory",
+        nbytes=2 * row_bytes,
+    )
+    try:
+        result = _project_memory_write(
+            base_path, project_id=project_id, key=key, serialised=serialised,
+            actor=actor, expected_version=expected_version, now=now,
+        )
+    except BaseException:
+        storage_accounting.release(reservation)
+        raise
+    if result.get("conflict"):
+        storage_accounting.release(reservation)
+    else:
+        storage_accounting.commit(reservation)
+    return result
+
+
+def _project_memory_write(
+    base_path: str | Path,
+    *,
+    project_id: str,
+    key: str,
+    serialised: str,
+    actor: str,
+    expected_version: int | None,
+    now: str,
+) -> dict[str, Any]:
     with _connect(base_path) as conn:
         existing = conn.execute(
             "SELECT version FROM project_memory WHERE project_id = ? AND key = ?",

@@ -707,7 +707,51 @@ def account_for_actor(base_path: str | Path, actor: str) -> str | None:
     text = (actor or "").strip()
     if text.startswith("universe:"):
         return owner_of(base_path, text.split(":", 1)[1])
-    return named_principal(text) or None
+    person = named_principal(text)
+    return person if person and is_account(base_path, person) else None
+
+
+def is_account(base_path: str | Path, principal: str) -> bool:
+    """Whether ``principal`` is an ACCOUNT storage is charged to: it owns a
+    universe or has a home. The host, a platform daemon's ``host`` owner, or a
+    subject that never founded anything has no pool, so it is not gated -- its
+    bytes are counted wherever they land on a universe."""
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.universe_owner import owned_universes
+
+    person = named_principal(principal or "")
+    if not person:
+        return False
+    try:
+        return bool(owned_universes(base_path, person) or get_founder_home(base_path, person))
+    except Exception:  # noqa: BLE001 -- unreadable: not provably an account
+        _log.warning("could not resolve whether %r is an account", person, exc_info=True)
+        return False
+
+
+def account_for_daemon(base_path: str | Path, daemon_id: str) -> str | None:
+    """The account a daemon's memory is charged to: its authenticated owner."""
+    from tinyassets.daemon_registry import get_daemon
+
+    try:
+        daemon = get_daemon(base_path, daemon_id=daemon_id)
+    except Exception:  # noqa: BLE001 -- unknown daemon: the write fails on its own
+        return None
+    owner = str(daemon.get("owner_user_id") or "")
+    return owner if is_account(base_path, owner) else None
+
+
+@contextlib.contextmanager
+def charged(
+    base_path: str | Path, *, account_id: str | None, store: str, nbytes: int,
+) -> Iterator[Reservation]:
+    """`admitted` for an ACCOUNT-scoped store (project memory, UI library,
+    daemon memory): the scope is the account itself."""
+    with admitted(
+        base_path, account_id=account_id, scope_id=account_id or "", store=store,
+        nbytes=nbytes,
+    ) as reservation:
+        yield reservation
 
 
 __all__ = [
@@ -718,6 +762,9 @@ __all__ = [
     "StorageRefused",
     "Usage",
     "account_for_actor",
+    "account_for_daemon",
+    "charged",
+    "is_account",
     "admitted",
     "commit",
     "measure",

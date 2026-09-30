@@ -72,6 +72,7 @@ from tinyassets.api.helpers import (
 from tinyassets.catalog import list_unreconciled_writes
 from tinyassets.ids import new_universe_id
 from tinyassets.ingestion.canon_io import iter_canon_files, safe_canon_path
+from tinyassets.storage_accounting import StorageRefused
 from tinyassets.universe_bundle import seed_okf_bundle
 from tinyassets.universe_soul import (
     NO_LOOP_DECLARED,
@@ -3282,6 +3283,8 @@ def _action_daemon_memory_capture(
             ),
             metadata=metadata,
         )
+    except StorageRefused as refused:
+        return json.dumps({"universe_id": uid, **refused.record})
     except (KeyError, ValueError, TypeError) as exc:
         return json.dumps({"universe_id": uid, "error": str(exc)})
     return json.dumps({"universe_id": uid, "daemon_id": daemon_id, "entry": entry}, default=str)
@@ -3428,6 +3431,8 @@ def _action_daemon_memory_promote(
             target_rel_path=target_rel_path,
             metadata=metadata,
         )
+    except StorageRefused as refused:
+        return json.dumps({"universe_id": uid, **refused.record})
     except (KeyError, ValueError, TypeError) as exc:
         return json.dumps({"universe_id": uid, "error": str(exc)})
     result["universe_id"] = uid
