@@ -20,6 +20,7 @@ from tinyassets.automations import (
     Automation,
     _due_instant,
     next_due_at,
+    slot_key_for_due,
 )
 
 NOW = datetime(2026, 9, 24, 12, 7, 30, tzinfo=timezone.utc)
@@ -73,13 +74,26 @@ def test_paused_and_retired_automations_never_fire(state):
         ("30 6 1 * *", "2026-10-01T06:30:00+00:00"),
     ],
 )
-def test_cron_next_fire_is_the_next_matching_minute(monkeypatch, expr, expected):
-    import time
+def test_cron_next_fire_is_the_next_matching_minute(expr, expected):
+    """With nothing currently OWED, the next matching slot in the row's zone.
 
-    # The pump matches cron against the process clock's zone; pin it to UTC so
-    # the expectations are about the rule, not the machine running the suite.
-    monkeypatch.setattr(time, "localtime", time.gmtime)
-    row = _row(trigger_kind="cron", interval_seconds=0, cron_expr=expr)
+    CONTRACT CHANGED 2026-09-30 (`automation-schedule-timezone`): cron is
+    evaluated in the automation's own `timezone` rather than the process clock,
+    so this no longer pins `time.localtime` -- the row says `UTC` and that is
+    what the expectations are about. A slot is also now claimable for a short
+    grace period after it passes (previously only the exact current minute
+    matched), which the decided DST policy requires: the spring-forward gap slot
+    never occurs as a local minute, so an exact-minute rule could never fire it.
+    `*/15` at 12:07:30 therefore has 12:00 genuinely owed, and the "what is
+    next" question only means something once that is recorded as fired.
+    """
+    row = _row(trigger_kind="cron", interval_seconds=0, cron_expr=expr, timezone="UTC")
+    owed = _due_instant(row, NOW)
+    if owed:
+        row = _row(
+            trigger_kind="cron", interval_seconds=0, cron_expr=expr, timezone="UTC",
+            last_due_local=slot_key_for_due(expr, "UTC", owed), last_due_at=owed,
+        )
     reported = next_due_at(row, NOW)
     assert reported == expected
     assert _due_instant(row, datetime.fromisoformat(reported)) == reported

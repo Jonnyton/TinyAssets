@@ -4799,6 +4799,17 @@ def main(
     except Exception:  # noqa: BLE001 - boot must not fail on budget maintenance
         logger.exception("served budget: maintenance not started")
 
+    # Take the run-recovery lock and interrupt what the previous process left in
+    # flight BEFORE starting anything that runs: the engine MCP children serve
+    # run tools too, and whichever process sweeps must be the one whose runs
+    # are not in the table yet. A deploy-killed run is announced as interrupted
+    # here, which is what lets an owner's run_completed loop survive a deploy.
+    # The maintenance block above also calls it, but inside a try that an
+    # earlier failure skips; this call is the one boot can rely on (once-only).
+    from tinyassets.api.runs import _ensure_runs_recovery
+
+    _ensure_runs_recovery()
+
     # Enforceable visibility preflight (also fires in the HTTP app's lifespan;
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so
     # run it here too — a strict-code boot must not serve undeclared universes.

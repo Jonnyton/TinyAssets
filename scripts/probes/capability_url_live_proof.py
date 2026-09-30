@@ -41,11 +41,13 @@ tidier than leaving a live branch and a real inference behind.
 
 Findings baked in from the first run (2026-09-30):
 
-* The packet carries a ``User-Agent``. The driver sends none, and
-  ``tinyassets.io`` is behind Cloudflare, which answers a UA-less POST with
-  ``error code: 1010`` (403) before the receiver sees it -- see
-  ``docs/concerns/2026-09-30-no-user-agent-blocks-cdn-fronted-webhooks.md``.
-  When that concern is fixed, this header becomes redundant, not wrong.
+* The packet sets NO ``User-Agent``, on purpose. It used to: the driver sent
+  none, and ``tinyassets.io`` is behind Cloudflare, which answers a UA-less POST
+  with ``error code: 1010`` (403) before the receiver sees it. That was filed
+  from this probe's first run and is now FIXED -- the driver sends the
+  platform's own client string on every call, and a per-call one is refused. So
+  this probe reaching the receiver with no special allowance is itself the
+  standing proof that the 1010 stays gone.
 * ``PROOF_BASE`` / ``PROOF_FOUNDER`` exist ONLY to rehearse against a throwaway
   data dir before pointing this at production. Production is the default.
 """
@@ -313,12 +315,13 @@ def main(universe_id: str, hook_host: str) -> int:
                 "method": "POST",
                 "host": hook_host,
                 "path": TEMPLATE,  # the PLACEHOLDER, never the token
-                "headers": {
-                    "Content-Type": "application/json",
-                    # See the module docstring: without this, Cloudflare
-                    # answers `error code: 1010` before the receiver is reached.
-                    "User-Agent": "TinyAssets-capability-url-proof/1.0",
-                },
+                # NO User-Agent. It used to carry one to get past Cloudflare's
+                # `error code: 1010`, which is the concern this probe's first
+                # run filed; the driver now sends the platform's own client
+                # string on every call, and a per-call one is REFUSED. So the
+                # probe reaching the receiver with no special allowance is
+                # itself the proof that the 1010 is gone.
+                "headers": {"Content-Type": "application/json"},
                 "body": {"proof": "capability-url", "at": int(time.time())},
             },
         }

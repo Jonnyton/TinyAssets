@@ -1299,15 +1299,26 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
     ``cron_expr`` or ``interval_seconds``:
 
         {"name": "Morning focus note", "branch_def_id": "<from the build reply>",
-         "cron_expr": "0 7 * * *"}
+         "cron_expr": "0 7 * * *", "timezone": "America/Los_Angeles"}
 
-    Cron is five fields, minute first, matched against the SERVER's local clock:
-    there is no per-owner timezone, so "7am" is 7am where the daemon runs, which
-    may not be where the owner is. I say which clock I used, and I confirm the
-    real answer with ``read_graph target="automations"`` -- it reports
-    ``next_due_at``, the instant it will actually fire, beside ``revision``
-    (which I then send back AS ``expected_revision`` to pause, resume or
-    delete). Runs of one branch never overlap.
+    Cron is five fields, minute first, and it runs in a TIMEZONE. ``timezone``
+    is an IANA name; omit it and the schedule uses the owner's own zone as
+    their app reported it, falling back to UTC only when none is known. I never
+    describe a schedule without its clock -- "7:00 AM America/Los_Angeles", not
+    "7am" -- and ``read_graph target="automations"`` hands me exactly that as
+    ``schedule_local``, beside ``timezone``, the absolute ``next_due_at``, and
+    ``revision`` (which I send back AS ``expected_revision`` to pause, resume or
+    delete). If I am unsure of the owner's zone I ASK rather than guess: a
+    wrong zone is a note that arrives at midnight.
+
+    Across a daylight-saving change each slot still fires once: a local time
+    that does not exist that day runs at the first valid instant after the gap,
+    and one that happens twice runs at the first. Runs of one branch never
+    overlap.
+
+    To control an existing trigger, first read ``read_graph target="automation"``
+    (or ``target="automations"``), then pass its automation_id and current
+    expected_revision.
 
     **When a create is refused**, the reply carries ``errors`` (what is wrong)
     and ``suggestions`` (which key to change), plus ``attempted_spec`` -- the
@@ -1514,6 +1525,18 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     A ``connect_http`` ask for a destination that already has a key makes the
     user paste a secret they already gave you — the one thing they must never
     be asked to do twice.
+
+    **A CDN block is NOT a key problem.** Failure class
+    ``destination_blocked_client`` means the destination's edge refused the
+    request before the service saw it — the body carries the edge's own code
+    (``error code: 1010`` and friends). The key was never presented to anything
+    that reads keys, so rotating it is the wrong ask and retrying gets the same
+    block. Every outbound call already sends this platform's own client string;
+    you do not set ``User-Agent`` on a packet and a request that tries is
+    refused. If a service insists on a particular one, it is declared ONCE on
+    the connection as a constant header, not per call. Say what happened, name
+    the destination and the code, and ask for the constant header — or tell
+    them the destination has to allow this platform at their end.
 
     **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
     ``git_read:owner/name`` / ``git_write:owner/name``. That is what lets the
@@ -2033,6 +2056,39 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     ``expected_generation``) stops new deliveries at once, from every sender.
     ``operation="disconnect"`` with ``{"link_id": ...}`` drops one sender's link
     from my own side. Neither retracts something already accepted.
+
+    **Telling TinyAssets about a gap: a patch request.** When I hit a bug, a
+    missing capability or an idea worth building, I report it instead of
+    stopping or working around it silently. It is a PATCH REQUEST, and it is an
+    ordinary delivery to an intake another user runs -- exactly the five steps
+    above. There is NO token, NO URL and NO credential anywhere in it, so I must
+    never raise a ``connect_http``/``connect`` ask for this; asking my person for
+    a bearer token to file a bug report is the wrong shape and the field would
+    be unanswerable.
+
+    ``read_graph target="pending_requests"`` carries a ``patch_intake`` block
+    when this platform offers one::
+
+        {"receiver_id": "...", "label": "TinyAssets",
+         "granted": true|false, "request_pending": true|false, "how": "..."}
+
+    * ``granted: true`` -- my person has approved it. Read the contract
+      (``read_graph target="receiver" query="<receiver_id>"``), point one of my
+      own step's outputs at it (``target="output_link"``,
+      ``operation="connect"``), and send (``run_graph
+      operation="deliver_output"``). A one-node code branch whose outputs are
+      what-I-tried / what-was-missing is enough. I file it MID-TURN and carry on;
+      I do not interrupt my person to ask permission I already have.
+    * ``granted: false`` -- I read ``request_pending`` and follow ``how``. If the
+      ask is waiting in their rail ("Let your universe report problems to ..."),
+      I point them at that one and wait. If they already declined or cleared it,
+      I respect that decision. I do not compose a second request for it.
+    * No ``patch_intake`` block at all -- this deployment offers no intake. I
+      say so plainly rather than inventing an address.
+
+    Delivery to that intake is refused with ``patch_intake_consent_required``
+    until the grant exists, and again if it is taken back. Nothing else of mine
+    rides along: the intake owner sees the fields I map and nothing more.
 
 """
 
@@ -2633,15 +2689,15 @@ def write_graph(
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds or cron_expr. Runs never overlap per branch:
+    exactly one of interval_seconds or cron_expr. A cron_expr runs in the
+    owner's timezone and is never stated without it (``branches``).
+    Runs never overlap per branch:
     a short interval_seconds reruns as each run ends; runs count to usage
     limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
     one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
     ``{"branch_def_id"}``) or ``pending_request_answered`` wakes it with
     ``inputs.event``.
-    To control an existing trigger, first read ``read_graph target="automation"``
-    (or ``target="automations"``), then pass its automation_id and current
-    expected_revision. Pause stops future triggers; resume reactivates the existing
+    Pause stops future triggers; resume reactivates the existing
     schedule; delete retires it and removes that automation's branch dependency.
     None cancels an already-running job. Read back the trigger and its last run
     before claiming work has stopped. These are existing owner-scoped controls;
@@ -2693,7 +2749,8 @@ def write_graph(
       ``"sink": "workspace"`` packet every one of them carries, the two ways to
       get a workspace, and a repository checkout.
     * ``delivering`` -- other users' universes sending into one of my steps, and
-      mine sending into theirs: receivers, connecting an output, who sent what.
+      mine sending into theirs: receivers, connecting an output, who sent what,
+      filing a patch request to TinyAssets (no token).
     * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
       office plan, any interface they ask for: I write its HTML/CSS/JS myself.
     * ``systems`` -- anything always on, several agents working together, or a
@@ -3920,16 +3977,19 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     for key, value in payload_obj.items():
         if not isinstance(value, str):
             return json.dumps({"error": f"payload '{key}' must be a string."})
-    from tinyassets.effectors.workspace import EXTERNAL_WRITE_SINK_WORKSPACE
+    from tinyassets.api.source_channel import person_only_sinks
 
     channel_type = (payload_obj.get("channel_type") or "").strip()
     # `sink` is checked too because `_approve_sink` reads `fields["sink"]` FIRST
     # and only falls back to `channel_type` -- refusing one spelling and not the
     # other would be a refusal with a documented way around it.
-    if act == "approve" and EXTERNAL_WRITE_SINK_WORKSPACE in {
-        channel_type,
-        (payload_obj.get("sink") or "").strip(),
-    }:
+    #
+    # The SET, not one sink name: `patch_intake` was added as a second
+    # rail-answered sink and a single-name check let the agent self-grant it
+    # (gpt-6-astra refute round on PR #4121, P1). `_approve_sink` refuses the
+    # same set at the write itself; this is the readable message.
+    named = {channel_type, (payload_obj.get("sink") or "").strip()}
+    if act == "approve" and named & person_only_sinks():
         # The `workspace` sink was admitted to the served build surface BECAUSE
         # its consents are typed per (op, connection, repo) and answered by the
         # owner on the request rail. This verb writes into the same
@@ -3944,10 +4004,11 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
         # person-only consent; the agent still cannot self-grant workspace access.
         return json.dumps({
             "error": (
-                "workspace consent cannot be self-approved: it is typed per "
-                "(operation, connection, repository) and is answered by the "
-                "universe's owner on the request rail. Ask for it there; this "
-                "verb approves outbound channel sinks only."
+                ", ".join(sorted(named & person_only_sinks()))
+                + " consent cannot be self-approved: it is answered by the "
+                "universe's owner on the request rail, where they read exactly "
+                "what it allows. Ask for it there; this verb approves outbound "
+                "channel sinks only."
             ),
         })
     if act == "approve" and channel_type == "source_code":

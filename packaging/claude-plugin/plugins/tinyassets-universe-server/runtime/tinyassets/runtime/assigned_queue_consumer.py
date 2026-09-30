@@ -17,18 +17,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from tinyassets.branch_tasks_v2 import (
-    DESCRIPTOR_VALIDITY_SECONDS,
-    EPOCH2_TASK_LEASE_SECONDS,
-    AssignedConsumerLease,
-    Epoch2BranchTask,
-    Epoch2BranchTaskAdapter,
-)
+from tinyassets.branch_tasks_v2 import DESCRIPTOR_VALIDITY_SECONDS
 from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
 from tinyassets.platform_runtime_provenance import (
     require_process_cloud_admission,
 )
-from tinyassets.runtime.claimed_branch_execution import execute_claimed_branch_task
 
 logger = logging.getLogger(__name__)
 
@@ -100,18 +93,6 @@ def _release_build_sha() -> str:
     except Exception:  # noqa: BLE001 - a missing receipt must never stop the beat
         candidate = ""
     return candidate if _is_hex_sha(candidate) else "0" * 40
-
-
-def _consumer_skip_reason(task: Epoch2BranchTask) -> str | None:
-    """Why this consumer will not even attempt a pending task (None = eligible)."""
-    if not task.automation_id:
-        return "consumer_not_applicable:assigned_cloud_automation"
-    if task.automation_executor_class != "cloud":
-        executor = task.automation_executor_class or "missing"
-        return f"requires_executor_class:{executor}"
-    if not task.automation_branch_version:
-        return "consumer_not_applicable:automation_branch_version_missing"
-    return None
 
 
 def _error_reason(prefix: str, exc: BaseException) -> str:
@@ -206,7 +187,6 @@ class AssignedQueueConsumer:
         )
         self._lock = threading.Lock()
         self._active: dict[str, Future[Any]] = {}
-        self._runtimes: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._automation_runs: set[str] = set()
         # Universes whose automation run ignored cancellation at timeout, with
         # the runs of that batch. The universe stays leased AND busy until they
@@ -388,7 +368,13 @@ class AssignedQueueConsumer:
             self._stop.wait(self.poll_seconds)
 
     def poll_once(self) -> int:
-        """Recover expired owned claims and fill currently available slots."""
+        """Beat for every serving universe and submit its due automations.
+
+        User-owned automations are the only background work this consumer runs.
+        The epoch-2 claim pass it used to run after them executed only slices of
+        fleet-era cloud automations, which nothing produces since that pump was
+        retired (plan C1); it went with them (plan C2).
+        """
 
         if not assigned_queue_consumer_enabled():
             return 0
@@ -400,7 +386,6 @@ class AssignedQueueConsumer:
             AssignedQueueRefusalStore,
         )
 
-        adapter = Epoch2BranchTaskAdapter(self.base_path)
         prep_store = AssignedQueueRefusalStore(self.base_path)
         # `.pause` is the universe's pause sentinel -- the owner's control and the
         # P0 provider_exhaustion repair both write it. Every other loop honours it
@@ -414,15 +399,9 @@ class AssignedQueueConsumer:
         # restart preserves `.pause` -- skipping the beat here would turn the P0
         # repair into a restart loop (Codex round 3 on the fleet prune).
         serving_universes = list_serving_universes(self.base_path)
-        # User-owned automations are considered FIRST, before the fleet-era pump
-        # and before the queue claim loop (user-owned-automations task 3.2). They
-        # are the only automation shape that survives the fleet retirement, so a
-        # universe's one active slot goes to its owner's automation rather than to
-        # a legacy control that can no longer authorize itself.
-        automation_submitted, automation_universes = self._submit_due_automations(
+        automation_submitted, _automation_universes = self._submit_due_automations(
             serving_universes, prep_store
         )
-        paused_universes: set[str] = set()
         for universe_id in serving_universes:
             try:
                 self._publish_heartbeat(universe_id)
@@ -434,7 +413,6 @@ class AssignedQueueConsumer:
                     self._no_runtime_reason(universe_id) or "ok:serving",
                 )
                 if self._paused(universe_id):
-                    paused_universes.add(universe_id)
                     self._record_reason(
                         prep_store, f"universe:{universe_id}:-", universe_id, "paused"
                     )
@@ -448,138 +426,7 @@ class AssignedQueueConsumer:
                     prep_store, f"universe:{universe_id}:-", universe_id,
                     _error_reason("prepare_error", exc),
                 )
-        adapter.recover_expired(
-            target_recovery_guard=lambda task: task.claimed_by.startswith(
-                ("assigned-consumer:", "worker_assigned_")
-            )
-        )
-        capacity, busy_universes = self._reap_finished()
-        if capacity <= 0:
-            return automation_submitted
-        submitted = 0
-        refusal_store = AssignedQueueRefusalStore(self.base_path)
-        for universe_id in serving_universes:
-            if (
-                submitted >= capacity
-                or universe_id in busy_universes
-                or universe_id in paused_universes
-            ):
-                continue
-            # One universe, one lease, whoever the worker is. The legacy path
-            # used to fence on `_active` alone, which is process-local, so a
-            # legacy task in one process and an automation in another could run
-            # the same universe concurrently (Codex round 2 §3a).
-            if not self._hold_universe(universe_id):
-                continue
-            # Everything from here to the handover is guarded: until the worker
-            # owns the lease, NOTHING may leave this block still holding it. A
-            # raise out of `list_candidates` or `submit` used to strand the
-            # universe until its TTL expired (Codex §b).
-            handed_over = False
-            try:
-                candidates = adapter.list_candidates(
-                    universe_id=universe_id, limit=20
-                )
-                claimed = None
-                lease = self._consumer_lease()
-                for candidate in candidates:
-                    # Every pending task this consumer passes over gets a reason,
-                    # and an unclaimable task must not starve a claimable one
-                    # behind it.
-                    skip = _consumer_skip_reason(candidate)
-                    if skip is not None:
-                        self._record_refusal(refusal_store, candidate, skip)
-                        continue
-                    claimed = self._try_claim(adapter, refusal_store, candidate, lease)
-                    if claimed is not None:
-                        break
-                if claimed is None:
-                    # Nothing to run here: never sit on a universe doing nothing.
-                    continue
-                future = self._executor.submit(self._execute_leased, claimed, lease)
-                with self._lock:
-                    if universe_id in self._active:
-                        adapter.release_assigned(
-                            claimed,
-                            consumer_lease=lease,
-                            reason="universe_already_active",
-                        )
-                        future.cancel()
-                        continue
-                    self._active[universe_id] = future
-                # The worker's `finally` owns the lease from this point.
-                handed_over = True
-                submitted += 1
-            finally:
-                if not handed_over:
-                    self._release_universe(universe_id)
-        return automation_submitted + submitted
-
-    def _hold_universe(self, universe_id: str) -> bool:
-        """Take the shared universe lease for legacy queue work, or record why not.
-
-        The same row `_run_automations` takes. Whoever holds it owns the
-        universe's background work, automation or legacy task alike.
-        """
-        from datetime import datetime as _dt
-
-        from tinyassets.automations import AutomationStore, agent_lease_prefix
-        from tinyassets.storage.assigned_queue_refusals import (
-            AssignedQueueRefusalStore,
-        )
-
-        store = AutomationStore(self.base_path)
-        now = _dt.now(timezone.utc)
-        try:
-            if store.acquire_universe_lease(
-                universe_id,
-                holder=self.consumer_id,
-                now=now,
-                # A legacy task still owns its whole universe: no agent of it
-                # may be running beside it (Codex round 2 §3a).
-                excluded_by_prefix=agent_lease_prefix(universe_id),
-                # The Epoch2 claim envelope, NOT the automation run timeout. A
-                # crashed legacy process makes its task recoverable after 30
-                # minutes; holding the universe for the 3-hour automation
-                # default would leave it blocked for another 2.5 hours after
-                # the work it was fencing became claimable again (Codex §b).
-                # The task heartbeat re-stamps this while the worker lives.
-                ttl_seconds=EPOCH2_TASK_LEASE_SECONDS,
-            ):
-                return True
-            holder = store.universe_lease_holder(universe_id, now=now) or "agent"
-        except Exception as exc:  # noqa: BLE001 - a lease blip cannot claim blind
-            logger.exception("universe lease acquire failed universe=%s", universe_id)
-            self._record_reason(
-                AssignedQueueRefusalStore(self.base_path),
-                f"universe:{universe_id}:-",
-                universe_id,
-                _error_reason("lease_error", exc),
-            )
-            return False
-        self._record_reason(
-            AssignedQueueRefusalStore(self.base_path),
-            f"universe:{universe_id}:-",
-            universe_id,
-            f"universe_busy:{holder or 'unknown'}",
-        )
-        return False
-
-    def _refresh_universe(self, universe_id: str) -> None:
-        """Re-stamp a legacy hold for another Epoch2 claim envelope."""
-        from datetime import datetime as _dt
-
-        from tinyassets.automations import AutomationStore
-
-        try:
-            AutomationStore(self.base_path).refresh_universe_lease(
-                universe_id,
-                holder=self.consumer_id,
-                now=_dt.now(timezone.utc),
-                ttl_seconds=EPOCH2_TASK_LEASE_SECONDS,
-            )
-        except Exception:  # noqa: BLE001 - a missed beat re-stamps next round
-            logger.exception("universe lease refresh failed universe=%s", universe_id)
+        return automation_submitted
 
     def _release_universe(self, universe_id: str) -> None:
         from tinyassets.automations import AutomationStore
@@ -590,17 +437,6 @@ class AssignedQueueConsumer:
             )
         except Exception:  # noqa: BLE001 - an unreleased lease expires on its own
             logger.exception("universe lease release failed universe=%s", universe_id)
-
-    def _execute_leased(
-        self,
-        claimed_task: Epoch2BranchTask,
-        lease: AssignedConsumerLease,
-    ) -> None:
-        """Run a claimed legacy task, then give the universe back."""
-        try:
-            self._execute(claimed_task, lease)
-        finally:
-            self._release_universe(claimed_task.universe_id)
 
     def _reap_finished(self) -> tuple[int, set[str]]:
         """Drop completed futures, then report free slots and busy universes.
@@ -690,9 +526,7 @@ class AssignedQueueConsumer:
         Slots are handed out one agent per universe per pass, so one owner's
         many agents cannot take every slot ahead of another owner's first.
 
-        Returns how many runs were submitted and in which universes, so the
-        legacy pump and the claim loop can leave those universes alone this
-        poll.
+        Returns how many runs were submitted and in which universes.
 
         Nothing here decides authority: `due_automations` reads owner-declared
         rows, and `run_due_automation` re-derives the owner's admin, home and
@@ -715,7 +549,7 @@ class AssignedQueueConsumer:
         ready_by_universe: list[tuple[str, list[tuple[str, tuple[Any, str]]]]] = []
         for universe_id in serving_universes:
             # `.pause` halts new background work for a universe; an automation is
-            # exactly that (same sentinel the claim loop and the legacy pump honour).
+            # exactly that.
             if self._paused(universe_id):
                 continue
             try:
@@ -1040,52 +874,6 @@ class AssignedQueueConsumer:
     def _paused(self, universe_id: str) -> bool:
         return (self.base_path / universe_id / ".pause").exists()
 
-    def _try_claim(
-        self,
-        adapter: Epoch2BranchTaskAdapter,
-        refusal_store: Any,
-        candidate: Epoch2BranchTask,
-        lease: AssignedConsumerLease,
-    ) -> Epoch2BranchTask | None:
-        from tinyassets.background_served_provider import (
-            claim_background_queue_authority_in_transaction,
-        )
-
-        try:
-            claimed = adapter.claim_assigned(
-                candidate,
-                consumer_lease=lease,
-                authority_claim=claim_background_queue_authority_in_transaction,
-            )
-        except Exception as exc:  # noqa: BLE001 - visible, never silent
-            logger.exception(
-                "assigned queue claim raised task=%s", candidate.branch_task_id
-            )
-            self._record_refusal(
-                refusal_store, candidate, _error_reason("claim_error", exc)
-            )
-            return None
-        if claimed is not None:
-            return claimed
-        try:
-            reason = adapter.explain_assigned_refusal(candidate, consumer_lease=lease)
-        except Exception as exc:  # noqa: BLE001 - the failure IS the reason
-            logger.exception(
-                "assigned queue refusal explain raised task=%s",
-                candidate.branch_task_id,
-            )
-            reason = _error_reason("explain_error", exc)
-        self._record_refusal(refusal_store, candidate, reason or "refusal_unexplained")
-        return None
-
-    def _record_refusal(
-        self,
-        refusal_store: Any,
-        task: Epoch2BranchTask,
-        reason: str,
-    ) -> None:
-        self._record_reason(refusal_store, task.branch_task_id, task.universe_id, reason)
-
     def _record_reason(
         self,
         refusal_store: Any,
@@ -1119,16 +907,6 @@ class AssignedQueueConsumer:
         except Exception:  # noqa: BLE001 - the ledger must never take the loop down
             logger.exception("assigned queue refusal record failed key=%s", key)
 
-    def _consumer_lease(self) -> AssignedConsumerLease:
-        return AssignedConsumerLease(
-            consumer_id=self.consumer_id,
-            lease_id=self.lease_id,
-            expires_at=(
-                datetime.now(timezone.utc)
-                + timedelta(seconds=EPOCH2_TASK_LEASE_SECONDS + 1)
-            ).isoformat(),
-        )
-
     def _no_runtime_reason(self, universe_id: str) -> str:
         """`no_serving_runtime` when the universe is not serving, else ''.
 
@@ -1138,14 +916,10 @@ class AssignedQueueConsumer:
         serving binding created by that assignment's owner (two serving
         bindings, or serving disabled, are refusals there too -- Codex on this
         change, rounds 1 and 2). When it holds, the universe IS serving: chat,
-        runs, and its own automations and schedules fire on its provider (this
-        loop submits due automations before it records this reason; event
-        subscriptions are NOT claimed, see the 2026-09-02 concern). The only
-        thing without a runner is a legacy control task queued before the host
-        workers were removed. Reporting that as "no serving provider selected"
-        sent the founder's universe looking for a selection surface that does
-        not exist (app thread, 2026-09-02) and made the app heal re-fire on
-        every load.
+        runs, and its own automations fire on its provider. Reporting anything
+        else as "no serving provider selected" sent the founder's universe
+        looking for a selection surface that does not exist (app thread,
+        2026-09-02) and made the app heal re-fire on every load.
         """
         try:
             from tinyassets.provider_assignment import load_provider_assignment
@@ -1290,144 +1064,6 @@ class AssignedQueueConsumer:
                     "fleet control retirement failed universe=%s automation=%s",
                     universe_id, automation_id,
                 )
-
-    def _execute(
-        self,
-        claimed_task: Epoch2BranchTask,
-        lease: AssignedConsumerLease,
-    ) -> None:
-        adapter = Epoch2BranchTaskAdapter(self.base_path)
-
-        def heartbeat() -> None:
-            # The universe lease rides the SAME beat as the task claim, so the
-            # two expire together instead of the universe outliving the work by
-            # hours (Codex §b).
-            self._refresh_universe(claimed_task.universe_id)
-            current = adapter.heartbeat(
-                claimed_task.branch_task_id,
-                worker_id=lease.consumer_id,
-                lease_seconds=EPOCH2_TASK_LEASE_SECONDS,
-            )
-            if current is None:
-                raise PermissionError("assigned queue claim lease was lost")
-            if current.status == "cancel_requested":
-                from tinyassets.runs import RunCancelledError
-
-                raise RunCancelledError("assigned queue task cancellation requested")
-
-        try:
-            from tinyassets.background_served_provider import (
-                BackgroundExecutorIdentityError,
-                authorize_background_served_provider_call,
-                load_background_executor_identity,
-                start_background_queue_authority,
-                terminalize_background_queue_authority,
-            )
-
-            try:
-                start_background_queue_authority(
-                    self.base_path,
-                    claimed_task,
-                    lease,
-                )
-                executor_identity = load_background_executor_identity(
-                    self.base_path,
-                    claimed_task,
-                    lease,
-                    heartbeat=heartbeat,
-                )
-            except BackgroundExecutorIdentityError as exc:
-                try:
-                    terminalize_background_queue_authority(
-                        self.base_path,
-                        claimed_task,
-                        status="failed",
-                        reason=exc.reason,
-                    )
-                except BackgroundExecutorIdentityError:
-                    logger.exception(
-                        "assigned queue authority failure terminalization failed task=%s",
-                        claimed_task.branch_task_id,
-                    )
-                adapter.finish(
-                    claimed_task.branch_task_id,
-                    worker_id=lease.consumer_id,
-                    status="failed",
-                    detail={"error": exc.reason},
-                )
-                return
-            provider_call = authorize_background_served_provider_call(
-                self.base_path,
-                claimed_task,
-                lease,
-            )
-            success, error, detail = execute_claimed_branch_task(
-                self.base_path,
-                claimed_task,
-                executor_identity,
-                provider_call,
-            )
-            terminal = (
-                "succeeded"
-                if success
-                else ("cancelled" if detail.get("cancel_requested") else "failed")
-            )
-            if error:
-                detail = {**detail, "error": error}
-            terminalize_background_queue_authority(
-                self.base_path,
-                claimed_task,
-                status=terminal,
-                reason=error or f"background_task_{terminal}",
-            )
-            adapter.finish(
-                claimed_task.branch_task_id,
-                worker_id=lease.consumer_id,
-                status=terminal,
-                detail=detail,
-            )
-        except Exception as exc:  # noqa: BLE001 - daemon uptime boundary
-            from tinyassets.exceptions import ProviderAuthorityHeldError
-
-            if isinstance(exc, (ProviderAuthorityHeldError, PermissionError)):
-                adapter.release_assigned(
-                    claimed_task,
-                    consumer_lease=lease,
-                    reason=f"authority_held:{type(exc).__name__}",
-                )
-                logger.warning(
-                    "assigned queue authority held task=%s: %s",
-                    claimed_task.branch_task_id,
-                    exc,
-                )
-                return
-            logger.exception("assigned queue task failed task=%s", claimed_task.branch_task_id)
-            try:
-                from tinyassets.background_served_provider import (
-                    BackgroundExecutorIdentityError,
-                    terminalize_background_queue_authority,
-                )
-
-                try:
-                    terminalize_background_queue_authority(
-                        self.base_path,
-                        claimed_task,
-                        status="failed",
-                        reason=f"assigned_consumer_exception:{type(exc).__name__}",
-                    )
-                except BackgroundExecutorIdentityError:
-                    logger.exception(
-                        "assigned queue authority exception terminalization failed task=%s",
-                        claimed_task.branch_task_id,
-                    )
-                adapter.finish(
-                    claimed_task.branch_task_id,
-                    worker_id=lease.consumer_id,
-                    status="failed",
-                    detail={"error": f"assigned_consumer_exception:{type(exc).__name__}"},
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("assigned queue failure terminalization failed")
 
 
 __all__ = [
