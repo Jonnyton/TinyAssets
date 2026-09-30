@@ -4,24 +4,33 @@ Requirement source: the P1 filed as
 ``docs/concerns/2026-09-30-no-user-agent-blocks-cdn-fronted-webhooks.md`` while
 proving capability URLs live.
 
-THE reproduction, 2026-09-30, against this platform's OWN
-``https://tinyassets.io/mcp/hooks/<token>`` receiver through the real effector.
-One variable changed:
-
-    without User-Agent -> 403  "error code: 1010\\n"      (the Cloudflare edge)
-    with    User-Agent -> 404  {"error":"not_found"}      (the application)
-
 ``_SsrfHardenedHttpDriver`` added no ``User-Agent`` on an ordinary call — the
 only one in the codebase was on the redirect download path. So EVERY outbound
-call on EVERY auth scheme went out UA-less, and the destinations users actually
-build channels to are all CDN-fronted: Slack, Discord, Zapier, Make, and
+call on EVERY auth scheme went out unidentified, and the destinations users
+build channels to are CDN-fronted: Slack, Discord, Zapier, Make, and
 ``tinyassets.io``.
 
-The failure was also unactionable from the owner's seat, which is the half that
-made it a P1 rather than a curiosity: ``error code: 1010`` classified as
-``external_write_failed``, whose served advice is "a reason you can fix ... run
-again yourself ... try at most twice". None of that is true of an edge block,
-and the owner — who holds both real repairs — was never told.
+WHAT WAS SEEN, and what was not. On 2026-09-30 a UA-less POST to this
+platform's own ``/mcp/hooks`` receiver was answered ``403 "error code: 1010"``
+by Cloudflare, and the same request carrying a User-Agent reached the
+application (``404 {"error":"not_found"}``) — 40 seconds apart, one header
+different. **That A/B did not reproduce hours later**, from either the dev host
+or the production egress IP, with a User-Agent, without one, or with
+``curl/7.68.0``: everything got the application's 404. So an edge block here is
+a bot score, not a function of this header.
+
+Which is why these tests assert what is actually true and checkable: that the
+platform identifies itself on every call, that only a connection's DECLARED
+header overrides it, that a per-call one is refused — and, separately, that an
+edge block is classified as something the universe cannot fix. None of them
+assert that sending a User-Agent prevents a block, because that is not a
+property this repo can hold the edge to.
+
+The classification half stands on its own regardless of frequency: whenever an
+edge does block, ``error code: 1010`` classified as ``external_write_failed``,
+whose served advice is "a reason you can fix ... run again yourself ... try at
+most twice", routed to the chatbot. Every part of that is wrong for an edge
+block, and the owner — who holds both real repairs — was never told.
 """
 
 from __future__ import annotations

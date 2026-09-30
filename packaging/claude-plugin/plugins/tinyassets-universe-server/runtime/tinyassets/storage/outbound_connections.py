@@ -1596,9 +1596,16 @@ _SSRF_READ_CHUNK = 65536
 #:
 #: HONEST on purpose: it names this platform and links to it, and it
 #: impersonates no browser. A CDN in front of a destination is entitled to know
-#: who is calling, and the alternative -- a UA-less request -- is what
-#: Cloudflare answers with `error code: 1010` before the origin sees it
-#: (reproduced live 2026-09-30 against this platform's own `/mcp/hooks`).
+#: who is calling.
+#:
+#: Sending one at all is the fix for an UNIDENTIFIED client, not for one
+#: specific block. On 2026-09-30 a UA-less POST to this platform's own
+#: `/mcp/hooks` was answered `error code: 1010` (403) by Cloudflare while the
+#: same request carrying a User-Agent reached the application -- but that A/B
+#: did NOT reproduce hours later, from either the dev host or the production
+#: egress IP, with or without the header. So an edge block here is a bot score,
+#: not a function of this header. Identifying ourselves removes one of its
+#: inputs and is what a well-behaved client does; it is not a guarantee.
 #:
 #: The version is read from the package rather than repeated here, so a release
 #: cannot ship a client string that lies about which build is calling.
@@ -3659,14 +3666,11 @@ class _SsrfHardenedHttpDriver:
             if name.lower() not in auth_names
         }
         request_headers.update(auth_headers)
-        # Say who we are, honestly, on every outbound call. A CDN answers a
-        # UA-less POST before the origin ever sees it -- reproduced live
-        # 2026-09-30 against this platform's own /mcp/hooks receiver, where
-        # Cloudflare returned `error code: 1010` (403), and the same request
-        # with a User-Agent reached the application. The destinations users
-        # actually build channels to are all CDN-fronted, so a missing
-        # User-Agent is not a cosmetic omission: it is a channel that cannot
-        # work and whose failure names nothing the owner can act on.
+        # Say who we are, honestly, on every outbound call. The destinations
+        # users build channels to are CDN-fronted, and an unidentified client
+        # is at the mercy of a bot score it gives no input to -- one of which
+        # bit once here (see OUTBOUND_USER_AGENT for what did and did not
+        # reproduce). This is HTTP citizenship, not a guaranteed unblock.
         #
         # A DEFAULT, not an override: the connection's declared constant
         # headers are merged before this (`merge_constant_headers`) and win, so

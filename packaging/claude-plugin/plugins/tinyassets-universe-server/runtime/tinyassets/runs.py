@@ -7367,8 +7367,13 @@ _EXTERNAL_WRITE_REFUSED_WORDS = (
 #: Cloudflare sits in front of a large share of the services a universe builds
 #: a channel to (and in front of this platform), and it names its own refusals:
 #: the body is literally `error code: NNNN`. The CLIENT-block family is what
-#: this class is for -- 1010 (browser/client refused, the one reproduced live
-#: on 2026-09-30), 1012/1013, the 1006-1008 bans, and 1020 (an access rule).
+#: this class is for -- 1010 (browser/client refused, the one seen live on
+#: 2026-09-30), 1012/1013, the 1006-1008 bans, and 1020 (an access rule).
+#:
+#: This class earns its place regardless of how OFTEN an edge blocks: whenever
+#: one does, the advice the row carried before was wrong in every part (see
+#: DESTINATION_BLOCKED_CLIENT_ACTION). Frequency changes the priority, never
+#: whether the guidance should be correct.
 #:
 #: Deliberately NOT here: 1015, which is rate limiting. Its repair is to slow
 #: down, not to change who we say we are, and guessing them into one class
