@@ -884,9 +884,17 @@ def test_the_chapters_cron_expression_passes_the_real_trigger_validator():
     from tinyassets.automations import TRIGGER_CRON, _validated_trigger
 
     payload = _chapter_cron_payload()
-    # The documented minimum, exactly: no field the chapter omits is required,
-    # and none it names is surplus.
-    assert set(payload) == {"name", "branch_def_id", "cron_expr"}, payload
+    # The documented shape, exactly. `timezone` joined on 2026-09-30
+    # (`automation-schedule-timezone`): it is OPTIONAL -- omitted means the
+    # owner's own zone -- but the example shows it, because a universe that
+    # cannot see a zone field is a universe that tells its user "7am server
+    # time", which is the live defect that change exists for.
+    assert set(payload) == {
+        "name", "branch_def_id", "cron_expr", "timezone",
+    }, payload
+    from tinyassets.schedule_timezone import is_known_timezone
+
+    assert is_known_timezone(payload["timezone"]), payload
     kind, seconds, expr = _validated_trigger(0, payload["cron_expr"])
     assert kind == TRIGGER_CRON
     assert seconds == 0
@@ -940,21 +948,29 @@ def test_the_chapter_names_the_revision_field_a_read_actually_returns():
     assert "beside the ``expected_revision``" not in text
 
 
-def test_the_chapter_does_not_promise_a_per_owner_cron_timezone():
-    """Cron matches the SERVER's local clock; no owner timezone exists.
+def test_the_chapter_promises_the_timezone_the_scheduler_now_honours():
+    """CONTRACT CHANGED 2026-09-30 (`automation-schedule-timezone`).
 
-    `automations._due_instant` calls `_cron_matches(expr,
-    time.localtime(...))`, and nothing in the codebase stores a per-owner
-    schedule timezone. Saying otherwise would have the universe tell an owner
-    "7am your time" for a cron it cannot honour that way.
+    This test asserted the OPPOSITE until then -- that the chapter must say
+    there is no per-owner timezone -- because there was not one, and promising
+    an owner "7am your time" for a cron the scheduler ran in UTC was the live
+    defect. Now a cron automation carries an IANA `timezone` defaulting to the
+    owner's own, so the chapter has to say THAT instead; a chapter still
+    claiming server time would be the wrong answer in the other direction.
     """
     from tinyassets import engine_mcp_server as s
 
     text = s.SERVED_TOOL_CHAPTERS["write_graph"]["branches"]
-    assert "owner's schedule timezone" not in text
-    assert "no per-owner timezone" in text
-    # And it points at the field that gives the real answer.
+    assert "no per-owner timezone" not in text
+    assert "server's local clock" not in text.lower()
+    assert "timezone" in text and "IANA" in text
+    # The zone is offered as a field AND as the default, so neither reads as
+    # something the agent must always supply.
+    assert "America/Los_Angeles" in text
+    assert "owner's own zone" in text
+    # And it still points at the fields that give the real answer.
     assert "next_due_at" in text
+    assert "schedule_local" in text
 
 
 def test_the_chapter_is_named_in_the_resident_index():
