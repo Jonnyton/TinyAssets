@@ -1376,13 +1376,19 @@ def converse(
     # because the exchange is not even stored until after this function returns.
     if granted and turn_config.engine_mcp_enabled:
         system = system + "\n\n" + _UNRECORDED_LESSON
+    # The chat turn is an agent call: it holds an INTERACTIVE seat of the
+    # universe's account for the model call (and the lesson extraction after it).
+    # Over the seat count it waits with no deadline -- never refused -- and its
+    # queue row, tagged with this universe, is what `get_status` reports as
+    # `seats.chat_waiting` with the waiting line and upgrade link. The interactive
+    # reserve means a chat only ever waits behind another chat.
     from tinyassets import universe_seats
 
-    account = universe_seats.account_for_universe(uid, root=udir.parent)
     with universe_seats.hold(
-        account, seat_class=universe_seats.CLASS_INTERACTIVE,
-        kind=universe_seats.KIND_CHAT_TURN, wait_s=None,
-        db=udir.parent / universe_seats.LEDGER_NAME,
+        universe_seats.account_key(uid, root=udir.parent),
+        seat_class=universe_seats.CLASS_INTERACTIVE,
+        kind=universe_seats.KIND_CHAT_TURN, universe_id=uid,
+        db=universe_seats.ledger_path(udir.parent),
     ):
         recorded: set = set()
         reply = _call_writer(

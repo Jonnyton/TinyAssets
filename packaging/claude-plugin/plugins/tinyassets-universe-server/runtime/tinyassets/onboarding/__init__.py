@@ -1360,11 +1360,11 @@ async def _handle_billing_status(request: Any) -> Any:
                         "reason": "no_home_universe"}
             # Tier and, if it is ending, when. No Stripe round-trip: `ends_at` is
             # persisted by the webhook, so this stays a local read even though it is
-            # polled. Usage limits belong to the metering change, which has NOT
-            # landed - reporting quotas here would advertise enforcement that does
-            # not exist.
+            # polled. Seats are enforced (`universe_seats`); storage is not yet, so
+            # it is not reported as a limit. `upgrade_url` is None on the top tier,
+            # which is what the app's `?upgrade=1` entry reads.
             plan = get_plan(_universe_dir(home))
-            from tinyassets.usage_policy import limits_for
+            from tinyassets.usage_policy import limits_for, upgrade_url
 
             limits = limits_for(plan["tier"])
             return {
@@ -1374,7 +1374,7 @@ async def _handle_billing_status(request: Any) -> Any:
                 "enforced": ["seats"],
                 "seats": limits.seats,
                 "interactive_reserve": limits.interactive_reserve,
-                "storage_bytes": limits.storage_bytes,
+                "upgrade_url": upgrade_url(plan["tier"]),
             }
 
     return JSONResponse(

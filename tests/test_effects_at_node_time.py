@@ -874,9 +874,9 @@ def test_a_write_settlement_promotes_an_admission_a_read_reclassified(tmp_path):
     from tinyassets import engine_admissions as ea
 
     db = tmp_path / "ledger.db"
-    adm = ea.admit_detail("u1", write_max=20, total_max=60, window_s=3600, db=db)
-    assert adm.ticket and adm.ticket > 0
-    ea.attach_run(adm.ticket, "run-w", db=db)
+    ticket = ea.admit("u1", db=db)
+    assert ticket > 0
+    ea.attach_run(ticket, "run-w", db=db)
 
     def kind():
         row = sqlite3.connect(db).execute(

@@ -13,14 +13,14 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
 
 ## 1. PR 1 — seats, storage, tiers
 
-- [ ] 1.1 `tiers.py`: the one table (free 3 seats / 2 GiB, paid 8 / 50 GiB,
+- [x] 1.1 `tiers.py`: the one table (free 3 seats / 2 GiB, paid 8 / 50 GiB,
       reserve 1), unknown-tier resolves to free loudly, and `upgrade_link()`
       returning `None` on the top tier.
-- [ ] 1.2 `universe_seats.py`: the lease + waiter tables under the canonical
+- [x] 1.2 `universe_seats.py`: the lease + waiter tables under the canonical
       data dir with the symlink refusal, one `BEGIN IMMEDIATE` acquire
       (reap → re-entry → count → ceiling → ahead → hold/enqueue), refresh,
       release, and the interactive reserve.
-- [ ] 1.3 Hold a seat at each agent-call site: `converse` chat turns, agent
+- [x] 1.3 Hold a seat at each agent-call site: `converse` chat turns, agent
       nodes (`graph_compiler`), automation runs and `event`/`once` wakes
       (`automations.py`), with the blocking-nested seat inherited on the
       existing `provider_invocation` carrier. Overlap policy resolves first.
@@ -28,11 +28,11 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
       `REVIEW.md`'s findings 10-16 and 18 as its starting constraints: the four
       physical stores, the reserve/publish/reconcile lifecycle, and a free quota
       that does not refuse a permanent workspace.
-- [ ] 1.5 Visible waiting state with the inline link: `converse` reply,
+- [x] 1.5 Visible waiting state with the inline link: `converse` reply,
       `read_graph`, automation projection, `api/resource_usage.py`,
       `billing/status`, and `/mcp/app?upgrade=1` wired to `startSubscribe()`
       in `app.html` (native shell exempt).
-- [ ] 1.6 Tests: acquire/release on all four terminal paths, queue order,
+- [x] 1.6 Tests: acquire/release on all four terminal paths, queue order,
       no-overtake, interactive reserve, stale reaping, re-entrant nesting,
       free-tier 4-agent village completing by queueing, chat fairness under a
       background ping-pong, link resolves to the real route. Mutation-check
@@ -43,7 +43,7 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
 - [ ] 2.1 Rebase onto #4107; delete its `ea.admit_detail` block and
       `usage_limit` return in `api/app_events.py` so an emit only stores a
       wake.
-- [ ] 2.2 Delete the meters and every refusal that reads them:
+- [x] 2.2 Delete the meters and every refusal that reads them:
       `RUN_WRITE_LIMIT`, `RUN_TOTAL_LIMIT`, `RUN_DAY_LIMIT`,
       `DISPATCHES_PER_HOUR`, `BYTES_PER_HOUR`, `BUDGET_WINDOW_S`,
       `usage_notice`, `charge_dispatch`, `dispatch_window_usage`,
@@ -54,7 +54,7 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
       `api/automations.py`, `api/deliveries.py`, `automations.py`,
       `automation_context.py`, `effectors/*`, `engine_mcp_server.py`,
       `universe_server.py`, `api/resource_usage.py`). Keep settlement.
-- [ ] 2.3 Replace the meter tests with seat/storage tests — rewrite
+- [x] 2.3 Replace the meter tests with seat/storage tests — rewrite
       `test_usage_limits.py`, `test_usage_dark_default.py`,
       `test_run_usage_budgets.py`, `test_effect_quota_enforcement.py` and the
       `test_app_event_runaway.py` cases per the #4107 hand-off. No `xfail`.

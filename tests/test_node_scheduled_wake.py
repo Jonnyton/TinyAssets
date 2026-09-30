@@ -38,7 +38,6 @@ from tinyassets.automations import (
     TRIGGER_ONCE,
     Automation,
     AutomationStore,
-    AutomationUnavailable,
     due_automations,
     register_automation,
     run_due_automation,
@@ -409,32 +408,6 @@ def test_a_stale_snapshot_of_a_spent_or_paused_row_does_not_run(
     assert graph.calls == []
 
 
-def test_a_wake_and_a_cadence_both_admit_fail_closed(
-    home: Path, monkeypatch
-) -> None:
-    """Refute P1 #7: a self-replenishing wake must not run on an unread budget.
-    Since plan item 6 usage is the only bound, so a cadence must not either
-    (Codex refute 2026-09-28, P1)."""
-    import tinyassets.engine_mcp_server as engine
-
-    asked: list[bool] = []
-
-    def admit(**kwargs):
-        if kwargs.get("kind") == "engine":
-            return True  # storing the wake is metered too; admit it here
-        asked.append(kwargs.get("fail_closed", False))
-        return False
-
-    monkeypatch.setattr(engine, "_engine_run_admit", admit)
-    monkeypatch.setattr(automations_module, "_execute", _Graph())
-    _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
-    now = datetime.now(timezone.utc)  # after the wake: its not_before is now-ish
-    _register_cadence(home, now - timedelta(hours=1))
-    for automation, key in due_automations(home, universe_id=UNIVERSE, now=now):
-        run_due_automation(home, automation, key, now=now)
-    assert sorted(asked) == [True, True]
-
-
 def test_five_killed_claims_retire_the_wake(home: Path) -> None:
     """Refute P2 #11: attempts that never reach `_retire_once` still end it."""
     _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
@@ -474,31 +447,37 @@ def test_a_cadence_does_not_count_its_attempt_history(home: Path) -> None:
     assert (row.attempt_count, row.last_claimed_at) == (0, "")
 
 
-def test_retries_that_never_reach_a_run_are_bounded(home: Path, monkeypatch) -> None:
-    import tinyassets.engine_mcp_server as engine
 
-    # Runs are refused; storing the wake (an engine edit) is admitted.
-    monkeypatch.setattr(engine, "_engine_run_admit",
-                        lambda **k: k.get("kind") == "engine")
-    monkeypatch.setattr(automations_module, "_execute", _Graph())
+def test_a_wake_waiting_for_a_seat_spends_none_of_its_attempts(home: Path, monkeypatch) -> None:
+    """A wake has `MAX_ONCE_ATTEMPTS` tries, and a seat wait is not one of them: it
+    waits before it claims, so however long its account is busy, the wake is
+    still owed, unretired and unfailed -- and runs when a seat frees."""
+    from tinyassets import universe_seats as seats
+
+    graph = _Graph()
+    monkeypatch.setattr(automations_module, "_execute", graph)
     _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
     [wake] = _wakes(home)
+    key = seats.account_key(UNIVERSE, root=home)
+    db = seats.ledger_path(home)
+    blockers = [seats.acquire(key, db=db) for _ in range(2)]  # free: 2 background
     at = datetime.now(timezone.utc)
-    reasons = []
-    for _attempt in range(MAX_ONCE_ATTEMPTS + 3):
-        due = due_automations(home, universe_id=UNIVERSE, now=at)
-        if not due:
-            break
-        reasons.append(run_due_automation(home, due[0][0], due[0][1], now=at))
-        if AutomationStore(home).get(wake.automation_id).retired_at:
-            break
-        at = _retry_at(home, wake.automation_id)
-    # Each refused attempt is retried one step after its claim, and the last
-    # one allowed retires the wake rather than leaving it pending.
-    assert reasons == ["settlement_unavailable"] * MAX_ONCE_ATTEMPTS
-    spent = AutomationStore(home).get(wake.automation_id)
-    assert spent.retired_at and spent.pause_reason == "gave_up"
-
+    try:
+        for _poll in range(MAX_ONCE_ATTEMPTS + 3):
+            [(due, due_at)] = due_automations(home, universe_id=UNIVERSE, now=at)
+            assert run_due_automation(home, due, due_at, now=at) == "waiting_for_seat"
+        row = AutomationStore(home).get(wake.automation_id)
+        assert row.attempt_count == 0
+        assert row.consecutive_failures == 0
+        assert not row.retired_at
+        assert graph.calls == []
+    finally:
+        for held in blockers:
+            seats.release(held.seat_id, db=db)
+    [(due, due_at)] = due_automations(home, universe_id=UNIVERSE, now=at)
+    assert run_due_automation(home, due, due_at, now=at).startswith("ok:ran:")
+    assert len(graph.calls) == 1
+    seats.stop_refresher()
 
 # -- Owner surface and storage ---------------------------------------------------
 

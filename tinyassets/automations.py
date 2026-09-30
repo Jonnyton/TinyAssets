@@ -23,7 +23,7 @@ outside a user's universe"):
 Fences and failure:
 
 * ``(automation_id, due_at)`` is the run fence (D2) -- a ``BEGIN IMMEDIATE``
-  count-and-insert, the same TOCTOU-safe shape as ``_engine_run_admit``. A
+  count-and-insert, the same TOCTOU-safe shape as ``universe_seats.acquire``. A
   restart recomputes the same ``due_at`` and finds the row, so a due run
   launches exactly once across restarts.
 * Registration fails loud (D4): a row that cannot fire right now is refused with
@@ -71,10 +71,9 @@ DB_FILENAME = ".automations.db"
 
 #: The shortest cadence: one second. There is no policy floor and no count
 #: ceiling (plan item 6, founder 2026-08-30 "limit USAGE, not shape"). What
-#: bounds a tight or numerous cadence is usage: every registration is charged
-#: to the universe's engine admissions, and every run it fires is charged as a
-#: run, per hour and per day (``tinyassets.engine_admissions``). A cadence
-#: shorter than the pump's poll simply fires once per poll.
+#: bounds a tight or numerous cadence is the account's seats: a run waits for one
+#: before it claims its attempt (``run_due_automation``). A cadence shorter than
+#: the pump's poll simply fires once per poll.
 MIN_INTERVAL_SECONDS = 1
 
 TRIGGER_INTERVAL = "interval"
@@ -764,44 +763,6 @@ class AutomationStore:
         finally:
             conn.close()
 
-    def skip_refused_instant(
-        self, automation_id: str, due_at: str, *, reason: str, now: datetime,
-    ) -> None:
-        """Advance a cadence past an instant that never ran, keeping no row.
-
-        The claim's attempt row is deleted and ``last_due_at`` moves on, in one
-        transaction, so the instant is neither re-run nor retained. The
-        consecutive-failure count is untouched: a refusal by the meter is not
-        a failure of the work.
-        """
-        stamp = _iso(now)
-        conn = self._connect(create=True)
-        if conn is None:  # pragma: no cover - create=True always connects
-            raise RuntimeError("automation store connection is unavailable")
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                conn.execute(
-                    "DELETE FROM automation_attempts "
-                    "WHERE automation_id = ? AND due_at = ?",
-                    (automation_id, due_at),
-                )
-                conn.execute(
-                    "UPDATE automations SET last_due_at = ?, last_reason = ?, "
-                    "last_due_local = ?, updated_at = ? WHERE automation_id = ?",
-                    (
-                        due_at, reason,
-                        self._slot_key(conn, automation_id, due_at),
-                        stamp, automation_id,
-                    ),
-                )
-                conn.execute("COMMIT")
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
-        finally:
-            conn.close()
-
     def finish_attempt(
         self,
         automation_id: str,
@@ -826,8 +787,8 @@ class AutomationStore:
         only into a table named "refusals" is not an owner-legible receipt).
 
         ``succeeded`` drives the consecutive-failure counter: True resets it,
-        False increments it, None leaves it (a skip that never ran, such as a
-        rate-limited attempt, is neither a success nor a failure of the work).
+        False increments it, None leaves it (a skip that never ran is neither a
+        success nor a failure of the work).
         """
         stamp = _iso(now)
         conn = self._connect(create=True)
@@ -1459,14 +1420,6 @@ def register_automation(
                 get_account_timezone(base, owner_user_id=owner) or DEFAULT_TIMEZONE
             )
 
-    # Usage, not shape: a registration is an engine write against this
-    # universe's admission window, like any other durable edit it makes. A node
-    # that enqueues in a loop, or an owner who registers hundreds, is refused
-    # by the same meter -- not by a count of rows (plan item 6).
-    from tinyassets.engine_mcp_server import _engine_run_admit
-
-    if not _engine_run_admit(universe_id=uid, fail_closed=True, kind="engine"):
-        raise AutomationUnavailable("settlement_unavailable")
     store = AutomationStore(base)
     stamp = _iso(moment)
     candidate = Automation(
@@ -2222,11 +2175,49 @@ def _failure_pause_reason(error_text: str) -> str:
     return ""
 
 
-def run_due_automation(base_path, automation, due_at, **kwargs):
-    """The claimed consumer worker waits before spending an attempt."""
-    from tinyassets.universe_seats import KIND_AUTOMATION, worker_seat
+#: The reason recorded while an automation waits for its account's seat. Not a
+#: failure and not an attempt: the row stays due and is re-offered next poll.
+WAITING_FOR_SEAT = "waiting_for_seat"
 
-    with worker_seat(automation.universe_id, root=base_path, kind=KIND_AUTOMATION):
+
+def run_due_automation(
+    base_path: str | Path,
+    automation: Automation,
+    due_at: str,
+    **kwargs: Any,
+) -> str:
+    """Take the account's seat, then run one due automation.
+
+    The seat comes FIRST, before any attempt is claimed, and without blocking:
+    over the seat count this returns `WAITING_FOR_SEAT` with the automation still
+    due, its queue position kept for the next poll (`universe_seats.try_acquire`).
+    So a wait never spends a wake's `MAX_ONCE_ATTEMPTS`, never counts toward
+    `MAX_CONSECUTIVE_FAILURES`, and never parks a consumer thread that another
+    account's automation is owed.
+
+    Holding the seat, the run's agent calls re-enter it: the run's worker copies
+    this context (`_execute`), and a blocking nested call borrows its parent's
+    seat by the exclusive depth transfer.
+    """
+    from tinyassets import universe_seats
+
+    base = Path(base_path)
+    moment = _as_utc(kwargs.get("now") or datetime.now(timezone.utc))
+    key = universe_seats.account_key(automation.universe_id, root=base)
+    outcome = universe_seats.try_acquire(
+        f"automation:{automation.automation_id}",
+        key,
+        kind=(universe_seats.KIND_WAKE if automation.trigger_kind == TRIGGER_ONCE
+              else universe_seats.KIND_AUTOMATION),
+        universe_id=automation.universe_id,
+        db=universe_seats.ledger_path(base),
+    )
+    if isinstance(outcome, universe_seats.Waiting):
+        _record_refusal(
+            base, automation, WAITING_FOR_SEAT, moment, str(kwargs.get("consumer_id") or ""),
+        )
+        return WAITING_FOR_SEAT
+    with universe_seats.bound(outcome):
         return _run_due_automation(base_path, automation, due_at, **kwargs)
 
 
@@ -2344,53 +2335,17 @@ def _run_due_automation(
             _retire_once(store, automation, ran=False, now=moment)
             return reason
 
-        # The same rolling write/total admission bounds a foreground `run_graph` pays
-        # (Codex ADAPT §7). Counted against THIS universe, so one owner's
-        # cadence cannot exhaust another's. A refusal is NOT a pause: the
-        # budget refills, so the next period simply tries again.
-        from tinyassets.engine_mcp_server import _admission_parts, _engine_run_admit
+        # Settlement identity only, never a refusal: this run already holds its
+        # account seat (`run_due_automation`), which is the only bound.
+        from tinyassets.engine_mcp_server import _engine_run_admit
 
-        ticket, _refused_by = _admission_parts(
-            _engine_run_admit(
-                universe_id=automation.universe_id,
-                want_ticket=True,
-                # Usage is the only bound on background work now (plan item
-                # 6), so an unreadable ledger refuses rather than admitting
-                # with no count -- for wakes (Codex refute 2026-09-27, P1) and
-                # cadences alike (Codex refute 2026-09-28, P1).
-                fail_closed=True,
-            )
-        )
-        if ticket is None:
-            if automation.trigger_kind == TRIGGER_ONCE:
-                # A wake's attempts are its bounded retry count; keep them.
-                store.finish_attempt(
-                    automation.automation_id,
-                    due_at,
-                    run_id="",
-                    status="refused",
-                    reason="settlement_unavailable",
-                    now=moment,
-                )
-            else:
-                # A cadence moves on to its next instant, and a refused one
-                # leaves no attempt row: a one-second cadence on a full meter
-                # would otherwise add a durable row every poll, outside the
-                # meter (Codex refute 2026-09-28, P1).
-                store.skip_refused_instant(
-                    automation.automation_id, due_at,
-                    reason="settlement_unavailable", now=moment,
-                )
-            _record_refusal(base, automation, "settlement_unavailable", moment, consumer_id)
-            _retire_once(store, automation, ran=False, now=moment)
-            return "settlement_unavailable"
+        ticket = _engine_run_admit(universe_id=automation.universe_id)
 
         branch = _load_branch(base, automation)
         provider_call = _bind_automation_provider_call(base, automation)
 
         def _started(run_id: str) -> None:
-            # Bind the admission to the run the moment it exists, so a run that
-            # only READ settles off the write budget like a foreground run
+            # Bind the settlement ticket to the run the moment it exists
             # (tinyassets.engine_admissions); _execute publishes the id before
             # it blocks on completion.
             from tinyassets.engine_admissions import attach_run

@@ -146,12 +146,6 @@ def test_stopping_does_not_require_execution_admission_or_provider(bound, monkey
     assert "error" not in control(row, op)
 
 
-def test_create_admission_refuses_without_writing(bound, monkeypatch):
-    monkeypatch.setattr(engine, "_engine_run_admit", lambda **k: False)
-    assert "error" in create()
-    assert AutomationStore(bound).list(universe_id=UNIVERSE) == []
-
-
 @pytest.mark.parametrize("actor", ["stranger", "writer"])
 def test_current_acl_and_owner_checks_are_real(bound, monkeypatch, actor):
     from tinyassets.daemon_server import grant_universe_access

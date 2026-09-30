@@ -4352,6 +4352,28 @@ def _managed_execution_scope(base_path: str | Path, run_id: str, *, provided=Non
             _RUN_EXECUTION_GUARD.reset(token)
 
 
+def _record_seat_wait(base_path, run_id: str, step_index: int, node_id: str,
+                      detail: dict) -> None:
+    """A node is waiting for its account's seat (`universe_seats`).
+
+    A system row, never a node status: the node has not run, so it must not read
+    as ``ran``. It carries the owner's waiting line, upgrade link included. A run
+    cancelled while its node waits stops waiting here: the cancellation
+    propagates out of the seat wait, which gives the queue position back.
+    """
+    record_event(base_path, RunStepEvent(
+        run_id=run_id,
+        step_index=step_index,
+        node_id=SYSTEM_EVENT_NODE_ID,
+        status="waiting_for_seat",
+        started_at=_now(),
+        finished_at=_now(),
+        detail={"node_id": node_id, **detail},
+    ))
+    if is_cancel_requested(base_path, run_id):
+        raise RunCancelledError(f"Run {run_id} cancelled while waiting for a seat.")
+
+
 def _owns_managed_execution(function):
     from functools import wraps
 
@@ -4395,24 +4417,7 @@ def _require_managed_start_status(base_path, run_id, expected_status):
             raise RunExecutionAuthorityLost("Execution lost its expected start status; no replay.")
 
 
-def _holds_account_seat(function):
-    from functools import wraps
-
-    @wraps(function)
-    def execute(base_path, *, run_id, **kwargs):
-        from tinyassets.universe_seats import worker_seat
-
-        row = get_run(base_path, run_id) or {}
-        universe = row.get("queue_universe_id")
-        if not universe:
-            return function(base_path, run_id=run_id, **kwargs)
-        with worker_seat(universe, root=base_path, kind="workflow"):
-            return function(base_path, run_id=run_id, **kwargs)
-    return execute
-
-
 @_owns_managed_execution
-@_holds_account_seat
 def _invoke_graph(
     base_path: str | Path,
     *,
@@ -4541,6 +4546,10 @@ def _invoke_graph(
                 detail=detail,
             ))
             _emit_node_status(node_id, NODE_STATUS_RUNNING)
+            return
+
+        if phase == "waiting":
+            _record_seat_wait(base_path, run_id, step + _PENDING_OFFSET, node_id, detail)
             return
 
         if phase == "effect":
@@ -6412,6 +6421,10 @@ def _invoke_graph_resume(
                 started_at=_now(),
                 detail=detail,
             ))
+            return
+
+        if phase == "waiting":
+            _record_seat_wait(base_path, run_id, step + _PENDING_OFFSET, node_id, detail)
             return
 
         if phase == "effect":

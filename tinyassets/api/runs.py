@@ -1327,19 +1327,12 @@ def enqueue_universe_branch_run(
     if errors:
         raise ValueError(f"branch {bid} failed validation: {errors}")
 
-    # A triggered run is a run: it is metered against the universe's usage,
-    # per hour and per day, like run_graph and automations. This is what
-    # bounds a schedule or subscription, now that their count and cadence
-    # floors are gone (plan item 6). Fails closed: a trigger has no user
-    # waiting on it, and an unreadable meter must not admit unmetered work.
+    # Settlement identity only; a triggered run is never refused for usage. It
+    # waits for its account's seats at its agent calls (`universe_seats`).
     from tinyassets.engine_admissions import attach_run
-    from tinyassets.engine_mcp_server import _admission_parts, _engine_run_admit
+    from tinyassets.engine_mcp_server import _engine_run_admit
 
-    ticket, refused_by = _admission_parts(
-        _engine_run_admit(universe_id=uid, want_ticket=True, fail_closed=True)
-    )
-    if ticket is None:
-        raise ValueError("run settlement ledger unavailable")
+    ticket = _engine_run_admit(universe_id=uid)
 
     provider_call: Any = None
     try:

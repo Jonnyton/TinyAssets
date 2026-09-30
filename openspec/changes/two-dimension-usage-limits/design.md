@@ -424,22 +424,44 @@ enforce. Stated so it is a decision rather than an oversight.
   seat that was released.
 
 
-## 2026-09-30 account scope correction
+## 2026-09-30 as built: seats per ACCOUNT
 
-The founder supersedes every per-universe admission statement above: seats are
-pooled by the owning account across every universe. Universe creation is unlimited.
-The account tier comes from its billing home. Ownership resolution needs one
-canonical durable owner; ACL administration and provider credential ownership are
-not interchangeable with that identity. The implementation is being reconciled
-against this constraint before the account-scope concern can be resolved.
+The founder superseded every per-universe statement above: one seat pool per
+person, shared across all their universes; universe creation stays unlimited.
 
-Workers hold seats for chat, workflow execution, agent nodes and automation/wake
-execution. A consumer waits before claiming its attempt. A worker timeout leaves
-release attached to the worker's completion, not to the caller's timeout. Nested
-blocking execution uses exclusive depth transfer; parallel siblings pay separately.
+- **Account.** `universe_seats.account_key` asks `universe_owner.owner_of` (#4139,
+  the resolver storage uses) and prefixes it (`account:<id>`). A universe with no
+  owner row is `unattributed:<uid>`, its own free pool. The tier is
+  `universe_owner.tier_of`; `usage_policy` keeps only the tier table and
+  `upgrade_url`. The first draft's `account_for_universe` guessed the owner from
+  `universe_acl` / `agent_bindings` / `founder_home` -- a second definition, and an
+  inference from adjacent tables -- and is gone.
+- **Where seats are taken.** Only at agent calls: the prompt node's executor and
+  the chat turn. The prompt node keys on the RUN's universe from its
+  `BranchExecutionContext`: a run compiles nodes without a `universe_context` (it
+  rides inside the bound provider call), so the first draft's node site, keyed on
+  `universe_context`, never took a seat in any real run. The automation and wake
+  worker take a seat with one non-blocking try per poll BEFORE claiming an
+  attempt (`try_acquire`, ticket kept per automation), and bind it so the run's
+  agent calls re-enter it. The first draft also held a seat around every
+  `_invoke_graph`, blocking a shared run-pool thread with no deadline; that is
+  removed -- it parked pool threads other accounts' runs were owed and added a
+  second seat per automation run.
+- **Visible waiting.** A waiting node emits phase `waiting`, which the runs sink
+  now records as a `waiting_for_seat` system event (it previously fell through
+  to `ran`). A run cancelled while waiting stops waiting and abandons its ticket.
+  A waiting chat is its waiter row, tagged with the universe; `get_status` shows
+  the owning account `seats` with `chat_waiting`, and the app paints the one
+  status line with the Upgrade link inside it.
+- **Death.** Holder = `process_liveness.owner_token(ledger root)`. Reclaim on
+  proven death, or on a lapsed lease with no proof of life; waiters of a dead
+  process are dropped at once (a dead waiter ahead of the queue would otherwise
+  stall live work with a free seat). Release checks the holder.
+- **Settlement.** `engine_admissions.admit` never refuses (a tampered ledger
+  records nothing), engine edits are no longer recorded, and rows are pruned
+  after two hours. The `settlement_unavailable` refusal the first draft
+  introduced in place of the meters is gone with them.
 
-The public upgrade URL is built by usage_policy.upgrade_url from app_path:
-https://tinyassets.io/app?upgrade=1. The existing app plan loader routes that flag
-to startSubscribe after authentication and omits checkout on the paid tier.
-Death proof is process_liveness.owner_state(store_root, token); the boot cleanup
-must keep a token's proof while any account seat still names it.
+Known and not fixed here: the run pool (`TINYASSETS_RUN_MAX_CONCURRENT`, 4) is
+shared by all accounts, and a prompt node waiting for its account's seat waits
+inside a pool thread. Filed as a concern.

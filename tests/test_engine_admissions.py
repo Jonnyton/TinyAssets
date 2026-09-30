@@ -29,12 +29,6 @@ def _rows(db, uid="u-tiny"):
         conn.close()
 
 
-
-
-
-
-
-
 def test_tickets_bind_the_right_row_whatever_the_interleaving(tmp_path):
     """Codex round 1 (P2): binding "the newest unattached row" cross-bound two
     concurrent admissions. A ticket is the row id, so order cannot matter."""
@@ -66,8 +60,6 @@ def test_an_old_ledger_is_migrated_and_its_rows_count_as_writes(tmp_path):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(admissions)")}
     conn.close()
     assert {"kind", "run_id"} <= cols
-
-
 
 
 def test_a_symlinked_ledger_is_refused_by_every_entry_point(tmp_path):
@@ -109,10 +101,6 @@ def test_ledger_path_is_absolute_even_for_a_relative_env(monkeypatch, tmp_path):
     assert adm.ledger_path().is_absolute()
 
 
-
-
-
-
 def test_a_settlement_that_arrives_before_the_bind_is_applied_at_bind_time(tmp_path):
     """Codex round 2 (P1): a fast run can finish - and settle - before run_graph
     has bound the admission to its id; the read used to be lost."""
@@ -127,8 +115,6 @@ def test_a_settlement_that_arrives_before_the_bind_is_applied_at_bind_time(tmp_p
     kept = conn.execute("SELECT kind FROM settlements WHERE run_id='run-fast'").fetchone()
     assert kept == ("read",)
     conn.close()
-
-
 
 
 def test_a_failed_run_settles_its_admission_as_a_read(monkeypatch, tmp_path):
@@ -186,24 +172,6 @@ def test_settlements_expire_on_every_settle(tmp_path):
     rows = conn.execute("SELECT run_id FROM settlements").fetchall()
     conn.close()
     assert rows == [("browser-run",)]
-
-
-
-
-
-
-def test_an_engine_row_can_never_be_bound_or_become_a_read(tmp_path):
-    """Codex (P2): attach_run bound any unattached ticket; binding an engine
-    row and settling it would have turned an engine write into a read."""
-    db = tmp_path / adm.LEDGER_NAME
-    t = adm.admit("u-tiny", db=db, kind=adm.KIND_ENGINE)
-    assert adm.reclassify_read("run-e", db=db) is False                    # waiting settlement
-    assert adm.attach_run(t, "run-e", db=db) is False                      # not a run row
-    assert _rows(db) == [(adm.KIND_ENGINE, "")]
-
-
-
-
 
 
 def test_prior_admissions_never_refuse_a_new_run(tmp_path):

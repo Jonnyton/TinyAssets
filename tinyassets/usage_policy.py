@@ -1,8 +1,19 @@
-"""Account tiers: concurrent agent seats and cloud storage bytes.
+"""What one account tier permits: THE table, and the only one.
 
-All universes belonging to one account share its seats. Storage accounting is
-tracked separately; this module declares its tier capacity without pretending
-that total cloud storage enforcement is implemented here.
+Founder directive 2026-09-30, verbatim: *"usage limits for accounts should really
+only be based on 2 things, total gibs thier universe takes up in the cloud. and how
+many agent calls thier universe can simoltaniously run ... free users have less cloud
+storage space and less simaltaniouse agent runs."* Both are per ACCOUNT: one
+allowance per person, shared across all of their universes.
+
+* ``seats`` -- concurrent agent calls (`tinyassets.universe_seats`). Over the limit,
+  work QUEUES; it is never refused and never dropped.
+* ``storage_bytes`` -- the account's cloud footprint (change
+  `account-storage-quota`).
+
+Which tier an account is on is `universe_owner.tier_of`; this module only says what
+each tier permits. An unresolvable tier is FREE, never unlimited. There are no rate
+meters of any kind.
 """
 
 from __future__ import annotations
@@ -108,7 +119,7 @@ def _positive_int(var: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class TierLimits:
-    """What one tier permits: two numbers, plus the retired window meters.
+    """What one tier permits: the directive's two numbers.
 
     ``seats`` and ``storage_bytes`` are the directive's two dimensions.
     ``background_seats`` is derived rather than stored, so the reserve can never
@@ -119,6 +130,7 @@ class TierLimits:
     seats: int
     interactive_reserve: int
     storage_bytes: float
+
     @property
     def is_paid(self) -> bool:
         return self.name == TIER_PAID
@@ -214,35 +226,3 @@ def limits_for(tier: str) -> TierLimits:
         interactive_reserve=reserve,
         storage_bytes=storage_mb * 1024.0 * 1024.0,
     )
-
-
-def limits_for_universe(universe_dir) -> TierLimits:
-    """This universe's limits, resolved from its stored tier.
-
-    The single place the two halves meet, so no caller pairs `get_tier` with
-    `limits_for` itself and no caller can pass a tier it chose. `get_tier` already
-    returns FREE for an absent or unreadable record, and it never raises.
-    """
-    from tinyassets.storage.subscription_state import get_tier
-
-    return limits_for(get_tier(universe_dir))
-
-
-def limits_for_account(account_id: str, *, root=None):
-    """Resolve the account's home subscription without creating account state."""
-    import sqlite3
-    from contextlib import closing
-    from pathlib import Path
-
-    from tinyassets.storage import DB_FILENAME, data_dir
-    from tinyassets.storage.subscription_state import get_tier
-
-    root = data_dir() if root is None else Path(root)
-    account_db = root / DB_FILENAME
-    if not account_db.exists():
-        return limits_for(TIER_FREE)
-    with closing(sqlite3.connect(account_db.as_uri() + "?mode=ro", uri=True)) as conn:
-        row = conn.execute(
-            "SELECT universe_id FROM founder_home WHERE founder_sub = ?", (account_id,),
-        ).fetchone()
-    return limits_for(get_tier(root / row[0]) if row else TIER_FREE)

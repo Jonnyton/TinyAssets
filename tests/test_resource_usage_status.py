@@ -29,7 +29,7 @@ def meters(tmp_path, monkeypatch):
         conn.executemany(
             "INSERT INTO admissions (universe_id,ts,kind) VALUES (?,?,?)",
             [(UID, NOW - 10, ea.KIND_READ), (UID, NOW - 20, ea.KIND_WRITE),
-             (UID, NOW - 30, ea.KIND_ENGINE), ("foreign", NOW, ea.KIND_WRITE),
+             (UID, NOW - 30, "engine"), ("foreign", NOW, ea.KIND_WRITE),
              (UID, NOW - 3601, ea.KIND_WRITE), (UID, NOW + 1, ea.KIND_WRITE)],
         )
     conn.close()

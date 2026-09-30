@@ -118,7 +118,6 @@ _UNAVAILABLE_DETAIL = {
         "overlap must be queue (wait for the running one, the default), skip "
         "(drop this run) or cancel_previous (stop the running one first)."
     ),
-    "settlement_unavailable": "The settlement ledger is unavailable; try again shortly.",
     "not_owner_or_admin": (
         "This automation belongs to someone else. Only its owner or an admin "
         "on this universe can change it."

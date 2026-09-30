@@ -368,35 +368,72 @@ def _get_shared_router() -> Any:
     return _SHARED_ROUTER
 
 
-def _run_agent_with_timeout(fn, *, timeout_s, node_id, universe_context, event_sink):
-    """Hold admission until the actual worker finishes, including after timeout."""
+def _seat_scope(universe_context, seat_scope) -> tuple[Path, str] | None:
+    """(data root, universe id) whose account this agent call is charged to.
+
+    The RUN's own universe first -- ``BranchExecutionContext.universe_id``, built
+    from the authenticated run row -- because that is what a real run carries: a
+    run compiles its nodes WITHOUT a ``universe_context`` (it rides inside the
+    bound provider call), so a seat keyed only on ``universe_context`` was never
+    taken by any run at all. A directly-built node with a universe context (the
+    local and test paths) falls back to that.
+    """
+    if seat_scope is not None and seat_scope[1]:
+        return Path(seat_scope[0]), str(seat_scope[1])
+    udir = getattr(universe_context, "universe_dir", None)
+    if udir is not None:
+        return Path(udir).parent, Path(udir).name
+    return None
+
+
+def _run_agent_with_timeout(fn, *, timeout_s, node_id, universe_context, event_sink,
+                            seat_scope=None):
+    """Run one agent call holding a seat of the universe's ACCOUNT.
+
+    This is the executor, never the enqueuer: the seat is taken here, where the
+    model call is about to happen, and waited for with no deadline -- work over
+    the seat count queues, it is never refused (founder, 2026-09-30). The wait is
+    published as a ``waiting`` event carrying the owner's waiting line, and a run
+    cancelled while it waits stops waiting.
+
+    A node inside a run that already holds a seat (an automation, a blocking
+    parent) re-enters it; a parallel sibling pays for its own. Once the call is
+    submitted, its future owns the release -- a timed-out call that is still
+    running keeps its seat until it actually ends.
+    """
     from tinyassets import universe_seats as seats
 
-    udir = getattr(universe_context, "universe_dir", None)
-    if udir is None:
+    scope = _seat_scope(universe_context, seat_scope)
+    if scope is None:
+        # No universe at all: the local single-tenant daemon, which has no account.
         return _run_with_timeout(fn, timeout_s=timeout_s, node_id=node_id)
-    account = seats.account_for_universe(Path(udir).name, root=Path(udir).parent)
-    db = Path(udir).parent / seats.LEDGER_NAME
+    root, universe_id = scope
+    account = seats.account_key(universe_id, root=root)
+    tier = seats.tier_of_key(account, root=root)
 
     def waiting(state):
-        if event_sink is not None:
-            event_sink(node_id=node_id, phase="waiting", kind="waiting_for_seat",
-                       detail=seats.waiting_message(account, running=state.running))
+        if event_sink is None:
+            return
+        try:
+            event_sink(
+                node_id=node_id, phase="waiting", kind="waiting_for_seat",
+                running=state.running, waiting=state.waiting,
+                detail=seats.waiting_message(running=state.running, tier=tier),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if _is_cancel_exception(exc):
+                raise
+            logger.exception("event_sink raised in %s (waiting)", node_id)
 
-    parent = seats._current_seat.get()
     held = seats.acquire_blocking(
-        account, db=db, wait_s=None, on_waiting=waiting,
-        parent_seat_id=parent.seat_id if parent else None,
-        parent_depth=parent.depth if parent else 1,
+        account, kind=seats.KIND_AGENT_NODE, universe_id=universe_id,
+        parent=seats.current_seat(), wait_s=None, on_waiting=waiting,
+        db=seats.ledger_path(root),
     )
-    try:
-        return _run_with_timeout(
-            fn, timeout_s=timeout_s, node_id=node_id,
-            on_done=lambda: seats.release(held.seat_id, db=db),
-        )
-    except BaseException:
-        # Once submitted, the future owns release, including a still-running timeout.
-        raise
+    return _run_with_timeout(
+        fn, timeout_s=timeout_s, node_id=node_id,
+        on_done=lambda: seats.release(held.seat_id, db=held.db),
+    )
 
 
 def _run_with_timeout(
@@ -1289,6 +1326,7 @@ def _build_prompt_template_node(
     concurrency_tracker: ConcurrencyTracker | None = None,
     universe_context: "UniverseContext | None" = None,
     branch_def_id: str = "",
+    seat_scope: tuple[Path, str] | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that fills the prompt template and calls an
     LLM. Output is stored under the node's first ``output_keys`` entry
@@ -1631,6 +1669,7 @@ def _build_prompt_template_node(
                             timeout_s=timeout_s,
                             node_id=node.node_id,
                             universe_context=universe_context, event_sink=event_sink,
+                            seat_scope=seat_scope,
                         )
                         response, provider_served, provider_meta = text_and_name
                     else:
@@ -1643,6 +1682,7 @@ def _build_prompt_template_node(
                             timeout_s=timeout_s,
                             node_id=node.node_id,
                             universe_context=universe_context, event_sink=event_sink,
+                            seat_scope=seat_scope,
                         )
                 except NodeTimeoutError:
                     raise
@@ -1661,6 +1701,7 @@ def _build_prompt_template_node(
                         timeout_s=timeout_s,
                         node_id=node.node_id,
                         universe_context=universe_context, event_sink=event_sink,
+                        seat_scope=seat_scope,
                     )
                 except NodeTimeoutError:
                     raise
@@ -3161,27 +3202,19 @@ def _build_invoke_branch_node(
 
 
 def _charge_child_run(node: NodeDefinition, ctx: "BranchExecutionContext") -> Any:
-    """Meter one sub-branch run against its universe's usage; return the ticket.
+    """Record a sub-branch run for effect settlement; return the ticket.
 
-    A child run is a run. It is charged to the same per-universe admission a
-    run_graph or an automation pays, per hour and per day
-    (``tinyassets.engine_admissions``). That -- not a depth cap -- is what
-    bounds a chain that invokes itself (plan item 6). A run with no universe
-    (the local single-tenant daemon) has no universe to meter. Fails closed:
-    an unreadable meter must not admit unmetered work.
+    Never a refusal: a child run's agent calls wait for the account's seats
+    (``tinyassets.universe_seats``), which is what bounds a chain that invokes
+    itself. A run with no universe (the local single-tenant daemon) records
+    nothing.
     """
     from tinyassets import engine_admissions as ea
 
     universe_id = (getattr(ctx, "universe_id", "") or "").strip()
     if not universe_id:
         return None
-    admission = ea.admit_detail(
-        universe_id,
-        fail_closed=True,
-    )
-    if admission.ticket is None:
-        raise CompilerError("Sub-branch settlement ledger unavailable")
-    return admission.ticket
+    return ea.admit(universe_id)
 
 
 def _bind_child_ticket(ticket: Any, run_id: str) -> None:
@@ -3849,6 +3882,13 @@ def _build_node_inner(
             state_schema=state_schema, llm_policy=llm_policy,
             concurrency_tracker=concurrency_tracker,
             universe_context=universe_context, branch_def_id=branch_def_id,
+            # The run's authenticated universe, so the agent call holds a seat
+            # of that universe's ACCOUNT (`universe_seats`).
+            seat_scope=(
+                (Path(base_path), execution_context.universe_id)
+                if base_path is not None and execution_context is not None
+                and execution_context.universe_id else None
+            ),
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if domain_id:

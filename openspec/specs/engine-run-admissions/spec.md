@@ -1,23 +1,35 @@
 # Engine Run Admissions
 
-> As-built (2026-08-30, changes `run-rate-cap-counts-writes` #2704, `engine-writes-count-toward-total` #2712, `sandboxed-code-node` #2719/#2723): the engine's per-universe run-admission ledger — what an engine-triggered run costs and how it is settled. Design rationale in the archived change's `design.md`. Live proof 2026-08-30: heartbeat periods settle as `read` rows; a one-line README job with retries (runs `c1cd14f98b6e4af8` → `3f86d7b9fde04bff`, `d773d4d006ae45a8`, `b77089dfa3c14d9e`, `631bd6d61473416f`) completed without meeting the cap.
+> As-built (2026-09-30, change `two-dimension-usage-limits`): the run-settlement
+> ledger. It records whether each run only read or also wrote, for the effect
+> boundary. It counts nothing against the account and refuses nothing: account
+> usage is two numbers -- cloud storage and concurrent seats (`universe-seats`).
+> History: the rolling-window run caps it used to enforce (`run-rate-cap-counts-writes`
+> #2704, `engine-writes-count-toward-total` #2712) are deleted.
 
 ## Purpose
 
-Bound how often an engine-triggered run can fire an already-approved effect (Codex gate #5) without charging the write budget for runs that provably wrote nothing.
+Settle each run as a read or a write, so the effect boundary knows what a run did.
 ## Requirements
 ### Requirement: Run admission retains settlement identity without rate limits
 
 Every admitted run SHALL receive a settlement ticket without any hourly, daily,
 write-count or total-count refusal. Tickets SHALL bind only their own run.
 A write settlement SHALL remain final against later read settlements; a settlement
-that arrives before attachment SHALL apply when the ticket is attached. Tampered
-or unreadable settlement stores SHALL report their actual availability failure.
-Concurrent account seats SHALL be acquired by executors, never by this bookkeeping.
+that arrives before attachment SHALL apply when the ticket is attached. A
+tampered, missing or locked settlement store SHALL record nothing and SHALL NOT
+refuse the run. Engine edits (`write_graph`, `remix`, `write_brain`, automation
+and webhook creation, model setup) SHALL NOT be recorded here at all. Rows SHALL
+be pruned once they can no longer be settled. Concurrent account seats SHALL be
+acquired by executors, never by this bookkeeping.
 
 #### Scenario: Prior runs do not refuse new work
 - **WHEN** an account has already completed many runs
 - **THEN** another run is admitted and waits for concurrency at its worker
+
+#### Scenario: An unusable ledger refuses nothing
+- **WHEN** the settlement store is a symlink, unreadable or locked
+- **THEN** the run starts anyway, with no settlement recorded
 
 #### Scenario: Settlement arrives before attachment
 - **WHEN** the worker finishes before its ticket is attached

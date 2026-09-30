@@ -1,4 +1,11 @@
-"""Run effect settlement bookkeeping. Account admission uses concurrent seats."""
+"""Run effect settlement: did a run only read, or did it write?
+
+The effect boundary reads that classification (`effectors.dispatch_node_effects`);
+nothing here counts, meters or refuses. Account usage is two numbers -- cloud
+storage and concurrent seats (`universe_seats`) -- and a run waits for a seat at
+its agent calls rather than being refused here (change
+`two-dimension-usage-limits`).
+"""
 
 from __future__ import annotations
 
@@ -7,37 +14,18 @@ import sqlite3
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import NamedTuple
 
 LEDGER_NAME = ".engine_run_admissions.db"
 KIND_WRITE = "write"
 KIND_READ = "read"
-# An engine write (write_graph, remix, brain): a durable, reversible mutation
-# of the universe's own state, never an external effect. It counts toward the
-# total bound only - live 2026-08-30 04:5xZ a founder's one-line README job
-# was refused at the 20-write cap with nine of the eighteen rows being the
-# universe's own branch authoring (it built ~8 branch variants in an hour).
-KIND_ENGINE = "engine"
 # Verbs that leave nothing behind on the far side. Compared case-insensitively.
 READ_VERBS = frozenset({"GET", "HEAD"})
-# ``admit`` returned this when a DB error was tolerated (fail-open): the run is
-# admitted but no row records it, so there is nothing to bind or settle.
+# ``admit`` returns this when the ledger could not record the run: the run still
+# goes ahead, there is simply nothing to bind or settle.
 ADMITTED_UNRECORDED = -1
-REFUSED_BY_LEDGER = "ledger"
-# A settlement row outlives the run it belongs to by this much; pruned on
-# every settle and every admission, so a browser run that never binds leaves
-# at most two hours of rows (Codex round 3).
+# A row outlives its run by this much; pruned on every admission and settle, so
+# the ledger holds at most this window of rows.
 SETTLEMENT_TTL_S = 2 * 3600
-
-
-class Admission(NamedTuple):
-    """``ticket``: the ledger row id when recorded; ``ADMITTED_UNRECORDED``
-    when a DB error was tolerated; None when refused - and then ``refused_by``
-    names the cap (``write`` / ``total``) or ``ledger``
-    (tampered/unusable)."""
-
-    ticket: int | None
-    refused_by: str | None
 
 
 def ledger_path() -> Path:
@@ -84,88 +72,48 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS settlements "
         "(run_id TEXT PRIMARY KEY, kind TEXT NOT NULL, ts REAL NOT NULL)"
     )
-    # Usage budgets (change `run-usage-budgets`): one row per effect dispatch
-    # with the bytes it moved; the rolling-hour sums bound a universe's
-    # outbound volume now that graph shape no longer does.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS dispatch_budget "
-        "(universe_id TEXT NOT NULL, ts REAL NOT NULL, dispatches INTEGER NOT NULL, "
-        "bytes INTEGER NOT NULL)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS dispatch_budget_universe_ts "
-        "ON dispatch_budget(universe_id, ts)"
-    )
-    # A day of rows is now kept, so the per-universe counts need an index.
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS admissions_universe_ts "
-        "ON admissions(universe_id, ts)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS admissions_ts ON admissions(ts)")
 
 
 def _is_ticket(ticket: object) -> bool:
     return isinstance(ticket, int) and not isinstance(ticket, bool) and ticket > 0
 
 
-def admit_detail(
-    universe_id: str,
-    *,
-    fail_closed: bool = False,
-    db: Path | None = None,
-    kind: str = KIND_WRITE,
-) -> Admission:
-    """Record settlement identity; prior usage never refuses a run."""
-    if kind not in (KIND_WRITE, KIND_ENGINE):
-        raise ValueError(f"admission kind must be write or engine, not {kind!r}")
+def admit(universe_id: str, *, db: Path | None = None) -> int:
+    """Record a run so its effects can settle it; return the ticket to bind.
+
+    NEVER refuses (spec `engine-run-admissions`: the ledger admits every run
+    unconditionally). A ledger that cannot record -- missing, tampered or locked --
+    returns ``ADMITTED_UNRECORDED`` and the run goes ahead unsettled.
+    """
     db = db or ledger_path()
     try:
-        # A data dir that does not exist yet must not mean "no cap" (Codex
-        # round 1): the ledger creates its own trusted parent.
         db.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
-        return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
-    trusted = _ledger_is_trusted(db)
-    if trusted is False:
-        return Admission(None, REFUSED_BY_LEDGER)
-    if trusted is None:
-        return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
+        return ADMITTED_UNRECORDED
+    if _ledger_is_trusted(db) is not True:
+        return ADMITTED_UNRECORDED
     now = time.time()
     try:
         conn = sqlite3.connect(str(db), timeout=10)
         try:
-            # The lock comes FIRST: schema inspection, migration, count and
-            # insert all happen under it, so a second first-touch waits and
-            # sees the migrated table rather than racing the ALTER.
+            # The lock comes FIRST: migration and insert happen under it, so a
+            # second first-touch waits and sees the migrated table.
             conn.execute("BEGIN IMMEDIATE")
             _ensure_schema(conn)
             cur = conn.execute(
                 "INSERT INTO admissions (universe_id, ts, kind, run_id) VALUES (?, ?, ?, '')",
-                (universe_id, now, kind),
+                (universe_id, now, KIND_WRITE),
             )
             ticket = int(cur.lastrowid or 0)
+            conn.execute("DELETE FROM admissions WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.execute("DELETE FROM settlements WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.commit()
-            return Admission(ticket if ticket > 0 else ADMITTED_UNRECORDED, None)
+            return ticket if ticket > 0 else ADMITTED_UNRECORDED
         finally:
             conn.close()
     except sqlite3.Error:
-        return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
-
-
-def admit(
-    universe_id: str,
-    *,
-    fail_closed: bool = False,
-    db: Path | None = None,
-    kind: str = KIND_WRITE,
-) -> int | None:
-    """``admit_detail`` without the reason: the ticket, or None when refused."""
-    return admit_detail(
-        universe_id,
-        fail_closed=fail_closed,
-        db=db,
-        kind=kind,
-    ).ticket
+        return ADMITTED_UNRECORDED
 
 
 def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bool:
@@ -173,8 +121,8 @@ def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bo
 
     Called by whoever admitted the run, right after the run id exists. If the
     run already settled (a fast run finishes before its caller returns), the
-    waiting settlement is applied here. Only a ``write`` row can be bound: an
-    ``engine`` row is never a run and can never become a read. Never raises;
+    waiting settlement is applied here. Only an unbound ``write`` row can be
+    bound (legacy ``engine`` rows age out unbound). Never raises;
     False means nothing was bound (no ticket, an unrecorded admission, a
     missing ledger, a row already bound, or not a run row) and the row simply
     stays as it is.
@@ -313,9 +261,3 @@ def fired_only_reads(
         if not verb or str(verb).strip().upper() not in READ_VERBS:
             return False
     return True
-
-
-# --------------------------------------------------------------------------- #
-# Usage budgets - outbound volume per universe per rolling hour
-# (change `run-usage-budgets`; the per-run half lives on the EffectChain)
-# --------------------------------------------------------------------------- #

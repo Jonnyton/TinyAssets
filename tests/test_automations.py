@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import fields, replace
@@ -2392,36 +2393,55 @@ def test_the_real_run_path_admits_through_the_live_session_and_records_a_run(
     assert _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"] == reason
 
 
-def test_waiting_never_claims_an_attempt_or_records_failure(tmp_path, registered, monkeypatch):
-    import threading
-    import time
-
+def test_waiting_for_a_seat_claims_no_attempt_and_counts_as_no_failure(
+    tmp_path, registered, monkeypatch,
+):
+    """Over the account's seat count an automation WAITS: no attempt is claimed,
+    nothing counts toward `MAX_CONSECUTIVE_FAILURES`, the consumer thread is not
+    parked, and the queue position is kept from poll to poll. When a seat frees it
+    runs, holding that seat -- keyed on the OWNER's account via `universe_owner`."""
     from tinyassets import universe_seats as seats
+    from tinyassets.daemon_server import grant_universe_ownership
 
+    grant_universe_ownership(tmp_path, universe_id=UNIVERSE, owner_id=OWNER)
+    key = seats.account_key(UNIVERSE, root=tmp_path)
+    assert key == f"account:{OWNER}"
+    db = seats.ledger_path(tmp_path)
+    held_during_run = []
     seam = _SeamRecorder()
-    monkeypatch.setattr(automations_module, "_execute", seam)
-    db = tmp_path / seats.LEDGER_NAME
-    blockers = [seats.acquire(OWNER, db=db) for _ in range(2)]
-    result = []
-    thread = threading.Thread(target=lambda: result.append(run_due_automation(
-        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW,
-    )), daemon=True)
-    thread.start()
+
+    def execute(*args, **kwargs):
+        held_during_run.append(seats.occupancy(key, db=db)["running"])
+        return seam(*args, **kwargs)
+
+    monkeypatch.setattr(automations_module, "_execute", execute)
+    blockers = [seats.acquire(key, db=db) for _ in range(2)]  # free: 2 background
     try:
-        deadline = time.monotonic() + 5
-        while not seats.occupancy(OWNER, db=db)["waiting"] and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert seats.occupancy(OWNER, db=db)["waiting"] == 1
+        tickets = set()
+        for _poll in range(4):
+            started = time.monotonic()
+            reason = run_due_automation(
+                tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW,
+            )
+            assert reason == automations_module.WAITING_FOR_SEAT
+            assert time.monotonic() - started < 5, "a wait must not park the consumer"
+            tickets.add(seats._tickets[f"automation:{registered.automation_id}"])
+        assert len(tickets) == 1, "each poll re-presents the same queue position"
         with sqlite3.connect(AutomationStore(tmp_path).db_path) as conn:
             assert conn.execute("SELECT COUNT(*) FROM automation_attempts").fetchone()[0] == 0
         assert not seam.calls
         current = AutomationStore(tmp_path).get(registered.automation_id)
         assert current.attempt_count == 0
         assert current.consecutive_failures == 0
+        assert current.desired_state == "active"
+        assert seats.occupancy(key, db=db)["waiting"] == 1
     finally:
         for held in blockers:
             seats.release(held.seat_id, db=db)
-        thread.join(5)
-        seats.stop_refresher()
-    assert not thread.is_alive()
-    assert result == ["ok:ran:run_1"]
+    assert run_due_automation(
+        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW,
+    ) == "ok:ran:run_1"
+    assert held_during_run == [1], "the run holds its account's seat"
+    occupancy = seats.occupancy(key, db=db)
+    assert (occupancy["running"], occupancy["waiting"]) == (0, 0)
+    seats.stop_refresher()
