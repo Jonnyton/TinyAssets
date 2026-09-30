@@ -183,6 +183,7 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         _DEPOSITABLE_AUTH_SCHEMES,
         _DESTINATION_RE,
     )
+    from tinyassets.storage.outbound_connections import _URL_SECRET_SCHEME
 
     action = raw if isinstance(raw, dict) else {"type": "answer"}
     kind = str(action.get("type") or "answer").strip().lower()
@@ -303,6 +304,16 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     # paths is still least privilege -- it is not a widening, and the user sees
     # every line before pasting once.
     if _validated_access(action) == "full":
+        if scheme == _URL_SECRET_SCHEME:
+            # A capability URL's authority IS one declared path. `full` admits
+            # every other path on the host once the host matches, so the
+            # reserved placeholder would never be enforced and the secret would
+            # have nowhere to live. Refused at the ask so the owner never reads
+            # a tab the deposit will not honour.
+            raise ValueError(
+                f'a {_URL_SECRET_SCHEME} ask names the endpoint the link points '
+                'at, so it cannot be "full"'
+            )
         # A new key has no stored hosts yet, so a full deposit names the
         # channel's host(s). One GET endpoint per host is recorded so the
         # existing host derivation and the SSRF host pin have something to read;
@@ -600,7 +611,10 @@ def _validated_workspace_consent(action: dict[str, Any]) -> dict[str, Any]:
 
 def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
     """Shared endpoint validation for connect_http and extend_http."""
-    from tinyassets.api.http_connection import _parse_allowed_endpoints
+    from tinyassets.api.http_connection import (
+        _parse_allowed_endpoints,
+        embedded_secret_refusal,
+    )
 
     raw_endpoints = action.get("endpoints")
     if not isinstance(raw_endpoints, list) or not raw_endpoints:
@@ -645,6 +659,14 @@ def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
         if "redirect_mode" in raw:
             endpoint["redirect_mode"] = raw["redirect_mode"]
         endpoints.append(endpoint)
+    # The hardcoded-secret refusal at the ASK door, which is the door the agent
+    # meets first. Raising it here means the correction reaches the agent while
+    # it is still composing the card, not after a person has read it: live
+    # 2026-09-30 a universe put a friend's webhook secret into path_template and
+    # nothing in the chain said a word.
+    hardcoded = embedded_secret_refusal(endpoints)
+    if hardcoded is not None:
+        raise ValueError(str(hardcoded["detail"]))
     parsed = _parse_allowed_endpoints(endpoints)   # same validation as deposit
     if any(endpoint.redirect_mode == "public_https_get" for endpoint in parsed):
         from tinyassets.api.http_connection import _canonical_policy
@@ -659,6 +681,8 @@ def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
+    from tinyassets.api.http_connection import URL_SECRET_FIELD_NAME
+    from tinyassets.storage.outbound_connections import _URL_SECRET_SCHEME
     from tinyassets.storage.pending_requests import FIELD_TYPES
 
     fields = raw if isinstance(raw, list) else []
@@ -791,6 +815,20 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
         # authenticate, failing at the far end with nothing to point at.
         secrets = [f for f in out if f["type"] == "secret"]
         scheme = str(action.get("auth_scheme") or "bearer").strip().lower()
+        if scheme == _URL_SECRET_SCHEME:
+            # ONE box, and it holds the WHOLE LINK. The live failure asked for
+            # "the code at the end of the link", which makes a person parse a
+            # URL and then sent that value as a header. The platform parses it
+            # (`extract_url_secret`), so the field must be the link -- and it is
+            # named the way the deposit reads it, like `oauth1a`'s four.
+            if len(secrets) != 1 or secrets[0]["name"] != URL_SECRET_FIELD_NAME:
+                raise ValueError(
+                    f"a {_URL_SECRET_SCHEME} card has exactly ONE secret field, "
+                    f"named {URL_SECRET_FIELD_NAME!r}, and the owner pastes the "
+                    "WHOLE link into it -- label it the way the service words it "
+                    '("Webhook URL"), and never ask them to pick the code out '
+                    "of it themselves"
+                )
         if len(secrets) > 1 and scheme not in _MULTI_VALUE_AUTH_SCHEMES:
             raise ValueError(
                 f"auth_scheme {scheme!r} takes a single value, so ask for one "
@@ -1301,6 +1339,8 @@ def _grants_git(action: dict[str, Any]) -> bool:
 
 def _grant_sentence(row: dict[str, Any]) -> str:
     """For a credential ask, the exact grant in one line. Empty otherwise."""
+    from tinyassets.storage.outbound_connections import _URL_SECRET_SCHEME
+
     action = row.get("action") or {}
     if action.get("type") == "bind_model_access":
         from tinyassets.api.model_access_requests import grant_sentence
@@ -1377,6 +1417,21 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     # (observed live, 2026-08-28).
     where = f' as "{action.get("destination")}"' if action.get("destination") else ""
     git_to = _git_host_clause(action.get("git_host"))
+    if str(action.get("auth_scheme") or "").strip().lower() == _URL_SECRET_SCHEME:
+        # The owner is pasting a whole link, so say what happens to it. The
+        # `{secret}` in the endpoint line is the platform's placeholder, not a
+        # thing they have to fill in, and without this the tab reads like a
+        # template they are supposed to complete.
+        kept = (
+            " The code in the link is kept in your vault and put back into the "
+            "address only as the call is made; this request stores the rest of "
+            "the link, never the code."
+        )
+        joined = "; ".join(lines)
+        return (
+            f"This link{where} will be able to {joined} - nothing else."
+            f"{kept}{git_to}"
+        )
     if len(lines) == 1:
         return f"This key{where} will be able to {lines[0]} - nothing else.{git_to}"
     # "reach" is the established wording and describes an endpoint list. It does
