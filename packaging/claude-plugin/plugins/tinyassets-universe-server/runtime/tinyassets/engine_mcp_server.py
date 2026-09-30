@@ -1880,9 +1880,10 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
     does NOT run -- the only code that runs is ``script``. Bounds: markup 32768,
     style 16384, script 32768 characters, the whole component under 49152 UTF-8
-    bytes. There is no limit on how many UIs a library holds -- only on its total
-    size, 4194304 bytes. Nothing I write is rewritten, reformatted or sanitized on
-    the way in or out.
+    bytes. Those bound ONE component. There is no limit on how many UIs my library
+    holds and none on its total size -- the bytes count toward my universe's
+    storage, like everything else I keep. Nothing I write is rewritten, reformatted
+    or sanitized on the way in or out.
 
     **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
     token, no reach into the surrounding page, and NO network of its own -- fetch,
@@ -1921,7 +1922,8 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     **Sharing one.** Publishing is the person's own deliberate act, and it is not
     a call I have here: they publish the UI component under ``components`` of a
     public definition (the connector's ``write_graph target="agent"
-    operation="publish"``), and a UI I only install stays private. To use someone else's, I read it with
+    operation="publish"``), and a UI I only install stays private. To use
+    someone else's, I read it with
     ``read_commons_shape agent_definition_id=...`` and save its component into
     this person's ``ui_library``; that copy is theirs, the same thing the
     connector's ``operation="remix"`` does. A copy always runs as the person who
@@ -2023,8 +2025,9 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     not exist", "not open to me" and "revoked" on purpose — it discloses nothing
     either way. ``receiver_generation_changed``: re-read the contract and reconnect.
     ``receiver_sender_rate_limit_exceeded``: only if that owner chose a per-sender
-    hourly policy of their own; the message names their limit and what I have sent. ``occurrence_conflict``: I
-    reused an ``occurrence_id`` with different content.
+    hourly policy of their own; the message names their limit and what I have
+    sent. ``occurrence_conflict``: I reused an ``occurrence_id`` with different
+    content.
 
     **Closing it.** ``operation="revoke"`` on the receiver (with
     ``expected_generation``) stops new deliveries at once, from every sender.

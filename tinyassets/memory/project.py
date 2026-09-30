@@ -11,7 +11,10 @@ Spec invariants:
 - Writes are append-only (audit trail row) — the primary row holds current
   value; history is retained for moderation.
 - No cross-project reads without explicit project_id.
-- Per-project size cap (default 1 MB total).
+- No per-project size cap. The 1 MB one that used to be here was a second
+  storage number beside the universe's tier storage, and storage is one of the
+  two limits an account actually has (founder, 2026-09-30) -- it is measured and
+  enforced once, over the universe, not per primitive. These bytes count there.
 - ``version`` field supports optimistic concurrency: writes require matching
   ``expected_version`` or return a ``{"conflict": ...}`` error.
 - ``version`` increments monotonically per ``(project_id, key)`` pair.
@@ -24,8 +27,6 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-_DEFAULT_SIZE_CAP_BYTES = 1_000_000  # 1 MB per project
 
 
 def _db_path(base_path: str | Path) -> Path:
@@ -76,16 +77,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _project_size_bytes(conn: sqlite3.Connection, project_id: str) -> int:
-    """Return the total byte count of all values for *project_id*."""
-    row = conn.execute(
-        "SELECT SUM(LENGTH(value)) FROM project_memory WHERE project_id = ?",
-        (project_id,),
-    ).fetchone()
-    total = row[0] if row and row[0] is not None else 0
-    return int(total)
-
-
 def project_memory_set(
     base_path: str | Path,
     *,
@@ -94,7 +85,6 @@ def project_memory_set(
     value: Any,
     actor: str = "",
     expected_version: int | None = None,
-    size_cap_bytes: int = _DEFAULT_SIZE_CAP_BYTES,
 ) -> dict[str, Any]:
     """Set *key* → *value* for *project_id*.
 
@@ -102,8 +92,10 @@ def project_memory_set(
     - ``{"status": "ok", "version": N}`` on success.
     - ``{"conflict": True, "current_version": N, "message": "..."}`` on
       optimistic-concurrency conflict.
-    - ``{"error": "size_cap_exceeded", ...}`` when the project would exceed
-      the per-project size cap.
+
+    There is no size refusal. These bytes are charged to the universe's tier
+    storage, which is where storage is measured; a per-project megabyte was a
+    second number for the same thing.
 
     *value* is JSON-serialised before storage so any JSON-serialisable type
     is accepted.
@@ -130,28 +122,6 @@ def project_memory_set(
                         f"expected {expected_version}, got {current_version}."
                     ),
                 }
-
-        # Size-cap check: existing value for this key will be replaced,
-        # so subtract its contribution from the current total.
-        current_total = _project_size_bytes(conn, project_id)
-        existing_key_bytes = 0
-        if existing:
-            existing_row = conn.execute(
-                "SELECT LENGTH(value) AS sz FROM project_memory "
-                "WHERE project_id = ? AND key = ?",
-                (project_id, key),
-            ).fetchone()
-            if existing_row:
-                existing_key_bytes = int(existing_row["sz"])
-        new_total = current_total - existing_key_bytes + len(serialised.encode())
-        if new_total > size_cap_bytes:
-            return {
-                "error": "size_cap_exceeded",
-                "project_id": project_id,
-                "cap_bytes": size_cap_bytes,
-                "current_bytes": current_total,
-                "value_bytes": len(serialised.encode()),
-            }
 
         new_version = current_version + 1
 

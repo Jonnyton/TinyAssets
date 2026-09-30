@@ -173,23 +173,36 @@ def test_there_is_no_limit_on_how_many_uis_a_library_holds(tmp_path) -> None:
     assert get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME)["ui_library"] == many
 
 
-def test_the_one_bound_is_total_library_bytes(tmp_path) -> None:
-    from tinyassets.custom_agents import MAX_APP_UI_LIBRARY_BYTES, _canonical_json
+def test_the_library_has_no_size_bound(tmp_path) -> None:
+    """Past the old 4 MiB ``MAX_APP_UI_LIBRARY_BYTES``, and the save succeeds.
 
-    # Exactly at the bound is kept; one byte over is refused, whatever the count.
-    at_cap = [_bundle()]
-    at_cap[0]["script"] = ""
-    at_cap[0]["script"] = "x" * (
-        MAX_APP_UI_LIBRARY_BYTES - len(_canonical_json(at_cap).encode("utf-8"))
-    )
-    assert len(_canonical_json(at_cap).encode("utf-8")) == MAX_APP_UI_LIBRARY_BYTES
-    save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
-                expected_revision=0, changes={"ui_library": at_cap})
-    over = [dict(at_cap[0], script=at_cap[0]["script"] + "x")]
-    with pytest.raises(AgentValidationError, match="the limit is"):
+    That constant refused an install with "remove one first". Its own comment
+    said it should be charged against a per-universe storage quota once one
+    existed -- one does, so it is (founder, 2026-09-30: an account's two limits
+    are cloud storage and concurrent agent seats). Per-BUNDLE validation is
+    untouched; that is payload validation of one document.
+    """
+    from tinyassets import custom_agents
+    from tinyassets.custom_agents import _canonical_json
+
+    assert not hasattr(custom_agents, "MAX_APP_UI_LIBRARY_BYTES")
+
+    # ~6 MiB of library, half again the old ceiling, built from valid bundles.
+    big = [dict(_bundle(), ui_id=f"ui-{i:03d}", script="x" * 32000) for i in range(200)]
+    assert len(_canonical_json(big).encode("utf-8")) > 4 * 1024 * 1024
+
+    saved = save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                        expected_revision=0, changes={"ui_library": big})
+    assert len(saved["ui_library"]) == 200
+    read_back = get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME)
+    assert read_back["ui_library"] == big
+    assert read_back["revision"] == 1
+
+    # The SELECTION pointer is still bounded -- one small document, not an account.
+    with pytest.raises(AgentValidationError, match="ui_selection exceeds"):
         save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
-                    expected_revision=1, changes={"ui_library": over})
-    assert get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME)["revision"] == 1
+                    expected_revision=1,
+                    changes={"ui_selection": {"ui_id": "x" * 4000}})
 
 
 def test_agent_bindings_is_the_shape_main_has(tmp_path) -> None:

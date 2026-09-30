@@ -61,10 +61,17 @@ def resolve_selection_in_transaction(conn, *, owner, universe):
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_bindings'"
                     ).fetchone() is None:
         return None  # Existing homes without custom-agent schema keep default chat.
+    # EVERY binding this owner has in this universe, with no cutoff. The read used
+    # to fetch 101 and refuse at 100 with "consumer installation list is
+    # ambiguous" -- BEFORE filtering to the app_experience rows that actually
+    # select a consumer. So a hundred unrelated bindings stopped the owner's
+    # conversation from resolving at all. That is a functional cliff, not a limit
+    # (founder, 2026-09-30: no structural caps on what users build).
+    #
+    # The real ambiguity check is below, on the rows that DO select a consumer:
+    # more than one active selection is ambiguous at any list size.
     rows = conn.execute("SELECT * FROM agent_bindings WHERE universe_id=? AND created_by=? "
-                        "ORDER BY agent_binding_id LIMIT 101", (universe, owner)).fetchall()
-    if len(rows) > 100:
-        raise PermissionError("consumer installation list is ambiguous")
+                        "ORDER BY agent_binding_id", (universe, owner)).fetchall()
     active = []
     for row in rows:
         config = json.loads(row["configuration_json"])
