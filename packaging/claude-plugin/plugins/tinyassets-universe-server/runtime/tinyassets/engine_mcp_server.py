@@ -1256,7 +1256,12 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
 
     **Two nodes, passing a value.** ``edges`` orders them; ``output_keys`` /
     ``input_keys`` name what moves, and every key they name must be declared in
-    ``state_schema`` when a schema is present:
+    ``state_schema`` when a schema is present. ``state_schema`` takes either the
+    list of field objects below or a plain mapping of name to type
+    (``{"agenda": "str", "brief": "str"}``), and JSON Schema's type words
+    (``string``, ``integer``, ``number``, ``boolean``, ``array``, ``object``)
+    are accepted for the Python ones. A type I get wrong is corrected and
+    reported back under ``notices`` rather than refusing the build:
 
         {"name": "Morning brief",
          "state_schema": [{"name": "agenda", "type": "str"},

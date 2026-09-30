@@ -1031,3 +1031,183 @@ def test_importing_the_module_twice_does_not_change_the_contract():
     before = sorted(s.SERVED_TOOL_CHAPTERS["write_graph"])
     importlib.reload(s)
     assert sorted(s.SERVED_TOOL_CHAPTERS["write_graph"]) == before
+
+
+# ---------------------------------------------------------------------------
+# Follow-up, 2026-09-30: the FIRST create attempt crashed opaquely
+#
+# Turn f3617ca3a91d4acab30eea8dbbeb2663 round 3, prod 6235666b -- the SAME free
+# account, on the run that did then succeed once it read the `branches` chapter.
+# Its first attempt got `{"error": "branch build rejected (AttributeError)."}`:
+# an exception class name, which tells the model nothing and is exactly the
+# shape of refusal this module exists to remove.
+# ---------------------------------------------------------------------------
+
+#: The live payload. `state_schema` is a MAPPING of name -> type, which is a
+#: reasonable thing to write and is not the list of field objects staging
+#: iterates; `type: "prompt"` and `"string"` are likewise natural guesses.
+TURN_F3617CA3_ROUND_3 = {
+    "name": "Morning Focus Note",
+    "nodes": [{
+        "node_id": "generate_note",
+        "type": "prompt",
+        "prompt_template": "Write a short note on what to focus on today",
+        "tools_allowed": [],
+        "output_keys": ["focus_note"],
+    }],
+    "edges": [],
+    "state_schema": {"focus_note": "string"},
+}
+
+
+def test_the_live_first_attempt_builds(served):
+    out = _create(served, TURN_F3617CA3_ROUND_3)
+    assert _landed(out), out
+
+
+def test_a_state_schema_mapping_becomes_the_declared_fields(served):
+    """name -> type is accepted and stored as the canonical field list."""
+    out = _create(served, TURN_F3617CA3_ROUND_3)
+    assert _landed(out), out
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import get_branch_definition
+
+    stored = get_branch_definition(_base_path(), branch_def_id=out["branch_def_id"])
+    assert [(f["name"], f["type"]) for f in stored["state_schema"]] == [
+        ("focus_note", "str"),
+    ]
+
+
+def test_the_fields_wrapper_shape_is_also_accepted(served):
+    """`_sanitize_served_branch_spec` already tolerates it, so staging must too."""
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    spec["state_schema"] = {"fields": [{"name": "focus_note", "type": "str"}]}
+    out = _create(served, spec)
+    assert _landed(out), out
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import get_branch_definition
+
+    stored = get_branch_definition(_base_path(), branch_def_id=out["branch_def_id"])
+    assert [(f["name"], f["type"]) for f in stored["state_schema"]] == [
+        ("focus_note", "str"),
+    ]
+
+
+def test_a_bare_string_state_field_names_the_field(served):
+    """`state_schema: ["focus_note"]` -- a name with no type is still a name."""
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    spec["state_schema"] = ["focus_note"]
+    out = _create(served, spec)
+    assert _landed(out), out
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import get_branch_definition
+
+    stored = get_branch_definition(_base_path(), branch_def_id=out["branch_def_id"])
+    assert [f["name"] for f in stored["state_schema"]] == ["focus_note"]
+
+
+@pytest.mark.parametrize("written,stored", [
+    ("string", "str"), ("text", "str"), ("integer", "int"),
+    ("number", "float"), ("boolean", "bool"), ("array", "list"),
+    ("object", "dict"), ("str", "str"),
+])
+def test_json_schema_type_names_are_accepted_silently(served, written, stored):
+    """These are EXACT synonyms, not guesses, so they earn no notice.
+
+    A model asked for a schema writes JSON Schema's vocabulary. `"string"` cost
+    the live turn a whole rejection.
+    """
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    spec["state_schema"] = {"focus_note": written}
+    out = _create(served, spec)
+    assert _landed(out), out
+    assert out.get("notices") == [], out
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import get_branch_definition
+
+    kept = get_branch_definition(_base_path(), branch_def_id=out["branch_def_id"])
+    assert kept["state_schema"][0]["type"] == stored
+
+
+def test_a_guessed_type_builds_and_says_what_it_guessed(served):
+    """A typo is a NOTICE, not a rejection: the field was accepted and stored.
+
+    CONTRACT CHANGED 2026-09-30 (was: rejected — `test_composite_branch_actions`
+    asserted that). Refusing a whole build over a value the code had already
+    resolved is the same defect class as the rest of this module; the author
+    still needs telling, so it rides back as `notices`.
+    """
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    spec["state_schema"] = [{"name": "focus_note", "type": "strang"}]
+    out = _create(served, spec)
+    assert _landed(out), out
+    notices = " ".join(out.get("notices") or [])
+    assert "strang" in notices and "str" in notices, out
+    # And it is visible in the prose the author reads, not only in a field.
+    assert "strang" in out.get("text", ""), out
+
+
+def test_a_notice_is_never_reported_as_an_error(served):
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    spec["state_schema"] = [{"name": "focus_note", "type": "strang"}]
+    out = _create(served, spec)
+    assert not out.get("errors"), out
+    assert out.get("status") != "rejected", out
+
+
+def test_the_notice_sentinel_never_reaches_the_author(served):
+    """The internal marker is stripped -- a NUL in a tool result is not prose."""
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    spec["state_schema"] = [{"name": "focus_note", "type": "strang"}]
+    blob = json.dumps(_create(served, spec))
+    assert "notice\\u0000" not in blob and "\x00" not in blob, blob
+
+
+@pytest.mark.parametrize("schema", [
+    42,
+    "focus_note",
+    {"focus_note": {"nested": "object"}},
+    [[["focus_note"]]],
+    [None],
+])
+def test_an_unusable_state_schema_returns_a_precise_error(served, schema):
+    """Whatever arrives, the answer names state_schema -- never a class name."""
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    spec["state_schema"] = schema
+    out = _create(served, spec)
+    blob = json.dumps(out)
+    for noise in ("AttributeError", "TypeError", "KeyError", "ValueError"):
+        assert noise not in blob, (noise, out)
+    if not _landed(out):
+        assert "state_schema" in blob, out
+
+
+@pytest.mark.parametrize("key,value", [
+    ("nodes", {"generate_note": {"prompt_template": "x"}}),
+    ("edges", {"generate_note": "END"}),
+    ("conditional_edges", {"generate_note": {"done": "END"}}),
+    ("edges", ["generate_note"]),
+    ("node_defs", [None]),
+    ("io_manifest", 7),
+    ("skills", "not-a-list"),
+    ("tags", {"a": 1}),
+])
+def test_no_container_shape_returns_a_bare_exception_class(served, key, value):
+    """The RULE, not one instance: a class name is not a diagnosis.
+
+    `write_graph` wraps the build in `except (AttributeError, TypeError,
+    ValueError, KeyError)` and returns `branch build rejected (<class>)`. That
+    backstop must stay -- a served handler must never propagate -- but reaching
+    it means some container shape crashed instead of being validated, and the
+    model is handed a word it cannot act on. Every one of these must come back
+    as either a build or a message naming the key.
+    """
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    spec["state_schema"] = []
+    spec[key] = value
+    out = _create(served, spec)
+    blob = json.dumps(out)
+    for noise in ("AttributeError", "TypeError", "KeyError", "ValueError"):
+        assert noise not in blob, (key, value, out)
+    if not _landed(out):
+        assert key in blob or "must be" in blob, (key, value, out)
