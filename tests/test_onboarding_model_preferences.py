@@ -16,7 +16,7 @@ from tinyassets.providers.model_preferences import MAX_POLICY_BYTES
 from tinyassets.storage.model_preferences import ModelPreferenceStore
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
-URL = "/mcp/app/models/preferences"
+URL = "/app/models/preferences"
 A, B = "user_model_a", "user_model_b"
 HOME_A, HOME_B = "u-1111111111111111", "u-2222222222222222"
 AUTO = {"version": 1, "mode": "automatic", "saved_default": None, "fallbacks": []}

@@ -75,6 +75,13 @@ NODE_STATUS_RAN = "ran"
 NODE_STATUS_FAILED = "failed"
 NODE_STATUS_CANCELLED = "cancelled"
 
+#: ``node_id`` for run events that record something about the RUN, not a node
+#: (``recursion_limit_applied``, ``provider_calls``, ``concurrency_stats``,
+#: ``effect``). Not a node: it carries no node status and is never rendered as
+#: one. The literal used to be spelled at every emitter and every reader; the
+#: one reader that did not spell it put it in run summaries as a node.
+SYSTEM_EVENT_NODE_ID = "__system__"
+
 
 class RunCancelledError(Exception):
     """Raised from an event_sink when a run has been cancelled so the
@@ -4527,7 +4534,7 @@ def _invoke_graph(
             record_event(base_path, RunStepEvent(
                 run_id=run_id,
                 step_index=step + _PENDING_OFFSET,
-                node_id="__system__",
+                node_id=SYSTEM_EVENT_NODE_ID,
                 status="effect",
                 started_at=_now(),
                 finished_at=_now(),
@@ -4694,7 +4701,7 @@ def _invoke_graph(
     record_event(base_path, RunStepEvent(
         run_id=run_id,
         step_index=0,
-        node_id="__system__",
+        node_id=SYSTEM_EVENT_NODE_ID,
         status="recursion_limit_applied",
         started_at=_now(),
         detail={"recursion_limit": recursion_limit},
@@ -4965,7 +4972,7 @@ def _invoke_graph(
         record_event(base_path, RunStepEvent(
             run_id=run_id,
             step_index=step + _PENDING_OFFSET,
-            node_id="__system__",
+            node_id=SYSTEM_EVENT_NODE_ID,
             status="concurrency_stats",
             started_at=_now(),
             detail=stats,
@@ -4980,7 +4987,7 @@ def _invoke_graph(
         record_event(base_path, RunStepEvent(
             run_id=run_id,
             step_index=step + _PENDING_OFFSET,
-            node_id="__system__",
+            node_id=SYSTEM_EVENT_NODE_ID,
             status="provider_calls",
             started_at=_now(),
             detail={"calls": provider_tracker["calls"]},
@@ -6398,7 +6405,7 @@ def _invoke_graph_resume(
             record_event(base_path, RunStepEvent(
                 run_id=run_id,
                 step_index=step + _PENDING_OFFSET,
-                node_id="__system__",
+                node_id=SYSTEM_EVENT_NODE_ID,
                 status="effect",
                 started_at=_now(),
                 finished_at=_now(),
@@ -6719,11 +6726,25 @@ def build_node_status_map(
     Later events dominate earlier ones: a node seen as ``ran`` wins over
     its earlier ``pending`` row. This is the shape Claude.ai visualises
     to auto-build a state diagram.
+
+    ``__system__`` rows are NOT nodes and never appear here. Every emitter of
+    one already says so ("recorded as a system row (never a node status)"), and
+    two readers already re-filtered it, but this fold did not -- so a run
+    summary listed ``__system__: recursion_limit_applied`` among its nodes and
+    the mermaid diagram drew a box for it. Live 2026-09-30 (runs
+    ``61184d8f21724915`` / ``4828ae18e2414e77``): the row reads as a failed step
+    of the workflow to both a user and a chatbot. The applied limit is still
+    surfaced, off the EVENT, as ``recursion_limit``
+    (``api/runs._compose_run_snapshot``).
     """
-    statuses: dict[str, str] = {nid: NODE_STATUS_PENDING for nid in declared_order}
+    statuses: dict[str, str] = {
+        nid: NODE_STATUS_PENDING
+        for nid in declared_order
+        if nid != SYSTEM_EVENT_NODE_ID
+    }
     for ev in events:
         node_id = ev.get("node_id", "")
-        if not node_id:
+        if not node_id or node_id == SYSTEM_EVENT_NODE_ID:
             continue
         statuses.setdefault(node_id, NODE_STATUS_PENDING)
         current = statuses[node_id]
@@ -6739,7 +6760,7 @@ def build_node_status_map(
         if priority.get(incoming, 0) >= priority.get(current, 0):
             statuses[node_id] = incoming
     # Preserve declared order, then append any out-of-order nodes.
-    ordered_ids = list(declared_order)
+    ordered_ids = [nid for nid in declared_order if nid != SYSTEM_EVENT_NODE_ID]
     for nid in statuses:
         if nid not in ordered_ids:
             ordered_ids.append(nid)

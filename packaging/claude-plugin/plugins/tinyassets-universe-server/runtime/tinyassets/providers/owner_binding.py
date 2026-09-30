@@ -57,9 +57,28 @@ _NO_UNIVERSE = (
 #: The owner-facing refusal. Run-failure taxonomy keys on "connect your
 #: provider" (``tinyassets/api/runs.py``), so a universe that has no owner
 #: authority reads as the actionable fix, not as a platform fault.
+#:
+#: The one definition. ``foreground_run_provider`` and ``provider_assignment``
+#: each held a byte-identical copy of this string; the taxonomy, the canary and
+#: six tests keyed on the literal, so three copies were three chances for the
+#: sentence and its meaning to drift apart.
 CONNECT_PROVIDER_MESSAGE = (
     "Connect your provider before running this universe. TinyAssets will not "
     "borrow platform credentials or start a metered trial."
+)
+#: Lead-in for a held run whose universe DOES have a provider connected.
+#:
+#: ``CONNECT_PROVIDER_MESSAGE`` is the right sentence for a universe with no
+#: owner authority. It was ALSO the sentence for every other refusal on the run
+#: lane, because `except Exception` handlers wrapped all of them in it. Live
+#: 2026-09-30 (universe ``u-01ky3zh1arr8qth8jee7zx63pq``, runs
+#: ``61184d8f21724915`` / ``4828ae18e2414e77``): an owner whose ``api_key_http``
+#: source was connected, ready and serving their chat was told to connect a
+#: provider -- the wrong cause, the wrong fix, and no other clue in the record.
+#: A refusal with words of its own keeps them behind this lead-in, and the
+#: taxonomy keys on the lead-in so the failure class is unchanged.
+AUTHORITY_HELD_DETAIL = (
+    "This universe's connected provider could not authorize this run: "
 )
 _NO_OWNER_AUTHORITY = (
     f"{CONNECT_PROVIDER_MESSAGE} (The platform has no LLM: this call names a "
@@ -136,6 +155,7 @@ def require_owner_bound_dispatch(
 
 
 __all__ = [
+    "AUTHORITY_HELD_DETAIL",
     "CONNECT_PROVIDER_MESSAGE",
     "HOST_PROCESS_CREDENTIALS",
     "is_host_credential_provider",

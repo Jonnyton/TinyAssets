@@ -62,7 +62,14 @@ _FUNCS = (
     "offerSavedLine", "clearComposerState", "clearAccountScopedState", "clearThread",
 )
 _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
-                   "offerSavedConversationCheck")
+                   "offerSavedConversationCheck",
+                   # Collaborators `clearAccountScopedState` gained on
+                   # 2026-09-30: rail card nodes are now kept across a refresh
+                   # so a 15-second poll cannot delete what the user typed into
+                   # a card, which makes clearing them an account-change step.
+                   # Optional like their siblings, so these harnesses stay green
+                   # against a tree without the change.
+                   "clearRailCards", "clearTypedValues")
 
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.
@@ -217,7 +224,7 @@ def test_a_late_history_peek_does_not_restore_a_turn_started_meanwhile(tmp_path,
     """The peek was still in flight when the founder sent; its result must not
     read the record that send wrote as a previous page's abandoned message."""
     out = _run(tmp_path, html, r"""
-    // Both halves come from /mcp/app/me before the composer is usable
+    // Both halves come from /app/me before the composer is usable
     // (enterSignedIn); the peek is what is still in flight, not the pair.
     setQueueOwner("p-1"); setQueueScope("u-1");
     let release; MCP.getConversation=()=>new Promise(r=>{release=r;});

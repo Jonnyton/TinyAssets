@@ -26,7 +26,7 @@ def post(operation, data, *, origin="https://tinyassets.io"):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(
             app=Starlette(routes=onboarding.onboarding_routes())), base_url="https://tinyassets.io",
         ) as client:
-            return await client.post("/mcp/app/model-connect/" + operation,
+            return await client.post("/app/model-connect/" + operation,
                                      json=data, headers={"Origin": origin})
     return asyncio.run(run())
 
@@ -90,8 +90,8 @@ def test_only_callback_shell_is_exempt_from_bearer_challenge():
     assert not _auth_challenge_path(hosted.CALLBACK_PREFIX + "a" * 43)
     assert _auth_challenge_path(hosted.CALLBACK_PREFIX + "a" * 42)
     assert _auth_challenge_path(hosted.CALLBACK_PREFIX + "a" * 43 + "/exchange")
-    assert _auth_challenge_path("/mcp/app/model-connect/begin")
-    assert _auth_challenge_path("/mcp/app/model-connect/exchange")
+    assert _auth_challenge_path("/app/model-connect/begin")
+    assert _auth_challenge_path("/app/model-connect/exchange")
 
 
 def test_bad_challenge_does_not_bootstrap_a_home(monkeypatch):

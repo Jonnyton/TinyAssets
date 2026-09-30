@@ -12,6 +12,48 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## WorkOS: register the app's new redirect URI (2026-09-30)
+
+**One dashboard field. Sign-in is broken at the new URL until it is set.**
+
+The app moved from `https://tinyassets.io/mcp/app` to `https://tinyassets.io/app`
+(your directive, no back-compat). The SPA builds its OAuth `redirect_uri` from the
+page it is served at, so AuthKit now receives `https://tinyassets.io/app` — and
+AuthKit refuses a redirect URI that is not registered. Nothing in the repo can
+register it; this is the single founder action for the move.
+
+1. `dashboard.workos.com` → **Production** environment → **Redirects**.
+2. Add `https://tinyassets.io/app` to **Sign-in callback / Redirect URIs**.
+3. Remove `https://tinyassets.io/mcp/app` once the new one is saved. Leaving it is
+   not dangerous, but it is dead — nothing serves that path any more.
+4. Nothing else changes: same origin, same client ID, same MCP resource
+   (`https://tinyassets.io/mcp`, untouched by the move).
+
+Expected symptom before you do this: sign-in bounces to AuthKit and comes back with
+an `invalid_redirect_uri` / "redirect URI not allowed" error instead of a session.
+The app shell itself loads fine either way, so `curl` proof of `/app` passing does
+not prove sign-in works.
+
+**Third-party OAuth connections with a PRE-REGISTERED client.** The generic
+connection flow's one fixed redirect URI moved too, to
+`https://tinyassets.io/app/model-callback/connect`. Connections that dynamically
+register a client send the new callback automatically and need nothing. But if a
+provider's `client_id` was supplied by hand, that provider's own app settings
+still list the `/mcp/app/...` return and will refuse the exchange — whoever owns
+that provider account updates the redirect URI there. Nothing in this repo can
+do it, and it is per-connection rather than platform-wide.
+
+**Also, only if Stripe billing is switched on** (it is inert unless
+`STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` are set): the Stripe webhook endpoint
+is registered as a URL and moved with the app. Repoint it to
+`https://tinyassets.io/app/billing/webhook` —
+`python scripts/stripe_go_live.py --check --webhook-url https://tinyassets.io/app/billing/webhook`
+says whether it needs doing, and `--provision` creates the new endpoint (it prints
+the new `whsec_…` once; the old endpoint should then be deleted in the dashboard).
+If billing is not switched on, there is nothing to do.
+
+---
+
 ## Store launch: four founder steps (2026-09-29)
 
 Both stores are one founder action away from moving. Apple asked for more information
@@ -75,7 +117,7 @@ side.
    The Team ID, Services ID and Key ID are not secret and can be sent to the lead.
 5. Tell the lead it's done. The agent runs `python scripts/authkit_login_parity_probe.py`
    (it fails today, exit 1, and passes once Apple is offered). Then it checks one real
-   **Continue with Apple** sign-in on `https://tinyassets.io/mcp/app`.
+   **Continue with Apple** sign-in on `https://tinyassets.io/app`.
 
 ### Apple: renew the App Review inference key before 2026-10-10
 
@@ -87,7 +129,7 @@ cannot reply, which is a certain rejection. The key must be renewed before resub
 1. **OpenRouter** (the account that owns the current review key) → **Keys → Create
    key**. Name `tinyassets-app-review`, credit limit **$5**, expiry at least
    2026-12-31. Copy the key; do not save it anywhere else.
-2. In a private browser window, sign in to `https://tinyassets.io/mcp/app` as the review
+2. In a private browser window, sign in to `https://tinyassets.io/app` as the review
    account. Open **Connect**, choose OpenRouter, paste the key into **Paste only the
    key**, and tap **Connect**.
 3. Send one message, for example "What can you help me with?", and confirm a reply
@@ -203,7 +245,7 @@ The deposit spec (`openspec/specs/byo-llm-deposit-surface/spec.md`,
 **SHALL NOT itself enable serving**. On 2026-09-01 a pasted Codex deposit through the app
 left the universe chatting but every run refused with `provider_not_bound`, because the
 paste path never followed the hint. #2760 fixes that in the app (the paste path and the
-heartbeat call the same `/mcp/app/serving/bind` the phone uses); a server-side
+heartbeat call the same `/app/serving/bind` the phone uses); a server-side
 "deposit serves when nothing serves" was built, then withdrawn on Codex review because it
 contradicts the requirement above.
 
@@ -922,7 +964,7 @@ changes; without the regenerate step this looks unfixed.
 **Why it is a host action:** it is a setting in your X account. Nothing in this
 repo can change it.
 
-**Reproduced 2026-08-27 through the webapp**, driving `tinyassets.io/mcp/app`
+**Reproduced 2026-08-27 through the webapp**, driving `tinyassets.io/app`
 as the signed-in founder rather than the MCP — run `948a32670485432a`, same
 branch, same result. Two things that run additionally rules out:
 

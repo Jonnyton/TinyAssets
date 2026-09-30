@@ -290,6 +290,9 @@ $('rail-items'); const rail=$('request-rail'); rail.appendChild($('connect-panel
 const host=$('rail-items');
 Object.defineProperty(host,'textContent',{get(){return '';},set(v){this.replaceChildren();}});
 let railOpen=null, railCache=[], NATIVE=false, connectWasBlocking=null;
+// renderRail now REUSES a card node whose row and open state are unchanged, so
+// a 15-second poll cannot delete what the user typed into it.
+let railNodes=new Map();
 // The module-level flags the sliced functions close over. `connectOtherOpen` joined
 // them on 2026-09-26: "Other ways to connect" is now CLOSED unless the user tapped
 // it, and the renderer derives the element's state from this rather than reading it

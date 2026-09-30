@@ -847,6 +847,15 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     held = _held_attempt_annotation(error_str, _provider_chain_from_error(error_str))
     if held is not None:
         return held
+    from tinyassets.providers.owner_binding import AUTHORITY_HELD_DETAIL
+
+    if AUTHORITY_HELD_DETAIL.lower() in msg:
+        # A held run whose universe DOES have a provider connected: the message
+        # carries the refusal's own words after this lead-in. Keyed BEFORE the
+        # substring nets below, because those words are arbitrary -- a wrapped
+        # cause mentioning "timeout" or "credential" would otherwise be
+        # classified as a timeout or an expired key instead of held authority.
+        return ("permission_denied:provider_not_bound", _PROVIDER_NOT_BOUND_ACTION)
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",
@@ -1441,7 +1450,7 @@ def _compose_run_snapshot(
     """Pack run metadata + node statuses + mermaid into a phone-legible dict."""
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
-    from tinyassets.runs import build_node_status_map
+    from tinyassets.runs import SYSTEM_EVENT_NODE_ID, build_node_status_map
 
     declared_order: list[str] = []
     branch_name = ""
@@ -1491,10 +1500,14 @@ def _compose_run_snapshot(
         mermaid,
     ])
 
-    # Surface the applied recursion limit from the __system__ event if present.
+    # Surface the applied recursion limit from the system event if present. It
+    # is a run FACT, reported as its own field -- never as a node status, which
+    # is why `build_node_status_map` drops the row (live 2026-09-30: summaries
+    # listed `__system__: recursion_limit_applied` among the nodes).
     recursion_limit: int | None = None
     for ev in events:
-        if ev.get("node_id") == "__system__" and ev.get("status") == "recursion_limit_applied":
+        if (ev.get("node_id") == SYSTEM_EVENT_NODE_ID
+                and ev.get("status") == "recursion_limit_applied"):
             try:
                 recursion_limit = int(ev.get("detail", {}).get("recursion_limit", 0)) or None
             except (TypeError, ValueError):
@@ -1581,11 +1594,13 @@ def _compose_run_snapshot(
     # external-call phase", and stopped. Say what the window is.
     if run_record["status"] in ("running", "queued"):
         finished = {"ran", "completed", "skipped"}
-        # Every run also carries __system__ events (recursion_limit_applied,
-        # provider_calls); only real nodes decide whether the graph is done
-        # (Codex: with them counted, "delivering" was unreachable).
-        real = [s for s in node_statuses if s.get("node_id") != "__system__"]
-        all_ran = bool(real) and all(s.get("status") in finished for s in real)
+        # Only real nodes decide whether the graph is done (Codex: with the
+        # system rows counted, "delivering" was unreachable). `node_statuses`
+        # no longer carries one -- `build_node_status_map` drops them at the
+        # fold, which is the single place that decides what a node status is.
+        all_ran = bool(node_statuses) and all(
+            s.get("status") in finished for s in node_statuses
+        )
         if all_ran and declares_effects:
             snapshot["phase"] = "delivering_effects"
             snapshot["suggested_action"] = (

@@ -158,6 +158,17 @@ jobs:
         run: |
           python scripts/probe_retired_mcp_routes.py
 
+      # The app's public URL (tinyassets.io/app) is a Worker route like /mcp, so
+      # this workflow is where it can break. Without this step a deploy that
+      # dropped the /app binding would stay green while the app served the
+      # website origin's 404 -- the 2026-04-19 P0 shape, one path over.
+      - name: Prove the app surface after deploy
+        if: >
+          github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
+        run: |
+          python scripts/probe_app_surface.py --verbose
+
       - name: Summary
         if: always()
         run: |

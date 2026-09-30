@@ -11,7 +11,7 @@ def _me(tmp_path, monkeypatch, *, owner="owner-1", uid="u-owner"):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(onboarding, "_read_home", lambda identity, **kw: uid)
     _grant_admin(tmp_path, owner, uid)
-    return _drive_get("/mcp/app/me", identity=_user(owner), monkeypatch=monkeypatch)
+    return _drive_get("/app/me", identity=_user(owner), monkeypatch=monkeypatch)
 
 
 def test_http_only_serving_is_connected_not_bootstrap(tmp_path, monkeypatch):
@@ -76,6 +76,6 @@ def test_no_home_get_does_not_bootstrap(tmp_path, monkeypatch):
     def forbidden(_identity):
         raise AssertionError("GET must not create a home")
     monkeypatch.setattr(onboarding, "_bootstrap_home", forbidden)
-    _, doc = _drive_get("/mcp/app/me", identity=_user("owner-1"), monkeypatch=monkeypatch)
+    _, doc = _drive_get("/app/me", identity=_user("owner-1"), monkeypatch=monkeypatch)
     assert doc == {"principal_id": "owner-1", "universe_id": "", "home_bound": False,
                    "engine_connected": False, "setup": "empty"}

@@ -4632,7 +4632,7 @@ def create_streamable_http_app() -> Starlette:
             *starlette_discovery_routes(),
             _PulseRoute("/mcp/pulse", _pulse_endpoint, methods=["GET"]),
             *_inbound_routes,
-            # Onboarding SPA at /mcp/app — same-origin to /mcp, dark-flagged
+            # Onboarding SPA at /app — same-origin to /mcp, dark-flagged
             # (returns 404 until TINYASSETS_ONBOARDING_APP is set). Mounted
             # before the MCP transport so the exact path resolves first.
             *onboarding_routes(),

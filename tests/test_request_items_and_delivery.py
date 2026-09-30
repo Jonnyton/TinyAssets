@@ -334,6 +334,38 @@ def test_malformed_items_are_refused_and_nothing_is_stored(base, signed_in):
     assert list_pending(udir) == []
 
 
+def test_an_items_feedback_is_screened_for_credential_SHAPE_not_for_words(base, signed_in):
+    """The sixth credential screen, and the newest -- so the easiest to miss.
+
+    ``_answer_item`` arrived after the flat ``[A-Za-z0-9_\\-]{16,}`` pattern was
+    replaced (2026-09-30), and a merge put the new call site next to a constant
+    that no longer existed. Ruff caught the undefined name, but nothing would
+    have caught a silent revert, so both halves of the contract are pinned here.
+
+    PLAIN WORDS PASS. That is the regression: a universe was refused twice for
+    explaining, in a sentence, that there was nothing to paste -- because the
+    hyphen in ``self-authenticating`` made it a 19-character "unbroken run".
+    """
+    signed_in(OWNER)
+    _home(base, UID, OWNER)
+    raised = _ask(UID, items=_items("a", "b"))
+
+    prose = ("No token exists for this destination: your friend's link is a "
+             "self-authenticating webhook URL, so there is nothing to paste.")
+    accepted = _answer(UID, request_id=raised["request_id"], item_id="a",
+                       values={"note": "ok"}, feedback=prose)
+    assert accepted.get("error") is None, accepted
+    assert accepted["feedback"] == prose
+
+    # ...and a real secret shape is still refused. Assembled at run time: a
+    # literal here is what GitHub push protection rejects.
+    key = "ghp" + "_16C7e42F292c6912E7710c838347Ae178B4a"
+    refused = _answer(UID, request_id=raised["request_id"], item_id="b",
+                      values={"note": "ok"}, feedback="use " + key)
+    assert refused.get("error") == "request_invalid"
+    assert "credential" in refused["detail"]
+
+
 # --- the boundary that keeps "however he likes" safe ---------------------------
 
 
@@ -403,6 +435,113 @@ def test_dont_ask_again_cannot_be_hung_on_one_item(base, signed_in):
 
     assert refused.get("error") == "request_invalid"
     assert list_suppressions(udir) == []
+
+
+def test_answering_an_item_of_an_edited_request_is_refused(base, signed_in):
+    """The pin binds the row that RESOLVES to the row that was displayed. The
+    item branch returned before that check, so an item edited after the tab
+    was rendered still answered and still closed the request (gpt-6-astra,
+    2026-09-29) -- which made putting items inside the pin meaningless."""
+    import json as _json
+    import sqlite3
+
+    from tinyassets.storage.pending_requests import _DB_NAME, get_request
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+    raised = _ask(UID, items=_items("a", "b"))
+    # Edit the stored items WITHOUT touching the dedupe key, which is exactly
+    # the shape the pin exists to catch.
+    conn = sqlite3.connect(udir / _DB_NAME)
+    try:
+        conn.execute(
+            "UPDATE pending_requests SET items_json = ? WHERE request_id = ?",
+            (_json.dumps([
+                {"item_id": "a", "title": "Wire money instead", "fields": []},
+                {"item_id": "b", "title": "Do b", "fields": []},
+            ]), raised["request_id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    refused = _answer(UID, request_id=raised["request_id"], item_id="a", values={})
+
+    assert refused.get("error") == "request_changed"
+    row = get_request(udir, raised["request_id"])
+    assert row["status"] == "pending"
+    assert row["item_answers"]["a"]["status"] == "pending"
+
+
+def test_an_itemless_requests_identity_is_unchanged_by_items_existing(
+    base, signed_in,
+):
+    """Appending an empty list to every dedupe key changed the identity of
+    every request that already existed: a live pending row stops
+    deduplicating, and every standing "don't ask again" stops matching
+    (gpt-6-astra, 2026-09-29)."""
+    import json as _json
+
+    from tinyassets.storage.pending_requests import get_request
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+    raised = _ask(UID)
+    row = get_request(udir, raised["request_id"])
+
+    assert row["dedupe_key"] == _json.dumps(
+        [row["kind"], row["title"], row["body"], row["fields"], row["action"]],
+        sort_keys=True, separators=(",", ":"),
+    )
+    assert len(_json.loads(row["dedupe_key"])) == 5
+
+
+def test_a_settled_decision_still_matches_the_same_itemless_ask(base, signed_in):
+    """The end-to-end shape of the same finding: dismiss with "don't ask me
+    this again", then ask identically. It must be refused, not re-raised."""
+    from tinyassets.storage.pending_requests import list_pending
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+    first = _ask(UID)
+    _answer(UID, request_id=first["request_id"], dismiss=True,
+            dont_ask_again=True, feedback="not interested")
+
+    again = _ask(UID)
+
+    assert again.get("status") == "settled"
+    assert again.get("decision") == "declined"
+    assert list_pending(udir) == []
+
+
+def test_a_live_pending_itemless_row_still_deduplicates(base, signed_in):
+    """The other half: an identical ask must land on the tab already up, not
+    open a second one."""
+    from tinyassets.storage.pending_requests import list_pending
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+
+    first = _ask(UID)
+    second = _ask(UID)
+
+    assert first["request_id"] == second["request_id"]
+    assert len(list_pending(udir)) == 1
+
+
+def test_an_itemised_ask_is_a_different_identity_from_the_itemless_one(
+    base, signed_in,
+):
+    from tinyassets.storage.pending_requests import list_pending
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+
+    itemless = _ask(UID)
+    itemised = _ask(UID, items=_items("a"))
+
+    assert itemless["request_id"] != itemised["request_id"]
+    assert len(list_pending(udir)) == 2
 
 
 def test_answering_an_item_keeps_the_row_reproducing_what_was_shown(base, signed_in):

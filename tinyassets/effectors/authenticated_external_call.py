@@ -689,6 +689,40 @@ def _resolve_host(request: dict[str, Any], connection_view: Any) -> tuple[str, s
     return "", "host_ambiguous"
 
 
+def _capability_url_shape_error(url: str, connection_view: Any) -> str:
+    """Refuse a ``url_secret`` request that does not address the placeholder.
+
+    The credential of a capability URL — the common incoming-webhook shape,
+    where the secret is a path segment rather than a header — is substituted by
+    the broker child. A node therefore writes ``…/{secret}`` and NEVER the code,
+    so this effector, the run state, the evidence and the receipt only ever hold
+    the placeholder form (design.md D7: redaction is structural). No channel is
+    named here or anywhere in this module: the shape is what is recognised.
+
+    Returns a secret-free message, or ``""``. The message never echoes the
+    offending url: if the author did hardcode a secret, repeating it in the
+    error would put it in the very run record this exists to keep clean.
+    """
+    from tinyassets.storage.outbound_connections import (
+        _URL_SECRET_REST_TOKEN,
+        _URL_SECRET_SCHEME,
+        _URL_SECRET_TOKEN,
+    )
+
+    scheme = str(getattr(connection_view, "auth_scheme", "") or "").strip().lower()
+    if scheme != _URL_SECRET_SCHEME:
+        return ""
+    path = url.partition("?")[0]
+    if _URL_SECRET_TOKEN in path or _URL_SECRET_REST_TOKEN in path:
+        return ""
+    return (
+        "this connection's secret is a path segment held in the vault, so the "
+        f"request path must address it as {_URL_SECRET_TOKEN} (or "
+        f"{_URL_SECRET_REST_TOKEN}) exactly as the endpoint declares it — never "
+        "the code itself, which would be stored with this run"
+    )
+
+
 def _build_url(request: dict[str, Any], host: str) -> tuple[str, str]:
     """Return ``(url, error_kind)``. Accepts an absolute ``url`` or ``host``+``path``.
 
@@ -954,6 +988,23 @@ def _run(
             "error_kind": url_error,
             "matched_output_key": matched_key,
             "connection_id": connection_id,
+        }
+
+    capability_error = _capability_url_shape_error(url, view)
+    if capability_error:
+        # A capability-URL connection addresses the PLACEHOLDER, never the code.
+        # The allowlist in the child would refuse a real secret here anyway (its
+        # reserved pattern matches only the literal token), but that refusal
+        # arrives AFTER this url has been recorded on the returned evidence and
+        # persisted with the run. Refusing it here keeps a node-authored secret
+        # out of the run record entirely, and tells the author the one thing
+        # they need to change.
+        return {
+            "error": capability_error,
+            "error_kind": "capability_url_not_addressed_by_placeholder",
+            "matched_output_key": matched_key,
+            "connection_id": connection_id,
+            "destination": destination,
         }
 
     wire_request: dict[str, Any] = {"url": url}

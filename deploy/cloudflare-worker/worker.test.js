@@ -1,7 +1,7 @@
 // Unit tests for worker.js — run with `node --test worker.test.js`.
 //
 // Tests cover:
-//   - shouldProxy: path matching (only /mcp* matches).
+//   - shouldProxy: path matching (/mcp* plus the apex /app subtree).
 //   - proxyToTunnel: header preservation, hop-by-hop stripping, streaming
 //     pass-through, 5xx → 502 translation, network-error → 502, X-Forwarded-*
 //     addition, Host rewrite, CF Access service-token injection.
@@ -17,6 +17,8 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import worker, {
+    belongsToWebsite,
+    PASSTHROUGH_MARKER,
     proxyToTunnel,
     shouldProxy,
     TUNNEL_ORIGIN,
@@ -89,6 +91,69 @@ describe('shouldProxy', () => {
         assert.equal(shouldProxy('/catalog'), false);
         assert.equal(shouldProxy('/assets/logo.png'), false);
     });
+
+    // The app moved from /mcp/app to the apex /app on 2026-09-30. The Worker is
+    // the only thing standing between that path and the website origin, so the
+    // binding is load-bearing: without these the app URL 404s from GitHub Pages.
+    it('accepts /app (the app shell)', () => {
+        assert.equal(shouldProxy('/app'), true);
+    });
+
+    it('accepts /app/ and the whole app subtree', () => {
+        assert.equal(shouldProxy('/app/'), true);
+        assert.equal(shouldProxy('/app/me'), true);
+        assert.equal(shouldProxy('/app/token'), true);
+        assert.equal(shouldProxy('/app/billing/webhook'), true);
+        assert.equal(shouldProxy('/app/model-callback/connect'), true);
+    });
+
+    // The `tinyassets.io/app*` route has to be the suffix wildcard so
+    // query-bearing callback URLs match it at all, which means it also delivers
+    // apex assets that merely start with "app". The site really serves
+    // /apple-touch-icon.png, so the guard is not hypothetical.
+    it('rejects apex assets that merely start with "app"', () => {
+        assert.equal(shouldProxy('/apple-touch-icon.png'), false);
+        assert.equal(shouldProxy('/app-ads.txt'), false);
+        assert.equal(shouldProxy('/apps'), false);
+        assert.equal(shouldProxy('/appx/deep'), false);
+    });
+
+    // URL.pathname never carries the query, so the callback URLs are just
+    // '/app' by the time the Worker decides. The QUERY is what the Cloudflare
+    // route has to cope with, and that is wrangler.toml's job, not this
+    // function's — pinned here so the two cannot drift apart silently.
+    it('decides on the path alone, since URL.pathname drops the query', () => {
+        assert.equal(new URL('https://tinyassets.io/app?code=x&state=y').pathname, '/app');
+        assert.equal(shouldProxy(new URL('https://tinyassets.io/app?code=x').pathname), true);
+        assert.equal(shouldProxy(new URL('https://tinyassets.io/app?subscribed=1').pathname), true);
+    });
+});
+
+describe('belongsToWebsite', () => {
+    it('claims only the app-prefixed siblings the wide route drags in', () => {
+        assert.equal(belongsToWebsite('/apple-touch-icon.png'), true);
+        assert.equal(belongsToWebsite('/app-ads.txt'), true);
+        assert.equal(belongsToWebsite('/apps'), true);
+        assert.equal(belongsToWebsite('/appx/deep'), true);
+    });
+
+    it('never claims an app path', () => {
+        assert.equal(belongsToWebsite('/app'), false);
+        assert.equal(belongsToWebsite('/app/'), false);
+        assert.equal(belongsToWebsite('/app/me'), false);
+    });
+
+    // The retired /mcp-directory* family must keep terminating at the edge as an
+    // ordinary 404 — a spec requirement. Pass-through is scoped so it cannot
+    // reintroduce the fallthrough ambiguity that made the 2026-04-19 P0 hard to
+    // diagnose.
+    it('never claims a /mcp path, retired or canonical', () => {
+        assert.equal(belongsToWebsite('/mcp'), false);
+        assert.equal(belongsToWebsite('/mcp/app'), false);
+        assert.equal(belongsToWebsite('/mcp-directory'), false);
+        assert.equal(belongsToWebsite('/'), false);
+        assert.equal(belongsToWebsite('/catalog'), false);
+    });
 });
 
 // ------- handler routing ---------------------------------------------------
@@ -137,6 +202,127 @@ describe('worker handler — canonical /mcp routing', () => {
             assert.equal(response.status, 200);
         });
     }
+});
+
+describe('worker handler — canonical /app routing', () => {
+    for (const method of ['GET', 'HEAD', 'POST', 'OPTIONS']) {
+        it(`proxies ${method} /app to the tunnel`, async () => {
+            const response = await worker.fetch(
+                new Request('https://tinyassets.io/app?subscribed=1', { method }),
+                {},
+            );
+
+            assert.ok(lastUpstreamRequest, 'the app URL must reach the daemon');
+            assert.equal(lastUpstreamRequest.method, method);
+            assert.equal(lastUpstreamRequest.url, `${TUNNEL_ORIGIN}/app?subscribed=1`);
+            assert.equal(response.status, 200);
+        });
+    }
+
+    // The finding that made the route a suffix wildcard: these two URLs carry
+    // the entire sign-in and billing flow, and a Cloudflare route matches the
+    // whole URL including the query, so an exact `/app` binding sent them to
+    // the website origin.
+    for (const [what, query] of [
+        ['the AuthKit return', '?code=synthetic&state=' + 'f'.repeat(43)],
+        ['the Stripe subscribed return', '?subscribed=1'],
+        ['the Stripe cancelled return', '?subscribed=0'],
+        ['an error return', '?error=access_denied'],
+    ]) {
+        it(`proxies ${what} on /app with its query intact`, async () => {
+            const response = await worker.fetch(
+                new Request('https://tinyassets.io/app' + query, { method: 'GET' }),
+                {},
+            );
+
+            assert.ok(lastUpstreamRequest, `${what} must reach the daemon`);
+            assert.equal(lastUpstreamRequest.url, `${TUNNEL_ORIGIN}/app${query}`);
+            assert.equal(response.status, 200);
+        });
+    }
+
+    it('proxies an app API subpath with its query intact', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/app/models/preferences?universe_id=u1', {
+                method: 'GET',
+            }),
+            {},
+        );
+
+        assert.ok(lastUpstreamRequest);
+        assert.equal(
+            lastUpstreamRequest.url,
+            `${TUNNEL_ORIGIN}/app/models/preferences?universe_id=u1`,
+        );
+        assert.equal(response.status, 200);
+    });
+
+    // No back-compat (founder directive 2026-09-30): the edge must NOT redirect
+    // or alias the retired path. It stays inside the /mcp/ family, so it is
+    // proxied to the daemon — which no longer mounts it and answers 404. That
+    // keeps the retirement diagnosable (our origin said no, not the website's).
+    it('does not redirect or alias the retired /mcp/app path', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/mcp/app', { method: 'GET' }),
+            {},
+        );
+
+        assert.ok(lastUpstreamRequest, 'still proxied, never edge-redirected');
+        assert.equal(lastUpstreamRequest.url, `${TUNNEL_ORIGIN}/mcp/app`);
+        assert.equal(response.headers.get('Location'), null);
+        assert.ok(response.status < 300 || response.status >= 400);
+    });
+});
+
+describe('worker handler — website pass-through for app-prefixed siblings', () => {
+    for (const path of ['/apple-touch-icon.png', '/app-ads.txt', '/apps']) {
+        it(`hands ${path} to the website origin unchanged`, async () => {
+            const response = await worker.fetch(
+                new Request('https://tinyassets.io' + path, { method: 'GET' }),
+                {},
+            );
+
+            assert.ok(lastUpstreamRequest, 'must be forwarded, not answered 404');
+            // Same URL — NOT rewritten to the tunnel origin. That is the whole
+            // point: the site keeps serving its own asset.
+            assert.equal(lastUpstreamRequest.url, 'https://tinyassets.io' + path);
+            assert.equal(lastUpstreamRequest.headers.get(PASSTHROUGH_MARKER), '1');
+            assert.equal(response.status, 200);
+        });
+    }
+
+    it('never reaches the tunnel origin for a website path', async () => {
+        await worker.fetch(
+            new Request('https://tinyassets.io/apple-touch-icon.png'),
+            {},
+        );
+        assert.ok(
+            !lastUpstreamRequest.url.startsWith(TUNNEL_ORIGIN),
+            'a website asset must not be sent through the Access-gated tunnel',
+        );
+    });
+
+    it('terminates rather than looping if its own subrequest comes back', async () => {
+        // Cloudflare sends a Worker's same-route subrequest to the origin
+        // instead of re-invoking the script. The marker makes that a
+        // terminator rather than something we have to trust.
+        const looped = new Request('https://tinyassets.io/apple-touch-icon.png', {
+            headers: { [PASSTHROUGH_MARKER]: '1' },
+        });
+        const response = await worker.fetch(looped, {});
+        assert.equal(lastUpstreamRequest, null, 'must not forward a second time');
+        assert.equal(response.status, 404);
+    });
+
+    it('still terminates retired /mcp-directory* at the edge, not via the site', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/mcp-directory/anything'),
+            {},
+        );
+        assert.equal(lastUpstreamRequest, null, 'no forward of any kind');
+        assert.equal(response.status, 404);
+        assert.equal(await response.text(), 'Not Found');
+    });
 });
 
 // ------- proxyToTunnel: basic routing --------------------------------------
@@ -448,7 +634,7 @@ describe('proxyToTunnel — failure translation', () => {
             JSON.stringify({ error: 'billing_unavailable', detail: 'no key' }),
             { status: 503, headers: { 'Content-Type': 'application/json' } },
         );
-        const req = new Request('https://tinyassets.io/mcp/app/billing/checkout', {
+        const req = new Request('https://tinyassets.io/app/billing/checkout', {
             method: 'POST',
         });
         const res = await proxyToTunnel(req);

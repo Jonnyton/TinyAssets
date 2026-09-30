@@ -5,25 +5,14 @@ collide with the app-URL move (#4112). Slice 2 (3.x) depends on #4112.
 
 ## 1. Slice 1 — items and the delivery core
 
-- [x] 1.1 Items: `items_json` (via `_ADDED_COLUMNS`) and
-      `request_item_answers`; `_validated_items` on the ask (id pattern,
-      uniqueness, bound of 50, no `secret` field, `action.type == "answer"`
-      only); `item_id` on the answer path, resolving once, closing the request
-      on the last item, reporting the rest unanswered; projections join item
-      state; `item_id` joins `EVENT_FILTER_KEYS[pending_request_answered]`.
-- [x] 1.2 Device registry: `tinyassets/storage/owner_devices.py` — owner-derived
-      subject, token-moves-on-reregistration, retirement, the per-owner on/off
-      setting, and the content-free `request_notifications` ledger.
-- [x] 1.3 Dispatch + transports: `tinyassets/owner_notifications.py`
-      (server-composed identity, bounded agent body, no field values,
-      idempotency on request/item/device/kind, bounded failure classes,
-      `no_transport` degrade, the `clear` to other devices; no usage meter and
-      no rate limit) over a server-owned callback, with `tinyassets/notify/fcm.py`
-      (HTTP v1, service account from the secret loader),
-      `tinyassets/notify/webpush.py` (self-issued VAPID) and the test fake.
-- [x] 1.4 Wire the seams: `request_from_user` dispatches on a genuinely new
-      pending row only (not a dedupe hit, not a settled reply), carrying the
-      owner from `_owner_gate`; the answer paths dispatch the clear.
+- [x] 1.1 Items, the device registry, dispatch + transports, and the seams --
+      all landed in #4122. Items: `items_json`, `request_item_answers`,
+      `_validated_items` (id pattern, uniqueness, 50 bound, no `secret`,
+      `answer` actions only), `item_id` on the answer path, and `item_id` as a
+      `pending_request_answered` filter key. Delivery:
+      `storage/owner_devices.py`, `owner_notifications.py`, `notify/fcm.py` +
+      `notify/webpush.py` over a server-owned callback, wired at
+      `request_from_user` (new rows only) and the resolution seam.
 
 ## 2. Slice 1 — prove
 
@@ -48,6 +37,28 @@ collide with the app-URL move (#4112). Slice 2 (3.x) depends on #4112.
       anything make a notification look like it came from the platform or
       another user?) and runaway notification cost. Fold the verdict in; max
       three rounds.
+
+      Two rounds ran and **both returned REJECT**, the second finding defects
+      the first round's fixes had introduced. Slice 1 merged (#4122) before
+      either verdict was folded in, so **main carries the reviewed-and-rejected
+      code** and the findings became fixes to landed behaviour. Lead's call:
+      split, and simplify the delivery half rather than review it again.
+- [x] 2.5 Items fixes on landed code, scoped to items (this PR): an itemless
+      request keeps its original five-element identity, so live pending rows
+      still deduplicate and standing decisions still match; and an item answer
+      goes through `displayed_row_matches`, which it previously returned before
+      reaching. Both were reproduced by `gpt-6-astra`.
+- [ ] 2.6 Delivery, simplified (separate PR, depends on this one). The
+      per-device outstanding-alert latch is dropped: it is a rate limiter in
+      disguise, and account limits are seats and storage only (founder,
+      2026-09-30). Delivery is one notification per
+      `(request_id, item_id, destination, kind)` with the ledger primary key as
+      the only dedupe, claimed inside the send transaction; cost is bounded by
+      seats and `MAX_PENDING`, and ask/withdraw churn is the agent's own seat
+      time. Carries the review fixes that stand on their own: endpoint
+      canonicalisation, platform-namespaced destination digests, byte-budgeted
+      payloads, closed-set `retired_reason`, title sanitisation, and the
+      claim-time destination re-verification. One fresh astra round.
 
 ## 3. Slice 2 — surfaces and the native release (depends on #4112)
 

@@ -129,7 +129,7 @@ import { Button, StatusPill, RitualLabel } from "@tiny/design-system";
   <RitualLabel>Start</RitualLabel>
   <h1>A universe of your own.</h1>
   <p>It runs on the subscription you already pay for.</p>
-  <Button href="https://tinyassets.io/mcp/app">Open the app</Button>
+  <Button href="https://tinyassets.io/app">Open the app</Button>
   <StatusPill kind="live" pulse>reachable</StatusPill>
 </section>
 ```
