@@ -168,10 +168,106 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
             columns.add(column)
 
 
+#: Schema version. Bumped when a DATA migration ships, not for a new column
+#: (``_ADDED_COLUMNS`` handles those and is idempotent by inspection).
+_SCHEMA_VERSION = 1
+
+
+def _canonical_itemless_key(stored: str) -> str | None:
+    """The five-element form of a six-element key whose items are empty.
+
+    ``None`` for anything else -- and "anything else" is everything except the
+    one exact shape this exists for.
+
+    Why it exists: the version that introduced items put ``items`` in EVERY
+    request's dedupe key, including the empty list, and it deployed. That
+    changed the identity of every itemless request, so such a row now
+    deduplicates against nothing, its execution pin refuses it, and a standing
+    decision recorded against it never matches again (gpt-6-astra, 2026-09-30;
+    its production census found zero such rows retained, but the writer was
+    live, so they were reachable until this ships).
+
+    A ONE-TIME REWRITE rather than accepting two shapes at each lookup. Three
+    places compare these keys -- the pending dedupe, the suppression lookup and
+    the execution pin -- and teaching each of them "try another shape" widens
+    the pin, which is the one thing that must stay exact. After this runs there
+    is one identity per request again.
+    """
+    if not stored.endswith(",[]]"):
+        return None  # cheap reject before parsing anything
+    try:
+        parsed = json.loads(stored)
+    except (json.JSONDecodeError, RecursionError):
+        return None
+    if not isinstance(parsed, list) or len(parsed) != 6 or parsed[5] != []:
+        return None
+    rewritten = json.dumps(parsed[:5], sort_keys=True, separators=(",", ":"))
+    # Only when the six-element form was itself canonical. A key we cannot
+    # reproduce is a key we do not understand, and rewriting it would destroy
+    # an identity rather than restore one.
+    if json.dumps(parsed, sort_keys=True, separators=(",", ":")) != stored:
+        return None
+    return rewritten
+
+
+def _migrate_itemless_keys(conn: sqlite3.Connection) -> int:
+    """Rewrite the deployed six-element itemless keys. Runs once per database.
+
+    Gated on ``PRAGMA user_version`` so the scan is not paid on every open.
+    Covers ``pending_requests`` AND ``request_suppressions``: fixing the pin
+    alone leaves duplicate tabs and dead standing decisions, which is most of
+    the damage.
+    """
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= _SCHEMA_VERSION:
+        return 0
+    rewritten = 0
+    try:
+        for table in ("pending_requests", "request_suppressions"):
+            rows = conn.execute(
+                f"SELECT rowid, dedupe_key FROM {table} WHERE dedupe_key LIKE '%,[]]'"
+            ).fetchall()
+            for rowid, stored in rows:
+                canonical = _canonical_itemless_key(str(stored or ""))
+                if canonical is None:
+                    continue
+                try:
+                    conn.execute(
+                        f"UPDATE {table} SET dedupe_key = ? WHERE rowid = ?",
+                        (canonical, rowid),
+                    )
+                except sqlite3.IntegrityError:
+                    # A suppression is keyed on dedupe_key and the canonical
+                    # one already exists. The canonical row is the live one, so
+                    # drop the stale duplicate rather than fail the open.
+                    conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))
+                rewritten += 1
+        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        # COMMIT HERE, not at the caller's exit. `_db` is opened re-entrantly --
+        # `create_request` calls `get_request` while holding its own
+        # transaction -- so leaving the marker uncommitted means the inner open
+        # still sees version 0, tries to migrate, and deadlocks on the outer
+        # connection's write lock. Committing makes the marker visible to the
+        # nested open, which then skips.
+        conn.commit()
+    except sqlite3.OperationalError as exc:
+        # Another connection is mid-write. The marker is unset, so the next
+        # open retries; the rewrite is idempotent, so retrying is free. Never
+        # fail a read because a one-time repair had to wait.
+        logger.info("pending_requests: itemless key rewrite deferred: %s", exc)
+        return 0
+    if rewritten:
+        logger.info(
+            "pending_requests: rewrote %d itemless dedupe key(s) to their "
+            "five-element form", rewritten,
+        )
+    return rewritten
+
+
 def _db(universe_dir: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(Path(universe_dir) / _DB_NAME), timeout=10.0)
     conn.executescript(_SCHEMA)
     _ensure_columns(conn)
+    _migrate_itemless_keys(conn)
     return conn
 
 
