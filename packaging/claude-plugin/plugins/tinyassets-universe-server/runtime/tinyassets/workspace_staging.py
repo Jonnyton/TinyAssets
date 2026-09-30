@@ -106,8 +106,21 @@ def hold_in_use(staging_dir: str | Path) -> int | None:
     return fd
 
 
+def in_use_fd(staging_dir: str | Path) -> int | None:
+    """This process's share on ``staging_dir``, to pass to a git the PARENT runs
+    against it (`workspace_git.inheriting`). None when not held here."""
+    with _STATE_LOCK:
+        return _HELD.get(str(staging_dir))
+
+
+class Uninspectable(OSError):
+    """A tree whose in-use locks could not be inspected. KEPT (it may be a live
+    worker's) and reported, never counted as simply in use."""
+
+
 def _lock_tree_exclusive(tree: Path, *, wait_s: float = 0.0) -> list[int] | None:
-    """Exclusive locks on every ``.inuse`` in ``tree``, or None if any is held.
+    """Exclusive locks on every ``.inuse`` in ``tree``, or None if any is held;
+    raises `Uninspectable` when a lock could not be inspected at all.
 
     Held by the caller while it removes the tree, so nothing can mark it in use
     in between. Always returns [] where shared locks do not exist.
@@ -135,9 +148,9 @@ def _lock_tree_exclusive(tree: Path, *, wait_s: float = 0.0) -> list[int] | None
             continue
         try:
             fd = os.open(os.path.join(dirpath, INUSE_NAME), os.O_RDWR | os.O_NOFOLLOW)
-        except OSError:
+        except OSError as exc:
             _abort()
-            return None
+            raise Uninspectable(f"{dirpath}: in-use lock unreadable: {exc}") from None
         while not _flock(fd, exclusive=True, blocking=False):
             if time.monotonic() >= deadline:
                 os.close(fd)
@@ -147,7 +160,7 @@ def _lock_tree_exclusive(tree: Path, *, wait_s: float = 0.0) -> list[int] | None
         fds.append(fd)
     if walk_errors:
         _abort()
-        return None
+        raise Uninspectable(f"{tree}: could not walk: {walk_errors[0]}")
     return fds
 
 
@@ -400,7 +413,15 @@ def sweep(base_path: str | Path) -> SweepReport:
         size, _ = _tree_bytes_and_newest(path)
         # A dead owner does not prove a dead WORKER: whatever still holds the
         # tree's in-use share keeps it.
-        locks = _lock_tree_exclusive(path)
+        try:
+            locks = _lock_tree_exclusive(path)
+        except Uninspectable as exc:
+            # KEPT -- it may be a live worker's -- but loudly, and counted as a
+            # failure, so a tree that is uninspectable forever is visible on
+            # every pass instead of passing as "in use" (round 3, P2).
+            logger.warning("workspace staging kept, locks uninspectable: %s", exc)
+            report.failed += 1
+            continue
         if locks is None:
             report.kept_live += 1
             continue

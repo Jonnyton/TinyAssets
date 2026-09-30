@@ -964,16 +964,24 @@ def _checkout(
         home = staging / "populate-home"
         home.mkdir(parents=True, exist_ok=True)
         checkout_ref = f"tiny/{_universe_short(universe_id)}/checkout"
+        from tinyassets import workspace_git as _workspace_git
+        from tinyassets import workspace_staging as _workspace_staging
+
         try:
-            populate_workspace_from_bundle(
-                bundle,
-                repo_dir,
-                str(answer.get("ref_name") or "refs/tiny/export"),
-                checkout_ref,
-                home_dir=home,
-                path=_git_path(),
-                dest_fd=_descriptor_or_none(repo_fd),
-            )
+            # The git that populates reads staging's bundle and uses its HOME,
+            # in its own session: it inherits this process's in-use share, so
+            # it keeps the tree marked even if this process is killed first
+            # (gpt-6-astra, PR #4143 round 3).
+            with _workspace_git.inheriting(_workspace_staging.in_use_fd(staging)):
+                populate_workspace_from_bundle(
+                    bundle,
+                    repo_dir,
+                    str(answer.get("ref_name") or "refs/tiny/export"),
+                    checkout_ref,
+                    home_dir=home,
+                    path=_git_path(),
+                    dest_fd=_descriptor_or_none(repo_fd),
+                )
         except _Refused:
             raise
         except Exception as exc:

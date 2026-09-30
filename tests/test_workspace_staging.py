@@ -375,8 +375,89 @@ def test_an_uninspectable_lock_keeps_the_tree(tmp_path, monkeypatch):
     report = ws.sweep(tmp_path)
     monkeypatch.undo()
 
-    assert report.removed == 0 and report.kept_live == 1
+    # Kept -- but reported as a failure, not passed off as "in use" (round 3).
+    assert report.removed == 0 and report.failed == 1 and report.kept_live == 0
     assert (tree / "credential-ish").is_file()
+
+
+@_POSIX_ONLY
+def test_an_uninspectable_tree_is_logged_every_pass(tmp_path, monkeypatch, caplog):
+    root = ws.staging_root(tmp_path)
+    root.mkdir()
+    tree = root / _dead_token(root) / "run"
+    _fill(tree)
+
+    def _unwalkable(*_a, **_k):
+        raise ws.Uninspectable(f"{tree}: could not walk: denied")
+
+    monkeypatch.setattr(ws, "_lock_tree_exclusive", _unwalkable)
+    with caplog.at_level("WARNING", logger="tinyassets.workspace_staging"):
+        first = ws.sweep_data_root(tmp_path)
+        second = ws.sweep_data_root(tmp_path)
+
+    assert first.failed == 1 and second.failed == 1
+    assert caplog.text.count("locks uninspectable") == 2
+
+
+def test_a_scoped_inheritance_reaches_only_gits_inside_the_block(tmp_path, monkeypatch):
+    from tinyassets import workspace_git
+
+    monkeypatch.setattr(workspace_git, "_INHERITED_FDS", ())
+    fd = os.open(str(tmp_path / "share"), os.O_RDWR | os.O_CREAT)
+    home = tmp_path / "git-home"
+    home.mkdir()
+    seen: list = []
+
+    def _launcher(command, **kwargs):
+        seen.append(kwargs.get("pass_fds", ()))
+
+        class _Done:
+            returncode, stdout, stderr = 0, b"", b""
+
+        return _Done()
+
+    def _git():
+        workspace_git.run_git(
+            ["--version"], cwd=tmp_path, home_dir=home, path="/usr/bin",
+            timeout_s=5, launcher=_launcher,
+        )
+
+    try:
+        with workspace_git.inheriting(fd):
+            _git()
+        _git()
+    finally:
+        os.close(fd)
+    if os.name == "posix":
+        assert fd in seen[0]
+    assert fd not in seen[1], "a scoped share must not leak into later gits"
+
+
+@_POSIX_ONLY
+def test_the_parent_populate_git_inherits_the_staging_share(tmp_path, monkeypatch):
+    """Round 3: the PARENT runs populate's git against staging, in its own
+    session; it must carry the share too."""
+    import tinyassets.workspace_git as wg
+    from tests.test_workspace_effector import _packet, _run, _setup
+    from tinyassets.effectors import EffectChain
+
+    _root, universe_dir = _setup(tmp_path)
+    chain = EffectChain(run_id="run-1", base_path=str(tmp_path), universe_id="universe-1")
+    captured = {}
+
+    def _populate(bundle, dest, ref_name, checkout_ref, *, home_dir, **_kw):
+        staging = Path(bundle).parent
+        captured["scoped"] = wg._SCOPED_FDS.get()
+        captured["held"] = ws.in_use_fd(staging)
+        Path(dest).mkdir(parents=True, exist_ok=True)
+        return "c" * 40
+
+    monkeypatch.setattr(wg, "populate_workspace_from_bundle", _populate)
+    monkeypatch.setattr("tinyassets.effectors.workspace._git_path", lambda: "/usr/bin")
+    _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+
+    assert captured["held"] is not None
+    assert captured["held"] in captured["scoped"]
 
 
 @_POSIX_ONLY
