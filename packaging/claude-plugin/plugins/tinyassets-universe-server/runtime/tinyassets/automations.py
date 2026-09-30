@@ -1551,12 +1551,17 @@ def owed_since(automation: Automation, due_at: str) -> str:
     Not ``due_at`` itself. An interval collapses missed instants onto the
     LATEST one, so its ``due_at`` moves forward every poll it is not served and
     a steady stream of one-shot wakes would always look older (Codex refute
-    2026-09-29, P2). Its first unserved instant does not move.
+    2026-09-29, P2). Its first unserved instant does not move. A cron row is
+    owed only inside its minute and forgets the last one, so it counts from
+    its last run: a minute it loses is gone, and a wake can wait (round 3).
     """
+    anchor = _parse(automation.last_due_at) or _parse(automation.created_at)
+    if anchor is None:
+        return due_at
     if automation.trigger_kind == TRIGGER_INTERVAL and automation.interval_seconds > 0:
-        anchor = _parse(automation.last_due_at) or _parse(automation.created_at)
-        if anchor is not None:
-            return _iso(anchor + timedelta(seconds=automation.interval_seconds))
+        return _iso(anchor + timedelta(seconds=automation.interval_seconds))
+    if automation.trigger_kind == TRIGGER_CRON:
+        return min(_iso(anchor), due_at)
     return due_at
 
 

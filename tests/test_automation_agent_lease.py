@@ -716,6 +716,28 @@ def test_a_cadence_is_not_starved_by_a_stream_of_fresh_wakes(
     assert _first_run(home, monkeypatch) == [cadence.automation_id]
 
 
+def test_a_cron_row_is_not_starved_by_a_stream_of_fresh_wakes(
+    home: Path, monkeypatch,
+) -> None:
+    """A cron row is due only inside its minute, and its due_at is that minute's
+    bucket, so a wake created in the previous minute always looked older and a
+    self-waking chain could take every minute from it (refute P2, round 3)."""
+    cron = register_automation(
+        home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="minutely",
+        branch_def_id=WRITER, cron_expr="* * * * *", now=NOW,
+    )
+    bucket = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    before = bucket - timedelta(seconds=1)
+    wake = register_automation(
+        home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="wake",
+        branch_def_id=WRITER, not_before=before.isoformat(), overlap="skip", now=before,
+    )
+    due = dict((a.automation_id, d) for a, d in automations_module.due_automations(
+        home, universe_id=UNIVERSE, now=datetime.now(timezone.utc)))
+    assert due[wake.automation_id] < due[cron.automation_id], due
+    assert _first_run(home, monkeypatch) == [cron.automation_id]
+
+
 def test_a_row_that_cannot_take_its_agent_says_so_on_the_row(
     home: Path, monkeypatch,
 ) -> None:
