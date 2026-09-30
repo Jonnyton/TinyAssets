@@ -334,9 +334,16 @@ def _branch_readable_by_caller(branch_def_id: str) -> bool:
     read that branch. A readable run of a branch that is private to someone
     else must not render the branch's name, nodes and edges as they are now
     (astra refute 2026-09-30)."""
+    import sqlite3
+
     from tinyassets.api.branches import resolve_branch_id_for_read
 
-    return resolve_branch_id_for_read(branch_def_id, str(_base_path())) == branch_def_id
+    try:
+        return resolve_branch_id_for_read(branch_def_id, str(_base_path())) == branch_def_id
+    except (KeyError, sqlite3.OperationalError):
+        # No branch store, or no such branch: nothing readable to enrich from.
+        # Fail closed -- the run view still reports its own node statuses.
+        return False
 
 
 def _run_mermaid_from_events(
