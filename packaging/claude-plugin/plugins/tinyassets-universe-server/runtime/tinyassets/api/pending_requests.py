@@ -59,6 +59,9 @@ import json
 import logging
 import re
 from typing import Any
+from urllib.parse import urlsplit
+
+from tinyassets.credential_shape import looks_like_credential
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +118,22 @@ _SECRET_FIELD_TYPES = _DEPOSIT_TYPES | {"rotate_http"}
 #: A plain https link, no userinfo (`https://user:pw@host`), bounded.
 _MAX_URL_CHARS = 300
 _SAFE_URL_RE = re.compile(r"^https://[^\s/@]+(?:/[^\s]*)?$")
+#: A dotted-quad or bracketed-v6 host. See :func:`_unusable_field_url`.
+_IP_HOST_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+#: This platform's own hosts. A field link to one of these is checked against
+#: the pages the site serves, because an invented first-party page reads as
+#: platform help (live 2026-09-30: an agent offered ``/settings``, a 404).
+_FIRST_PARTY_HOSTS = frozenset({"tinyassets.io", "www.tinyassets.io"})
+#: Every route ``WebSite/site-react/app`` serves, plus the app itself. Kept in
+#: sync by ``tests/test_request_card_layout_and_links.py``, which reads that
+#: directory and fails when a page is added or removed without this list.
+_FIRST_PARTY_PATHS = frozenset({
+    "", "/", "/account", "/alliance", "/build", "/catalog", "/commons",
+    "/connect", "/contribute", "/developers", "/economy", "/fine-print",
+    "/goal", "/goals", "/graph", "/host", "/legal", "/loop", "/notebook",
+    "/patch-loop", "/patterns", "/proof", "/soul", "/start", "/status",
+    "/wiki", "/mcp", "/mcp/app",
+})
 _MAX_ANSWER_CHARS = 2000
 #: Every verb the egress layer knows. The owner reads each one on the tab and
 #: decides; a cap below the full set only made the agent raise a second ask.
@@ -125,9 +144,12 @@ _MAX_REQUEST_ENDPOINTS = 40
 #: Git scopes one ask may carry.
 _MAX_REQUEST_GIT_SCOPES = 40
 
-#: An unbroken run this long is a credential, not prose. Feedback is free text
-#: stored in the clear, so it gets the same screen the resolver applies.
-_ENTROPY_RUN_RE = re.compile(r"[A-Za-z0-9_\-]{16,}")
+#: Feedback, reasons and notes are free text stored in the clear, so they get
+#: the same screen the resolver applies -- a SHAPE screen, not a word screen.
+#: What was here (``[A-Za-z0-9_\-]{16,}``) had ``-`` inside its class, so
+#: ``self-authenticating`` was a "16+ character unbroken run" and a universe was
+#: refused twice, live 2026-09-30, for explaining in plain words that there was
+#: no token to paste. See :mod:`tinyassets.credential_shape`.
 
 
 def _payload(value: Any) -> dict[str, Any]:
@@ -658,6 +680,41 @@ def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
     return endpoints
 
 
+def _unusable_field_url(url: str) -> str:
+    """Why this agent-composed field link cannot be offered, or ``""``.
+
+    Cheap, local checks only -- no fetch of an arbitrary third-party URL from
+    this process. Two classes, both live findings on 2026-09-30:
+
+    * a **raw address**. "Get it from 203.0.113.7" tells the owner nothing about
+      who they are about to trust while they hold a secret.
+    * an **invented first-party page**. The agent rendered "Get it from
+      tinyassets.io" over ``https://tinyassets.io/settings``, a path that does
+      not exist -- a dead end, and, styled as though the platform said it, a
+      phishing shape. First-party links are allow-listed against the pages the
+      site actually serves; everything else is the agent's own suggestion and is
+      labelled as such in the app.
+    """
+    host = urlsplit(url).hostname or ""
+    host = host.strip().strip(".").lower()
+    if not host:
+        return "url must name a host"
+    if _IP_HOST_RE.match(host) or ":" in host:
+        return (
+            "url must name a hostname, not a raw address -- the owner has to be "
+            "able to see whose page they are opening"
+        )
+    if host in _FIRST_PARTY_HOSTS:
+        path = "/" + urlsplit(url).path.strip("/")
+        if path.rstrip("/").lower() not in _FIRST_PARTY_PATHS:
+            return (
+                f"there is no {path} page on this site; a credential for another "
+                "service is not found here, so link that service's own page (or "
+                "leave url out and say where to look in 'help')"
+            )
+    return ""
+
+
 def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
     from tinyassets.storage.pending_requests import FIELD_TYPES
 
@@ -758,6 +815,9 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                     "(no credentials in it, at most "
                     f"{_MAX_URL_CHARS} chars)"
                 )
+            unusable = _unusable_field_url(url)
+            if unusable:
+                raise ValueError(f"field {name!r}: {unusable}")
             entry["url"] = url
         if ftype == "choice":
             options = [str(o).strip()[:60] for o in (field.get("options") or []) if str(o).strip()]
@@ -1757,7 +1817,7 @@ def withdraw_request(*, universe_id: str = "", payload: Any = None) -> dict[str,
             ),
         }
     reason = str(document.get("reason") or "").strip()[:_MAX_ANSWER_CHARS]
-    if reason and _ENTROPY_RUN_RE.search(reason):
+    if reason and looks_like_credential(reason):
         return _bad(
             "that reason looks like it contains a credential; it is stored in "
             "the clear, so say it in words instead"
@@ -1917,7 +1977,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
 
     if document.get("dismiss") is True:
         fb = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
-        if fb and _ENTROPY_RUN_RE.search(fb):
+        if fb and looks_like_credential(fb):
             return _bad(
                 "that feedback looks like it contains a credential; it is stored "
                 "in the clear, so say it in words instead"
@@ -1939,7 +1999,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         # runs -- for an action-bearing ask the answer IS the act, so a deny
         # that fell through would extend the grant it was refusing.
         fb = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
-        if fb and _ENTROPY_RUN_RE.search(fb):
+        if fb and looks_like_credential(fb):
             return _bad(
                 "that feedback looks like it contains a credential; it is stored "
                 "in the clear, so say it in words instead"
@@ -2028,8 +2088,8 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         if str(k) in recordable
     }
     # Feedback is free text the user types, so it can hold anything — including a
-    # credential pasted into the wrong box. Same entropy screen the resolver uses.
-    if feedback and _ENTROPY_RUN_RE.search(feedback):
+    # credential pasted into the wrong box. Same shape screen the resolver uses.
+    if feedback and looks_like_credential(feedback):
         return _bad(
             "that feedback looks like it contains a credential; it is stored in "
             "the clear, so say it in words instead"

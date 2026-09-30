@@ -6,8 +6,19 @@ sign-in completed, and the rail still showed "Connect another LLM" under
 real ask, so every surface reading the rail -- and the user reading the heading
 -- was told an action was outstanding when none was.
 
-The entry itself must stay: it is the only route to adding a second source. It
-is the STATUS and the heading that must tell the truth.
+Fixing the status was not enough. Live 2026-09-30 the same free account still
+had a permanent "LLM - Connect another LLM" card sitting in the rail with no
+Accept, Deny or Clear on it, because a derived entry has nothing to resolve:
+
+    "There is NO dismiss, deny or clear control, so a naive user with a working
+    universe has a 'Waiting on you' item they can neither act on nor remove. If
+    it's a standing 'optional' item, it doesn't belong in 'Waiting on you' at
+    all; that rail is for things blocking the user's work, and optional extras
+    live in the model picker ('Change model')."   -- founder, 2026-09-30
+
+So the entry still EXISTS -- every client reads it, and it is still the one
+route to a second source -- and the app no longer renders it as a rail card.
+"Change model" reaches it, and the card appears only while it is open.
 """
 
 from __future__ import annotations
@@ -108,16 +119,19 @@ console.log(JSON.stringify({tabs,head:$('rail-head').textContent,
 def test_the_heading_stops_asking_when_only_optional_rows_remain():
     out = _run_head([_CONNECTED])
     assert out["head"] == "Nothing waiting on you", "a connected universe was still asked"
-    assert out["railHidden"] is False, "the only route to another source disappeared"
-    assert len(out["tabs"]) == 1 and out["tabs"][0]["optional"] is True
-    assert out["tabs"][0]["hasPanel"] is False, "an optional row opened itself"
+    assert out["railHidden"] is False, "the rail vanished, so 'Add a key yourself' went with it"
+    assert out["tabs"] == [], (
+        "an item with nothing to accept, deny or clear was left in 'Waiting on you'"
+    )
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
 def test_one_real_ask_still_makes_the_heading_ask():
+    """A real ask renders; the optional entry beside it still does not."""
     out = _run_head([_ASK, _CONNECTED])
     assert out["head"] == "Waiting on you"
-    assert [tab["optional"] for tab in out["tabs"]] == [False, True]
+    assert [tab["optional"] for tab in out["tabs"]] == [False]
+    assert "Key please" in out["tabs"][0]["text"]
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
@@ -129,9 +143,24 @@ def test_an_older_page_payload_without_a_status_is_still_treated_as_an_ask():
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
-def test_an_optional_row_still_opens_when_the_user_taps_it():
+def test_the_optional_row_renders_when_the_model_picker_opens_it():
+    """``openConnectRequest`` sets ``railOpen``; that is the picker's route in."""
     out = _run_head([_CONNECTED], "railOpen='sys_connect_llm';renderRail(railCache);")
+    assert len(out["tabs"]) == 1, "the model picker's route had no card to show"
     assert out["tabs"][0]["hasPanel"] is True, "the optional row could not be opened"
+    assert out["tabs"][0]["optional"] is True
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_closing_the_opened_optional_row_removes_it_from_the_rail():
+    """Tapping its header IS the dismiss a derived entry cannot otherwise have."""
+    out = _run_head(
+        [_CONNECTED],
+        "railOpen='sys_connect_llm';renderRail(railCache);"
+        "railOpen=null;renderRail(railCache);",
+    )
+    assert out["tabs"] == [], "the card the user closed stayed on the rail"
+    assert out["panelHidden"] is True, "the setup panel was left on screen"
 
 
 _BLOCKING = {"request_id": "sys_connect_llm", "kind": "LLM", "sticky": True,
@@ -163,11 +192,10 @@ def test_the_finished_setup_card_does_not_carry_its_expansion_across_the_connect
         # ...then the callback returns and the rail refreshes: now connected.
         "renderRail(" + json.dumps([_CONNECTED]) + ");",
     )
-    assert out["tabs"][0]["hasPanel"] is False, "the finished setup card stayed open"
+    assert out["tabs"] == [], "the finished setup card stayed on the rail"
     assert out["panelHidden"] is True, "the setup panel was still on screen"
     assert out["otherOpen"] is False, "'Other ways to connect' stayed open"
     assert out["railOpen"] is None
-    assert out["tabs"][0]["optional"] is True
     assert out["head"] == "Nothing waiting on you"
 
 

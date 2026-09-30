@@ -92,7 +92,8 @@
        requests are reachable through the same read. */
     .chat-body{flex:1;min-height:0;display:flex}
     .rail{width:16rem;flex:0 0 auto;border-left:1px solid var(--line);
-          overflow-y:auto;padding:.6rem;display:flex;flex-direction:column;gap:.5rem}
+          overflow-y:auto;padding:.6rem;display:flex;flex-direction:column;gap:.5rem;
+          min-width:0}
     .rail[hidden]{display:none}
     .rail-head{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;
                color:var(--muted);padding:.2rem .3rem}
@@ -108,19 +109,36 @@
                text-transform:uppercase;color:var(--accent);border:1px solid var(--line);
                border-radius:6px;padding:.05rem .4rem;margin-bottom:.3rem}
     .rtab-title{display:block;font-size:.85rem;line-height:1.3;color:var(--request-text)}
-    .rtab-body{padding:0 .7rem .7rem;border-top:1px solid var(--line)}
+    .rtab-body{padding:0 .7rem .7rem;border-top:1px solid var(--line);min-width:0}
     .rtab-why{font-size:.8rem;color:var(--muted);margin:.5rem 0}
     .rtab-grant{font-size:.78rem;margin:.5rem 0;padding:.4rem .5rem;
                 border-left:2px solid var(--accent);background:var(--surface)}
-    .rtab-body input,.rtab-body textarea,.rtab-body select{width:100%;font:inherit;
-        padding:.45rem;border-radius:8px;border:1px solid var(--line);
+    /* Nothing in a card may reach past the rail. The rail is 16rem and is the
+       LAST column, so an overflowing child is not merely ugly: live 2026-09-30
+       at 2400px "Send reply" spanned x=2358..2409 past a 2400px viewport, and
+       the only clickable sliver was over the rail's scrollbar, so a reply could
+       not be sent at all. Two causes, both here: an unbreakable long token (the
+       grant blockquote quotes a hook URL) and a four-button row that could not
+       wrap. */
+    .rtab-title,.rtab-why,.rtab-grant,.rtab-help,.rtab-link,.rtab-note,.rtab-mute,
+    .rtab-label{overflow-wrap:anywhere;word-break:break-word;min-width:0}
+    .rtab-body input,.rtab-body textarea,.rtab-body select{width:100%;max-width:100%;
+        font:inherit;padding:.45rem;border-radius:8px;border:1px solid var(--line);
         background:var(--surface);color:inherit;margin-top:.25rem}
     .rtab-label{display:block;font-size:.78rem;color:var(--muted);margin-top:.5rem}
     .rtab-help{display:block;font-size:.72rem;color:var(--muted);opacity:.85;margin:.15rem 0 .1rem;line-height:1.35}
-    .rtab-link{display:inline-block;font-size:.72rem;margin:0 0 .3rem;text-decoration:underline}
-    .rtab-row{display:flex;gap:.4rem;margin-top:.6rem}
-    .rtab-row .btn{padding:.4rem .7rem;font-size:.82rem}
-    .rtab-mute{display:flex;align-items:center;gap:.4rem;font-size:.76rem;
+    .rtab-link{display:inline-block;max-width:100%;font-size:.72rem;margin:0 0 .3rem;text-decoration:underline}
+    /* An agent-composed field link is the UNIVERSE's suggestion, not platform
+       help. It says so, and it does not borrow the accent colour the platform's
+       own links use (live 2026-09-30: an agent's invented tinyassets.io/settings
+       rendered exactly like platform chrome next to a secret box). */
+    .rtab-suggest{display:block;font-size:.7rem;color:var(--muted);opacity:.8;
+                  margin:.2rem 0 0}
+    .rtab-link--agent{color:var(--ink-dim);text-decoration:underline dotted;
+                      font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    .rtab-row{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.6rem}
+    .rtab-row .btn{flex:0 1 auto;min-width:0;padding:.4rem .7rem;font-size:.82rem}
+    .rtab-mute{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem;font-size:.76rem;
                color:var(--muted);margin-top:.5rem}
     .rtab-mute input{width:auto;margin:0}
     .rtab-note{font-size:.76rem;color:var(--muted);margin-top:.4rem;min-height:1rem}
@@ -2751,6 +2769,15 @@
         this.menuClose({restoreFocus:false});this.open();
       });
       more.className+=" model-menu-item--more";
+      // Adding a SOURCE, which is not choosing a model — and not an ask either.
+      // It used to be a permanent card in "Waiting on you" that a working
+      // universe could neither act on nor remove (founder 2026-09-30: "optional
+      // extras live in the model picker"). This is that route: one tap from
+      // "Change model", and the rail only shows the card while it is open.
+      const connect=this.menuRow("Connect another model source…",false,()=>{
+        this.menuClose({restoreFocus:false});openConnectRequest();
+      });
+      connect.className+=" model-menu-item--more";
     },
     // A click in the list IS the decision: apply it as the saved default now.
     async choose(key){
@@ -4204,6 +4231,32 @@
     renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
     clearComposerState();
     clearThread();
+    clearRailCards();
+  }
+  // Every control under a node, cleared by WALKING it rather than by a selector
+  // list. A `value` that is a string is a control holding typed text, whatever
+  // element it turned out to be — a rail secret field is a <textarea> today and
+  // the next field type added is covered without anyone coming back here.
+  function clearTypedValues(node){
+    if(!node) return;
+    if(typeof node.value === "string") node.value = "";
+    for(const child of node.children || []) clearTypedValues(child);
+  }
+  // The rail's own cards belong to the account that was asked. Their nodes are
+  // now KEPT across refreshes so typing survives a poll (see renderRail), which
+  // makes clearing them on an account change this function's job rather than a
+  // side effect of the next rebuild. A rail secret field is a <textarea>, not a
+  // password input, so `clearCredentialFields` never reached it: a key pasted
+  // into a card and not submitted outlived the sign-out either way.
+  function clearRailCards(){
+    const host=$("rail-items");
+    if(host){
+      clearTypedValues(host);
+      host.textContent="";
+    }
+    railNodes = new Map();
+    railCache = [];
+    railOpen = null;
   }
   // Every credential the owner typed and did NOT submit, cleared when the login
   // ends. A RULE, not a list of ids: a `type="password"` input is by definition
@@ -5879,6 +5932,10 @@
   let railOpen = null;      // request_id of the expanded tab
   let connectWasBlocking = null;  // was the connect request sticky last render?
   let railCache = [];
+  // request_id -> {signature, node}: the card nodes currently on screen, so a
+  // refresh whose rows are unchanged keeps the live DOM rather than replacing
+  // it. What the user has typed lives in those nodes. See renderRail.
+  let railNodes = new Map();
   // Did the USER open "Other ways to connect"? Kept here rather than read back
   // off the <details>, because the setup panel node is PARKED and reused across
   // every rail refresh: once anything had opened it, the element stayed open and
@@ -5997,8 +6054,38 @@
     // it is the only route to adding a key yourself, and a surface that vanishes
     // is a surface a user cannot find.
     rail.hidden = false;
+    const keep = new Map();
     railCache.forEach(req=>{
       if(folded && req.request_id === folded.request_id) return;
+      // A sticky ask is a PRECONDITION, not a question: it opens itself and has
+      // no dismiss, because a universe with no model cannot be asked to accept
+      // having no model.
+      const open = req.sticky ? (railOpen !== "closed:" + req.request_id)
+                              : (railOpen === req.request_id);
+      // An optional entry is NOT a rail item. "Waiting on you" is for what
+      // blocks the user's work; a standing offer to add a second model source
+      // belongs in the model picker, which reaches it through
+      // openConnectRequest (founder 2026-09-30, on a free account whose only
+      // rail row was one it could neither act on nor remove). Still rendered
+      // when something opened it deliberately, so that route has a card.
+      if(isOptionalRequest(req) && !open) return;
+      const setup = isSetupRequest(req);
+      // REUSE the existing node when the row and its open state are unchanged.
+      // The rail re-renders on a 15-second poll, and rebuilding the card
+      // DELETED whatever the user had typed into it: live 2026-09-30, a Deny
+      // note typed into "Reply or note" reached the thread as a bare
+      // `Denied: "<title>"`, because the poll had already emptied the box the
+      // click was about to read. Keeping the node keeps its values, with no
+      // copy of a typed secret anywhere outside the DOM. The setup card is
+      // exempt: its inputs live in #connect-panel, which is parked and
+      // re-hosted on purpose above.
+      const signature = JSON.stringify([req, open, isOptionalRequest(req)]);
+      const previous = railNodes.get(req.request_id);
+      if(previous && !setup && previous.signature === signature){
+        keep.set(req.request_id, previous);
+        host.appendChild(previous.node);
+        return;
+      }
       const tab = document.createElement("div");
       tab.className = isOptionalRequest(req) ? "rtab rtab--optional" : "rtab";
       const btn = document.createElement("button");
@@ -6013,15 +6100,14 @@
         renderRail(railCache);
       });
       tab.appendChild(btn);
-      // A sticky ask is a PRECONDITION, not a question: it opens itself and has
-      // no dismiss, because a universe with no model cannot be asked to accept
-      // having no model.
-      const open = req.sticky ? (railOpen !== "closed:" + req.request_id)
-                              : (railOpen === req.request_id);
-      if(open && isSetupRequest(req)){ tab.appendChild(connectBody(req)); setupOpen = !!req.sticky; }
+      if(open && setup){ tab.appendChild(connectBody(req)); setupOpen = !!req.sticky; }
       else if(open) tab.appendChild(railBody(req));
       host.appendChild(tab);
+      if(!setup) keep.set(req.request_id, {signature, node: tab});
     });
+    // Anything not carried over is gone from the rail; drop it so a resolved
+    // ask cannot come back holding a stale node.
+    railNodes = keep;
     rail.classList.toggle("rail--setup", setupOpen);
   }
 
@@ -6305,6 +6391,46 @@
     if(panel.scrollIntoView) panel.scrollIntoView({block:"nearest",behavior:"smooth"});
   }
 
+  // A field's `url` is composed by the AGENT, so the app renders it as the
+  // universe's suggestion and never as platform help. Live 2026-09-30, a free
+  // account's credential card carried "Get it from tinyassets.io" over
+  // https://tinyassets.io/settings — a page that does not exist. Styled like
+  // the platform's own links, an agent-chosen destination in a secret prompt is
+  // both a dead end and a phishing shape.
+  //
+  // So: say who suggested it, show the real host AND path (the host alone hid
+  // that the path was invented), https only, and never the accent colour. A
+  // value that is not a usable https link is shown as plain text, not a link:
+  // the owner still sees what the universe said, and cannot click it.
+  function railFieldLink(raw, lab){
+    const note = document.createElement("span");
+    note.className = "rtab-suggest";
+    note.textContent = "Suggested by your universe:";
+    lab.appendChild(note);
+    let url = null;
+    try { url = new URL(String(raw)); } catch (_e) { url = null; }
+    const safe = !!url && url.protocol === "https:" && !url.username && !url.password;
+    // Host and path, so an invented path is visible. Bounded, because the text
+    // is the agent's and this sits beside a box the owner is about to type a
+    // secret into.
+    const where = safe ? (url.host + (url.pathname === "/" ? "" : url.pathname)).slice(0, 120)
+                       : String(raw).slice(0, 120);
+    if(!safe){
+      const dead = document.createElement("span");
+      dead.className = "rtab-help";
+      dead.textContent = where + " — not a usable https link, so it is not clickable.";
+      lab.appendChild(dead);
+      return;
+    }
+    const a = document.createElement("a");
+    a.className = "rtab-link rtab-link--agent";
+    a.href = url.href;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer nofollow";
+    a.textContent = where;
+    lab.appendChild(a);
+  }
+
   function railBody(req){
     const box = document.createElement("div"); box.className = "rtab-body";
     if(req.body){
@@ -6329,21 +6455,7 @@
         hint.className = "rtab-help"; hint.textContent = f.help;
         lab.appendChild(hint);
       }
-      if(f.url){
-        const a = document.createElement("a");
-        a.className = "rtab-link";
-        a.href = f.url;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        // The visible text is the HOST, not friendly words. The agent composes
-        // this link and may be running code the owner pulled from the commons,
-        // so the owner must be able to SEE where a click goes before taking it
-        // while they are being asked for a secret.
-        let where = f.url;
-        try { where = new URL(f.url).host; } catch (_e) { /* show it raw */ }
-        a.textContent = "Get it from " + where;
-        lab.appendChild(a);
-      }
+      if(f.url) railFieldLink(f.url, lab);
       lab.appendChild(railFieldControl(f, req.request_id));
       box.appendChild(lab);
     });
