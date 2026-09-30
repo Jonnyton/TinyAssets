@@ -1318,21 +1318,28 @@ def test_invoke_none_answers_not_available():
     assert time.monotonic() - started < 15.0, "an unanswered call would hang"
 
 
-def test_rpc_calls_are_capped_per_run():
-    """The call after MAX_RPC_CALLS fails the node; every call up to it is
-    answered. The cap is read from node_sandbox, not pinned (2026-09-02)."""
+def test_rpc_calls_are_not_capped():
+    """``MAX_RPC_CALLS = 500`` is gone: every call a node makes is answered.
+
+    It failed the node at call 501 with "too many rpc calls" -- a structural
+    bound on what one node may be. An account has exactly two limits, cloud
+    bytes and concurrent agent seats (founder, 2026-09-30). Each individual
+    reply is still bounded by ``MAX_RPC_REPLY_BYTES``, which is payload
+    validation of one message.
+    """
     seen: list[str] = []
     sandbox = NodeSandbox(timeout=60.0)
-    cap = node_sandbox.MAX_RPC_CALLS
+    assert not hasattr(node_sandbox, "MAX_RPC_CALLS"), "the per-node cap came back"
+    calls = 520  # past the old 500
     source = (
         "def run(state):\n"
-        f"    for i in range({cap + 8}):\n"
+        f"    for i in range({calls}):\n"
         "        invoke_mcp_action('ping', i=i)\n"
         "    return {'done': True}\n"
     )
 
     result = sandbox.run_sync(
-        node_id="rpc-cap",
+        node_id="rpc-uncapped",
         source_code=source,
         input_state={},
         input_keys=[],
@@ -1341,9 +1348,9 @@ def test_rpc_calls_are_capped_per_run():
         timeout=60.0,
     )
 
-    assert result.success is False
-    assert "too many rpc calls" in result.error
-    assert len(seen) == cap, f"cap should let exactly {cap} through, saw {len(seen)}"
+    assert result.success is True, result.error
+    assert result.output_state["done"] is True
+    assert len(seen) == calls, f"every call must be answered, saw {len(seen)}"
 
 
 def test_rpc_reply_is_capped_at_one_mib():

@@ -908,10 +908,8 @@ class TestChildFailurePolicy:
             _retry_budget_reset,
         )
 
-        # Reset the threadlocal to ensure clean budget state.
+        # Reset the threadlocal counter to a clean state.
         _retry_budget_reset()
-        # Generous global cap to not interfere.
-        monkeypatch.setenv("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "10")
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -949,7 +947,6 @@ class TestChildFailurePolicy:
             _retry_budget_reset,
         )
         _retry_budget_reset()
-        monkeypatch.setenv("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "10")
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -974,16 +971,26 @@ class TestChildFailurePolicy:
         # Initial attempt + retry_budget=1 retry = 2 attempts total.
         assert mock_exec.call_count == 2
 
-    def test_global_cap_overrides_per_spec_budget(self, tmp_path, monkeypatch):
-        """Per-spec retry_budget=10 + global cap=1 → only 1 retry across
-        the parent run, then propagate."""
+    def test_no_env_var_overrides_the_authors_retry_budget(self, tmp_path, monkeypatch):
+        """`retry_budget=10` gets ten retries, whatever the environment says.
+
+        `TINYASSETS_MAX_CHILD_RETRIES_TOTAL` (default 5) used to cap the total
+        across a parent run and then behave as `propagate`, so an author who
+        declared ten retries silently got five. Founder, 2026-09-30: honour the
+        author's retry policy. The bound on a retry storm is that each child run
+        charges admission and holds a seat, and the parent waits on them in turn.
+        """
+        from tinyassets import graph_compiler
         from tinyassets.graph_compiler import (
             ChildFailedError,
             _build_invoke_branch_version_node,
             _retry_budget_reset,
         )
         _retry_budget_reset()
+        # Set as hostilely as the old code would have honoured: 1 total retry.
         monkeypatch.setenv("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "1")
+        assert not hasattr(graph_compiler, "_retry_budget_max"), "the override is gone"
+        assert not hasattr(graph_compiler, "_retry_budget_remaining")
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -992,7 +999,7 @@ class TestChildFailurePolicy:
                 "wait_mode": "blocking",
                 "output_mapping": {"parent_out": "child_out"},
                 "on_child_fail": "retry",
-                "retry_budget": 10,  # would allow 10 retries, but global cap=1
+                "retry_budget": 10,
             },
         )
         node_fn = _build_invoke_branch_version_node(
@@ -1005,8 +1012,8 @@ class TestChildFailurePolicy:
             with pytest.raises(ChildFailedError):
                 node_fn({})
 
-        # Initial attempt + 1 retry (global cap) = 2 attempts.
-        assert mock_exec.call_count == 2
+        # Initial attempt + the author's 10 retries. Under the old cap: 2.
+        assert mock_exec.call_count == 11
 
     def test_failure_class_classification(self, tmp_path):
         """Each child terminal status maps to the correct failure_class."""

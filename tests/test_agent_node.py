@@ -320,7 +320,10 @@ def test_the_compiler_names_only_agent_nodes_and_gives_them_the_turn_backstop(
     tools_allowed, agent,
 ):
     from tinyassets.graph_compiler import _build_prompt_template_node
-    from tinyassets.universe_intelligence import served_absolute_cap_s
+    from tinyassets.universe_intelligence import (
+        UNBOUNDED_TURN_SECONDS,
+        served_absolute_cap_s,
+    )
 
     seen = []
 
@@ -336,8 +339,13 @@ def test_the_compiler_names_only_agent_nodes_and_gives_them_the_turn_backstop(
     assert config.agent_node_id == ("step" if agent else "")
     # The key binds the call to this branch's node, which the session re-derives.
     assert config.agent_node_key == (agent_node_key("b", node.to_dict()) if agent else "")
+    # An agent node IS the converse turn, so it gets the turn's backstop: the
+    # universe's own cap if it set one, else the unreachable number that stands
+    # for "no wall clock" (founder, 2026-09-30: a turn runs until it is
+    # finished). A non-agent node keeps its declared timeout.
+    assert served_absolute_cap_s(None) is None, "no platform turn cap"
     assert config.absolute_cap_s == pytest.approx(
-        served_absolute_cap_s(None) if agent else 300.0, rel=0.01,
+        UNBOUNDED_TURN_SECONDS if agent else 300.0, rel=0.01,
     )
 
 

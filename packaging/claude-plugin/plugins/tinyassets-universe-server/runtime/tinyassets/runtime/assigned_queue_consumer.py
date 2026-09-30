@@ -24,6 +24,22 @@ from tinyassets.platform_runtime_provenance import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Universe-lease TTL when no operator run timeout is set, which is the default.
+#: A lease only has to outlive the gap to its next re-stamp -- the batch refresher
+#: runs every `LEASE_REFRESH_SECONDS` and the unstopped sweep every cycle -- so
+#: expiry still means "nobody is refreshing", which is the property the lease is
+#: for. It used to be the RUN TIMEOUT; a run finishes when it is finished
+#: (founder, 2026-09-30), so there is no run duration to derive a TTL from, and a
+#: TTL is not the place to invent one.
+_LEASE_TTL_FLOOR_S = 900.0
+
+
+def _lease_ttl_seconds() -> float:
+    """The universe-lease TTL: an operator's run timeout if set, else the floor."""
+    from tinyassets.automations import run_timeout_seconds
+
+    return run_timeout_seconds() or _LEASE_TTL_FLOOR_S
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _DEFAULT_GLOBAL_CONCURRENCY = 2
 _DEFAULT_POLL_SECONDS = 2.0
@@ -466,7 +482,6 @@ class AssignedQueueConsumer:
         from tinyassets.automations import (
             AutomationStore,
             cancel_grace_seconds,
-            run_timeout_seconds,
         )
         from tinyassets.runs import get_future
 
@@ -486,7 +501,13 @@ class AssignedQueueConsumer:
                         universe_id,
                         holder=self.consumer_id,
                         now=_dt.now(timezone.utc),
-                        ttl_seconds=run_timeout_seconds() + cancel_grace_seconds(),
+                        # The lease only has to outlive the gap to the NEXT sweep,
+                        # which re-stamps it while the run is live. It used to be
+                        # derived from the run timeout; there is no run timeout any
+                        # more (a run finishes when it is finished), and a TTL is
+                        # not the place to invent one. An operator-set timeout is
+                        # still honoured when there is one.
+                        ttl_seconds=_lease_ttl_seconds() + cancel_grace_seconds(),
                     )
                 except Exception:  # noqa: BLE001 - the held lease still stands
                     logger.exception(
@@ -716,7 +737,6 @@ class AssignedQueueConsumer:
             AutomationStore,
             automation_lease_key,
             run_due_automation,
-            run_timeout_seconds,
         )
         from tinyassets.storage.assigned_queue_refusals import (
             AssignedQueueRefusalStore,
@@ -727,7 +747,7 @@ class AssignedQueueConsumer:
         key = automation_lease_key(due[0][0])
         store = AutomationStore(self.base_path)
         refusal_store = AssignedQueueRefusalStore(self.base_path)
-        ttl = run_timeout_seconds()
+        ttl = _lease_ttl_seconds()
         if not store.acquire_universe_lease(
             key,
             holder=self.consumer_id,

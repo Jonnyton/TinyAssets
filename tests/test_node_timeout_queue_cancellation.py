@@ -362,7 +362,9 @@ class _WorkerWinsTheCancelRace:
         self.did_submit = threading.Event()
 
     def submit(self, fn, /, *args, **kwargs):
-        self.submitted = fn
+        # Keep the arguments, as a real executor does: the caller may submit
+        # ``contextvars.copy_context().run`` with the work as its argument.
+        self.submitted = lambda: fn(*args, **kwargs)
 
         class _Uncancellable(concurrent.futures.Future):
             def cancel(self) -> bool:

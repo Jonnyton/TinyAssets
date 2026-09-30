@@ -341,17 +341,34 @@ def test_non_json_output_keeps_the_process_but_not_the_clock(monkeypatch):
 # --- the served turn gets the generous cap, not the library default -----------
 
 
-def test_the_served_turn_is_bounded_by_a_generous_backstop_not_a_deadline():
+def test_the_served_turn_has_no_wall_clock_only_a_hang_control():
+    """A granted turn runs until it is FINISHED (founder, 2026-09-30).
+
+    ``_SERVED_ABSOLUTE_CAP_S = 3600`` killed it at the hour mark. The 30-second
+    idle watchdog stays: a provider that has emitted nothing is hung, which is
+    liveness, not duration.
+    """
+    from tinyassets import universe_intelligence
     from tinyassets.universe_intelligence import (
-        _SERVED_ABSOLUTE_CAP_S,
+        UNBOUNDED_TURN_SECONDS,
         _sandboxed_config,
     )
+
+    assert not hasattr(universe_intelligence, "_SERVED_ABSOLUTE_CAP_S")
 
     ctx = types.SimpleNamespace(config=types.SimpleNamespace(timeout=300))
     cfg = _sandboxed_config(ctx, granted=True)
     profile = cfg.stream_timeout_profile()
-    assert _SERVED_ABSOLUTE_CAP_S >= 3600, "a five-step GitHub job must fit"
-    assert profile.absolute_cap_s == _SERVED_ABSOLUTE_CAP_S
+    # The profile's field is a float and None there means the library 600s, so
+    # "no cap" is an unreachable number rather than None: 30 days, which no turn
+    # reaches and which every timeout API on both platforms accepts.
+    import threading
+
+    assert profile.absolute_cap_s == UNBOUNDED_TURN_SECONDS
+    assert profile.absolute_cap_s >= 30 * 24 * 3600
+    assert profile.absolute_cap_s < threading.TIMEOUT_MAX, (
+        "a cap the executor cannot accept is a cap of zero, not of none"
+    )
     assert profile.idle_s == 30.0, "the hang control stays fast"
 
 
@@ -366,9 +383,11 @@ def test_a_universe_may_override_its_own_knobs():
     assert profile.idle_s == 10.0
 
 
-def test_a_nonsense_override_falls_back_rather_than_disabling_the_cap():
+def test_a_nonsense_override_falls_back_to_no_cap_rather_than_a_guessed_one():
+    """"forever" is not a number, so it is not honoured as one -- and the
+    fallback is the platform default, which is now no cap at all."""
     from tinyassets.universe_intelligence import (
-        _SERVED_ABSOLUTE_CAP_S,
+        UNBOUNDED_TURN_SECONDS,
         _sandboxed_config,
     )
 
@@ -376,7 +395,7 @@ def test_a_nonsense_override_falls_back_rather_than_disabling_the_cap():
         config=types.SimpleNamespace(timeout=300, absolute_cap_s="forever")
     )
     profile = _sandboxed_config(ctx, granted=True).stream_timeout_profile()
-    assert profile.absolute_cap_s == _SERVED_ABSOLUTE_CAP_S
+    assert profile.absolute_cap_s == UNBOUNDED_TURN_SECONDS
 
 
 # --- the real vocabulary, recorded from codex-cli 0.146.0 on 2026-08-29 -------

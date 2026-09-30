@@ -1036,12 +1036,13 @@ def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
 
     On a busy box this degrades to "inconclusive" rather than queueing. The probe is a
     diagnostic, and making a diagnostic wait behind real user turns is the wrong trade.
+    `try_provider_slot` checks immediately rather than waiting for admission.
     """
-    from tinyassets.provider_admission import ProviderBusy, provider_slot
+    from tinyassets.provider_admission import ProviderBusy, try_provider_slot
 
     def _run() -> dict[str, str]:
         try:
-            with provider_slot():
+            with try_provider_slot():
                 return _codex_live_auth_probe_uncached(timeout_s)
         except ProviderBusy:
             return {"status": "inconclusive",

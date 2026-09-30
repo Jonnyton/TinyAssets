@@ -1043,14 +1043,18 @@ _mcp_read_graph = _register_structured_tool(
 )
 
 
-#: Two ways a universe may legitimately come into being, and no third:
-#:   * SIGNUP -- an authenticated subject with no home yet gets exactly one, free.
-#:   * SUBSCRIPTION -- a paying subject may have more than one.
+#: ONE condition on a universe coming into being: it belongs to an authenticated
+#: person. Before this gate, a universe could exist whose only grant was a
+#: synthetic non-WorkOS actor -- so "whose is this?" had no answer, and that
+#: question is what every multi-tenant guarantee is built on (founder rule,
+#: 2026-08-28).
 #:
-#: Before this, any authenticated caller could mint unlimited universes, and a
-#: universe could exist whose only grant was a synthetic non-WorkOS actor -- so
-#: "whose is this?" had no answer, and that question is what every multi-tenant
-#: guarantee is built on (founder rule, 2026-08-28).
+#: HOW MANY a person may own is not a condition. The subscription gate that used
+#: to live here ("you already have a universe; additional ones are part of the
+#: paid plan") was an account limit, and an account has exactly two of those --
+#: the cloud bytes it occupies and the agent runs it may have going at once
+#: (founder, 2026-09-30). A second universe costs storage, and storage is already
+#: metered, so the number of universes is not separately bounded.
 #:
 #: Enforced HERE, on the public surface, rather than in `_action_create_universe`:
 #: that is a shared primitive which fixtures, migrations and internal seeding call
@@ -1060,8 +1064,8 @@ _mcp_read_graph = _register_structured_tool(
 def _universe_birth_refusal() -> dict | None:
     """None when this caller may birth a universe, else the refusal body.
 
-    Fail-closed throughout: if we cannot tell who is asking, or whether they already
-    have one, we do not create. An unowned universe is precisely what this prevents.
+    Fail-closed on identity: if we cannot tell who is asking, we do not create. An
+    unowned universe is precisely what this prevents.
     """
     from tinyassets.api.permissions import current_request_actor_id
     from tinyassets.principals import named_principal
@@ -1073,38 +1077,7 @@ def _universe_birth_refusal() -> dict | None:
             "failure_class": "universe_requires_authenticated_subject",
             "actionable_by": "chatbot",
         }
-
-    from tinyassets.api.helpers import _base_path
-    from tinyassets.daemon_server import get_founder_home
-
-    try:
-        home = get_founder_home(_base_path(), actor)
-    except Exception:  # noqa: BLE001 -- fail closed
-        return {
-            "error": "could not check whether you already have a universe.",
-            "failure_class": "universe_binding_unreadable",
-            "actionable_by": "host",
-        }
-    if not home:
-        return None  # signup: the first one is free
-
-    try:
-        from tinyassets.api.helpers import _universe_dir
-        from tinyassets.storage.subscription_state import TIER_PAID, get_tier
-
-        if get_tier(_universe_dir(home)) == TIER_PAID:
-            return None
-    except Exception:  # noqa: BLE001 -- fail closed
-        pass
-    return {
-        "error": (
-            "You already have a universe. Additional universes are part of the paid "
-            "plan — subscribe and this works straight away."
-        ),
-        "failure_class": "additional_universe_requires_subscription",
-        "actionable_by": "chatbot",
-        "existing_universe_id": home,
-    }
+    return None
 
 
 def write_graph(
@@ -1945,12 +1918,33 @@ def stop_scheduler_for_serving() -> None:
 def stop_workspace_sweepers_for_serving() -> None:
     """Join workspace sweepers when this serving lifespan ends."""
     from tinyassets.runs import _stop_all_workspace_sweepers
+    from tinyassets.workspace_staging import stop_sweeper
 
     try:
         if not _stop_all_workspace_sweepers():
             logger.warning("workspace sweeper shutdown exceeded its timeout")
     except Exception:  # noqa: BLE001 - shutdown fault must not mask teardown
         logger.exception("workspace sweeper shutdown failed")
+    try:
+        if not stop_sweeper():
+            logger.warning("workspace staging sweeper shutdown exceeded its timeout")
+    except Exception:  # noqa: BLE001 - shutdown fault must not mask teardown
+        logger.exception("workspace staging sweeper shutdown failed")
+
+
+def start_staging_sweeper_for_serving(data_root: Any) -> None:
+    """Sweep leaked workspace staging at boot and periodically.
+
+    Hygiene, not a gate: it runs on its own thread and a failure is logged, never
+    raised into startup. It removes only what no live process owns
+    (`tinyassets.workspace_staging`), and logs the inventory it removed.
+    """
+    from tinyassets.workspace_staging import start_sweeper
+
+    try:
+        start_sweeper(data_root)
+    except Exception:  # noqa: BLE001 - serving must not wait on cleanup
+        logger.exception("workspace staging sweeper failed to start")
 
 
 _WEBHOOK_OP_ACTIONS = {
@@ -2037,6 +2031,10 @@ def run_graph(
             read_graph target=run shows the actual current/terminal status.
         run_id: Required for operation=cancel; not accepted for operation=run.
     """
+    # Runs are queued, not synchronously awaited here. runs.py deliberately
+    # clears provider-slot inheritance at submission. An engine-MCP process
+    # therefore acquires normally; model-side polling can still exhaust the
+    # nested reserve (a cross-process suspension protocol remains necessary).
     normalized_operation = (operation or "run").strip().lower()
     if normalized_operation == "deliver_output":
         if any((branch_def_id, branch_version_id, run_name, recursion_limit_override, goal_id,
@@ -4462,6 +4460,7 @@ def create_streamable_http_app() -> Starlette:
             else:
                 if orphans:
                     logger.warning("settled %d orphaned agent turn(s)", len(orphans))
+            start_staging_sweeper_for_serving(data_dir())
             # The scheduler starts whenever the daemon serves — schedules are a user's
             # own automations and do not belong to the inbound channel surface
             # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates
@@ -4860,6 +4859,7 @@ def main(
             assigned_consumer = AssignedQueueConsumer(data_dir())
             assigned_consumer.start()
         run_visibility_startup_gate()
+        start_staging_sweeper_for_serving(data_dir())
         if transport in ("sse", "stdio"):
             # Neither transport carries a bearer, and neither runs behind the
             # auth middleware, so the principal is the local operator, bound
