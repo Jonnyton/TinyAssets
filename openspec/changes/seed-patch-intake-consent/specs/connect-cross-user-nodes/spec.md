@@ -73,6 +73,29 @@ with the reason and no consent SHALL be written.
 - **WHEN** the configured intake no longer matches the stored row, or the intake does not accept this sender
 - **THEN** no consent is written, the request stays pending, and the reply says why
 
+### Requirement: The patch-intake consent is the owner's tap, never self-granted
+
+`patch_intake` SHALL be a person-only consent sink: the agent's own channel-approval
+verb SHALL refuse to write it, checked in the function that performs the grant so
+the refusal does not depend on one entry point, and under every spelling that verb
+accepts. The requirement to hold the consent SHALL follow the ask a universe was
+actually offered, recorded per universe, so changing or removing the configured
+intake cannot release an intake a universe already holds a link to. Approving
+SHALL resolve the pending request before recording the consent, so a losing or
+failed resolution never leaves an active consent behind a request nobody answered.
+
+#### Scenario: The agent approves the sink for itself
+- **WHEN** it calls the channel-approval verb with the `patch_intake` sink, under either the `sink` or `channel_type` key
+- **THEN** it is refused, no consent exists, and the owner's request is still pending
+
+#### Scenario: The configured intake is unset or retargeted
+- **WHEN** a universe was offered an intake, connected an output to it, and the configuration is then removed or pointed elsewhere
+- **THEN** delivery to that intake is still refused without the grant
+
+#### Scenario: Two answers race
+- **WHEN** one caller approves while another dismisses the same request
+- **THEN** exactly one wins, and a consent exists only if the approval was the winner
+
 ### Requirement: Served guidance points at the seeded request, never at a credential
 
 The rail read SHALL carry, when an intake is configured, the intake's
