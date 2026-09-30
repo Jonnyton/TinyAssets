@@ -57,8 +57,11 @@ def test_every_required_context_runs_on_merge_group() -> None:
         # A job-level `if:` can skip the job, and branch protection counts a
         # skipped required check as passed. `always()` is the one condition
         # allowed: it cannot evaluate false (the sharded `required-tests`
-        # aggregate needs it to report when a shard fails).
-        assert _if(job) in ("", "always()"), (
+        # aggregate needs it to report when a shard fails). The queue-only
+        # condition is also allowed: it is false only on `pull_request`, so it
+        # can never skip the merge-group run that gates main (heavy suites run
+        # once, in the queue -- founder 2026-09-30).
+        assert _if(job) in ("", "always()", "github.event_name != 'pull_request'"), (
             f"{name}:{job_id} must not carry a job-level if: that can skip it; "
             f"got {_if(job)!r}"
         )
