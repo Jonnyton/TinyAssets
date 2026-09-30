@@ -552,8 +552,48 @@ def test_a_gap_day_hourly_cron_does_not_stay_owed():
 # ---------------------------------------------------------------------------
 
 
+#: Zones chosen to break an hour-granular or DST-naive assumption:
+#: a 45-minute offset (Chatham), a 30-minute DST step (Lord Howe), a skipped
+#: calendar DAY (Apia, 2011-12-30) and a plain half-hour offset (Kolkata).
+_AWKWARD_ZONES = (
+    "America/Los_Angeles", "Australia/Lord_Howe", "Pacific/Apia",
+    "Asia/Kolkata", "Europe/Berlin", "Pacific/Chatham",
+)
+
+
+@pytest.mark.parametrize("zone_name", _AWKWARD_ZONES)
+@pytest.mark.parametrize("year", [2011, 2027, 2028])
+def test_wall_label_order_is_instant_order_once_a_gap_clamps(zone_name, year):
+    """The invariant that makes selection's ordering unambiguous.
+
+    Clamping an absent label to the gap's end COLLAPSES labels onto one instant
+    but never inverts them, so ascending wall labels give ascending instants.
+    Asserted rather than assumed because it is why `_latest_cron_slot` may take
+    the latest candidate and `next_due_at` the earliest ahead, and it is also
+    the honest account of one of Codex's findings on PR #4128: the reported
+    Lord Howe ordering disagreement was a SYMPTOM of the gap bug, not an
+    independent defect -- with clamping correct, the two orders coincide.
+
+    Every day of the year at 15-minute granularity, across zones picked to
+    break a whole-hour assumption.
+    """
+    zone = resolve_zone(zone_name)
+    labels = [time(hour, minute) for hour in range(24) for minute in (0, 15, 30, 45)]
+    day = date(year, 1, 1)
+    inversions = []
+    while day.year == year:
+        instants = [slot_instant(day, slot, zone) for slot in labels]
+        inversions += [
+            (day.isoformat(), str(labels[i]), str(labels[i + 1]))
+            for i in range(len(instants) - 1)
+            if instants[i] > instants[i + 1]
+        ]
+        day += timedelta(days=1)
+    assert not inversions, inversions[:5]
+
+
 @pytest.mark.parametrize("zone_name,expr,moment", [
-    # The reported case: wall-label order is not instant order across the gap.
+    # The reported case, which the gap fix also settles.
     (LORD_HOWE, "15,30 2 * * *", "2027-10-02T15:29:00+00:00"),
     (LA, "15,30 2 * * *", "2027-03-14T09:59:00+00:00"),
     (LA, "0 * * * *", "2027-03-14T09:59:00+00:00"),
