@@ -5975,8 +5975,6 @@
   ConnectOAuth.resumeWhenSignedIn();
   // End connect OAuth controller.
 
-  // ---- Pending-request rail ------------------------------------------------
-  let notificationEnabled=false, notificationBusy=false, notificationLoad=0;
   // ---- Native (Android / FCM) notifications ----
   // Same route, same ownership model as the browser: the token is POSTed to
   // /app/devices under the signed-in session and the server files it under the
@@ -6140,6 +6138,8 @@
     field.value=p.text;
     answerRail(target,"reply",note,[]);
   }
+  // ---- Pending-request rail ------------------------------------------------
+  let notificationEnabled=false, notificationBusy=false, notificationLoad=0;
   async function rebindBrowserNotifications(){
     // A persistent browser subscription must move with the verified login,
     // even when the new owner never opens Account.
