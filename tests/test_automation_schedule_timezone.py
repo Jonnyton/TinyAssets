@@ -21,6 +21,7 @@ exactly the cases that behave differently.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -164,7 +165,11 @@ def test_each_slot_becomes_due_once_on_a_transition_day(expr, day, owed_utc):
     moment = start
     while moment < end:
         owed = _due_instant(automation, moment)
-        if owed and owed not in fired:
+        if owed:
+            # EVERY fire is counted, repeats included. Discarding duplicates
+            # before counting made this pass with de-duplication disabled
+            # entirely (Codex refute, PR #4128): the assertion measured the
+            # helper, not the code.
             fired.append(owed)
             # Record it the way the runner does, so the next poll sees it fired.
             automation = _cron(
@@ -387,7 +392,8 @@ def _fires(expr: str, zone_name: str, day: date, *, hours: int) -> list[str]:
     fired: list[str] = []
     for minute in range(hours * 60):
         owed = _due_instant(automation, start + timedelta(minutes=minute))
-        if owed and owed not in fired:
+        if owed:
+            # Repeats counted, for the reason in `test_each_slot_...` above.
             fired.append(owed)
             automation = _cron(
                 expr, zone=zone_name,
@@ -461,6 +467,133 @@ def test_an_hourly_cron_fires_the_repeated_hour_once():
     # 09:00Z is 01:00 PST -- the SECOND occurrence of 01:00 -- and is skipped.
     assert "2027-11-07T09:00:00+00:00" not in fired
     assert "2027-11-07T08:00:00+00:00" in fired
+
+
+# ---------------------------------------------------------------------------
+# Codex refute round, PR #4128: the gap's END, not the gap's middle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("zone_name,day,slot,expected_local", [
+    # Los Angeles skips 02:00-03:00; EVERY absent label fires at 03:00.
+    (LA, SPRING, time(2, 0), (3, 0)),
+    (LA, SPRING, time(2, 15), (3, 0)),
+    (LA, SPRING, time(2, 30), (3, 0)),
+    (LA, SPRING, time(2, 59), (3, 0)),
+    # Lord Howe skips only 02:00-02:30, so its absent labels fire at 02:30.
+    (LORD_HOWE, date(2027, 10, 3), time(2, 0), (2, 30)),
+    (LORD_HOWE, date(2027, 10, 3), time(2, 15), (2, 30)),
+])
+def test_every_slot_inside_a_gap_fires_at_the_gaps_end(
+    zone_name, day, slot, expected_local,
+):
+    """The policy is "the first valid instant AFTER it" -- not "shifted by the
+    offset", which is what attaching a zone to an absent wall time does.
+
+    Codex refute: only a slot at the gap's exact START happened to land on the
+    gap's end, so testing 02:00 alone read as "the policy is free". 02:15 became
+    03:15 in Los Angeles and 02:45 in Lord Howe -- both inside or past the gap
+    rather than at its close.
+    """
+    zone = resolve_zone(zone_name)
+    assert not slot_exists(day, slot, zone), (zone_name, day, slot)
+    local = slot_instant(day, slot, zone).astimezone(zone)
+    assert (local.hour, local.minute) == expected_local, local.isoformat()
+    assert local.date() == day
+
+
+def test_the_gap_end_is_the_first_valid_minute_not_merely_a_valid_one():
+    zone = resolve_zone(LA)
+    landed = slot_instant(SPRING, time(2, 30), zone)
+    # One minute earlier is still inside the gap, so this really is the edge.
+    before = (landed - timedelta(minutes=1)).astimezone(zone)
+    assert (before.hour, before.minute) == (1, 59), before.isoformat()
+
+
+def test_several_gap_slots_collapse_to_one_firing(served_free=None):
+    """`0,15,30 2 * * *` in Los Angeles on the gap day is ONE run, not three.
+
+    All three labels are absent and all three clamp to the same instant, so the
+    owner asked for three runs at times that do not exist and gets the single
+    run the gap's end can carry.
+    """
+    expr = "0,15,30 2 * * *"
+    fired = _fires(expr, LA, SPRING, hours=23)
+    assert fired.count("2027-03-14T10:00:00+00:00") == 1, fired
+    assert len(set(fired)) == 1, fired
+
+
+def test_selection_and_persistence_agree_on_the_gap_days_slot():
+    """The identity a fire is recorded under must be the one selection compares.
+
+    Codex refute, claim 2: selection chose local 03:00 for 10:00Z and the old
+    inversion stored 02:00, so the key never matched and the slot stayed owed
+    all day. Both now come from one function.
+    """
+    expr = "0 * * * *"
+    owed = _due_instant(_cron(expr), _utc("2027-03-14T10:00:00+00:00"))
+    assert owed == "2027-03-14T10:00:00+00:00"
+    recorded = slot_key_for_due(expr, LA, owed)
+    assert recorded, "a selected instant must map to a slot"
+    # Recording it settles the slot: the same moment is no longer owed.
+    after = _cron(expr, last_local=recorded, last_utc=owed)
+    assert _due_instant(after, _utc("2027-03-14T10:00:00+00:00")) == ""
+    assert _due_instant(after, _utc("2027-03-14T10:30:00+00:00")) == ""
+
+
+def test_a_gap_day_hourly_cron_does_not_stay_owed():
+    """The consequence of claim 2, as a loop: no instant repeats."""
+    fired = _fires("0 * * * *", LA, SPRING, hours=23)
+    assert len(fired) == len(set(fired)), fired
+
+
+# ---------------------------------------------------------------------------
+# Codex refute: the preview must promise the instant that will actually run
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("zone_name,expr,moment", [
+    # The reported case: wall-label order is not instant order across the gap.
+    (LORD_HOWE, "15,30 2 * * *", "2027-10-02T15:29:00+00:00"),
+    (LA, "15,30 2 * * *", "2027-03-14T09:59:00+00:00"),
+    (LA, "0 * * * *", "2027-03-14T09:59:00+00:00"),
+])
+def test_next_due_at_promises_the_instant_selection_will_owe(zone_name, expr, moment):
+    automation = _cron(expr, zone=zone_name)
+    promised = next_due_at(automation, _utc(moment))
+    assert promised, (zone_name, expr, moment)
+    owed = _due_instant(automation, _utc(promised))
+    assert owed == promised, (zone_name, expr, promised, owed)
+
+
+# ---------------------------------------------------------------------------
+# Codex refute: grace is for a late poller, not a licence to run history
+# ---------------------------------------------------------------------------
+
+
+def test_a_slot_before_the_automation_existed_is_never_owed():
+    """Created at 07:59 local, a 7am schedule must not immediately owe 07:00.
+
+    Codex refute, claim 3: the grace window had no `created_at` floor, so a
+    fresh schedule fired for a slot that passed before there was a schedule.
+    """
+    automation = _cron("0 7 * * *")
+    automation = replace(automation, created_at="2027-06-15T14:59:00+00:00")
+    assert _due_instant(automation, _utc("2027-06-15T14:59:30+00:00")) == ""
+    # The next day's slot is owed normally.
+    assert _due_instant(automation, _utc("2027-06-16T14:00:00+00:00")) == (
+        "2027-06-16T14:00:00+00:00"
+    )
+
+
+def test_a_slot_after_creation_is_still_claimed_inside_grace():
+    """The floor must not cost a genuinely late poller its run."""
+    automation = replace(
+        _cron("0 7 * * *"), created_at="2027-06-15T13:00:00+00:00",
+    )
+    assert _due_instant(automation, _utc("2027-06-15T14:20:00+00:00")) == (
+        "2027-06-15T14:00:00+00:00"
+    )
 
 
 # ---------------------------------------------------------------------------

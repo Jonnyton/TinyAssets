@@ -1595,15 +1595,28 @@ def _cron_slots_on(schedule: Any, local_day: _date) -> list[_time]:
 
 
 def _latest_cron_slot(
-    automation: Automation, moment: datetime,
+    automation: Automation,
+    moment: datetime,
+    *,
+    grace: timedelta | None = _CRON_GRACE,
 ) -> tuple[_date, _time] | None:
     """The most recent (local date, slot) whose instant is at or before ``moment``.
 
-    Walks local dates backward so a slot is found by the clock the owner wrote
-    it in. Returns the LATEST such slot, and only while it is still inside
-    ``_CRON_GRACE`` -- an older one is missed, not owed. Without that bound a
-    schedule created at noon would immediately owe the morning slot that passed
-    before it existed.
+    Candidates are ordered by INSTANT, not by wall-clock label. Across a
+    spring-forward gap the two orders differ -- several absent labels clamp to
+    the moment the gap closes, so a later label can hold an earlier or equal
+    instant -- and a label-ordered walk then picks a slot whose instant is not
+    the latest (Codex refute, PR #4128: Lord Howe ``15,30 2 * * *`` promised
+    15:45Z while selection owed 15:30Z).
+
+    ``grace`` bounds how late a slot may be claimed; ``None`` removes the bound,
+    which is what `slot_key_for_due` needs when it asks "which slot IS this
+    recorded instant" rather than "what is owed now".
+
+    A slot before the automation existed is never owed: the grace window is for
+    a poller that is late, not a licence to run history. Without that floor,
+    creating a 7am schedule at 07:59 local immediately owed 07:00 -- before
+    there was an automation (same review, claim 3).
     """
     from tinyassets.scheduler import CronParseError, CronSchedule
 
@@ -1612,57 +1625,76 @@ def _latest_cron_slot(
     except CronParseError:
         return None
     zone = resolve_zone(cron_zone_name(automation))
+    born = _parse(automation.created_at)
     today = local_now(moment, zone).date()
+    candidates: list[tuple[datetime, _date, _time]] = []
     for back in range(_CRON_LOOKBACK_DAYS + 1):
         local_day = today - timedelta(days=back)
-        for slot in reversed(_cron_slots_on(schedule, local_day)):
+        for slot in _cron_slots_on(schedule, local_day):
             instant = slot_instant(local_day, slot, zone)
             if instant > moment:
                 continue
-            if moment - instant > _CRON_GRACE:
-                return None
-            return local_day, slot
-    return None
+            if grace is not None and moment - instant > grace:
+                continue
+            if born is not None and instant < born:
+                continue
+            candidates.append((instant, local_day, slot))
+    if not candidates:
+        return None
+    # Latest instant; the local slot breaks a tie deterministically, so two
+    # pollers reading the same row at the same wall-clock agree.
+    instant, local_day, slot = max(candidates)
+    return local_day, slot
 
 
 def slot_key_for_due(
     cron_expr: str, zone_name: str, due_at: str,
 ) -> str:
-    """The local slot key a recorded ``due_at`` came from, or ``""``.
+    """The local slot key a recorded ``due_at`` belongs to, or ``""``.
 
-    The recording path (`release_attempt` / `finish_attempt`) is handed a UTC
-    instant, and the de-duplication key is a LOCAL slot, so the instant has to
-    be inverted. Done by re-resolving the expression's own slots around that
-    instant and matching -- exact, because `_due_instant` produced the instant
-    from a slot by the same function.
+    ONE definition of "which slot", shared by selection and persistence.
+    `_due_instant` asks `_latest_cron_slot` for the slot owed at a moment; this
+    asks the SAME function at the recorded instant, so the key stored is by
+    construction the key that selection will later compare against.
 
-    UTC -> local is not injective across a spring-forward gap: on a Los Angeles
-    2027-03-14, both local 02:00 (absent, so pushed to the gap's end) and local
-    03:00 resolve to 10:00Z. The EARLIEST matching slot wins, which keeps the
-    key stable and means an expression naming both treats them as the one
-    firing they genuinely are -- they are the same instant.
+    The first version inverted instead -- re-deriving the slot by matching
+    instants -- and UTC to local is not injective across a spring-forward gap,
+    where every absent wall time clamps to the moment the gap closes and a real
+    slot can sit there too. Selection chose one of them and inversion chose
+    another (the earliest), so the recorded key never matched and the slot
+    stayed owed for the rest of the day (Codex refute, PR #4128, claim 2: Los
+    Angeles hourly at 10:00Z selected local 03:00 and stored 02:00). Deriving
+    both from one function removes the disagreement instead of trying to keep
+    two derivations in step.
 
     Returns ``""`` for a non-cron row or an unparseable expression, which leaves
     the UTC-instant bridge in `_already_fired` as the guard.
     """
-    from tinyassets.scheduler import CronParseError, CronSchedule
-
     instant = _parse(due_at)
     if instant is None or not (cron_expr or "").strip():
         return ""
-    try:
-        schedule = CronSchedule.parse(cron_expr)
-        zone = resolve_zone(zone_name or DEFAULT_TIMEZONE)
-    except (CronParseError, UnknownTimezone):
+    probe = Automation(
+        automation_id="", universe_id="", owner_principal_id="", name="",
+        branch_def_id="", trigger_kind=TRIGGER_CRON, interval_seconds=0,
+        cron_expr=cron_expr, inputs={}, desired_state=STATE_ACTIVE,
+        pause_reason="", revision=1, created_at="", updated_at="", retired_at="",
+        last_due_at="", last_run_id="", last_reason="", last_finished_at="",
+        timezone=zone_name or DEFAULT_TIMEZONE,
+    )
+    found = _latest_cron_slot(probe, instant, grace=None)
+    if found is None:
         return ""
-    # A slot's local date can sit either side of its UTC date, so look at both
-    # neighbours rather than only the instant's own local date.
-    middle = local_now(instant, zone).date()
-    for local_day in (middle - timedelta(days=1), middle, middle + timedelta(days=1)):
-        for slot in _cron_slots_on(schedule, local_day):
-            if slot_instant(local_day, slot, zone) == instant:
-                return slot_key(local_day, slot)
-    return ""
+    # The slot selection picks at this moment must actually BE this moment. It
+    # normally is -- `due_at` came from selection -- and demanding it means an
+    # instant no slot produces reports "" instead of quietly claiming the
+    # preceding slot, which would suppress that slot's real fire.
+    try:
+        zone = resolve_zone(cron_zone_name(probe))
+    except UnknownTimezone:
+        return ""
+    if slot_instant(found[0], found[1], zone) != instant:
+        return ""
+    return slot_key(*found)
 
 
 def _already_fired(automation: Automation, local_day: _date, slot: _time) -> bool:
@@ -1795,10 +1827,21 @@ def next_due_at(automation: Automation, now: datetime) -> str:
         limit = (moment + NEXT_DUE_HORIZON).astimezone(zone).date()
         local_day = today
         while local_day <= limit:
-            for slot in _cron_slots_on(schedule, local_day):
-                instant = slot_instant(local_day, slot, zone)
-                if instant > moment:
-                    return _iso(instant)
+            # Sorted by INSTANT within the day: wall-label order is not instant
+            # order across a spring-forward gap, where absent labels clamp to
+            # the gap's end. Promising the first label past `moment` returned an
+            # instant LATER than the one selection would owe, so the promised
+            # slot was never the one that ran (Codex refute, PR #4128).
+            ahead = sorted(
+                instant
+                for instant in (
+                    slot_instant(local_day, slot, zone)
+                    for slot in _cron_slots_on(schedule, local_day)
+                )
+                if instant > moment
+            )
+            if ahead:
+                return _iso(ahead[0])
             local_day += timedelta(days=1)
     return ""
 

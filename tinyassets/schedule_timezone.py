@@ -34,7 +34,7 @@ it here is that a future reader can tell it was CHOSEN.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 #: What a schedule runs on when nothing better is known. Never a guess at the
@@ -89,13 +89,61 @@ def normalize_timezone(name: str) -> str:
 def slot_instant(local_day: date, slot: time, zone: ZoneInfo) -> datetime:
     """The UTC instant a local wall-clock slot means on ``local_day``.
 
-    Implements the decided DST policy; see the module docstring for the
-    measurements. ``fold=0`` (the default) is the earlier of an ambiguous pair,
-    and a non-existent wall time normalizes forward to the end of the gap --
-    which is "the first valid instant after it".
+    Implements the decided DST policy:
+
+    * ordinary wall time -> its instant;
+    * AMBIGUOUS (fall-back) -> the FIRST of its two occurrences, which is what
+      ``fold=0`` already selects;
+    * NON-EXISTENT (spring-forward gap) -> the first valid instant at or after
+      it, found explicitly by ``_gap_end``.
+
+    The gap case needs that explicit step, which the first version of this
+    module got wrong (Codex refute, PR #4128). Attaching a zone to a
+    non-existent wall time preserves the POSITION WITHIN the gap rather than
+    clamping to its end: Los Angeles 02:15 on 2027-03-14 became 03:15, and Lord
+    Howe's missing 02:15 became 02:45. Only a slot at the gap's exact start
+    happened to land on the gap's end, which is why testing 02:00 alone read as
+    "the policy needs no code".
     """
     naive = datetime.combine(local_day, slot)
-    return naive.replace(tzinfo=zone).astimezone(timezone.utc)
+    attached = naive.replace(tzinfo=zone)
+    if attached.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None) == naive:
+        return attached.astimezone(timezone.utc)
+    return _gap_end(naive, zone)
+
+
+def _gap_end(naive: datetime, zone: ZoneInfo) -> datetime:
+    """The first instant whose local wall time is at or after ``naive``.
+
+    ``naive`` is inside a spring-forward gap, so no instant has exactly that
+    wall time and the policy is to fire at the moment the gap closes.
+
+    Both folds bracket the transition -- ``fold=1`` uses the post-transition
+    offset and lands BEFORE the gap, ``fold=0`` uses the pre-transition offset
+    and lands after it -- so the answer is found by bisecting between them on
+    minute boundaries. Cron is minute-granular and the tz database places
+    transitions on whole minutes, so a minute bisect is exact here and needs
+    about six steps for a one-hour gap.
+    """
+    low = naive.replace(tzinfo=zone, fold=1).astimezone(timezone.utc)
+    high = naive.replace(tzinfo=zone, fold=0).astimezone(timezone.utc)
+    if high < low:
+        low, high = high, low
+
+    def _at_or_after(moment: datetime) -> bool:
+        return moment.astimezone(zone).replace(tzinfo=None) >= naive
+
+    if _at_or_after(low):
+        return low
+    minutes = int((high - low).total_seconds() // 60)
+    lo, hi = 0, max(minutes, 1)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _at_or_after(low + timedelta(minutes=mid)):
+            hi = mid
+        else:
+            lo = mid + 1
+    return low + timedelta(minutes=lo)
 
 
 def slot_exists(local_day: date, slot: time, zone: ZoneInfo) -> bool:
