@@ -36,6 +36,13 @@ echo "=== deep-link scheme ==="
 python3 scripts/add_app_scheme.py
 grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
 
+echo "=== firebase config (push) ==="
+# Reads ANDROID_GOOGLE_SERVICES_JSON_B64, else ANDROID_GOOGLE_SERVICES_JSON_FILE,
+# else /keys/google-services.json (build.sh is run without /keys mounted, so a
+# plain build logs "push DISABLED" and still succeeds). Mount the keys dir
+# read-only to build with push on.
+python3 scripts/materialize_google_services.py
+
 echo "=== launcher icon + splash ==="
 python3 scripts/add_app_icons.py
 

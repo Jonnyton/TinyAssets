@@ -192,6 +192,9 @@ def _source_manifest() -> str:
         """    </activity>\n"""
         """    <service android:name=".LocalCallbackService" android:exported="false" """
         """android:foregroundServiceType="dataSync"/>\n"""
+        """    <service android:name=".TinyAssetsMessagingService" android:exported="false">"""
+        """<intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT"/>"""
+        """</intent-filter></service>\n"""
         """  </application>\n</manifest>\n"""
     )
 

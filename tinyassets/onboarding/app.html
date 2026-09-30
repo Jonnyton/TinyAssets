@@ -4063,6 +4063,7 @@
     if(me&&me.universe_id) setQueueScope(me.universe_id);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
+    if(NATIVE){ rebindNativeNotifications(); collectNotificationReply(); }
     // Not awaited: the owner's clock is for the NEXT schedule they create, so
     // it must not sit in front of the page they are waiting for.
     reportTimezone();
@@ -4318,6 +4319,7 @@
   function enterSignedOut(){ clearInterval(statusTimer); clearInterval(workingTimer); workingTimer=null;
     MCP.endLogin(); Voice.stop(false);
     if(typeof unsubscribeBrowserNotifications === "function") unsubscribeBrowserNotifications();
+    if(NATIVE) unregisterNativeNotifications();
     // Pending attachments belong to the account that picked them. They are
     // dropped, never released (release needs that same login and home) and
     // never carried into whoever signs in next.
@@ -5376,6 +5378,8 @@
     function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); }
     $("btn-notifications").addEventListener("click", ()=>toggleNotifications(false));
     $("btn-browser-notifications").addEventListener("click", ()=>toggleNotifications(true));
+    // The phone app has no browser push; its one switch registers the phone.
+    if(NATIVE) $("btn-browser-notifications").hidden=true;
     // ---- your universe's connections ----
     // Disconnect is a deliberate TWO-STEP, in-page confirmation. It used to
     // raise the browser's own confirm(): one string, drawn outside the page,
@@ -5971,6 +5975,123 @@
 
   // ---- Pending-request rail ------------------------------------------------
   let notificationEnabled=false, notificationBusy=false, notificationLoad=0;
+  // ---- Native (Android / FCM) notifications ----
+  // Same route, same ownership model as the browser: the token is POSTed to
+  // /app/devices under the signed-in session and the server files it under the
+  // authenticated subject -- nothing in the body names an owner. The token is
+  // write-only (no read returns it).
+  const NATIVE_PUSH_FLAG="app.push.fcm";
+  let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
+  function nativePush(){ return NATIVE ? nativePlugin("PushNotifications") : null; }
+  function wireNativePush(){
+    const P=nativePush();
+    if(!P || nativePushWired) return;
+    nativePushWired=true;
+    P.addListener("registration", ev=>{
+      const value=ev && ev.value;
+      if(nativeTokenWaiter){ const w=nativeTokenWaiter; nativeTokenWaiter=null; w.resolve(value); return; }
+      // Android rotated the token while nobody was waiting: move the new one to
+      // the server, but only for a phone the owner turned notifications on for.
+      if(value && token() && localStorage.getItem(NATIVE_PUSH_FLAG)==="1")
+        notificationAPI(notificationSession(),"/app/devices",{platform:"fcm",token:value,label:"This phone"}).catch(()=>{});
+    });
+    P.addListener("registrationError", ()=>{
+      if(nativeTokenWaiter){ const w=nativeTokenWaiter; nativeTokenWaiter=null;
+        w.reject(new Error("Couldn't reach Google's notification service. Try again.")); }
+    });
+  }
+  function nativeFcmToken(){
+    const P=nativePush();
+    if(!P) return Promise.reject(new Error("Notifications aren't available in this version of the app."));
+    wireNativePush();
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{
+        if(nativeTokenWaiter){ nativeTokenWaiter=null; reject(new Error("Couldn't reach Google's notification service. Try again.")); }
+      },20000);
+      nativeTokenWaiter={resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(e);}};
+      // A build without Firebase configured has no push: register() rejects.
+      Promise.resolve().then(()=>P.register()).catch(()=>{
+        if(nativeTokenWaiter){ const w=nativeTokenWaiter; nativeTokenWaiter=null;
+          w.reject(new Error("Notifications aren't set up in this version of the app yet.")); }
+      });
+    });
+  }
+  async function registerNativeNotifications(session){
+    const P=nativePush();
+    if(!P) throw new Error("Notifications aren't available in this version of the app.");
+    let permission=await P.checkPermissions();
+    if(permission.receive!=="granted") permission=await P.requestPermissions();
+    if(permission.receive!=="granted") throw new Error("Notifications are blocked. Allow them in Android settings to turn them on.");
+    const value=await nativeFcmToken();
+    if(!value) throw new Error("Couldn't get a notification address for this phone. Try again.");
+    await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
+    localStorage.setItem(NATIVE_PUSH_FLAG,"1");
+  }
+  async function rebindNativeNotifications(){
+    // The phone's token can change while the app is closed, and nothing is
+    // listening then. Fetch the current one on every sign-in and re-post it;
+    // the store refreshes the same device in place.
+    const P=nativePush();
+    if(!P || localStorage.getItem(NATIVE_PUSH_FLAG)!=="1") return;
+    const session=notificationSession();
+    try{
+      const permission=await P.checkPermissions();
+      if(permission.receive!=="granted"){ localStorage.removeItem(NATIVE_PUSH_FLAG); return; }
+      const value=await nativeFcmToken();
+      if(!value) return;
+      await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
+    }catch(_error){
+      // If ownership cannot be moved, stop this phone receiving the old
+      // owner's notifications. The owner can turn them on again in Account.
+      if(session.current()) await unregisterNativeNotifications();
+    }
+  }
+  async function unregisterNativeNotifications(){
+    const P=nativePush();
+    localStorage.removeItem(NATIVE_PUSH_FLAG);
+    if(!P) return;
+    try{ await P.unregister(); await P.removeAllDeliveredNotifications(); }
+    catch(_error){ console.warn("Could not remove this phone's push registration."); }
+  }
+  // The text typed into a notification's inline Reply arrives natively, only
+  // after MainActivity verified the intent came from this app. It is submitted
+  // here, through the signed-in session, like any other answer.
+  async function collectNotificationReply(){
+    const R=NATIVE ? nativePlugin("NotificationReply") : null;
+    if(!R) return;
+    try{
+      const reply=await R.consume();
+      if(reply && reply.request_id && reply.text){
+        pendingReply={request_id:reply.request_id,item_id:reply.item_id||"",text:reply.text,seen:0};
+        refreshRail();
+      }
+    }catch(_error){ /* no reply waiting */ }
+  }
+  function applyPendingReply(){
+    const p=pendingReply;
+    if(!p) return;
+    const req=(railCache||[]).find(r=>r.request_id===p.request_id);
+    let item=null;
+    if(req && p.item_id) item=(req.items||[]).find(i=>i.item_id===p.item_id) || null;
+    const answered=!req || (p.item_id && (!item || (item.status && item.status!=="pending")));
+    if(answered){
+      // Answered on another device meanwhile. Keep the words rather than lose
+      // them: the composer, when the owner has nothing typed there.
+      if(++p.seen>=2){
+        pendingReply=null;
+        const box=$("composer-input");
+        if(box && !box.value) box.value=p.text;
+      }
+      return;
+    }
+    const id=item ? req.request_id+"::"+item.item_id : req.request_id;
+    const target=item ? {...item, request_id:id, parent_request_id:req.request_id} : req;
+    const field=$("fb_"+id), note=$("note_"+id);
+    if(!field || !note) return;   // the card is not built yet; the next render retries
+    pendingReply=null;
+    field.value=p.text;
+    answerRail(target,"reply",note,[]);
+  }
   async function rebindBrowserNotifications(){
     // A persistent browser subscription must move with the verified login,
     // even when the new owner never opens Account.
@@ -6033,7 +6154,7 @@
         li.textContent=(device.label || device.platform) + (device.enabled ? " — enabled" : " — off");
         $("notification-devices").appendChild(li);
       });
-      if(!settings.vapid_public_key) status.textContent="Browser notifications are not configured yet.";
+      if(!NATIVE && !settings.vapid_public_key) status.textContent="Browser notifications are not configured yet.";
     }catch(error){ if(session.current() && generation===notificationLoad) status.textContent=error.message; }
   }
   async function toggleNotifications(registerBrowser){
@@ -6042,7 +6163,9 @@
     const button=$("btn-notifications"), status=$("notification-status");
     notificationBusy=true; button.disabled=true;
     try{
-      if(enable){
+      if(enable && NATIVE){
+        await registerNativeNotifications(session);
+      } else if(enable){
         if(!("Notification" in window) || !navigator.serviceWorker || !("PushManager" in window))
           throw new Error("This browser does not support push notifications.");
         // Ask while the click's user activation is still available.
@@ -6181,6 +6304,7 @@
     if(typeof railLink !== "undefined" && railLink && (items||[]).some(r=>r.request_id===railLink)){
       railOpen=railLink; railLink=null;
     }
+    if(typeof pendingReply !== "undefined" && pendingReply && (items||[]).some(r=>r.request_id===pendingReply.request_id)) railOpen=pendingReply.request_id;
     railCache = items || [];
     const rail = $("request-rail"), host = $("rail-items"), head = $("rail-head");
     if(!rail || !host) return;
@@ -6286,6 +6410,7 @@
       const target=$("item_" + railOpen + "::" + railDeepItem);
       if(target){ target.scrollIntoView({block:"nearest"}); target.focus(); railDeepItem=null; }
     }
+    if(typeof pendingReply !== "undefined" && pendingReply) applyPendingReply();
   }
 
   function updateRailItems(req){

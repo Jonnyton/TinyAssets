@@ -54,6 +54,13 @@ PLATFORM_ANDROID = "android"
 PLATFORM_WEB = "web"
 PLATFORMS = frozenset({PLATFORM_ANDROID, PLATFORM_WEB})
 
+#: Names a client may use for a platform the store keeps under another name.
+#: The Android app says what it holds -- an FCM registration token -- and the
+#: store files that under ``android``, the key the FCM transport is resolved by.
+#: Resolved HERE, before the platform decides how a token is read, so an alias
+#: can never select a different identity rule than the platform it names.
+PLATFORM_ALIASES = {"fcm": PLATFORM_ANDROID}
+
 #: Delivery kinds. ``raised`` is the visible notification for a new request;
 #: ``clear`` is the silent data message that takes it off the owner's other
 #: devices once they answered on one.
@@ -387,6 +394,7 @@ def register_device(
     if not sub:
         raise ValueError("owner_user_id is required")
     kind = (platform or "").strip().lower()
+    kind = PLATFORM_ALIASES.get(kind, kind)
     if kind not in PLATFORMS:
         raise ValueError("platform must be one of " + ", ".join(sorted(PLATFORMS)))
     stored, identity = _canonical_token(token, kind)
