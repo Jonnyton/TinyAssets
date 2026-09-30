@@ -35,13 +35,44 @@ from tinyassets.provider_work_authority import (
     ProviderWorkReceiptState,
     provider_work_receipt_id,
 )
+from tinyassets.providers.owner_binding import (
+    AUTHORITY_HELD_DETAIL as _AUTHORITY_HELD_DETAIL,
+)
+from tinyassets.providers.owner_binding import (
+    CONNECT_PROVIDER_MESSAGE as _CONNECT_PROVIDER_MESSAGE,
+)
 
 RUN_GRAPH_OPERATION = "run_graph"
 _SUPPORTED_ROLES = frozenset({"writer", "judge"})
-_HELD = (
-    "Connect your provider before running this universe. TinyAssets will not "
-    "borrow platform credentials or start a metered trial."
-)
+#: Imported, not re-declared: `providers.owner_binding` owns both sentences.
+_HELD = _CONNECT_PROVIDER_MESSAGE
+_HELD_DETAIL = _AUTHORITY_HELD_DETAIL
+
+
+def _held_authority_error(cause: BaseException | None = None):
+    """The held class, saying what is actually missing.
+
+    Three `except Exception` handlers on this lane raised `_HELD` for every
+    refusal they caught, so "Connect your provider" was the only thing a held
+    run ever said -- including to owners who had. See `_HELD_DETAIL` for the
+    live case. A cause with words of its own keeps them, scrubbed and clipped
+    through the router's existing `redacted_failure_detail`: a wrapped cause can
+    be an OS or HTTP error, so its text is never assumed credential-free.
+
+    `NoServingProvider` is the one cause that maps back to `_HELD`: it IS "no
+    provider is connected", and its own words would read as a second, weaker
+    version of the same instruction.
+    """
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_serving_binding import NoServingProvider
+    from tinyassets.providers.diagnostics import redacted_failure_detail
+
+    if cause is None or isinstance(cause, NoServingProvider):
+        return ProviderAuthorityHeldError(_HELD)
+    detail = redacted_failure_detail(str(cause).strip())
+    if not detail:
+        return ProviderAuthorityHeldError(_HELD)
+    return ProviderAuthorityHeldError(_HELD_DETAIL + detail)
 
 
 def _content_digest(payload: object) -> str:
@@ -327,7 +358,9 @@ class _ForegroundRunProviderSession:
         from tinyassets.exceptions import ProviderAuthorityHeldError
 
         if self._run_id:
-            raise ProviderAuthorityHeldError(_HELD)
+            raise _held_authority_error(
+                PermissionError("this provider session is already bound to a run")
+            )
         try:
             snapshot = branch.to_dict()
             branch_def_id = str(snapshot.get("branch_def_id") or "").strip()
@@ -342,7 +375,7 @@ class _ForegroundRunProviderSession:
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
-            raise ProviderAuthorityHeldError(_HELD) from exc
+            raise _held_authority_error(exc) from exc
 
     def _admit(self) -> None:
         from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -359,7 +392,9 @@ class _ForegroundRunProviderSession:
         )
 
         if not self._run_id or self._branch_snapshot is None:
-            raise ProviderAuthorityHeldError(_HELD)
+            raise _held_authority_error(
+                PermissionError("this provider session is not bound to a run yet")
+            )
         # Enforcement site (C), foreground half (design.md § Enforcement sites).
         # This lane never calls `claim_assigned`, so the claim CAS cannot cover
         # it; admission has to happen here, and it has to happen *here* rather
@@ -570,7 +605,7 @@ class _ForegroundRunProviderSession:
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
-            raise ProviderAuthorityHeldError(_HELD) from exc
+            raise _held_authority_error(exc) from exc
 
     def _admit_manifest(self, conn, store, agent, assignment, nodes, roles):
         """One aggregate receipt for all nodes, not one full allowance per source."""
@@ -1018,7 +1053,7 @@ class _ForegroundRunProviderSession:
         except Exception as exc:
             if carrier is not None:
                 raise
-            raise ProviderAuthorityHeldError(_HELD) from exc
+            raise _held_authority_error(exc) from exc
         finally:
             cleanup_llm_credential_snapshot(snapshot)
 
@@ -1046,9 +1081,9 @@ class _ForegroundRunProviderSession:
         ):
             raise PermissionError("foreground provider authority cannot be substituted")
         if self._closed:
-            from tinyassets.exceptions import ProviderAuthorityHeldError
-
-            raise ProviderAuthorityHeldError(_HELD)
+            raise _held_authority_error(
+                PermissionError("this run's provider session is already closed")
+            )
 
         # Enforcement site (C), foreground half, at the call boundary — the
         # mirror of the served lane's gate in `background_served_provider._call`.
@@ -1279,7 +1314,7 @@ class _ForegroundRunProviderSession:
 def captured_work_preference(
     base_path: str | Path, *, universe_id: str, principal_id: str,
 ) -> dict[str, Any] | None:
-    """The owner's SAVED model preference, captured once, or None for legacy.
+    """This run's captured model-choice document -- saved preference or not.
 
     `openspec/specs/agent-model-selection/spec.md` already promises that a work
     choice needs neither a change to the universe's main serving provider nor a
@@ -1291,15 +1326,31 @@ def captured_work_preference(
     new authority: a preference grants nothing, and `_admit` /
     `_authorize_attempt` still decide every invocation on current authority.
 
+    **A document is returned even with NOTHING saved** (`saved: None`), which is
+    the automatic mode a chat turn uses when its owner has chosen no model.
+    Returning None there left the run on the legacy pin, and the legacy pin
+    resolves an unspecified node model as
+    `snapshot.default_model_id or definition.model` -- the source's DECLARED
+    default. Live 2026-09-30, universe `u-01ky3zh1arr8qth8jee7zx63pq`
+    (runs 61184d8f21724915 / 4828ae18e2414e77): an `api_key_http` OpenRouter
+    source whose declared `inclusionai/ling-3.0-flash-vl:free` had left the
+    account's 632-model catalogue. The owner's chat turn ordered the fresh
+    catalogue and ran; every run, automation and agent node of that universe
+    pinned the vanished id and failed `authority_held`. One resolver
+    (`prepare_owned_model_plan`) now answers "which model" for both surfaces, so
+    they cannot disagree again.
+
     `current` is always None. A tab-local override belongs to an interactive
     turn; a run has no tab, so only the durable saved default and its ordered
     fallbacks apply.
 
-    Returns None -- exactly the pre-existing behaviour -- when there is no
-    saved preference, when the scope is not nameable, or when this universe is
+    Returns None only when the scope is not nameable, or when this universe is
     no longer the principal's home. A moved home is NOT swallowed: the session's
     own `_validate_founder_home` refuses the run a step later with the failure
-    class it already had, so reading a preference cannot invent a new one.
+    class it already had, so reading a preference cannot invent a new one. A
+    universe on a LEGACY (no-manifest) assignment also keeps its existing path:
+    `prepare_owned_model_plan` returns no plan for one, and
+    `prepare_captured_choices` passes that through as no captured choices.
     """
     from tinyassets.storage.model_preferences import (
         ModelPreferenceStore,
@@ -1315,11 +1366,9 @@ def captured_work_preference(
         )
     except (PreferenceHomeChanged, ValueError):
         return None
-    if snapshot.policy is None:
-        return None
     return {
         "version": 1,
-        "saved": snapshot.policy.document(),
+        "saved": None if snapshot.policy is None else snapshot.policy.document(),
         "observed_generation": snapshot.generation,
         "current": None,
     }

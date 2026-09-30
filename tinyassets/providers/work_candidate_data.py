@@ -111,7 +111,12 @@ class WorkCandidateData:
             ):
                 raise PermissionError("explicit work model order is not fully eligible")
         if not self.order:
-            raise PermissionError("no eligible work model remains")
+            # TYPED, not a bare PermissionError: `_admit`'s handler converts any
+            # other exception into held authority, and "your accepted sources
+            # produced no runnable model" is a different owner action from
+            # "connect a provider". The run taxonomy keys on this MESSAGE, which
+            # is why it is the class constant rather than a local literal.
+            raise WorkModelExhaustedError(WorkModelExhaustedError.MESSAGE)
         self._fitted = None
         self._exhaustion = ()
         self._lock = threading.RLock()
