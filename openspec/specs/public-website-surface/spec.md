@@ -25,7 +25,7 @@ The site SHALL present TinyAssets as a personal universe: a cloud agent that run
 
 - **WHEN** a visitor reads the home page
 - **THEN** the proof is a receipt of a real run (fetch → code → write, pull request #2728, `README: 91 lines.`, merged 2026-08-30) with a link to the public pull request
-- **AND** the primary action is the web app at `https://tinyassets.io/mcp/app`
+- **AND** the primary action is the web app at `https://tinyassets.io/app`
 
 #### Scenario: Subscription copy stays truthful
 
@@ -121,7 +121,7 @@ data, and SHALL NOT offer an unsigned `Refresh MCP` control.
 
 ### Requirement: Start, Surfaces, And Availability Copy Are Truthful
 
-`/start` SHALL present three steps (sign in; connect a subscription; say what real thing to finish) and the four surfaces with their real addresses: the web app at `https://tinyassets.io/mcp/app`, the chatbot connector URL `https://tinyassets.io/mcp` for Claude.ai and ChatGPT, the Android pre-release APK at the `android-latest` release asset, and the desktop app as unsigned builds from `desktop-app/` in the repository. `/fine-print` SHALL state plainly what does not exist: no platform model, no list of integrations, no signed desktop installer and no Play listing yet, no paid work market. `/developers` SHALL name `https://tinyassets.io/mcp` as the only public endpoint and list the seven canonical handles (`converse`, `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `get_status`) with the source-install path (Python 3.11+, clone, editable install, `tinyassets-mcp` / `tinyassets-cli`).
+`/start` SHALL present three steps (sign in; connect a subscription; say what real thing to finish) and the four surfaces with their real addresses: the web app at `https://tinyassets.io/app`, the chatbot connector URL `https://tinyassets.io/mcp` for Claude.ai and ChatGPT, the Android pre-release APK at the `android-latest` release asset, and the desktop app as unsigned builds from `desktop-app/` in the repository. `/fine-print` SHALL state plainly what does not exist: no platform model, no list of integrations, no signed desktop installer and no Play listing yet, no paid work market. `/developers` SHALL name `https://tinyassets.io/mcp` as the only public endpoint and list the seven canonical handles (`converse`, `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `get_status`) with the source-install path (Python 3.11+, clone, editable install, `tinyassets-mcp` / `tinyassets-cli`).
 
 #### Scenario: Visitor asks for a desktop installer
 

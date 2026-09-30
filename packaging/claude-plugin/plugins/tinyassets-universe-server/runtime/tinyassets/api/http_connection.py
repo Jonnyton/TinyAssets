@@ -49,12 +49,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
 from tinyassets.storage.outbound_connections import (
     _SSRF_ALLOWED_METHODS,
+    _URL_SECRET_SCHEME,
     ACCESS_EXACT,
     ACCESS_FULL,
     ActionCap,
@@ -62,6 +64,9 @@ from tinyassets.storage.outbound_connections import (
     SsrfValidationError,
     _parse_allowed_endpoints,
     normalize_access_mode,
+    url_secret_token,
+    validate_url_secret_binding,
+    validate_url_secret_value,
 )
 from tinyassets.storage.workspace_authority import (
     GitScopeError,
@@ -99,15 +104,216 @@ _ABSENT = object()
 #: a smuggling attempt (``Content-Length`` was the one that prompted them).
 #:
 #: Generic on purpose: ``oauth1a`` is what makes every OAuth 1.0a API
-#: depositable with no service code, and ``header`` does the same for every
-#: custom-header API.
-_DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "header", "oauth1a"})
+#: depositable with no service code, ``header`` does the same for every
+#: custom-header API, and ``url_secret`` for every capability URL — a webhook
+#: link whose secret is a path segment, which is how Slack, Discord, Zapier,
+#: Make and this platform's own ``/mcp/hooks/<token>`` all work. Before it, a
+#: universe handed such a link had two options and both were wrong: ask for a
+#: bearer token that does not exist, or hardcode the secret into
+#: ``path_template`` where the grant stores and shows it in the clear. It did
+#: the second, live, on 2026-09-30.
+_DEPOSITABLE_AUTH_SCHEMES = frozenset(
+    {"bearer", "basic", "header", "oauth1a", _URL_SECRET_SCHEME}
+)
+#: The ONE field name a ``url_secret`` card uses. Fixed for the same reason
+#: ``oauth1a``'s four are: the deposit reads it. Label it the way the service
+#: words it ("Webhook URL"), name it this.
+URL_SECRET_FIELD_NAME = "capability_url"
 #: ``oauth2`` is deposited ONLY by a completed sign-in (``connection_oauth.flow``
 #: through ``pending_requests.answer_connect_with_token``), never pasted: its
 #: token bundle names the token URL a refresh token is sent to, so only the
 #: owner's own sign-in may write it.
 _SIGN_IN_AUTH_SCHEME = "oauth2"
 _OAUTH1A_FIELDS = ("api_key", "api_secret", "access_token", "access_token_secret")
+
+
+#: A fixed path segment this long, this mixed and this varied is not a path.
+#: 20 characters with both a letter and a digit and at least 10 DISTINCT
+#: characters clears every ordinary API path segment (``completions``,
+#: ``messages``, ``contents``, ``pulls``, ``v1``, ``2``) and catches every
+#: capability secret in the table in ``proposal.md`` -- a 43-character
+#: ``secrets.token_urlsafe(32)`` hook token, Slack's 24-character webhook token,
+#: Discord's 68. It also catches an opaque PUBLIC id (a Google Sheets id), which
+#: is a deliberate false positive: hardcoding one is still the wrong shape, and
+#: the refusal names the right one (a ``{param}`` with a pattern).
+_EMBEDDED_SECRET_MIN_CHARS = 20
+_EMBEDDED_SECRET_MIN_DISTINCT = 10
+
+
+def looks_like_embedded_secret(segment: str) -> bool:
+    """Whether a FIXED path segment reads as a credential or an opaque id.
+
+    A heuristic, on purpose, and deliberately biased toward the shape the
+    handbook already teaches: whichever of the two it is, the repair is a
+    placeholder, so a false positive costs an agent one better-shaped endpoint
+    and a false negative costs a user their secret stored in the clear.
+    """
+    text = segment if isinstance(segment, str) else ""
+    if len(text) < _EMBEDDED_SECRET_MIN_CHARS:
+        return False
+    if not any(c.isdigit() for c in text) or not any(c.isalpha() for c in text):
+        return False
+    return len(set(text)) >= _EMBEDDED_SECRET_MIN_DISTINCT
+
+
+def embedded_secret_refusal(endpoints: Any) -> dict[str, Any] | None:
+    """Refuse a hardcoded secret in a ``path_template``, or return ``None``.
+
+    THE live 2026-09-30 failure: with no shape for a capability URL, the universe
+    put the friend's webhook secret into ``path_template`` -- a grant field that
+    is stored in the clear, projected to ``read_graph target="connections"``,
+    rendered in the owner's grant sentence and copied into a remixed connector
+    artifact.
+
+    Runs at the AUTHORING doors only (this ask, this deposit, this extension),
+    never in ``_validate_path_template``, which also re-parses STORED templates.
+    Putting it there would make an already-deposited connection unreadable and
+    unremovable, which is a data-loss bug wearing a security fix's name.
+    """
+    if not isinstance(endpoints, list):
+        return None
+    for endpoint in endpoints:
+        template = (
+            endpoint.get("path_template")
+            if isinstance(endpoint, dict)
+            else getattr(endpoint, "path_template", None)
+        )
+        if not isinstance(template, str):
+            continue
+        for index, segment in enumerate(template.split("/")[1:], start=1):
+            if segment.startswith("{") or not looks_like_embedded_secret(segment):
+                continue
+            return {
+                "error": "connection_setup_invalid",
+                "detail": (
+                    f"path_template segment {index} looks like a secret or an "
+                    "opaque id, not a fixed path. If it is a credential (the "
+                    "code in a webhook link), do not put it here: use "
+                    f'"auth_scheme": "{_URL_SECRET_SCHEME}" and write '
+                    "{secret} in its place, and the owner pastes the whole "
+                    "link into the card -- the code goes to the vault instead "
+                    "of into this grant, where it would be stored and shown in "
+                    "the clear. If it is a public identifier, make it a {name} "
+                    "placeholder with a param_patterns regex."
+                ),
+            }
+    return None
+
+
+def extract_url_secret(
+    secret: str, endpoints: tuple[Any, ...]
+) -> tuple[str, str]:
+    """``(stored_segment, error)`` for a ``url_secret`` deposit.
+
+    The owner pastes the WHOLE LINK they were given, because that is what they
+    have -- the live failure asked them to "paste the code at the end of the
+    link", which is the platform making a person do a parse. So this parses it:
+    the URL must be plain https, and its host and path must match exactly ONE
+    declared endpoint whose template carries the reserved placeholder. The
+    captured segment(s) become the credential. A bare segment is still accepted
+    for an owner who pasted only the code.
+
+    NEVER echoes the pasted value. A refusal names the declared TEMPLATE, which
+    is the thing the owner can compare against what they were given.
+    """
+    text = (secret or "").strip()
+    carriers = [
+        (endpoint, url_secret_token(endpoint))
+        for endpoint in endpoints
+        if url_secret_token(endpoint)
+    ]
+    if not carriers:
+        return "", (
+            f"a {_URL_SECRET_SCHEME} deposit needs an endpoint whose "
+            "path_template carries {secret}"
+        )
+    expected = ", ".join(
+        f"https://{endpoint.host}{endpoint.path_template}"
+        for endpoint, _token in carriers
+    )
+    if not text.lower().startswith(("http://", "https://")):
+        # A bare segment. Validated against the grammar of the single carrier;
+        # with several, which one it belongs to would be a guess.
+        if len(carriers) != 1:
+            return "", (
+                "this connection declares several capability endpoints, so "
+                f"paste the whole link (expected one of: {expected})"
+            )
+        try:
+            return validate_url_secret_value(text, carriers[0][1]), ""
+        except SsrfValidationError as exc:
+            return "", str(exc)
+    try:
+        parts = urllib.parse.urlsplit(text)
+        # `parts.port` is lazy AND raises on a non-numeric port, so read it
+        # inside the same guard as the parse.
+        port = parts.port
+        hostname = parts.hostname
+    except ValueError:
+        # `urlsplit` QUOTES ITS INPUT: a netloc that changes under NFKC
+        # normalization (a full-width solidus, U+FF0F) raises
+        # "netloc '<the whole thing>' contains invalid characters", and the
+        # whole thing is the link with the secret in it. Swallowed to fixed
+        # text, with `from None` so no `__context__` carries it either
+        # (gpt-6-astra refute round 1, FINDING 5).
+        return "", (
+            "that link could not be read as a plain https URL -- paste it again "
+            f"exactly as you were given it (expected {expected})"
+        )
+    if (
+        parts.scheme != "https"
+        or parts.username is not None
+        or parts.password is not None
+        or port is not None
+        or parts.query
+        or parts.fragment
+        or not hostname
+    ):
+        # A PORT is refused, not ignored. Reading `hostname` alone accepted
+        # `https://host:8443/mcp/hooks/<secret>` against an endpoint that is
+        # dialed on 443 — so the owner's secret for one origin would be sent to
+        # a different one on the same name (astra round 1, FINDING 6). The
+        # endpoint grammar carries no port, so there is nothing to match against.
+        return "", (
+            "paste the plain https link you were given -- no sign-in prefix, no "
+            f"port, no query string and no #fragment (expected {expected})"
+        )
+    host = hostname.strip().lower()
+    # Zapier and Make show a trailing slash in their own UI; the endpoint
+    # template does not carry one, so tolerate exactly that.
+    path = parts.path.rstrip("/") or "/"
+    matches: list[str] = []
+    for endpoint, token in carriers:
+        if endpoint.host != host:
+            continue
+        prefix, _sep, suffix = endpoint.path_template.partition(token)
+        if suffix.strip("/"):
+            # The placeholder is not the tail of the template: the captured
+            # value is bounded by the fixed segments on both sides.
+            if not (path.startswith(prefix) and path.endswith(suffix)):
+                continue
+            captured = path[len(prefix):len(path) - len(suffix)]
+        else:
+            if not path.startswith(prefix):
+                continue
+            captured = path[len(prefix):]
+        try:
+            matches.append(validate_url_secret_value(captured, token))
+        except SsrfValidationError:
+            continue
+    unique = sorted(set(matches))
+    if not unique:
+        return "", (
+            "that link does not match the endpoint this request declared "
+            f"(expected {expected}). Check you pasted the right link, or raise "
+            "the ask for the link you have."
+        )
+    if len(unique) > 1:
+        return "", (
+            "that link matches more than one declared endpoint, so which part "
+            f"is the secret would be a guess (declared: {expected})"
+        )
+    return unique[0], ""
 
 
 def _secret_shape_error(scheme: str, secret: str) -> str:
@@ -522,6 +728,30 @@ def _connect_http(
     except (ValueError, TypeError) as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
     requested_endpoints = [e.as_dict() for e in parsed_endpoints]
+    # A secret hardcoded into an endpoint would be stored in the clear in the
+    # grant. Refused HERE, at the authoring door, with the shape that works.
+    hardcoded = embedded_secret_refusal(requested_endpoints)
+    if hardcoded is not None:
+        return hardcoded
+    # The capability-URL binding, before anything is written, so the owner reads
+    # a precise refusal rather than the storage layer's. The asked access mode
+    # rides along rather than being re-checked here: two statements of one rule
+    # is how the two drift, and the validator is the one the storage boundary
+    # and dispatch also call.
+    try:
+        validate_url_secret_binding(
+            scheme, parsed_endpoints, access_mode=asked_access
+        )
+    except SsrfValidationError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    if scheme == _URL_SECRET_SCHEME:
+        # THE extraction: the owner pasted the whole link, the platform finds the
+        # secret in it, and only the segment is written. Replaces `secret` for
+        # every write below, so no code path can store the full URL.
+        extracted, extract_error = extract_url_secret(secret, parsed_endpoints)
+        if extract_error:
+            return {"error": "connection_setup_invalid", "detail": extract_error}
+        secret = extracted
     # The connection SCOPE for an http connection is the set of HTTP methods it
     # permits — that is the "connection scope string" the authenticated_external_call
     # effector matches the packet ``verb`` against (proxy/broker check
@@ -1242,6 +1472,18 @@ def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     shape_error = _secret_shape_error(scheme, secret)
     if shape_error:
         return {"error": "connection_setup_invalid", "detail": shape_error}
+    if scheme == _URL_SECRET_SCHEME:
+        # A capability URL is rotated by pasting the NEW link, which is what a
+        # service hands out when one is regenerated -- so the same extraction as
+        # the deposit runs here, against the STORED endpoints. Without it the
+        # whole URL would land in the vault and every later call would send
+        # `https://host/mcp/hooks/https://host/mcp/hooks/<token>`.
+        extracted, extract_error = extract_url_secret(
+            secret, resource.allowed_endpoints
+        )
+        if extract_error:
+            return {"error": "connection_setup_invalid", "detail": extract_error}
+        secret = extracted
 
     # Which DEPOSIT this card was raised against. The id and credential_ref are
     # both derived from (universe, destination), so neither changes when a key is
@@ -1362,6 +1604,11 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         asked_access = normalize_access_mode(document.get("access"))
     except ValueError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
+    # The same authoring-door refusal as the deposit: a widening must not be the
+    # way a hardcoded secret gets into a grant.
+    hardcoded = embedded_secret_refusal(added)
+    if hardcoded is not None:
+        return hardcoded
     scope_only = not isinstance(added, list) or not added
     if scope_only and not requested_git_scopes and asked_access != ACCESS_FULL:
         # A full ask names neither: it is the channel, not a list.

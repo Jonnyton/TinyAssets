@@ -57,12 +57,24 @@ def test_failure_second_insert_rolls_back_including_retention(tmp_path):
     assert [m.text for m in store.load_recent_readonly(tmp_path, "a")] == ["old", "answer"]
 
 
-def test_failure_obeys_existing_retention(tmp_path, monkeypatch):
-    monkeypatch.setattr(store, "RETENTION_TURNS", 2)
+def test_a_failure_row_is_never_deleted_by_a_later_exchange(tmp_path):
+    """The failure notice stays in the transcript when later turns are written.
+
+    A platform failure notice is the evidence a user needs to say what went
+    wrong, and it used to be the first thing the 400-turn ceiling ate.
+
+    Scope, honestly: three rows is below any plausible ceiling, so this proves
+    the failure row is not dropped by a later exchange. That no ceiling exists at
+    all is proved past 400 turns in
+    ``tests/test_conversation_history_is_never_deleted.py``.
+    """
     assert store.record_failure(tmp_path, "a", "old", "unknown")
     assert store.record_failure(tmp_path, "b", "other owner", "unknown")
     assert store.record_exchange(tmp_path, "a", "new", "answer")
-    assert [m.text for m in store.load_recent_readonly(tmp_path, "a")] == ["new", "answer"]
+    rows = store.load_recent_readonly(tmp_path, "a", limit=100)
+    assert [m.text for m in rows][:1] == ["old"]
+    assert [m.text for m in rows][-2:] == ["new", "answer"]
+    assert any(m.speaker == "platform" for m in rows)
     assert len(store.load_recent_readonly(tmp_path, "b")) == 2
 
 

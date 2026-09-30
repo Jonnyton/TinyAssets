@@ -324,6 +324,24 @@ class ModelConfig:
     locked out", and the reply that just succeeded is better evidence about the
     source than the extra call that did not."""
 
+    owns_capacity_siblings: bool = False
+    """This caller holds a candidate ORDER over the source and will settle its
+    cooldown itself.
+
+    The capacity handler withholds a source's cooldown when an unknown window
+    may still be per-model, because cooling the connection would skip the very
+    sibling the caller is about to try. That purchase only makes sense for a
+    caller that HAS a sibling to try and cools the source once it runs out.
+
+    An agent turn already qualifies through ``agent_request``; this is how a
+    WORKFLOW node says the same thing
+    (``_ForegroundRunProviderSession._cool_abandoned_sources``). Additive on
+    purpose: the capacity decoder now runs for every call rather than only agent
+    rounds (live 2026-09-30), so the handler is newly reachable from callers
+    that hold no order -- a post-reply learning extraction, say -- and those
+    must keep being cooled, or a source at a DAILY cap is re-asked by every
+    later turn forever."""
+
     def stream_timeout_profile(self) -> StreamTimeoutProfile:
         """Resolve the idle-watchdog profile, filling ``None`` knobs with the
         design defaults. Backward-compat: a config that only ever set the legacy

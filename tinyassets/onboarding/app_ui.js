@@ -3,7 +3,7 @@
   // agent writes, and this renders them. A bundle is somebody's arbitrary code —
   // usually somebody the viewer has never met, because bundles are shared by
   // publish/remix — so nothing here sanitizes it. It runs in the sandboxed,
-  // opaque-origin document `/mcp/app/ui-frame` serves (see ui_frame.py for the
+  // opaque-origin document `/app/ui-frame` serves (see ui_frame.py for the
   // policy), which owns no storage, no cookies and no network of its own.
   //
   // Everything the bundle can do is in ACTIONS below and nowhere else. Each
@@ -21,22 +21,22 @@
   const AppUI={
     KIND:"tinyassets.app-ui.v1",VERSION:1,PROTOCOL:1,
     SHELL_KIND:"tinyassets.app-experience-shell.v1",
-    FRAME_SRC:"/mcp/app/ui-frame",
+    FRAME_SRC:"/app/ui-frame",
     // No `allow-same-origin`: that single word is the whole isolation boundary.
     // With it the frame would share this page's origin and could read
     // `sessionStorage` (the access token), `localStorage` and the parent DOM.
     // The frame's own response header sandboxes it too, so this is the second of
     // two independent locks, not the only one.
     SANDBOX:"allow-scripts",
-    // Per-UI bounds, and ONE bound on the whole library: its bytes, never a count
-    // of UIs (no structural caps -- a person keeps as many as they like).
-    // MAX_LIBRARY_BYTES must equal MAX_APP_UI_LIBRARY_BYTES in
-    // tinyassets/custom_agents.py; a test derives it from the Python constant
-    // rather than restating it. Sizes are UTF-8 BYTES, because that is what the
-    // server caps: counting UTF-16 units let multi-byte bundles pass here and
-    // fail at write time (Codex, 2026-09-26).
+    // Per-UI bounds only. There is NO bound on the library as a whole -- neither
+    // a count of UIs nor a byte total. A 4 MiB library ceiling used to refuse an
+    // install once the stored library was full; those bytes are the universe's
+    // tier storage now, one of the two limits an account has (founder 2026-09-30).
+    // Sizes are UTF-8 BYTES, because that is what the server validates: counting
+    // UTF-16 units let multi-byte bundles pass here and fail at write time
+    // (Codex, 2026-09-26).
     MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
-    MAX_LIBRARY_BYTES:4194304,MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
+    MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
     MAX_LIST_RUNS:50,MAX_OUTPUT_CHUNK:8192,MAX_ID:200,
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
@@ -320,8 +320,12 @@
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
     // bundle cannot enumerate anybody else's universe.
     async listAgents(){
+      // One page, the size AppLayout reads with. A bundle asking "what agents do
+      // I have" is a display read: if a viewer keeps more than a page of them it
+      // sees the newest page, which is a page size, not a refusal. Nothing here
+      // disables a control on the count (that cliff was removed 2026-09-30).
       const doc=await MCP.callTool("read_graph",
-        {target:"agent_bindings",graph_id:this.home,limit:AppLayout.LIST_LIMIT},{idempotent:true});
+        {target:"agent_bindings",graph_id:this.home,limit:AppLayout.PAGE},{idempotent:true});
       if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your agents are unavailable");
       const selected=AppLayout.installation&&AppLayout.installation.configuration&&
         AppLayout.installation.configuration.turn_consumer;
@@ -554,12 +558,9 @@
         const observed=this.readLibrary(row);
         if(!observed.ok) throw Error("Your installed UIs cannot be read ("+observed.reason+"); nothing was overwritten");
         next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
-        // The one limit is size, and it is checked against the row this save
-        // read, so a library that grew elsewhere is measured as it now stands.
-        const size=this.bytes(JSON.stringify(next));
-        if(size>this.MAX_LIBRARY_BYTES)
-          throw Error("Your installed UIs would total "+size+" bytes, over the "+
-            this.MAX_LIBRARY_BYTES+"-byte limit; remove one first");
+        // No library-wide limit, so no install is ever turned away for the size
+        // of what is already there. The bundle itself was validated above, and
+        // its bytes are the universe's storage.
         return {ui_library:JSON.parse(JSON.stringify(next))};
       });
       if(!outcome.ok){

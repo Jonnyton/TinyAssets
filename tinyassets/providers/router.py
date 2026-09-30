@@ -1360,16 +1360,44 @@ class ProviderRouter:
                 # The owner's ceilings are NOT consulted: they price every
                 # attempt anyway, and reading them here made the same refusal
                 # mean different things to a free and a paid account.
-                if exc.signal.scope != "model" and not free_sibling_retry(
-                    scope=exc.signal.scope, failure_class=exc.failure_class,
-                    retry_after_s=exc.retry_after,
-                    turn_budget_s=cfg.stream_timeout_profile().absolute_cap_s,
+                #
+                # Withholding buys exactly one thing -- a sibling on this same
+                # grant -- so it is only for a caller that HAS one and settles
+                # the cooldown once its order runs out. An agent turn does; a
+                # workflow node says so with `ModelConfig.owns_capacity_siblings`
+                # (`_ForegroundRunProviderSession._cool_abandoned_sources`).
+                #
+                # Everyone ELSE is cooled exactly as before. The capacity
+                # decoder now runs for every call rather than only agent rounds,
+                # so this handler is newly reachable from callers that hold no
+                # order at all -- a post-reply learning extraction, say -- and
+                # for them a withheld window is never spent and never settled.
+                # That is the DAILY-cap case `free_sibling_retry` warns about:
+                # every later turn pays the full order again, forever.
+                owns_siblings = (
+                    cfg.agent_request is not None
+                    or getattr(cfg, "owns_capacity_siblings", False)
+                )
+                if not owns_siblings or (
+                    exc.signal.scope != "model" and not free_sibling_retry(
+                        scope=exc.signal.scope, failure_class=exc.failure_class,
+                        retry_after_s=exc.retry_after,
+                        turn_budget_s=cfg.stream_timeout_profile().absolute_cap_s,
+                    )
                 ):
                     self._cool(cfg, provider_name, _rate_limit_cooldown_s(exc))
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed", skip_class="quota_or_cooldown",
                     detail=redacted_failure_detail(str(exc)), failure_class=exc.failure_class,
                     retry_after_s=exc.retry_after, capacity_scope=exc.signal.scope,
+                    # The RAISER now declares whether anything was generated for
+                    # the one class that reaches here -- a whole-response HTTP
+                    # status (`api_key_http_provider._pre_generation`) -- so
+                    # `_side_effect_from` answers "none" on its own and this
+                    # conditional is a second definition of the same fact.
+                    # Left in place deliberately: collapsing it is a no-op for
+                    # every reachable caller and not worth touching the chat
+                    # path for in the same change. See the PR's follow-up note.
                     side_effect_state=(
                         "none" if cfg.agent_request is not None
                         and getattr(provider, "agent_execution_kind", None) == "engine_inference"

@@ -15,7 +15,7 @@
   // read for layout and never written by this controller.
   const AppLayout={
     KIND:"tinyassets.app-layout.v1",VERSION:1,ROLE:"app_experience",
-    TAG:"tinyassets-app-layout-v1",LIST_LIMIT:100,
+    TAG:"tinyassets-app-layout-v1",PAGE:100,
     SURFACES:["conversation","requests","models","status"],
     DENSITIES:["comfortable","compact"],
     NODES:{conversation:["thread","attachments","composer"],requests:["request-rail"],
@@ -24,7 +24,7 @@
             models:"Model bar",status:"Conversation status"},
     epoch:0,home:"",principal:"",loaded:false,enabled:false,busy:false,uncertain:false,
     mode:"default",source:null,arrangement:null,
-    installation:null,candidates:[],saturated:false,
+    installation:null,candidates:[],
     results:[],inspected:null,draft:null,previousTurn:null,
     anchors:new Map(),hiddenIds:[],root:null,
 
@@ -119,7 +119,7 @@
     reset(){
       this.epoch++; this.restore();
       this.enabled=false; this.home=""; this.principal=""; this.loaded=false; this.busy=false; this.uncertain=false;
-      this.installation=null; this.candidates=[]; this.saturated=false;
+      this.installation=null; this.candidates=[];
       this.results=[]; this.inspected=null; this.draft=null; this.previousTurn=null;
       $("btn-layouts").hidden=true;
       if($("layout-dialog").open) $("layout-dialog").close();
@@ -156,13 +156,28 @@
       if(!me||me.principal_id!==principal||me.universe_id!==home||me.setup!=="connected"){
         this.reset(); throw new Error("Signed-in identity or home changed; sign in again.");
       }
-      const doc=await MCP.callTool("read_graph",{target:"agent_bindings",graph_id:this.home,limit:this.LIST_LIMIT},{idempotent:true});
-      if(!this.fence(epoch,home)) throw new Error("Session changed");
-      if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("Installed layouts unavailable");
-      this.saturated=doc.bindings.length>=this.LIST_LIMIT;
-      this.candidates=doc.bindings.filter(b=>this.eligible(b));
+      // Read the WHOLE list, however long it is. Ask for a page; if the server
+      // filled it exactly, the list may continue, so ask for a bigger one and
+      // replace the view. A fixed 100-row ceiling used to be a hard stop that
+      // flagged the list as incomplete and disabled Apply at exactly a hundred
+      // bindings -- a functional cliff, not a limit (founder, 2026-09-30: no
+      // structural caps on what a user builds). Growth rather than a cursor, because
+      // read_graph takes a limit and no offset, and a re-read under one epoch
+      // is still one consistent view.
+      let bindings=[],page=this.PAGE;
+      for(;;){
+        const doc=await MCP.callTool("read_graph",{target:"agent_bindings",graph_id:this.home,limit:page},{idempotent:true});
+        if(!this.fence(epoch,home)) throw new Error("Session changed");
+        if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("Installed layouts unavailable");
+        bindings=doc.bindings;
+        if(bindings.length<page) break;   // short page => the list ended
+        page*=4;
+      }
+      this.candidates=bindings.filter(b=>this.eligible(b));
       this.loaded=true;
-      if(this.saturated||this.candidates.length>1) throw new Error("Installation list is incomplete or ambiguous. Apply is disabled.");
+      // The only ambiguity that matters is more than one ELIGIBLE layout
+      // installation, which is ambiguous at any list size.
+      if(this.candidates.length>1) throw new Error("More than one eligible layout installation: the choice is ambiguous, so Apply is disabled until one remains.");
       return this.candidates;
     },
     async getDefinition(id){
@@ -202,7 +217,7 @@
       this.status("Layout applied: "+String(agent.name||"unnamed")+(read.others.length?". Other components in this design are preserved but not rendered by this app: "+read.others.join(", "):""));
     },
     async select(bindingId){
-      if(!this.enabled||this.busy||this.saturated||this.candidates.length!==1) return;
+      if(!this.enabled||this.busy||this.candidates.length!==1) return;
       const binding=this.candidates.find(b=>String(b.agent_binding_id)===String(bindingId));
       if(!binding){ this.status("That installation is no longer listed. Refresh."); return; }
       const epoch=this.epoch,home=this.home;
@@ -277,7 +292,7 @@
       if(previous)await this.saveTurn(previous.definition_id,previous.selection);
     },
     async saveTurn(definitionId,selection){
-      if(!this.enabled||this.busy||this.uncertain||!this.loaded||this.saturated||this.candidates.length>1)return;
+      if(!this.enabled||this.busy||this.uncertain||!this.loaded||this.candidates.length>1)return;
       const epoch=this.epoch,home=this.home,observed=this.installation;
       this.busy=true;this.paint();
       try{
@@ -370,7 +385,7 @@
     // ---- writes: explicit, CAS, read back, never replayed ----
     async apply(){
       if(!this.enabled||this.busy) return;
-      if(!this.loaded||this.saturated||this.candidates.length>1){ this.status("Refresh a complete, unambiguous installation list before applying."); return; }
+      if(!this.loaded||this.candidates.length>1){ this.status("Refresh a complete, unambiguous installation list before applying."); return; }
       if(!this.inspected||!this.inspected.read.ok){ this.status("Inspect a supported public design before applying."); this.paint(); return; }
       if(this.uncertain){ this.status("The last save was not confirmed. Refresh your installed layout before applying again."); this.paint(); return; }
       if(!this.draftMatchesInspected()){ this.status("Your arrangement differs from the public design. Publish it first, then apply the published design."); this.paint(); return; }
@@ -490,7 +505,6 @@
         results.appendChild(row);
       }
       const cands=$("layout-candidates"); cands.replaceChildren();
-      if(this.saturated) this.line(cands,"The binding list may be incomplete (100 rows). Installations below are only those listed.","muted");
       for(const b of this.candidates){
         const row=document.createElement("li");
         const current=this.installation&&this.installation.binding_id===String(b.agent_binding_id);
@@ -519,7 +533,7 @@
           if(!c||c.kind!=="tinyassets.turn-graph.v1")continue;
           const compatible=this.turnComponent(c);
           this.line(turnPanel,key+": "+(compatible.ok?"Uses workflow version "+c.branch_version_id+". Receives your message"+(c.input_map.history?" and recent conversation history":"")+". Source, model and effect access are checked when used. Foreign workflows require your own explicit remix first.":compatible.reason));
-          turnPanel.appendChild(this.button("Use "+key+" for conversations",()=>this.selectTurn(key),this.busy||this.uncertain||!compatible.ok||!this.loaded||this.saturated||this.candidates.length>1));
+          turnPanel.appendChild(this.button("Use "+key+" for conversations",()=>this.selectTurn(key),this.busy||this.uncertain||!compatible.ok||!this.loaded||this.candidates.length>1));
         }
       }
       const editor=$("layout-editor"); editor.replaceChildren();
@@ -538,7 +552,7 @@
       }
       $("layout-density").disabled=!this.draft;
       $("btn-layout-preview").disabled=this.busy||!this.draft;
-      $("btn-layout-apply").disabled=this.busy||this.uncertain||!this.loaded||this.saturated||this.candidates.length>1||!this.draftMatchesInspected();
+      $("btn-layout-apply").disabled=this.busy||this.uncertain||!this.loaded||this.candidates.length>1||!this.draftMatchesInspected();
       $("btn-layout-publish").disabled=this.busy||!this.draft;
       $("btn-layout-refresh").disabled=this.busy;
       $("btn-layout-search").disabled=this.busy;

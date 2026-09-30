@@ -1145,8 +1145,17 @@ def list_bindings(
     universe_id: str,
     limit: int = 30,
 ) -> list[dict[str, Any]]:
+    """The owner's bindings, newest first, at most ``limit`` of them.
+
+    ``limit`` is honoured as asked. It used to be silently clamped to 100, so a
+    caller that asked for more got exactly 100 back and could not tell whether
+    that was the whole list or a page -- which is how the app ended up disabling
+    its own Apply button at a hundred rows. A page size the caller chooses is a
+    read preference; a ceiling the platform imposes on it is a limit, and an
+    account has exactly two (founder, 2026-09-30).
+    """
     uid = (universe_id or "").strip()
-    bounded_limit = max(1, min(int(limit), 100))
+    page = max(1, int(limit))
     with _agent_connect(base_path) as conn:
         rows = conn.execute(
             """
@@ -1156,7 +1165,7 @@ def list_bindings(
             ORDER BY updated_at DESC, agent_binding_id DESC
             LIMIT ?
             """,
-            (uid, bounded_limit),
+            (uid, page),
         ).fetchall()
         return [_binding_from_row(row) for row in rows]
 
@@ -1365,13 +1374,14 @@ def set_binding_serving_in_transaction(
     return _binding_from_row(updated)
 
 
-#: The one bound on a person's UI library: its canonical-JSON bytes, NOT a count.
-#: There is no limit on how many UIs someone keeps (founder rule: limit usage,
-#: never structure). Sized so a light user never meets it -- about 85 UIs at the
-#: per-UI maximum, and far more at a typical size -- while one row stays a sane
-#: size to read back whole. No per-universe storage quota covers database rows
-#: yet; when one does, this should be charged against it instead.
-MAX_APP_UI_LIBRARY_BYTES = 4 * 1024 * 1024
+#: There is NO bound on a person's UI library, by count OR by bytes. The 4 MiB
+#: ``MAX_APP_UI_LIBRARY_BYTES`` that used to live here was a separate storage
+#: number, refusing an install with "remove one first"; its own comment said it
+#: should be charged against a per-universe storage quota once one existed. One
+#: does, so it is: these bytes count toward tier storage, which is one of the two
+#: limits an account has (founder, 2026-09-30 -- the other is concurrent agent
+#: seats). Per-UI bundle validation is unchanged: that is payload validation of
+#: one document, not an account limit.
 _APP_UI_FIELDS = frozenset({"ui_library", "ui_selection"})
 _MAX_APP_UI_SELECTION_BYTES = 1024
 
@@ -1472,15 +1482,9 @@ def save_app_ui(
     if not isinstance(changes, dict):
         raise AgentValidationError("app UI payload must be a JSON object")
     _check_app_ui_fields(changes)
-    # Each field is bounded on its own, because a partial save never sees the
-    # other one: a large library and a separately saved choice must not add up
-    # to a row over the cap.
-    library_bytes = len(_canonical_json(changes.get("ui_library", [])).encode("utf-8"))
-    if library_bytes > MAX_APP_UI_LIBRARY_BYTES:
-        raise AgentValidationError(
-            f"ui_library is {library_bytes} bytes of canonical JSON; "
-            f"the limit is {MAX_APP_UI_LIBRARY_BYTES}"
-        )
+    # The library has no size bound -- its bytes are the universe's tier storage.
+    # The SELECTION still does: it is one small pointer document, and a payload
+    # bound on a single document is not an account limit.
     selection_bytes = len(_canonical_json(changes.get("ui_selection")).encode("utf-8"))
     if selection_bytes > _MAX_APP_UI_SELECTION_BYTES:
         raise AgentValidationError(
@@ -1534,7 +1538,6 @@ __all__ = [
     "AgentNotFoundError",
     "AgentValidationError",
     "MAX_AGENT_JSON_BYTES",
-    "MAX_APP_UI_LIBRARY_BYTES",
     "MAX_LINEAGE_DEPTH",
     "create_binding",
     "get_app_ui",

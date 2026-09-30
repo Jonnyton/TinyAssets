@@ -122,14 +122,15 @@ _DEFAULT_PAID_STORAGE_MB = 20_000.0
 #: Where an owner goes to buy more of either number.
 #:
 #: There is no GET upgrade route: the app's own control (`app.html` `btn-plan` ->
-#: `startSubscribe`) POSTs `/mcp/app/billing/checkout`, which is identity-gated. A
+#: `startSubscribe`) POSTs `/app/billing/checkout`, which is identity-gated. A
 #: link inside a message cannot POST, and inventing a route is forbidden -- so the
 #: link is the app's EXISTING route plus a query parameter wired to that same
-#: `startSubscribe()`. One builder, so there is exactly one string to test and the
-#: app-url move (#4112, `/mcp/app` -> `/app`) is a one-line change here.
+#: `startSubscribe()`. One builder, so there is exactly one string to test -- and
+#: that paid off: when the app's public URL moved (#4112) this was the one-line
+#: default change below.
 _UPGRADE_ORIGIN = "https://tinyassets.io"
 _APP_PATH_VAR = "TINYASSETS_APP_PATH"
-_DEFAULT_APP_PATH = "/mcp/app"
+_DEFAULT_APP_PATH = "/app"
 _UPGRADE_QUERY = "upgrade=1"
 
 #: Longest a single run may be charged for, so a wedged run cannot accrue forever.
@@ -207,8 +208,8 @@ class TierLimits:
 
 
 def app_path() -> str:
-    """The app's served path. One reader, so the `/mcp/app` -> `/app` move
-    (#4112) is a single default to change here and nothing else."""
+    """The app's served path. One reader, which is why moving the app's public
+    URL (#4112) was a single default change here and nothing else."""
     raw = (os.environ.get(_APP_PATH_VAR) or "").strip()
     path = raw or _DEFAULT_APP_PATH
     if not path.startswith("/"):

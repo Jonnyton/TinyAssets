@@ -32,7 +32,7 @@ from tinyassets.onboarding import session_store
 CODE_EXCHANGE = {
     "code": "c",
     "code_verifier": "v",
-    "redirect_uri": "https://tinyassets.io/mcp/app",
+    "redirect_uri": "https://tinyassets.io/app",
 }
 
 
@@ -492,7 +492,7 @@ def test_a_rotation_never_writes_the_successor_handle_in_plaintext():
 
     The tombstone used to carry `superseded_by: <new handle>` OUTSIDE the
     ciphertext and live until the session's 7-day `exp`. A data-dir reader could
-    harvest those values and POST the newest one to /mcp/app/token: the original
+    harvest those values and POST the newest one to /app/token: the original
     cross-user disclosure, delivered as directly usable bearer handles. The
     successor now lives inside the seal, under the OLD handle's AAD.
     """

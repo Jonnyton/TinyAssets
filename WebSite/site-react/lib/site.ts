@@ -5,7 +5,7 @@
 export const SITE = {
   origin: "https://tinyassets.io",
   /** The web app: sign in, connect a subscription, talk to your universe. */
-  app: "https://tinyassets.io/mcp/app",
+  app: "https://tinyassets.io/app",
   /** The one public MCP endpoint (Claude.ai / ChatGPT connector URL). */
   mcp: "https://tinyassets.io/mcp",
   repo: "https://github.com/TinyAssets/TinyAssets",
