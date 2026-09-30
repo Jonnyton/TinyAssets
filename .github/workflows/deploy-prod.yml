@@ -379,13 +379,17 @@ jobs:
           set -euo pipefail
           python scripts/probe_app_surface.py --verbose
 
-      - name: Roll back if a public surface is red
+      # Name kept verbatim: three test files key on this step by name
+      # (test_deploy_prod_workflow, test_expected_instance_state_preparation,
+      # test_prune_units). The CONDITION is what had to change — the app probe
+      # is a second public surface that must trigger the same rollback.
+      - name: Roll back if the public canary is red
         if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure') }}
         env:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
         run: |
           set -euo pipefail
-          echo "::error::a public surface went red after a fresh deploy — rolling back to the captured previous image"
+          echo "::error::a public surface (MCP canary or app probe) went red after a fresh deploy — rolling back to the captured previous image"
           if [ -z "${PREV_IMAGE}" ]; then
             echo "::error::no previous image captured; manual rollback required"; exit 3
           fi
