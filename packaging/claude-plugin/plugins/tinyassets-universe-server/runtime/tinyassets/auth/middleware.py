@@ -527,16 +527,29 @@ _DISCOVERY_PATHS = frozenset({
 })
 
 
-def _is_app_path(path: str) -> bool:
-    """Exactly the web-app subtree: ``/app`` and ``/app/*``.
+#: Characters that end the ``/app`` segment. ``/`` is the only one an ASGI
+#: ``scope["path"]`` can actually carry -- the server splits the query and the
+#: client never sends the fragment -- but a predicate that decides an auth
+#: boundary fails closed on the forms it cannot receive rather than trusting the
+#: layer above to keep stripping them.
+_APP_SEGMENT_BOUNDARY = ("/", "?", "#")
 
-    Anchored on the segment boundary so a sibling prefix the apex website owns
-    (``/apple-touch-icon.png``, ``/app-ads.txt``) is never mistaken for an app
-    route. Deliberately NOT traversal-normalised: every carve-out below is an
-    exact-equality test, so a ``..`` path can only ever be *challenged* here,
-    never exempted.
+
+def _is_app_path(path: str) -> bool:
+    """Exactly the web-app subtree: ``/app`` and ``/app`` + a segment boundary.
+
+    Anchored on the boundary so a sibling prefix the apex website owns
+    (``/apple-touch-icon.png``, ``/app-ads.txt``, ``/apps``) is never mistaken
+    for an app route -- those must keep reaching the website origin, and in dev
+    (where every path routes to the daemon) they must not be swept into a 401.
+
+    Deliberately NOT traversal-normalised: every carve-out above is an
+    exact-equality test, so a ``..`` or ``//`` path can only ever be
+    *challenged* here, never exempted.
     """
-    return path == "/app" or path.startswith("/app/")
+    if path == "/app":
+        return True
+    return path.startswith("/app") and path[4:5] in _APP_SEGMENT_BOUNDARY
 
 
 def _auth_challenge_path(path: str) -> bool:

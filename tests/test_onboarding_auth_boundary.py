@@ -147,10 +147,80 @@ def test_app_challenge_is_anchored_on_the_segment_boundary():
     """Apex website paths that merely start with "app" are not app routes.
 
     `/apple-touch-icon.png` is a real file the site serves; a prefix test would
-    have started 401ing it the moment the Worker route widened.
+    have started 401ing it the moment the Worker route widened. In dev, where
+    every path routes to the daemon, that would be a live 401 on a site asset.
     """
     for path in ("/apple-touch-icon.png", "/app-ads.txt", "/apps", "/appx/deep"):
         assert mw._auth_challenge_path(path) is False, path
+    # Case matters: /APP/me is not this route, so it must not be treated as one.
+    assert mw._auth_challenge_path("/APP/me") is False
+
+
+def test_a_query_or_fragment_bearing_path_fails_closed():
+    """An ASGI `scope["path"]` cannot carry these — the server splits the query
+    and the client never sends the fragment.
+
+    Asserted anyway because the OLD rule challenged them (they matched the
+    `/mcp/` prefix), and a boundary predicate that becomes *more permissive*
+    than the one it replaces is the wrong direction even on unreachable input.
+    """
+    for path in ("/app?subscribed=1", "/app#frag", "/app?", "/app#"):
+        assert mw._auth_challenge_path(path) is True, path
+
+
+def test_the_app_subtree_verdict_matches_the_pre_move_mcp_app_verdict():
+    """Differential against the rule this replaces.
+
+    The old predicate covered the app only because it sat under `/mcp/`. For
+    every route suffix the app actually serves, the verdict for `/app<suffix>`
+    must equal what `/mcp/app<suffix>` used to get — that equality is the whole
+    safety claim of the move, and it is not visible by reading either rule alone.
+    """
+    def pre_move_verdict(path: str) -> bool:
+        # The rule as it stood before the move, reconstructed from its parts so
+        # this stays a comparison and not a restatement of the new code.
+        if path in mw._DISCOVERY_PATHS:
+            return False
+        if path.startswith("/mcp/app/model-callback/"):
+            handle = path[len("/mcp/app/model-callback/"):]
+            if len(handle) == 43 and "/" not in handle:
+                return False
+        if path in ("/mcp/app", "/mcp/app/token", "/mcp/app/billing/webhook"):
+            return False
+        return path == "/mcp" or path.startswith("/mcp/")
+
+    suffixes = [
+        "", "/", "/token", "/token/x", "/me", "/me/", "/ui-frame", "/settings",
+        "/billing/webhook", "/billing/webhook/x", "/billing/checkout",
+        "/billing/cancel", "/billing/status", "/account/delete",
+        "/connections", "/files", "/serving/bind", "/models/preferences",
+        "/voice/status", "/voice/session", "/trace",
+        "/openai/device/start", "/openai/device/poll", "/openai/begin",
+        "/openai/exchange", "/model-connect/deposit_key",
+        "/model-callback/" + "f" * 43, "/model-callback/short",
+        "/model-callback/", "/../mcp/tools", "/./me", "//me",
+    ]
+    for suffix in suffixes:
+        assert mw._auth_challenge_path("/app" + suffix) is pre_move_verdict(
+            "/mcp/app" + suffix
+        ), suffix
+
+
+def test_the_connector_family_verdicts_are_untouched_by_the_move():
+    """Hard Rule 11: `/mcp` is not part of this change."""
+    expected = {
+        "/mcp": True,
+        "/mcp/": True,
+        "/mcp/anything": True,
+        "/mcp/pulse": True,
+        "/mcp/.well-known/oauth-protected-resource": False,
+        "/.well-known/oauth-protected-resource": False,
+        "/": False,
+        "/not-mcp": False,
+        "/catalog": False,
+    }
+    for path, challenged in expected.items():
+        assert mw._auth_challenge_path(path) is challenged, path
 
 
 def test_retired_mcp_app_paths_are_challenged_not_exempt():
