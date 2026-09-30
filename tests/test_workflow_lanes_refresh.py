@@ -6,27 +6,38 @@ so a workflow run launched the CLI with whatever was stored, however old
 assignment in its one receipt, and a refresh renews the accepted source, which
 moves the assignment. So the refresh has to run before that pin.
 
-The tests drive the real foreground `run_graph` lane over its real stores. Only
-the terminal provider, the token spend and the issuer metadata are synthetic.
-(The background lane's copies went with the consumer's epoch-2 claim pass in
-the fleet prune: nothing can claim a background slice any more.)
+The founder's background agent is a user-owned automation, so both lanes are
+driven: the foreground `run_graph` path, and the pump's `run_due_automation`,
+which binds the owner and starts the branch on the same run path. (These used to
+launch the background lane through the consumer's epoch-2 claim pass, which the
+fleet prune removed.) Real stores throughout; only the terminal provider, the
+token spend and the issuer metadata are synthetic.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import sqlite3
+from datetime import datetime, timezone
 
+from tests import test_background_budget_finalization_e2e as background
 from tests import test_run_provider_session as foreground
+from tests import test_workflow_http_agent as http_agent
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_run_provider_session import _module_local_cloud_admission  # noqa: F401
 from tests.test_subscription_credential_refresh import (
     ID_TOKEN,
     _endpoint_from_the_credential,
 )
+from tinyassets.storage.provider_work_authority import db_path as authority_db_path
+
+work_agent = http_agent.work_agent
+http_wire = http_agent.http_wire
 
 OWNER = "acct_alice"
 UID = "universe_alice"
+NOW = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _stale_document() -> str:
@@ -215,3 +226,129 @@ def test_an_async_sub_branch_that_runs_first_refreshes_for_itself(
     assert spent == ["r-1"]
     assert _stored_refresh_token(tmp_path) == "r-2"
     assert _custody_matches_the_vault(tmp_path)
+
+
+# -- The background lane: a due automation ------------------------------------
+#
+# The founder's always-on agent is a user-owned automation. The pump calls
+# run_due_automation, which binds the owner (owner_run_identity) and starts the
+# branch through the same async run path as `run_graph`. These drive that pump
+# entry for real; only the router's terminal provider is a fake.
+
+DUE_AT = "2026-08-29T12:10:00+00:00"
+
+
+def run_automation_once(tmp_path, monkeypatch, *, policy=None, agent=False,
+                        provider=None, setup_serving=None):
+    """Register one automation over the owner's serving universe and run it once.
+
+    Returns the pump's recorded reason, the provider the router called, and the
+    run row. The branch is the old background rig's (one node per ``policy``
+    entry); the launcher is now the live one.
+    """
+    from tests.test_automations import _real_providers
+    from tinyassets.api.permissions import owner_run_identity
+    from tinyassets.automations import register_automation, run_due_automation
+    from tinyassets.runs import get_run
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    background._seed_serving_assignment(tmp_path)
+    if setup_serving is not None:
+        setup_serving()
+    background._seed_branch_version(tmp_path, policy=policy, agent=agent)
+    # Registration is the owner's own request; the branch is private to them.
+    with owner_run_identity(tmp_path, UID, OWNER):
+        automation = register_automation(
+            tmp_path, universe_id=UID, owner_principal_id=OWNER, name="Always-on agent",
+            branch_def_id="branch_repo_spec_loop", interval_seconds=600, now=NOW,
+        )
+    fake = provider if provider is not None else background._CountingProvider()
+    started: list[str] = []
+    with _real_providers(codex=fake):
+        reason = run_due_automation(
+            tmp_path, automation, DUE_AT, now=NOW, on_run_started=started.append,
+        )
+    run = get_run(tmp_path, started[0]) if started else None
+    return reason, fake, run
+
+
+def test_a_background_automation_refreshes_before_its_receipt_and_still_succeeds(
+    tmp_path, monkeypatch,
+):
+    spent = _rotating_spend(monkeypatch)
+
+    reason, fake, run = run_automation_once(
+        tmp_path, monkeypatch, setup_serving=lambda: _redeposit_stale(tmp_path),
+    )
+
+    assert reason.startswith("ok:ran:"), (reason, run and run.get("error"))
+    assert spent == ["r-1"]
+    assert len(fake.calls) == 1
+    assert _stored_refresh_token(tmp_path) == "r-2"
+    assert _custody_matches_the_vault(tmp_path)
+
+
+def test_a_background_agent_node_on_native_codex_refreshes_and_completes(
+    tmp_path, monkeypatch, work_agent,
+):
+    """The founder's own shape: a background workflow agent node on codex."""
+    from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+    from tinyassets.providers.base import ProviderResponse
+
+    spent = _rotating_spend(monkeypatch)
+    launched: list[str] = []
+
+    async def native(self, prompt, system, config, *, universe_dir=None):
+        # The launch ARTEFACT: the sealed copy the CLI actually reads.
+        document = json.loads((config.credential_snapshot_dir / "auth.json").read_bytes())
+        launched.append(document["tokens"]["refresh_token"])
+        self.calls.append(config)
+        return ProviderResponse(
+            text="background native work completed", provider="codex", model="native-default",
+            family="codex", latency_ms=1, input_tokens=3, output_tokens=4, cost_microunits=0,
+            native_evidence=NativeCompletionEvidence("codex", True, True, "committed"),
+        )
+
+    monkeypatch.setattr(background._CountingProvider, "agent_execution_kind", "native_agent",
+                        raising=False)
+    monkeypatch.setattr(background._CountingProvider, "complete", native)
+
+    reason, _fake, run = run_automation_once(
+        tmp_path, monkeypatch, agent=True,
+        policy={"preferred": {"provider": "codex", "model": ""}, "fallback_chain": []},
+        setup_serving=lambda: _redeposit_stale(tmp_path),
+    )
+
+    assert reason.startswith("ok:ran:"), (reason, run and run.get("error"), work_agent.errors)
+    assert spent == ["r-1"]
+    # The launch ran on the ROTATED sign-in, not the stale one.
+    assert launched == ["r-2"]
+    assert _custody_matches_the_vault(tmp_path)
+
+
+def test_a_multi_node_background_automation_refreshes_once_and_keeps_its_receipt(
+    tmp_path, monkeypatch,
+):
+    """The run's one work receipt is replayed by every node; a renewal at node 2
+    voided node 1's (Codex refute-review on #4082: two spends, one call, pending)."""
+    from tinyassets import subscription_refresh
+
+    spent = _rotating_spend(monkeypatch)
+    # Stale again the moment it is rotated: the worst case, a document entering
+    # its window between the two nodes.
+    monkeypatch.setattr(subscription_refresh, "document_is_stale", lambda *_a: True)
+    calls = _counting_refresh(monkeypatch)
+
+    reason, fake, run = run_automation_once(
+        tmp_path, monkeypatch, policy=[None, None],
+        setup_serving=lambda: _redeposit_stale(tmp_path),
+    )
+
+    assert reason.startswith("ok:ran:"), (reason, run and run.get("error"))
+    assert calls == [OWNER]
+    assert spent == ["r-1"]
+    assert len(fake.calls) == 2
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        receipts = conn.execute("SELECT COUNT(*) FROM provider_work_receipts").fetchone()[0]
+    assert receipts == 1
