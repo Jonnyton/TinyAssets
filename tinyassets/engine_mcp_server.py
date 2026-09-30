@@ -2581,8 +2581,8 @@ def write_graph(
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
     exactly one of interval_seconds or cron_expr. Runs never overlap per branch:
     a short interval_seconds reruns as each run ends; runs count to usage
-    limits. overlap ``skip``/``cancel_previous`` drops the due run or stops
-    the running one. Or event_type ``run_completed`` (event_filter
+    limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
+    one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
     ``{"branch_def_id"}``) or ``pending_request_answered`` wakes it with
     ``inputs.event``.
     To control an existing trigger, first read ``read_graph target="automation"``

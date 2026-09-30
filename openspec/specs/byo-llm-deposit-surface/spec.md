@@ -7,7 +7,7 @@ credential vault. Written 2026-09-30 from the code on `main`
 
 ## Requirements
 ### Requirement: One owner-scoped writer holds every subscription deposit
-Every subscription deposit SHALL go through `api.llm_deposit.connect_llm`: the chatbot operation, the in-app OpenAI device sign-in (`onboarding/openai_device.py`) and the browser deposit form (`connect_deposit.py`). No transport SHALL write an `llm_subscription` record any other way. The depositor SHALL be the authenticated request subject, never a payload field or environment value. The caller SHALL hold an explicit `admin` ACL row on the target universe, and a `write` grant SHALL NOT be enough. An unauthenticated caller, a non-admin caller and an unknown universe SHALL receive responses that do not reveal whether the universe or a credential exists. Only `claude` and `codex` SHALL be accepted, and any other service SHALL be refused before anything is written.
+Every subscription deposit SHALL go through `api.llm_deposit.connect_llm`: the chatbot operation and the in-app OpenAI device sign-in (`onboarding/openai_device.py`). No transport SHALL write an `llm_subscription` record any other way. The depositor SHALL be the authenticated request subject, never a payload field or environment value. The caller SHALL hold an explicit `admin` ACL row on the target universe, and a `write` grant SHALL NOT be enough. An unauthenticated caller, a non-admin caller and an unknown universe SHALL receive responses that do not reveal whether the universe or a credential exists. Only `claude` and `codex` SHALL be accepted, and any other service SHALL be refused before anything is written.
 
 #### Scenario: A write collaborator is refused
 - **WHEN** a caller holding only `write` on the universe deposits

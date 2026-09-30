@@ -21,8 +21,11 @@ run is still going.
     cadence passes meanwhile collapse into that one run. This is exactly how
     every automation behaved under the per-universe lease, so nothing
     existing changes.
-  - `skip`: drop this due run. A cadence moves on to its next instant; a
-    one-shot wake retires as `skipped_overlap`.
+  - `skip`: drop this due run; a cadence moves on to its next instant. A
+    one-shot wake is never dropped: it waits as under `queue`. (Revised
+    2026-09-29: retiring it as `skipped_overlap` silently ended a
+    self-waking loop whose `run_completed` wake fell due while the run that
+    fired it still held the agent.)
   - `cancel_previous`: ask the running run to cancel (the lease row records
     its run id), then start once it has stopped.
 - **The dead-holder proof is kept** from #4065. The OS liveness lock and the

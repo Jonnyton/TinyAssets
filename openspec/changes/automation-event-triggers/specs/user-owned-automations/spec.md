@@ -30,6 +30,10 @@ nothing.
 - **WHEN** a different user's run finishes in the owner's universe, a visitor-driven run of the universe finishes, someone else cancels the owner's run, or someone else answers a request
 - **THEN** no wake is stored for the owner's subscription
 
+#### Scenario: The owner sees when a subscription last fired and what it produced
+- **WHEN** a subscription fires, or its wake is refused
+- **THEN** the subscription's own row records when (`last_due_at`) and the outcome (`last_reason` `woke:<wake id>` or the refusal), without a `revision` bump, and the owner's read of it carries `last_wake` with that wake's run, drawn only from a wake in the same universe
+
 #### Scenario: A subscription that could not fire is refused
 - **WHEN** an owner subscribes to an event the engine does not emit, filters on a field the event lacks, or omits `branch_def_id` from a `run_completed` filter
 - **THEN** nothing is stored and the refusal names the reason
