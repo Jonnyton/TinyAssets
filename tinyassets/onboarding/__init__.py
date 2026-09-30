@@ -989,7 +989,6 @@ async def _handle_voice_session(request: Any) -> Any:
     from tinyassets.auth.middleware import current_identity
     from tinyassets.onboarding.realtime_voice import (
         RealtimeVoiceError,
-        allow_voice_session,
         create_voice_session,
         realtime_voice_enabled,
     )
@@ -1021,13 +1020,9 @@ async def _handle_voice_session(request: Any) -> Any:
             headers=_NO_STORE,
         )
 
+    # No per-user rate gate: the caller here is the authenticated owner asking
+    # their own universe to listen (founder, 2026-09-30 -- storage and seats only).
     identity = current_identity()
-    if not allow_voice_session(identity.user_id):
-        return JSONResponse(
-            {"error": "voice_session_rate_limited"},
-            status_code=429,
-            headers=_NO_STORE,
-        )
     home = await run_in_threadpool(_read_home, identity)
     if not home:
         return JSONResponse(
@@ -1056,7 +1051,7 @@ async def _handle_voice_status(request: Any) -> Any:
 
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.realtime_voice import allow_voice_status, voice_capability
+    from tinyassets.onboarding.realtime_voice import voice_capability
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -1064,12 +1059,6 @@ async def _handle_voice_status(request: Any) -> Any:
     if denied is not None:
         return denied
     identity = current_identity()
-    if not allow_voice_status(identity.user_id):
-        return JSONResponse(
-            {"error": "voice_status_rate_limited"},
-            status_code=429,
-            headers=_NO_STORE,
-        )
     home = await run_in_threadpool(_read_home, identity)
     result = await run_in_threadpool(
         voice_capability,

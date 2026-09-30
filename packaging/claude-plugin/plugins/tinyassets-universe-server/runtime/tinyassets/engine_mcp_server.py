@@ -1949,7 +1949,7 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
           "allowed_senders": [],             # exact principals; [] is nobody
           "open_to_all": true,               # OR: any authenticated user
           "discoverable": true,              # listed so others can find it
-          "sender_rate_limit": 60,           # accepted sends per sender per hour
+          "sender_rate_limit": 0,            # MY optional policy; 0 = none
           "description": "what I accept and what I do with it"}
 
     It returns a ``receiver_id`` and ``generation``. Four things worth knowing:
@@ -1964,6 +1964,11 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
       tightened ``sender_rate_limit``. Closing an exposure is an explicit
       ``"open_to_all": false`` / ``"discoverable": false``, or ``operation="revoke"``
       to stop every sender at once.
+    * ``sender_rate_limit`` is MY policy on MY receiver, and it is off by default.
+      Any positive number is accepted sends per sender per hour, with no ceiling;
+      0 is no limit. The platform sets none for me: a delivered run queues for one
+      of my agent seats, so a chatty sender waits rather than spending something I
+      cannot get back.
     * ``input_keys`` is the whole advertised contract. Everything else about the
       workflow — the rest of its steps, a decision step I run on what arrives, my
       other senders, my other deliveries — a sender never sees.
@@ -2017,8 +2022,8 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     **Refusals, and what each means.** ``receiver_or_link_not_found`` covers "does
     not exist", "not open to me" and "revoked" on purpose — it discloses nothing
     either way. ``receiver_generation_changed``: re-read the contract and reconnect.
-    ``receiver_sender_rate_limit_exceeded``: the owner's per-sender hourly cap, and
-    the message names the limit and what I have sent. ``occurrence_conflict``: I
+    ``receiver_sender_rate_limit_exceeded``: only if that owner chose a per-sender
+    hourly policy of their own; the message names their limit and what I have sent. ``occurrence_conflict``: I
     reused an ``occurrence_id`` with different content.
 
     **Closing it.** ``operation="revoke"`` on the receiver (with

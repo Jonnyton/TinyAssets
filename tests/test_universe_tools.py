@@ -827,3 +827,86 @@ def test_agent_owned_paths_are_pinned():
     assert universe_tools.AGENT_HARNESS_DIRS == (
         "skills", "prompts", "extensions", "workflows", "bin", "notes",
     )
+
+
+# ---------------------------------------------------------------------------
+# Host slots: a busy host WAITS, and there is no per-universe count
+# ---------------------------------------------------------------------------
+
+
+def test_there_is_no_per_universe_tool_slot_count():
+    """``_PER_UNIVERSE_SLOTS = 2`` and the 30s refusal deadline are gone.
+
+    They were a second, account-shaped ceiling stacked on the host floor: a
+    universe was told it could not run a third tool even on an otherwise idle
+    host, and a busy host refused after thirty seconds. An account has exactly
+    two limits, cloud bytes and concurrent agent seats (founder, 2026-09-30), and
+    over the concurrency line work WAITS.
+    """
+    import inspect
+
+    assert not hasattr(universe_tools, "_PER_UNIVERSE_SLOTS")
+    assert not hasattr(universe_tools, "_SLOT_WAIT_SECONDS")
+    # The host floor stays -- it is what keeps one universe from being an outage
+    # for the others on a 1 vCPU box.
+    assert universe_tools._HOST_SLOTS == 4
+
+    # Read the CODE, not the prose: the docstring and comments explain what was
+    # removed, so parse the function and unparse it without its docstring.
+    import ast
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(universe_tools._slot)))
+    fn = tree.body[0]
+    if ast.get_docstring(fn) is not None:
+        fn.body = fn.body[1:]
+    body = ast.unparse(fn)
+    assert "deadline" not in body, "a deadline here is a refusal wearing a timeout"
+    assert "raise" not in body, "_slot must never refuse for the host being busy"
+    assert "UniverseToolError" not in body
+
+
+@posix_only
+def test_a_full_host_makes_the_next_call_wait_and_then_run(tmp_path, monkeypatch):
+    """Every host slot held: the next caller queues, is told it is waiting, and runs.
+
+    Drives the real ``_slot`` with real ``flock`` files. The held slots are
+    released from a timer thread, so what this proves is the WAIT resolving into
+    a run -- the old code would have raised ``every tool slot ... is busy``.
+    """
+    import fcntl
+    import threading
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(universe_tools, "_HOST_SLOTS", 2)
+    monkeypatch.setattr(universe_tools, "_SLOT_POLL_SECONDS", 0.01)
+    universe = _universe(tmp_path)
+
+    directory = universe_tools._slot_dir()
+    held = []
+    for i in range(2):
+        fd = os.open(directory / f"host-{i}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held.append(fd)
+
+    waits: list[float] = []
+    released = threading.Event()
+
+    def _release():
+        for fd in held:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        released.set()
+
+    timer = threading.Timer(0.25, _release)
+    timer.start()
+    try:
+        with universe_tools._slot(universe, on_wait=waits.append):
+            assert released.is_set(), "the call ran only after a slot came free"
+    finally:
+        timer.cancel()
+        if not released.is_set():
+            _release()
+
+    assert len(waits) == 1, "a blocked caller is told exactly once that it is waiting"
+    assert waits[0] >= 0.0

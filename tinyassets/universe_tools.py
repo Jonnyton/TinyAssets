@@ -72,7 +72,7 @@ run. There is no unjailed or unlimited fallback.
 from __future__ import annotations
 
 import contextlib
-import hashlib
+import logging
 import os
 import re
 import shutil
@@ -138,6 +138,8 @@ AGENT_HARNESS_DIRS: tuple[str, ...] = (
 MASKED_DIRS: tuple[str, ...] = (PLATFORM_RUNTIME_DIR,)
 
 #: Environment inside the jail: fixed, secret-free, nothing inherited.
+logger = logging.getLogger(__name__)
+
 _JAIL_ENV: tuple[tuple[str, str], ...] = (
     ("PATH", "/usr/local/bin:/usr/bin:/bin"),
     ("HOME", "/tmp"),
@@ -160,11 +162,21 @@ DEFAULT_READ_LINES = 2000
 #: The longest a ``bash`` call may ask to run.
 MAX_BASH_SECONDS = 600.0
 
-#: How long a call waits for a free slot before it is refused.
-_SLOT_WAIT_SECONDS = 30.0
-#: Jails running at once for ONE universe, and on the whole host.
-_PER_UNIVERSE_SLOTS = 2
+#: Jails running at once on the whole HOST. A host-safety floor, not an account
+#: limit: four concurrent jails is what this box's memory and 1 vCPU can carry,
+#: and exceeding it is an outage for every universe on it.
+#:
+#: There is no per-universe count. ``_PER_UNIVERSE_SLOTS = 2`` was a second,
+#: account-shaped ceiling on top of it -- it told one universe it could not run a
+#: third tool even on an otherwise idle host. An account has exactly two limits,
+#: cloud bytes and concurrent agent seats (founder, 2026-09-30).
 _HOST_SLOTS = 4
+
+#: How often a waiting call re-tries for a free host slot. A busy host makes a
+#: call WAIT; it does not refuse it. There used to be a 30-second deadline here
+#: after which the call raised "every tool slot is busy" -- work over the
+#: concurrency line waits, and is never refused.
+_SLOT_POLL_SECONDS = 0.1
 
 _POLL_SECONDS = 0.05
 _KILL_GRACE_SECONDS = 5.0
@@ -442,36 +454,46 @@ def _slot_dir() -> Path:
 
 
 @contextlib.contextmanager
-def _slot(universe_dir: Path) -> Iterator[None]:
-    """Hold one per-universe slot and one host slot, or refuse.
+def _slot(universe_dir: Path, *, on_wait: Callable[[float], None] | None = None) -> Iterator[None]:
+    """WAIT for one host slot, then run. Never refuses for being busy.
 
     Lock files, so the bound holds across the per-universe engine processes.
+
+    ``on_wait`` is called once, with the seconds waited so far, the first time a
+    call actually has to queue -- so a surface that has a user in front of it can
+    say "waiting for a free slot" instead of going silent. Waiting is visible or
+    it is indistinguishable from a hang.
+
+    There is no deadline. A 30-second one used to turn a busy host into
+    ``every tool slot for this host is busy``, which is a refusal wearing a
+    timeout's clothes (founder, 2026-09-30: over the concurrency line, work
+    WAITS).
     """
     import fcntl
 
     directory = _slot_dir()
-    key = hashlib.sha256(str(universe_dir).encode("utf-8")).hexdigest()[:16]
-    pools = (
-        [directory / f"u-{key}-{i}.lock" for i in range(_PER_UNIVERSE_SLOTS)],
-        [directory / f"host-{i}.lock" for i in range(_HOST_SLOTS)],
-    )
-    held: list[int] = []
-    deadline = time.monotonic() + _SLOT_WAIT_SECONDS
+    pool = [directory / f"host-{i}.lock" for i in range(_HOST_SLOTS)]
+    started = time.monotonic()
+    fd: int | None = None
+    announced = False
     try:
-        for pool, what in zip(pools, ("this universe", "this host"), strict=True):
-            while True:
-                fd = _try_lock_one(pool, fcntl)
-                if fd is not None:
-                    held.append(fd)
-                    break
-                if time.monotonic() >= deadline:
-                    raise UniverseToolError(
-                        f"every tool slot for {what} is busy; try again shortly"
-                    )
-                time.sleep(0.1)
+        while True:
+            fd = _try_lock_one(pool, fcntl)
+            if fd is not None:
+                break
+            if not announced:
+                announced = True
+                if on_wait is not None:
+                    with contextlib.suppress(Exception):
+                        on_wait(time.monotonic() - started)
+                logger.info(
+                    "universe_tools: every host tool slot is busy; waiting (universe %s)",
+                    universe_dir.name,
+                )
+            time.sleep(_SLOT_POLL_SECONDS)
         yield
     finally:
-        for fd in held:
+        if fd is not None:
             with contextlib.suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
@@ -554,8 +576,14 @@ def run_jailed(
     limits: ToolLimits = DEFAULT_LIMITS,
     wall_seconds: float | None = None,
     output_bytes: int | None = None,
+    on_wait: Callable[[float], None] | None = None,
 ) -> ToolRun:
-    """Run ``inner`` in the universe's tool jail under ``limits``, or refuse."""
+    """Run ``inner`` in the universe's tool jail under ``limits``.
+
+    If every host slot is taken the call WAITS for one; it is not refused for the
+    host being busy. ``on_wait`` is invoked once when that happens, so a caller
+    with a user in front of it can surface a waiting state.
+    """
     wall = float(wall_seconds if wall_seconds is not None else limits.wall_seconds)
     cap = int(output_bytes if output_bytes is not None else limits.output_bytes)
     cpu = min(int(limits.cpu_seconds), int(wall) + 1)
@@ -567,7 +595,7 @@ def run_jailed(
     filter_fd = _seccomp_fd()
     try:
         argv = TOOL_JAIL_ARGV(root, limited, seccomp_fd=filter_fd)
-        with _slot(root):
+        with _slot(root, on_wait=on_wait):
             free = _free_disk(root)
             if 0 <= free < limits.min_free_disk_bytes:
                 raise UniverseToolError(
