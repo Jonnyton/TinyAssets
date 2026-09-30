@@ -440,27 +440,28 @@ const fortyFirst=await u.install(bundleOf({ui_id:'many-40'}));
 assert(fortyFirst.ok,'a 41st UI installs: '+JSON.stringify(fortyFirst));
 assert.equal(appUi.ui_library.length,41);
 
-// The stored row is near the byte limit while the cache says it is empty. The
-// save reads the row, so the refusal comes from what is stored, with its size.
+// A large stored library installs one more, whatever its size. The 4 MiB
+// MAX_LIBRARY_BYTES refusal ("remove one first") is gone: those bytes are the
+// universe's storage, which is one of an account's two limits, not a UI quota
+// (founder, 2026-09-30).
 const heavy=i=>bundleOf({ui_id:'heavy-'+i,markup:'x'.repeat(u.MAX_MARKUP)});
 const nearFull=[];
-while(u.bytes(JSON.stringify(nearFull.concat([heavy(nearFull.length)])))<=u.MAX_LIBRARY_BYTES)
- nearFull.push(heavy(nearFull.length));
-assert(nearFull.length>=50,'a light user is nowhere near this: '+nearFull.length+' max-size UIs fit');
+while(u.bytes(JSON.stringify(nearFull))<=4194304) nearFull.push(heavy(nearFull.length));
+assert(nearFull.length>=50,'past the old ceiling: '+nearFull.length+' max-size UIs');
+assert(u.MAX_LIBRARY_BYTES===undefined,'the library byte ceiling is gone');
 appUi=stored(nearFull,null);
 u.adopt(stored([],null));
-const storedFull=JSON.stringify(appUi);
 calls=[];
-const overflow=await u.install(heavy('one-too-many'));
-assert(!overflow.ok,'a UI that takes the library over its byte limit is refused');
-assert.equal(calls.filter(c=>c.tool==='write_graph').length,0,'and nothing is written');
-assert.equal(JSON.stringify(appUi),storedFull);
-assert(/over the \d+-byte limit/.test($('ui-status').textContent),$('ui-status').textContent);
+const overflow=await u.install(heavy('one-more'));
+assert(overflow.ok,'a UI past the old byte limit installs: '+JSON.stringify(overflow));
+assert.equal(calls.filter(c=>c.tool==='write_graph').length,1,'and it is written once');
+assert.equal(appUi.ui_library.length,nearFull.length+1);
+assert(!/remove one first/.test($('ui-status').textContent),$('ui-status').textContent);
 // Re-installing a ui_id already there replaces it rather than adding to the size.
 u.adopt(clone(appUi));
 const replaced=await u.install(bundleOf({ui_id:'heavy-0',name:'Renamed'}));
 assert(replaced.ok,JSON.stringify(replaced));
-assert.equal(appUi.ui_library.length,nearFull.length);
+assert.equal(appUi.ui_library.length,nearFull.length+1,'a replace adds no row');
 assert.equal(appUi.ui_library.find(b=>b.ui_id==='heavy-0').name,'Renamed');
 
 // ---- a brand-new account installs from nothing (lead, 2026-09-26) -----

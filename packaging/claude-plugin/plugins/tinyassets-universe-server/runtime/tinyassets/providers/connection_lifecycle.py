@@ -247,10 +247,10 @@ def fence_connection(
             # cannot adopt the old grant in the gap before vault deletion.
             ConnectionLedger(Path(base) / "outbound.db").revoke_connection(connection_id)
             conn.commit()
-        from tinyassets.storage.pending_requests import MAX_PENDING, list_pending, resolve_request
+        from tinyassets.storage.pending_requests import list_pending, resolve_request
 
         aliases = affected | {name.removeprefix("api_key_http:") for name in affected}
-        for request in list_pending(Path(universe), limit=MAX_PENDING):
+        for request in list_pending(Path(universe), limit=None):
             action = request.get("action") or {}
             if action.get("type") == "bind_model_access" and aliases.intersection(
                 action.get("model_access") or {}

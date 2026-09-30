@@ -406,29 +406,33 @@ def _transfer_files(base, *, principal, universe_id, link_id, occurrence_id, out
 
 
 def _enforce_sender_rate_limit(conn, receiver, *, sender_id):
-    """Bound how much traffic ONE sender can push through ONE receiver.
+    """Apply the OWNER's own per-sender policy, if they set one.
 
-    Runs on first acceptance only, inside the acceptance transaction, and BEFORE
-    ``engine_admissions.admit_detail`` -- a refused sender must not spend the
-    receiving owner's run admission budget, which is the abuse channel an open
-    receiver creates. A retry of an already-accepted occurrence never reaches here,
-    so replay neither consumes budget nor is refused.
+    Off unless the owner chose a number: the platform imposes no default and no
+    ceiling on traffic through someone else's receiver (founder, 2026-09-30 --
+    account limits are cloud storage and concurrent agent seats). The old
+    justification was that a stranger could spend the owner's run admission
+    budget; there is no such budget now, and a delivered run queues for a seat.
 
-    Usage, not structure: it limits deliveries per sender per window, never how many
-    receivers, nodes, links or contract fields an owner may have. One code path for
-    every account -- an enumerated sender gets the same rule as a stranger.
+    When the owner HAS set one, it runs on first acceptance only, inside the
+    acceptance transaction, and BEFORE any further admission, so a refused sender
+    does no work on the receiving side. A retry of an already-accepted occurrence
+    never reaches here, so replay is neither charged nor refused. One code path
+    for every account -- an enumerated sender gets the same rule as a stranger.
     """
     limit = receiver["sender_rate_limit"]
+    if not limit:  # NO_SENDER_RATE_LIMIT: the owner set no policy
+        return
     accepted = deliveries.sender_window_count(
         conn, receiver_id=receiver["receiver_id"], sender_id=sender_id,
         window_seconds=deliveries.SENDER_RATE_WINDOW_SECONDS,
     )
     if accepted >= limit:
         raise ValueError(
-            "receiver_sender_rate_limit_exceeded: this receiver accepts "
+            "receiver_sender_rate_limit_exceeded: this receiver's owner accepts "
             f"{limit} deliveries per sender per "
             f"{int(deliveries.SENDER_RATE_WINDOW_SECONDS)}s and you have sent "
-            f"{accepted}; its owner sets the limit"
+            f"{accepted}; the limit is theirs to set or remove"
         )
 
 

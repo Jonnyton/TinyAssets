@@ -113,10 +113,14 @@ CREATE INDEX IF NOT EXISTS idx_pending_requests_status
     ON pending_requests(status, created_at);
 """
 
-#: A pending request occupies a tab in the user's face. More than this means
-#: something is looping, and a rail of identical tabs is not a rail.
-MAX_PENDING = 50
-
+#: There is NO ceiling on how many requests may be pending. ``MAX_PENDING = 50``
+#: used to refuse the fifty-first with ``too_many_pending``; it was an account
+#: limit, and an account has exactly two -- the cloud bytes it occupies and its
+#: concurrent agent seats (founder, 2026-09-30). A looping universe is bounded by
+#: its seats, not by how many tabs it managed to open, and dedupe (the
+#: ``dedupe_key`` lookup below) already collapses an identical re-ask into the
+#: same row, which is what actually kept the rail readable.
+#:
 #: Answerable items on ONE request. Payload validation of a single ask, the same
 #: class as the API layer's `_MAX_FIELDS` -- a note of 200 tasks is not a note,
 #: and the notification for it has to fit. NOT an account limit: a universe may
@@ -351,11 +355,6 @@ def create_request(
                 # only the first is something to notify the owner about.
                 same = get_request(universe_dir, existing[0])
                 return {**same, "created": False} if same else None
-            pending = conn.execute(
-                "SELECT COUNT(*) FROM pending_requests WHERE status = 'pending'"
-            ).fetchone()[0]
-            if pending >= MAX_PENDING:
-                return {"error": "too_many_pending"}
             row_id = "req_" + uuid.uuid4().hex[:24]
             conn.execute(
                 "INSERT INTO pending_requests (request_id, kind, title, body, "
@@ -494,14 +493,27 @@ def get_request(universe_dir: Path, request_id: str) -> dict[str, Any] | None:
         return None
 
 
-def list_pending(universe_dir: Path, limit: int = 10) -> list[dict[str, Any]]:
-    """Oldest first — the rail reads top to bottom in the order asked."""
+def list_pending(universe_dir: Path, limit: int | None = 10) -> list[dict[str, Any]]:
+    """Oldest first — the rail reads top to bottom in the order asked.
+
+    ``limit=None`` returns every pending row. Callers that must SEE all of them —
+    reconciling a revoked connection, matching a model-access ask — used to pass
+    the old ``MAX_PENDING`` for this, which silently became a real cutoff the
+    moment the ceiling stopped existing. A page size is a read preference; it is
+    not an account limit, and it must not quietly hide a row someone is waiting
+    on.
+    """
     try:
         with _db(universe_dir) as conn:
-            rows = conn.execute(
-                f"{_SELECT} WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
-                (max(1, int(limit)),),
-            ).fetchall()
+            if limit is None:
+                rows = conn.execute(
+                    f"{_SELECT} WHERE status = 'pending' ORDER BY created_at ASC"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"{_SELECT} WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
+                    (max(1, int(limit)),),
+                ).fetchall()
             return _projected(conn, rows)
     except Exception:  # noqa: BLE001
         logger.warning("pending_requests: list failed", exc_info=True)
@@ -888,7 +900,6 @@ __all__ = [
     "ITEM_PENDING",
     "ITEM_UNANSWERED",
     "MAX_ITEMS",
-    "MAX_PENDING",
     "create_request",
     "find_by_action_type",
     "get_request",

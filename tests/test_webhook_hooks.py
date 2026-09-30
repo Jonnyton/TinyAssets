@@ -134,19 +134,29 @@ def test_admission_caps_per_token_and_survives_restart(tmp_path):
     now = 1000.0
     admitted = sum(
         hooks.admit(tmp_path, token=token, universe_id="u-a",
-                    token_max=5, universe_max=1000, window_s=60.0, now=now)
+                    token_max=5, window_s=60.0, now=now)
         for _ in range(8)
     )
     assert admitted == 5                              # per-token cap
     hooks._initialized.clear()                        # simulate a process restart
     assert not hooks.admit(tmp_path, token=token, universe_id="u-a",
-                           token_max=5, universe_max=1000, window_s=60.0, now=now)
+                           token_max=5, window_s=60.0, now=now)
     # window advances -> admitted again
     assert hooks.admit(tmp_path, token=token, universe_id="u-a",
-                       token_max=5, universe_max=1000, window_s=60.0, now=now + 61)
+                       token_max=5, window_s=60.0, now=now + 61)
 
 
-def test_admission_caps_per_universe_across_tokens(tmp_path):
+def test_admission_does_not_meter_a_universe_across_its_own_tokens(tmp_path):
+    """The per-universe aggregate is GONE; only the per-token flood limit remains.
+
+    It used to admit 6 of 20 across four of the owner's own tokens. That metered
+    the account holder against themselves, and an account has exactly two limits
+    -- cloud bytes and concurrent agent seats (founder, 2026-09-30). The per-token
+    number stays because ``/hooks/<token>`` is an unauthenticated public ingress:
+    the flood it stops comes from a stranger with the URL.
+    """
+    import inspect
+
     toks = [
         hooks.mint(
             tmp_path,
@@ -160,9 +170,12 @@ def test_admission_caps_per_universe_across_tokens(tmp_path):
     admitted = 0
     for i in range(20):
         if hooks.admit(tmp_path, token=toks[i % 4], universe_id="u-a",
-                       token_max=100, universe_max=6, window_s=60.0, now=now):
+                       token_max=100, window_s=60.0, now=now):
             admitted += 1
-    assert admitted == 6                              # per-universe aggregate cap binds
+    assert admitted == 20, "every delivery admitted: no per-universe aggregate"
+    # Mutation guard: a re-added aggregate would have to query the column again.
+    src = inspect.getsource(hooks.admit)
+    assert "universe_id = ?" not in src, "admit must not count per universe"
 
 
 # ── Atomic server-side replay dedupe (Codex #4) ─────────────────────────────────
@@ -202,25 +215,21 @@ def test_claim_delivery_is_atomic_under_concurrency(tmp_path):
     assert sum(wins) == 1                              # exactly one claim across 16 racers
 
 
-# ── Atomic in-flight reservation (Codex #5) ─────────────────────────────────────
+# Atomic in-flight reservation: revoke serialization, no ceiling.
 
-def test_reserve_dispatch_enforces_the_cap_and_active_check(tmp_path):
+def test_reserve_dispatch_has_no_cap_but_keeps_the_active_check(tmp_path):
     token = hooks.mint(
         tmp_path,
         universe_id="u-a",
         branch_def_id="b-1",
         owner_principal_id="owner-test",
     )
-    kw = dict(token=token, universe_id="u-a", cap=2, ttl_s=120.0, now=8000.0)
-    r1, s1 = hooks.reserve_dispatch(tmp_path, **kw)
-    r2, s2 = hooks.reserve_dispatch(tmp_path, **kw)
-    r3, s3 = hooks.reserve_dispatch(tmp_path, **kw)
-    assert s1 == "ok" and s2 == "ok" and s3 == "busy" and r3 is None
-    # releasing one frees a slot
-    hooks.release_dispatch(tmp_path, reservation_id=r1)
-    r4, s4 = hooks.reserve_dispatch(tmp_path, **kw)
-    assert s4 == "ok"
-    # a revoked token cannot reserve at all
+    kw = dict(token=token, universe_id="u-a", ttl_s=120.0, now=8000.0)
+    # No in-flight ceiling: the 3rd, 20th and 200th concurrent reservation all land.
+    reserved = [hooks.reserve_dispatch(tmp_path, **kw) for _ in range(200)]
+    assert all(status == "ok" and rid for rid, status in reserved)
+    assert len({rid for rid, _ in reserved}) == 200
+    # a revoked token still cannot reserve at all -- that is the gate that stays
     hooks.revoke(tmp_path, token=token)
     r5, s5 = hooks.reserve_dispatch(tmp_path, **kw)
     assert r5 is None and s5 == "revoked"
@@ -233,17 +242,30 @@ def test_reserve_dispatch_reconciles_terminated_and_abandoned(tmp_path):
         branch_def_id="b-1",
         owner_principal_id="owner-test",
     )
+    def _inflight():
+        conn = hooks._connect(tmp_path)
+        try:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM webhook_inflight WHERE universe_id = 'u-a'"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
     r1, _ = hooks.reserve_dispatch(tmp_path, token=token, universe_id="u-a",
-                                   cap=1, ttl_s=120.0, now=9000.0)
+                                   ttl_s=120.0, now=9000.0)
     hooks.link_dispatch(tmp_path, reservation_id=r1, run_id="run-1")
-    # cap is full, but reconciling run-1 (now terminal) frees the slot
+    assert _inflight() == 1
+    # Reconciliation still matters with no cap: it is what keeps the table from
+    # growing a row per delivery forever. A terminal run's row is swept.
     r2, s2 = hooks.reserve_dispatch(tmp_path, token=token, universe_id="u-a",
-                                    cap=1, ttl_s=120.0, terminal_run_ids={"run-1"}, now=9001.0)
+                                    ttl_s=120.0, terminal_run_ids={"run-1"}, now=9001.0)
     assert s2 == "ok" and r2 is not None
+    assert _inflight() == 1, "run-1's row was reconciled away, r2's took its place"
     # an UNLINKED reservation past its TTL is reclaimed as abandoned
     r3, s3 = hooks.reserve_dispatch(tmp_path, token=token, universe_id="u-a",
-                                    cap=1, ttl_s=120.0, now=9001.0 + 200)
-    assert s3 == "ok"
+                                    ttl_s=120.0, now=9001.0 + 200)
+    assert s3 == "ok" and r3 is not None
+    assert _inflight() == 1
 
 
 def test_reserve_dispatch_is_atomic_under_concurrency(tmp_path):
@@ -259,19 +281,24 @@ def test_reserve_dispatch_is_atomic_under_concurrency(tmp_path):
     outcomes: list[str] = []
     lock = threading.Lock()
 
+    rids: list[str] = []
+
     def worker():
-        _rid, status = hooks.reserve_dispatch(
-            tmp_path, token=token, universe_id="u-a", cap=5, ttl_s=120.0, now=9500.0)
+        rid, status = hooks.reserve_dispatch(
+            tmp_path, token=token, universe_id="u-a", ttl_s=120.0, now=9500.0)
         with lock:
             outcomes.append(status)
+            rids.append(rid)
 
     threads = [threading.Thread(target=worker) for _ in range(20)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    assert outcomes.count("ok") == 5                   # never overshoot the cap under 20 racers
-    assert outcomes.count("busy") == 15
+    # No cap to overshoot. What still has to hold under 20 racers is that every
+    # reservation is distinct and every one is real -- nothing is dropped.
+    assert outcomes.count("ok") == 20 and "busy" not in outcomes
+    assert len(set(rids)) == 20
 
 
 def test_a_concurrent_revoke_and_reserve_never_both_win(tmp_path):
@@ -296,7 +323,7 @@ def test_a_concurrent_revoke_and_reserve_never_both_win(tmp_path):
     def reserver():
         barrier.wait()
         _rid, results["reserve_status"] = hooks.reserve_dispatch(
-            tmp_path, token=token, universe_id="u-a", cap=10, ttl_s=120.0, now=9800.0)
+            tmp_path, token=token, universe_id="u-a", ttl_s=120.0, now=9800.0)
 
     tr = threading.Thread(target=revoker)
     ts = threading.Thread(target=reserver)
@@ -306,7 +333,7 @@ def test_a_concurrent_revoke_and_reserve_never_both_win(tmp_path):
         t.join()
     # After the dust settles the token is revoked; a fresh reserve must be refused.
     _rid, status = hooks.reserve_dispatch(
-        tmp_path, token=token, universe_id="u-a", cap=10, ttl_s=120.0, now=9801.0)
+        tmp_path, token=token, universe_id="u-a", ttl_s=120.0, now=9801.0)
     assert status == "revoked"
 
 
