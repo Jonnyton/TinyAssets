@@ -188,8 +188,6 @@ def test_real_worker_close_wins_against_waiting_child_insertion(tmp_path):
 
 def test_process_local_future_absence_is_not_managed_worker_death(tmp_path, monkeypatch):
     root, _ = _create(tmp_path)
-    monkeypatch.setenv("TINYASSETS_ORPHANED_RUN_GRACE_SECONDS", "60")
-    monkeypatch.setattr(runs, "_has_live_future", lambda *_: False)
     with runs._connect(tmp_path) as conn:
         conn.execute("UPDATE runs SET started_at=1 WHERE run_id=?", (root,))
     assert runs.get_run(tmp_path, root)["status"] == "running"

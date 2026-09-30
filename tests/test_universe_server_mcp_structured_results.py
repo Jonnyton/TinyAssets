@@ -88,7 +88,7 @@ def test_mcp_tool_large_result_keeps_full_structured_content_with_bounded_text(
         for idx in range(12)
     ]
 
-    def _large_gates_result(**_kwargs):
+    def _large_goals_result(**_kwargs):
         return json.dumps({
             "status": "ok",
             "goal_id": "4ff5862cc26d",
@@ -96,15 +96,14 @@ def test_mcp_tool_large_result_keeps_full_structured_content_with_bounded_text(
             "count": len(claims),
         })
 
-    monkeypatch.setattr(us, "_gates_impl", _large_gates_result)
+    # Any canonical handle whose result is large exercises the bounding; the
+    # retired `gates` tool this used to call is no longer registered.
+    monkeypatch.setattr(us, "_goals_impl", _large_goals_result)
 
-    async def _call_gates():
-        return await us.mcp.call_tool(
-            "gates",
-            {"action": "list_claims", "goal_id": "4ff5862cc26d"},
-        )
+    async def _call_read_graph():
+        return await us.mcp.call_tool("read_graph", {"target": "goals"})
 
-    result = asyncio.run(_call_gates())
+    result = asyncio.run(_call_read_graph())
 
     assert result.structured_content["claims"] == claims
     assert result.structured_content["count"] == 12

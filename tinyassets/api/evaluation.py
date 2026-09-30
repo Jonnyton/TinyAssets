@@ -264,6 +264,16 @@ def _action_compare_runs(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _branch_readable(bid: str) -> bool:
+    """Whether the caller may read this branch -- its nodes, its node history
+    and its versions. Everything here that returns branch content asks first,
+    and an unreadable branch answers exactly as an absent one does (astra
+    refute 2026-09-30: these readers checked nothing)."""
+    from tinyassets.api.branches import resolve_branch_id_for_read
+
+    return resolve_branch_id_for_read(bid, str(_base_path())) == bid
+
+
 def _action_suggest_node_edit(kwargs: dict[str, Any]) -> str:
     """Bundle everything Claude.ai needs to propose an edit, in one call.
 
@@ -292,6 +302,8 @@ def _action_suggest_node_edit(kwargs: dict[str, Any]) -> str:
         })
 
     _ensure_workflow_db()
+    if not _branch_readable(bid):
+        return json.dumps({"error": f"Branch '{bid}' not found."})
     try:
         source = get_branch_definition(_base_path(), branch_def_id=bid)
     except KeyError:
@@ -494,6 +506,8 @@ def _action_list_node_versions(kwargs: dict[str, Any]) -> str:
         })
 
     _ensure_workflow_db()
+    if not _branch_readable(bid):
+        return json.dumps({"error": f"Branch '{bid}' not found."})
     try:
         source = get_branch_definition(_base_path(), branch_def_id=bid)
     except KeyError:
@@ -914,12 +928,10 @@ def _action_list_branch_versions(kwargs: dict[str, Any]) -> str:
         return json.dumps({"error": "branch_def_id is required."})
     limit = int(kwargs.get("limit", 50) or 50)
 
-    from tinyassets.api.branches import resolve_branch_id_for_read
-
     base_path = _base_path()
     # Same rule as a single version: the history of a branch the caller may not
     # read does not exist for them.
-    if resolve_branch_id_for_read(bid, str(base_path)) != bid:
+    if not _branch_readable(bid):
         return json.dumps({"error": f"Branch '{bid}' not found."})
     versions = list_branch_versions(base_path, bid, limit=limit)
     return json.dumps({

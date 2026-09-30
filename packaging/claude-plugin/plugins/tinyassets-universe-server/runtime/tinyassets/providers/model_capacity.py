@@ -106,6 +106,7 @@ class CapacitySignal:
             raise ValueError("invalid capacity scope")
         if self.failure_class not in {
             "provider_credit_exhausted", "provider_rate_limited", "provider_overloaded",
+            "provider_daily_quota",
         }:
             raise ValueError("invalid capacity failure kind")
         delay = self.retry_after_s

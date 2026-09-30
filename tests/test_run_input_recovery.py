@@ -53,7 +53,6 @@ def test_aged_pre_family_admission_survives_other_process_recovery(
     mode,
     started,
 ):
-    monkeypatch.setenv("TINYASSETS_ORPHANED_RUN_GRACE_SECONDS", "1")
     run_id = _reserved(tmp_path)
     if started:
         with try_run_execution_lock(tmp_path, run_id=run_id) as guard:
@@ -87,9 +86,10 @@ def test_aged_pre_family_admission_survives_other_process_recovery(
 
 
 @pytest.mark.parametrize("has_empty_table", [False, True])
-@pytest.mark.parametrize("mode", ["read", "startup"])
-def test_non_admitted_legacy_recovery_unchanged(tmp_path, monkeypatch, has_empty_table, mode):
-    monkeypatch.setenv("TINYASSETS_ORPHANED_RUN_GRACE_SECONDS", "1")
+def test_non_admitted_recovery_needs_its_owner_dead(tmp_path, has_empty_table):
+    """A read never ends a run; recovery ends it once its owner is dead."""
+    from tests.run_owner_helpers import mark_owner_dead
+
     run_id = runs.create_run(
         tmp_path, branch_def_id="legacy", thread_id="", inputs={}, actor="owner"
     )
@@ -97,23 +97,24 @@ def test_non_admitted_legacy_recovery_unchanged(tmp_path, monkeypatch, has_empty
         conn.execute("UPDATE runs SET started_at=1")
         if has_empty_table:
             admissions.ensure_schema(conn)
-    if mode == "startup":
-        assert runs.recover_in_flight_runs(tmp_path) == 1
+    assert runs.get_run(tmp_path, run_id)["status"] == "queued"
+    assert runs.recover_in_flight_runs(tmp_path) == 0, "its owner is this live process"
+    mark_owner_dead(tmp_path, run_id)
+    assert runs.recover_in_flight_runs(tmp_path) == 1
     assert runs.get_run(tmp_path, run_id)["status"] == "interrupted"
 
 
 @pytest.mark.parametrize("malformed", ["view", "missing_column"])
-@pytest.mark.parametrize("mode", ["read", "startup"])
 def test_present_broken_admission_schema_never_enables_retirement(
     tmp_path,
-    monkeypatch,
     malformed,
-    mode,
 ):
-    monkeypatch.setenv("TINYASSETS_ORPHANED_RUN_GRACE_SECONDS", "1")
+    from tests.run_owner_helpers import mark_owner_dead
+
     run_id = runs.create_run(
         tmp_path, branch_def_id="legacy", thread_id="", inputs={}, actor="owner"
     )
+    mark_owner_dead(tmp_path, run_id)
     with runs._connect(tmp_path) as conn:
         conn.execute("UPDATE runs SET started_at=1")
         if malformed == "view":
@@ -121,9 +122,6 @@ def test_present_broken_admission_schema_never_enables_retirement(
         else:
             conn.execute("CREATE TABLE run_input_admissions(wrong TEXT)")
     with pytest.raises((RuntimeError, sqlite3.OperationalError)):
-        if mode == "read":
-            runs.get_run(tmp_path, run_id)
-        else:
-            runs.recover_in_flight_runs(tmp_path)
+        runs.recover_in_flight_runs(tmp_path)
     with runs._connect(tmp_path) as conn:
         assert conn.execute("SELECT status FROM runs").fetchone()[0] == "queued"

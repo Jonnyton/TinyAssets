@@ -9,8 +9,8 @@ expecting it to flip back.
 Invariants:
 - get_run on INTERRUPTED returns ``resumable=False`` + a
   ``resumable_reason`` string.
-- The original error message (``"Server restarted while this run was in
-  flight."``) is preserved in the ``error`` field.
+- The recovery error message (``"The process running this run stopped
+  before it finished."``) is preserved in the ``error`` field.
 - Non-interrupted runs don't carry ``resumable`` (absence = not
   applicable; presence with False = "this is terminal, rerun").
 """
@@ -66,15 +66,17 @@ def test_interrupted_run_get_run_surfaces_resumable_false(run_env):
     us, base = run_env
     rid = _create_running_run(base, us)
 
-    # Simulate daemon restart recovery.
+    # Simulate daemon restart recovery: the owning process died.
+    from tests.run_owner_helpers import mark_owner_dead
     from tinyassets.runs import recover_in_flight_runs
+    mark_owner_dead(base, rid)
     assert recover_in_flight_runs(base) == 1
 
     got = _call(us, "get_run", run_id=rid)
     assert got["status"] == "interrupted"
     assert got["resumable"] is False
     assert got["resumable_reason"] == "v1 terminal-on-restart"
-    assert "Server restarted" in got["error"]
+    assert "stopped before it finished" in got["error"]
 
 
 def test_non_interrupted_run_does_not_carry_resumable_field(run_env):
@@ -105,7 +107,9 @@ def test_interrupted_surface_across_multiple_runs(run_env):
     us, base = run_env
     rids = [_create_running_run(base, us, f"b{i}") for i in range(3)]
 
+    from tests.run_owner_helpers import mark_owner_dead
     from tinyassets.runs import recover_in_flight_runs
+    mark_owner_dead(base, *rids)
     assert recover_in_flight_runs(base) == 3
 
     for rid in rids:

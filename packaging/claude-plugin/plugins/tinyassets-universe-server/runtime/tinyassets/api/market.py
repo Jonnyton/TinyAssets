@@ -2301,6 +2301,19 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     except KeyError:
         return json.dumps({"status": "rejected", "error": f"Goal '{gid}' not found."})
 
+    # A canonical is something every runner of the goal will run: it may only
+    # name a version the setter can read, or a personal canonical becomes a
+    # way to run -- and preflight-read -- another user's private snapshot
+    # (astra refute 2026-09-30). Unreadable reads as absent.
+    if branch_version_id:
+        from tinyassets.api.branches import _resolve_readable_version
+
+        if _resolve_readable_version(branch_version_id, str(_base_path())) is None:
+            return json.dumps({
+                "status": "rejected",
+                "error": f"Branch version '{branch_version_id}' not found.",
+            })
+
     actor = named_principal(_current_actor())
     raw_scope_actor = str(kwargs.get("scope") or "").strip()
     scope_actor = named_principal(raw_scope_actor)
