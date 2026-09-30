@@ -82,6 +82,9 @@ class _Wire:
         self.models = models
         self.reads: list[dict[str, Any]] = []
         self.requests: list[tuple[str, dict[str, Any]]] = []
+        #: Models this source answers 429 for, as OpenRouter does when a FREE
+        #: model's own window is spent. Everything else answers normally.
+        self.rate_limited: frozenset[str] = frozenset()
 
     # -- discovery -------------------------------------------------------
     def read(self, **kwargs: Any) -> dict[str, Any]:
@@ -94,10 +97,15 @@ class _Wire:
 
     def request(self, verb: str, document: dict[str, Any]) -> dict[str, Any]:
         self.requests.append((verb, document))
+        model = document["body"]["model"]
+        if model in self.rate_limited:
+            # A whole-response status, exactly as the live source sends it: a
+            # header-less 429 with no body, before a single token is generated.
+            return {"status": 429, "headers": {}, "body": ""}
         return {
             "status": 200,
             "body": json.dumps({
-                "model": document["body"]["model"],
+                "model": model,
                 "choices": [{
                     "message": {"role": "assistant", "content": "morning focus note"},
                     "finish_reason": "stop",
@@ -243,6 +251,18 @@ def _seed_universe(
     return f"api_key_http:{definition.id}"
 
 
+def _definition_id(universe: str, owner: str) -> str:
+    """This universe's one registered source, read back from the real registry."""
+    from tinyassets.providers.definition import list_definitions
+
+    matches = [
+        item for item in list_definitions(universe)
+        if item.owner_user_id == owner and item.access_method == "api_key_http"
+    ]
+    assert len(matches) == 1, matches
+    return matches[0].id
+
+
 def _branch(
     *, owner: str, branch_def_id: str = "branch_morning_focus", agent_node: bool = False,
     visibility: str = "private",
@@ -320,6 +340,83 @@ def test_an_unpinned_prompt_node_runs_on_a_model_the_account_actually_has(
     # this list was empty and the run failed `authority_held` instead.
     assert DECLARED not in wire.sent_models
     assert record["output"]["note"] == "morning focus note"
+
+
+def test_a_free_models_429_steps_to_the_next_model_the_owner_already_accepted(
+    tmp_path, monkeypatch, authenticate_request, wires,
+):
+    """The second live report: one 429 ended the whole run.
+
+    Live 2026-09-30 ~05:16Z on deployed `704b066d`, run `c22c1cb12db74d6a`:
+
+        work model attempt is held: qwen/qwen3.8-27b:free on
+        api_key_http:provdef_ed01... (provider_rate_limited)
+
+    with `provider_chain.attempts` holding exactly ONE attempt, on an account
+    with 632 models whose chat turns fall through to another free model on the
+    same 429. The recorded diagnostic carried
+    `detail: "compute provider rate limited (429)"` -- the source's own HTTP
+    status, NOT `_MAX_BINDING_INVOCATIONS` or any other platform limit -- with
+    no `capacity_scope`, no `retry_after_s` and no `side_effect_state`, because
+    the provider only decodes a capacity signal for an AGENT round.
+
+    So a workflow node must step to the next model in the owner's own captured
+    order, which is the same fallback a chat turn takes.
+    """
+    authenticate_request(A_OWNER)
+    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
+    wires[A_OWNER].rate_limited = frozenset({LIVE_MODELS[0]})
+
+    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
+
+    assert record["status"] == "completed", record["error"]
+    assert wires[A_OWNER].sent_models == list(LIVE_MODELS), wires[A_OWNER].sent_models
+    assert record["output"]["note"] == "morning focus note"
+
+
+def test_every_model_rate_limited_is_exhaustion_naming_each_one(
+    tmp_path, monkeypatch, authenticate_request, wires,
+):
+    """Stepping past a 429 must still stop, and say what it tried.
+
+    The bound is the owner's own order: when every model in it answered 429 the
+    run reports typed exhaustion naming each, not "held" after the first.
+    """
+    from tinyassets.exceptions import WorkModelExhaustedError
+
+    authenticate_request(A_OWNER)
+    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
+    wires[A_OWNER].rate_limited = frozenset(LIVE_MODELS)
+
+    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
+
+    assert record["status"] == "failed"
+    assert WorkModelExhaustedError.MESSAGE in record["error"], record["error"]
+    assert wires[A_OWNER].sent_models == list(LIVE_MODELS), wires[A_OWNER].sent_models
+    for model in LIVE_MODELS:
+        assert model in record["error"], record["error"]
+    assert "provider_rate_limited" in record["error"], record["error"]
+
+
+def test_a_node_declaring_no_fallbacks_stays_on_its_pin_through_a_429(
+    tmp_path, monkeypatch, authenticate_request, wires,
+):
+    """`fallback_chain: []` still means only this model, 429 or not."""
+    authenticate_request(A_OWNER)
+    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
+    wires[A_OWNER].rate_limited = frozenset({LIVE_MODELS[0]})
+    provider = f"api_key_http:{_definition_id(A_HOME, A_OWNER)}"
+    branch = _branch(owner=A_OWNER)
+    branch.node_defs[0].llm_policy = {
+        "preferred": {"provider": provider, "model": LIVE_MODELS[0]},
+        "fallback_chain": [],
+    }
+
+    record = _run(tmp_path, monkeypatch, branch, A_HOME)
+
+    assert record["status"] == "failed"
+    assert wires[A_OWNER].sent_models == [LIVE_MODELS[0]], wires[A_OWNER].sent_models
+    assert LIVE_MODELS[1] not in wires[A_OWNER].sent_models
 
 
 def test_an_unnamed_model_resolves_at_the_reservation_even_with_no_captured_order(

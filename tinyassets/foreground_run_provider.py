@@ -1178,6 +1178,48 @@ class _ForegroundRunProviderSession:
             )
         return self._call_once(role, prompt, system, config, policy, kwargs)
 
+    def _narrowed_exhaustion(self, boundary, kind, narrowings, config):
+        """Exclude only the failed MODEL when excluding the source is a guess.
+
+        `capacity_boundary` collapses an unreported window to the whole account
+        on purpose -- it never invents independence -- and exposes
+        `observed_scope` so the CALLER can decide. A conversation turn already
+        does (`AgentTurnCoordinator._narrowed`); a workflow node did not, and
+        took the conservative reading as final. On a free account whose ONE
+        source holds every model, that rejected every sibling, so a single
+        model's 429 ended the run after one attempt while the owner's chat turn
+        stepped to the next free model on the identical refusal (live
+        2026-09-30, run `c22c1cb12db74d6a`).
+
+        The decision is the platform's single capacity policy, not a second one:
+        `free_sibling_retry` answers whether an unknown window buys a sibling,
+        the same call and the same bound the conversation path uses. Engine
+        inference only -- a native executor runs on ONE subscription, so a limit
+        there is a fact about that account rather than a model within it.
+
+        Returns the exhaustion to record and whether it rests on a guess.
+        """
+        from dataclasses import replace as _replace
+
+        from tinyassets.providers.model_capacity import (
+            MAX_FREE_SIBLING_RETRIES,
+            free_sibling_retry,
+        )
+
+        if kind != "engine_inference" or narrowings >= MAX_FREE_SIBLING_RETRIES:
+            return boundary.exhaustion, False
+        if not free_sibling_retry(
+            scope=boundary.observed_scope,
+            failure_class=boundary.failure_class,
+            retry_after_s=boundary.retry_after_s,
+            # The NODE's own deadline is this work's budget, so a source naming a
+            # window longer than the node may live rules the sibling out here for
+            # the same reason it does on a turn.
+            turn_budget_s=getattr(config, "absolute_cap_s", None),
+        ):
+            return boundary.exhaustion, False
+        return _replace(boundary.exhaustion, scope="model"), True
+
     def _call_captured_prompt(self, role, prompt, system, config, policy, kwargs,
                               metadata_observer):
         from tinyassets.exceptions import AllProvidersExhaustedError
@@ -1186,6 +1228,7 @@ class _ForegroundRunProviderSession:
 
         attempts = 0
         boundaries = ()
+        narrowings = 0
         last_capacity = None
         while True:
             selected = self._work_candidates.next_candidate(policy)
@@ -1221,9 +1264,18 @@ class _ForegroundRunProviderSession:
                 )
                 if boundary is None:
                     raise _held_attempt_error(role, selected, exc) from exc
-                boundaries += (boundary,)
+                exhaustion, narrowed = self._narrowed_exhaustion(
+                    boundary, kind, narrowings, config,
+                )
+                narrowings += int(narrowed)
+                # The boundary is retained carrying the exhaustion actually
+                # RECORDED, not the one it proposed: `exhausted_error` matches
+                # evidence to exhaustion by value, so keeping the unnarrowed copy
+                # silently dropped the classified failure class and retry-after
+                # from the run's own error the moment a narrowing happened.
+                boundaries += (replace(boundary, exhaustion=exhaustion),)
                 last_capacity = exc
-                self._work_candidates.next_candidate(policy, (boundary.exhaustion,))
+                self._work_candidates.next_candidate(policy, (exhaustion,))
                 continue
             if metadata_observer is not None:
                 metadata = {"attempts": attempts, "model": selected.model_id}

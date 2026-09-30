@@ -1370,11 +1370,15 @@ class ProviderRouter:
                     provider=provider_name, status="failed", skip_class="quota_or_cooldown",
                     detail=redacted_failure_detail(str(exc)), failure_class=exc.failure_class,
                     retry_after_s=exc.retry_after, capacity_scope=exc.signal.scope,
-                    side_effect_state=(
-                        "none" if cfg.agent_request is not None
-                        and getattr(provider, "agent_execution_kind", None) == "engine_inference"
-                        else _side_effect_from(exc)
-                    ),
+                    # The RAISER declares whether anything was generated; this
+                    # used to assume "none" for an agent round on an
+                    # engine-inference source and read the telemetry otherwise,
+                    # which is the same fact answered twice. The only class that
+                    # raises here is a whole-response HTTP status, and it now
+                    # says so at the raise site
+                    # (`api_key_http_provider._pre_generation`), so an absent
+                    # fact can keep meaning "unknown" for everyone else.
+                    side_effect_state=_side_effect_from(exc),
                     **_tool_wait_evidence(exc),
                 ))
                 continue
