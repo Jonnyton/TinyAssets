@@ -114,24 +114,40 @@ def _lock_tree_exclusive(tree: Path, *, wait_s: float = 0.0) -> list[int] | None
     """
     if not _POSIX:
         return []
+    if not os.path.lexists(tree):
+        return []
     deadline = time.monotonic() + max(0.0, wait_s)
     fds: list[int] = []
-    for dirpath, dirnames, filenames in os.walk(tree, followlinks=False):
+    walk_errors: list[OSError] = []
+
+    def _abort() -> None:
+        for held in fds:
+            os.close(held)
+
+    # FAIL CLOSED: a directory that cannot be walked, or an .inuse that cannot
+    # be opened, is a lock we could not inspect -- and an uninspected lock may
+    # be a live worker's (gpt-6-astra, PR #4143 round 2).
+    for dirpath, dirnames, filenames in os.walk(
+        tree, followlinks=False, onerror=walk_errors.append,
+    ):
         dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))]
         if INUSE_NAME not in filenames:
             continue
         try:
             fd = os.open(os.path.join(dirpath, INUSE_NAME), os.O_RDWR | os.O_NOFOLLOW)
         except OSError:
-            continue
+            _abort()
+            return None
         while not _flock(fd, exclusive=True, blocking=False):
             if time.monotonic() >= deadline:
                 os.close(fd)
-                for held in fds:
-                    os.close(held)
+                _abort()
                 return None
             time.sleep(0.05)
         fds.append(fd)
+    if walk_errors:
+        _abort()
+        return None
     return fds
 
 
