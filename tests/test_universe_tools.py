@@ -120,9 +120,14 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     assert "--share-net" not in argv
     for flag in ("--unshare-all", "--clearenv", "--die-with-parent", "--new-session"):
         assert flag in argv, flag
-    # The universe root is READ-ONLY at /u; only agent-owned paths are rw.
-    assert (root, "/u") in _pairs(argv, "--ro-bind")
-    rw = dict((dest, src) for src, dest in _pairs(argv, "--bind"))
+    # /u is a tmpfs of binds, then made READ-ONLY; only agent-owned paths are rw.
+    tmpfs_at = argv.index("--tmpfs", argv.index("--tmpfs") + 1)
+    remount_at = argv.index("--remount-ro")
+    assert argv[tmpfs_at + 1] == "/u" and argv[remount_at + 1] == "/u"
+    assert all(tmpfs_at < argv.index(dest) < remount_at for _src, dest in (
+        _pairs(argv, "--bind-try") + _pairs(argv, "--ro-bind-try")))
+    assert root not in argv, "the root itself is never bound"
+    rw = dict((dest, src) for src, dest in _pairs(argv, "--bind-try"))
     assert rw["/u/identity.md"] == str(universe.resolve() / "identity.md")
     assert rw["/u/skills"] == str(universe.resolve() / "skills")
     assert "/u" not in rw
@@ -131,7 +136,8 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     for name in universe_tools.AGENT_HARNESS_DIRS:
         assert (universe / name).is_dir(), f"harness dir {name} is created first"
     # Nothing else of the data root, and no credential snapshot or install tree.
-    for source, _dest in _pairs(argv, "--bind") + _pairs(argv, "--ro-bind"):
+    for source, _dest in (_pairs(argv, "--bind") + _pairs(argv, "--ro-bind")
+                          + _pairs(argv, "--bind-try") + _pairs(argv, "--ro-bind-try")):
         assert source.startswith(root) or not source.startswith(str(tmp_path)), source
     env = {argv[i + 1]: argv[i + 2] for i, a in enumerate(argv) if a == "--setenv"}
     assert env["HOME"] == "/tmp" and set(env) == {"PATH", "HOME", "LANG", "TERM"}
@@ -139,16 +145,17 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     assert argv[argv.index("--") + 1:] == ["/bin/true"]
 
 
-def test_the_owners_credentials_and_authority_state_are_masked_from_the_agent(
+def test_the_owners_credentials_and_authority_state_are_absent_from_the_jail(
     tmp_path, monkeypatch,
 ):
     """The credential vault and the consent / usage databases live in the
-    universe ROOT, not .runtime. Every hidden root entry is masked: a dir by an
-    empty tmpfs, a file by a read-only /dev/null. None is bound read-write."""
+    universe ROOT, not .runtime. No hidden root entry is in the jail at all:
+    not bound, not masked. Visible platform files are read-only."""
     universe = _universe(tmp_path)
     (universe / ".credential-vault.json").write_text('{"k": "SECRET"}', encoding="utf-8")
     (universe / ".credentials").mkdir()
     (universe / ".effector_consents.db").write_bytes(b"sqlite")
+    (universe / ".effector_consents.db-shm").write_bytes(b"shm")
     (universe / ".usage_ledger.db").write_bytes(b"sqlite")
     (universe / ".runtime").mkdir()
     (universe / ".claude").mkdir()
@@ -157,27 +164,45 @@ def test_the_owners_credentials_and_authority_state_are_masked_from_the_agent(
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
     argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
 
-    masked_files = {dest for src, dest in _pairs(argv, "--ro-bind") if src == "/dev/null"}
-    assert {"/u/.credential-vault.json", "/u/.effector_consents.db",
-            "/u/.usage_ledger.db"} <= masked_files
-    tmpfs = {argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--tmpfs"}
-    assert {"/u/.credentials", "/u/.runtime", "/u/.claude"} <= tmpfs
-    rw = {dest for _src, dest in _pairs(argv, "--bind")}
-    # Control plane and platform state stay read-only (visible, never writable).
-    for name in ("soul.md", "config.yaml", ".credential-vault.json", ".effector_consents.db"):
-        assert f"/u/{name}" not in rw, name
+    for arg in argv:
+        assert "/." not in arg, f"a hidden root entry reached the jail argv: {arg}"
+    ro = {dest for _src, dest in _pairs(argv, "--ro-bind-try")}
+    assert {"/u/soul.md", "/u/config.yaml"} <= ro
+    rw = {dest for _src, dest in _pairs(argv, "--bind-try")}
+    assert not {"/u/soul.md", "/u/config.yaml"} & rw
 
 
-def test_a_symlinked_hidden_root_entry_is_refused_not_followed(tmp_path, monkeypatch):
+def test_a_symlinked_root_entry_is_never_bound(tmp_path, monkeypatch):
     universe = _universe(tmp_path)
     other = _universe(tmp_path, "u-bravo")
     try:
         (universe / ".runtime").symlink_to(other, target_is_directory=True)
+        (universe / "notes").symlink_to(other, target_is_directory=True)
+        (universe / "founder.md").symlink_to(other / "founder.md")
     except (OSError, NotImplementedError):
         pytest.skip("this host cannot create a symlink")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    with pytest.raises(UniverseToolError, match="is a link"):
-        universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    assert not any(str(other.resolve()) in arg for arg in argv)
+    assert "/u/notes" not in argv and "/u/founder.md" not in argv
+
+
+def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkeypatch):
+    """The daemon owns the folder concurrently: a SQLite sidecar or a temp file
+    that exists at the scan may be gone when bubblewrap runs. Every bind is a
+    ``-try``, and the view still validates when its source has vanished."""
+    universe = _universe(tmp_path)
+    (universe / "story.db-shm").write_bytes(b"shm")
+    view = universe_tools._universe_view(universe.resolve())
+    (universe / "story.db-shm").unlink()
+    argv = jail_argv(["/bin/true"], view, bwrap_path="/usr/bin/bwrap")
+    assert (str(universe.resolve() / "story.db-shm"), "/u/story.db-shm") in _pairs(
+        argv, "--ro-bind-try")
+    with pytest.raises(ProviderConfinementError, match="does not exist"):
+        jail_argv(["/bin/true"], provider_jail.UniverseView(
+            universe_dir=universe, mounts=(provider_jail.JailMount(
+                "ro-bind", "/u/gone", universe / "gone"),),
+        ), bwrap_path="/usr/bin/bwrap")
 
 
 def test_the_jail_loads_a_filter_refusing_links_and_special_files(tmp_path, monkeypatch):

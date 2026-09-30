@@ -135,8 +135,10 @@ def provider_launch_scope(
 
 @dataclass(frozen=True, slots=True)
 class JailMount:
-    """One bubblewrap mount operation: ``bind``, ``ro-bind``, ``tmpfs`` or
-    ``mask-file`` (an empty, read-only file over ``dest``; no source)."""
+    """One bubblewrap mount operation: ``bind``, ``ro-bind``, ``tmpfs``,
+    ``bind-try`` / ``ro-bind-try`` (skipped when the source is gone by the
+    time the jail starts) or ``remount-ro`` (``dest`` itself read-only; the
+    mounts already under it keep their own flags; no source)."""
 
     op: str
     dest: str
@@ -277,17 +279,17 @@ def hidden_dir_masks(universe_dir: Path) -> list[JailMount]:
 def _validated_view(view: UniverseView) -> UniverseView:
     root = view.universe_dir.resolve(strict=False)
     for mount in view.mounts:
-        if mount.op not in ("bind", "ro-bind", "tmpfs", "mask-file"):
+        if mount.op not in ("bind", "ro-bind", "bind-try", "ro-bind-try", "tmpfs", "remount-ro"):
             raise _refuse(f"unknown mount operation {mount.op!r}")
         dest = mount.dest
         if not dest.startswith("/") or dest.rstrip("/") == "" or _covered(dest, _RESERVED_DESTS):
             raise _refuse(f"a view may not mount at {dest!r}")
-        if mount.op in ("tmpfs", "mask-file"):
+        if mount.op in ("tmpfs", "remount-ro"):
             continue
         if mount.source is None:
             raise _refuse("a bind needs a source")
         try:
-            source = mount.source.resolve(strict=True)
+            source = mount.source.resolve(strict=not mount.op.endswith("-try"))
         except OSError:
             raise _refuse("a bind source does not exist") from None
         if not _within(source, root):
@@ -435,14 +437,12 @@ def jail_argv(
     out.extend(_install_binds(install_paths, view, bound))
     out.extend(_ca_file_binds(env, view, bound))
     for mount in view.mounts:
-        if mount.op == "tmpfs":
-            out.extend(("--tmpfs", mount.dest))
-        elif mount.op == "mask-file":
-            # The host's empty character device, read-only: the file reads as
-            # empty and cannot be written, renamed or removed (a mountpoint).
-            out.extend(("--ro-bind", "/dev/null", mount.dest))
+        if mount.op in ("tmpfs", "remount-ro"):
+            out.extend((f"--{mount.op}", mount.dest))
         else:
-            source = str(mount.source.resolve(strict=True))  # validated above
+            # Validated above; a ``-try`` source that is gone passes through
+            # unresolved and bubblewrap skips it.
+            source = str(mount.source.resolve(strict=not mount.op.endswith("-try")))
             out.extend((f"--{mount.op}", source, mount.dest))
     for name, value in view.setenv:
         out.extend(("--setenv", name, value))

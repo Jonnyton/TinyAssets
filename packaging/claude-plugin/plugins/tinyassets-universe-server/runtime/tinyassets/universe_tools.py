@@ -16,15 +16,23 @@ Every call -- reads included -- runs as a process inside bubblewrap, built by
 the SAME :func:`tinyassets.providers.provider_jail.jail_argv` as a provider
 launch, with a narrower view:
 
-* the owning universe at ``/u``, and nothing else of ``/data``. The root is
-  READ-ONLY; only what the agent owns is bound read-write (its brain files and
-  the harness directories ``skills/``, ``prompts/``, ``notes/`` ...), see
-  :data:`AGENT_BRAIN_FILES`;
-* every hidden root entry masked -- the credential vault
+* the owning universe at ``/u``, and nothing else of ``/data``. ``/u`` is an
+  allowlist, not the root with holes punched in it: a read-only tmpfs holding
+  one bind per VISIBLE root entry. Only what the agent owns is bound
+  read-write (its brain files and the harness directories ``skills/``,
+  ``prompts/``, ``notes/`` ...), see :data:`AGENT_BRAIN_FILES`; every other
+  visible entry is read-only;
+* no hidden root entry at all -- the credential vault
   (``.credential-vault.json``, ``.credentials/``), ``.runtime/``, the consent,
-  usage and receipt databases -- so the agent can neither read the owner's
-  credentials nor forge the platform's authority state, and cannot create a
-  new root entry the daemon would trust;
+  usage and receipt databases and their SQLite sidecars -- so the agent can
+  neither read the owner's credentials nor forge the platform's authority
+  state, and cannot create a new root entry the daemon would trust. Leaving
+  them out, rather than mounting over each one, is what lets a jail start
+  while the daemon has a database open: a ``-shm``/``-wal`` sidecar comes and
+  goes with the connection, and a mask needs its mountpoint to still exist
+  when bubblewrap reaches it (on the read-only root it cannot be created, so
+  the jail refused to start). A visible entry that vanishes between the scan
+  and the launch is skipped, for the same reason;
 * system binaries read-only, a private ``/tmp``, ``/dev`` and pid-namespace
   ``/proc``; NO ``/app``, no install tree, no credential snapshot at all;
 * NO network: no ``--share-net``, so the jail has its own empty network
@@ -109,7 +117,7 @@ MOUNT_POINT = "/u"
 
 #: What the agent OWNS in its folder: the only paths bound read-write into the
 #: tool jail. Everything else at the universe root is the platform's and is
-#: either read-only (visible, e.g. ``soul.md``, ``config.yaml``) or masked
+#: either read-only (visible, e.g. ``soul.md``, ``config.yaml``) or absent
 #: (every hidden root entry: the credential vault ``.credential-vault.json`` and
 #: ``.credentials/``, ``.runtime/``, the consent / usage / receipt databases).
 #: The root itself is read-only, so no new root entry -- hidden or not -- can
@@ -249,38 +257,35 @@ def _system_binary(name: str) -> str:
 
 
 def _universe_view(root: Path) -> UniverseView:
-    """The tool jail's view of ``root``: read-only, hidden entries masked,
-    agent-owned paths read-write.
+    """The tool jail's view of ``root``: a read-only ``/u`` holding the visible
+    entries, agent-owned paths read-write, hidden entries absent.
 
-    Order is fixed: the read-only root first, then the masks and the
-    read-write binds, which land on top of it.
+    Order is fixed: the empty tmpfs, one bind per entry, then the remount that
+    makes ``/u`` itself read-only (the binds under it keep their own flags).
+    Every bind is ``-try``: the daemon owns this folder concurrently, and an
+    entry it removes after the scan is simply not in this call's view.
     """
     for name in AGENT_HARNESS_DIRS:
         path = root / name
         if not os.path.lexists(path):
             path.mkdir(mode=0o755)
-    mounts = [JailMount("ro-bind", MOUNT_POINT, root)]
+    mounts = [JailMount("tmpfs", MOUNT_POINT)]
     with os.scandir(root) as entries:
         listing = sorted(entries, key=lambda entry: entry.name)
     for entry in listing:
-        dest = f"{MOUNT_POINT}/{entry.name}"
-        if entry.name.startswith("."):
-            if entry.is_symlink():
-                raise UniverseToolError(
-                    f"the universe's {entry.name} is a link; the tool jail cannot mask it, "
-                    "so it will not start"
-                )
-            if entry.is_dir(follow_symlinks=False):
-                mounts.append(JailMount("tmpfs", dest))
-            else:
-                mounts.append(JailMount("mask-file", dest))
+        # Hidden: platform state. Symlink: never bound (a planted link must not
+        # be followed). Neither dir nor file: nothing the tools need.
+        if entry.name.startswith(".") or entry.is_symlink():
             continue
-        if entry.is_symlink():
-            continue  # never bound; the read-only root shows a dangling link
-        if entry.name in AGENT_HARNESS_DIRS and entry.is_dir(follow_symlinks=False):
-            mounts.append(JailMount("bind", dest, root / entry.name))
-        elif entry.name in AGENT_BRAIN_FILES and entry.is_file(follow_symlinks=False):
-            mounts.append(JailMount("bind", dest, root / entry.name))
+        is_dir = entry.is_dir(follow_symlinks=False)
+        if not is_dir and not entry.is_file(follow_symlinks=False):
+            continue
+        owned = (
+            entry.name in AGENT_HARNESS_DIRS if is_dir else entry.name in AGENT_BRAIN_FILES
+        )
+        op = "bind-try" if owned else "ro-bind-try"
+        mounts.append(JailMount(op, f"{MOUNT_POINT}/{entry.name}", root / entry.name))
+    mounts.append(JailMount("remount-ro", MOUNT_POINT))
     return UniverseView(
         universe_dir=root,
         mounts=tuple(mounts),
