@@ -99,14 +99,48 @@ def _fake(raises: Exception | None = None) -> tuple[_Recorder, dict]:
     return recorder, {"android": recorder, "web": recorder}
 
 
+def _vapid_keypair() -> tuple[str, str]:
+    """A throwaway VAPID key, for tests that must cross the real transport."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode("ascii")
+    return pem, "mailto:ops@example.com"
+
+
+def _web_subscription(label: str) -> dict:
+    """A subscription with a real P-256 public key, as a browser mints."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    client = ec.generate_private_key(ec.SECP256R1())
+    public = client.public_key().public_bytes(
+        serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint,
+    )
+
+    def b64(raw: bytes) -> str:
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    return {
+        "endpoint": f"https://push.example.com/{label}",
+        "keys": {"p256dh": b64(public), "auth": b64(b"0123456789abcdef")},
+    }
+
+
 def _register(base: Path, owner: str, token: str, platform: str = "android") -> str:
     """Register one device. A web device needs a real subscription shape, so a
-    bare label is turned into one keyed on itself."""
+    bare label is turned into one keyed on itself -- with a REAL P-256 key, so
+    the row works for a test that crosses the real transport."""
     if platform == "web" and isinstance(token, str):
-        token = {
-            "endpoint": f"https://push.example.com/{token}",
-            "keys": {"p256dh": "k", "auth": "a"},
-        }
+        token = _web_subscription(token)
     return devices.register_device(
         base, owner_user_id=owner, platform=platform, token=token,
     )["device_id"]
@@ -416,6 +450,72 @@ def test_a_universe_name_cannot_fake_the_title_structure(base):
     assert "‮" not in _compose(base, A_UID, ask).title
 
 
+@pytest.mark.parametrize("hidden", [
+    "⁧", "⁦", "⁨", "⁩", "؜", "​", "‎",
+    "﻿", "⁠", "‮", "᠎",
+])
+def test_every_invisible_class_member_is_stripped_from_a_name(base, hidden):
+    """A hand-listed range missed U+2067 and U+061C, so a name made of them
+    still rendered as an invisible identity line (gpt-6-astra, 2026-09-30).
+    Enumerating a class the standard already names is how the list ends up
+    incomplete, so membership comes from `unicodedata` now."""
+    from tinyassets.daemon_server import set_universe_display_name
+    from tinyassets.owner_notifications import _UNNAMED, _compose
+
+    _home(base, A_UID, ALICE, A_NAME)
+    set_universe_display_name(base, universe_id=A_UID, display_name=hidden * 4)
+
+    title = _compose(base, A_UID, {"request_id": "r", "kind": "TODO"}).title
+
+    assert title == _UNNAMED + " asks"
+    assert hidden not in title
+
+
+def test_an_invisible_character_cannot_reopen_the_suffix(base):
+    """`x asks` + U+2069 visually duplicated the suffix."""
+    from tinyassets.daemon_server import set_universe_display_name
+    from tinyassets.owner_notifications import _compose
+
+    _home(base, A_UID, ALICE, A_NAME)
+    set_universe_display_name(
+        base, universe_id=A_UID, display_name="x asks⁩",
+    )
+
+    title = _compose(base, A_UID, {"request_id": "r", "kind": "TODO"}).title
+
+    assert title == "x asks"
+    assert title.count(" asks") == 1
+
+
+def test_a_transport_return_outside_the_outcome_set_is_not_stored(base):
+    """The exception paths were bounded; the SUCCESS path was not, so a
+    transport returning a string had it stored in the ledger and handed back in
+    the dispatch result (gpt-6-astra, 2026-09-30)."""
+    _home(base, A_UID, ALICE, A_NAME)
+    _register(base, ALICE, "token-alice-phone")
+
+    def _leaky_return(device, notification):
+        return "Bearer " + device["token"]
+
+    row, result = _raise_request(
+        base, A_UID, ALICE, {"android": _leaky_return},
+    )
+
+    blob = json.dumps([result, devices.deliveries_for(
+        base, request_id=row["request_id"],
+    )])
+    assert "Bearer" not in blob
+    assert "token-alice-phone" not in blob
+    assert list(result["outcomes"].values()) == ["unavailable"]
+
+
+@pytest.mark.parametrize("returned", [None, 0, object(), "delivered", "SENT", ""])
+def test_only_the_closed_outcome_set_is_accepted(base, returned):
+    from tinyassets.owner_notifications import _bounded_outcome
+
+    assert _bounded_outcome(returned) == "unavailable"
+
+
 def test_a_retirement_reason_is_a_code_never_transport_text(base):
     """`retired_reason` is the one string on this table a transport supplies,
     and it comes back out of `list_devices`. Injecting a bearer token through
@@ -475,27 +575,68 @@ def test_a_notification_of_accepted_input_always_fits_one_record(base):
     assert notification.data["request_id"] == request["request_id"]
 
 
-def test_that_oversized_notification_actually_sends(base):
-    """The end of the same finding: not merely "fits", but delivers."""
+def test_that_oversized_notification_crosses_the_real_size_check(base):
+    """The end of the same finding: not merely "fits", but delivers.
+
+    This has to cross the REAL web-push encryption, which is what refuses an
+    over-budget record. The earlier version used the recorder fake, which
+    returns `sent` without serialising anything -- so replacing composition
+    with a 6780-byte payload still passed it (gpt-6-astra, 2026-09-30). The
+    fake is the SOCKET here and nothing above it.
+    """
+    import urllib.error
+    import urllib.request
+
     from tinyassets.daemon_server import set_universe_display_name
+    from tinyassets.notify import TransportFailed
+    from tinyassets.notify.webpush import webpush_transport
 
     _home(base, A_UID, ALICE, A_NAME)
     set_universe_display_name(
         base, universe_id=A_UID, display_name="\U0001f600" * 55,
     )
     _register(base, ALICE, "laptop", platform="web")
-    recorder, transports = _fake()
+    pem, subject = _vapid_keypair()
+    real = webpush_transport({
+        "TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY": pem,
+        "TINYASSETS_WEBPUSH_VAPID_SUBJECT": subject,
+    })
+    wire: list[int] = []
 
-    _row, result = _raise_request(
-        base, A_UID, ALICE, transports,
-        kind="\U0001f600" * 24, title="\U0001f600" * 120,
-        items=[{"item_id": f"{n:02d}" + "a" * 62, "title": "Task"}
-               for n in range(20)],
-        fields=[],
+    class _Sent:
+        def read(self, _n: int = -1) -> bytes:
+            return b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            return False
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda request, timeout=None: (wire.append(len(request.data)), _Sent())[1],
     )
+    try:
+        _row, result = _raise_request(
+            base, A_UID, ALICE, {"web": real},
+            kind="\U0001f600" * 24, title="\U0001f600" * 120,
+            items=[{"item_id": f"{n:02d}" + "a" * 62, "title": "Task"}
+                   for n in range(20)],
+            fields=[],
+        )
+    finally:
+        monkeypatch.undo()
 
-    assert result["sent"] == 1
-    assert len(recorder.calls) == 1
+    assert result["sent"] == 1, result
+    assert wire, "nothing reached the wire"
+    # And the guard it had to pass is real: an unfitted payload is refused.
+    with pytest.raises(TransportFailed):
+        real(
+            {"token": json.dumps(_web_subscription("laptop"))},
+            Notification(title="t", body="\U0001f600" * 2000, data={}),
+        )
 
 
 # --- cost, without a meter ----------------------------------------------------
@@ -792,6 +933,90 @@ def test_the_device_that_answered_is_not_cleared_again(base):
 
     assert [d["device_id"] for d, _ in recorder.calls] != [answering]
     assert len(recorder.calls) == 1
+
+
+def test_an_answer_while_the_push_is_in_flight_still_clears(base):
+    """The outcome is recorded AFTER the transport returns, so an owner
+    answering while the push was still in flight found no `sent` row and got no
+    clear -- leaving a stale notification on the phone. A crash between send
+    and record had the same blind spot (gpt-6-astra, 2026-09-30). A CLAIMED row
+    counts as "may be displaying it", because clearing a device that never got
+    one is a no-op and failing to clear one that did is not."""
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.storage.pending_requests import resolve_request
+
+    _home(base, A_UID, ALICE, A_NAME)
+    device_id = _register(base, ALICE, "phone")
+    cleared: list[Notification] = []
+    import tinyassets.owner_notifications as notifications
+
+    def _answer_mid_flight(device, notification):
+        if notification.silent:
+            cleared.append(notification)
+            return OUTCOME_SENT
+        # This push is "on the wire": claimed, but its outcome is not recorded
+        # yet, because that happens when this returns. The owner answers right
+        # now, on another surface. The id comes from the notification itself,
+        # since the dispatch runs inside the raise.
+        request_id = notification.data["request_id"]
+        with identity_context(Identity(user_id=ALICE, username=ALICE)):
+            resolve_request(
+                base / A_UID, request_id, status="answered",
+                answer={"note": "fast"},
+            )
+        return OUTCOME_SENT
+
+    transports = {"android": _answer_mid_flight, "web": _answer_mid_flight}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(notifications, "resolve_transports", lambda: transports)
+    try:
+        from tinyassets.api.pending_requests import request_from_user
+
+        with identity_context(Identity(user_id=ALICE, username=ALICE)):
+            raised = request_from_user(universe_id=A_UID, payload={
+                "kind": "TODO", "title": "Today", "action": {"type": "answer"},
+                "fields": [{"name": "note", "type": "text", "label": "Reply"}],
+            })
+    finally:
+        monkeypatch.undo()
+
+    assert cleared, "the in-flight answer produced no clear"
+    assert cleared[0].data["request_id"] == raised["request_id"]
+    assert devices.delivered_devices(
+        base, owner_user_id=ALICE, request_id=raised["request_id"],
+    ) == [device_id]
+
+
+def test_withdrawing_a_request_takes_its_notification_down(base):
+    """A withdrawn ask's notification is stale: the phone showed a request that
+    no longer existed and tapping it opened nothing (gpt-6-astra, 2026-09-30).
+    Withdrawal used to skip the clear to protect a per-device latch that no
+    longer exists."""
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.storage.pending_requests import withdraw_request
+
+    _home(base, A_UID, ALICE, A_NAME)
+    _register(base, ALICE, "phone")
+    recorder, transports = _fake()
+    import tinyassets.owner_notifications as notifications
+
+    row, _ = _raise_request(base, A_UID, ALICE, transports)
+    recorder.calls.clear()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(notifications, "resolve_transports", lambda: transports)
+    try:
+        with identity_context(Identity(user_id=ALICE, username=ALICE)):
+            withdraw_request(base / A_UID, row["request_id"], reason="never mind")
+    finally:
+        monkeypatch.undo()
+
+    [(_device, notification)] = recorder.calls
+    assert notification.silent is True
+    assert notification.data == {
+        "kind": "clear", "request_id": row["request_id"], "universe_id": A_UID,
+    }
 
 
 def test_a_device_that_never_got_the_alert_is_not_woken_to_clear_it(base):
@@ -1138,6 +1363,47 @@ def test_a_url_alias_of_one_endpoint_cannot_retain_the_previous_owner(base, alia
     assert len(devices.list_devices(base, owner_user_id=BOB)) == 1
 
 
+@pytest.mark.parametrize(("a", "b"), [
+    # An IPv6 host and a host that merely SPELLS like one with a port.
+    ("https://[::1]:444/abc", "https://[::1:444]/abc"),
+    ("https://[2001:db8::1]:8443/x", "https://[2001:db8::1:8443]/x"),
+    # An absent query and an empty one.
+    ("https://push.example.com/abc", "https://push.example.com/abc?"),
+    # A non-default port is part of the address.
+    ("https://push.example.com/abc", "https://push.example.com:8443/abc"),
+])
+def test_two_addresses_the_transport_distinguishes_stay_distinct(base, a, b):
+    """Rebuilding a URL from parts collapsed distinctions the transport keeps:
+    re-joining host and port by hand made `[::1]:444` and `[::1:444]` one
+    string (gpt-6-astra, 2026-09-30). A field-separated identity cannot
+    collapse, because each component is compared as a component."""
+    keys = {"p256dh": "k", "auth": "a"}
+    devices.register_device(
+        base, owner_user_id=ALICE, platform="web",
+        token={"endpoint": a, "keys": keys},
+    )
+
+    devices.register_device(
+        base, owner_user_id=BOB, platform="web",
+        token={"endpoint": b, "keys": keys},
+    )
+
+    # Neither owner lost their device to the other's registration.
+    assert len(devices.list_devices(base, owner_user_id=ALICE)) == 1
+    assert len(devices.list_devices(base, owner_user_id=BOB)) == 1
+
+
+def test_an_unparseable_authority_is_its_own_identity(base):
+    """An endpoint we cannot parse must not quietly merge with another."""
+    from tinyassets.storage.owner_devices import _canonical_endpoint
+
+    weird = _canonical_endpoint("https://host:notaport/abc")
+    other = _canonical_endpoint("https://host:alsobad/abc")
+
+    assert weird != other
+    assert weird != _canonical_endpoint("https://host/abc")
+
+
 def test_a_genuinely_different_path_is_a_different_destination(base):
     """The canonicalisation is narrow on purpose: merging two real
     destinations would silently drop someone's device."""
@@ -1184,6 +1450,138 @@ def test_registration_refuses_a_subscription_it_could_not_address(base, bad):
         devices.register_device(
             base, owner_user_id=ALICE, platform="web", token=bad,
         )
+
+
+# --- the upgrade path is part of the floor ------------------------------------
+
+
+def _write_legacy_device(base, owner: str, platform: str, token, digest: str) -> str:
+    """A device row as a PREVIOUS version stored it: correct token, stale
+    destination digest. Written directly, because the point is that the code
+    which computes the digest has changed underneath it."""
+    import sqlite3
+    import time as _time
+    import uuid as _uuid
+
+    from tinyassets.storage.owner_devices import _SCHEMA, owner_devices_db_path
+
+    device_id = "dev_" + _uuid.uuid4().hex[:24]
+    stored = token if isinstance(token, str) else json.dumps(
+        token, sort_keys=True, separators=(",", ":"),
+    )
+    conn = sqlite3.connect(owner_devices_db_path(base))
+    try:
+        conn.executescript(_SCHEMA)
+        conn.execute(
+            "INSERT INTO owner_devices (device_id, owner_user_id, platform, "
+            "token_sha256, token_json, label, enabled, created_at, last_seen_at) "
+            "VALUES (?,?,?,?,?,'',1,?,?)",
+            (device_id, owner, platform, digest, stored, _time.time(),
+             _time.time()),
+        )
+        conn.execute("PRAGMA user_version = 0")
+        conn.commit()
+    finally:
+        conn.close()
+    return device_id
+
+
+def _legacy_digest(token) -> str:
+    """The digest the previous version computed: whole document, no platform."""
+    import hashlib
+
+    text = token if isinstance(token, str) else json.dumps(
+        token, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_a_device_registered_before_the_digest_changed_still_moves(base):
+    """THE FLOOR, through the upgrade path rather than the code path. Changing
+    how the destination digest is computed made every existing row invisible to
+    the ownership move, so a handset that changed accounts kept a live row
+    under each owner and the previous owner's notifications still arrived
+    (gpt-6-astra, 2026-09-30)."""
+    _home(base, A_UID, ALICE, A_NAME)
+    _home(base, B_UID, BOB, "Bob's universe")
+    token = "shared-handset-token"
+    _write_legacy_device(base, ALICE, "android", token, _legacy_digest(token))
+    assert len(devices.list_devices(base, owner_user_id=ALICE)) == 1
+    recorder, transports = _fake()
+
+    devices.register_device(
+        base, owner_user_id=BOB, platform="android", token=token,
+    )
+
+    assert devices.list_devices(base, owner_user_id=ALICE) == []
+    assert len(devices.list_devices(base, owner_user_id=BOB)) == 1
+    _raise_request(base, A_UID, ALICE, transports)
+    assert recorder.calls == []
+
+
+def test_a_legacy_web_device_moves_too(base):
+    _home(base, A_UID, ALICE, A_NAME)
+    _home(base, B_UID, BOB, "Bob's universe")
+    subscription = _web_subscription("shared-browser")
+
+    _write_legacy_device(
+        base, ALICE, "web", subscription, _legacy_digest(subscription),
+    )
+    devices.register_device(
+        base, owner_user_id=BOB, platform="web", token=subscription,
+    )
+
+    assert devices.list_devices(base, owner_user_id=ALICE) == []
+    assert len(devices.list_devices(base, owner_user_id=BOB)) == 1
+
+
+def test_the_same_owner_reregistering_a_legacy_row_keeps_one_device(base):
+    """Not only the cross-owner case: a same-owner relaunch also has to find
+    its own legacy row, or it mints a second device for one handset."""
+    _home(base, A_UID, ALICE, A_NAME)
+    token = "alice-handset"
+    legacy = _write_legacy_device(
+        base, ALICE, "android", token, _legacy_digest(token),
+    )
+
+    again = devices.register_device(
+        base, owner_user_id=ALICE, platform="android", token=token,
+    )["device_id"]
+
+    assert again == legacy
+    assert len(devices.list_devices(base, owner_user_id=ALICE)) == 1
+
+
+def test_legacy_duplicates_for_one_destination_collapse_to_the_newest(base):
+    """The previous digest allowed several rows for one destination. Leaving
+    them means the move keeps missing one."""
+    _home(base, A_UID, ALICE, A_NAME)
+    subscription = _web_subscription("dupe")
+    alias = {**subscription, "expirationTime": None}
+
+    _write_legacy_device(
+        base, ALICE, "web", subscription, _legacy_digest(subscription),
+    )
+    newest = _write_legacy_device(
+        base, ALICE, "web", alias, _legacy_digest(alias),
+    )
+
+    listed = devices.list_devices(base, owner_user_id=ALICE)
+
+    assert [d["device_id"] for d in listed] == [newest]
+
+
+def test_the_digest_migration_is_idempotent(base):
+    _home(base, A_UID, ALICE, A_NAME)
+    token = "alice-handset"
+    legacy = _write_legacy_device(
+        base, ALICE, "android", token, _legacy_digest(token),
+    )
+
+    for _ in range(3):
+        assert [d["device_id"] for d in devices.list_devices(
+            base, owner_user_id=ALICE,
+        )] == [legacy]
 
 
 # --- the destination is re-verified at claim time -----------------------------

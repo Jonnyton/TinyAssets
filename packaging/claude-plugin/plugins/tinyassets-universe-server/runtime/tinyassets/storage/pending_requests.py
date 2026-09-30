@@ -727,6 +727,14 @@ def withdraw_request(
         return {"error": "request_storage_unavailable", "detail": str(exc)}
     row = get_request(universe_dir, request_id)
     if moved and row is not None:
+        # A withdrawn ask's notification is STALE, so it comes down. Leaving it
+        # up meant the phone still showed a request that no longer existed, and
+        # tapping it opened nothing (gpt-6-astra, 2026-09-30). Withdrawal used
+        # to deliberately skip this, but that was to protect a per-device latch
+        # that no longer exists; there is no reason left not to clear.
+        from tinyassets.owner_notifications import clear_for_universe_dir
+
+        clear_for_universe_dir(universe_dir, request_id=request_id)
         return row
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}

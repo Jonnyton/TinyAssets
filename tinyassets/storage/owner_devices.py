@@ -135,6 +135,86 @@ CREATE INDEX IF NOT EXISTS ix_request_notifications_owner
     ON request_notifications(owner_user_id);"""
 
 
+#: Schema version. Bumped when the DESTINATION DIGEST changes, because that is
+#: the value ownership moves are matched on: a row still carrying the previous
+#: digest is invisible to the move, so a handset that changed accounts keeps a
+#: live row under each owner and the previous owner's notifications still
+#: arrive. That is the cross-user floor, reintroduced through the upgrade path
+#: rather than the code path (gpt-6-astra, 2026-09-30) -- the same class as the
+#: request-identity migration in `storage/pending_requests.py`, and the reason
+#: any change to `_token_digest` or `_canonical_token` must bump this.
+_SCHEMA_VERSION = 1
+
+
+def _migrate_destination_digests(conn: sqlite3.Connection) -> int:
+    """Recompute every row's destination digest. Runs once per database.
+
+    Rows written before the digest was namespaced by platform and before the
+    endpoint was canonicalised hash differently, so ``register_device`` cannot
+    see them. Recomputing from each row's OWN stored token is exact -- the
+    token is what the transport addresses -- and resolves duplicates that the
+    old digest allowed: several rows can collapse onto one destination, and the
+    newest registration is the live one.
+    """
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= _SCHEMA_VERSION:
+        return 0
+    try:
+        rows = conn.execute(
+            "SELECT device_id, platform, token_json, token_sha256, "
+            "owner_user_id, created_at FROM owner_devices ORDER BY created_at ASC"
+        ).fetchall()
+        # destination -> the winning device_id, newest last.
+        winner: dict[str, str] = {}
+        recomputed: dict[str, str] = {}
+        for device_id, platform, token_json, stored_digest, _owner, _created in rows:
+            try:
+                _stored, identity = _canonical_token(token_json, str(platform))
+            except ValueError:
+                # A token this version cannot address is not a destination we
+                # can route to. Leave it exactly as it is rather than guess.
+                continue
+            digest = _token_digest(str(platform), identity)
+            recomputed[device_id] = digest
+            if digest != stored_digest or digest in winner:
+                winner[digest] = device_id  # later rows win
+            else:
+                winner.setdefault(digest, device_id)
+        dropped = 0
+        rewritten = 0
+        for device_id, digest in recomputed.items():
+            if winner.get(digest) != device_id:
+                # Several rows for one destination, which the previous digest
+                # allowed. Only the newest survives, or the ownership move
+                # would keep missing one of them.
+                conn.execute(
+                    "DELETE FROM owner_devices WHERE device_id = ?", (device_id,),
+                )
+                dropped += 1
+                continue
+            cur = conn.execute(
+                "UPDATE owner_devices SET token_sha256 = ? WHERE device_id = ? "
+                "AND token_sha256 != ?",
+                (digest, device_id, digest),
+            )
+            rewritten += cur.rowcount if cur.rowcount > 0 else 0
+        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        # Committed inside the migration: `_connect` is used re-entrantly, so an
+        # uncommitted marker means the nested open tries to migrate too and
+        # deadlocks on this connection's write lock.
+        conn.commit()
+    except sqlite3.OperationalError as exc:
+        # The marker stays unset, so the next open retries; recomputing from
+        # each row's own token is idempotent, so retrying is free.
+        logger.info("owner_devices: destination digest rewrite deferred: %s", exc)
+        return 0
+    if rewritten or dropped:
+        logger.info(
+            "owner_devices: recomputed %d destination digest(s) and dropped %d "
+            "duplicate row(s)", rewritten, dropped,
+        )
+    return rewritten + dropped
+
+
 @contextmanager
 def _connect(base_path: str | Path) -> Iterator[sqlite3.Connection]:
     db = owner_devices_db_path(base_path)
@@ -144,6 +224,7 @@ def _connect(base_path: str | Path) -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.executescript(_SCHEMA)
+        _migrate_destination_digests(conn)
         yield conn
         conn.commit()
     finally:
@@ -236,24 +317,46 @@ def _canonical_token(token: Any, platform: str) -> tuple[str, str]:
 def _canonical_endpoint(endpoint: str) -> str:
     """The endpoint reduced to what the transport actually addresses.
 
-    ``urllib`` sends the scheme, host and selector; a **fragment** never leaves
-    the client and host case is not significant. So
+    ``urllib`` sends the scheme, host, port and selector; a **fragment** never
+    leaves the client and host case is not significant. So
     ``https://push.example.com/abc`` and ``https://push.example.com/abc#bob``
     are one destination, and treating them as two let each owner keep a live
-    row for the same browser (gpt-6-astra round 2, 2026-09-29).
+    row for the same browser (gpt-6-astra, 2026-09-29).
 
-    Deliberately narrow: scheme and host are lowercased, the default port is
-    dropped, and the fragment is discarded. Nothing else is "normalised" --
-    path case, percent-encoding and DNS aliases are NOT assumed equivalent,
-    because assuming that without evidence would merge two real destinations
-    into one and silently drop a device.
+    Returns a STRUCTURED identity, not a rebuilt URL. Rebuilding one collapsed
+    distinctions the transport keeps: re-joining a host and port by hand made
+    ``https://[::1]:444/abc`` and ``https://[::1:444]/abc`` the same string
+    though they address ``(::1, 444)`` and ``(::1:444, 443)``, and an absent
+    query became indistinguishable from an empty one (gpt-6-astra, 2026-09-30).
+    A field-separated form cannot collapse: each component is compared as a
+    component.
+
+    Deliberately narrow: scheme and host are lowercased and the default port is
+    resolved. Path case, percent-encoding and DNS aliases are NOT assumed
+    equivalent -- assuming that without evidence would merge two real
+    destinations and silently drop a device.
     """
     parts = urllib.parse.urlsplit(endpoint)
-    host = (parts.hostname or "").lower()
-    if parts.port and not (parts.scheme == "https" and parts.port == 443):
-        host = f"{host}:{parts.port}"
-    return urllib.parse.urlunsplit(
-        (parts.scheme.lower(), host, parts.path, parts.query, "")
+    scheme = parts.scheme.lower()
+    # `port` raises on a malformed authority; an endpoint we cannot parse is
+    # its own identity rather than one that quietly merges with another.
+    try:
+        port = parts.port
+    except ValueError:
+        return json.dumps(
+            ["raw", endpoint], sort_keys=True, separators=(",", ":"),
+        )
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    # `urlsplit` reports an empty query for BOTH "/abc" and "/abc?", so whether
+    # a query was present has to come from the text before the fragment. A
+    # provider may or may not distinguish them; the point is that this does not
+    # decide for it by merging them.
+    before_fragment = endpoint.split("#", 1)[0]
+    return json.dumps(
+        [scheme, (parts.hostname or "").lower(), port, parts.path,
+         parts.query, "?" in before_fragment],
+        sort_keys=True, separators=(",", ":"),
     )
 
 
@@ -511,26 +614,38 @@ def reserve_delivery(
         return {"token": row[0]}
 
 
+#: Outcomes that mean the notification definitely never reached the device, so
+#: there is nothing on it to take down.
+_NEVER_ARRIVED = ("no_transport", "moved", "latched")
+
+
 def delivered_devices(
     base_path: str | Path, *, owner_user_id: str, request_id: str,
 ) -> list[str]:
-    """Destinations that actually received this request's notification.
+    """Destinations that may be displaying this request's notification.
 
-    Which is exactly the set with something to clear. A device that never got
-    one has nothing to take down, so it is not woken -- and this reads the
-    delivery ledger rather than a second piece of state, so there is one
-    record of what was sent.
+    CLAIMED, minus the outcomes that prove it never arrived -- not
+    ``outcome = 'sent'``. The outcome is written *after* the transport returns,
+    so an owner answering while a push is still in flight found no sent row and
+    got no clear, leaving a stale notification on the phone; a crash between
+    send and record had the same blind spot (gpt-6-astra, 2026-09-30).
+
+    The two errors are not symmetric. Clearing a device that never received one
+    is a no-op cancel; failing to clear one that did leaves the person looking
+    at a request that is already answered. So an in-flight claim counts as
+    "may be displaying it".
     """
     sub = (owner_user_id or "").strip()
     if not sub or not request_id:
         return []
+    placeholders = ",".join("?" * len(_NEVER_ARRIVED))
     with _connect(base_path) as conn:
         return [
             r[0] for r in conn.execute(
                 "SELECT device_id FROM request_notifications "
                 "WHERE request_id = ? AND owner_user_id = ? AND kind = ? "
-                "AND outcome = 'sent'",
-                (request_id, sub, KIND_RAISED),
+                f"AND outcome NOT IN ({placeholders})",
+                (request_id, sub, KIND_RAISED, *_NEVER_ARRIVED),
             )
         ]
 

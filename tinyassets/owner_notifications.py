@@ -58,10 +58,12 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 from tinyassets.notify import (
+    FAILURE_CLASSES,
     OUTCOME_GONE,
     OUTCOME_NO_TRANSPORT,
     OUTCOME_SENT,
@@ -105,14 +107,27 @@ MAX_BODY_BYTES = 600
 #: Anything that is not printable text. Newlines included: a body that can
 #: start a new line can fake a second notification inside one.
 _CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
-#: Characters that OCCUPY NO SPACE. A name made of them renders as an
-#: invisible identity line, which is a notification that appears to come
-#: from nobody -- so they are removed rather than replaced with a space
-#: (gpt-6-astra round 2, 2026-09-29). Zero-width marks, the bidi overrides
-#: (which can visually reverse a name), and the word joiner.
-_INVISIBLE = re.compile(
-    "[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]"
-)
+#: Characters that OCCUPY NO SPACE, by Unicode CATEGORY rather than by a list
+#: of ranges. A hand-listed range missed U+2067 and U+061C -- both bidi
+#: controls -- so a name made of them still rendered as an invisible identity
+#: line, and one of them could re-open the suffix visually (gpt-6-astra,
+#: 2026-09-30). Enumerating a class the standard already names is how the list
+#: ends up incomplete; `Cf` (format) plus `Cc`/`Cs`/`Co`/`Cn` is the class, and
+#: `unicodedata` is the authority for membership.
+_HIDDEN_CATEGORIES = frozenset({"Cf", "Cc", "Cs", "Co", "Cn"})
+
+
+def _visible(value: str) -> str:
+    """``value`` with zero-width, format and control characters removed.
+
+    Removed rather than replaced with a space: a name of them is not a name,
+    and substituting spaces would leave a title of blanks that still looks
+    like an identity.
+    """
+    return "".join(
+        ch for ch in value
+        if unicodedata.category(ch) not in _HIDDEN_CATEGORIES
+    )
 
 
 def _flat(value: Any, limit: int, *, byte_limit: int = 0) -> str:
@@ -123,7 +138,7 @@ def _flat(value: Any, limit: int, *, byte_limit: int = 0) -> str:
     character cap is not a size cap. Truncation is on a UTF-8 boundary, so a
     bounded string never ends in half a character.
     """
-    text = _INVISIBLE.sub("", _CONTROL.sub(" ", str(value or ""))).strip()[:limit]
+    text = _visible(_CONTROL.sub(" ", str(value or ""))).strip()[:limit]
     if byte_limit and len(text.encode("utf-8")) > byte_limit:
         text = text.encode("utf-8")[:byte_limit].decode("utf-8", "ignore").strip()
     return text
@@ -240,6 +255,29 @@ def _within_record(notification: Notification) -> Notification:
     return notification
 
 
+#: What a transport is allowed to RETURN. The exception paths were already
+#: bounded to a closed set; the success path was not, so a transport that
+#: returned a string instead of the literal outcome had it stored in the ledger
+#: and handed back in the dispatch result -- a leak channel reachable through
+#: the return value rather than through an exception (gpt-6-astra, 2026-09-30).
+#: The shipped transports return the fixed literal; the boundary belongs here
+#: anyway, exactly as it does for `retired_reason`.
+_ALLOWED_OUTCOMES = frozenset({
+    OUTCOME_SENT, OUTCOME_GONE, OUTCOME_NO_TRANSPORT, *FAILURE_CLASSES,
+})
+
+
+def _bounded_outcome(value: object) -> str:
+    """A transport's return value, mapped onto the closed outcome set."""
+    if isinstance(value, str) and value in _ALLOWED_OUTCOMES:
+        return value
+    logger.warning(
+        "owner_notifications: transport returned %s outside the outcome set",
+        type(value).__name__,
+    )
+    return OUTCOME_UNAVAILABLE
+
+
 def _owner_of(base: Path, universe_id: str) -> str:
     """The universe's admin owner, or "". The ONLY routing key there is."""
     try:
@@ -310,7 +348,7 @@ def _dispatch(
         # two would otherwise still receive this owner's private title.
         destination = {**device, "token": claim["token"]}
         try:
-            outcome = transport(destination, notification)
+            outcome = _bounded_outcome(transport(destination, notification))
         except TransportGone as exc:
             outcome = OUTCOME_GONE
             retire_device(

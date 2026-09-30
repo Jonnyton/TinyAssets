@@ -29,6 +29,29 @@ Device registration SHALL take the owning subject from the authenticated request
 - **WHEN** the same owner registers the same destination again
 - **THEN** the existing device keeps its identifier and its stored token is refreshed, rather than a second device appearing
 
+#### Scenario: Two addresses the transport distinguishes stay distinct
+- **WHEN** registrations differ in a component the transport addresses separately — host, resolved port, path, or the presence of a query
+- **THEN** they are separate destinations, including cases where naive rejoining of host and port would produce one string
+
+#### Scenario: An address that cannot be parsed is its own destination
+- **WHEN** an endpoint's authority cannot be parsed
+- **THEN** it is treated as a distinct destination rather than merged with another
+
+### Requirement: A change to destination identity migrates existing registrations
+When the stored destination identity is computed differently than it was for existing rows, those rows SHALL be brought to the current computation before an ownership move is matched against them, and rows that collapse onto one destination SHALL be resolved to the most recent registration. The migration SHALL be idempotent and SHALL NOT fail a read when another writer holds the store.
+
+#### Scenario: A device registered before the change still moves
+- **WHEN** a destination was registered under a previous identity computation and a different user registers the same destination
+- **THEN** the previous owner's row is removed and a later notification for them reaches no device holding it
+
+#### Scenario: The same owner re-registering finds their own earlier row
+- **WHEN** the owner re-registers a destination stored under the previous computation
+- **THEN** the existing device keeps its identifier rather than a second device appearing for one handset
+
+#### Scenario: Rows that collapse onto one destination resolve to the newest
+- **WHEN** several stored rows prove to name one destination under the current computation
+- **THEN** only the most recent registration survives
+
 #### Scenario: Tokens are not readable back
 - **WHEN** the owner lists their devices
 - **THEN** each entry carries an id, platform, label, enabled flag and last-seen time, and no token material
@@ -62,6 +85,10 @@ The notification title SHALL be derived by the server from the universe record a
 #### Scenario: A universe name cannot counterfeit the structure
 - **WHEN** the universe's own name already ends with the fixed indication, or consists of characters that occupy no space, or contains a direction override
 - **THEN** the delivered title carries the indication exactly once, is visible text, and cannot be visually reordered
+
+#### Scenario: The invisible characters are a class, not a list
+- **WHEN** a name uses any Unicode format, control, surrogate, private-use or unassigned character, including bidi isolates and marks
+- **THEN** it is removed, and a name of only such characters falls back to the neutral phrase
 
 ### Requirement: Delivery addresses a destination verified at claim time
 Dispatch SHALL obtain the destination it sends to from the same transaction that claims the notification and verifies current ownership, not from an earlier read. A device that ceased to be this owner's, or was retired, between the start of dispatch and its own claim SHALL NOT be sent to.
@@ -144,6 +171,10 @@ Dispatch SHALL be idempotent on the request, item, device and kind, so a retry a
 - **WHEN** the same request is dispatched twice to the same device
 - **THEN** the transport is invoked once and the second attempt is reported as a replay
 
+#### Scenario: A transport's return value is also bounded
+- **WHEN** a transport returns a value that is not one of the defined outcomes
+- **THEN** it is recorded and reported as an unavailable outcome, and the returned value appears in no ledger row or dispatch result
+
 #### Scenario: A transport exception carrying a secret leaks nothing
 - **WHEN** the transport raises an exception whose text contains credential material
 - **THEN** the recorded evidence holds only a fixed failure class and the caller receives no exception text
@@ -160,7 +191,15 @@ When no transport is configured, dispatch SHALL report that plainly, SHALL log i
 - **THEN** the request is stored and answerable, the dispatch reports no transport, and no receipt claims a delivery
 
 ### Requirement: Answering on one device clears the others
-Resolving a request SHALL dispatch a content-free clear carrying its request id, and ONLY to destinations that the delivery record shows actually received that request's notification. Resolving one item of a request SHALL NOT dispatch a clear, because a notification names the request rather than an item. The clear SHALL be best effort and SHALL never fail or delay the answer.
+Closing a request — by answering it, dismissing it, or the universe withdrawing it — SHALL dispatch a content-free clear carrying its request id, and ONLY to destinations whose notification may still be displayed. A destination whose notification was claimed but whose outcome is not yet recorded SHALL count as possibly displaying it, because clearing one that never received a notification is harmless while failing to clear one that did leaves a resolved request on the owner's screen. Resolving one item of a request SHALL NOT dispatch a clear, because a notification names the request rather than an item. The clear SHALL be best effort and SHALL never fail or delay the closure.
+
+#### Scenario: An answer while the notification is still in flight still clears
+- **WHEN** the owner resolves a request after its notification was claimed but before its outcome was recorded
+- **THEN** a clear is dispatched to that destination
+
+#### Scenario: A withdrawn request's notification comes down
+- **WHEN** the universe withdraws a request it had raised
+- **THEN** a clear naming that request is dispatched, so no notification points at a request that no longer exists
 
 #### Scenario: The other phone's notification goes away
 - **WHEN** the owner answers a request on one registered device
