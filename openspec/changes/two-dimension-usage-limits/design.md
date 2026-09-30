@@ -284,10 +284,42 @@ founder's "everything we are testing should work" makes a
 refuse-on-unmeasurable quota the wrong trade. Named explicitly so a reviewer
 can disagree with it deliberately.
 
-**Reads never consult it.** The gate is only on byte-adding paths: run-output
-and run-file custody writes, wiki/page writes, permanent workspace
-generations, conversation-store growth. Delete, read, list and status never
-call it.
+**Reads never consult it.** Delete, read, list and status never call it.
+
+### D5a. Where the gate goes, named exactly
+
+`grep` for byte-writing calls across `tinyassets/` returns 20+ modules
+(`api/wiki.py` 14, `node_sandbox.py` 10, `api/universe.py` 9,
+`universe_tools.py` 8, `soul_edit.py` 6, and a long tail of ledgers, session
+stores and vaults). Gating all of them would be ~40 call sites and 40 chances
+to miss one, and the misses would be silent — the worst shape available.
+
+The gate goes on the paths a **user can drive volume through**, because that
+is where a quota is meaningful and where an owner can act on a refusal:
+
+| Gated | Why |
+|---|---|
+| run output persistence | the dominant growth path; one run can write MB |
+| run-file custody intake | user uploads, already byte-bounded per file (`TINYASSETS_RUN_FILE_CUSTODY_MAX_BYTES`) but unbounded in aggregate |
+| `write_page` / wiki writes | user-authored content, unbounded in count |
+| permanent workspace generations | GiB-scale; already has an admission transaction to extend |
+| node sandbox outputs | a code node can write arbitrary bytes |
+| conversation-store growth | grows with use, not with an explicit user action |
+
+Not gated: credential vault, session store, subscription state, the auto-ship
+and admission ledgers, soul/persona edits, provider process scratch. Each is
+bounded by its own schema and measured in KB. A universe does not reach 2 GiB
+through bookkeeping rows, and refusing a credential write because a universe
+is full would break sign-in to fix storage — the failure would be worse than
+the condition.
+
+Consequence stated plainly: the accounted footprint (D5) covers the WHOLE
+universe directory, including the ungated writers, so ungated bookkeeping
+still counts toward the quota and still shows in the owner's number. It just
+cannot be refused. So the quota is never under-reported; it is only
+under-enforced on writers that cannot move it. That asymmetry is deliberate,
+and it is the right way round: accounting is complete, enforcement is
+actionable.
 
 ## D6. Tier values in one place
 

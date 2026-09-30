@@ -30,8 +30,7 @@ charged to, another's.
 
 ### Requirement: At the quota new writes are refused with a visible, actionable failure, and reads never break
 
-A byte-adding write SHALL be refused once the universe's accounted footprint
-has reached its tier's storage quota. The refusal SHALL be structured and
+A byte-adding write on a path a user can drive volume through SHALL be refused once the universe's accounted footprint has reached its tier's storage quota, and the design SHALL name that set of paths explicitly rather than describing it. Accounting SHALL cover the universe's whole directory including writers that are not gated, so the owner's number is never under-reported; a writer whose own schema bounds it to kilobytes and which the owner cannot act on — a credential vault, a session store, an internal ledger — SHALL NOT be gated, because refusing it would break the means of fixing the condition. The refusal SHALL be structured and
 visible to the owner, naming the bytes used, the quota, how to free space, and
 an inline clickable upgrade link — the same wording and link used for a seat
 wait, and absent for an account already on the highest tier. No read, list,
@@ -46,6 +45,10 @@ from an unmeasurable footprint and SHALL NOT be reported as one.
 #### Scenario: A full universe still reads
 - **WHEN** a universe is at its storage quota
 - **THEN** reading its graph, pages, runs and status all succeed unaffected
+
+#### Scenario: Sign-in still works on a full universe
+- **WHEN** a universe is at its storage quota and a credential, session or internal ledger row must be written
+- **THEN** the write succeeds, so the owner retains the means to free space
 
 #### Scenario: A full universe can be emptied
 - **WHEN** an owner deletes run outputs or workspaces from a universe at its quota
