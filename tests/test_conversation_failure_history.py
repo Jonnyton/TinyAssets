@@ -58,10 +58,15 @@ def test_failure_second_insert_rolls_back_including_retention(tmp_path):
 
 
 def test_a_failure_row_is_never_deleted_by_a_later_exchange(tmp_path):
-    """No retention delete anywhere: the failure notice stays in the transcript.
+    """The failure notice stays in the transcript when later turns are written.
 
     A platform failure notice is the evidence a user needs to say what went
     wrong, and it used to be the first thing the 400-turn ceiling ate.
+
+    Scope, honestly: three rows is below any plausible ceiling, so this proves
+    the failure row is not dropped by a later exchange. That no ceiling exists at
+    all is proved past 400 turns in
+    ``tests/test_conversation_history_is_never_deleted.py``.
     """
     assert store.record_failure(tmp_path, "a", "old", "unknown")
     assert store.record_failure(tmp_path, "b", "other owner", "unknown")

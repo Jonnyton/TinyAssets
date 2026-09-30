@@ -871,9 +871,25 @@ def test_a_full_host_makes_the_next_call_wait_and_then_run(tmp_path, monkeypatch
     """Every host slot held: the next caller queues, is told it is waiting, and runs.
 
     Drives the real ``_slot`` with real ``flock`` files. The held slots are
-    released from a timer thread, so what this proves is the WAIT resolving into
-    a run -- the old code would have raised ``every tool slot ... is busy``.
+    released after 0.25 s, so what this proves is the WAIT resolving into a run
+    and ``on_wait`` firing.
+
+    It does NOT by itself prove there is no deadline -- a restored 30-second one
+    would pass this too (Codex refute, 2026-09-30). What catches that is
+    ``test_there_is_no_per_universe_tool_slot_count``, which unparses ``_slot``
+    and refuses any ``deadline``, ``raise`` or ``UniverseToolError`` in its body.
+    Asserted here as well so the pair cannot drift apart.
     """
+    import ast as _ast
+    import inspect as _inspect
+    import textwrap as _textwrap
+
+    _fn = _ast.parse(
+        _textwrap.dedent(_inspect.getsource(universe_tools._slot))
+    ).body[0]
+    if _ast.get_docstring(_fn) is not None:
+        _fn.body = _fn.body[1:]
+    assert "deadline" not in _ast.unparse(_fn)
     import fcntl
     import threading
 

@@ -53,9 +53,14 @@ def test_reading_is_still_bounded_by_default(tmp_path):
 def test_no_write_path_issues_a_delete(tmp_path):
     """Mutation guard against a retention delete creeping back in.
 
-    A trigger that aborts any DELETE on the transcript. If either write path
-    still trims, the exchange fails and the assertion below catches it -- which
-    a row count alone would not, since a re-added ceiling could be set high.
+    A trigger that aborts any DELETE on the transcript. It has to run PAST the
+    old 400-turn threshold to mean anything: a re-added
+    ``DELETE ... turn_no <= max - RETENTION_TURNS`` matches zero rows below the
+    threshold, so the trigger would never fire and the guard would pass against
+    the very code it exists to catch (Codex refute, 2026-09-30).
+
+    So: 250 exchanges = 500 rows, comfortably past 400, with the trigger armed
+    from the first one.
     """
     store.record_exchange(tmp_path, "s", "first", "reply")
     conn = store._connect(tmp_path / ".conversation_memory.db")
@@ -68,9 +73,20 @@ def test_no_write_path_issues_a_delete(tmp_path):
     finally:
         conn.close()
 
-    for i in range(10):
+    for i in range(250):
         assert store.record_exchange(tmp_path, "s", f"q{i}", f"a{i}"), (
-            "a write path attempted a DELETE on conversation_turns"
+            f"a write path attempted a DELETE on conversation_turns at exchange {i}"
         )
     assert store.record_failure(tmp_path, "s", "bad", "unknown")
-    assert _stored_turn_count(tmp_path) == 24
+    assert _stored_turn_count(tmp_path) == 504
+    # And the projection path, which had its own DELETE, is covered by source:
+    # there is no DELETE on conversation_turns anywhere in either writer.
+    import inspect
+
+    from tinyassets.storage import conversation_run_admissions as cra
+
+    for module in (store, cra):
+        src = inspect.getsource(module)
+        assert "DELETE FROM conversation_turns" not in src, (
+            f"{module.__name__} deletes transcript rows"
+        )

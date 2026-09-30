@@ -81,7 +81,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from tinyassets.providers import provider_jail
@@ -252,6 +252,10 @@ class ToolRun:
     #: ``disk_limit`` or None.
     killed: str | None
     elapsed: float
+    #: Seconds this call spent QUEUED for a host tool slot before it started.
+    #: Reported in the result trailer: every tool here answers with text, and a
+    #: wait the caller cannot see is indistinguishable from a hang.
+    waited: float = 0.0
 
 
 # ── the jail ────────────────────────────────────────────────────────────────
@@ -454,15 +458,29 @@ def _slot_dir() -> Path:
 
 
 @contextlib.contextmanager
-def _slot(universe_dir: Path, *, on_wait: Callable[[float], None] | None = None) -> Iterator[None]:
+def _slot(
+    universe_dir: Path,
+    *,
+    on_wait: Callable[[float], None] | None = None,
+    waited: list[float] | None = None,
+) -> Iterator[None]:
     """WAIT for one host slot, then run. Never refuses for being busy.
 
     Lock files, so the bound holds across the per-universe engine processes.
 
     ``on_wait`` is called once, with the seconds waited so far, the first time a
     call actually has to queue -- so a surface that has a user in front of it can
-    say "waiting for a free slot" instead of going silent. Waiting is visible or
-    it is indistinguishable from a hang.
+    say "waiting for a free slot" instead of going silent. ``waited`` (a
+    one-element sink list) receives the total seconds queued, which the result
+    trailer reports. Waiting is visible or it is indistinguishable from a hang.
+
+    KNOWN GAP (Codex refute, 2026-09-30, P2): this wait is not interruptible.
+    The engine tool wrappers reach it through ``asyncio.to_thread``, and
+    cancelling that await does not stop the worker thread, so a cancelled request
+    keeps its place in the queue until a slot frees. The waiter holds no lock and
+    no jail (one pipe descriptor only), and the queue's depth is the transport's
+    own thread pool rather than anything a universe chooses --
+    ``docs/concerns/2026-09-30-a-cancelled-tool-call-keeps-waiting.md``.
 
     There is no deadline. A 30-second one used to turn a busy host into
     ``every tool slot for this host is busy``, which is a refusal wearing a
@@ -480,6 +498,8 @@ def _slot(universe_dir: Path, *, on_wait: Callable[[float], None] | None = None)
         while True:
             fd = _try_lock_one(pool, fcntl)
             if fd is not None:
+                if waited is not None:
+                    waited.append(time.monotonic() - started if announced else 0.0)
                 break
             if not announced:
                 announced = True
@@ -592,10 +612,18 @@ def run_jailed(
     # The jail itself adds up to three processes (bwrap, its pid-1, prlimit's
     # exec target); the tree cap is the rlimit plus that overhead.
     process_cap = int(limits.processes) + 3
+    queued: list[float] = []
+    # The jail is resolved and its seccomp descriptor opened BEFORE queueing, so
+    # a host that cannot jail at all refuses immediately instead of waiting to be
+    # told so. The cost is that a queued call holds ONE pipe descriptor for the
+    # length of its wait (Codex refute, 2026-09-30): bounded by the transport's
+    # own thread pool, so ~40 descriptors against a 1024 `nofile` limit. Taking
+    # the slot first instead ran the bwrap probe before validation and broke the
+    # refusal ordering these tests pin, which is a worse trade than 40 pipes.
     filter_fd = _seccomp_fd()
     try:
         argv = TOOL_JAIL_ARGV(root, limited, seccomp_fd=filter_fd)
-        with _slot(root, on_wait=on_wait):
+        with _slot(root, on_wait=on_wait, waited=queued):
             free = _free_disk(root)
             if 0 <= free < limits.min_free_disk_bytes:
                 raise UniverseToolError(
@@ -614,10 +642,11 @@ def run_jailed(
                     # the jail ever runs outside it. A failed join never execs.
                     argv = ["/bin/sh", "-c", 'echo $$ > "$0" && exec "$@"',
                             str(cgroup / "cgroup.procs"), *argv]
-                return _supervise(
+                run = _supervise(
                     argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall,
                     cap=cap, process_cap=process_cap,
                 )
+                return replace(run, waited=queued[0] if queued else 0.0)
     finally:
         os.close(filter_fd)
 
@@ -829,6 +858,18 @@ _SIGXCPU = getattr(signal, "SIGXCPU", 24)
 _SIGKILL = getattr(signal, "SIGKILL", 9)
 
 
+def _waited_note(run: ToolRun) -> str:
+    """The queued-for-a-slot note, or empty. Prepended to a tool's own answer.
+
+    A busy host makes a call WAIT rather than refusing it, so the only way the
+    caller learns that its 40-second read was 38 seconds of queueing is if the
+    answer says so.
+    """
+    if run.waited < 1.0:
+        return ""
+    return f"[waited {run.waited:.0f}s for a free tool slot on this host]\n"
+
+
 def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
     if run.killed == "timeout":
         return f"[killed: ran longer than {wall:g}s]"
@@ -864,15 +905,17 @@ def read_file(
         universe_dir, ["/bin/sh", "-c", script, "sh", target, str(start), str(count)],
         limits=limits,
     )
+    note = _waited_note(run)
     if run.killed == "output_limit":
         return (
-            _text(run.output)
+            note + _text(run.output)
             + f"\n[truncated at {limits.output_bytes} bytes; read a smaller range "
             "with offset and limit]"
         )
     if run.killed or run.exit_code != 0:
-        return f"error: {_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}"
-    return _text(run.output)
+        return (f"error: {note}"
+                f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
+    return note + _text(run.output)
 
 
 def write_file(
@@ -889,9 +932,11 @@ def write_file(
         universe_dir, ["/bin/sh", "-c", script, "sh", target],
         stdin=payload, limits=limits,
     )
+    note = _waited_note(run)
     if run.killed or run.exit_code != 0:
-        return f"error: {_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}"
-    return f"wrote {len(payload)} bytes to {target}"
+        return (f"error: {note}"
+                f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
+    return note + f"wrote {len(payload)} bytes to {target}"
 
 
 def edit_file(
@@ -908,10 +953,12 @@ def edit_file(
          "sh", target],
         limits=limits, output_bytes=MAX_EDIT_BYTES,
     )
+    note = _waited_note(run)
     if run.killed == "output_limit":
         return f"error: {target} is over the {MAX_EDIT_BYTES}-byte edit limit; use bash"
     if run.killed or run.exit_code != 0:
-        return f"error: {_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}"
+        return (f"error: {note}"
+                f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
     try:
         current = run.output.decode("utf-8")
     except UnicodeDecodeError:
@@ -929,7 +976,7 @@ def edit_file(
     )
     if written.startswith("error:"):
         return written
-    return f"edited {target}"
+    return note + f"edited {target}"
 
 
 def bash(
@@ -946,7 +993,7 @@ def bash(
     body = _text(run.output)
     if body and not body.endswith("\n"):
         body += "\n"
-    return body + _trailer(run, limits, wall)
+    return _waited_note(run) + body + _trailer(run, limits, wall)
 
 
 # ── the skill index (progressive disclosure) ────────────────────────────────

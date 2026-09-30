@@ -68,12 +68,24 @@ def resolve_selection_in_transaction(conn, *, owner, universe):
     # conversation from resolving at all. That is a functional cliff, not a limit
     # (founder, 2026-09-30: no structural caps on what users build).
     #
+    # STREAMED, not materialized, and it STOPS at the second active selection.
+    # This runs inside the caller's `BEGIN IMMEDIATE` on the shared author
+    # database (`conversation_run_admissions`), so it holds the writer lock: a
+    # `fetchall()` here would both allocate every row of a large installation and
+    # hold that lock for the whole parse (Codex refute, 2026-09-30, P1). Iterating
+    # the cursor keeps one row live at a time, and the early exit means the
+    # ambiguous case reads only as far as the ambiguity.
+    #
+    # The scan is bounded to ONE universe's rows by
+    # `idx_agent_binding_universe(universe_id, ...)`, so it never walks other
+    # people's bindings, and what it does walk is the owner's own storage.
+    #
     # The real ambiguity check is below, on the rows that DO select a consumer:
     # more than one active selection is ambiguous at any list size.
-    rows = conn.execute("SELECT * FROM agent_bindings WHERE universe_id=? AND created_by=? "
-                        "ORDER BY agent_binding_id", (universe, owner)).fetchall()
+    cursor = conn.execute("SELECT * FROM agent_bindings WHERE universe_id=? AND created_by=? "
+                          "ORDER BY agent_binding_id", (universe, owner))
     active = []
-    for row in rows:
+    for row in cursor:
         config = json.loads(row["configuration_json"])
         if not isinstance(config, dict):
             raise ValueError("invalid receiver installation configuration")
@@ -93,8 +105,10 @@ def resolve_selection_in_transaction(conn, *, owner, universe):
         if selection["state"] != "active":
             raise ValueError("unsupported consumer selection state")
         active.append((row, selection))
-    if len(active) > 1:
-        raise PermissionError("consumer installation is ambiguous")
+        if len(active) > 1:
+            # Stop here rather than after the whole table: the answer cannot
+            # change, and every further row is lock time nobody needs.
+            raise PermissionError("consumer installation is ambiguous")
     if not active:
         return None
     binding, selection = active[0]

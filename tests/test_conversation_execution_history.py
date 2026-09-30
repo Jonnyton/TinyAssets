@@ -78,9 +78,14 @@ def test_an_old_receipt_survives_later_exchanges(tmp_path):
     """The 400-turn retention delete is gone: the oldest pair and its receipt stay.
 
     This used to assert the opposite -- that the store dropped everything beyond
-    ``RETENTION_TURNS``. Founder, 2026-09-30: stored turns are bytes charged to
-    tier storage, not their own limit, and nothing on the platform deletes a
-    user's transcript.
+    a monkeypatched ``RETENTION_TURNS`` of 2. Founder, 2026-09-30: stored turns
+    are bytes charged to tier storage, not their own limit, and nothing on the
+    platform deletes a user's transcript.
+
+    Scope, honestly: two exchanges is below any plausible ceiling, so this proves
+    the RECEIPT survives a later write, not that the ceiling is gone. The ceiling
+    is proved gone past 400 turns in
+    ``tests/test_conversation_history_is_never_deleted.py``.
     """
     assert store.record_exchange(tmp_path, "a", "old q", "old a", execution=RECEIPT)
     assert store.record_exchange(tmp_path, "a", "new q", "new a")
