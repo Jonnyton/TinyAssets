@@ -45,6 +45,48 @@ should work so neither of our users should need to upgrade"*. Shipping the quota
 designed would break permanent workspaces on free, which is worse than not shipping
 it.
 
+### Production is NOT affected today (measured 2026-09-30)
+
+Asked before carrying on, because the finding reads like a live outage and is not.
+Driving the real `workspace_pool.admit` with today's live parameters
+(`max_bytes = _DEFAULT_MAX_CHECKOUT_BYTES` = 4 GiB,
+`universe_quota_bytes = _DEFAULT_MAX_CHECKOUT_BYTES * 4` = 16 GiB):
+
+| Free quota | Empty universe, one permanent workspace |
+|---|---|
+| **16 GiB (today's live value)** | **ADMITTED** |
+| 8 GiB | ADMITTED |
+| 5 GiB | ADMITTED |
+| 4 GiB | ADMITTED (exactly at the boundary) |
+| 2 GiB (the proposed value) | REFUSED `workspace_quota_exceeded` |
+
+And the quota does bind correctly when a universe is genuinely full: at 13 GiB used
+against the 16 GiB quota, a 4 GiB request is refused with
+`workspace_quota_exceeded: 13958643712 used + 0 reserved + 4294967296 requested`.
+
+So finding 16 is **prospective, not live**. It describes what the 2 GiB free quota
+would have done had it shipped. The minimum viable free quota is
+`_DEFAULT_MAX_CHECKOUT_BYTES` (4 GiB) while the reservation stays a flat 4 GiB;
+anything below it refuses a permanent workspace on an empty universe.
+
+### Two live gaps this measurement exposed, which are the storage change's real brief
+
+1. **The quota is not tier-aware at all.** `_universe_quota_kwargs` returns a flat
+   `_DEFAULT_MAX_CHECKOUT_BYTES * 4` for every universe. So *"free users have less
+   cloud storage space"* is currently **not true** — free and paid have identical
+   storage limits, 16 GiB each. The directive's second number is not implemented,
+   rather than implemented wrongly.
+2. **There are already two storage numbers for one fact.** 16 GiB hardcoded in
+   `effectors/workspace.py` and enforced for workspaces only, versus
+   `usage_policy`'s `_DEFAULT_FREE_STORAGE_MB = 2000` / `_PAID_STORAGE_MB = 20000`,
+   declared per tier and enforced nowhere. They disagree by 8x on free. The storage
+   change must collapse them, not add a third.
+
+The fix for finding 16 is therefore not "raise the free quota to 4 GiB" — that
+would make free and paid nearly equal again. It is to make the RESERVATION
+incremental or quota-fitted, so a 2 GiB universe can hold a small workspace,
+which is astra's own suggested remedy.
+
 The rest are the same class: the accounting is not authoritative yet.
 
 - **11, 12** the directory boundary is wrong. Run databases live at
