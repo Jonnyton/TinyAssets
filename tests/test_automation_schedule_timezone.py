@@ -375,6 +375,95 @@ def test_a_fresh_schedule_created_after_its_slot_does_not_fire_immediately():
 
 
 # ---------------------------------------------------------------------------
+# Zones that are not whole hours, and a DST shift that is not an hour
+# ---------------------------------------------------------------------------
+
+
+def _fires(expr: str, zone_name: str, day: date, *, hours: int) -> list[str]:
+    """Distinct instants owed while polling every minute, recording each fire."""
+    zone = resolve_zone(zone_name)
+    start = datetime(day.year, day.month, day.day, tzinfo=zone).astimezone(timezone.utc)
+    automation = _cron(expr, zone=zone_name)
+    fired: list[str] = []
+    for minute in range(hours * 60):
+        owed = _due_instant(automation, start + timedelta(minutes=minute))
+        if owed and owed not in fired:
+            fired.append(owed)
+            automation = _cron(
+                expr, zone=zone_name,
+                last_local=slot_key_for_due(expr, zone_name, owed), last_utc=owed,
+            )
+    return fired
+
+
+def _local_day_hours(zone_name: str, day: date) -> float:
+    """How long this local day really is -- 23, 23.5, 24, 24.5 or 25 hours.
+
+    Both ends are converted to UTC before subtracting. Subtracting two aware
+    datetimes that share a `tzinfo` gives the WALL-clock difference (a flat 24
+    hours across any transition), which is the trap that made this helper
+    report 24 for a 25-hour day on the first attempt.
+    """
+    zone = resolve_zone(zone_name)
+    nxt = day + timedelta(days=1)
+    start = datetime(day.year, day.month, day.day, tzinfo=zone).astimezone(timezone.utc)
+    end = datetime(nxt.year, nxt.month, nxt.day, tzinfo=zone).astimezone(timezone.utc)
+    return (end - start).total_seconds() / 3600
+
+
+@pytest.mark.parametrize("expr,expected_slot", [
+    ("0 7 * * *", "2027-06-15T07:00"),
+    ("30 7 * * *", "2027-06-15T07:30"),
+])
+def test_a_half_hour_offset_zone_resolves_and_inverts(expr, expected_slot):
+    """Asia/Kolkata is +05:30, so an hour-granular assumption would drift."""
+    fired = _fires(expr, "Asia/Kolkata", date(2027, 6, 15), hours=24)
+    assert len(fired) == 1, fired
+    assert slot_key_for_due(expr, "Asia/Kolkata", fired[0]) == expected_slot
+    # And it really is 07:00 local, not 07:00Z.
+    local = _utc(fired[0]).astimezone(resolve_zone("Asia/Kolkata"))
+    assert (local.hour, local.minute) == (7, int(expr.split()[0]))
+
+
+#: Australia/Lord_Howe shifts by THIRTY minutes, so its spring gap is
+#: 02:00-02:30 and only half of 01:30-02:00 repeats in autumn. An
+#: implementation that assumed a one-hour DST step passes Los Angeles and fails
+#: here, which is why this zone is in the suite.
+LORD_HOWE = "Australia/Lord_Howe"
+
+
+@pytest.mark.parametrize("day", [date(2027, 10, 3), date(2027, 4, 4)])
+@pytest.mark.parametrize("expr", ["0 2 * * *", "30 2 * * *", "0 7 * * *"])
+def test_a_thirty_minute_dst_shift_still_fires_each_slot_once(expr, day):
+    """One fire per LOCAL DAY, on a day that is 23.5 or 24.5 hours long."""
+    hours = _local_day_hours(LORD_HOWE, day)
+    assert hours in (23.5, 24.5), (day, hours)
+    # Poll only this local day, so a fire on the next date cannot be counted.
+    fired = _fires(expr, LORD_HOWE, day, hours=int(hours))
+    assert len(fired) == 1, (expr, day, fired)
+    # It inverts to a slot on THIS local date.
+    assert slot_key_for_due(expr, LORD_HOWE, fired[0]).startswith(day.isoformat())
+
+
+def test_an_hourly_cron_fires_the_repeated_hour_once():
+    """`0 * * * *` on a 25-hour day: 24 local slots, the ambiguous one once.
+
+    The sharpest test of "dedupe by local slot": a UTC-keyed fence would fire 25
+    times here, because the fall-back hour supplies two UTC buckets whose local
+    label is the same.
+    """
+    day = date(2027, 11, 7)
+    assert _local_day_hours(LA, day) == 25
+    fired = _fires("0 * * * *", LA, day, hours=25)
+    inversions = [slot_key_for_due("0 * * * *", LA, inst) for inst in fired]
+    assert len(fired) == 24, fired
+    assert len(set(inversions)) == 24, inversions
+    # 09:00Z is 01:00 PST -- the SECOND occurrence of 01:00 -- and is skipped.
+    assert "2027-11-07T09:00:00+00:00" not in fired
+    assert "2027-11-07T08:00:00+00:00" in fired
+
+
+# ---------------------------------------------------------------------------
 # 2b: the owner's zone, captured and then used as the default
 # ---------------------------------------------------------------------------
 
