@@ -198,6 +198,18 @@ def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkey
     argv = jail_argv(["/bin/true"], view, bwrap_path="/usr/bin/bwrap")
     assert (str(universe.resolve() / "story.db-shm"), "/u/story.db-shm") in _pairs(
         argv, "--ro-bind-try")
+    # Replaced by a link after the scan: the argv is refused, not bound to it.
+    other = _universe(tmp_path, "u-bravo")
+    (universe / "wiki").mkdir()
+    view = universe_tools._universe_view(universe.resolve())
+    (universe / "wiki").rmdir()
+    try:
+        (universe / "wiki").symlink_to(other, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        with pytest.raises(ProviderConfinementError, match="inside its own universe"):
+            jail_argv(["/bin/true"], view, bwrap_path="/usr/bin/bwrap")
     with pytest.raises(ProviderConfinementError, match="does not exist"):
         jail_argv(["/bin/true"], provider_jail.UniverseView(
             universe_dir=universe, mounts=(provider_jail.JailMount(
