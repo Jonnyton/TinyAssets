@@ -1697,11 +1697,14 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``"ui_selection": {"version": 1, "state": "active", "ui_id": "<mine>"}`` to the
     same row; ``{"version": 1, "state": "default"}`` means ordinary chat.
 
-    **Sharing one.** ``write_graph target="agent" operation="publish"`` with the UI
-    component under ``components`` publishes it for anyone to copy, and
-    ``operation="remix"`` copies someone else's. A copy always runs as the person
-    who installed it, in THEIR universe -- it can never reach back to whoever wrote
-    it. Publishing is a separate, deliberate act: a UI I only install stays private.
+    **Sharing one.** Publishing is the person's own deliberate act, and it is not
+    a call I have here: they publish the UI component under ``components`` of a
+    public definition (the connector's ``write_graph target="agent"
+    operation="publish"``), and a UI I only install stays private. To use someone else's, I read it with
+    ``read_commons_shape agent_definition_id=...`` and save its component into
+    this person's ``ui_library``; that copy is theirs, the same thing the
+    connector's ``operation="remix"`` does. A copy always runs as the person who
+    installed it, in THEIR universe -- it can never reach back to whoever wrote it.
 
 """
 
@@ -1804,6 +1807,45 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
 
 """
 
+_WRITE_GRAPH_SYSTEMS_CHAPTER = """\
+    **Systems that keep running: several agents, shared work, their own screen.**
+    When someone asks for something always on, a team of agents that coordinate,
+    or a product other people can use, I build it INSIDE this universe from what
+    I already have. There is no server to deploy and nothing runs anywhere else.
+    Asking the person for a hosting destination, a deploy target or a code-host
+    token so the thing can run or be shared is the wrong shape; so is writing
+    a service under /u with deployment instructions. It's one mapping:
+
+    * **Each agent is an agent node**: a prompt node with ``"agent"`` in
+      ``tools_allowed`` (chapter ``code_nodes``). Its prompt is that agent's role.
+      One branch per agent lets each wake on its own. I grant only what it uses:
+      ``["agent", "read", "write", "edit"]`` for one that works in shared files.
+    * **Always on means automations** (``target="automation"``, create payload in
+      the resident text): ``interval_seconds`` or ``cron_expr`` for a heartbeat,
+      and ``event_type`` ``run_completed`` with ``event_filter``
+      ``{"branch_def_id"}`` so one agent finishing wakes another, or
+      ``pending_request_answered`` to resume when the person answers me. A code
+      node granted ``"enqueue_branch_run"`` wakes one of my branches now or not
+      before a time: ``invoke_mcp_action("enqueue_branch_run",
+      branch_def_id=..., inputs={...})``. Each automation holds its own lease, so
+      different agents run at the same time and none overlaps itself.
+    * **Shared state is files in /u** that the agents read and write: a board, a
+      queue, a log, one file per item. Every run reads them fresh, so the file IS
+      the coordination. Claim by writing a name into it, hand off by writing and
+      waking the next agent. Agents address each other through what they write.
+    * **Its screen is an app UI** (chapter ``interfaces``). I build it only from
+      the calls that chapter lists. What those calls cannot show, I do not fake
+      on screen or backfill with an outside service.
+    * **Sharing.** Publishing to the commons is the person's act, not a call I
+      have here, so I name exactly which workflows and which UI would become
+      public and let them publish it. Someone who wants another person's system
+      finds it with ``browse_commons``, copies each workflow with
+      ``remix_shape`` and the UI component into their own ``app_ui``, and
+      creates their own automations. Every copy is private and runs on its
+      owner's own compute.
+
+"""
+
 #: Chapter name -> text, in the order the resident index names them.
 _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
     "connections": _WRITE_GRAPH_CONNECTIONS_CHAPTER,
@@ -1811,6 +1853,7 @@ _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
     "workspaces": _WRITE_GRAPH_WORKSPACES_CHAPTER,
     "delivering": _WRITE_GRAPH_DELIVERING_CHAPTER,
     "interfaces": _WRITE_GRAPH_INTERFACES_CHAPTER,
+    "systems": _WRITE_GRAPH_SYSTEMS_CHAPTER,
 }
 
 #: Every served handle that keeps chapters outside its description.
@@ -2396,13 +2439,11 @@ def write_graph(
     **Writing a file through an API that takes base64 (a contents API):
     NEVER generate base64 and NEVER re-type a file - both corrupt it (live
     2026-08-29: `422 not valid Base64`, then a file with 87 lines collapsed,
-    then a "repair" with 36 typos).** This one stays here rather than in the
-    handbook: skipping it produces a WRONG effectful call -- a corrupted file
-    written to somebody's repository -- not an absent one. The `connections`
-    chapter has the two-node shape that does it correctly.
+    then a "repair" with 36 typos).** The `connections` chapter has the
+    two-node shape that does it correctly.
 
     THE HANDBOOK. My long-form guidance for this handle is not repeated in
-    every round of every turn -- it is five chapters I read when I need one,
+    every round of every turn -- it is six chapters I read when I need one,
     exactly as I read a skill's SKILL.md when a request matches it:
 
     * ``connections`` -- raising a credential ask (``target="pending_request"``),
@@ -2420,6 +2461,8 @@ def write_graph(
       mine sending into theirs: receivers, connecting an output, who sent what.
     * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
       office plan, any interface they ask for: I write its HTML/CSS/JS myself.
+    * ``systems`` -- anything always on, several agents working together, or a
+      product for others: built HERE, never hosted elsewhere.
 
     I read one with ``read_graph target="handbook"
     query="write_graph.<chapter>"``; ``read_graph target="handbook"`` with no
