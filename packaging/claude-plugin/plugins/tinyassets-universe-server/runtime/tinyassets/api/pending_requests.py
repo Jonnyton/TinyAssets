@@ -1838,7 +1838,9 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
     entry stays -- it is the only route to a second source -- but it is
     ``optional``: offered, answerable, and outstanding to nobody.
     """
-    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES)}
+    from tinyassets.providers.free_sources import source_cards
+
+    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards()}
     primary = None if connected else _first_power_preset()
     if primary is not None:
         setup["primary"] = primary
@@ -2004,6 +2006,14 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     # mute with no way back, and needs no migration.
     connected = _serving_llm_bound(_base_path(), uid, permissions.current_actor_id().strip())
     entry = _connect_llm_request(connected=connected)
+    if connected:
+        from tinyassets.provider_assignment import load_provider_assignment
+
+        assignment = load_provider_assignment(_base_path(), universe_id=uid)
+        if assignment is not None and len(assignment.candidates) == 1:
+            entry["suggestion"] = (
+                "Add another free source to keep going when one reaches its limit."
+            )
     rows = [*rows, entry] if connected else [entry, *rows]
     # FIRST in the rail: a refused sign-in is the reason a powered universe is not
     # working, so it outranks both the agent's asks and the optional

@@ -476,7 +476,7 @@ class ProviderRouter:
     # Shared health
     # ------------------------------------------------------------------
 
-    def _cool(self, cfg: Any, provider_name: str, seconds: int) -> bool:
+    def _cool(self, cfg: Any, provider_name: str, seconds: int, *, daily_detail: str = "") -> bool:
         """The ONE place an in-flight attempt writes the shared cooldown map.
 
         Returns whether it was written. A ``ModelConfig.secondary_call`` is
@@ -495,7 +495,11 @@ class ProviderRouter:
                 "keeps this source", provider_name, seconds,
             )
             return False
-        self._quota.cooldown(provider_name, seconds)
+        # One write site (test_every_router_cooldown_write_goes_through_the_guard);
+        # the keyword is passed only when there is a daily detail, so ordinary
+        # cooldowns keep their original call shape.
+        extra = {"daily_detail": daily_detail} if daily_detail else {}
+        self._quota.cooldown(provider_name, seconds, **extra)
         return True
 
     # ------------------------------------------------------------------
@@ -1067,10 +1071,13 @@ class ProviderRouter:
             if not self._quota.available(provider_name):
                 logger.info("Skipping %s (quota/cooldown)", provider_name)
                 cd = self._quota.cooldown_remaining(provider_name)
+                daily = self._quota.daily_detail(provider_name)
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="skipped",
                     skip_class="quota_or_cooldown",
-                    detail="quota or cooldown gate",
+                    detail=daily or "provider cooldown gate",
+                    failure_class="provider_daily_quota" if daily else None,
+                    capacity_scope="account" if daily else None,
                     cooldown_remaining_s=cd if cd > 0 else None,
                 ))
                 continue
@@ -1395,7 +1402,13 @@ class ProviderRouter:
                         turn_budget_s=cfg.stream_timeout_profile().absolute_cap_s,
                     )
                 ):
-                    self._cool(cfg, provider_name, _rate_limit_cooldown_s(exc))
+                    daily = exc.failure_class == "provider_daily_quota"
+                    self._cool(
+                        cfg, provider_name,
+                        (_retry_after_cooldown_s(exc.retry_after) if exc.retry_after is not None
+                         else MAX_COOLDOWN_S) if daily else _rate_limit_cooldown_s(exc),
+                        daily_detail=redacted_failure_detail(str(exc)) if daily else "",
+                    )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed", skip_class="quota_or_cooldown",
                     detail=redacted_failure_detail(str(exc)), failure_class=exc.failure_class,
