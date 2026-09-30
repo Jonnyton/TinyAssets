@@ -484,6 +484,13 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
     """
     with _connect(base_path) as conn:
         conn.executescript(schema)
+        # NOT in the schema script: `executescript` autocommits, so the table
+        # would exist before its backfill committed, and a crash between the two
+        # would skip the backfill forever (gpt-6-astra, PR #4139). The table and
+        # its backfill are born in ONE transaction.
+        from tinyassets.universe_owner import migrate_universe_owner
+
+        migrate_universe_owner(conn)
         from tinyassets.storage.accounts import (
             migrate_capability_grants_schema,
         )
@@ -4842,6 +4849,65 @@ def grant_universe_access(
         "granted_at": now,
         "granted_by": granted_by or "",
     }
+
+
+def grant_universe_ownership(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    owner_id: str,
+) -> None:
+    """Create-time grant: the creator's admin row AND the universe's owner row,
+    in ONE transaction, so no universe is ever granted but unowned
+    (account-storage-quota D2). Raises `OwnershipConflict` when the universe
+    already belongs to another account; the admin grant then rolls back too.
+    """
+    from tinyassets.universe_owner import record_creation
+
+    owner = named_principal(owner_id)
+    uid = (universe_id or "").strip()
+    if not owner or not uid:
+        raise ValueError("grant_universe_ownership requires universe_id and owner_id.")
+    now = _now()
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO universe_acl
+              (universe_id, actor_id, permission, granted_at, granted_by)
+            VALUES (?, ?, 'admin', ?, ?)
+            ON CONFLICT(universe_id, actor_id) DO UPDATE SET
+                permission = excluded.permission,
+                granted_at = excluded.granted_at,
+                granted_by = excluded.granted_by
+            """,
+            (uid, owner, now, owner),
+        )
+        record_creation(conn, universe_id=uid, owner_id=owner)
+
+
+def revoke_universe_ownership(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    owner_id: str,
+) -> None:
+    """Undo `grant_universe_ownership` for a create that failed: the grant and
+    the owner row go together, and only if this account is the recorded owner."""
+    owner = named_principal(owner_id)
+    uid = (universe_id or "").strip()
+    if not owner or not uid:
+        return
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        conn.execute(
+            "DELETE FROM universe_acl WHERE universe_id = ? AND actor_id = ?",
+            (uid, owner),
+        )
+        conn.execute(
+            "DELETE FROM universe_owner WHERE universe_id = ? AND owner_id = ?",
+            (uid, owner),
+        )
 
 
 def set_founder_home(

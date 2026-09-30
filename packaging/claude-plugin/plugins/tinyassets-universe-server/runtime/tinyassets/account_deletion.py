@@ -196,6 +196,13 @@ REDACTED_TABLES = frozenset({"action_records"})
 #: be deleted.
 ATTRIBUTION_COLUMNS = MappingProxyType({
     "canonical_bindings": ("bound_by_actor_id",),
+    # A universe the person owned that SURVIVES them (not the home, which the
+    # universe sweep deletes with its owner row) keeps an owner -- the opaque
+    # fingerprint -- rather than none. With none it would become unattributed,
+    # which is never refused: a collaborator could fill it without bound
+    # (gpt-6-astra, PR #4139). The fingerprint has no home, so it is charged at
+    # the free tier, and it names nobody.
+    "universe_owner": ("owner_id",),
 })
 
 #: Money the person is a party to. Refuse the deletion rather than discard it:
@@ -363,6 +370,26 @@ def deletion_plan(
 # --------------------------------------------------------------------------- #
 
 
+def _redacted_owner_exemption(table: str, key: str, tables: set[str] | list[str]) -> str:
+    """SQL excluding PROVEN redacted owners from the foreign-ownership scan.
+
+    After A deletes their account, a universe A owned that survives -- say, B's
+    home -- carries owner ``deleted:<fingerprint>``. That names nobody, so it
+    must not block B's own deletion forever (gpt-6-astra round 2, PR #4139).
+
+    Narrow on purpose (round 3): ONLY ``universe_owner.owner_id``, and only a
+    value that matches an actual tombstone -- the fingerprint is the first 16 hex
+    of the same digest `deleted_principals` stores. A prefix test alone let a
+    live local principal named ``deleted:...`` have its rows swept.
+    """
+    if (table, key) != ("universe_owner", "owner_id") or "deleted_principals" not in tables:
+        return ""
+    return (
+        ' AND "owner_id" NOT IN '
+        "(SELECT 'deleted:' || substr(founder_sub, 1, 16) FROM deleted_principals)"
+    )
+
+
 def deletion_blockers(
     conn: sqlite3.Connection, *, principal: str, home: str
 ) -> list[str]:
@@ -480,7 +507,8 @@ def deletion_blockers(
                 foreign = _count(
                     conn,
                     f'SELECT COUNT(*) FROM "{table}" '
-                    f'WHERE universe_id = ? AND "{key}" NOT IN (?, \'system\', \'\')',
+                    f'WHERE universe_id = ? AND "{key}" NOT IN (?, \'system\', \'\')'
+                    + _redacted_owner_exemption(table, key, tables),
                     (home, principal),
                 )
             except sqlite3.OperationalError:
