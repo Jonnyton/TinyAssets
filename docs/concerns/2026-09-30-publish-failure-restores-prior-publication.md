@@ -1,3 +1,12 @@
+---
+severity: P2
+title: A failed publish withdraws earlier publication too
+filed: '2026-09-30'
+summary: >-
+  When bundle storage fails, compensation clears every confirmed version's publication mark
+  and makes every branch private, including ones that were already public before this request.
+---
+
 # Failed publish should restore prior publication state
 
 2026-09-30, PR #4107 cross-family verification review: AGREE, P2 correctness.
