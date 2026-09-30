@@ -87,9 +87,10 @@ def test_the_chapter_promises_only_what_the_platform_accepts() -> None:
     text = _chapter()
 
     # Every event type it names is one an automation accepts.
-    named_events = set(re.findall(r"``(run_completed|pending_request_answered|[a-z_]+_event)``", text))
-    assert named_events == {"run_completed", "pending_request_answered"}
-    assert named_events <= automations.EVENT_TYPES
+    named_events = set(
+        re.findall(r"``(run_completed|pending_request_answered|[a-z_]*_event)``", text))
+    # Every event it names is one an automation accepts, and it names them all.
+    assert named_events == set(automations.EVENT_TYPES)
 
     # The in-node wake is a verb a code node can actually be granted.
     assert "enqueue_branch_run" in graph_compiler._NODE_MCP_ACTION_ALIASES
@@ -138,3 +139,20 @@ def test_no_chapter_hands_the_agent_a_publish_it_cannot_make(monkeypatch) -> Non
                 assert "connector" in sentence, (name, sentence)
             if 'operation="publish"' in sentence or "Publishing" in sentence:
                 assert "connector" in sentence or "person" in sentence, (name, sentence)
+
+
+def test_the_publish_ask_it_shows_is_one_the_platform_accepts() -> None:
+    """The example action carries exactly the keys the ask validator reads."""
+    from tinyassets.api.publish_requests import validate_action
+
+    text = _chapter()
+    shown = re.search(r'"action": \{"type": "publish",(.*?)\}\}', text, re.S)
+    assert shown, "the chapter shows the publish ask"
+    keys = set(re.findall(r'"([a-z_]+)":', shown.group(1)))
+    accepted = set(validate_action({
+        "name": "n", "branch_ids": ["b"], "ui_id": "", "automation_ids": [],
+        "description": ""}))
+    assert keys == accepted - {"type"}, (keys, accepted)
+    # And the installer's steps name only calls the served surface has.
+    for call in ("browse_commons", "read_commons_shape", "remix_shape", "app_ui"):
+        assert call in text, call

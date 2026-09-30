@@ -194,6 +194,7 @@ def _seed_runnable_branch(
             },
             notes=f"{branch_def_id} v1",
             publisher="host",
+            public=True,  # the author's explicit publish
         )
         bvid = version.branch_version_id
 

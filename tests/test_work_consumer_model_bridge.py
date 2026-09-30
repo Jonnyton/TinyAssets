@@ -207,7 +207,10 @@ def test_public_selected_reusable_graph_uses_reserved_run_and_exact_reply_projec
     branch.node_defs[0].llm_policy = None
     branch.visibility = "public"
     save_branch_definition(tmp_path, branch_def=branch.to_dict())
-    version = publish_branch_version(tmp_path, branch.to_dict(), publisher="public-creator")
+    # The creator's explicit publish marks THIS version public; only a marked
+    # version of a public branch is readable (so remixable) by anyone else.
+    version = publish_branch_version(tmp_path, branch.to_dict(), publisher="public-creator",
+                                     public=True)
     assert "name" not in version.snapshot  # Existing published executable-pin format.
     public_version = version
     remixed = json.loads(universe_server.write_graph(target="branch", operation="remix",

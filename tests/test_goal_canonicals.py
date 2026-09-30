@@ -52,6 +52,7 @@ def _seed_version(base_path, branch_id: str) -> str:
         base_path,
         branch.to_dict(),
         publisher="alice",
+        public=True,  # the author's explicit publish
     ).branch_version_id
 
 

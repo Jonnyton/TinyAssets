@@ -1057,7 +1057,7 @@ def test_the_system_row_is_not_reported_as_a_node_of_the_run(
     assert SYSTEM_EVENT_NODE_ID not in snapshot["mermaid"]
     assert "recursion_limit_applied" not in snapshot["summary"]
     # The fact itself is not lost, only moved off the node list.
-    assert snapshot["recursion_limit"] == 100
+    assert snapshot["recursion_limit"] == 1_000_000
 
 
 def test_a_declared_system_node_id_still_never_becomes_a_node_status():

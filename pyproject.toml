@@ -154,6 +154,10 @@ select = ["E", "F", "W", "I"]
 # be reflowed without breaking the JS. Plus a PowerShell one-liner in the
 # module docstring that users copy-paste verbatim.
 "scripts/claude_chat.py" = ["E501"]
+# The sandboxed UI bootstrap is one fixed HTML/JS document served verbatim;
+# reflowing its JavaScript to satisfy a Python line length changes the document.
+"tinyassets/onboarding/ui_frame.py" = ["E501"]
+"packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/onboarding/ui_frame.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

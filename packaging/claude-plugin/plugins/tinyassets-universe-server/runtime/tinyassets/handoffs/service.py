@@ -110,10 +110,21 @@ def list_declarations(
     branch_version_id: str,
 ) -> dict[str, Any]:
     """Show every external effect an immutable version declares."""
-    from tinyassets.branch_versions import get_branch_version
+    from tinyassets.branch_versions import branch_version_def_id, get_branch_version
+    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.principals import named_principal
 
-    version = get_branch_version(base_path, (branch_version_id or "").strip())
-    if version is None:
+    bid = branch_version_def_id(base_path, (branch_version_id or "").strip())
+    try:
+        branch = get_branch_definition(base_path, branch_def_id=bid) if bid else {}
+    except KeyError:
+        branch = {}
+    actor = named_principal(actor_id)
+    is_author = bool(actor) and actor == branch.get("author")
+    version = get_branch_version(base_path, branch_version_id) if branch else None
+    if version is None or not (is_author or (
+        branch.get("visibility") == "public" and version.public
+    )):
         raise HandoffValidationError(
             f"branch version {branch_version_id!r} not found"
         )

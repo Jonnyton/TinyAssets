@@ -4065,7 +4065,7 @@
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
     // In this order: a reply left by a previous owner is discarded by the rebind
     // before this page can collect it.
-    if(NATIVE) rebindNativeNotifications().then(collectNotificationReply);
+    if(typeof rebindNativeNotifications === "function") rebindNativeNotifications().then(collectNotificationReply);
     // Not awaited: the owner's clock is for the NEXT schedule they create, so
     // it must not sit in front of the page they are waiting for.
     reportTimezone();
@@ -4321,7 +4321,7 @@
   function enterSignedOut(){ clearInterval(statusTimer); clearInterval(workingTimer); workingTimer=null;
     MCP.endLogin(); Voice.stop(false);
     if(typeof unsubscribeBrowserNotifications === "function") unsubscribeBrowserNotifications();
-    if(NATIVE) unregisterNativeNotifications();
+    if(typeof unregisterNativeNotifications === "function") unregisterNativeNotifications();
     // Pending attachments belong to the account that picked them. They are
     // dropped, never released (release needs that same login and home) and
     // never carried into whoever signs in next.
@@ -5381,7 +5381,7 @@
     $("btn-notifications").addEventListener("click", ()=>toggleNotifications(false));
     $("btn-browser-notifications").addEventListener("click", ()=>toggleNotifications(true));
     // The phone app has no browser push; its one switch registers the phone.
-    if(NATIVE) $("btn-browser-notifications").hidden=true;
+    if(typeof NATIVE !== "undefined" && NATIVE) $("btn-browser-notifications").hidden=true;
     // ---- your universe's connections ----
     // Disconnect is a deliberate TWO-STEP, in-page confirmation. It used to
     // raise the browser's own confirm(): one string, drawn outside the page,
@@ -5983,7 +5983,7 @@
   const NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner",
         NATIVE_PUSH_RECIPIENT="app.push.recipient";
   let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
-  function nativePush(){ return NATIVE ? nativePlugin("PushNotifications") : null; }
+  function nativePush(){ return (typeof NATIVE !== "undefined" && NATIVE) ? nativePlugin("PushNotifications") : null; }
   // Tells the native message service whether the signed-in owner wants
   // notifications on this phone. It is checked on every arriving message, so
   // turning it off at sign-out stops display at once, however long FCM takes to
@@ -5992,7 +5992,7 @@
   // carries the tag of whoever it was sent to, and native drops any that does
   // not match the account the phone is armed for.
   async function setNativeActive(active, recipient){
-    const R=NATIVE ? nativePlugin("NotificationReply") : null;
+    const R=(typeof NATIVE !== "undefined" && NATIVE) ? nativePlugin("NotificationReply") : null;
     if(!R) return;
     try{ await R.setActive({active, recipient: recipient||""}); }
     catch(_error){ /* an older shell has no gate */ }
@@ -6100,7 +6100,7 @@
   // after MainActivity verified the intent came from this app. It is submitted
   // here, through the signed-in session, like any other answer.
   async function collectNotificationReply(){
-    const R=NATIVE ? nativePlugin("NotificationReply") : null;
+    const R=(typeof NATIVE !== "undefined" && NATIVE) ? nativePlugin("NotificationReply") : null;
     if(!R) return;
     try{
       const reply=await R.consume();
@@ -6202,7 +6202,7 @@
         li.textContent=(device.label || device.platform) + (device.enabled ? " — enabled" : " — off");
         $("notification-devices").appendChild(li);
       });
-      if(!NATIVE && !settings.vapid_public_key) status.textContent="Browser notifications are not configured yet.";
+      if(!(typeof NATIVE !== "undefined" && NATIVE) && !settings.vapid_public_key) status.textContent="Browser notifications are not configured yet.";
     }catch(error){ if(session.current() && generation===notificationLoad) status.textContent=error.message; }
   }
   async function toggleNotifications(registerBrowser){
@@ -6211,7 +6211,7 @@
     const button=$("btn-notifications"), status=$("notification-status");
     notificationBusy=true; button.disabled=true;
     try{
-      if(enable && NATIVE){
+      if(enable && typeof NATIVE !== "undefined" && NATIVE){
         await registerNativeNotifications(session);
       } else if(enable){
         if(!("Notification" in window) || !navigator.serviceWorker || !("PushManager" in window))

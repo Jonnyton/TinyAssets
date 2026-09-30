@@ -114,6 +114,12 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     # runtime until that retires (plan B2/B3); preserved like the fleet history,
     # since a scoped reset never needed to rewrite it.
     "automation_activations": "preserve",
+    # Which account a universe's storage and seats are charged to
+    # (account-storage-quota). PRESERVED: a scoped reset keeps the login, and the
+    # fresh home it later births gets its own owner row at creation. The reset
+    # home's row names a universe id whose directory is gone, which measures as
+    # zero bytes; it is never re-used, because universe ids are never re-issued.
+    "universe_owner": "preserve",
 })
 
 FAULT_POINTS = (
@@ -246,6 +252,8 @@ _KNOWN_ROOT_RUN_TABLES = frozenset({
     "branch_schedules",
     "branch_subscriptions",
     "branch_versions",
+    # One-time data-migration markers (name, time, counts): no subject data.
+    "branch_versions_migrations",
     "conformance_pack",
     "contribution_events",
     "conversation_run_admissions",

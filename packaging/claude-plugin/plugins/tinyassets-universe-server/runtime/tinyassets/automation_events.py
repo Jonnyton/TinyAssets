@@ -6,7 +6,7 @@ subscribed branch, and the automation pump fires that wake exactly as it fires
 any other -- run fence, per-universe lease, run admission, and the owner's live
 authority re-checked at run time. Nothing here runs a branch itself.
 
-Two events are emitted, each from the one place its state changes:
+Three events are emitted, each from the one place its state changes:
 
 * ``run_completed`` -- ``runs.update_run_status``, on a run's transition into a
   terminal status. Payload: ``run_id``, ``branch_def_id``, ``outcome``.
@@ -16,6 +16,8 @@ Two events are emitted, each from the one place its state changes:
   ``item_id`` (empty unless one item was resolved). An item that closes its
   request emits ONCE, carrying both the item and the closed status, so a single
   act never wakes an unfiltered subscription twice.
+* ``app_event`` -- connector ``run_graph operation="emit_event"``, which a
+  custom UI's bridge calls as its viewer. Payload: ``name``, ``data``.
 
 The cross-user floor: an event is stamped with the principal that caused it,
 and wakes only subscriptions that principal owns, in that principal's own home
@@ -43,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.automations import (
+    EVENT_APP,
     EVENT_FILTER_KEYS,
     EVENT_PENDING_REQUEST_ANSWERED,
     EVENT_RUN_COMPLETED,
@@ -316,4 +319,60 @@ def emit_pending_request_answered(
     )
 
 
-__all__ = ["emit", "emit_pending_request_answered", "emit_run_completed"]
+#: An app event's name, and the canonical-JSON bound on its data.
+APP_EVENT_NAME_RE = r"[a-z0-9][a-z0-9_.-]{0,63}"
+MAX_APP_EVENT_DATA_BYTES = 8192
+
+
+def validated_app_event(name: Any, data: Any) -> tuple[str, dict[str, Any]]:
+    """``(name, data)`` or ValueError naming what is wrong. Pure; stores nothing."""
+    import json
+    import re
+
+    text = name if isinstance(name, str) else ""
+    if not re.fullmatch(APP_EVENT_NAME_RE, text):
+        raise ValueError(
+            "name must be 1-64 lowercase letters, digits, '_', '.' or '-', "
+            "starting with a letter or digit"
+        )
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError("data must be a JSON object")
+    size = len(json.dumps(data, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False).encode("utf-8"))
+    if size > MAX_APP_EVENT_DATA_BYTES:
+        raise ValueError(f"data is {size} bytes; the limit is {MAX_APP_EVENT_DATA_BYTES}")
+    return text, dict(data)
+
+
+def emit_app_event(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    principal_id: str,
+    name: str,
+    data: dict[str, Any],
+) -> list[str]:
+    """The owner's own session emitted ``name``: wake their subscriptions to it.
+
+    Every cross-user rule is ``emit``'s: the principal's own subscriptions, in
+    their own current home, and only when ``universe_id`` is that home.
+    """
+    return emit(
+        base_path,
+        event_type=EVENT_APP,
+        universe_id=universe_id,
+        principal_id=principal_id,
+        payload={"name": name, "data": data},
+    )
+
+
+__all__ = [
+    "MAX_APP_EVENT_DATA_BYTES",
+    "emit",
+    "emit_app_event",
+    "emit_pending_request_answered",
+    "emit_run_completed",
+    "validated_app_event",
+]
