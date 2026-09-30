@@ -147,6 +147,11 @@ _live = 0
 _peak_live = 0
 _admitted = 0
 _refused = 0
+#: Callers currently QUEUED for a slot. Declared here, not only assigned inside
+#: `reset_for_tests`: a module global that only a test helper creates reads fine
+#: under pytest and raises `NameError` from `admission_snapshot` in production,
+#: which is how a status surface breaks with a green suite.
+_waiting = 0
 
 
 #: Slots held back for NESTED work. A served turn holds a slot for the whole life of its

@@ -597,3 +597,20 @@ class TestTheBoundBindsBehaviourally:
         assert _is_nested(_Ctx()) is True
         assert _is_nested(_Plain()) is False
         assert _is_nested(None) is False
+
+
+def test_the_snapshot_works_on_a_fresh_import_with_no_test_reset():
+    """Every counter must exist at import, not only after `reset_for_tests`.
+
+    `_waiting` was assigned only inside `reset_for_tests`, which every test in
+    this file calls -- so the suite was green while `admission_snapshot()` raised
+    `NameError` in production, where nothing calls a test helper. Reloading the
+    module is the only way to observe the real import-time state.
+    """
+    import importlib
+
+    fresh = importlib.reload(pa)
+    snap = fresh.admission_snapshot()
+    for key in ("limit", "admitted", "refused_no_wait", "live", "waiting", "peak_concurrent"):
+        assert key in snap, key
+    assert snap["waiting"] == 0
