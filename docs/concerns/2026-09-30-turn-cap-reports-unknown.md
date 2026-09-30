@@ -120,19 +120,22 @@ above is independent of both and stands.
    row with no timeout at all.
 2. **"The client does not time a long turn out."** It does: the body reader is
    bounded per chunk — `const chunk = await this._bound(reader.read(),
-   ...silence())` (`tinyassets/onboarding/app.html:1120`). It bounds inter-chunk
-   SILENCE rather than total duration, which is exactly the bound that fires if
-   the origin's `: ping` comments stop arriving.
+   ...silence())` (`tinyassets/onboarding/app.html:1120`), at `SILENCE_MS:
+   120000` (`app.html:1003`). It bounds inter-chunk SILENCE, not total duration.
 
-The app's sentence — "Delivery could not be confirmed: the reply was cut off in
-transit" — is still the CLIENT's own transport verdict (`stream_truncated`,
-`app.html:1080-1085`) and is still accurate about what the browser saw: no
-terminal frame arrived for that request. Which hop dropped it, and whether the
-pings were arriving, remains the open question already filed as
-`docs/concerns/2026-08-28-converse-sse-stream-has-no-keepalive.md` — with the
-silence timer above as a newly-identified suspect for that file, not this one.
-Fixing the class below changes what the owner is told when the server's answer
-DOES arrive; it does not make a cut stream arrive.
+   That bound is nonetheless **excluded for this turn by its error class**: it
+   raises `stream_silent` ("your universe stopped sending anything back",
+   `app.html:1101-1102`), and what the app showed was `stream_truncated` ("the
+   reply was cut off in transit", `app.html:1084-1085` / `1320-1321`) — the
+   class raised only where the bytes STOPPED before the answer. Recorded as a
+   discriminator in
+   `docs/concerns/2026-08-28-converse-sse-stream-has-no-keepalive.md`, which is
+   where the transport question belongs.
+
+So the app's sentence is the CLIENT's own transport verdict and is accurate
+about what the browser saw: the stream ended without a terminal frame for that
+request. Fixing the class below changes what the owner is told when the server's
+answer DOES arrive; it does not make a cut stream arrive.
 
 **What would settle round 21:** the container's `StartedAt` either side of
 2026-09-30T01:07Z (reconciler vs in-band) and the turn's `created_at` to
