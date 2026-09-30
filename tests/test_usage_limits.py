@@ -1,10 +1,10 @@
-"""Structural caps became usage limits (plan item 6).
+"""Structural caps are gone, and nothing replaced them with a meter.
 
-The invoke_branch depth cap, the automation ceiling, the cadence floors and
-the per-owner schedule counts are gone. What bounds a universe's work now is
-its usage: every run -- a run_graph, an automation, a triggered run, a
-sub-branch child -- is recorded in the effect settlement ledger. These tests drive the real ledger, the real compiled
-graph and the real triggered-run path.
+The invoke_branch depth cap, the automation ceiling, the cadence floors and the
+per-owner schedule counts are gone. What bounds an account's work is its seats
+(`universe_seats`); every run -- a run_graph, an automation, a triggered run, a
+sub-branch child -- is only recorded in the effect settlement ledger. These tests
+drive the real ledger, the real compiled graph and the real triggered-run path.
 """
 
 from __future__ import annotations
@@ -31,9 +31,6 @@ OWNER = "acct_usage_owner"
 @pytest.fixture(autouse=True)
 def _pin_data_dir(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-
-
-# -- The daily window -------------------------------------------------------------
 
 
 # -- invoke_branch: no depth cap, child settlement ------------------------

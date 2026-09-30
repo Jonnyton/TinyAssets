@@ -246,11 +246,30 @@ def _engine_mcp_enabled() -> bool:
     )
 
 
-#: Founder rule 2026-08-29 - see _sandboxed_config. The GRANTED founder turn's
-#: absolute cap is a runaway backstop until a user Stop exists, not a deadline.
-#: 3600s: a five-step GitHub job at ~100s per round-trip fits with room; a turn
-#: still emitting protocol events at an hour is the runaway case.
-_SERVED_ABSOLUTE_CAP_S = 3600.0
+#: A GRANTED founder turn has NO wall-clock cap. ``_SERVED_ABSOLUTE_CAP_S =
+#: 3600.0`` killed a turn at the hour mark; founder, 2026-09-30: a turn runs
+#: until it is FINISHED, and 2026-08-29: "a turn should continue till finished
+#: unless interrupted by the user or should stop for some other reason."
+#:
+#: What still stops a turn, and why none of it is a clock on the work:
+#:   * the 30s IDLE watchdog -- a provider that has emitted nothing is hung, which
+#:     is liveness, not duration;
+#:   * a user Stop;
+#:   * run-owner proof, which terminalizes a run whose owner is gone.
+#: An hour of protocol events is a long job, not a runaway, and there is no
+#: number that tells the two apart.
+#:
+#: A universe may still SET one for itself (``absolute_cap_s`` in its config) --
+#: that is its own policy, not the platform's, and it defaults to none.
+
+#: The number to pass where a caller STRUCTURALLY needs one and the universe set
+#: no cap: a node executor that takes `timeout` as a number, for instance.
+#:
+#: 30 days. Unreachable by any turn, so it bounds nothing in practice, while
+#: staying well inside `threading.TIMEOUT_MAX` (4,294,967s on Windows) -- ten
+#: years raised `OverflowError: timeout value is too large` from the executor
+#: wait, which is a cap of zero seconds rather than none.
+UNBOUNDED_TURN_SECONDS = 30 * 24 * 3600.0
 
 
 def _served_knob(config, name: str, default):
@@ -266,7 +285,7 @@ def _served_knob(config, name: str, default):
     return value if value > 0 else default
 
 
-def served_absolute_cap_s(config) -> float:
+def served_absolute_cap_s(config) -> float | None:
     """How long a GRANTED founder turn may legitimately run in this universe.
 
     One definition, because a surface that reports activity has to agree with the
@@ -277,7 +296,7 @@ def served_absolute_cap_s(config) -> float:
     granted turn runs until it is finished") with a positive per-universe
     override, and this returns that same number.
     """
-    return _served_knob(config, "absolute_cap_s", _SERVED_ABSOLUTE_CAP_S)
+    return _served_knob(config, "absolute_cap_s", None)
 
 
 def _sandboxed_config(
@@ -320,18 +339,22 @@ def _sandboxed_config(
     # streamed turn is the 30s idle watchdog (a hung provider) plus an absolute
     # cap as a runaway backstop.
     #
-    # The generous cap applies ONLY to the granted founder turn. The live
-    # failure was the 300s communicate() timeout, not the 600s stream default
-    # (Codex round 2 corrected an earlier claim here) - but 600s is borderline
-    # for the five ~100s round-trips that job needed, and the founder's rule is
-    # "finish", so the granted turn gets 3600s until a user Stop exists. The
-    # synchronous learning extractor and non-founder turns keep the library
-    # default: the extractor runs BEFORE the reply is returned, so a generous
-    # cap there could withhold an already-generated reply (Codex round 2, P1).
-    absolute_cap_s = (
-        served_absolute_cap_s(ctx.config)
-        if granted else None
-    )
+    # The granted founder turn has NO absolute cap: it runs until it is finished
+    # (founder, 2026-09-30). The hour-long one that used to sit here was the last
+    # wall clock on a turn's WORK, as opposed to on one stalled read. A universe
+    # that wants a cap for itself sets `absolute_cap_s` in its own config.
+    #
+    # The synchronous learning extractor and non-founder turns keep the library
+    # default: the extractor runs BEFORE the reply is returned, so an uncapped
+    # one there could withhold an already-generated reply (Codex round 2, P1).
+    # `StreamTimeoutProfile.absolute_cap_s` is a float, and None there means the
+    # library default (600s) rather than "no cap" -- so "no cap" is spelled as an
+    # unreachable number, not as None. A NON-granted turn keeps None on purpose:
+    # the extractor runs before the reply is returned and must stay bounded.
+    if granted:
+        absolute_cap_s = served_absolute_cap_s(ctx.config) or UNBOUNDED_TURN_SECONDS
+    else:
+        absolute_cap_s = None
     idle_timeout_s = _served_knob(ctx.config, "idle_timeout_s", None)
     engine_mcp = bool(
         granted and founder_principal and universe_id and _engine_mcp_enabled()

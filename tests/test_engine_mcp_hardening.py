@@ -8,7 +8,6 @@ per-request HTTP bearer auth on the loopback engine server.
 from __future__ import annotations
 
 import importlib
-import sqlite3
 
 # ── per-request HTTP bearer auth (Codex #6) ──────────────────────────────────
 

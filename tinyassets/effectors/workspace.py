@@ -741,15 +741,19 @@ def _staging_root(base_path: Path, run_id: str, node_id: str) -> Path:
     A per-operation nonce keeps two operations of the SAME node (a checkout
     then a push, or a retry) from sharing a directory a previous one may still
     be tearing down.
+
+    Created under this process's liveness token (`workspace_staging`), so the
+    sweep can prove whether its owner is still running. EVERY caller removes it
+    with `workspace_staging.remove` in a ``finally``: it holds a credentialed
+    clone, and a failed checkout used to leave it behind forever.
     """
-    staging = (
-        base_path
-        / ".workspace-staging"
-        / _staging_id(run_id)
-        / f"{_staging_id(node_id)}-{secrets.token_hex(4)}"
+    from tinyassets import workspace_staging
+
+    return workspace_staging.create(
+        base_path,
+        _staging_id(run_id),
+        f"{_staging_id(node_id)}-{secrets.token_hex(4)}",
     )
-    staging.mkdir(parents=True, exist_ok=True)
-    return staging
 
 
 def _pool_db(base_path: Path) -> Path:
@@ -920,6 +924,7 @@ def _checkout(
     # and nobody wipes is a leak the pool cannot see.
     owned: list[Any] = []
     published = False
+    staging: Path | None = None
     try:
         staging = _staging_root(base_path, run_id, node_id)
         answer = execute(
@@ -1034,6 +1039,13 @@ def _checkout(
         published = True
         owned.clear()
     finally:
+        # Staging goes on EVERY exit -- refusal, exception, cancellation --
+        # not only on the success path that removes it before publishing. It
+        # holds the credentialed clone; this is what leaked 2.8 GiB.
+        if staging is not None:
+            from tinyassets import workspace_staging
+
+            workspace_staging.remove(staging)
         if not published:
             _close_handles(*owned)
             _owe_wipe(base_path, lease, run_id=run_id, universe_id=universe_id)
@@ -1331,95 +1343,102 @@ def _push(
     remote_ref = f"refs/heads/tiny/{_universe_short(universe_id)}/{slug}"
 
     staging = _staging_root(base_path, run_id, node_id)
-    destination = staging / "in.bundle"
-    relative = f"repo/{_JAIL_EXPORT_DIR}/{commit_sha}.bundle"
+    try:
+        destination = staging / "in.bundle"
+        relative = f"repo/{_JAIL_EXPORT_DIR}/{commit_sha}.bundle"
 
-    # The hourly ledger sees the push BEFORE any bytes move: a push holds no
-    # lease, so without this it charged nothing at all (Codex round 3, P1 #4).
-    operation_id = _operation_id(run_id, node_id, "push")
-    _reserve_operation(
-        base_path,
-        universe_id=universe_id,
-        run_id=run_id,
-        operation_id=operation_id,
-        max_bytes=_MAX_BUNDLE_BYTES,
-        refusal="workspace_push_refused",
-    )
+        # The hourly ledger sees the push BEFORE any bytes move: a push holds no
+        # lease, so without this it charged nothing at all (Codex round 3, P1 #4).
+        operation_id = _operation_id(run_id, node_id, "push")
+        _reserve_operation(
+            base_path,
+            universe_id=universe_id,
+            run_id=run_id,
+            operation_id=operation_id,
+            max_bytes=_MAX_BUNDLE_BYTES,
+            refusal="workspace_push_refused",
+        )
 
-    # Hold the capability across the copy: a discard racing this must not be
-    # able to close the descriptor mid-read.
-    with _acquired(chain, mount.node_id) as held:
-        try:
-            copied = _fs().copy_regular_file_beneath(
-                held.lease_fd, relative, destination, max_bytes=_MAX_BUNDLE_BYTES
-            )
-        except NotImplementedError as exc:
-            # Same permanent host property, reported against push's own class.
+        # Hold the capability across the copy: a discard racing this must not be
+        # able to close the descriptor mid-read.
+        with _acquired(chain, mount.node_id) as held:
+            try:
+                copied = _fs().copy_regular_file_beneath(
+                    held.lease_fd, relative, destination, max_bytes=_MAX_BUNDLE_BYTES
+                )
+            except NotImplementedError as exc:
+                # Same permanent host property, reported against push's own class.
+                raise _Refused(
+                    "workspace_push_refused",
+                    f"the workspace sink needs POSIX openat semantics; this host is "
+                    f"{os.name!r} ({exc})",
+                ) from None
+            except Exception as exc:
+                raise _Refused(
+                    "workspace_push_refused", f"the export bundle could not be read: {exc}"
+                )
+
+        intent = record_push_intent(
+            base_path,
+            run_id=str(run_id),
+            node_id=node_id,
+            connection_id=mount.connection_id,
+            repo=repo,
+            remote_ref=remote_ref,
+            sha=commit_sha,
+            host=host,
+            grant_id=mount.grant_id,
+            universe_id=universe_id,
+            expected_old_sha=_str_field(packet, "expected_old_sha") or None,
+        )
+        answer = execute(
+            {
+                "op": "push",
+                "universe_dir": str(base_path),
+                "credential_ref": str(getattr(resource, "credential_ref", "")),
+                "host": host,
+                "owner_repo": repo,
+                "remote_ref": remote_ref,
+                "commit_sha": commit_sha,
+                "bundle_path": str(destination),
+                "staging_dir": str(staging),
+            }
+        )
+        # A TIMEOUT is not a failure: the send may have landed. It stays claimable
+        # as `unknown` and the startup reconciler asks the remote (P1 #5).
+        if answer.get("ok"):
+            state = "done"
+        elif str(answer.get("stderr_class") or "") == "timeout":
+            state = "unknown"
+        else:
+            state = "failed"
+        settle_push_intent(
+            base_path, intent, state, observed_sha=str(answer.get("observed_sha") or "") or None
+        )
+        _reconcile_operation(base_path, operation_id, int(answer.get("bytes") or copied or 0))
+        if not answer.get("ok"):
             raise _Refused(
                 "workspace_push_refused",
-                f"the workspace sink needs POSIX openat semantics; this host is "
-                f"{os.name!r} ({exc})",
-            ) from None
-        except Exception as exc:
-            raise _Refused(
-                "workspace_push_refused", f"the export bundle could not be read: {exc}"
+                str(answer.get("error") or "push refused"),
+                stderr_class=str(answer.get("stderr_class") or ""),
+                observed_sha=str(answer.get("observed_sha") or ""),
+                remote_ref=remote_ref,
+                intent_state=state,
             )
-
-    intent = record_push_intent(
-        base_path,
-        run_id=str(run_id),
-        node_id=node_id,
-        connection_id=mount.connection_id,
-        repo=repo,
-        remote_ref=remote_ref,
-        sha=commit_sha,
-        host=host,
-        grant_id=mount.grant_id,
-        universe_id=universe_id,
-        expected_old_sha=_str_field(packet, "expected_old_sha") or None,
-    )
-    answer = execute(
-        {
+        return {
             "op": "push",
-            "universe_dir": str(base_path),
-            "credential_ref": str(getattr(resource, "credential_ref", "")),
-            "host": host,
-            "owner_repo": repo,
+            "repo": repo,
             "remote_ref": remote_ref,
-            "commit_sha": commit_sha,
-            "bundle_path": str(destination),
-            "staging_dir": str(staging),
+            "sha": commit_sha,
+            "bytes": int(answer.get("bytes") or copied or 0),
+            "reconciled": bool(answer.get("reconciled")),
         }
-    )
-    # A TIMEOUT is not a failure: the send may have landed. It stays claimable
-    # as `unknown` and the startup reconciler asks the remote (P1 #5).
-    if answer.get("ok"):
-        state = "done"
-    elif str(answer.get("stderr_class") or "") == "timeout":
-        state = "unknown"
-    else:
-        state = "failed"
-    settle_push_intent(
-        base_path, intent, state, observed_sha=str(answer.get("observed_sha") or "") or None
-    )
-    _reconcile_operation(base_path, operation_id, int(answer.get("bytes") or copied or 0))
-    if not answer.get("ok"):
-        raise _Refused(
-            "workspace_push_refused",
-            str(answer.get("error") or "push refused"),
-            stderr_class=str(answer.get("stderr_class") or ""),
-            observed_sha=str(answer.get("observed_sha") or ""),
-            remote_ref=remote_ref,
-            intent_state=state,
-        )
-    return {
-        "op": "push",
-        "repo": repo,
-        "remote_ref": remote_ref,
-        "sha": commit_sha,
-        "bytes": int(answer.get("bytes") or copied or 0),
-        "reconciled": bool(answer.get("reconciled")),
-    }
+    finally:
+        # Push staging held a copy of the bundle and the git homes, and was
+        # never removed on ANY path before -- success included.
+        from tinyassets import workspace_staging
+
+        workspace_staging.remove(staging)
 
 
 def _discard(

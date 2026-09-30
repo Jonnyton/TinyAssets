@@ -336,7 +336,7 @@ def _run_rail(rows, extra):
     source = "\n".join(_js_function(html, name) for name in (
         "isSetupRequest", "isOptionalRequest", "forgetFinishedSetup",
         "foldedModelAccess", "renderRail", "connectBody", "railFieldLink",
-        "railFieldControl", "railBody", "frameTitle", "answerLine",
+        "railFieldControl", "railBody", "updateRailItems", "frameTitle", "answerLine",
         "clearTypedValues", "clearRailCards"))
     shapes = html[html.index("  const ConnectShapes={"):
                   html.index("  // A declared model list needs")]

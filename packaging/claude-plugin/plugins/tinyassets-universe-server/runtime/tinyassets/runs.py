@@ -4278,12 +4278,19 @@ def _initialize_prepared_run(
     )
 
 
-#: Default LangGraph recursion-limit ceiling, raised from LangGraph's
-#: stock 25 → 100 per the Tier-1 investigation Step 6 (BUG-019/021/022).
-#: Stock 25 is too tight for branches with 3+ gate iterations; BUG-020
-#: runs tripped the limit. Callers can override via the explicit
-#: `recursion_limit_override` arg on execute_branch / execute_branch_async.
-DEFAULT_RECURSION_LIMIT = 100
+#: LangGraph needs a recursion ceiling, so there is a number here; it is not a
+#: limit. 100 (raised from LangGraph's stock 25 during the Tier-1 investigation,
+#: BUG-019/021/022) refused a branch whose author wrote a longer loop, with
+#: "Branch loop may be too deep" -- a structural cap on what someone may build,
+#: and an account has exactly two limits, cloud bytes and concurrent agent seats
+#: (founder, 2026-09-30).
+#:
+#: One million is past any graph a person writes and far below Python's own
+#: limits on the structures LangGraph builds per step. What actually bounds an
+#: endless loop is the run's SEAT: it holds one for as long as it runs, and its
+#: owner can stop it. An author may still pass any positive
+#: `recursion_limit_override` -- including a smaller one, as their own guard.
+DEFAULT_RECURSION_LIMIT = 1_000_000
 
 
 def _family_status_writer(member):
@@ -5765,6 +5772,7 @@ def _execute_branch_core(
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
     _workspace_parent=None,
+    _provider_parent=None,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -5885,7 +5893,13 @@ def _execute_branch_core(
     # authenticated actor): a bare submit gives it the pool thread's empty
     # context, and a code node's RPC then resolves the daemon's env identity
     # (Codex round 3, P0).
-    future = executor.submit(contextvars.copy_context().run, _worker)
+    from tinyassets.provider_admission import independent_provider_work
+
+    # run_graph returns queued: it has not suspended its provider. Only a
+    # blocking compiler invoke may explicitly hand a slot to this worker.
+    with independent_provider_work(parent_slot=_provider_parent):
+        worker_context = contextvars.copy_context()
+    future = executor.submit(worker_context.run, _worker)
     _track_future(run_id, future)
 
     return RunOutcome(
@@ -6095,6 +6109,7 @@ def execute_branch_version_async(
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
     _workspace_parent=None,
+    _provider_parent=None,
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
 
@@ -6140,6 +6155,7 @@ def execute_branch_version_async(
         branch_version_id=branch_version_id,
         owner_user_id=owner_user_id,
         _workspace_parent=_workspace_parent,
+        _provider_parent=_provider_parent,
         _enqueue_universe_id=_enqueue_universe_id,
         _invocation_depth=_invocation_depth,
     )
@@ -6357,7 +6373,11 @@ def resume_run(
         with _managed_execution_scope(base_path, run_id):
             return _resume_worker()
 
-    future = executor.submit(contextvars.copy_context().run, _owned_resume_worker)
+    from tinyassets.provider_admission import independent_provider_work
+
+    with independent_provider_work():
+        worker_context = contextvars.copy_context()
+    future = executor.submit(worker_context.run, _owned_resume_worker)
     _track_future(run_id, future)
 
     return RunOutcome(

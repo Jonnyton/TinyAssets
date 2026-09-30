@@ -265,11 +265,12 @@ class TestAccountDeletion:
     def test_a_deleted_owner_does_not_block_the_survivors_own_deletion(self, base):
         """A owned B's home; A deleted their account. B must still be able to
         delete theirs -- the redacted owner names nobody who could resolve it."""
-        from tinyassets.account_deletion import deletion_blockers
+        from tinyassets.account_deletion import deletion_blockers, write_tombstone
 
         grant_universe_ownership(base, universe_id="u-home-a", owner_id=A)
         grant_universe_ownership(base, universe_id="u-home-b", owner_id=A)
         set_founder_home(base, founder_sub=B, universe_id="u-home-b")
+        write_tombstone(base, A)  # the real flow writes it before any row work
         self._delete_rows(base, A, "u-home-a")
 
         conn = sqlite3.connect(ds.db_path(base))
@@ -297,6 +298,33 @@ class TestAccountDeletion:
             conn.close()
 
         assert any("universe_owner" in b for b in blockers), blockers
+
+    @pytest.mark.parametrize("live", ["deleted:live-b", "deleted:0123456789abcdef"])
+    def test_a_live_principal_named_like_a_redaction_still_blocks(self, base, live):
+        """Local auth accepts any subject, including one spelled like a
+        redaction (gpt-6-astra round 3). Only a TOMBSTONED fingerprint is
+        exempt; a live owner by any name blocks."""
+        from tinyassets.account_deletion import deletion_blockers
+
+        grant_universe_ownership(base, universe_id="u-home-b", owner_id=live)
+        set_founder_home(base, founder_sub=B, universe_id="u-home-b")
+
+        conn = sqlite3.connect(ds.db_path(base))
+        conn.row_factory = sqlite3.Row
+        try:
+            blockers = deletion_blockers(conn, principal=B, home="u-home-b")
+        finally:
+            conn.close()
+
+        assert any("universe_owner" in b for b in blockers), blockers
+
+    def test_the_exemption_is_only_for_the_owner_table(self, base):
+        """Another table's `deleted:`-looking created_by is still foreign."""
+        from tinyassets.account_deletion import _redacted_owner_exemption
+
+        tables = {"universe_owner", "deleted_principals", "consumer_bindings"}
+        assert _redacted_owner_exemption("consumer_bindings", "created_by", tables) == ""
+        assert _redacted_owner_exemption("universe_owner", "owner_id", tables)
 
 
 def test_an_interrupted_migration_leaves_nothing_and_retries(base, monkeypatch):

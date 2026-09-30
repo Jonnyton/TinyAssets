@@ -457,12 +457,23 @@ def test_rpc_runs_the_invoker_inside_the_requests_context(monkeypatch):
     assert chain.rpc_calls == 1
 
 
-def test_rpc_cap_is_per_run_not_per_node():
+def test_rpc_calls_are_counted_and_never_capped():
+    """``RUN_RPC_CALLS_MAX = 5000`` is gone; the count is evidence, not a limit.
+
+    It failed a run partway through with "too many invoke_mcp_action calls in
+    this run". An account has exactly two limits -- cloud bytes and concurrent
+    agent seats (founder, 2026-09-30) -- and a run is bounded by holding its seat
+    for as long as it takes, not by a count of what it did with it.
+    """
+    import inspect
+
+    assert not hasattr(effectors, "RUN_RPC_CALLS_MAX")
+    assert "cap" not in inspect.signature(EffectChain.rpc_permit).parameters
+
     chain = EffectChain(run_id="r9")
-    for _ in range(effectors.RUN_RPC_CALLS_MAX):
+    for _ in range(6000):  # past the old 5000
         chain.rpc_permit()
-    with pytest.raises(RuntimeError, match="too many"):
-        chain.rpc_permit()
+    assert chain.rpc_calls == 6000, "the count is kept, it just refuses nothing"
 
 
 def test_a_bad_reducer_delta_fails_before_any_effect_fires(monkeypatch):
@@ -772,16 +783,17 @@ def test_resume_seeds_at_most_once_and_the_rpc_cap_from_the_interrupted_segment(
     chain.seed_from_output({
         "external_write_results": {"fetch": {SINK: {"delivered": True}}},
         "effects_fired_before": ["older"],
-        "rpc_calls": effectors.RUN_RPC_CALLS_MAX - 1,
+        "rpc_calls": 4999,
         "invocation_depth": 2,
     })
     assert chain.already_fired == {"fetch", "older"} and chain.invocation_depth == 2
     with pytest.raises(EffectFailedError, match="already fired"):
         dispatch_node_effects(chain, _effect_node("fetch"), {"fetch_packet": _packet()})
     assert adapter.calls == []
-    chain.rpc_permit()                      # the last permitted call of the run
-    with pytest.raises(RuntimeError, match="too many"):
-        chain.rpc_permit()
+    # A resumed count carries forward and keeps counting; nothing refuses it.
+    chain.rpc_permit()
+    chain.rpc_permit()
+    assert chain.rpc_calls == 5001
 
 
 def test_a_same_thread_settle_inside_a_dispatch_defers_to_its_end(monkeypatch):

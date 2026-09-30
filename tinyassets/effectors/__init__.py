@@ -308,15 +308,19 @@ class EffectFailedError(Exception):
 
 _READ_VERBS = frozenset({"GET", "HEAD"})
 
-#: Per-root-run usage budgets (defaults; tier-raisable, never a shape rule).
-RUN_DISPATCHES_MAX = 5000
-#: invoke_mcp_action round-trips per run, across every node and every resume.
-#: Sized with node_sandbox.MAX_RPC_CALLS (per node): a per-node allowance the
-#: run-wide counter refused at call 33 was two definitions of one cap (Codex
-#: on the 2026-09-02 limits change).
-RUN_RPC_CALLS_MAX = 5000
-RUN_BYTES_MAX = 256 * 1024 * 1024
-#: Charged when a delivered call did not report its sizes: the per-call caps.
+#: There are NO per-run count budgets. ``RUN_DISPATCHES_MAX`` (5000 effect
+#: dispatches), ``RUN_RPC_CALLS_MAX`` (5000 ``invoke_mcp_action`` round-trips) and
+#: ``RUN_BYTES_MAX`` (256 MiB outbound) all refused a run partway through, telling
+#: the author to "split the work across runs" -- a structural cap on what one run
+#: may be. An account has exactly two limits, cloud bytes and concurrent agent
+#: seats (founder, 2026-09-30), and a run is bounded by holding a seat for as long
+#: as it takes, not by a count of what it did with it.
+#:
+#: The counters themselves stay: ``dispatches``, ``rpc_calls`` and ``bytes_out``
+#: on the chain are what a receipt and a status read report, and an observation is
+#: not a limit. Per-CALL payload bounds stay too -- those validate one request.
+#:
+#: Charged when a delivered call did not report its sizes: the per-call bounds.
 _UNKNOWN_REQUEST_BYTES = 8 * 1024 * 1024
 _UNKNOWN_RESPONSE_BYTES = 5 * 1024 * 1024
 
@@ -331,26 +335,6 @@ def _bytes_moved(per_node: dict) -> int:
         total += int(req) if isinstance(req, int) else _UNKNOWN_REQUEST_BYTES
         total += int(resp) if isinstance(resp, int) else _UNKNOWN_RESPONSE_BYTES
     return total
-
-
-def _budget_refusal(chain: "EffectChain", key: str, sink: str) -> "EffectFailedError | None":
-    """The budget an upcoming dispatch would break, as the node's failure, or
-    None. Per-run first (cheap, exact), then the universe's rolling hour."""
-    if chain.dispatches >= RUN_DISPATCHES_MAX:
-        return EffectFailedError(
-            key, sink,
-            f"run budget exhausted: {chain.dispatches} effect dispatches in this run "
-            f"(budget {RUN_DISPATCHES_MAX}); split the work across runs",
-            "effect_budget_exhausted",
-        )
-    if chain.bytes_out >= RUN_BYTES_MAX:
-        return EffectFailedError(
-            key, sink,
-            f"run budget exhausted: {chain.bytes_out} outbound bytes in this run "
-            f"(budget {RUN_BYTES_MAX}); fetch less or split the work across runs",
-            "effect_budget_exhausted",
-        )
-    return None
 
 
 @dataclass
@@ -651,16 +635,15 @@ class EffectChain:
         except (TypeError, ValueError):
             pass
 
-    def rpc_permit(self, cap: int | None = None) -> None:
-        """Count one ``invoke_mcp_action`` round-trip against the run's cap."""
-        if cap is None:
-            cap = RUN_RPC_CALLS_MAX
+    def rpc_permit(self) -> None:
+        """Count one ``invoke_mcp_action`` round-trip. Counts; never refuses.
+
+        There is no cap to permit against any more, so the name is now about the
+        counting. A run is bounded by its seat, and each individual call is still
+        bounded by its own payload limits.
+        """
         with self.lock:
             self.rpc_calls += 1
-            if self.rpc_calls > cap:
-                raise RuntimeError(
-                    f"too many invoke_mcp_action calls in this run (cap {cap})"
-                )
 
 
 _ACTIVE_CHAINS: dict[str, EffectChain] = {}
@@ -739,9 +722,6 @@ def dispatch_node_effects(
                 "run, so route the loop around the effect node or split the branch",
                 "effect_already_fired",
             )
-        refusal = _budget_refusal(chain, key, effects[0])
-        if refusal is not None:
-            raise refusal
         chain.inflight.add(key)
         chain.active += 1
         chain.dispatching.add(me)

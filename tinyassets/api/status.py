@@ -48,26 +48,39 @@ _STATUS_SCHEMA_VERSION = 2
 _WORKING_TURN_REAP_MARGIN_S = 30.0
 
 
+#: How long a turn row with no fresh progress is presumed dead FOR THE
+#: INDICATOR. A display freshness rule, not a turn cap: nothing here stops a
+#: turn, and a turn that is still emitting progress keeps refreshing its row.
+#:
+#: It used to be derived from the served turn cap plus a margin. There is no
+#: turn cap any more -- a turn runs until it is finished (founder, 2026-09-30) --
+#: so deriving a display bound from one would make the indicator answer "not
+#: working" about a turn that IS working, which is the exact bug #4020 fixed in
+#: the other direction. Six hours is far past any turn observed, and a universe
+#: that legitimately runs longer shows a stale indicator rather than having its
+#: work stopped.
+_WORKING_TURN_STALE_AFTER_S = 6 * 3600.0
+
+
 def _working_turn_max_age_s(udir: Path) -> float:
     """How old a still-progressing turn row may be and still mean "working now".
 
-    Resolved from the cap the COORDINATOR will actually enforce for this
-    universe, not from the library default. The first version of this used
-    ``DEFAULT_ABSOLUTE_CAP_S`` (600s) and Codex refuted it on #4020: the granted
-    founder turn -- the only kind the app produces -- gets 3600s with a
-    per-universe override (``universe_intelligence.served_absolute_cap_s``), so a
-    630s bound called a healthy turn dead after ten and a half minutes and hid
-    the indicator for exactly the long turns it was added for.
+    The universe's OWN ``absolute_cap_s``, if it set one, plus a reaping margin:
+    a universe that caps its own turns knows when its row is dead. Otherwise the
+    display freshness rule above.
 
-    Erring generous is the right direction here. A NON-granted turn keeps the
-    library default, so its wedged row stays reported as activity for longer than
-    strictly necessary; the cost of that is a stale indicator on a dead row,
-    against the cost of hiding live work, which is the bug being fixed.
+    Erring generous is the right direction. A wedged row stays reported as
+    activity for longer than strictly necessary; the cost of that is a stale
+    indicator on a dead row, against the cost of hiding live work, which is the
+    bug this exists to fix.
     """
     from tinyassets.config import load_universe_config
     from tinyassets.universe_intelligence import served_absolute_cap_s
 
-    return served_absolute_cap_s(load_universe_config(udir)) + _WORKING_TURN_REAP_MARGIN_S
+    own_cap = served_absolute_cap_s(load_universe_config(udir))
+    if own_cap is None:
+        return _WORKING_TURN_STALE_AFTER_S
+    return own_cap + _WORKING_TURN_REAP_MARGIN_S
 
 
 def _universe_active_turn(udir: Path) -> dict[str, Any] | None:

@@ -38,30 +38,35 @@ def test_the_bound_is_the_cap_the_coordinator_will_actually_enforce(tmp_path):
     dead after ten and a half minutes, hiding the indicator for exactly the long
     turns it was added for.
     """
-    from tinyassets.api.status import _WORKING_TURN_REAP_MARGIN_S, _working_turn_max_age_s
-    from tinyassets.providers.base import DEFAULT_ABSOLUTE_CAP_S
-    from tinyassets.universe_intelligence import _SERVED_ABSOLUTE_CAP_S, served_absolute_cap_s
+    from tinyassets.api.status import (
+        _WORKING_TURN_STALE_AFTER_S,
+        _working_turn_max_age_s,
+    )
+    from tinyassets.universe_intelligence import served_absolute_cap_s
 
-    assert _SERVED_ABSOLUTE_CAP_S > DEFAULT_ABSOLUTE_CAP_S, (
-        "if these ever converge this test is no longer proving anything")
+    # A turn has NO platform cap now (founder, 2026-09-30: it runs until it is
+    # finished), so the display bound cannot be derived from one -- deriving it
+    # would answer "not working" about a turn that IS working, which is the same
+    # bug #4020 fixed in the other direction. It is a DISPLAY freshness rule.
     plain = tmp_path / "plain"
     plain.mkdir()
-    assert _working_turn_max_age_s(plain) == _SERVED_ABSOLUTE_CAP_S + _WORKING_TURN_REAP_MARGIN_S
-    assert _working_turn_max_age_s(plain) == _CAP
+    assert served_absolute_cap_s(None) is None
+    assert _working_turn_max_age_s(plain) == _WORKING_TURN_STALE_AFTER_S
+    assert _WORKING_TURN_STALE_AFTER_S >= 6 * 3600, (
+        "far past any observed turn: a stale indicator beats a hidden one"
+    )
 
-    # The SAME resolver the coordinator uses, so if a raised per-universe cap ever
-    # becomes reachable it raises this bound with it rather than having that
-    # universe's longer turns called dead. (`UniverseConfig` carries no
-    # `absolute_cap_s` field today, so the knob is inert for a config.yaml
-    # universe -- which is exactly why the bound must not be a literal either.)
+    # A universe that caps ITS OWN turns knows when its row is dead, so its own
+    # number still drives the bound -- the same resolver the coordinator uses.
     class _Raised:
         absolute_cap_s = 7200.0
 
     assert served_absolute_cap_s(_Raised()) == 7200.0
+
     class _Nonsense:
         absolute_cap_s = "later"
 
-    assert served_absolute_cap_s(_Nonsense()) == _SERVED_ABSOLUTE_CAP_S
+    assert served_absolute_cap_s(_Nonsense()) is None
 
 
 _CAP = 3630.0  # the status projection's own bound; pinned to the real one just above

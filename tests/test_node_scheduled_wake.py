@@ -197,6 +197,15 @@ def test_not_before_is_accepted_and_a_past_one_means_now(home: Path) -> None:
     assert datetime.fromisoformat(wake.not_before) > datetime(2026, 9, 1, tzinfo=timezone.utc)
 
 
+def test_a_wake_can_be_scheduled_more_than_a_year_ahead(home: Path) -> None:
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+    _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}, delay_seconds=400*86400")
+    after = datetime.now(timezone.utc)
+    [wake] = _wakes(home)
+    scheduled = datetime.fromisoformat(wake.not_before)
+    assert before + timedelta(days=400) <= scheduled <= after + timedelta(days=400)
+
+
 @pytest.mark.parametrize(
     ("call", "needle"),
     [
@@ -204,7 +213,6 @@ def test_not_before_is_accepted_and_a_past_one_means_now(home: Path) -> None:
          "not both"),
         (f"branch_def_id={PRIVATE!r}, delay_seconds=-1", ">= 0"),
         (f"branch_def_id={PRIVATE!r}, delay_seconds=True", "a number"),
-        (f"branch_def_id={PRIVATE!r}, delay_seconds=400*86400", "trigger_invalid"),
         (f"branch_def_id={PRIVATE!r}, not_before='soon'", "trigger_invalid"),
     ],
 )
