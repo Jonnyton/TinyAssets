@@ -303,6 +303,13 @@ def test_the_reply_intent_is_bound_to_a_secret_only_this_app_holds():
     # set synchronously by the page -- so a message after sign-out is dropped
     # even if FCM has not finished deleting the token.
     assert "!armed.equals(recipient)" in service
+    # Check-and-post and arm/disarm share one lock (FCM delivers on a worker
+    # thread), a clear is fenced by recipient like everything else, and a Reply
+    # carries the tag of the MESSAGE it came from, not whatever is armed later.
+    assert service.count("synchronized (ARM_LOCK)") == 2
+    assert service.index("synchronized (ARM_LOCK)") < service.index('"clear".equals')
+    assert "intent.putExtra(EXTRA_RECIPIENT, recipient);" in service
+    assert "armedRecipient(this));" not in service.split("private PendingIntent pending")[1]
     assert "!armed.equals(recipient)" in injector
     assert "static void setActive(Context context, boolean active, String recipient)" in service
     assert "setActive(PluginCall call)" in _java("NotificationReplyPlugin.java")

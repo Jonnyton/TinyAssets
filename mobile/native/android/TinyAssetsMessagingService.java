@@ -79,7 +79,21 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
         return prefs.getString(RECIPIENT_KEY, null);
     }
 
+    // Held while a message is checked AND posted, and while the phone is armed
+    // or disarmed. FCM delivers on a worker thread: without this, a message
+    // could pass the check, sign-out could disarm and clear the tray, and the
+    // worker would then post the previous owner's text onto the next owner's
+    // screen. With it, the post either happens before the disarm (and the
+    // page's clear that follows removes it) or does not happen at all.
+    private static final Object ARM_LOCK = new Object();
+
     static void setActive(Context context, boolean active, String recipient) {
+        synchronized (ARM_LOCK) {
+            writeActive(context, active, recipient);
+        }
+    }
+
+    private static void writeActive(Context context, boolean active, String recipient) {
         SharedPreferences.Editor edit = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit();
         if (active && safeId(recipient) != null) {
             edit.putBoolean(ACTIVE_KEY, true).putString(RECIPIENT_KEY, recipient);
@@ -119,13 +133,24 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
         NotificationManager manager =
             (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager == null) return;
-        if ("clear".equals(data.get("kind"))) {
-            manager.cancel(requestId, NOTIFICATION_ID);
-            return;
-        }
-        String armed = armedRecipient(this);
         String recipient = data.get("recipient");
-        if (armed == null || recipient == null || !armed.equals(recipient)) return;
+        if (recipient == null) return;
+        synchronized (ARM_LOCK) {
+            String armed = armedRecipient(this);
+            // A message for anyone but the account this phone is armed for is
+            // dropped -- a clear included: request ids repeat across owners, so
+            // a clear meant for someone else must not cancel this owner's.
+            if (armed == null || !armed.equals(recipient)) return;
+            if ("clear".equals(data.get("kind"))) {
+                manager.cancel(requestId, NOTIFICATION_ID);
+                return;
+            }
+            show(manager, requestId, recipient, data);
+        }
+    }
+
+    private void show(NotificationManager manager, String requestId, String recipient,
+                      Map<String, String> data) {
         String title = data.get("title");
         String body = data.get("body");
         if (title == null || body == null) return;
@@ -141,12 +166,12 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setContentIntent(pending(requestId, itemId, ACTION_OPEN, false));
+            .setContentIntent(pending(requestId, itemId, ACTION_OPEN, false, recipient));
 
         RemoteInput reply = new RemoteInput.Builder(REPLY_KEY).setLabel("Reply").build();
         builder.addAction(new NotificationCompat.Action.Builder(
             android.R.drawable.ic_menu_send, "Reply",
-            pending(requestId, itemId, ACTION_REPLY, true))
+            pending(requestId, itemId, ACTION_REPLY, true, recipient))
             .addRemoteInput(reply)
             .setShowsUserInterface(true)
             .build());
@@ -160,7 +185,8 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
         return itemIds.contains(",") ? null : itemIds;
     }
 
-    private PendingIntent pending(String requestId, String itemId, String action, boolean reply) {
+    private PendingIntent pending(String requestId, String itemId, String action, boolean reply,
+                                  String recipient) {
         Intent intent = new Intent(this, MainActivity.class)
             .setAction(action)
             // Distinguishes the two PendingIntents for one request: extras are
@@ -174,7 +200,9 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
         if (itemId != null) intent.putExtra(EXTRA_ITEM_ID, itemId);
         if (reply) {
             intent.putExtra(EXTRA_NONCE, replyNonce(this));
-            intent.putExtra(EXTRA_RECIPIENT, armedRecipient(this));
+            // The tag of the MESSAGE this notification was built from, not
+            // whatever the phone is armed for when this line runs.
+            intent.putExtra(EXTRA_RECIPIENT, recipient);
         }
         // A RemoteInput reply is written into the PendingIntent by the system,
         // so it must be MUTABLE: explicitly from Android 12, and by default
