@@ -42,8 +42,17 @@ something real). Those are the categories AGENTS.md says to specify first.
   `_action_create_universe`, the only birth path; first contact materializes
   through it too. Ownership never moves: a different account raises
   `OwnershipConflict`, and the grant rolls back with it. A shared universe's
-  other admins are never charged. Account deletion removes the person's owner
-  rows, and their non-home universes become unattributed.
+  other admins are never charged. Account deletion removes the home's owner row
+  along with the home. A non-home universe that survives its owner is re-keyed
+  to the opaque `deleted:<fingerprint>` (`account_deletion.ATTRIBUTION_COLUMNS`).
+  That account has no home, so it is charged at the free tier and names nobody.
+  It never becomes unattributed, because unattributed means never refused, and
+  that exemption is only for universes that predate the table
+  (gpt-6-astra, PR #4139).
+- **The table and its backfill commit together**
+  (`universe_owner.migrate_universe_owner`, one `BEGIN IMMEDIATE`). The table's
+  existence is the marker that the backfill ran, so a crash between the two
+  must leave neither.
 - **`universe_owner.owner_of(base, universe_id) -> account_id | None`** and
   **`universe_owner.tier_of(base, account_id)`** are the one resolver pair. The tier is read
   from the account's home universe's `.subscription_state.db`, which is where

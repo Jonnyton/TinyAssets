@@ -224,11 +224,65 @@ class TestTierOf:
 # --------------------------------------------------------------------------- #
 
 
-def test_account_deletion_plans_the_owner_rows(base):
-    from tinyassets.account_deletion import deletion_plan
+class TestAccountDeletion:
+    def _delete_rows(self, base: Path, principal: str, home: str) -> None:
+        from tinyassets.account_deletion import _delete_root_rows
 
-    grant_universe_ownership(base, universe_id="u-x", owner_id=A)
+        conn = sqlite3.connect(ds.db_path(base))
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                _delete_root_rows(conn, principal=principal, home=home, counts={})
+        finally:
+            conn.close()
+
+    def test_the_home_owner_row_goes_with_the_home(self, base):
+        grant_universe_ownership(base, universe_id="u-home", owner_id=A)
+
+        self._delete_rows(base, A, "u-home")
+
+        assert uo.owner_of(base, "u-home") is None
+
+    def test_a_surviving_universe_stays_charged_to_an_opaque_owner(self, base):
+        """A retained universe must not become unattributed (never refused) --
+        and must not keep the deleted person's identifier either."""
+        from tinyassets.account_deletion import _fingerprint
+
+        grant_universe_ownership(base, universe_id="u-home", owner_id=A)
+        grant_universe_ownership(base, universe_id="u-shared", owner_id=A)
+        grant_universe_access(
+            base, universe_id="u-shared", actor_id=B, permission="write", granted_by=A,
+        )
+
+        self._delete_rows(base, A, "u-home")
+
+        owner = uo.owner_of(base, "u-shared")
+        assert owner == f"deleted:{_fingerprint(A)}"
+        assert A not in owner
+        assert uo.owned_universes(base, A) == []
+        assert uo.tier_of(base, owner) == TIER_FREE
+
+
+def test_an_interrupted_migration_leaves_nothing_and_retries(base, monkeypatch):
+    """The table IS the marker that the backfill ran, so they commit together:
+    a crash inside the backfill must not leave a table that skips it forever."""
+    initialize_author_server(base)
+    set_founder_home(base, founder_sub=A, universe_id="u-home-a")
+    _legacy_db_without_owner_table(base)
+
+    def _crash(_conn):
+        raise RuntimeError("killed mid-backfill")
+
+    monkeypatch.setattr(uo, "backfill_from_founder_home", _crash)
+    with pytest.raises(RuntimeError):
+        initialize_author_server(base)
     with sqlite3.connect(ds.db_path(base)) as conn:
-        plan = deletion_plan(conn, principal=A, home="u-home")
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'universe_owner'"
+        ).fetchone() is None
+    monkeypatch.undo()
+    ds._AUTHOR_SERVER_INITIALIZED.discard(str(ds.db_path(base)))
 
-    assert ("owner_id", "principal") in plan["universe_owner"]
+    initialize_author_server(base)
+
+    assert uo.owner_of(base, "u-home-a") == A

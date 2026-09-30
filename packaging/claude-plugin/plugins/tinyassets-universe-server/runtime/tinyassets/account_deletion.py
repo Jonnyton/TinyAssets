@@ -126,10 +126,6 @@ PERSON_KEYED_DESPITE_UNIVERSE = MappingProxyType({
     # binding to the same home is a blocker, but a binding is the person's own
     # row and should not depend on the universe sweep to disappear.
     "founder_home": "founder_sub",
-    # Being charged for a universe is this person's row wherever it points: a
-    # deleted account must not stay the owner of a non-home universe it made.
-    # That universe then becomes unattributed (counted, never refused).
-    "universe_owner": "owner_id",
     # A grant is this person's grant OF THEIR OWN connection, so it goes with
     # them wherever it points — and it must, because the grant references the
     # connection with no ON DELETE clause: leaving a grant on someone else's
@@ -200,6 +196,13 @@ REDACTED_TABLES = frozenset({"action_records"})
 #: be deleted.
 ATTRIBUTION_COLUMNS = MappingProxyType({
     "canonical_bindings": ("bound_by_actor_id",),
+    # A universe the person owned that SURVIVES them (not the home, which the
+    # universe sweep deletes with its owner row) keeps an owner -- the opaque
+    # fingerprint -- rather than none. With none it would become unattributed,
+    # which is never refused: a collaborator could fill it without bound
+    # (gpt-6-astra, PR #4139). The fingerprint has no home, so it is charged at
+    # the free tier, and it names nobody.
+    "universe_owner": ("owner_id",),
 })
 
 #: Money the person is a party to. Refuse the deletion rather than discard it:

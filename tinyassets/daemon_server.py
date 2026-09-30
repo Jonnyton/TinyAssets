@@ -481,32 +481,16 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
         founder_sub TEXT PRIMARY KEY,
         deleted_at  REAL NOT NULL
     );
-
-    -- The ONE account a universe's storage and seats are charged to
-    -- (account-storage-quota D2). Written by the transaction that creates the
-    -- universe, beside the creator's admin grant; never inferred from grants.
-    -- A shared universe's other admins are never its owner. See
-    -- `tinyassets.universe_owner`.
-    CREATE TABLE IF NOT EXISTS universe_owner (
-        universe_id TEXT PRIMARY KEY,
-        owner_id    TEXT NOT NULL,
-        bound_at    REAL NOT NULL,
-        source      TEXT NOT NULL CHECK (source IN ('creation', 'founder_home'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_universe_owner_owner
-        ON universe_owner(owner_id);
     """
     with _connect(base_path) as conn:
-        owner_table_is_new = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'universe_owner'"
-        ).fetchone() is None
         conn.executescript(schema)
-        if owner_table_is_new:
-            # Once, when the table is born -- never again, so a later home
-            # rebind can never silently re-own a universe.
-            from tinyassets.universe_owner import backfill_from_founder_home
+        # NOT in the schema script: `executescript` autocommits, so the table
+        # would exist before its backfill committed, and a crash between the two
+        # would skip the backfill forever (gpt-6-astra, PR #4139). The table and
+        # its backfill are born in ONE transaction.
+        from tinyassets.universe_owner import migrate_universe_owner
 
-            backfill_from_founder_home(conn)
+        migrate_universe_owner(conn)
         from tinyassets.storage.accounts import (
             migrate_capability_grants_schema,
         )

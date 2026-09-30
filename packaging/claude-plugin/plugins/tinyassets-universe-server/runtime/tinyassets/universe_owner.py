@@ -39,6 +39,42 @@ class OwnershipConflict(RuntimeError):
     silently: a caller that meets this has a bug or an attack, not a race to win."""
 
 
+_TABLE_DDL = (
+    # The ONE account a universe's storage and seats are charged to
+    # (account-storage-quota D2).
+    "CREATE TABLE universe_owner ("
+    " universe_id TEXT PRIMARY KEY,"
+    " owner_id    TEXT NOT NULL,"
+    " bound_at    REAL NOT NULL,"
+    " source      TEXT NOT NULL CHECK (source IN ('creation', 'founder_home')))",
+    "CREATE INDEX idx_universe_owner_owner ON universe_owner(owner_id)",
+)
+
+
+def migrate_universe_owner(conn: sqlite3.Connection) -> bool:
+    """Create `universe_owner` and run its one-time backfill ATOMICALLY.
+
+    The table's existence is the marker that the backfill ran, so the two must
+    commit together: SQLite DDL is transactional, and both happen inside one
+    ``BEGIN IMMEDIATE``. A crash anywhere inside leaves neither, and the next
+    start retries. Returns True when this call created the table.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'universe_owner'"
+        ).fetchone()
+        if exists is None:
+            for statement in _TABLE_DDL:
+                conn.execute(statement)
+            backfill_from_founder_home(conn)
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    return exists is None
+
+
 def backfill_from_founder_home(conn: sqlite3.Connection) -> int:
     """Bind pre-existing universes to the founder whose HOME they are.
 
