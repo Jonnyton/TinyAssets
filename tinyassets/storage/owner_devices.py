@@ -54,6 +54,13 @@ PLATFORM_ANDROID = "android"
 PLATFORM_WEB = "web"
 PLATFORMS = frozenset({PLATFORM_ANDROID, PLATFORM_WEB})
 
+#: Names a client may use for a platform the store keeps under another name.
+#: The Android app says what it holds -- an FCM registration token -- and the
+#: store files that under ``android``, the key the FCM transport is resolved by.
+#: Resolved HERE, before the platform decides how a token is read, so an alias
+#: can never select a different identity rule than the platform it names.
+PLATFORM_ALIASES = {"fcm": PLATFORM_ANDROID}
+
 #: Delivery kinds. ``raised`` is the visible notification for a new request;
 #: ``clear`` is the silent data message that takes it off the owner's other
 #: devices once they answered on one.
@@ -231,6 +238,20 @@ def _connect(base_path: str | Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def recipient_tag(owner_user_id: str) -> str:
+    """An opaque, non-reversible tag naming WHOSE notification a message is.
+
+    Sent with every FCM message and returned to the owner's own app at
+    registration, so the phone can refuse a message that is not for the account
+    it is currently armed for -- even one already in flight when the handset
+    changed hands. It is a fixed function of the subject: nothing a caller
+    supplies selects it, and it identifies no one outside the platform.
+    """
+    return "r" + hashlib.sha256(
+        f"recipient\x00{owner_user_id}".encode("utf-8")
+    ).hexdigest()[:20]
+
+
 def _token_digest(platform: str, identity: str) -> str:
     """The destination digest, NAMESPACED BY PLATFORM.
 
@@ -387,6 +408,7 @@ def register_device(
     if not sub:
         raise ValueError("owner_user_id is required")
     kind = (platform or "").strip().lower()
+    kind = PLATFORM_ALIASES.get(kind, kind)
     if kind not in PLATFORMS:
         raise ValueError("platform must be one of " + ", ".join(sorted(PLATFORMS)))
     stored, identity = _canonical_token(token, kind)
@@ -528,7 +550,11 @@ def delivery_targets(base_path: str | Path, *, owner_user_id: str) -> list[dict[
             "ORDER BY created_at ASC",
             (sub,),
         ).fetchall()
-    return [{"device_id": r[0], "platform": r[1], "token": r[2]} for r in rows]
+    tag = recipient_tag(sub)
+    return [
+        {"device_id": r[0], "platform": r[1], "token": r[2], "recipient": tag}
+        for r in rows
+    ]
 
 
 def notifications_enabled(base_path: str | Path, *, owner_user_id: str) -> bool:

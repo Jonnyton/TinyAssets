@@ -3187,6 +3187,27 @@ def _staged_branch_from_spec(
     entry = (spec.get("entry_point") or "").strip()
     if not entry and graph_blob is not None:
         entry = (graph_blob.get("entry_point") or "").strip()
+    order = [gn.id for gn in branch.graph_nodes]
+    if (
+        len(order) > 1
+        and not branch.edges
+        and not branch.conditional_edges
+        and entry in ("", order[0])
+    ):
+        # A LIST of nodes with no wiring at all reads one way: in the order
+        # written. Refusing it ("node 'b' is not reachable from entry point
+        # 'a'") answered a question the spec had already answered, and cost a
+        # small model a round to restate it as edges (live 2026-09-30, free
+        # account). Only an ABSENCE is filled: any edge, conditional edge, or an
+        # entry point other than the first node means the author is wiring the
+        # graph themselves, and that is validated exactly as written.
+        for src, dst in zip(order, order[1:]):
+            _apply_edge_spec(branch, {"from": src, "to": dst})
+        notices.append(
+            "no edges were given, so the nodes run in the order listed: "
+            + " -> ".join(order)
+            + ". Pass edges to wire them any other way."
+        )
     if entry:
         branch.entry_point = entry
     elif not branch.entry_point and branch.graph_nodes:

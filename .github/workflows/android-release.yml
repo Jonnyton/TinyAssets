@@ -80,6 +80,14 @@ jobs:
           python3 scripts/add_app_scheme.py
           grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
 
+      - name: Materialise google-services.json (phone notifications)
+        working-directory: mobile
+        env:
+          # Build input, never committed (public repo). Unset = the build still
+          # succeeds with push disabled and says so in this step's log.
+          ANDROID_GOOGLE_SERVICES_JSON_B64: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_B64 }}
+        run: python3 scripts/materialize_google_services.py
+
       - name: Install the launcher icon + splash (pre-rendered, no image toolchain in CI)
         working-directory: mobile
         run: python3 scripts/add_app_icons.py

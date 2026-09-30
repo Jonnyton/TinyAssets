@@ -1046,32 +1046,51 @@ to be 201, and `x-access-level` to read `read-write`.
 
 ## Firebase project for phone notifications (2026-09-30)
 
-**Why:** requests are getting device delivery
-(`openspec/changes/notify-owner-of-requests`), so a universe can reach its owner
-— the gap the founder's own "Morning focus note" branch stopped on. Android push
-goes through FCM, and FCM needs a Firebase project only the account owner can
-create. **Browser and desktop push need nothing from you** — web-push keys are
-self-issued — so the chain gets proven live on the browser first, and this row is
-what adds the phone.
+**Why:** a universe's "Waiting on you" requests now push to the owner's devices
+(`openspec/changes/notify-owner-of-requests`). Browser and desktop push need
+nothing from you — web-push keys are self-issued. **Android push needs a Firebase
+project only the account owner can create**, and the Android app (1.0.4, the
+first build that carries push) reads two secrets that come out of it. Until they
+exist, 1.0.4 still builds and runs: the build logs `push DISABLED` and the
+"Request notifications" switch in the phone app says notifications aren't set up
+yet.
 
-**The whole ask is three steps in one browser session:**
+**Steps, one browser session** (an agent can drive 1-3 in your signed-in browser
+if you say so; step 4 mints a private key, so it waits for your explicit go):
 
-1. `console.firebase.google.com` -> **Add project**. If the Play/Cloud project
+1. `console.firebase.google.com` -> **Add project**. If the Google Cloud project
    behind `io.tinyassets.app` is already listed, choose **Add Firebase to an
-   existing Google Cloud project** rather than creating a second one.
+   existing Google Cloud project** rather than creating a second one. Decline
+   Google Analytics when asked — the app has none and the Play Data safety /
+   Advertising ID answers assume that.
 2. In that project -> **Add app -> Android**, package name exactly
-   `io.tinyassets.app` -> **Download `google-services.json`**.
-3. **Project settings -> Service accounts -> Generate new private key** -> keep
+   `io.tinyassets.app` (nothing else is needed; skip the SDK steps) ->
+   **Download `google-services.json`**.
+3. **Project settings -> Cloud Messaging**: confirm *Firebase Cloud Messaging API
+   (V1)* shows **Enabled** (it is on by default for new projects). The legacy
+   server-key API is not used and stays off.
+4. **Project settings -> Service accounts -> Generate new private key** -> keep
    the JSON it downloads.
 
-Then hand both files over. `google-services.json` is build input: materialised
-from a secret at build time and never committed (this repo is public, and
-`mobile/android/` is gitignored anyway). The service-account JSON **is a
-credential** — vault only, never a committed file, never a workflow literal.
+**Where each file goes** (names are exact; nothing is committed, this repo is
+public):
 
-**Offer:** an agent can drive steps 1-3 in your signed-in browser if you say so;
-the downloads land on your machine and you hand them over as above. Step 3 mints
-a private key, so it does not happen without your explicit go-ahead. Say which
-you prefer.
+| File | Secret name | Read by | Where it lives |
+|---|---|---|---|
+| `google-services.json` | `ANDROID_GOOGLE_SERVICES_JSON_B64` (base64 of the file, one line) | the **Android build** — `mobile/scripts/materialize_google_services.py` in `android-release.yml` | GitHub repo secret. For the container build instead: save the file as `~/.tinyassets/android/google-services.json` (it is mounted at `/keys`, or name it with `ANDROID_GOOGLE_SERVICES_JSON_FILE`). |
+| service-account JSON | `TINYASSETS_FCM_SERVICE_ACCOUNT_JSON` (the whole document, compacted to ONE line, e.g. `python -c "import json,sys;print(json.dumps(json.load(open(sys.argv[1]))))" key.json`) | the **server** — `tinyassets/notify/fcm.py`, via FCM HTTP v1 | the vault, then a line in `/etc/tinyassets/env` on the droplet (the daemon container's `env_file`); redeploy/recreate to pick it up. Vault only — never a committed file, never a workflow literal. |
+
+`google-services.json` is not a server credential (its API key is restricted to
+the app), but it is build input and stays out of git. The service-account JSON
+**is** a credential.
+
+**Then:** build 1.0.4 with both in place (the build log should say
+`push ENABLED ... project <id>`), sign and upload it the usual way, and turn
+notifications on in the phone app's Account page. Proof is a request raised by
+your universe arriving on the phone, and tapping it opening that request.
+
+**Play Console, with 1.0.4:** add **Device or other IDs** (the FCM registration
+token; optional, functionality only) to the Data safety form — see
+`docs/ops/google-play-launch.md` §6. Advertising ID stays **No**.
 
 ---

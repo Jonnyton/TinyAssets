@@ -192,6 +192,10 @@
     .composer-input{flex:1;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
       border-radius:12px;padding:.7rem .8rem;font:inherit;resize:none;max-height:40vh}
     .btn--send{align-self:flex-end}
+    .btn--send[hidden],.btn--stop[hidden]{display:none}
+    .btn--stop{align-self:flex-end;background:var(--surface-2);color:var(--ink);
+      border:1px solid var(--accent);min-width:4.3rem}
+    .btn--stop:disabled{opacity:.6}
     .btn--attach{align-self:flex-end;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
       padding:.55rem .6rem;font-size:1.1rem;line-height:1}
     .btn--attach:hover{background:var(--surface)}
@@ -246,6 +250,7 @@
       .composer .btn--voice{grid-column:2;grid-row:2}
       .composer .composer-input{grid-column:3;grid-row:2;min-width:0}
       .composer .btn--send{grid-column:4;grid-row:2}
+      .composer .btn--stop{grid-column:4;grid-row:2}
     }
     .result{background:#0b0c17;border:1px solid var(--line);border-radius:10px;padding:.8rem;
       overflow-x:auto;font-size:.8rem;white-space:pre-wrap}
@@ -459,6 +464,12 @@
         <textarea id="composer-input" class="composer-input" rows="1"
                   placeholder="Message your universe" autocomplete="off"></textarea>
         <button id="btn-send" class="btn btn--primary btn--send" type="submit">Send</button>
+        <!-- Stop: shown in Send's place while the universe is working (Escape does
+             the same on a keyboard). Messages typed meanwhile queue, and after a
+             stop they go out together as the next turn. -->
+        <button id="btn-stop" class="btn btn--stop" type="button" hidden
+                aria-label="Stop your universe's current turn"
+                title="Stop this turn (Esc). Anything you queued is sent next.">Stop</button>
       </form>
       <div id="status-line" class="status-line" role="status" aria-live="polite"
            aria-label="Conversation status"></div>
@@ -1726,7 +1737,110 @@
   // sentence is; a queue count, an attachment notice or a failure line belongs to
   // whoever wrote it and is never touched here.
   let serverStatusLine=false;
+  // ---- Stop (founder 2026-09-30: "just like it works in claude code") --------
+  // While the universe is working, Send gives its place to Stop; Escape does the
+  // same. The server stops the turn at its next safe point (a tool call already
+  // running finishes and is recorded), the in-flight reply comes back marked
+  // "Interrupted", and THEN everything queued behind it goes out as ONE message,
+  // in the order it was typed. Nothing queued: the turn just stops.
+  let interruptRequested=false, flushAfterInterrupt=false, interruptPending=null, batchAfterStop=false;
+  //: How long a Stop request may hold the composer before it is given up on.
+  const STOP_REQUEST_MS=10000;
+  function renderStop(){
+    const stop=$("btn-stop"), send=$("btn-send");
+    if(!stop||!send) return;
+    const working=workingSince()>0;
+    if(!working && !turnStartedAt && !interruptPending) interruptRequested=false;
+    stop.hidden=!working; send.hidden=working;
+    stop.disabled=interruptRequested;
+    stop.textContent=interruptRequested?"Stopping\u2026":"Stop";
+  }
+  // The queue flushes once per ended turn; after a stop it flushes as one batch.
+  function takeInterruptFlush(){
+    const batch=flushAfterInterrupt; flushAfterInterrupt=false; interruptRequested=false;
+    return batch;
+  }
+  // A turn's cleanup hands the composer to what is queued. While a Stop request
+  // is still on the wire NO turn starts -- not the queue, not a manual send,
+  // not a spoken line (astra rounds 1-2): a Stop that arrived after the next
+  // turn began would stop THAT turn. Everything waits, bounded by
+  // STOP_REQUEST_MS, and goes out when the request settles.
+  function flushAfterTurn(){
+    const batch=takeInterruptFlush();
+    if(!interruptPending) return flushSendQueue(batch);
+    batchAfterStop=batchAfterStop||batch;
+  }
+  function drainAfterStop(){
+    const batch=batchAfterStop; batchAfterStop=false;
+    flushSendQueue(batch);
+  }
+  async function interruptTurn(){
+    if(interruptRequested || !workingSince()) return;
+    // Fenced like every other answer: what this request may change belongs to
+    // the turn, account and home it was pressed for.
+    const mine=activeTurn, epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    const sameAccount=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    const stillMine=()=>activeTurn===mine&&sameAccount();
+    interruptRequested=true; flushAfterInterrupt=true; renderStop();
+    const waiting=sendQueue.length;
+    setStatusLine("Stopping your universe's turn..."+(waiting
+      ? " then sending the "+waiting+" waiting message"+(waiting===1?"":"s")+" together."
+      : ""));
+    const abort=typeof AbortController==="function"?new AbortController():null;
+    const post=()=>fetch("/app/turn/interrupt",{method:"POST",credentials:"same-origin",
+      headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+      body:JSON.stringify({universe_id:scope}),signal:abort?abort.signal:undefined});
+    const request=(async()=>{
+      let r=await post();
+      // A retry carries whatever credential is current THEN: never send it once
+      // the account or home has changed, or this Stop would be another
+      // account's (astra round 3).
+      if(r.status===401 && sameAccount() && await refreshAccessToken()){
+        if(!sameAccount()) return null;
+        r=await post();
+      }
+      return r.ok?await r.json():null;
+    })();
+    // Bounded: a request that never answers must not hold the composer forever.
+    let timer=null;
+    const deadline=new Promise(resolve=>{ timer=setTimeout(()=>{
+      if(abort) abort.abort(); resolve(null); },STOP_REQUEST_MS); });
+    const settled=Promise.race([request.catch(()=>null),deadline]);
+    interruptPending=settled; renderStop();
+    const doc=await settled;
+    clearTimeout(timer);
+    // Only the request that still holds the composer releases it; a sign-out in
+    // the meantime already cleared it (clearComposerState).
+    if(interruptPending===settled){ interruptPending=null; drainAfterStop(); }
+    // The turn it was pressed for already ended (its cleanup consumed the
+    // flags), or the page moved to another account or home: nothing to change.
+    if(!stillMine()){ renderStop(); return; }
+    if(!doc || typeof doc.interrupted!=="number"){
+      interruptRequested=false; flushAfterInterrupt=false; renderStop();
+      setStatusLine("Could not stop the turn. It is still running; try Stop again.");
+      return;
+    }
+    if(doc.interrupted===0){
+      // No conversation turn of yours was running on the server. Either this
+      // page's reply is already on its way back -- it lands normally, and what
+      // is queued still goes out together when it does -- or the work the
+      // indicator shows is not a conversation turn (an automation runs on its
+      // own and a Stop here never touches it).
+      interruptRequested=false;
+      if(!turnStartedAt) flushAfterInterrupt=false;
+      setStatusLine(turnStartedAt
+        ? "Your universe's reply is already on its way; anything queued goes out together when it lands."
+        : "Nothing you can stop is running: the work shown is not a conversation turn.");
+    }else if(!turnStartedAt){
+      // A turn another window started ends on the server's word; stop painting
+      // it now rather than until the next beat.
+      interruptRequested=false; flushAfterInterrupt=false;
+      serverTurn=null; renderWorking();
+    }
+    renderStop();
+  }
   function renderWorking(){
+    renderStop();
     // ONE indicator, and it is the original line under the composer. #4020 added a
     // second, louder banner alongside it and the founder had both at once: "there
     // are now 2 indicators at once that my universe is thinking, i preferred only
@@ -3467,8 +3581,44 @@
     });
     note.appendChild(drop);
   }
-  function flushSendQueue(){
-    if(sendQueueHeld || $("btn-send").disabled || !sendQueue.length) return;
+  // After a stop, what was queued goes out as ONE turn, the way Claude Code
+  // sends its queued messages: in the order typed, separated by a blank line.
+  // Only lines that can share a turn are joined -- same account and home, same
+  // model choice, not tied to a chosen conversation; anything else waits and
+  // goes out after, as before.
+  function takeBatch(){
+    const group=[];
+    while(sendQueue.length){
+      const next=sendQueue[0];
+      if((next.owner&&next.owner!==queueOwner)||(next.scope&&next.scope!==queueScope)){
+        sendQueue.shift(); unmarkQueued(next.bubble); continue;
+      }
+      if(claimedElsewhere(next)){ sendQueue.shift(); unmarkQueued(next.bubble); continue; }
+      const first=group[0];
+      if(next.opts.consumerRequest) break;
+      if(first&&JSON.stringify(first.opts.modelChoice)!==JSON.stringify(next.opts.modelChoice)) break;
+      group.push(sendQueue.shift());
+    }
+    return group;
+  }
+  function flushBatch(){
+    const group=takeBatch();
+    saveQueue();
+    if(!group.length) return flushSendQueue();
+    group.forEach(item=>unmarkQueued(item.bubble));
+    const methods=group.map(item=>turnInputMethod(item.opts.inputMethod));
+    const same=methods.every(m=>m===methods[0]);
+    const message=group.map(item=>item.message).join("\n\n");
+    const display=group.map(item=>item.display||item.message).join("\n\n");
+    // Each line is already on screen as its own bubble; the turn is not drawn again.
+    const opts=Object.assign({},group[0].opts,{echoed:true,keepComposer:true,relay:false,
+      sentAt:Date.now(),inputMethod:same?methods[0]:"unknown"});
+    sendTurn(message, display, opts)
+      .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
+  }
+  function flushSendQueue(batch){
+    if(sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
+    if(batch===true) return flushBatch();
     const next=sendQueue.shift();
     // A queued line goes out only under the account and home that queued it.
     // SAME rule as the in-flight record's (restoreInflight): a stamped pair
@@ -3537,7 +3687,7 @@
 
   async function sendTurn(message, display, opts){
     opts=captureTurnOptions(opts);
-    if($("btn-send").disabled) return queueTurn(message, display, opts);
+    if($("btn-send").disabled || interruptPending) return queueTurn(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the universe (file content
     // embedded verbatim). They differ only when an attachment rode along.
@@ -3622,8 +3772,8 @@
         // working on this one, on the strength of a guess the transport
         // explicitly refused to make. The lines stay queued, on disk, until
         // the user explicitly resumes them, even after another manual send.
-        if(unconfirmed) noteHeldQueue();
-        else flushSendQueue();
+        if(unconfirmed){ takeInterruptFlush(); noteHeldQueue(); }
+        else flushAfterTurn();
         Voice.conversationSettled(delivered,{message,ts:sentAt,
           consumerRequest:opts.consumerRequest||null,owner:sentOwner,scope:sentScope});
       }
@@ -3652,7 +3802,7 @@
     // Voice does not queue silently behind another turn: overlapping speech
     // would make delivery ambiguous. Keep the audio session alive, but ask the
     // founder to wait and say the line again.
-    if($("btn-send").disabled) throw new Error("voice_turn_busy");
+    if($("btn-send").disabled || interruptPending) throw new Error("voice_turn_busy");
     const opts=captureTurnOptions({inputMethod:"spoken"});
     appendMessage("founder",message);
     rememberInflight(message,message,undefined,"spoken",opts.modelChoice);
@@ -3720,8 +3870,8 @@
       // Queued lines and the voice session belong to the account and home
       // that are on screen now; a turn that outlived its own is not theirs.
       if(stillHere()&&mine){
-        if(unconfirmed) noteHeldQueue();
-        else flushSendQueue();
+        if(unconfirmed){ takeInterruptFlush(); noteHeldQueue(); }
+        else flushAfterTurn();
         Voice.conversationSettled(delivered,{message,ts:voiceSentAt,
           consumerRequest:opts.consumerRequest||null,owner:sentOwner,scope:sentScope});
       }
@@ -4063,6 +4213,9 @@
     if(me&&me.universe_id) setQueueScope(me.universe_id);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
+    // In this order: a reply left by a previous owner is discarded by the rebind
+    // before this page can collect it.
+    if(typeof rebindNativeNotifications === "function") rebindNativeNotifications().then(collectNotificationReply);
     // Not awaited: the owner's clock is for the NEXT schedule they create, so
     // it must not sit in front of the page they are waiting for.
     reportTimezone();
@@ -4255,6 +4408,9 @@
     if(input){ input.value=""; if(input.style) input.style.height="auto"; }
     const send=$("btn-send"); if(send) send.disabled=false;
     activeTurn=null; turnStartedAt=0; liveInflight=null;
+    // A Stop pressed for the previous account's turn is not this account's.
+    interruptRequested=false; flushAfterInterrupt=false;
+    interruptPending=null; batchAfterStop=false;
     // The working indicator is this screen's state as much as the composer is:
     // the previous account's turn must not be reported to whoever signs in next.
     serverTurn=null; serverStatusLine=false;
@@ -4318,6 +4474,7 @@
   function enterSignedOut(){ clearInterval(statusTimer); clearInterval(workingTimer); workingTimer=null;
     MCP.endLogin(); Voice.stop(false);
     if(typeof unsubscribeBrowserNotifications === "function") unsubscribeBrowserNotifications();
+    if(typeof unregisterNativeNotifications === "function") unregisterNativeNotifications();
     // Pending attachments belong to the account that picked them. They are
     // dropped, never released (release needs that same login and home) and
     // never carried into whoever signs in next.
@@ -5350,6 +5507,15 @@
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
+    $("btn-stop").addEventListener("click",()=>interruptTurn());
+    // Escape stops the turn, as in Claude Code -- unless something else on the
+    // page already used this Escape (a menu or dialog closing handles it first).
+    document.addEventListener("keydown",(e)=>{
+      if(e.key!=="Escape"||e.defaultPrevented||e.isComposing) return;
+      if($("btn-stop").hidden||$("btn-stop").disabled) return;
+      if(document.querySelector("dialog[open]")) return;
+      e.preventDefault(); interruptTurn();
+    });
     $("btn-rail-add").addEventListener("click",toggleAddKey);
     $("connect-shapes").addEventListener("click",e=>{
       const b=e.target&&e.target.closest?e.target.closest("button[data-shape]"):null;
@@ -5376,6 +5542,8 @@
     function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); }
     $("btn-notifications").addEventListener("click", ()=>toggleNotifications(false));
     $("btn-browser-notifications").addEventListener("click", ()=>toggleNotifications(true));
+    // The phone app has no browser push; its one switch registers the phone.
+    if(typeof NATIVE !== "undefined" && NATIVE) $("btn-browser-notifications").hidden=true;
     // ---- your universe's connections ----
     // Disconnect is a deliberate TWO-STEP, in-page confirmation. It used to
     // raise the browser's own confirm(): one string, drawn outside the page,
@@ -5969,6 +6137,169 @@
   ConnectOAuth.resumeWhenSignedIn();
   // End connect OAuth controller.
 
+  // ---- Native (Android / FCM) notifications ----
+  // Same route, same ownership model as the browser: the token is POSTed to
+  // /app/devices under the signed-in session and the server files it under the
+  // authenticated subject -- nothing in the body names an owner. The token is
+  // write-only (no read returns it).
+  const NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner",
+        NATIVE_PUSH_RECIPIENT="app.push.recipient";
+  let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
+  function nativePush(){ return (typeof NATIVE !== "undefined" && NATIVE) ? nativePlugin("PushNotifications") : null; }
+  // Tells the native message service whether the signed-in owner wants
+  // notifications on this phone. It is checked on every arriving message, so
+  // turning it off at sign-out stops display at once, however long FCM takes to
+  // delete the token.
+  // `recipient` is the tag the SERVER returned for this owner; every message
+  // carries the tag of whoever it was sent to, and native drops any that does
+  // not match the account the phone is armed for.
+  async function setNativeActive(active, recipient){
+    const R=(typeof NATIVE !== "undefined" && NATIVE) ? nativePlugin("NotificationReply") : null;
+    if(!R) return;
+    try{ await R.setActive({active, recipient: recipient||""}); }
+    catch(_error){ /* an older shell has no gate */ }
+  }
+  // Arms the phone for the owner a registration was just made for -- only if
+  // that owner is STILL the signed-in one. No await sits between the check and
+  // the native call, so a sign-out that lands later is ordered after it and
+  // wins; a continuation that outlived its login arms nothing.
+  function armNativeFor(session, created){
+    if(!session.current() || !created || !created.recipient) return false;
+    localStorage.setItem(NATIVE_PUSH_OWNER,queueOwner||"");
+    localStorage.setItem(NATIVE_PUSH_RECIPIENT,created.recipient);
+    setNativeActive(true, created.recipient);
+    return true;
+  }
+  function wireNativePush(){
+    const P=nativePush();
+    if(!P || nativePushWired) return;
+    nativePushWired=true;
+    P.addListener("registration", ev=>{
+      const value=ev && ev.value;
+      if(nativeTokenWaiter){ const w=nativeTokenWaiter; nativeTokenWaiter=null; w.resolve(value); return; }
+      // Android rotated the token while nobody was waiting: move the new one to
+      // the server, but only for a phone the owner turned notifications on for.
+      if(value && token() && localStorage.getItem(NATIVE_PUSH_FLAG)==="1")
+        notificationAPI(notificationSession(),"/app/devices",{platform:"fcm",token:value,label:"This phone"}).catch(()=>{});
+    });
+    P.addListener("registrationError", ()=>{
+      if(nativeTokenWaiter){ const w=nativeTokenWaiter; nativeTokenWaiter=null;
+        w.reject(new Error("Couldn't reach Google's notification service. Try again.")); }
+    });
+  }
+  function nativeFcmToken(){
+    const P=nativePush();
+    if(!P) return Promise.reject(new Error("Notifications aren't available in this version of the app."));
+    wireNativePush();
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{
+        if(nativeTokenWaiter){ nativeTokenWaiter=null; reject(new Error("Couldn't reach Google's notification service. Try again.")); }
+      },20000);
+      nativeTokenWaiter={resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(e);}};
+      // A build without Firebase configured has no push: register() rejects.
+      Promise.resolve().then(()=>P.register()).catch(()=>{
+        if(nativeTokenWaiter){ const w=nativeTokenWaiter; nativeTokenWaiter=null;
+          w.reject(new Error("Notifications aren't set up in this version of the app yet.")); }
+      });
+    });
+  }
+  async function registerNativeNotifications(session){
+    const P=nativePush();
+    if(!P) throw new Error("Notifications aren't available in this version of the app.");
+    let permission=await P.checkPermissions();
+    if(permission.receive!=="granted") permission=await P.requestPermissions();
+    if(permission.receive!=="granted") throw new Error("Notifications are blocked. Allow them in Android settings to turn them on.");
+    const value=await nativeFcmToken();
+    if(!value) throw new Error("Couldn't get a notification address for this phone. Try again.");
+    const created=await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
+    if(!armNativeFor(session, created)) throw new Error("Account changed. Open Account again.");
+    localStorage.setItem(NATIVE_PUSH_FLAG,"1");
+  }
+  async function rebindNativeNotifications(){
+    // The phone's token can change while the app is closed, and nothing is
+    // listening then. Fetch the current one on every sign-in and re-post it;
+    // the store refreshes the same device in place.
+    const P=nativePush();
+    if(!P || localStorage.getItem(NATIVE_PUSH_FLAG)!=="1") return;
+    const session=notificationSession();
+    try{
+      if(localStorage.getItem(NATIVE_PUSH_OWNER)!==(queueOwner||"")){
+        // The registration was made by someone else (a sign-out that never
+        // finished): nothing of theirs stays on screen or armed to be answered
+        // as this owner until the token has moved.
+        await setNativeActive(false);
+        await P.removeAllDeliveredNotifications();
+        const R=nativePlugin("NotificationReply");
+        if(R) await R.consume();
+      }
+      const permission=await P.checkPermissions();
+      if(permission.receive!=="granted"){ localStorage.removeItem(NATIVE_PUSH_FLAG); return; }
+      const value=await nativeFcmToken();
+      if(!value) return;
+      const created=await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
+      if(!armNativeFor(session, created)) throw new Error("Account changed.");
+    }catch(_error){
+      // If ownership cannot be moved, stop this phone receiving the old
+      // owner's notifications. The owner can turn them on again in Account.
+      if(session.current()) await unregisterNativeNotifications();
+    }
+  }
+  async function unregisterNativeNotifications(){
+    const P=nativePush(), R=nativePlugin("NotificationReply");
+    localStorage.removeItem(NATIVE_PUSH_FLAG);
+    localStorage.removeItem(NATIVE_PUSH_OWNER);
+    localStorage.removeItem(NATIVE_PUSH_RECIPIENT);
+    await setNativeActive(false);
+    // A reply the previous owner typed but this page never submitted belongs to
+    // that owner: drop it natively and here, so the next sign-in never sees it.
+    pendingReply=null;
+    if(R){ try{ await R.consume(); }catch(_error){ /* nothing parked */ } }
+    if(!P) return;
+    try{ await P.unregister(); await P.removeAllDeliveredNotifications(); }
+    catch(_error){ console.warn("Could not remove this phone's push registration."); }
+  }
+  // The text typed into a notification's inline Reply arrives natively, only
+  // after MainActivity verified the intent came from this app. It is submitted
+  // here, through the signed-in session, like any other answer.
+  async function collectNotificationReply(){
+    const R=(typeof NATIVE !== "undefined" && NATIVE) ? nativePlugin("NotificationReply") : null;
+    if(!R) return;
+    try{
+      const reply=await R.consume();
+      // Only for the account this phone is armed for: a reply that belongs to
+      // anyone else is dropped, not re-homed to whoever is signed in now.
+      const mine=localStorage.getItem(NATIVE_PUSH_RECIPIENT);
+      if(reply && reply.request_id && reply.text && mine && reply.recipient===mine){
+        pendingReply={request_id:reply.request_id,item_id:reply.item_id||"",text:reply.text,seen:0};
+        refreshRail();
+      }
+    }catch(_error){ /* no reply waiting */ }
+  }
+  function applyPendingReply(){
+    const p=pendingReply;
+    if(!p) return;
+    const req=(railCache||[]).find(r=>r.request_id===p.request_id);
+    let item=null;
+    if(req && p.item_id) item=(req.items||[]).find(i=>i.item_id===p.item_id) || null;
+    const answered=!req || (p.item_id && (!item || (item.status && item.status!=="pending")));
+    if(answered){
+      // Answered on another device meanwhile. Keep the words rather than lose
+      // them: the composer, when the owner has nothing typed there.
+      if(++p.seen>=2){
+        pendingReply=null;
+        const box=$("composer-input");
+        if(box && !box.value) box.value=p.text;
+      }
+      return;
+    }
+    const id=item ? req.request_id+"::"+item.item_id : req.request_id;
+    const target=item ? {...item, request_id:id, parent_request_id:req.request_id} : req;
+    const field=$("fb_"+id), note=$("note_"+id);
+    if(!field || !note) return;   // the card is not built yet; the next render retries
+    pendingReply=null;
+    field.value=p.text;
+    answerRail(target,"reply",note,[]);
+  }
   // ---- Pending-request rail ------------------------------------------------
   let notificationEnabled=false, notificationBusy=false, notificationLoad=0;
   async function rebindBrowserNotifications(){
@@ -6033,7 +6364,7 @@
         li.textContent=(device.label || device.platform) + (device.enabled ? " — enabled" : " — off");
         $("notification-devices").appendChild(li);
       });
-      if(!settings.vapid_public_key) status.textContent="Browser notifications are not configured yet.";
+      if(!(typeof NATIVE !== "undefined" && NATIVE) && !settings.vapid_public_key) status.textContent="Browser notifications are not configured yet.";
     }catch(error){ if(session.current() && generation===notificationLoad) status.textContent=error.message; }
   }
   async function toggleNotifications(registerBrowser){
@@ -6042,7 +6373,9 @@
     const button=$("btn-notifications"), status=$("notification-status");
     notificationBusy=true; button.disabled=true;
     try{
-      if(enable){
+      if(enable && typeof NATIVE !== "undefined" && NATIVE){
+        await registerNativeNotifications(session);
+      } else if(enable){
         if(!("Notification" in window) || !navigator.serviceWorker || !("PushManager" in window))
           throw new Error("This browser does not support push notifications.");
         // Ask while the click's user activation is still available.
@@ -6181,6 +6514,7 @@
     if(typeof railLink !== "undefined" && railLink && (items||[]).some(r=>r.request_id===railLink)){
       railOpen=railLink; railLink=null;
     }
+    if(typeof pendingReply !== "undefined" && pendingReply && (items||[]).some(r=>r.request_id===pendingReply.request_id)) railOpen=pendingReply.request_id;
     railCache = items || [];
     const rail = $("request-rail"), host = $("rail-items"), head = $("rail-head");
     if(!rail || !host) return;
@@ -6286,6 +6620,7 @@
       const target=$("item_" + railOpen + "::" + railDeepItem);
       if(target){ target.scrollIntoView({block:"nearest"}); target.focus(); railDeepItem=null; }
     }
+    if(typeof pendingReply !== "undefined" && pendingReply) applyPendingReply();
   }
 
   function updateRailItems(req){

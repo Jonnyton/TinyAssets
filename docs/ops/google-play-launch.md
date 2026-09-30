@@ -296,6 +296,7 @@ Play's taxonomy, not ours. Answer exactly:
   | Personal info → **User IDs** | WorkOS user id | Required | App functionality, Account management |
   | Messages → **Other in-app messages** | what you say to your universe | **Required** — chatting *is* the app's primary functionality, and Play asks that data required for primary functionality be declared required, not that the user could decline to type | App functionality |
   | Files and docs → **Files and docs** | attachments you send it | Optional (attaching is a choice) | App functionality |
+  | Device or other IDs → **Device or other IDs** | the FCM registration token, **added in 1.0.4** (phone notifications). Sent to the platform only when the owner turns notifications on, and removed on sign-out or account deletion | Optional (notifications are a choice) | App functionality |
   | App activity → **Other user-generated content** | the AI-provider credential you deposit (Play has no "credentials" type; this is its category for user-entered content that fits nowhere else) | Optional (Connect can be skipped) | App functionality |
 
   **Voice is intentionally absent from this saved-data draft.** The Android
@@ -422,7 +423,11 @@ The live App content overview previously showed this as a separate unstarted
 declaration. For any candidate, answer **No** only after rebuilding the exact upload
 artifact and passing merged-manifest verification:
 
-- `mobile/package.json` contains no ads, analytics, Firebase, or Play advertising SDK.
+- `mobile/package.json` contains no ads, analytics, or Play advertising SDK. From 1.0.4
+  it does contain `@capacitor/push-notifications`, which pulls in `firebase-messaging`
+  (FCM delivery only -- no Firebase Analytics, no ads); the AD_ID answer below still
+  holds because the merged-manifest verifier rejects `AD_ID`, and the 1.0.4 bundle
+  passed it.
 - `mobile/scripts/verify_android_release.py` permits only Internet, foreground-service,
   microphone, and Capacitor's non-exported receiver permission. If a dependency merges
   `com.google.android.gms.permission.AD_ID`, the release fails on permission drift.

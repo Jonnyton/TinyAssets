@@ -191,13 +191,17 @@ def test_a_send_builds_the_v1_request_for_the_credentials_own_project(
     assert sent.get_header("Authorization") == "Bearer ya29.test"
     message = wire.body_of(SEND_URL)["message"]
     assert message["token"] == "device-token-1"
-    assert message["notification"] == {
-        "title": "Alice's universe", "body": "TODO: Today",
-    }
+    # Data only: the app builds the notification (so it can carry an inline
+    # Reply), and a `notification` block would be shown by the system without
+    # ever reaching the app's code.
+    assert "notification" not in message
+    assert "notification" not in message["android"]
+    assert message["data"]["title"] == "Alice's universe"
+    assert message["data"]["body"] == "TODO: Today"
+    # The app tags the notification with this id, which is what lets a clear
+    # cancel that exact notification and stops one request stacking.
     assert message["data"]["request_id"] == "req_abc"
-    # The tag is what lets a clear cancel this exact notification, and what
-    # stops one request stacking. It is derived, never supplied.
-    assert message["android"]["notification"]["tag"] == "req_abc"
+    assert message["android"]["priority"] == "high"
 
 
 def test_the_endpoint_cannot_be_influenced_by_the_device_or_the_body(
@@ -213,6 +217,19 @@ def test_the_endpoint_cannot_be_influenced_by_the_device_or_the_body(
     assert [r.full_url for r in wire.requests] == [TOKEN_URL, SEND_URL]
 
 
+def test_the_recipient_tag_comes_from_the_device_row_never_from_content(
+    service_account, wire,
+):
+    transport = resolve_transports()["android"]
+
+    transport(
+        {"token": "device-token-1", "recipient": "rALICE"},
+        _note(data={"request_id": "req_abc", "recipient": "rMALLORY"}),
+    )
+
+    assert wire.body_of(SEND_URL)["message"]["data"]["recipient"] == "rALICE"
+
+
 def test_a_silent_clear_carries_no_notification_block(service_account, wire):
     transport = resolve_transports()["android"]
 
@@ -225,6 +242,7 @@ def test_a_silent_clear_carries_no_notification_block(service_account, wire):
     message = wire.body_of(SEND_URL)["message"]
     assert "notification" not in message
     assert message["data"] == {"kind": "clear", "request_id": "req_abc"}
+    assert message["android"] == {"priority": "normal"}
 
 
 def test_the_access_token_is_exchanged_once_for_several_sends(
@@ -541,6 +559,6 @@ def test_dispatch_reaches_both_platforms_with_their_own_transport(
     assert result["sent"] == 2
     assert len(wire.sent_to(SEND_URL)) == 1
     assert len(wire.sent_to(PUSH_ENDPOINT)) == 1
-    assert wire.body_of(SEND_URL)["message"]["notification"]["title"] == (
+    assert wire.body_of(SEND_URL)["message"]["data"]["title"] == (
         "Alice's universe asks"
     )

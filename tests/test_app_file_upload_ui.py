@@ -1595,6 +1595,9 @@ function renderWorking(){ log.push({working:turnStartedAt>0}); }
 function renderConverse(a){ log.push({rendered:a&&a.reply}); }
 function sessionExpired(){ log.push({expired:true}); }
 function flushSendQueue(){ log.push({flushed:true}); }
+let interruptPending = null;
+function takeInterruptFlush(){ return false; }
+function flushAfterTurn(){ flushSendQueue(); }
 let sendImpl = async ()=>({reply:"ok"});
 async function sendConversationRequest(){ return sendImpl(); }
 

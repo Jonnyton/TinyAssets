@@ -148,7 +148,10 @@ as the workflow artifact.
   shipped-artifact and exact-candidate verification. Keep that answer only for a
   candidate whose merged manifest passes this repository's permission allowlist.
   `com.google.android.gms.permission.AD_ID` is not allowed, and `mobile/package.json`
-  contains no ads/analytics/Firebase dependency. Any SDK that merges the permission
+  contains no ads/analytics dependency (1.0.4 adds `firebase-messaging` through
+  `@capacitor/push-notifications` for FCM delivery only; its merged `WAKE_LOCK`,
+  `ACCESS_NETWORK_STATE` and `c2dm.permission.RECEIVE` are the allowlist's
+  `MERGED_ONLY_PERMISSIONS`). Any SDK that merges the permission
   must fail the release verifier and force the saved answer to be reconsidered. The
   current change is actioned but has not been sent for review.
 - Foreground service: because the bundle declares a `dataSync` foreground service

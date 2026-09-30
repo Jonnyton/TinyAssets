@@ -72,12 +72,20 @@ collide with the app-URL move (#4112). Slice 2 (3.x) depends on #4112.
       navigation, request/item deep links, item answers through the existing
       answer path, status-only poll updates preserving drafts, and clear handling.
       Native Android and Electron delivery remain in 3.2, a separate PR.
-- [ ] 3.2 Native: `@capacitor/push-notifications`, a committed Java plugin plus
-      `mobile/scripts/configure_android_push.py`, `google-services.json`
-      materialised from a secret and never committed, tap-through to
-      `/app?request=<id>`, and Accept / Deny / Reply actions that submit
-      through the app's own session. Desktop allows only the `notifications`
-      permission for the app origin.
+- [x] 3.2 Native Android (this PR; Electron desktop permission is still open):
+      `@capacitor/push-notifications`; `TinyAssetsMessagingService` draws the
+      notification from the server's DATA-ONLY FCM message (so it can carry an
+      inline Reply) and cancels it on a silent clear; a tap opens
+      `/app?request=<id>[&item=<id>]`; a Reply's text is handed to the page by
+      `NotificationReplyPlugin` and submitted through the app's own session --
+      no device-scoped credential, and the exported `MainActivity` only honours
+      a Reply carrying a per-install secret. The phone POSTs its FCM token to
+      `/app/devices` as platform `fcm` (filed under `android`). `google-services.json`
+      is materialised from `ANDROID_GOOGLE_SERVICES_JSON_B64` by
+      `mobile/scripts/materialize_google_services.py` and never committed;
+      unconfigured builds succeed with push disabled. Founder steps:
+      `docs/host-actions.md`. Desktop allows only the `notifications` permission
+      for the app origin -- not done here.
 - [ ] 3.3 Deploy, then `python scripts/deployed_sha.py --assert-contains <sha>`
       and `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
       --assert-handles`. Live proof: the founder's universe wires its own

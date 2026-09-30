@@ -153,6 +153,8 @@ function $(id){
   return DOM.other[id];
 }
 let activeTurn=null, turnStartedAt=0, liveInflight=null;
+let interruptRequested=false, flushAfterInterrupt=false;
+let interruptPending=null, batchAfterStop=false;
 function appendMessage(role,text){
   if(!hasMessages){ const e=$("thread-empty"); if(e)e.remove(); hasMessages=true; }
   const m=el("msg"); m.className="msg msg--"+role; m.text=String(text||"");

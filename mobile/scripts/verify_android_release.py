@@ -17,6 +17,21 @@ from configure_android_release import AndroidRelease, load_release
 DEFAULT_MOBILE = Path(__file__).resolve().parents[1]
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 A = f"{{{ANDROID_NS}}}"
+TOOLS = "{http://schemas.android.com/tools}"
+# Contributed by firebase-messaging at manifest-merge time; they are never in the
+# source manifest, so they are allowed but not required.
+MERGED_ONLY_PERMISSIONS = (
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.WAKE_LOCK",
+    "com.google.android.c2dm.permission.RECEIVE",
+)
+NATIVE_SOURCES = (
+    "LocalCallbackPlugin.java",
+    "LocalCallbackService.java",
+    "VoiceWebChromeClient.java",
+    "TinyAssetsMessagingService.java",
+    "NotificationReplyPlugin.java",
+)
 
 
 def _value(text: str, pattern: str, label: str) -> str:
@@ -129,9 +144,13 @@ def verify_manifest(path: Path, release: AndroidRelease, *, merged: bool) -> Non
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.RECORD_AUDIO",
         f"{release.app_id}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+        *MERGED_ONLY_PERMISSIONS,
     }
     unexpected = sorted(str(item) for item in permissions - allowed)
-    required = allowed - {f"{release.app_id}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"}
+    required = allowed - {
+        f"{release.app_id}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+        *MERGED_ONLY_PERMISSIONS,
+    }
     missing = sorted(required - permissions)
     if unexpected or missing:
         raise ValueError(f"permission drift: missing={missing}, unexpected={unexpected}")
@@ -184,6 +203,27 @@ def verify_manifest(path: Path, release: AndroidRelease, *, merged: bool) -> Non
             "LocalCallbackService must be non-exported and foregroundServiceType=dataSync"
         )
 
+    notify_service = next(
+        (
+            item
+            for item in components
+            if (item.get(A + "name") or "").endswith("TinyAssetsMessagingService")
+        ),
+        None,
+    )
+    if notify_service is None or notify_service.get(A + "exported") != "false":
+        raise ValueError("TinyAssetsMessagingService must be present and non-exported")
+    # Both services answer MESSAGING_EVENT. If the plugin's own survives the
+    # merge, FCM may hand the data-only message to it and nothing is ever shown.
+    # (The source manifest carries the tools:node="remove" marker that does the
+    # removing; only a service that is NOT so marked would survive the merge.)
+    if any(
+        (item.get(A + "name") or "").endswith("pushnotifications.MessagingService")
+        and item.get(TOOLS + "node") != "remove"
+        for item in components
+    ):
+        raise ValueError("the push plugin's MessagingService must be removed from the manifest")
+
     for component in components:
         if (
             component.get(A + "exported") == "true"
@@ -205,11 +245,7 @@ def verify_sources(mobile: Path, release: AndroidRelease) -> None:
     if not str(server.get("url", "")).startswith("https://"):
         raise ValueError("Capacitor server.url must be HTTPS")
 
-    for name in (
-        "LocalCallbackPlugin.java",
-        "LocalCallbackService.java",
-        "VoiceWebChromeClient.java",
-    ):
+    for name in NATIVE_SOURCES:
         text = (mobile / "native/android" / name).read_text(encoding="utf-8")
         if not re.search(rf"^package\s+{re.escape(release.app_id)};", text, re.MULTILINE):
             raise ValueError(f"{name} package differs from {release.app_id}")
@@ -242,6 +278,21 @@ def verify_sources(mobile: Path, release: AndroidRelease) -> None:
     missing = [item for item in startup_safeguards if item not in service]
     if missing:
         raise ValueError(f"LocalCallbackService is missing startup safeguards: {missing}")
+    notify = (mobile / "native/android/TinyAssetsMessagingService.java").read_text(
+        encoding="utf-8"
+    )
+    notify_safeguards = (
+        "extends FirebaseMessagingService",
+        "SecureRandom",
+        "Context.MODE_PRIVATE",
+        "EXTRA_NONCE",
+        "PendingIntent.FLAG_IMMUTABLE",
+        'if ("clear".equals(data.get("kind")))',
+        "manager.cancel(requestId, NOTIFICATION_ID)",
+    )
+    missing = [item for item in notify_safeguards if item not in notify]
+    if missing:
+        raise ValueError(f"TinyAssetsMessagingService is missing safeguards: {missing}")
     voice = (mobile / "native/android/VoiceWebChromeClient.java").read_text(encoding="utf-8")
     safeguards = (
         'TRUSTED_SCHEME = "https"',
@@ -269,15 +320,13 @@ def verify_generated_java(mobile: Path, release: AndroidRelease) -> None:
         raise ValueError("generated MainActivity package differs from release identity")
     if "registerPlugin(LocalCallbackPlugin.class)" not in main:
         raise ValueError("generated MainActivity did not register LocalCallbackPlugin")
+    if "registerPlugin(NotificationReplyPlugin.class)" not in main:
+        raise ValueError("generated MainActivity did not register NotificationReplyPlugin")
     if "new VoiceWebChromeClient(bridge, this)" not in main:
         raise ValueError("generated MainActivity did not install VoiceWebChromeClient")
     if "voiceChromeClient.stopCapture(bridge.getWebView())" not in main:
         raise ValueError("generated MainActivity does not stop microphone capture on pause")
-    for name in (
-        "LocalCallbackPlugin.java",
-        "LocalCallbackService.java",
-        "VoiceWebChromeClient.java",
-    ):
+    for name in NATIVE_SOURCES:
         source = mobile / "native/android" / name
         generated = package_dir / name
         if not generated.is_file() or _sha256(generated) != _sha256(source):
