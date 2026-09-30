@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -636,8 +636,8 @@ def test_a_self_waking_loop_survives_the_wake_its_own_run_fires(
             graph.emitted.clear()
             # The overlap window: the next wake is due, its predecessor still runs.
             assert consumer.poll_once() == 0
-            wakes = [a for a in AutomationStore(home).list(universe_id=UNIVERSE)
-                     if a.trigger_kind == "once"]
+            wakes = [a for a in AutomationStore(home).list(
+                universe_id=UNIVERSE, include_retired=True) if a.trigger_kind == "once"]
             assert not [a for a in wakes if a.pause_reason == "skipped_overlap"], wakes
             waiting = [a for a in wakes if not a.retired_at]
             assert len(waiting) == 1, wakes
@@ -649,3 +649,63 @@ def test_a_self_waking_loop_survives_the_wake_its_own_run_fires(
     finally:
         graph.finish.set()
         consumer.stop(timeout=10)
+
+
+def test_an_agents_longest_owed_row_runs_first(home: Path, monkeypatch) -> None:
+    """A wake kept waiting is not starved by the agent's own short cadence,
+    which is due again on every free poll (refute P2): of one agent's due rows,
+    the one owed longest runs first, whatever order they were created in."""
+    cadence = register_automation(
+        home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="fast",
+        branch_def_id=WRITER, interval_seconds=1, now=NOW,
+    )
+    # Registered after the cadence (so listed after it), and kept waiting since.
+    later = NOW + timedelta(minutes=1)
+    wake = register_automation(
+        home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="wake",
+        branch_def_id=WRITER, not_before=later.isoformat(), overlap="skip", now=later,
+    )
+    listed = [a.automation_id for a in AutomationStore(home).list(universe_id=UNIVERSE)]
+    assert listed == [cadence.automation_id, wake.automation_id], "precondition"
+    ran: list[str] = []
+    monkeypatch.setattr(
+        automations_module, "_execute",
+        lambda base, automation, *a, **k: ran.append(automation.automation_id)
+        or _FakeOutcome(run_id="r"),
+    )
+    consumer, _inline = _consumer_with_inline_executor(home)
+    try:
+        consumer.poll_once()
+    finally:
+        consumer.stop()
+    assert ran[:1] == [wake.automation_id], (ran, cadence.automation_id)
+
+
+def test_a_row_that_cannot_take_its_agent_says_so_on_the_row(
+    home: Path, monkeypatch,
+) -> None:
+    """A lost lease race is shown where the owner reads the automation, not
+    only under the universe key (refute P2)."""
+    wake = _wake(home, WRITER, overlap="skip")
+    store = AutomationStore(home)
+    assert store.acquire_universe_lease(
+        UNIVERSE, holder="worker_legacy_elsewhere",
+        now=datetime.now(timezone.utc), ttl_seconds=600,
+    )
+    monkeypatch.setattr(
+        "tinyassets.runtime.assigned_queue_consumer.AssignedQueueConsumer."
+        "_agent_running_elsewhere", lambda self, key, now: False,
+    )
+    ran: list[str] = []
+    monkeypatch.setattr(automations_module, "_execute",
+                        lambda *a, **k: ran.append("x") or _FakeOutcome(run_id="r"))
+    consumer, _inline = _consumer_with_inline_executor(home)
+    try:
+        consumer.poll_once()
+    finally:
+        consumer.stop()
+    assert ran == []
+    assert _refusal_rows(home).get(f"automation:{wake.automation_id}", "").startswith(
+        "universe_busy:"
+    ), _refusal_rows(home)
+    assert store.get(wake.automation_id).retired_at == ""

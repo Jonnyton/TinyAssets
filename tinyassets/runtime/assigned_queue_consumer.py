@@ -717,7 +717,9 @@ class AssignedQueueConsumer:
                 continue
             ready: list[tuple[str, tuple[Any, str]]] = []
             seen: set[str] = set()
-            for automation, due_at in due:
+            # Longest-owed first, so an agent's one-shot wake is not starved by
+            # its own short cadence that is due again on every free poll.
+            for automation, due_at in sorted(due, key=lambda item: item[1]):
                 key = automation_lease_key(automation)
                 if key in busy or self._agent_running_elsewhere(key, now):
                     self._apply_overlap(key, automation, due_at, now, refusal_store)
@@ -868,6 +870,7 @@ class AssignedQueueConsumer:
         from datetime import datetime as _dt
 
         from tinyassets.automations import (
+            REFUSAL_KEY_PREFIX,
             AutomationStore,
             automation_lease_key,
             run_due_automation,
@@ -902,6 +905,14 @@ class AssignedQueueConsumer:
                 universe_id,
                 reason,
             )
+            # And on each row, where its owner reads the automation.
+            for automation, _due_at in due:
+                self._record_reason(
+                    refusal_store,
+                    f"{REFUSAL_KEY_PREFIX}{automation.automation_id}",
+                    universe_id,
+                    reason,
+                )
             return
         stop_refresh = threading.Event()
         refresher = threading.Thread(
