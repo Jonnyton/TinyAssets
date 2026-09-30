@@ -50,6 +50,7 @@ from tinyassets.automations import (
     next_due_at,
     register_automation,
 )
+from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
 
 logger = logging.getLogger("universe_server.automations")
 
@@ -315,6 +316,9 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
             "automation_id": control.automation_id,
             "legacy": True,
             "status": "retired_fleet_era",
+            # The consumer stopped it with this reason (plan C1). Carried on
+            # the row so it outlives the refusal ledger's freshness window.
+            "detail": RETIRED_FLEET_CONTROL_REASON,
             "desired_state": getattr(
                 control.desired_state, "value", control.desired_state
             ),

@@ -80,7 +80,9 @@ def _bindings(base, *statuses: str, created_by: str = "alice") -> None:
 def test_a_SERVING_universe_is_not_told_to_choose_a_provider(tmp_path, monkeypatch):
     _ready(monkeypatch)
     _bindings(tmp_path, "configured", "serving")
-    assert _consumer(tmp_path)._no_runtime_reason("u-1") == "legacy_control_tasks_parked"
+    # Serving: nothing to report (the fleet-era "legacy_control_tasks_parked"
+    # retired with its pump; the consumer records an `ok:` row status hides).
+    assert _consumer(tmp_path)._no_runtime_reason("u-1") == ""
 
 
 def test_TWO_serving_bindings_are_not_serving_because_admission_refuses_them(tmp_path, monkeypatch):

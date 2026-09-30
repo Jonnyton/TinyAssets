@@ -689,6 +689,11 @@ def test_legacy_control_rows_are_listed_and_flagged(tmp_path: Path, env) -> None
     # The fleet-era row's own desired_state, reported as-is: it is a record of
     # what the old layer was told, not a claim that anything will run.
     assert legacy["desired_state"] == "active"
+    # The disposition the consumer records when it stops these (plan C1) is on
+    # the row itself, so it outlives the refusal ledger's freshness window.
+    from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
+
+    assert legacy["detail"] == RETIRED_FLEET_CONTROL_REASON
     assert listed["count"] == 2
 
 
