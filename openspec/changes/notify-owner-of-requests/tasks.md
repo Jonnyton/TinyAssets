@@ -62,12 +62,16 @@ collide with the app-URL move (#4112). Slice 2 (3.x) depends on #4112.
 
 ## 3. Slice 2 — surfaces and the native release (depends on #4112)
 
-- [ ] 3.1 App surface: `/app` routes for device register / list / retire, the
+- [x] 3.1 App surface: `/app` routes for device register / list / retire, the
       notification on/off and the service worker — each added to #4112's
       enumerated `_is_app_path`, with a negative test that a new app route
       never answers anonymously; and the rail rendering items as a checklist
       with per-item Accept / Deny / Reply, a `?request=<id>` deep link, and the
       on/off row listing the owner's own devices.
+      Browser slice: permission + subscription registration, exact app click
+      navigation, request/item deep links, item answers through the existing
+      answer path, status-only poll updates preserving drafts, and clear handling.
+      Native Android and Electron delivery remain in 3.2, a separate PR.
 - [ ] 3.2 Native: `@capacitor/push-notifications`, a committed Java plugin plus
       `mobile/scripts/configure_android_push.py`, `google-services.json`
       materialised from a secret and never committed, tap-through to

@@ -95,6 +95,11 @@
           overflow-y:auto;padding:.6rem;display:flex;flex-direction:column;gap:.5rem;
           min-width:0}
     .rail[hidden]{display:none}
+    .rtab-item{border-bottom:1px solid var(--line);padding:.6rem 0;margin-bottom:.6rem}
+    .rtab-item-heading{display:flex;align-items:flex-start;gap:.4rem;overflow-wrap:anywhere}
+    .rtab-item-heading input{width:auto;flex:0 0 auto;margin:.2rem 0 0}
+    .rtab-item-name{flex:1;min-width:0}
+    .rtab-item-status{display:block;font-size:.7rem;color:var(--muted)}
     .rail-head{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;
                color:var(--muted);padding:.2rem .3rem}
     .rtab{border:1px solid var(--line);border-radius:10px;background:var(--surface-2);
@@ -571,6 +576,12 @@
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
+        <h3>Request notifications</h3>
+        <p>Get notified when your universe is waiting on you. Turning this off stops notifications on all your devices.</p>
+        <button id="btn-notifications" class="btn btn--ghost" type="button" disabled>Loading notifications...</button>
+        <button id="btn-browser-notifications" class="btn btn--ghost" type="button">Enable in this browser</button>
+        <div id="notification-status" class="notice" role="status"></div>
+        <ul id="notification-devices"></ul>
         <div class="danger-zone">
           <h3>Delete your account</h3>
           <p>This deletes your universe — its memory, your conversation history, and any
@@ -4051,6 +4062,7 @@
     // saved attachments), which is readable only once owner and home are known.
     if(me&&me.universe_id) setQueueScope(me.universe_id);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
+    if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
     // Not awaited: the owner's clock is for the NEXT schedule they create, so
     // it must not sit in front of the page they are waiting for.
     reportTimezone();
@@ -4305,6 +4317,7 @@
 
   function enterSignedOut(){ clearInterval(statusTimer); clearInterval(workingTimer); workingTimer=null;
     MCP.endLogin(); Voice.stop(false);
+    if(typeof unsubscribeBrowserNotifications === "function") unsubscribeBrowserNotifications();
     // Pending attachments belong to the account that picked them. They are
     // dropped, never released (release needs that same login and home) and
     // never carried into whoever signs in next.
@@ -5360,7 +5373,9 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); }
+    $("btn-notifications").addEventListener("click", ()=>toggleNotifications(false));
+    $("btn-browser-notifications").addEventListener("click", ()=>toggleNotifications(true));
     // ---- your universe's connections ----
     // Disconnect is a deliberate TWO-STEP, in-page confirmation. It used to
     // raise the browser's own confirm(): one string, drawn outside the page,
@@ -5955,10 +5970,113 @@
   // End connect OAuth controller.
 
   // ---- Pending-request rail ------------------------------------------------
+  let notificationEnabled=false, notificationBusy=false, notificationLoad=0;
+  async function rebindBrowserNotifications(){
+    // A persistent browser subscription must move with the verified login,
+    // even when the new owner never opens Account.
+    const session=notificationSession();
+    try{
+      if(!navigator.serviceWorker) return;
+      const registration=await navigator.serviceWorker.getRegistration("/app");
+      const subscription=registration && await registration.pushManager.getSubscription();
+      if(subscription){
+        await notificationAPI(session,"/app/devices",{
+          platform:"web",token:subscription.toJSON(),label:"Browser"});
+        const notifications=await registration.getNotifications();
+        if(session.current()) notifications.forEach(n=>n.close());
+      }
+    }catch(_error){
+      // If ownership cannot be moved, stop this browser receiving the old
+      // owner's push. The owner can explicitly enable it again in Account.
+      if(session.current()) await unsubscribeBrowserNotifications();
+    }
+  }
+  async function unsubscribeBrowserNotifications(){
+    const epoch=MCP._loginEpoch;
+    try{
+      if(!navigator.serviceWorker) return;
+      const registration=await navigator.serviceWorker.getRegistration("/app");
+      if(!registration || epoch!==MCP._loginEpoch) return;
+      const subscription=await registration.pushManager.getSubscription();
+      if(epoch!==MCP._loginEpoch) return;
+      if(subscription) await subscription.unsubscribe();
+      const notifications=await registration.getNotifications();
+      if(epoch===MCP._loginEpoch) notifications.forEach(n=>n.close());
+    }catch(_error){ console.warn("Could not remove this browser's push subscription."); }
+  }
+  function notificationSession(){
+    const epoch=MCP._loginEpoch, owner=queueOwner, bearer=token();
+    return {bearer, current:()=>epoch===MCP._loginEpoch && owner===queueOwner && !!token()};
+  }
+  async function notificationAPI(session, path, body){
+    if(!session.current()) throw new Error("Account changed. Open Account again.");
+    const response=await fetch(path,{method:body === undefined ? "GET" : "POST",
+      headers:{Authorization:"Bearer " + session.bearer,"Content-Type":"application/json"},
+      body:body === undefined ? undefined : JSON.stringify(body)});
+    if(!session.current()) throw new Error("Account changed. Open Account again.");
+    if(!response.ok) throw new Error(response.status===401 ? "Sign in again to change notifications." : "Notifications are unavailable. Try again.");
+    return response.json();
+  }
+  async function loadNotifications(){
+    const session=notificationSession(), generation=++notificationLoad;
+    const button=$("btn-notifications"), status=$("notification-status");
+    button.disabled=true; status.textContent=""; $("notification-devices").textContent="";
+    try{
+      const settings=await notificationAPI(session,"/app/notify");
+      const devices=await notificationAPI(session,"/app/devices");
+      if(!session.current() || generation!==notificationLoad) return;
+      notificationEnabled=settings.enabled;
+      button.textContent=settings.enabled ? "Turn notifications off" : "Turn notifications on";
+      button.disabled=notificationBusy;
+      devices.devices.forEach(device=>{
+        const li=document.createElement("li");
+        li.textContent=(device.label || device.platform) + (device.enabled ? " — enabled" : " — off");
+        $("notification-devices").appendChild(li);
+      });
+      if(!settings.vapid_public_key) status.textContent="Browser notifications are not configured yet.";
+    }catch(error){ if(session.current() && generation===notificationLoad) status.textContent=error.message; }
+  }
+  async function toggleNotifications(registerBrowser){
+    if(notificationBusy) return;
+    const session=notificationSession(), enable=registerBrowser || !notificationEnabled;
+    const button=$("btn-notifications"), status=$("notification-status");
+    notificationBusy=true; button.disabled=true;
+    try{
+      if(enable){
+        if(!("Notification" in window) || !navigator.serviceWorker || !("PushManager" in window))
+          throw new Error("This browser does not support push notifications.");
+        // Ask while the click's user activation is still available.
+        const permission=await Notification.requestPermission();
+        if(permission!=="granted") throw new Error("Notifications are blocked. Allow them in your browser settings to turn them on.");
+        const settings=await notificationAPI(session,"/app/notify");
+        if(!settings.vapid_public_key) throw new Error("Browser notifications are not configured yet.");
+        const registration=await navigator.serviceWorker.register("/app/sw.js",{scope:"/app"});
+        await navigator.serviceWorker.ready;
+        if(!session.current()) return;
+        const key=settings.vapid_public_key.replace(/-/g,"+").replace(/_/g,"/");
+        const bytes=Uint8Array.from(atob(key + "=".repeat((4-key.length%4)%4)),c=>c.charCodeAt(0));
+        const subscription=await registration.pushManager.getSubscription()
+          || await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes});
+        await notificationAPI(session,"/app/devices",{platform:"web",token:subscription.toJSON(),label:"Browser"});
+      }
+      await notificationAPI(session,"/app/notify",{enabled:enable});
+      if(session.current()) status.textContent=enable ? "Notifications are on." : "Notifications are off on all devices.";
+    }catch(error){ if(session.current()) status.textContent=error.message; }
+    finally{
+      notificationBusy=false;
+      if(session.current()){
+        button.disabled=false;
+        // Keep failures visible; re-read only after a successful setting write.
+        if(status.textContent==="Notifications are on." || status.textContent==="Notifications are off on all devices.") await loadNotifications();
+      }
+    }
+  }
   // The agent raises asks; they appear as tabs whose header is the KIND it chose
   // ("API", "Approval", anything). The agent composes the fields, so a kind this
   // code has never heard of still renders — that is the point of the primitive.
-  let railOpen = null;      // request_id of the expanded tab
+  let railOpen = null;
+  let railLink = new URLSearchParams(location.search).get("request");
+  let railDeepItem = new URLSearchParams(location.search).get("item");
   let connectWasBlocking = null;  // was the connect request sticky last render?
   let railCache = [];
   // request_id -> {signature, node}: the card nodes currently on screen, so a
@@ -6060,6 +6178,9 @@
   }
 
   function renderRail(items){
+    if(typeof railLink !== "undefined" && railLink && (items||[]).some(r=>r.request_id===railLink)){
+      railOpen=railLink; railLink=null;
+    }
     railCache = items || [];
     const rail = $("request-rail"), host = $("rail-items"), head = $("rail-head");
     if(!rail || !host) return;
@@ -6105,8 +6226,13 @@
       // rail row was one it could neither act on nor remove). Still rendered
       // when something opened it deliberately, so that route has a card.
       if(isOptionalRequest(req) && !open && !req.suggestion) return;
+      const shape={...req};
+      if(req.items) shape.items=req.items.map(i=>({item_id:i.item_id,title:i.title,body:i.body,fields:i.fields}));
       wanted.push({req, open, setup: isSetupRequest(req),
-                   signature: JSON.stringify([req, open, isOptionalRequest(req)])});
+                   signature: JSON.stringify([shape, open, isOptionalRequest(req)])});
+      // Resolution from another device updates only the checklist status. Never
+      // replace the card (or another item's draft) during a poll.
+      if(req.items && railNodes.has(req.request_id)) updateRailItems(req);
     });
     // The setup card is never reused: its inputs live in #connect-panel, which
     // is parked on the rail and re-hosted on purpose, so its presence always
@@ -6149,12 +6275,30 @@
       if(open && setup){ tab.appendChild(connectBody(req)); setupOpen = !!req.sticky; }
       else if(open) tab.appendChild(railBody(req));
       host.appendChild(tab);
+      if(req.items) updateRailItems(req);
       if(!setup) keep.set(req.request_id, {signature, node: tab});
     });
     // Anything not carried over is gone from the rail; drop it so a resolved
     // ask cannot come back holding a stale node.
     railNodes = keep;
     rail.classList.toggle("rail--setup", setupOpen);
+    if(typeof railDeepItem !== "undefined" && railDeepItem){
+      const target=$("item_" + railOpen + "::" + railDeepItem);
+      if(target){ target.scrollIntoView({block:"nearest"}); target.focus(); railDeepItem=null; }
+    }
+  }
+
+  function updateRailItems(req){
+    (req.items||[]).forEach(item=>{
+      const id=req.request_id + "::" + item.item_id;
+      const box=$("item_" + id), check=$("check_" + id), status=$("status_" + id);
+      const done=!!item.status && item.status !== "pending";
+      if(check) check.checked=done;
+      if(status) status.textContent=done ? (item.status === "dismissed" ? "Denied" : "Answered") : "Waiting";
+      if(box) box.querySelectorAll("button, input, textarea, select").forEach(el=>{
+        if(el.id === "check_" + id || done) el.disabled=true;
+      });
+    });
   }
 
   // The setup request's body: the panel node, configured from the request.
@@ -6524,6 +6668,25 @@
 
   function railBody(req){
     const box = document.createElement("div"); box.className = "rtab-body";
+    (req.items||[]).forEach(item=>{
+      const id=req.request_id + "::" + item.item_id;
+      const entry=document.createElement("section"); entry.id="item_" + id; entry.className="rtab-item";
+      entry.tabIndex=-1;
+      const heading=document.createElement("label"); heading.className="rtab-item-heading";
+      const check=document.createElement("input"); check.type="checkbox";
+      check.id="check_" + id; check.disabled=true;
+      heading.appendChild(check);
+      const name=document.createElement("span"); name.className="rtab-item-name"; name.textContent=item.title;
+      heading.appendChild(name);
+      const status=document.createElement("span"); status.id="status_" + id;
+      status.className="rtab-item-status"; name.appendChild(status); entry.appendChild(heading);
+      entry.appendChild(railBody({...item, request_id:id, parent_request_id:req.request_id}));
+      box.appendChild(entry);
+    });
+    if(req.items && req.items.length){
+      const heading=document.createElement("strong"); heading.textContent="Whole request";
+      box.appendChild(heading);
+    }
     if(req.body){
       const why = document.createElement("p");
       why.className = "rtab-why"; why.textContent = req.body; box.appendChild(why);
@@ -6563,7 +6726,7 @@
     mbox.type = "checkbox"; mbox.id = "mute_" + req.request_id;
     mute.appendChild(mbox);
     mute.appendChild(document.createTextNode("Don't ask me this again"));
-    box.appendChild(mute);
+    if(!req.item_id) box.appendChild(mute);
 
     const note = document.createElement("div");
     note.className = "rtab-note"; note.id = "note_" + req.request_id;
@@ -6582,7 +6745,7 @@
     };
     verb("Accept", "btn--primary", "accept");
     verb("Deny", "btn--ghost", "deny");
-    verb("Clear", "btn--ghost", "clear");
+    if(!req.item_id) verb("Clear", "btn--ghost", "clear");
     verb("Send reply", "btn--link", "reply");
     box.appendChild(row); box.appendChild(note);
     ConnectOAuth.decorate(req, box, row, note);
@@ -6621,7 +6784,7 @@
         ? frame(k, 60) + ": (provided)"
         : frame(k, 60) + ": " + frame(values[k], 200));
       line = "Answered \"" + title + "\" \u2014 " + parts.join("; ");
-    } else line = "Approved: \"" + title + "\"";
+    } else line = (mode === "reply" ? "Answered \"" : "Approved: \"") + title + "\"";
     if(payload && payload.dont_ask_again) line += " (and don\u2019t ask me this again)";
     if(payload && payload.feedback) line += " \u2014 " + payload.feedback;
     return line;
@@ -6641,9 +6804,10 @@
   }
 
   async function answerRail(req, mode, note, buttons){
+    let itemAnswered=false;
     const fbEl = $("fb_" + req.request_id), muteEl = $("mute_" + req.request_id);
     const text = fbEl && fbEl.value.trim() ? fbEl.value.trim() : "";
-    if(mode === "reply"){
+    if(mode === "reply" && !req.item_id){
       if(!text){ note.textContent = "Type something to send."; return; }
       if(fbEl) fbEl.value = "";
       note.textContent = "Sent. The ask stays open until you accept, deny or clear it.";
@@ -6651,11 +6815,13 @@
         {relay:true, keepComposer:true, inputMethod:"typed"});
       return;
     }
-    const payload = { request_id: req.request_id };
+    const payload = { request_id: req.parent_request_id || req.request_id };
+    if(req.item_id) payload.item_id=req.item_id;
+    if(mode === "reply" && !text){ note.textContent = "Type something to send."; return; }
     if(text) payload.feedback = text;
-    if(muteEl && muteEl.checked) payload.dont_ask_again = true;
+    if(!req.item_id && muteEl && muteEl.checked) payload.dont_ask_again = true;
     if(mode === "clear"){ payload.dismiss = true; }
-    else if(mode === "deny"){ payload.decision = "declined"; }
+    else if(mode === "deny"){ if(req.item_id) payload.dismiss=true; else payload.decision = "declined"; }
     else {
       const values = {};
       (req.fields||[]).forEach(f=>{
@@ -6684,6 +6850,7 @@
         }
       }
       else {
+        itemAnswered=!!req.item_id;
         if(r && r.suppressed === false) delete payload.dont_ask_again;
         // The answer is the founder's own line in the thread. Live 2026-08-29:
         // after each approval the universe sat idle until the founder typed
@@ -6694,7 +6861,7 @@
         const busy = $("btn-send").disabled;
         note.textContent = (r.receipt || (mode === "clear" ? "Cleared." : mode === "deny" ? "Denied." : "Sent."))
           + (busy ? " Your universe will see it when its current turn ends." : "");
-        railOpen = null;
+        if(!req.item_id || r.request_status !== "pending") railOpen = null;
         await refreshRail();
         sendTurn(answerLine(req, mode, payload), undefined,
           {relay:true, keepComposer:true, inputMethod:"app_action"});
@@ -6702,7 +6869,7 @@
     }catch(err){
       if(err.authRequired) return enterSignedOut();
       note.textContent = "Couldn't do that: " + err.message;
-    }finally{ buttons.forEach(b=>{ b.disabled = false; }); }
+    }finally{ buttons.forEach(b=>{ b.disabled = itemAnswered; }); }
   }
 
   async function refreshRail(){

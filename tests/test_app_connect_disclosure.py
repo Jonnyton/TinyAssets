@@ -70,6 +70,7 @@ const $=id=>{if(!elements.has(id)){const e=node(id);e.id=id;elements.set(id,e);}
   return elements.get(id);};
 const document={createElement:node,addEventListener(){}};
 const window={};
+const location={search:'',href:'https://tinyassets.io/app',pathname:'/app'};
 const HostedModelConnect={adopt(){},configure(){},setup:null};
 // The real ids the page uses, declared above the slice.
 const CONNECT_REQUEST_ID='sys_connect_llm';
