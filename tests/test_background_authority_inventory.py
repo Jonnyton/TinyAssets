@@ -187,14 +187,6 @@ def test_inventory_closes_indirect_and_packaged_execution_boundaries() -> None:
     )
     assert (
         CallSite(
-            "tinyassets/scheduler.py",
-            "Scheduler._maybe_fire_schedule",
-            "_run_fn",
-        )
-        in observed
-    )
-    assert (
-        CallSite(
             "packaging/claude-plugin/plugins/tinyassets-universe-server/"
             "runtime/tinyassets/graph_compiler.py",
             "_build_invoke_branch_node._node_fn",

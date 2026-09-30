@@ -40,6 +40,14 @@ from tinyassets.runs import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _pin_data_dir(tmp_path, monkeypatch):
+    """Every child run is charged to its universe's admission ledger, which
+    lives under the data dir. Pin it, or the charges land in the real one."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+
+
 def _make_child_branch(*, author: str = "child-author") -> BranchDefinition:
     """Trivial child branch: one source-code node returns a fixed dict."""
     nd = NodeDefinition(
