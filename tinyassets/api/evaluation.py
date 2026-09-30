@@ -885,6 +885,8 @@ def _action_publish_version(kwargs: dict[str, Any]) -> str:
             publisher=publisher,
             notes=notes,
             parent_version_id=parent_version_id,
+            # The owner's explicit publish: this version, and only this one.
+            public=True,
         )
     except (KeyError, ValueError) as exc:
         return json.dumps({"error": str(exc)})
@@ -934,6 +936,15 @@ def _action_list_branch_versions(kwargs: dict[str, Any]) -> str:
     if not _branch_readable(bid):
         return json.dumps({"error": f"Branch '{bid}' not found."})
     versions = list_branch_versions(base_path, bid, limit=limit)
+    from tinyassets.api.branches import _request_branch_actor
+    from tinyassets.daemon_server import get_branch_definition
+
+    actor = _request_branch_actor()
+    if actor is None or (get_branch_definition(base_path, branch_def_id=bid).get("author")
+                         or "") != actor:
+        # Anyone but the author sees only versions its owner published; the
+        # rest is edit history.
+        versions = [v for v in versions if v.public]
     return json.dumps({
         "branch_def_id": bid,
         "versions": [v.to_dict() for v in versions],

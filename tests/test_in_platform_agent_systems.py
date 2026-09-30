@@ -564,6 +564,108 @@ def test_a_credential_anywhere_in_a_workflow_is_refused(home: Path) -> None:
     assert _visibility(home, SCRIBE) == "private"
 
 
+def _bob_reads_version(version_id: str) -> str:
+    from tinyassets.api.extensions import _extensions_impl
+
+    with _as(BOB):
+        return _extensions_impl(action="get_branch_version", branch_version_id=version_id)
+
+
+def test_publishing_exposes_the_confirmed_version_never_the_history(home: Path) -> None:
+    """Founder 2026-09-30 (astra round 3, P1): publishing made a branch's whole
+    private edit history readable, including a credential the owner had since
+    removed. Only the version the owner confirmed is marked published."""
+    from tinyassets.api.extensions import _extensions_impl
+    from tinyassets.custom_agents import get_definition
+
+    token = "sk-" + "live" + "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6"
+    _library(home)
+    with _as(OWNER):
+        for prompt in (f"Use {token}", "the clean prompt"):
+            patched = json.loads(_extensions_impl(
+                action="patch_branch", branch_def_id=SCOUT, changes_json=json.dumps(
+                    [{"op": "update_node", "node_id": "n1", "prompt_template": prompt}])))
+            assert not patched.get("error"), patched
+        history = json.loads(_extensions_impl(action="list_branch_versions",
+                                               branch_def_id=SCOUT))["versions"]
+    assert any(token in json.dumps(v) for v in history), "the history really holds it"
+
+    done = _answer(_ask_publish(home)["request_id"])
+    assert done.get("published") is True, done
+    confirmed = set(done["branch_versions"].values())
+    refs = {c["published_version_id"] for c in get_definition(
+        home, done["agent_definition_id"])["components"].values()
+        if c["kind"] == "tinyassets.branch-ref.v1"}
+    assert refs == confirmed
+    for version in history:
+        seen = _bob_reads_version(version["branch_version_id"])
+        if version["branch_version_id"] not in confirmed:
+            assert "not found" in seen and token not in seen, seen
+    for version_id in confirmed:
+        assert version_id in _bob_reads_version(version_id)
+    with _as(BOB):
+        listed = _extensions_impl(action="list_branch_versions", branch_def_id=SCOUT)
+    assert token not in listed
+    assert {v["branch_version_id"] for v in json.loads(listed)["versions"]} <= confirmed
+
+
+def test_a_refused_accept_leaves_its_minted_versions_unreadable(home: Path, monkeypatch) -> None:
+    """Astra round 3, P1: a version minted during an accept that was then
+    refused was readable. Minted versions stay unmarked until the commit point."""
+    from tinyassets import branch_versions
+    from tinyassets.api.extensions import _extensions_impl
+
+    _library(home)
+    ask = _ask_publish(home)
+    real_mint = branch_versions.publish_branch_version
+    minted: list[str] = []
+
+    def mint_then_edit(*args, **kwargs):
+        version = real_mint(*args, **kwargs)
+        minted.append(version.branch_version_id)
+        if len(minted) == 1:
+            with _as(OWNER):
+                _extensions_impl(
+                    action="patch_branch", branch_def_id=SCRIBE, changes_json=json.dumps(
+                        [{"op": "set_description", "description": "changed"}]))
+        return version
+
+    monkeypatch.setattr(branch_versions, "publish_branch_version", mint_then_edit)
+    out = _answer(ask["request_id"])
+    assert out.get("error") == "publish_refused", out
+    assert minted
+    for version_id in minted:
+        assert "not found" in _bob_reads_version(version_id)
+    # And they stay unreadable if the owner later makes the branch public some
+    # other way: an unconsented version was never marked, so a branch going
+    # public does not publish it (the branch's privacy alone would hide the
+    # mint-time-marking mistake).
+    from tinyassets.daemon_server import update_branch_definition
+
+    for branch in (SCOUT, SCRIBE):
+        update_branch_definition(home, branch_def_id=branch, updates={"visibility": "public"})
+    for version_id in minted:
+        assert "not found" in _bob_reads_version(version_id), version_id
+
+
+@pytest.mark.parametrize("updates", [
+    {"stats": {"note": "OWNER PRIVATE"}},
+    {"version": 7},
+])
+def test_stats_and_version_are_pinned_too(home: Path, updates) -> None:
+    """Astra round 3, P1: `stats` and `version` sat outside the snapshot while a
+    public read returns both. Only visibility, published and updated_at are
+    exempt now."""
+    from tinyassets.daemon_server import update_branch_definition
+
+    _library(home)
+    ask = _ask_publish(home)
+    update_branch_definition(home, branch_def_id=SCOUT, updates=updates)
+    out = _answer(ask["request_id"])
+    assert out.get("error") == "publish_refused", out
+    assert _visibility(home, SCOUT) == "private"
+
+
 def test_a_bundle_that_fails_to_publish_leaves_nothing_public(home: Path, monkeypatch) -> None:
     """Astra round 2, P2: branches went public before the bundle was validated.
     The bundle is now validated before any write, and a storage failure after

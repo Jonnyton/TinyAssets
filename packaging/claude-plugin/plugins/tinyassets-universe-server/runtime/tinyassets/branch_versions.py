@@ -61,7 +61,8 @@ BRANCH_VERSIONS_SCHEMA = """
         rolled_back_at        TEXT,
         rolled_back_by        TEXT,
         rolled_back_reason    TEXT,
-        watch_window_seconds  INTEGER NOT NULL DEFAULT 86400
+        watch_window_seconds  INTEGER NOT NULL DEFAULT 86400,
+        public                INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE INDEX IF NOT EXISTS idx_bv_branch_def
@@ -105,6 +106,9 @@ class BranchVersion:
     rolled_back_by: str | None = None
     rolled_back_reason: str | None = None
     watch_window_seconds: int = DEFAULT_WATCH_WINDOW_SECONDS
+    #: The publication mark: its owner published THIS version. Anyone but the
+    #: author reads a version only when this is set AND its branch is readable.
+    public: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -121,6 +125,7 @@ class BranchVersion:
             "rolled_back_by": self.rolled_back_by,
             "rolled_back_reason": self.rolled_back_reason,
             "watch_window_seconds": self.watch_window_seconds,
+            "public": self.public,
         }
 
 
@@ -170,7 +175,8 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
                 rolled_back_at        TEXT,
                 rolled_back_by        TEXT,
                 rolled_back_reason    TEXT,
-                watch_window_seconds  INTEGER NOT NULL DEFAULT 86400
+                watch_window_seconds  INTEGER NOT NULL DEFAULT 86400,
+                public                INTEGER NOT NULL DEFAULT 0
             )
         """)
         # Step 2: ALTER TABLE for any pre-Task-#22 DBs missing the new
@@ -186,6 +192,21 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
                 conn.execute(
                     f"ALTER TABLE branch_versions ADD COLUMN {col_name} {col_ddl}"
                 )
+        if "public" not in existing_cols:
+            # The publication mark (in-platform-agent-systems, founder
+            # 2026-09-30): a version is readable by anyone but its author
+            # only when its owner published THAT version. patch_branch mints
+            # a snapshot before and after every edit, so a branch's versions
+            # are mostly private edit history. Existing rows: an explicit
+            # publish is marked, patch_branch's own snapshots are not -- the
+            # one minter whose notes say so.
+            conn.execute(
+                "ALTER TABLE branch_versions ADD COLUMN public INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute(
+                "UPDATE branch_versions SET public = 1 "
+                "WHERE notes NOT LIKE 'patch_branch %'"
+            )
         # Step 3: indexes — including the new idx_bv_status / idx_bv_published_at
         # which reference columns the ALTER step just added on migrated DBs.
         conn.execute(
@@ -256,8 +277,14 @@ def publish_branch_version(
     notes: str = "",
     parent_version_id: str | None = None,
     watch_window_seconds: int | None = None,
+    public: bool = False,
 ) -> BranchVersion:
     """Mint an immutable snapshot of branch_dict.
+
+    ``public`` marks THIS version as published by its owner -- the only way a
+    version becomes readable to anyone but its author (see
+    :func:`mark_versions_public`). An identical snapshot that already exists is
+    returned, and marked when ``public`` is set.
 
     Returns the BranchVersion. If an identical content_hash already exists
     for this branch_def_id, returns the existing record (deterministic).
@@ -289,6 +316,15 @@ def publish_branch_version(
             (branch_def_id, content_hash),
         ).fetchone()
         if existing is not None:
+            if public and not existing["public"]:
+                conn.execute(
+                    "UPDATE branch_versions SET public = 1 WHERE branch_version_id = ?",
+                    (existing["branch_version_id"],),
+                )
+                existing = conn.execute(
+                    "SELECT * FROM branch_versions WHERE branch_version_id = ?",
+                    (existing["branch_version_id"],),
+                ).fetchone()
             return _row_to_version(existing)
 
         branch_version_id = f"{branch_def_id}@{content_hash[:8]}"
@@ -309,8 +345,8 @@ def publish_branch_version(
             INSERT OR IGNORE INTO branch_versions
                 (branch_version_id, branch_def_id, content_hash,
                  snapshot_json, notes, publisher, published_at, parent_version_id,
-                 status, watch_window_seconds)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                 status, watch_window_seconds, public)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
             """,
             (
                 branch_version_id,
@@ -322,6 +358,7 @@ def publish_branch_version(
                 published_at,
                 parent_version_id,
                 resolved_watch_window,
+                1 if public else 0,
             ),
         )
         # Re-fetch to get exact stored row (handles INSERT OR IGNORE race).
@@ -503,6 +540,19 @@ def _validate_version_exists(conn: sqlite3.Connection, version_id: str) -> None:
         raise KeyError(f"parent_version_id '{version_id}' not found.")
 
 
+def mark_versions_public(
+    base_path: str | Path, version_ids: list[str], *, public: bool = True,
+) -> None:
+    """Set (or clear) the publication mark on exactly these versions."""
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        for version_id in version_ids:
+            conn.execute(
+                "UPDATE branch_versions SET public = ? WHERE branch_version_id = ?",
+                (1 if public else 0, version_id),
+            )
+
+
 def _row_to_version(row: sqlite3.Row) -> BranchVersion:
     try:
         snapshot = json.loads(row["snapshot_json"])
@@ -538,11 +588,13 @@ def _row_to_version(row: sqlite3.Row) -> BranchVersion:
             and row["watch_window_seconds"] is not None
             else DEFAULT_WATCH_WINDOW_SECONDS
         ),
+        public=bool(row["public"]) if "public" in row_keys else False,
     )
 
 
 __all__ = [
     "BranchVersion",
+    "mark_versions_public",
     "BRANCH_VERSIONS_SCHEMA",
     "DEFAULT_WATCH_WINDOW_SECONDS",
     "compute_content_hash",

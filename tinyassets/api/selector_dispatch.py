@@ -265,6 +265,7 @@ def ensure_default_selector_published(base_path: str | Path) -> str:
         base_path,
         branch_dict=branch_dict,
         publisher=DEFAULT_SELECTOR_PUBLISHER,
+        public=True,
         notes=(
             "Platform default selector v1 — single prompt-template "
             "node ranking candidate branches from collected signals. "

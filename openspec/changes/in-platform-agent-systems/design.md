@@ -135,6 +135,26 @@ Deny, Clear and a served turn publish nothing. The served surface has no
 `answer_request`. That is the existing rule for every action-bearing ask: an
 agent that could answer its own ask could consent for its owner.
 
+### Versions carry their own publication mark (founder, 2026-09-30)
+
+`patch_branch` snapshots every edit, so most of a branch's versions are private
+edit history. Round 3 showed that publishing a branch exposed all of it,
+including a credential the owner had since removed. Each version now has a
+`public` mark:
+- Anyone but the branch's author reads a version only when its branch is
+  readable AND the version is marked.
+- `publish_branch_version(public=True)` sets the mark. That also covers an
+  identical snapshot returned from history.
+- The mark is set only by the explicit connector `publish_version`, by this
+  ask's accept (after the flip), and by the platform's default selector.
+- Migration: existing rows are marked except `patch_branch`'s own snapshots,
+  which are the one minter whose notes say so.
+- Listings for non-authors show only marked versions. The commons'
+  "published" scope means "has a marked version".
+
+The snapshot also pins `stats` and `version`. Only `visibility`, `published`
+and `updated_at` are exempt, because a public read returns both of the others.
+
 ### What the owner's branch being public means
 
 This is the existing commons model: a public branch is a readable, copyable

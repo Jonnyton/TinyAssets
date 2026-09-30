@@ -113,8 +113,11 @@ def test_a_single_version_answers_a_stranger_as_if_absent(
 ) -> None:
     base, authenticate = branch_authority_env
     version_id = _alices_private_branch(base)
+    from tinyassets.branch_versions import publish_branch_version
+
     public = _seed_branch(base, branch_def_id="bob-public", author="bob", node_ids=("s",))
-    public_version = _publish(base, public, "bob")
+    public_version = publish_branch_version(
+        base, public, publisher="bob", public=True).branch_version_id
 
     authenticate("bob")
     assert _ext("get_branch_version", branch_version_id=version_id) == {
@@ -128,3 +131,73 @@ def test_a_single_version_answers_a_stranger_as_if_absent(
     authenticate("carol")
     assert _ext("get_branch_version", branch_version_id=public_version)[
         "branch_version_id"] == public_version
+
+
+def test_a_public_branchs_unpublished_history_stays_its_authors(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],  # noqa: F811
+) -> None:
+    """Founder 2026-09-30 (astra round 3 on #4107): a public branch exposes only
+    the versions its owner published. Its edit history -- the snapshots
+    patch_branch mints on every edit -- stays readable to the author alone."""
+    from tinyassets.branch_versions import publish_branch_version
+
+    base, authenticate = branch_authority_env
+    branch = _seed_branch(base, branch_def_id="alice-open", author="alice", node_ids=("s",))
+    branch["node_defs"][0]["prompt_template"] = SECRET
+    history = publish_branch_version(base, branch, publisher="alice",
+                                     notes="patch_branch pre-patch snapshot").branch_version_id
+    branch["node_defs"][0]["prompt_template"] = "the clean prompt"
+    published = publish_branch_version(base, branch, publisher="alice",
+                                       public=True).branch_version_id
+
+    authenticate("bob")
+    assert _ext("get_branch_version", branch_version_id=history) == {
+        "error": f"Version '{history}' not found."}
+    listed = _ext("list_branch_versions", branch_def_id="alice-open")
+    assert [v["branch_version_id"] for v in listed["versions"]] == [published]
+    assert SECRET not in json.dumps(listed)
+    seen = _ext("get_branch_version", branch_version_id=published)
+    assert seen["branch_version_id"] == published
+
+    authenticate("alice")
+    mine = _ext("list_branch_versions", branch_def_id="alice-open")
+    assert {v["branch_version_id"] for v in mine["versions"]} == {history, published}
+
+
+def test_publishing_an_identical_snapshot_marks_the_existing_row(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],  # noqa: F811
+) -> None:
+    """A publish whose content matches an earlier edit snapshot gets that same
+    row back; it must come back MARKED, or the publish silently exposes nothing."""
+    from tinyassets.branch_versions import get_branch_version, publish_branch_version
+
+    base, _authenticate = branch_authority_env
+    branch = _seed_branch(base, branch_def_id="same", author="alice", node_ids=("s",))
+    first = publish_branch_version(base, branch, publisher="alice",
+                                   notes="patch_branch post-patch snapshot")
+    again = publish_branch_version(base, branch, publisher="alice", public=True)
+    assert again.branch_version_id == first.branch_version_id
+    assert get_branch_version(base, first.branch_version_id).public is True
+
+
+def test_existing_rows_are_marked_by_how_they_were_minted(tmp_path: Path) -> None:
+    """The migration: an explicit publish is marked, patch_branch's own edit
+    snapshots are not."""
+    from tinyassets.branch_versions import (
+        _connect,
+        get_branch_version,
+        initialize_branch_versions_db,
+    )
+
+    initialize_branch_versions_db(tmp_path)
+    with _connect(tmp_path) as conn:
+        conn.execute("ALTER TABLE branch_versions DROP COLUMN public")
+        for vid, notes in (("b@1", ""), ("b@2", "patch_branch pre-patch snapshot"),
+                           ("b@3", "v2 of the shape")):
+            conn.execute(
+                "INSERT INTO branch_versions (branch_version_id, branch_def_id, content_hash, "
+                "snapshot_json, notes, publisher, published_at) VALUES (?, 'b', ?, '{}', ?, "
+                "'alice', '2026-01-01')", (vid, vid, notes))
+    initialize_branch_versions_db(tmp_path)
+    assert [get_branch_version(tmp_path, v).public for v in ("b@1", "b@2", "b@3")] == [
+        True, False, True]

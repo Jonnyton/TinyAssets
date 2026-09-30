@@ -564,7 +564,14 @@ def _resolve_readable_version(
     version_id: str,
     base_path: str,
 ) -> tuple[str, dict[str, Any]] | None:
-    """Resolve a version only when its persisted parent branch is readable."""
+    """Resolve a version only when the caller may read THAT version.
+
+    Its author reads every version of their branch, history included. Anyone
+    else needs both a readable branch AND the version's publication mark:
+    patch_branch snapshots every edit, so a public branch's versions are mostly
+    private edit history, and publishing a branch must expose only the version
+    its owner confirmed (founder 2026-09-30, astra round 3 on #4107).
+    """
     from tinyassets.branch_versions import get_branch_version
 
     version_id = (version_id or "").strip()
@@ -573,7 +580,12 @@ def _resolve_readable_version(
     version = get_branch_version(base_path, version_id)
     if version is None:
         return None
-    if _resolve_readable_branch(version.branch_def_id, base_path) is None:
+    readable = _resolve_readable_branch(version.branch_def_id, base_path)
+    if readable is None:
+        return None
+    actor = _request_branch_actor()
+    is_author = actor is not None and (readable[1].get("author") or "") == actor
+    if not (is_author or version.public):
         return None
     return version_id, version.to_dict()
 
@@ -760,7 +772,13 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         if scope == "published":
             from tinyassets.branch_versions import list_branch_versions
 
-            versions = list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1)
+            # Published = a version its owner published, newest first; an
+            # unmarked edit snapshot is history, not a published shape.
+            versions = [
+                v for v in list_branch_versions(
+                    _base_path(), r.get("branch_def_id", ""), limit=50)
+                if v.public
+            ]
             if not versions:
                 continue
             published_version_id = versions[0].branch_version_id

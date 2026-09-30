@@ -87,11 +87,12 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-#: Fields of a branch row that publishing itself changes, or that move on their
-#: own (run stats, edit bookkeeping). Everything else in the STORED row -- every
-#: nested key included, known to the model or not -- is part of what becomes
-#: public, so it is part of the snapshot.
-_VOLATILE_BRANCH_FIELDS = frozenset({"visibility", "published", "updated_at", "version", "stats"})
+#: Fields of a branch row that publishing itself changes, or pure edit
+#: bookkeeping. Everything else in the STORED row -- every nested key included,
+#: known to the model or not, `stats` and `version` too -- is part of what
+#: becomes public, so it is part of the snapshot (astra round 3: both hold
+#: arbitrary text a public read returns).
+_VOLATILE_BRANCH_FIELDS = frozenset({"visibility", "published", "updated_at"})
 
 #: The portable fields of a UI component -- exactly what the app renders
 #: (``AppUI.FIELDS`` in onboarding/app_ui.js). A stored component may carry
@@ -341,18 +342,19 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
     1. Rebuild the snapshot from the live rows; its canonical digest must equal
        the approved one. Every content check, the definition's included, runs
        here -- before anything is written.
-    2. Mint each version from its row AS IT WILL BE FLIPPED. A version of a
-       private branch is unreadable (readability follows the branch), so this
-       exposes nothing.
+    2. Mint each version from its row AS IT WILL BE FLIPPED, UNMARKED. An
+       unmarked version is readable only by its author, so this exposes nothing
+       even if the branch goes public some other way later.
     3. The commit point: one transaction re-checks every row against the
        snapshot and flips them all public, or flips none.
-    4. Publish the pre-validated definition. The only failure left is storage;
-       it flips the branches back, so nothing is left public.
+    4. Mark exactly those versions published -- never the branch's history --
+       then publish the pre-validated definition. A failure here un-marks them
+       and flips the branches back, so nothing is left public.
     """
     from tinyassets.api import permissions
     from tinyassets.api.custom_agents import custom_agents
     from tinyassets.api.helpers import _base_path
-    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.branch_versions import mark_versions_public, publish_branch_version
     from tinyassets.principals import named_principal
 
     actor = named_principal(permissions.current_actor_id())
@@ -372,6 +374,7 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
 
     _flip_if_unchanged(snap)
     try:
+        mark_versions_public(_base_path(), list(versions.values()))
         result = custom_agents(
             action="publish_agent", payload=json.dumps(snap["definition"]),
             idempotency_key=f"publish-request:{request_id}",
@@ -381,6 +384,7 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
             detail = result.get("detail") or result.get("error")
             raise ValueError(f"the bundle was not published ({detail}); nothing was left public")
     except BaseException:
+        mark_versions_public(_base_path(), list(versions.values()), public=False)
         _unflip(snap)
         raise
     return {"published": True, "agent_definition_id": agent["agent_definition_id"],
