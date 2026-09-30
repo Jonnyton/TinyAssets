@@ -13,9 +13,11 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
 
 ## 1. PR 1 — seats, storage, tiers
 
-- [ ] 1.1 `tiers.py`: the one table (free 3 seats / 2 GiB, paid 8 / 50 GiB,
-      reserve 1), unknown-tier resolves to free loudly, and `upgrade_link()`
-      returning `None` on the top tier.
+- [x] 1.1 Extend `usage_policy.py` (which already owns tier resolution and a
+      declared `storage_bytes`) with seats and the interactive reserve -- free
+      3 / paid 8, reserve 1, storage left at its existing 2,000 / 20,000 MB.
+      Unknown tier resolves to free loudly; `upgrade_url()` returns `None` on
+      the top tier. No second tier table.
 - [ ] 1.2 `universe_seats.py`: the lease + waiter tables under the canonical
       data dir with the symlink refusal, one `BEGIN IMMEDIATE` acquire
       (reap → re-entry → count → ceiling → ahead → hold/enqueue), refresh,
@@ -26,8 +28,10 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
       existing `provider_invocation` carrier. Overlap policy resolves first.
 - [ ] 1.4 Propose `universe-storage-quota` as its own change, carrying
       `REVIEW.md`'s findings 10-16 and 18 as its starting constraints: the four
-      physical stores, the reserve/publish/reconcile lifecycle, and a free quota
-      that does not refuse a permanent workspace.
+      physical stores, the reserve/publish/reconcile lifecycle, a free quota
+      that does not refuse a permanent workspace, and collapsing the THREE
+      disagreeing storage numbers onto the tier's (folding
+      `_universe_quota_kwargs`' flat 16 GiB into it).
 - [ ] 1.5 Visible waiting state with the inline link: `converse` reply,
       `read_graph`, automation projection, `api/resource_usage.py`,
       `billing/status`, and `/mcp/app?upgrade=1` wired to `startSubscribe()`
@@ -48,7 +52,10 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
       `DISPATCHES_PER_HOUR`, `BYTES_PER_HOUR`, `BUDGET_WINDOW_S`,
       `usage_notice`, `charge_dispatch`, `dispatch_window_usage`,
       `workspace_pool`'s per-universe `bytes_per_hour` refusal (astra finding
-      18 -- a surviving hourly account meter the first scope missed), the cap
+      18 / inventory R6), the per-run effect budget (R5),
+      `usage_policy`'s effect quotas and `reserve_effect_quota` /
+      `release_effect_quota` / `settle_effect_quota` with
+      `storage/usage_ledger` (R7), the cap
       parameters on `admit`, and `run_usage_limited` / `run_rate_limited` /
       `usage_limited` / `usage_limit_reached` at each caller (`api/runs.py`,
       `api/automations.py`, `api/deliveries.py`, `automations.py`,
@@ -68,6 +75,10 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
       rounds.
 - [ ] 3.2 Update PLAN.md's usage-limit design section quoting the directive;
       deploy and `python scripts/deployed_sha.py --assert-contains <sha>`.
-- [ ] 3.3 Sync deltas into `openspec/specs/`, archive this change, and archive
+- [ ] 3.3 Sync deltas into `openspec/specs/`, correcting the stale as-built
+      text the inventory found in the same pass (`engine-run-admissions`
+      still says 300/900 per hour where the code said 1200/3600;
+      `live-mcp-connector-surface` L552; `scratch-storage` L49); archive this
+      change, and archive
       `usage-limits-replace-caps` and `consolidate-platform-resource-policy`,
       which this supersedes.

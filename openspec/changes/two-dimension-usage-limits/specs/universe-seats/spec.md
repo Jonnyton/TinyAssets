@@ -136,9 +136,9 @@ An account already on the highest tier SHALL see the fact without an upgrade
 link. The prompt SHALL be informative and SHALL NOT block: the work still runs
 when a seat frees.
 
-#### Scenario: A waiting chat turn says so rather than hanging
-- **WHEN** a chat turn cannot get a seat within the bounded wait
-- **THEN** the owner receives a message naming the number of seats running with an inline upgrade link, the turn keeps its queue position, and its reply arrives when the seat frees
+#### Scenario: A waiting chat turn keeps waiting and says so
+- **WHEN** a chat turn cannot get a seat
+- **THEN** it keeps waiting until a seat frees, the owner sees the waiting message with a live running count and an inline upgrade link while it waits, and it is served rather than returned as unable to run
 
 #### Scenario: The upgrade link resolves to the real upgrade flow
 - **WHEN** the waiting message's upgrade link is followed
@@ -167,3 +167,31 @@ The seat count and the interactive reserve for each account tier SHALL be define
 #### Scenario: Both test accounts work on free
 - **WHEN** a free universe runs a four-agent village and the owner chats while it runs
 - **THEN** every agent completes by queueing, the chat turn gets a seat, and nothing requires an upgrade
+
+### Requirement: An interactive turn waits until it is served; only work that is durable elsewhere may give up
+
+A caller whose work exists ONLY as the in-flight request SHALL wait until a seat frees rather than give up after a timeout, because returning to the user empty-handed reads as a refusal however it is worded and the directive says work is never refused. A caller whose work is already durable in its own table -- an automation row, a wake row, a queued run -- MAY use a bounded wait and be retried on the next tick, because giving up there loses nothing. While any caller waits, the owner-visible waiting state SHALL be re-published often enough that the running count does not go stale. A failure to publish that state SHALL NOT cost the caller the seat it is owed.
+
+#### Scenario: A chat turn is served, not bounced
+- **WHEN** a chat turn waits far longer than the bounded-wait period because every seat is held
+- **THEN** it is still waiting rather than returned, and it runs as soon as a seat frees
+
+#### Scenario: A pump gives up but keeps its place
+- **WHEN** an automation pump's bounded wait elapses
+- **THEN** it stops waiting, its queue position survives for the next tick, and the automation is not recorded as refused
+
+#### Scenario: A broken owner surface does not cost a seat
+- **WHEN** publishing the waiting state raises
+- **THEN** the caller still receives its seat when one frees
+
+### Requirement: Waiting for a seat burns no attempt, retry or failure counter
+
+Waiting for a seat SHALL NOT consume a one-shot wake's attempt allowance, SHALL NOT increment an automation's consecutive-failure count toward self-pausing, and SHALL NOT be recorded as a refusal, a skip or a rate limit on any owner-facing projection. A seat wait is a delay, not an outcome. Retirement and self-pausing SHALL continue to count only attempts that actually ran and actually failed.
+
+#### Scenario: A one-shot wake on a busy universe still runs
+- **WHEN** a `once` wake becomes due repeatedly while no seat is free, more times than its maximum attempt allowance
+- **THEN** none of those waits counts as an attempt, the wake does not retire, and it runs when a seat frees
+
+#### Scenario: A busy universe does not pause its own automations
+- **WHEN** an automation waits for a seat on many consecutive due instants
+- **THEN** its consecutive-failure count is unchanged and it does not pause itself

@@ -115,8 +115,23 @@ run), not account usage, and the founder's two numbers do not replace them.
 
 | tier | seats | storage |
 |---|---|---|
-| `free` | 3 (2 background + 1 interactive-reserved) | 2 GiB |
-| `paid` | 8 (7 background + 1 interactive-reserved) | 50 GiB |
+| `free` | 3 (2 background + 1 interactive-reserved) | 2,000 MB |
+| `paid` | 8 (7 background + 1 interactive-reserved) | 20,000 MB |
+
+The storage figures are `usage_policy`'s existing per-tier defaults, kept
+deliberately. An earlier draft of this proposal said 2 GiB / 50 GiB, which
+disagreed with the code in the same change — a fourth number in a field that
+already had three. **One number wins, and it is the tier's.** The limits
+inventory at `8a7c8c00` found the three that disagree:
+
+| Source | Free | Paid | Enforced? |
+|---|---|---|---|
+| `usage_policy` per-tier | 2,000 MB | 20,000 MB | nowhere |
+| `effectors/workspace.py` `_universe_quota_kwargs` | 16 GiB | 16 GiB | workspaces only |
+| this proposal, earlier draft | 2 GiB | 50 GiB | — |
+
+The storage change collapses them onto the tier value and folds the workspace
+quota into it, rather than adding a fourth.
 
 Free gets a smaller quota and fewer seats, as directed. A 4-agent village on
 free runs 2 at a time and the other 2 wait — which is the behaviour the

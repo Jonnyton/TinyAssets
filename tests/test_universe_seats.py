@@ -72,7 +72,7 @@ def test_every_terminal_path_releases_the_seat(db, ending):
     raised = {"failure": RuntimeError, "timeout": TimeoutError,
               "cancellation": Cancelled}.get(ending)
     with pytest.raises(raised) if raised else _nullctx():
-        with seats.hold("u1", db=db, wait_s=0.0) as held:
+        with seats.hold("u1", db=db, wait_s=0.0, seats=3, reserve=1) as held:
             assert isinstance(held, Seat)
             if raised:
                 raise raised("ended")
@@ -86,6 +86,115 @@ class _nullctx:
 
     def __exit__(self, *_):
         return False
+
+
+# -- Waiting, for a caller that must not bounce ------------------------------ #
+
+
+def test_a_chat_turn_waits_until_served_instead_of_bouncing(db, monkeypatch):
+    """`wait_s=None`. A turn that queued must not come back to the user after a
+    timeout: a bounce reads as a refusal however it is worded, and the directive
+    says work is never refused. So the turn waits, and is served when the seat
+    frees."""
+    # A short bounded deadline, so "waits far past where a bounce would fire"
+    # is a fraction of a second rather than minutes.
+    monkeypatch.setattr(seats, "SEAT_WAIT_SECONDS", 0.05)
+    blocker = seats.acquire(
+        "u1", seat_class=CLASS_INTERACTIVE, seats=1, reserve=0, db=db,
+    )
+    assert isinstance(blocker, Seat)
+
+    served: list[object] = []
+    notices: list[Waiting] = []
+
+    def turn():
+        with seats.hold(
+            "u1", seat_class=CLASS_INTERACTIVE, kind=seats.KIND_CHAT_TURN,
+            wait_s=None, on_waiting=notices.append, seats=1, reserve=0, db=db,
+        ) as got:
+            served.append(got)
+
+    thread = threading.Thread(target=turn, daemon=True)
+    thread.start()
+    # Outlive the BOUNDED deadline by a wide margin. Joining for less than
+    # `SEAT_WAIT_SECONDS` would pass even if `wait_s=None` silently bounced,
+    # which is exactly what a mutation check caught.
+    thread.join(timeout=seats.SEAT_WAIT_SECONDS * 8)
+    assert thread.is_alive(), "an interactive turn must keep waiting, not bounce"
+    assert not served, "nothing may be yielded before a seat exists"
+    assert notices, "a waiting turn must publish its waiting state"
+    assert notices[0].running == 1
+
+    seats.release(blocker.seat_id, db=db)
+    thread.join(timeout=5.0)
+    seats.stop_refresher()
+    assert not thread.is_alive()
+    assert len(served) == 1
+    assert isinstance(served[0], Seat), "the turn is served once a seat frees"
+
+
+def test_the_waiting_notice_carries_the_live_running_count(db):
+    """The owner watches this number, so it must come from the ledger each time
+    rather than being captured once."""
+    seats.acquire("u1", seat_class=CLASS_BACKGROUND, seats=2, reserve=1, db=db)
+    waiting = seats.acquire("u1", seat_class=CLASS_BACKGROUND, seats=2, reserve=1, db=db)
+    assert isinstance(waiting, Waiting)
+    message = seats.waiting_message("u1", running=waiting.running, tier="free")
+    assert "(1 running)" in message
+    assert "[Upgrade](" in message
+
+
+def test_a_bounded_waiter_keeps_its_ticket_when_it_gives_up(db):
+    """A pump gives up and retries next tick. Its queue position must survive,
+    or a busy universe would send it to the back forever."""
+    seats.acquire("u1", seat_class=CLASS_BACKGROUND, seats=2, reserve=1, db=db)
+    with seats.hold(
+        "u1", seat_class=CLASS_BACKGROUND, wait_s=0.0, seats=2, reserve=1, db=db,
+    ) as got:
+        assert isinstance(got, Waiting)
+        ticket = got.ticket
+    again = seats.acquire(
+        "u1", seat_class=CLASS_BACKGROUND, seats=2, reserve=1, ticket=ticket, db=db,
+    )
+    assert isinstance(again, Waiting)
+    assert again.ticket == ticket, "giving up on a bounded wait must not lose the position"
+
+
+def test_a_failing_waiting_notice_does_not_lose_the_seat(db):
+    """A notice is a notification, not a step. If the owner's surface is down the
+    caller must still get its seat."""
+    blocker = seats.acquire(
+        "u1", seat_class=CLASS_INTERACTIVE, seats=1, reserve=0, db=db,
+    )
+
+    calls: list[int] = []
+
+    def boom(_state):
+        calls.append(1)
+        raise RuntimeError("owner surface unavailable")
+
+    served: list[object] = []
+
+    def turn():
+        with seats.hold(
+            "u1", seat_class=CLASS_INTERACTIVE, wait_s=None, on_waiting=boom,
+            seats=1, reserve=0, db=db,
+        ) as got:
+            served.append(got)
+
+    thread = threading.Thread(target=turn, daemon=True)
+    thread.start()
+    # Let it actually wait, so the notice actually fires and actually raises.
+    thread.join(timeout=0.5)
+    assert calls, "the notice must have been attempted while waiting"
+    assert thread.is_alive()
+
+    seats.release(blocker.seat_id, db=db)
+    thread.join(timeout=5.0)
+    seats.stop_refresher()
+    assert served and isinstance(served[0], Seat), (
+        "a notice that raises must not cost the caller the seat it is owed"
+    )
 
 
 # -- The queue --------------------------------------------------------------- #

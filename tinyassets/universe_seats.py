@@ -64,11 +64,13 @@ What this module does NOT promise, stated because two of them read like promises
   stop typing.
 * **A durable queue for synchronous callers.** A waiter row is a QUEUE POSITION,
   not a work record (astra round 1, finding 3). Background work -- automations,
-  wakes, agent nodes -- is already durable in its own tables, so waiting only
-  delays it and nothing is dropped. A `converse` chat turn is a synchronous
-  request: if it cannot get a seat it is TOLD so, and the caller retries. This
-  module must not be read as promising to replay it later, because it does not
-  store it.
+  wakes, agent nodes -- is already durable in its own tables, so a bounded wait
+  that gives up costs nothing: the row is still due and the next tick retries it.
+  A `converse` chat turn has no such row, so it does the opposite: it waits until
+  served (`wait_s=None`), publishing its waiting state as it goes. It must not
+  bounce after a timeout, because a bounce reads as a refusal however it is
+  worded, and the directive says work is never refused. What this module does not
+  do is STORE the turn and replay it later -- it holds the caller instead.
 
 Where the seat is taken, which is not where it is asked for
 ----------------------------------------------------------
@@ -130,11 +132,14 @@ SEAT_REFRESH_SECONDS = 30.0
 #: as long as the work ahead of it takes and losing its position would be the drop
 #: this module promises never to do.
 WAITER_LEASE_SECONDS = 900.0
-#: How long a blocking acquire waits before handing back a visible waiting state
-#: instead of continuing to block. Matches `provider_admission`'s own judgement:
-#: long enough to ride out a brief burst, short enough that a queued user gets an
-#: answer rather than a hang.
+#: How long a bounded acquire waits before giving up. Used by callers whose work
+#: is durable elsewhere and can be picked up on the next tick -- an automation
+#: pump, a wake. NOT used by a chat turn, which waits until it is served
+#: (`wait_s=None`); see `hold`.
 SEAT_WAIT_SECONDS = 20.0
+#: How often a caller that is waiting re-publishes its waiting state, so the
+#: owner's "(N running)" count does not go stale while they watch it.
+WAITING_NOTICE_SECONDS = 5.0
 #: Poll cadence while blocking. Cheap next to an agent call measured in seconds.
 _POLL_SECONDS = 0.1
 
@@ -877,33 +882,78 @@ def hold(
     kind: str = KIND_AGENT_NODE,
     run_id: str = "",
     parent_seat_id: str | None = None,
-    wait_s: float = SEAT_WAIT_SECONDS,
+    wait_s: float | None = SEAT_WAIT_SECONDS,
+    on_waiting: object | None = None,
+    seats: int | None = None,
+    reserve: int | None = None,
     db: Path | None = None,
 ):
-    """Hold a seat for the body, waiting up to ``wait_s`` for one.
+    """Hold a seat for the body, waiting for one.
 
-    Yields a :class:`Seat` when held, or a :class:`Waiting` when the bounded wait
-    elapsed -- the caller then surfaces the waiting state rather than blocking
-    forever, and the queue POSITION IS KEPT so the work is not dropped. Check
-    `isinstance(x, Seat)`.
+    ``wait_s=None`` waits until served. That is what an INTERACTIVE chat turn
+    passes, and it is the directive's own contract: work *"is never refused and
+    never dropped"*, so a turn that has queued must not bounce back to the user
+    after 20 seconds -- a bounce reads as a refusal however it is worded. The wait
+    is bounded in practice by the interactive reserve: an interactive turn only
+    ever waits behind ANOTHER interactive turn, never behind background work.
 
-    Released on every exit path including exceptions, which is success, failure,
-    cancellation and timeout. A crash is covered by the lease instead, and that is
-    the only path a `finally` cannot reach.
+    A float ``wait_s`` gives up after that long, and is for callers whose work is
+    durable elsewhere and will be retried on the next tick -- an automation pump,
+    a wake. Giving up there costs nothing, because the row is still due.
+
+    ``on_waiting`` is called with the :class:`Waiting` as soon as the caller
+    starts waiting and every `WAITING_NOTICE_SECONDS` after, so the owner sees
+    "Waiting for a free seat (N running)" with a live count instead of a silent
+    hang. It must not raise; it is a notification, not a step.
+
+    Yields a :class:`Seat` when held, or a :class:`Waiting` if a BOUNDED wait
+    elapsed. Check `isinstance(x, Seat)`.
+
+    ``seats`` / ``reserve`` override the tier lookup. Production callers leave
+    them None so the account's own tier decides; they exist so a test can drive
+    the real wait loop against a chosen seat algebra instead of reimplementing it.
+
+    Released on every exit path including exceptions -- success, failure,
+    cancellation and timeout. A crash is covered by the lease, the only path a
+    `finally` cannot reach.
     """
-    deadline = time.monotonic() + max(0.0, wait_s)
+    deadline = None if wait_s is None else time.monotonic() + max(0.0, wait_s)
     ticket: int | None = None
+    notified_at: float | None = None
+
+    def _notify(state: Waiting) -> None:
+        nonlocal notified_at
+        if on_waiting is None or not callable(on_waiting):
+            return
+        now_m = time.monotonic()
+        if notified_at is not None and now_m - notified_at < WAITING_NOTICE_SECONDS:
+            return
+        notified_at = now_m
+        try:
+            on_waiting(state)
+        except Exception:
+            # A notice that fails must not lose the seat the caller is owed.
+            _log.warning("waiting notice failed for %s", universe_id, exc_info=True)
+
     outcome: Seat | Waiting = acquire(
         universe_id,
         seat_class=seat_class,
         kind=kind,
         run_id=run_id,
         parent_seat_id=parent_seat_id,
+        seats=seats,
+        reserve=reserve,
         db=db,
     )
-    while isinstance(outcome, Waiting) and time.monotonic() < deadline:
+    while isinstance(outcome, Waiting) and (
+        deadline is None or time.monotonic() < deadline
+    ):
         ticket = outcome.ticket
+        _notify(outcome)
         time.sleep(_POLL_SECONDS)
+        # Re-presenting the ticket both keeps the queue position AND refreshes
+        # the waiter's lease, so an unbounded wait cannot age out of its own
+        # queue while it is still waiting.
         outcome = acquire(
             universe_id,
             seat_class=seat_class,
@@ -911,11 +961,13 @@ def hold(
             run_id=run_id,
             ticket=ticket,
             parent_seat_id=parent_seat_id,
+            seats=seats,
+            reserve=reserve,
             db=db,
         )
     if isinstance(outcome, Waiting):
-        # Still waiting. Hand it back WITHOUT abandoning the ticket: the position
-        # is the promise that the work runs.
+        # A BOUNDED wait elapsed. Hand it back WITHOUT abandoning the ticket:
+        # the position is the promise that the work runs.
         yield outcome
         return
     # A re-entered seat is its parent's: the parent's refresher already stamps it,
@@ -945,6 +997,7 @@ __all__ = [
     "SEAT_LEASE_SECONDS",
     "SEAT_REFRESH_SECONDS",
     "SEAT_WAIT_SECONDS",
+    "WAITING_NOTICE_SECONDS",
     "WAITER_LEASE_SECONDS",
     "Seat",
     "SeatLedgerUnusable",
