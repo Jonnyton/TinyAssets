@@ -329,6 +329,16 @@ _EMPTY_LLM_RESPONSE_ACTION = (
 # execution is task #39 (Phase 3.5).
 
 
+def _branch_readable_by_caller(branch_def_id: str) -> bool:
+    """A run view is enriched from the CURRENT branch only when the caller may
+    read that branch. A readable run of a branch that is private to someone
+    else must not render the branch's name, nodes and edges as they are now
+    (astra refute 2026-09-30)."""
+    from tinyassets.api.branches import resolve_branch_id_for_read
+
+    return resolve_branch_id_for_read(branch_def_id, str(_base_path())) == branch_def_id
+
+
 def _run_mermaid_from_events(
     branch_def_id: str,
     node_statuses: list[dict[str, Any]],
@@ -347,6 +357,8 @@ def _run_mermaid_from_events(
     from tinyassets.daemon_server import get_branch_definition
 
     try:
+        if not _branch_readable_by_caller(branch_def_id):
+            raise KeyError(branch_def_id)
         source_dict = get_branch_definition(
             _base_path(), branch_def_id=branch_def_id,
         )
@@ -1374,6 +1386,8 @@ def _compose_run_snapshot(
     branch_name = ""
     declares_effects: bool | None = None
     try:
+        if not _branch_readable_by_caller(run_record["branch_def_id"]):
+            raise KeyError(run_record["branch_def_id"])
         source_dict = get_branch_definition(
             _base_path(), branch_def_id=run_record["branch_def_id"],
         )
@@ -2463,6 +2477,18 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
                 ),
             })
         recursion_limit_override = _rl_val
+
+    # Readability BEFORE the snapshot is loaded: every caller, not only the
+    # explicit run_graph path. A goal's canonical run reached this with any
+    # version id, and the preflight then returned the private snapshot's input
+    # names and field descriptions (astra refute 2026-09-30). Unreadable answers
+    # exactly as absent does.
+    from tinyassets.api.branches import _resolve_readable_version
+
+    if _resolve_readable_version(bvid, str(_base_path())) is None:
+        return json.dumps({
+            "error": f"branch_version_id {bvid!r} not found in branch_versions",
+        })
 
     try:
         from tinyassets.api.run_files import dispatch_file_branch

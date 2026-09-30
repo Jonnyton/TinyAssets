@@ -1,14 +1,13 @@
 """The live /mcp surface advertises exactly the seven canonical public tools.
 
-The legacy fat tools stay
-registered + callable for one migration release but are hidden from tools/list
-and logged on call by the _DeprecatedToolVisibility middleware.
+The legacy fat tools (universe, extensions, goals, gates, wiki) are no longer
+registered at all (2026-09-30): hidden-but-dispatchable was a route to another
+user's private branch history.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 
 import pytest
 from fastmcp.exceptions import ValidationError as FastMCPValidationError
@@ -16,11 +15,12 @@ from pydantic import ValidationError as PydanticValidationError
 
 import tinyassets.universe_server as universe_server
 from tinyassets.universe_server import (
-    _DEPRECATED_TOOL_NAMES,
     mcp,
     read_graph,
     write_graph,
 )
+
+LEGACY_FAT_TOOLS = frozenset({"universe", "extensions", "goals", "gates", "wiki"})
 
 CANONICAL_PUBLIC_TOOLS = {
     "read_graph",
@@ -57,17 +57,16 @@ def test_live_surface_advertises_exactly_canonical_public_tools() -> None:
     advertised = {tool.name for tool in _advertised_tools()}
     assert advertised == CANONICAL_PUBLIC_TOOLS
     assert "converse" in advertised  # the relay handle is user-facing
-    # No enumerated legacy fat tool leaks onto the advertised surface.
-    assert _DEPRECATED_TOOL_NAMES.isdisjoint(advertised)
+    # No legacy fat tool leaks onto the advertised surface.
+    assert LEGACY_FAT_TOOLS.isdisjoint(advertised)
 
 
-def test_legacy_tools_stay_registered_but_hidden() -> None:
+def test_legacy_tools_are_not_registered_at_all() -> None:
+    """Registered is what a client can DISPATCH, listed or not. Only the
+    canonical handles remain."""
     registered = {tool.name for tool in _registered_tools()}
-    advertised = {tool.name for tool in _advertised_tools()}
-    # Still registered (callable) ...
-    assert _DEPRECATED_TOOL_NAMES <= registered
-    # ... but not advertised.
-    assert _DEPRECATED_TOOL_NAMES.isdisjoint(advertised)
+    assert registered == CANONICAL_PUBLIC_TOOLS
+    assert LEGACY_FAT_TOOLS.isdisjoint(registered)
 
 
 def test_handle_annotations_match_contract() -> None:
@@ -461,18 +460,3 @@ def test_goal_write_and_read_round_trip(monkeypatch, tmp_path) -> None:
     finally:
         invalidate_backend_cache()
 
-
-def test_deprecated_legacy_tool_callable_and_logged(monkeypatch, tmp_path, caplog) -> None:
-    """A hidden legacy tool still dispatches by plain name and logs deprecation."""
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-
-    from tinyassets.catalog import invalidate_backend_cache
-
-    invalidate_backend_cache()
-    try:
-        with caplog.at_level(logging.WARNING, logger="universe_server"):
-            result = asyncio.run(mcp.call_tool("universe", {"action": "list"}))
-        assert result is not None
-        assert "deprecated-tool-call name=universe" in caplog.text
-    finally:
-        invalidate_backend_cache()

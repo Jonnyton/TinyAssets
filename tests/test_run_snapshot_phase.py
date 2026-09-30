@@ -41,6 +41,11 @@ def _stub_branch(monkeypatch, *, effects):
                 node_defs=[node(node_id="call_github", display_name="call_github",
                                 effects=effects)])
     monkeypatch.setattr(daemon_server, "get_branch_definition", lambda *a, **k: {})
+    # The fake branch stands in for one the caller may read; who may read a
+    # branch is tested in test_branch_version_read_authority.py.
+    import tinyassets.api.runs as _runs_api
+
+    monkeypatch.setattr(_runs_api, "_branch_readable_by_caller", lambda _bid: True)
     monkeypatch.setattr(branches.BranchDefinition, "from_dict", staticmethod(lambda d: fake))
 
 
