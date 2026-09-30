@@ -26,6 +26,8 @@ tests substitute them by parameter, never by an environment switch.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import ipaddress
 import logging
 import os
@@ -1158,17 +1160,47 @@ def _default_launcher(command: Sequence[str], **kwargs: Any) -> Any:
 
 
 #: Descriptors every git this process runs inherits: the workspace worker's
-#: staging in-use share (`workspace_worker._mark_staging_in_use`).
+#: staging in-use share (`workspace_worker._mark_staging_in_use`). Process-wide
+#: only in the one-request worker child, which exits after its operation.
 _INHERITED_FDS: tuple[int, ...] = ()
+#: The same, scoped to a block (`inheriting`): a long-lived server process must
+#: not hand one operation's share to every later git -- the number would be
+#: stale once that operation closed it.
+_SCOPED_FDS: contextvars.ContextVar[tuple[int, ...]] = contextvars.ContextVar(
+    "workspace_git_scoped_fds", default=(),
+)
+
+
+def _require_descriptor(fd: object) -> int:
+    if not isinstance(fd, int) or isinstance(fd, bool) or fd < 0:
+        raise WorkspaceGitError("bad_argument", "an inherited descriptor must be an fd")
+    return fd
 
 
 def inherit_descriptor(fd: int) -> None:
     """Make every later git in this process inherit ``fd``."""
     global _INHERITED_FDS
-    if not isinstance(fd, int) or isinstance(fd, bool) or fd < 0:
-        raise WorkspaceGitError("bad_argument", "inherit_descriptor needs a descriptor")
+    fd = _require_descriptor(fd)
     if fd not in _INHERITED_FDS:
         _INHERITED_FDS = (*_INHERITED_FDS, fd)
+
+
+@contextlib.contextmanager
+def inheriting(fd: int | None):
+    """Every git run inside this block inherits ``fd`` (None: no-op).
+
+    Used by the PARENT for git it runs itself against staging (populate), so a
+    git that outlives a killed parent still holds the tree's in-use share
+    (gpt-6-astra, PR #4143 round 3).
+    """
+    if fd is None:
+        yield
+        return
+    token = _SCOPED_FDS.set((*_SCOPED_FDS.get(), _require_descriptor(fd)))
+    try:
+        yield
+    finally:
+        _SCOPED_FDS.reset(token)
 
 
 def run_git(
@@ -1238,7 +1270,7 @@ def run_git(
         "check": False,
         "shell": False,
     }
-    inherited = () if _IS_WINDOWS else _INHERITED_FDS
+    inherited = () if _IS_WINDOWS else (*_INHERITED_FDS, *_SCOPED_FDS.get())
     if pass_fds or inherited:
         # The descriptor must survive into the child, or /proc/self/fd/<n>
         # in its cwd names nothing. `_INHERITED_FDS` is the staging in-use
