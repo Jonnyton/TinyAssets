@@ -734,21 +734,17 @@ def _connect_http(
     if hardcoded is not None:
         return hardcoded
     # The capability-URL binding, before anything is written, so the owner reads
-    # a precise refusal rather than the storage layer's.
+    # a precise refusal rather than the storage layer's. The asked access mode
+    # rides along rather than being re-checked here: two statements of one rule
+    # is how the two drift, and the validator is the one the storage boundary
+    # and dispatch also call.
     try:
-        validate_url_secret_binding(scheme, parsed_endpoints)
+        validate_url_secret_binding(
+            scheme, parsed_endpoints, access_mode=asked_access
+        )
     except SsrfValidationError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
     if scheme == _URL_SECRET_SCHEME:
-        if asked_access == ACCESS_FULL:
-            return {
-                "error": "connection_setup_invalid",
-                "detail": (
-                    f"a {_URL_SECRET_SCHEME} connection is granted exactly, "
-                    "never full: its secret is one declared path, and full "
-                    "access would admit every other path on the host instead"
-                ),
-            }
         # THE extraction: the owner pasted the whole link, the platform finds the
         # secret in it, and only the segment is written. Replaces `secret` for
         # every write below, so no code path can store the full URL.

@@ -452,11 +452,66 @@ def test_every_segment_of_a_multi_segment_secret_is_a_bundle_member() -> None:
     """
     values = url_secret_sensitive_values(SLACK_SECRET)
     assert values[0] == SLACK_SECRET
-    assert set(values[1:]) == set(SLACK_SECRET.split("/"))
+    # The 24-char token segment is scanned on its own; that is the secret.
+    assert SLACK_SECRET.split("/")[-1] in values
     bundle = _build_http_secret_bundle(_URL_SECRET_SCHEME, SLACK_SECRET)
     assert set(bundle.secret_values()) == set(values)
     # Still readable as the one value the substituter splices in.
     assert bundle.get("token") == SLACK_SECRET
+
+
+def test_short_leading_segments_are_not_scanned_individually() -> None:
+    """Scanning EVERY segment would trade a leak for a denial of service.
+
+    The leading segments of a real capability URL are public ids -- a workspace
+    id, a channel id, a webhook id -- and they are short. A legitimate response
+    that happens to contain one would read as an echo and fail a working
+    connection. So the joined credential is always scanned and a segment only
+    when it is long enough to BE the secret rather than the address.
+    """
+    values = url_secret_sensitive_values(SLACK_SECRET)
+    # `T024BE7LD` and `B01ABCDEF` are 9 characters and public.
+    assert "T024BE7LD" not in values
+    assert "B01ABCDEF" not in values
+    # ...and a numeric id that could plausibly appear in any JSON body.
+    assert url_secret_sensitive_values("12345678/tOkEn0123456789abcdef") == (
+        "12345678/tOkEn0123456789abcdef",
+        "tOkEn0123456789abcdef",
+    )
+
+
+def test_a_response_carrying_only_a_public_id_segment_is_not_an_echo(
+    stub_server: Any,
+) -> None:
+    """The other half of the same property, through the real driver: a body that
+    quotes the PUBLIC part of a capability URL is ordinary evidence, and must
+    not fail the call."""
+    driver, port = _local_driver(stub_server)
+    stub_server.stub.update(
+        status=200, body=json.dumps({"channel": "B01ABCDEF"}).encode()
+    )
+    endpoints = _parse_allowed_endpoints(
+        [
+            {
+                "host": "public.example",
+                "path_template": SLACK_TEMPLATE,
+                "methods": ["POST"],
+            }
+        ]
+    )
+
+    result = driver(
+        bundle=_build_http_secret_bundle(_URL_SECRET_SCHEME, SLACK_SECRET),
+        auth_scheme=_URL_SECRET_SCHEME,
+        method="POST",
+        url=f"https://public.example:{port}{SLACK_TEMPLATE}",
+        body={"text": "x"},
+        allowed_endpoints=endpoints,
+    )
+    assert result["status"] == 200
+    assert "B01ABCDEF" in result["body"]
+    # The real secret is still absent.
+    assert SLACK_SECRET.split("/")[-1] not in json.dumps(result)
 
 
 def test_the_scheme_emits_no_auth_header() -> None:

@@ -709,6 +709,10 @@ def validate_url_secret_binding(
     Called at the deposit door (a user-facing refusal), at ``create_connection``
     (the storage boundary every issuer passes), and at dispatch against the row
     as RE-READ, which is what refuses a row mutated after a proxy opened.
+
+    ``access_mode`` is optional ONLY so a caller with no mode in hand can still
+    check the placeholder half; every call site in this repo passes it, and one
+    that cannot must not be inventing ``exact`` on the row's behalf.
     """
     scheme = (auth_scheme or "").strip().lower()
     carriers = [endpoint for endpoint in endpoints if url_secret_token(endpoint)]
@@ -1822,23 +1826,46 @@ class _CanonicalOutboundUrl:
     is_ip_literal: bool
 
 
+#: A path segment at least this long is scanned for in a response ON ITS OWN,
+#: not only as part of the joined credential. The same threshold
+#: ``api/pending_requests._ENTROPY_RUN_RE`` uses for "an unbroken run this long
+#: is a credential, not prose", and it is a threshold rather than the grammar
+#: floor (8) for a reason given in ``url_secret_sensitive_values``.
+_URL_SECRET_SCANNED_SEGMENT_CHARS = 16
+
+
 def url_secret_sensitive_values(credential: str) -> tuple[str, ...]:
-    """Every string a response must be scanned for: the whole credential AND
-    each of its segments.
+    """Every string a response must be scanned for: the whole credential, and
+    each segment long enough to be a credential on its own.
 
     A ``{secret+}`` credential is several path segments joined by ``/``. The
-    response scanners (`_declassify_response`, and the broker's echo check)
+    response scanners (``_declassify_response``, and the broker's echo check)
     match SUBSTRINGS, so scanning only the joined form let a destination echo
-    one segment back — ``{"token": "superSecret789"}`` — and that segment was
-    returned to the caller, persisted by ``bounded_evidence`` and quoted in the
+    ONE segment back — a body carrying just the token of a ``T…/B…/token``
+    secret — and that segment reached the caller, ``bounded_evidence``, and the
     run's ``external_write_errors`` preview (gpt-6-astra refute round 1,
-    FINDING 2). Every segment is at least 8 characters by grammar, so scanning
-    them individually cannot make an ordinary response look like an echo.
+    FINDING 2).
+
+    But scanning EVERY segment trades a leak for a denial of service. The
+    leading segments of a real multi-segment capability URL are typically PUBLIC
+    ids (a workspace id, a channel id, a webhook id), they are short, and a
+    legitimate response can contain one — an 8-character numeric id in a JSON
+    body would then read as an echo and fail a working connection. So the
+    joined credential is always scanned, and a segment is scanned individually
+    only when it is long enough to be the secret rather than the address:
+    a 24-character webhook token is, a 9-character workspace id is not.
     """
     text = credential if isinstance(credential, str) else ""
     if not text:
         return ()
-    values = [text, *(part for part in text.split("/") if part)]
+    values = [
+        text,
+        *(
+            part
+            for part in text.split("/")
+            if len(part) >= _URL_SECRET_SCANNED_SEGMENT_CHARS
+        ),
+    ]
     return tuple(dict.fromkeys(values))
 
 
