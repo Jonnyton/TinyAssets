@@ -28,7 +28,6 @@ tests/test_branch_runner.py
 tests/test_branch_tasks_v2.py
 tests/test_canonical_dispatch.py
 tests/test_claude_chat_recovery.py
-tests/test_cloud_automation_continuation.py
 tests/test_composite_branch_actions.py
 tests/test_cross_run_state_query.py
 tests/test_daemon_dashboard.py

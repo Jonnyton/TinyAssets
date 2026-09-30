@@ -538,8 +538,8 @@ def test_served_binding_selection_is_owner_scoped_and_unambiguous(tmp_path):
         expected_revision=connected["agent_binding"]["revision"],
         enabled=True,
     )
-    # The general list only exposes the newest 100 rows. Inactive bindings
-    # outside that window must not conceal this older serving binding.
+    # The general list returns one page, newest first. Inactive bindings outside
+    # the page must not conceal this older serving binding.
     for _ in range(105):
         create_binding(
             tmp_path, universe_id="u-owner", definition_id=agent["agent_definition_id"],

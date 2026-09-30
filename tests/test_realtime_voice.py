@@ -21,11 +21,8 @@ _OFFER_SDP = "v=0\r\no=browser 1 1 IN IP4 127.0.0.1\r\n"
 _ANSWER_SDP = "v=0\r\no=bridge 1 1 IN IP4 203.0.113.10\r\n"
 
 
-@pytest.fixture(autouse=True)
-def _clear_session_limits():
-    rv._session_buckets.clear()
-    yield
-    rv._session_buckets.clear()
+#: There is no per-user rate bucket to clear between tests any more -- the voice
+#: session/status limiters were account limits and are gone (founder 2026-09-30).
 
 
 def _enable(monkeypatch) -> None:
@@ -228,26 +225,28 @@ def test_voice_transport_uses_only_the_generic_outbound_gate(monkeypatch):
         assert rv.realtime_voice_enabled() is expected
 
 
-def test_session_limit_is_per_identity_and_resets():
-    for _ in range(rv.VOICE_SESSIONS_PER_WINDOW):
-        assert rv.allow_voice_session("owner-a", now=10.0) is True
-    assert rv.allow_voice_session("owner-a", now=10.0) is False
-    assert rv.allow_voice_session("owner-b", now=10.0) is True
-    assert rv.allow_voice_session(
-        "owner-a", now=10.0 + rv.VOICE_SESSION_WINDOW_SECONDS
-    ) is True
+def test_there_is_no_per_user_voice_rate_limiter():
+    """The owner is never rate-limited for talking to their own universe.
 
-
-def test_status_limit_is_per_identity_and_resets(monkeypatch):
-    monkeypatch.setattr(rv, "VOICE_STATUS_CHECKS_PER_WINDOW", 2)
-    monkeypatch.setattr(rv, "_status_buckets", {})
-    assert rv.allow_voice_status("owner-a", now=10.0) is True
-    assert rv.allow_voice_status("owner-a", now=10.0) is True
-    assert rv.allow_voice_status("owner-a", now=10.0) is False
-    assert rv.allow_voice_status("owner-b", now=10.0) is True
-    assert rv.allow_voice_status(
-        "owner-a", now=10.0 + rv.VOICE_STATUS_WINDOW_SECONDS
-    ) is True
+    ``VOICE_SESSIONS_PER_WINDOW = 10`` and ``VOICE_STATUS_CHECKS_PER_WINDOW = 60``
+    answered 429 to the authenticated account holder. Founder, 2026-09-30: an
+    account has exactly two limits, cloud bytes and concurrent agent seats, and
+    neither is a count of microphone presses. The limiters, their buckets and
+    their window constants are all gone.
+    """
+    for gone in (
+        "VOICE_SESSIONS_PER_WINDOW",
+        "VOICE_SESSION_WINDOW_SECONDS",
+        "VOICE_STATUS_CHECKS_PER_WINDOW",
+        "VOICE_STATUS_WINDOW_SECONDS",
+        "allow_voice_session",
+        "allow_voice_status",
+        "_session_buckets",
+        "_status_buckets",
+    ):
+        assert not hasattr(rv, gone), f"{gone} came back"
+    # The provider's own session length is not an account limit and stays.
+    assert rv.VOICE_SESSION_MAX_SECONDS == 30 * 60
 
 
 def test_public_config_contains_only_protocol_and_limits(monkeypatch):
@@ -718,21 +717,20 @@ def test_route_scopes_distinct_identities_to_distinct_home_universes(
     ]
 
 
-def test_route_rate_limits_before_home_or_resource_access(monkeypatch):
+def test_the_session_route_answers_no_rate_refusal(monkeypatch):
+    """Twenty back-to-back session requests, twice the old window of 10.
+
+    None is a 429. The route reaches the real home/authority checks every time,
+    which is what a removed rate gate has to mean: not "a bigger number" but
+    "the request is evaluated on its merits".
+    """
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     _enable(monkeypatch)
-    import tinyassets.onboarding as onboarding
 
-    monkeypatch.setattr(rv, "allow_voice_session", lambda _user_id: False)
-    monkeypatch.setattr(
-        onboarding,
-        "_read_home",
-        lambda _identity: (_ for _ in ()).throw(AssertionError("home must not resolve")),
-    )
-    assert _drive({"offer_sdp": _OFFER_SDP}, identity=_owner())[:2] == (
-        429,
-        {"error": "voice_session_rate_limited"},
-    )
+    for _ in range(20):
+        status, payload = _drive({"offer_sdp": _OFFER_SDP}, identity=_owner())[:2]
+        assert status != 429, payload
+        assert "rate_limited" not in str(payload)
 
 
 def test_route_resolves_home_owner_and_returns_no_store(monkeypatch, tmp_path):
@@ -810,20 +808,14 @@ def test_status_route_is_authenticated_secret_free_and_unpowered(monkeypatch, tm
     assert headers["cache-control"] == "no-store"
 
 
-def test_status_route_rate_limits_before_home_resolution(monkeypatch):
+def test_the_status_route_answers_no_rate_refusal(monkeypatch):
+    """A hundred preflight checks, well past the old 60-per-minute window."""
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
-    import tinyassets.onboarding as onboarding
 
-    monkeypatch.setattr(rv, "allow_voice_status", lambda _user_id: False)
-    monkeypatch.setattr(
-        onboarding,
-        "_read_home",
-        lambda _identity: pytest.fail("rate limit must precede home resolution"),
-    )
-    assert _drive_status(identity=_owner())[:2] == (
-        429,
-        {"error": "voice_status_rate_limited"},
-    )
+    for _ in range(100):
+        status, payload = _drive_status(identity=_owner())[:2]
+        assert status != 429, payload
+        assert "rate_limited" not in str(payload)
 
 
 def test_status_route_reports_ready_without_returning_connection_secret(

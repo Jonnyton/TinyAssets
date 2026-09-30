@@ -12,11 +12,42 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Expose your patch intake as a receiver, so new users can be offered it (2026-09-30)
+
+**Why:** PR #4121 seeds a consent request in every new user's rail — "Let your universe
+report problems to TinyAssets" — and approving it connects their universe to your intake.
+The platform has to be TOLD which intake to offer: it is your universe's node, owned by
+you like any user's, so there is no id in the code. It needs a `receiver_id`, and
+production has none yet (`/data/.runs.db` `graph_receivers`: 0 rows, read 2026-09-30).
+
+Your two intakes exist today only as inbound `/mcp/hooks/<token>` webhooks. Those are
+anonymous — whatever arrives is attached to nobody's universe, and the sender has to hold
+a secret. Native delivery carries the sender's identity and needs no secret at all, which
+is why the seeded request has nothing to paste.
+
+**Ask your universe, in the app or the chatbot** (branch `bc19127bde44` is the general
+patch-request one, with `what_they_tried` / `what_was_missing_or_broken` / `request_type`):
+
+> Expose the entry step of my patch-request workflow as a receiver any authenticated user
+> can send to, and list it so they can find it. Accept `what_they_tried`,
+> `what_was_missing_or_broken` and `request_type`. Tell me the receiver id.
+
+It will call `write_graph target="receiver" operation="create"` with `open_to_all: true`
+and `discoverable: true`. **Send the lead the `receiver_id` it returns** — that value goes
+into `TINYASSETS_PATCH_INTAKE_RECEIVER_ID` in the deploy env, and until it is set the
+seeded request does not appear for anyone.
+
+Optional: `TINYASSETS_PATCH_INTAKE_LABEL` changes what the platform calls your intake in
+that request. It defaults to `TinyAssets`.
+
+This blocks the Play closed test: the founder asked for patch requests to be live before
+testers arrive.
+
 ## WorkOS: register the app's new redirect URI (2026-09-30)
 
 **One dashboard field. Sign-in is broken at the new URL until it is set.**
 
-The app moved from `https://tinyassets.io/mcp/app` to `https://tinyassets.io/app`
+The app moved to `https://tinyassets.io/app`
 (your directive, no back-compat). The SPA builds its OAuth `redirect_uri` from the
 page it is served at, so AuthKit now receives `https://tinyassets.io/app` — and
 AuthKit refuses a redirect URI that is not registered. Nothing in the repo can
@@ -24,7 +55,7 @@ register it; this is the single founder action for the move.
 
 1. `dashboard.workos.com` → **Production** environment → **Redirects**.
 2. Add `https://tinyassets.io/app` to **Sign-in callback / Redirect URIs**.
-3. Remove `https://tinyassets.io/mcp/app` once the new one is saved. Leaving it is
+3. Remove the old app redirect URI once the new one is saved. Leaving it is
    not dangerous, but it is dead — nothing serves that path any more.
 4. Nothing else changes: same origin, same client ID, same MCP resource
    (`https://tinyassets.io/mcp`, untouched by the move).
@@ -39,7 +70,7 @@ connection flow's one fixed redirect URI moved too, to
 `https://tinyassets.io/app/model-callback/connect`. Connections that dynamically
 register a client send the new callback automatically and need nothing. But if a
 provider's `client_id` was supplied by hand, that provider's own app settings
-still list the `/mcp/app/...` return and will refuse the exchange — whoever owns
+still list the old return path and will refuse the exchange — whoever owns
 that provider account updates the redirect URI there. Nothing in this repo can
 do it, and it is per-connection rather than platform-wide.
 

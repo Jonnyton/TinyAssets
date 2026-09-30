@@ -35,8 +35,6 @@ What bounds delivery is what already bounds everything else:
 * **Seats.** A run that raises a request holds a concurrent agent-run seat
   while it does, so churn is an agent spending its owner's own seat time. That
   is the account limit doing its job, not a hole.
-* **``MAX_PENDING``.** Fifty unanswered requests per universe, so the pile a
-  loop can build is capped before delivery is involved.
 * **The ledger's primary key.** One notification per
   ``(request_id, item_id, device_id, kind)``, claimed in the same transaction
   that reads the destination — so a retry, a redelivery, or a crash mid-send

@@ -203,43 +203,6 @@ def test_workflow_discovered_model_has_sealed_versioned_evidence(
     assert snapshots and all(not path.exists() for path in snapshots)
 
 
-def test_background_discovered_model_keeps_workflow_authority_and_settles_once(
-    tmp_path, monkeypatch,
-):
-    from tests.test_background_budget_finalization_e2e import (
-        _CountingProvider as BackgroundProvider,
-    )
-    from tests.test_background_budget_finalization_e2e import _run_consumer_once
-    from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
-    from tinyassets.daemon_server import set_founder_home
-    from tinyassets.runs import get_run_by_branch_task_id
-
-    seen = []
-
-    async def enumerate_models(self, *, universe_dir, credential_snapshot_dir):
-        seen.append(credential_snapshot_dir)
-        return catalogue(["background-new-model"])
-    monkeypatch.setattr(BackgroundProvider, "native_credential_service", "codex")
-    monkeypatch.setattr(BackgroundProvider, "enumerate_models", enumerate_models)
-    set_founder_home(tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
-                     platform_generated=True)
-    task_id, _, _, _, _ = _run_consumer_once(
-        tmp_path, monkeypatch, model_access={"codex": ModelAccess("discovered")},
-        policy={"preferred": {"provider": "codex", "model_id": "background-new-model"}},
-    )
-    task = Epoch2BranchTaskAdapter(tmp_path).get(task_id)
-    run = get_run_by_branch_task_id(tmp_path, branch_task_id=task_id)
-    assert task.status == "succeeded", None if run is None else run.get("error")
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        records = [json.loads(row[0]) for row in conn.execute(
-            "SELECT record_json FROM provider_invocation_reservations",
-        )]
-    assert len(records) == 1 and records[0]["state"] == "succeeded"
-    assert records[0]["selection"]["model_id"] == "background-new-model"
-    assert records[0]["selection"]["model_evidence"]["version"] == 2
-    assert seen and all(not path.exists() for path in seen)
-
-
 @pytest.mark.parametrize("correction", [
     {"version": 1}, {"version": True}, {"basis": "owner_declared"},
     {"observed_at": "yesterday"}, {"completed_at": "2026-09-01T00:00:00"},

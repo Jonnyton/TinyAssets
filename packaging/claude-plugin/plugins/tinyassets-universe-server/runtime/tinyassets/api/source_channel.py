@@ -38,6 +38,26 @@ from typing import Any
 CHANNEL_SOURCE_CODE = "source_code"
 
 
+def person_only_sinks() -> frozenset[str]:
+    """Consent sinks the OWNER answers on the request rail, never self-approved.
+
+    This verb writes into the very ``effector_consents`` store those rails feed,
+    so a sink whose whole point is a person's tap must be refused here or the
+    rail is a formality the agent can walk around -- it shares the owner's
+    principal, so no authorization check downstream can tell the two apart.
+
+    ``workspace`` was the first (Codex refute review of PR #2742, Q1);
+    ``patch_intake`` is the second, and it was missed in exactly the same way --
+    the refusal named one sink instead of the class it belongs to, so the next
+    rail-answered sink inherited the hole. A SET, checked in the one function
+    that writes the grant, is what stops a third.
+    """
+    from tinyassets.effectors.workspace import EXTERNAL_WRITE_SINK_WORKSPACE
+    from tinyassets.patch_intake import PATCH_INTAKE_SINK
+
+    return frozenset({EXTERNAL_WRITE_SINK_WORKSPACE, PATCH_INTAKE_SINK})
+
+
 def _auth_failed(detail: str, **extra: Any) -> str:
     payload = {
         "error": "auth_failed",
@@ -376,6 +396,19 @@ def _approve_sink(
             "error": "destination is required for a sink channel",
             "failure_class": "missing_destination",
             "actionable_by": "chatbot",
+        })
+    # THE authority check, in the one function that writes the grant. The served
+    # handle refuses these earlier with a friendlier message, but a refusal that
+    # lives only at one entry point is a refusal with a way around it.
+    if sink in person_only_sinks():
+        return json.dumps({
+            "error": "consent_is_person_only",
+            "failure_class": "consent_is_person_only",
+            "actionable_by": "user",
+            "detail": (
+                f'"{sink}" consent is answered by the universe\'s owner on the '
+                "request rail, not granted here. Ask for it there."
+            ),
         })
     try:
         universe_dir = _universe_dir(uid)

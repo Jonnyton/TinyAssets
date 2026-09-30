@@ -989,7 +989,6 @@ async def _handle_voice_session(request: Any) -> Any:
     from tinyassets.auth.middleware import current_identity
     from tinyassets.onboarding.realtime_voice import (
         RealtimeVoiceError,
-        allow_voice_session,
         create_voice_session,
         realtime_voice_enabled,
     )
@@ -1021,13 +1020,9 @@ async def _handle_voice_session(request: Any) -> Any:
             headers=_NO_STORE,
         )
 
+    # No per-user rate gate: the caller here is the authenticated owner asking
+    # their own universe to listen (founder, 2026-09-30 -- storage and seats only).
     identity = current_identity()
-    if not allow_voice_session(identity.user_id):
-        return JSONResponse(
-            {"error": "voice_session_rate_limited"},
-            status_code=429,
-            headers=_NO_STORE,
-        )
     home = await run_in_threadpool(_read_home, identity)
     if not home:
         return JSONResponse(
@@ -1056,7 +1051,7 @@ async def _handle_voice_status(request: Any) -> Any:
 
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.realtime_voice import allow_voice_status, voice_capability
+    from tinyassets.onboarding.realtime_voice import voice_capability
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -1064,12 +1059,6 @@ async def _handle_voice_status(request: Any) -> Any:
     if denied is not None:
         return denied
     identity = current_identity()
-    if not allow_voice_status(identity.user_id):
-        return JSONResponse(
-            {"error": "voice_status_rate_limited"},
-            status_code=429,
-            headers=_NO_STORE,
-        )
     home = await run_in_threadpool(_read_home, identity)
     result = await run_in_threadpool(
         voice_capability,
@@ -1197,6 +1186,74 @@ async def _handle_serving_bind(request: Any) -> Any:
     out = await run_in_threadpool(_bind)
     return JSONResponse({"serving": out}, headers={"Cache-Control": "no-store"})
 
+
+
+async def _handle_account_timezone(request: Any) -> Any:
+    """Record the signed-in user's own clock, as their browser reports it.
+
+    The app has always KNOWN the zone -- it formats every timestamp it displays
+    with ``Intl.DateTimeFormat`` -- and never sent it, while the scheduler
+    matched cron against the container's UTC clock. So a Pacific owner was told
+    "7am server time" for a note that would arrive at midnight (live
+    2026-09-30). This is the one route that closes that gap.
+
+    Same-origin JSON like the other account writes. An unresolvable name is
+    REFUSED rather than stored or blanked: a client that cannot name its zone
+    must not be able to clear one the owner already has, because the value
+    decides when their mornings happen.
+    """
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.schedule_timezone import UnknownTimezone
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    reported = str(data.get("timezone", "")).strip()
+    identity = current_identity()
+
+    def _store() -> str:
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.storage.account_timezone import set_account_timezone
+
+        with identity_context(identity):
+            return set_account_timezone(
+                _base_path(),
+                owner_user_id=identity.user_id,
+                timezone_name=reported,
+            )
+
+    try:
+        from starlette.concurrency import run_in_threadpool
+
+        stored = await run_in_threadpool(_store)
+    except UnknownTimezone as exc:
+        return JSONResponse(
+            {"error": "timezone_invalid", "detail": str(exc)},
+            status_code=400,
+            headers=_NO_STORE,
+        )
+    except Exception:  # noqa: BLE001 - a settings write never breaks sign-in
+        import logging
+
+        logging.getLogger("tinyassets.onboarding").warning(
+            "account timezone could not be stored"
+        )
+        return JSONResponse(
+            {"error": "timezone_unavailable"}, status_code=503, headers=_NO_STORE
+        )
+    return JSONResponse({"timezone": stored}, headers=_NO_STORE)
 
 
 async def _handle_account_delete(request: Any) -> Any:
@@ -1747,6 +1804,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
         Route("/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
+        Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/connections", handle_connections, methods=["GET", "POST"]),
         Route("/app/files", handle_file_upload, methods=["POST"]),
         # Notifications. `/app/devices` and `/app/notify` are identity-gated by
