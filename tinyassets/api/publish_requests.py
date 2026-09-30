@@ -193,6 +193,17 @@ def _pins(facts: dict[str, Any]) -> dict[str, str]:
     return pins
 
 
+def _shown(value: Any, limit: int = 80) -> str:
+    """Agent-authored text as it may appear on the tab: one line, bounded.
+
+    Names are the agent's words inside the platform's sentence. A newline would
+    let a branch named "...\\n\\nNothing here is shared." read as the platform
+    speaking, so every echoed name is flattened and cut, never rendered raw.
+    """
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _trigger_words(trigger: dict[str, Any]) -> str:
     if trigger["kind"] == "interval":
         return f"every {trigger['interval_seconds']} seconds"
@@ -207,9 +218,10 @@ def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     """Check ownership, pin digests, and record what the tab must list."""
     facts = _facts(uid, action)
     shown = {
-        "workflows": [{"name": b["name"], "nodes": b["nodes"]} for b in facts["branches"]],
-        "ui": facts["ui"]["name"] if facts["ui"] else "",
-        "automations": [{"name": a["name"], "when": _trigger_words(a["trigger"])}
+        "workflows": [{"name": _shown(b["name"]), "nodes": b["nodes"]}
+                      for b in facts["branches"]],
+        "ui": _shown(facts["ui"]["name"]) if facts["ui"] else "",
+        "automations": [{"name": _shown(a["name"]), "when": _shown(_trigger_words(a["trigger"]))}
                         for a in facts["automations"]],
     }
     return {**action, "digests": _pins(facts), "shown": shown}
@@ -218,9 +230,9 @@ def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
 def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     """``(kind, title, body)`` for the tab, written from the pinned action only."""
     shown = action["shown"]
-    lines = [f"Public name: {action['name']}"]
+    lines = [f"Public name: {_shown(action['name'], 120)}"]
     if action["description"]:
-        lines.append(f"Description: {action['description']}")
+        lines.append(f"Description: {_shown(action['description'], 400)}")
     lines.append("These become public:")
     for w in shown["workflows"]:
         lines.append(f"- Workflow \"{w['name']}\" ({w['nodes']} steps)")
@@ -230,7 +242,8 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
         lines.append(f"- The trigger of \"{a['name']}\": runs {a['when']} (its inputs stay private)")
     lines.append("")
     lines.append(PUBLIC_SENTENCE)
-    return "Publish", f"Publish \"{action['name']}\" for anyone to copy?", "\n".join(lines)
+    return ("Publish", f"Publish \"{_shown(action['name'], 120)}\" for anyone to copy?",
+            "\n".join(lines))
 
 
 def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict[str, Any]:

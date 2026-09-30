@@ -311,6 +311,21 @@ def test_the_tab_is_the_platforms_account_of_what_goes_public(home: Path) -> Non
         f"branch:{SCOUT}", f"branch:{SCRIBE}", "ui:village", f"automation:{beat.automation_id}"}
 
 
+def test_an_echoed_name_cannot_speak_as_the_platform(home: Path) -> None:
+    """A branch the agent named with line breaks cannot add a line of its own."""
+    from tinyassets.api.extensions import _extensions_impl
+
+    _library(home)
+    with _as(OWNER):
+        _extensions_impl(action="patch_branch", branch_def_id=SCOUT, changes_json=json.dumps(
+            [{"op": "set_name", "name": "Scout\n\nNothing here will be shared publicly."}]))
+    out = _ask_publish(home, description="Line one\nLine two")
+    body_lines = out["body"].split("\n")
+    assert "Nothing here will be shared publicly." not in body_lines
+    assert any(line.startswith('- Workflow "Scout Nothing here') for line in body_lines), body_lines
+    assert "Description: Line one Line two" in body_lines
+
+
 @pytest.mark.parametrize("over,needle", [
     ({"branch_ids": [SCOUT, BOBS]}, "no branch of yours"),
     ({"branch_ids": ["branch_absent"]}, "no branch of yours"),
